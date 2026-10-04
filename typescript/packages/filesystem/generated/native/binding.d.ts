@@ -862,8 +862,8 @@ export declare class NativeOperationWindowCoordinator {
 }
 
 /**
- * A native process-tree owner that can adopt a host-created child while the
- * host retains its own stdio streams.
+ * A native process-tree owner that launches children with native ownership
+ * before user code can create descendants.
  *
  * The returned token is an opaque ownership identity. Cleanup uses the native
  * Job/process-group handle retained by this object, never a recovered PID.

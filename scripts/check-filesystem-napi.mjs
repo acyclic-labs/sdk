@@ -120,10 +120,12 @@ async function qualifyProcessOwner(binding) {
   const directory = await mkdtemp(join(tmpdir(), "acyclic-native-owner-"));
   const pidFile = join(directory, "grandchild.pid");
   const rootExitFile = join(directory, "root-exit");
-  const grandchild = "const fs=require('node:fs'); fs.writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 100000);";
+  const grandchild = "const fs=require('node:fs'); fs.writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => process.exit(0), 10000);";
   const root = `const fs=require('node:fs'); const {spawn}=require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}, process.argv[1]], { detached: true, windowsHide: true, stdio: 'ignore', env: {} }); fs.writeFileSync(process.argv[2], 'exited');`;
   let spawned;
+  let descendantPid;
   let rootActive = false;
+  let rootTokenRetired = false;
   let rootCleanupUncertain = false;
   try {
     const environment = [
@@ -138,21 +140,22 @@ async function qualifyProcessOwner(binding) {
     if (!exists(pidFile)) throw new Error("native process owner fixture did not start its descendant");
     while (!exists(rootExitFile) && Date.now() < deadline) await delay(20);
     if (!exists(rootExitFile)) throw new Error("native process owner fixture root did not exit");
-    const descendantPid = Number(await readFile(pidFile, "utf8"));
+    descendantPid = Number(await readFile(pidFile, "utf8"));
     if (!Number.isSafeInteger(descendantPid) || descendantPid <= 0) throw new Error("native process owner fixture wrote an invalid descendant PID");
     let result;
     while (Date.now() < deadline) {
       result = owner.terminate(spawned.token);
       if (result.kind === "terminated") {
-        rootActive = false;
+        rootTokenRetired = true;
         break;
       }
       await delay(20);
     }
     if (result?.kind !== "terminated") throw new Error(`native process owner did not prove cleanup: ${JSON.stringify(result)}`);
-    if (processAlive(descendantPid)) throw new Error("native process owner left a root-exits-first descendant alive");
+    if (processAlive(descendantPid)) throw new Error("native process owner left a root-exits-first descendant alive after reported completion");
+    rootActive = false;
   } finally {
-    if (rootActive && spawned !== undefined) {
+    if (rootActive && !rootTokenRetired && spawned !== undefined) {
       const cleanupDeadline = Date.now() + 5_000;
       while (rootActive && Date.now() < cleanupDeadline) {
         try {
@@ -165,6 +168,11 @@ async function qualifyProcessOwner(binding) {
         if (rootActive) await delay(20);
       }
       rootCleanupUncertain = rootActive;
+    }
+    if (rootTokenRetired && descendantPid !== undefined && processAlive(descendantPid)) {
+      const descendantDeadline = Date.now() + 12_000;
+      while (processAlive(descendantPid) && Date.now() < descendantDeadline) await delay(50);
+      if (processAlive(descendantPid)) rootCleanupUncertain = true;
     }
     await rm(directory, { recursive: true, force: true });
     if (rootCleanupUncertain) throw new Error("native root-exits-first fixture cleanup remained uncertain");

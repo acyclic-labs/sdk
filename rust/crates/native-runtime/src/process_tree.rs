@@ -16,7 +16,18 @@ pub struct ProcessTree {
 
 impl ProcessTree {
     pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
-        let (child, guard) = platform::spawn(command)?;
+        let (child, guard) = platform::spawn(command, false)?;
+        Ok(Self {
+            child: Some(child),
+            guard,
+        })
+    }
+
+    /// Starts a one-use command through the atomic Linux cgroup handoff.
+    /// Consuming the command makes reuse of a pre-exec ownership hook
+    /// impossible by construction.
+    pub(crate) fn spawn_owned(mut command: Command) -> io::Result<Self> {
+        let (child, guard) = platform::spawn(&mut command, true)?;
         Ok(Self {
             child: Some(child),
             guard,
@@ -134,11 +145,6 @@ mod platform {
     use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Child, Command};
-    #[cfg(target_os = "linux")]
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
 
     #[cfg(target_os = "linux")]
     use std::fs::{create_dir, read_to_string, remove_dir, write};
@@ -154,10 +160,10 @@ mod platform {
         cgroup: Option<Cgroup>,
     }
 
-    pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Guard)> {
+    pub(super) fn spawn(command: &mut Command, allow_cgroup: bool) -> io::Result<(Child, Guard)> {
         command.process_group(0);
         #[cfg(target_os = "linux")]
-        let cgroup = match configured_cgroup_root() {
+        let cgroup = match allow_cgroup.then(configured_cgroup_root).flatten() {
             Some(root) => {
                 let value = Cgroup::prepare(&root)?;
                 let procs_path = match value.procs_path() {
@@ -167,21 +173,11 @@ mod platform {
                         return Err(error);
                     }
                 };
-                let launch_once = Arc::new(AtomicBool::new(false));
-                let launch_once_child = Arc::clone(&launch_once);
                 // The child has not executed user code when this hook runs.
                 // Moving it into the cgroup here closes the post-spawn fork
                 // window that made parent-side attachment unsafe.
                 unsafe {
-                    command.pre_exec(move || {
-                        if launch_once_child.swap(true, Ordering::AcqRel) {
-                            return Err(io::Error::new(
-                                io::ErrorKind::AlreadyExists,
-                                "process command cannot be reused after native ownership setup",
-                            ));
-                        }
-                        attach_current_process(&procs_path)
-                    });
+                    command.pre_exec(move || attach_current_process(&procs_path));
                 }
                 Some(value)
             }
@@ -295,8 +291,24 @@ mod platform {
     #[cfg(target_os = "linux")]
     fn cleanup_failed_launch(child: &mut Child, cgroup: Option<&Cgroup>) -> io::Result<()> {
         let Some(cgroup) = cgroup else {
-            stop_child(child);
-            return Ok(());
+            let pid = child.id() as libc::pid_t;
+            let signal_result = unsafe { libc::kill(-pid, libc::SIGKILL) };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                if child.try_wait()?.is_some() {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "native process-group cleanup did not finish after launch initialization failure",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            return Err(io::Error::other(format!(
+                "native process-group cleanup cannot prove escaped descendant ownership (signal result: {signal_result:?})"
+            )));
         };
         if let Err(error) = cgroup.terminate() {
             stop_child(child);
@@ -304,10 +316,10 @@ mod platform {
                 "native cgroup cleanup failed after launch initialization error: {error}"
             )));
         }
-        child.wait()?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            if cgroup.complete()? {
+            let root_exited = child.try_wait()?.is_some();
+            if root_exited && cgroup.complete()? {
                 cgroup.discard();
                 return Ok(());
             }
@@ -554,7 +566,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut tree = ProcessTree::spawn(&mut command).expect("spawn process tree");
+        let mut tree = ProcessTree::spawn_owned(command).expect("spawn process tree");
         let deadline = Instant::now() + Duration::from_secs(5);
         while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
@@ -576,7 +588,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut tree = ProcessTree::spawn(&mut command).expect("spawn root-exits-first tree");
+        let mut tree = ProcessTree::spawn_owned(command).expect("spawn root-exits-first tree");
         let deadline = Instant::now() + Duration::from_secs(5);
         while !temporary.path().join("orphan-ready").exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));

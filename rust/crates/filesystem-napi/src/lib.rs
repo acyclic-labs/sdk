@@ -44,7 +44,7 @@ use acyclic_fs::{
 };
 use acyclic_fs::{Mount as WorkspaceMount, MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use acyclic_native_runtime::{ProcessTree, spawn_process_tree_owned};
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;
@@ -155,8 +155,8 @@ pub struct NativeCapabilities {
     pub provider_process_io_observable: bool,
 }
 
-/// A native process-tree owner that can adopt a host-created child while the
-/// host retains its own stdio streams.
+/// A native process-tree owner that launches children with native ownership
+/// before user code can create descendants.
 ///
 /// The returned token is an opaque ownership identity. Cleanup uses the native
 /// Job/process-group handle retained by this object, never a recovered PID.
@@ -327,7 +327,7 @@ impl NativeProcessOwner {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let tree = spawn_process_tree(&mut command).map_err(napi_error)?;
+        let tree = spawn_process_tree_owned(command).map_err(napi_error)?;
         let pid = tree
             .id()
             .ok_or_else(|| napi_error("native process did not expose a PID"))?;
@@ -385,7 +385,9 @@ impl NativeProcessOwner {
     ) -> Result<AsyncTask<NativeProcessWriteTask>> {
         let token = parse_process_token(&token)?;
         if bytes.len() > MAX_NATIVE_PROCESS_WRITE_BYTES {
-            return Err(napi_error("native process stdin write exceeds the bounded request size"));
+            return Err(napi_error(
+                "native process stdin write exceeds the bounded request size",
+            ));
         }
         let (stdin, write_in_flight, terminating) = {
             let trees = self
@@ -408,9 +410,15 @@ impl NativeProcessOwner {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
-                return Err(napi_error("native process already has a stdin write in progress"));
+                return Err(napi_error(
+                    "native process already has a stdin write in progress",
+                ));
             }
-            (stdin, entry.write_in_flight.clone(), entry.terminating.clone())
+            (
+                stdin,
+                entry.write_in_flight.clone(),
+                entry.terminating.clone(),
+            )
         };
         Ok(AsyncTask::new(NativeProcessWriteTask {
             stdin,
