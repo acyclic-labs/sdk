@@ -1,0 +1,64 @@
+{
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "source_tree": "0965d5206687234704f1d86a01defbb719e23edb",
+  "source_clean_after": true,
+  "kind": "installed-swarm-gate-tooling-checkpoint",
+  "skipped": 0,
+  "files": [
+    {
+      "sha256": "20a670c8837974db9b7678102890c3051af6eae9923f0470b0c1bff95224d520",
+      "source_path": "C:\\graphcoder-builds\\installed-swarm-gates-616cb671e.log",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\616cb671e\\installed-gate-tooling\\installed-swarm-gates-616cb671e.log"
+    },
+    {
+      "sha256": "81a00739e950f48c8961d6f9a0cd978e9b745bb6ecff976c7fbb78a349d66352",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\scripts\\graphcoder-installed-swarm-e2e.mjs",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\616cb671e\\installed-gate-tooling\\graphcoder-installed-swarm-e2e.mjs"
+    },
+    {
+      "sha256": "4eb3374bc28af341c778239909b61616ecbc275dbc66f9c185eb87b136166204",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\scripts\\graphcoder-installed-swarm-e2e.test.mjs",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\616cb671e\\installed-gate-tooling\\graphcoder-installed-swarm-e2e.test.mjs"
+    },
+    {
+      "sha256": "ca1ed6d8629094c0ec66ab45b340ab71e87177febc0b8e3e68ce5423dd38e268",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\scripts\\graphcoder-platform-gates.mjs",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\616cb671e\\installed-gate-tooling\\graphcoder-platform-gates.mjs"
+    },
+    {
+      "sha256": "2fe646403b3f1e50d37ec16a5ed6a63c9ea07ebc8205eebfd69011a2641d50bc",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\scripts\\graphcoder-platform-gates.provenance.test.mjs",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\616cb671e\\installed-gate-tooling\\graphcoder-platform-gates.provenance.test.mjs"
+    },
+    {
+      "sha256": "5157d8c6aed257ff83f1b671c8268bb84878e2dfd2700482b8fa399e57d018f6",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\docs\\graphcoder-swarm\\platform-gates.json",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\616cb671e\\installed-gate-tooling\\platform-gates.json"
+    },
+    {
+      "sha256": "9c2d6d66d3710e333c42636956a559721f51d0ef8d3d1924597f96293f9341e0",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\docs\\graphcoder-swarm\\graphcoder-installed-swarm-scenarios.json",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\616cb671e\\installed-gate-tooling\\graphcoder-installed-swarm-scenarios.json"
+    }
+  ],
+  "failed": 0,
+  "recorded_at": "2026-10-04T21:46:00.9110496Z",
+  "source_commit": "616cb671ee7a4e1752702590c71996c8dc40f199",
+  "passed": 11,
+  "limitations": [
+    "Tooling, provenance and real driver rejection tests only",
+    "No installed recursive runtime, native command or user-checkout writeback qualification",
+    "Cancellation fault remains unmet; worker candidates require integration and qualification"
+  ],
+  "exit_code": 0,
+  "runtime": {
+    "sha256": "1b41336fc188453644a3986ddc508627e2c7288df74e7c86abfc46106bc603e3",
+    "path": "C:\\Program Files\\nodejs\\node.exe",
+    "version": "v24.4.1"
+  },
+  "platform": "windows",
+  "commands": [
+    "node --check scripts/graphcoder-installed-swarm-e2e.mjs",
+    "node --test scripts/graphcoder-installed-swarm-e2e.test.mjs scripts/graphcoder-platform-gates.provenance.test.mjs"
+  ]
+}
