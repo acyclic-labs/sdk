@@ -527,6 +527,7 @@ where
         maximum_bytes: 1024 * 1024,
     };
     let export_request_bytes = export_request.encode_to_vec();
+    let mut exported_chunks = Vec::new();
     match service.export(Request::new(export_request.clone())).await {
         Ok(response) => {
             let mut chunks = response.into_inner();
@@ -534,6 +535,7 @@ where
             let mut encoded = Vec::new();
             while let Some(chunk) = chunks.next().await {
                 let chunk = chunk?;
+                exported_chunks.push(chunk.clone());
                 encoded.push(json!({
                     "type": "acyclic.filesystem.v2.ExportChunk",
                     "bytes_base64": b64(&chunk.encode_to_vec()),
@@ -573,15 +575,33 @@ where
             "state": state,
         })),
     }
-    let import_chunk = fs_wire::ImportChunk {
-        workspace: Some(fixture_ref.clone()),
-        operation_id: vec![0x44; 16],
-        cursor: b"fixture-cursor".to_vec(),
-        object_id: b"fixture-object".to_vec(),
-        contents: b"rust-fixture".to_vec(),
-        terminal: true,
-    };
-    let import_request_bytes = import_chunk.encode_to_vec();
+    if exported_chunks.is_empty() {
+        return Err(Status::internal("export produced no manifest chunk"));
+    }
+    let operation_id = vec![0x44; 16];
+    let import_chunks: Vec<_> = exported_chunks
+        .iter()
+        .map(|chunk| fs_wire::ImportChunk {
+            workspace: Some(fixture_ref.clone()),
+            operation_id: operation_id.clone(),
+            cursor: chunk.cursor.clone(),
+            object_id: chunk.object_id.clone(),
+            contents: chunk.contents.clone(),
+            terminal: chunk.terminal,
+        })
+        .collect();
+    let import_request_bytes = import_chunks[0].encode_to_vec();
+    let import_request_chunks: Vec<_> = import_chunks
+        .iter()
+        .map(|chunk| {
+            let bytes = chunk.encode_to_vec();
+            json!({
+                "type": "acyclic.filesystem.v2.ImportChunk",
+                "bytes_base64": b64(&bytes),
+                "sha256": digest(&bytes),
+            })
+        })
+        .collect();
     // The generated server trait accepts tonic::Streaming, so exercise this
     // client-stream operation through the generated client over an in-process
     // loopback listener. This keeps the request typed while avoiding a second
@@ -605,8 +625,42 @@ where
     )
     .await
     .map_err(|error| Status::internal(format!("connect import fixture: {error}")))?;
-    let import_result = client.import(iter(vec![import_chunk.clone()])).await;
+    let import_result = client.import(iter(import_chunks.clone())).await;
+    let invalid_chunk = fs_wire::ImportChunk {
+        workspace: Some(fixture_ref.clone()),
+        operation_id: vec![0x45; 16],
+        cursor: Vec::new(),
+        object_id: b"invalid-object".to_vec(),
+        contents: b"invalid".to_vec(),
+        terminal: true,
+    };
+    let invalid_request_bytes = invalid_chunk.encode_to_vec();
+    let negative_result = client.import(iter(vec![invalid_chunk])).await;
     server_task.abort();
+    let negative_probe = match negative_result {
+        Ok(response) => {
+            let bytes = response.into_inner().encode_to_vec();
+            json!({
+                "response": {
+                    "type": "acyclic.filesystem.v2.ImportResponse",
+                    "bytes_base64": b64(&bytes),
+                    "sha256": digest(&bytes),
+                }
+            })
+        }
+        Err(error) => json!({
+            "request": {
+                "type": "acyclic.filesystem.v2.ImportChunk",
+                "bytes_base64": b64(&invalid_request_bytes),
+                "sha256": digest(&invalid_request_bytes),
+            },
+            "response": {
+                "status": error.code().to_string(),
+                "code": format!("{:?}", error.code()),
+                "message": error.message()
+            }
+        }),
+    };
     match import_result {
         Ok(response) => {
             let response = response.into_inner();
@@ -619,12 +673,14 @@ where
                     "type": "acyclic.filesystem.v2.ImportChunk",
                     "bytes_base64": b64(&import_request_bytes),
                     "sha256": digest(&import_request_bytes),
+                    "chunks": import_request_chunks,
                 },
                 "response": {
                     "type": "acyclic.filesystem.v2.ImportResponse",
                     "bytes_base64": b64(&response.encode_to_vec()),
                     "sha256": digest(&response.encode_to_vec()),
                 },
+                "negative_probe": negative_probe,
                 "state": state,
             }));
         }
@@ -637,12 +693,14 @@ where
                 "type": "acyclic.filesystem.v2.ImportChunk",
                 "bytes_base64": b64(&import_request_bytes),
                 "sha256": digest(&import_request_bytes),
+                "chunks": import_request_chunks,
             },
             "response": {
                 "status": error.code().to_string(),
                 "code": format!("{:?}", error.code()),
                 "message": error.message()
             },
+            "negative_probe": negative_probe,
             "state": state,
         })),
     }
@@ -963,6 +1021,7 @@ mod tests {
         assert!(import["response"]["sha256"]
             .as_str()
             .is_some_and(|hash| hash.starts_with("sha256:")));
+        assert_eq!(import["negative_probe"]["response"]["code"], "InvalidArgument");
 
         let delete = records
             .iter()
