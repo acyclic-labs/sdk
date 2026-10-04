@@ -195,6 +195,7 @@ dependencies = [
  "acyclic-inference",
  "acyclic-machines",
  "acyclic-objects",
+ "acyclic-sdk-contract-wire",
  "acyclic-stream",
  "acyclic-workers",
  "bytes",
