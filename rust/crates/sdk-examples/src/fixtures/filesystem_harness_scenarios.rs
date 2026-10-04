@@ -979,13 +979,25 @@ mod tests {
                 .is_some_and(|value| !value.is_empty()));
         }
 
-        for operation in ["ReadLink", "Observe", "Cancel"] {
-            let error = records
+        let read_link = records
+            .iter()
+            .find(|record| record["operation"] == "ReadLink")
+            .expect("filesystem read-link evidence");
+        assert_eq!(read_link["response"]["code"], "Unavailable");
+        assert!(!read_link["response"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty());
+        for operation in ["Observe", "Cancel"] {
+            let response = records
                 .iter()
                 .find(|record| record["operation"] == operation)
-                .expect("expected filesystem negative operation");
-            assert_eq!(error["response"]["code"], "NotFound");
-            assert!(!error["response"]["message"]
+                .expect("expected filesystem operation response")["response"]
+                .clone();
+            assert!(response["bytes_base64"]
+                .as_str()
+                .is_some_and(|bytes| !bytes.is_empty()));
+            assert!(!response["type"]
                 .as_str()
                 .unwrap_or_default()
                 .is_empty());
