@@ -8555,7 +8555,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// transaction APIs, which bind identity from their idempotency key.
     #[doc(hidden)]
     pub fn bind_authored_operation(&mut self, operation_id: OperationId) {
-        self.authored_operation_id = Some(operation_id);
+        match self.authored_operation_id {
+            None => self.authored_operation_id = Some(operation_id),
+            Some(bound) => {
+                // An authored checkout has one identity domain for its whole
+                // mutation sequence. Rebinding it would make a retry of the
+                // same path derive a different file identity, so keep the
+                // first binding and fail loudly in debug fixture builds.
+                debug_assert_eq!(
+                    bound, operation_id,
+                    "authored operation identity cannot be rebound"
+                );
+            }
+        }
     }
 
     /// Compiles the creation of one regular file with identity `file_id`
