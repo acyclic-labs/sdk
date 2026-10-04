@@ -1,0 +1,13 @@
+{
+  "kind": "harness-wasm-regeneration",
+  "source_commit": "441d0eff1",
+  "artifact_commit": "b41d27156d0139032318153b5971ee7b16d0bac0",
+  "result": "passed",
+  "build_log": "D:\\graphcoder-builds\\root-fork-20261004\\logs\\harness-wasm-regenerate-441d.txt",
+  "build_log_sha256": "08377900C36831911B3C043FA7535ED6090C073D62F2A0168DAC38044AC9A578",
+  "declaration_sha256": "CCB0A27C0D8AE9F1057E68F702B5806C06EDA9F5CD9C317CABE1EED2A4015C92",
+  "matrix_sha256": "4D723C6391A234D8CF18C149960C3D45EB19459A642FF326CB8DC439DC1605EF",
+  "scope": "Harness WASM rebuild and generated declaration refresh only; full generated audit pending",
+  "sandbox": false,
+  "models": "mocked"
+}
