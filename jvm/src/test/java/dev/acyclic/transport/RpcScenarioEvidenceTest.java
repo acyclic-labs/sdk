@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.google.protobuf.Message;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -213,13 +214,18 @@ final class RpcScenarioEvidenceTest {
     return switch (method.getType()) {
       case UNARY -> {
         Object response = ClientCalls.blockingUnaryCall(channel, method, options, request);
+        assertPopulatedResponse(response, method.getFullMethodName());
         yield response == null ? 0 : 1;
       }
       case SERVER_STREAMING -> {
         java.util.Iterator<?> responses = ClientCalls.blockingServerStreamingCall(
             channel, method, options, request);
         int count = 0;
-        while (responses.hasNext()) { responses.next(); count++; }
+        while (responses.hasNext()) {
+          Object response = responses.next();
+          assertPopulatedResponse(response, method.getFullMethodName());
+          count++;
+        }
         yield count;
       }
       case CLIENT_STREAMING -> streamCall(channel, method, request, false, options);
@@ -260,7 +266,15 @@ final class RpcScenarioEvidenceTest {
     AtomicReference<Throwable> failure = new AtomicReference<>();
     AtomicInteger responses = new AtomicInteger();
     StreamObserver response = new StreamObserver() {
-      @Override public void onNext(Object value) { responses.incrementAndGet(); }
+      @Override public void onNext(Object value) {
+        try {
+          assertPopulatedResponse(value, method.getFullMethodName());
+          responses.incrementAndGet();
+        } catch (Throwable error) {
+          failure.set(error);
+          done.countDown();
+        }
+      }
       @Override public void onError(Throwable error) { failure.set(error); done.countDown(); }
       @Override public void onCompleted() { done.countDown(); }
     };
@@ -273,6 +287,15 @@ final class RpcScenarioEvidenceTest {
     assertTrue(done.await(5, TimeUnit.SECONDS), method.getFullMethodName() + " did not complete");
     if (failure.get() != null) throw new AssertionError(method.getFullMethodName(), failure.get());
     return responses.get();
+  }
+
+  private static void assertPopulatedResponse(Object response, String rpc) {
+    if (!(response instanceof Message message)) {
+      throw new AssertionError(rpc + " returned a non-protobuf response");
+    }
+    if (message.getAllFields().isEmpty() || message.getSerializedSize() == 0) {
+      throw new AssertionError(rpc + " returned a default protobuf response with no populated Rust wire fields");
+    }
   }
 
   private static Object empty(MethodDescriptor.Marshaller<?> marshaller) {
