@@ -435,6 +435,11 @@ jobs:
           using System.Linq;
           using System.Runtime.InteropServices;
 
+          // Construct the facade before loading the absolute path below. This
+          // proves P/Invoke resolved the package's RID native asset by library
+          // name; the absolute path is used only for independent export and
+          // provenance checks.
+          using var engine = new EmbeddedStreamEngine();
           var nativePath = Environment.GetEnvironmentVariable("RUST_NATIVE_ASSET");
           if (string.IsNullOrWhiteSpace(nativePath) || !File.Exists(nativePath) ||
               !NativeLibrary.TryLoad(nativePath, out var nativeHandle))
@@ -457,7 +462,6 @@ jobs:
           }
           finally { NativeLibrary.Free(nativeHandle); }
 
-          using var engine = new EmbeddedStreamEngine();
           var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x52, 0x49, 0x44 };
           var appended = engine.Append("installed-consumer", value);
           var count = 0;
@@ -518,6 +522,11 @@ jobs:
               using System.Linq;
               using System.Runtime.InteropServices;
 
+              // Construct the facade before loading the absolute path below.
+              // This proves P/Invoke resolved the package's RID native asset
+              // by library name; the absolute path is only for independent
+              // export and provenance checks.
+              using var engine = new EmbeddedStreamEngine();
               var nativePath = Environment.GetEnvironmentVariable("RUST_NATIVE_ASSET");
               if (string.IsNullOrWhiteSpace(nativePath) || !File.Exists(nativePath) ||
                   !NativeLibrary.TryLoad(nativePath, out var nativeHandle))
@@ -540,7 +549,6 @@ jobs:
               }
               finally { NativeLibrary.Free(nativeHandle); }
 
-              using var engine = new EmbeddedStreamEngine();
               var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x4D, 0x55, 0x53, 0x4C };
               var appended = engine.Append("installed-musl-consumer", value);
               var count = 0;
