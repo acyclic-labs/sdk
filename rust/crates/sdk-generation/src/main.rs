@@ -38,6 +38,7 @@ const REQUIRED_TOOL_IDS: &[&str] = &[
     "sdk-language-producers",
     "sdk-python",
     "sdk-typescript",
+    "sdk-typescript-contracts",
     "sdk-typescript-rpc-contracts",
 ];
 const OPTIONAL_TOOL_IDS: &[&str] = &[];
@@ -2455,6 +2456,12 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
             script: None,
         },
         ToolSpec {
+            id: "sdk-typescript-contracts",
+            required: true,
+            manifest: some_file(root, "rust/crates/sdk-typescript/Cargo.toml"),
+            script: None,
+        },
+        ToolSpec {
             id: "sdk-typescript-rpc-contracts",
             required: true,
             manifest: some_file(root, "rust/crates/sdk-typescript/Cargo.toml"),
@@ -3163,7 +3170,7 @@ fn ensure_generation_destination(
     // whose legacy command accepted the repository root as its destination.
     // Other tools legitimately receive the source root as a read-only input
     // (for example rustdoc's --repo-root), so do not reject those arguments.
-    if tool != "sdk-typescript" {
+    if tool != "sdk-typescript" && tool != "sdk-typescript-contracts" {
         return Ok(());
     }
     let root = canonical_existing_directory(root, "source root")?;
@@ -3172,6 +3179,39 @@ fn ensure_generation_destination(
         return Err(CliError::new(format!(
             "{tool} generation output must be outside the frozen source checkout"
         )));
+    }
+    if tool == "sdk-typescript-contracts" {
+        let separator = command
+            .iter()
+            .position(|argument| argument == "--")
+            .ok_or_else(|| CliError::new(format!(
+                "{tool} generation command is missing its Cargo argument separator"
+            )))?;
+        let contract_args = command.get(separator + 1..).unwrap_or_default();
+        if contract_args.len() != 3 || contract_args[0] != "all-write" {
+            return Err(CliError::new(format!(
+                "{tool} generation command must use all-write <source-root> <output-root>"
+            )));
+        }
+        let source_argument = canonical_existing_directory(
+            Path::new(&contract_args[1]),
+            "generation source root",
+        )?;
+        if source_argument != root {
+            return Err(CliError::new(format!(
+                "{tool} generation source root must resolve to the frozen source checkout"
+            )));
+        }
+        let destination = canonical_existing_directory(
+            Path::new(&contract_args[2]),
+            "generation destination",
+        )?;
+        if destination != output {
+            return Err(CliError::new(format!(
+                "{tool} generation command must target the isolated output tree"
+            )));
+        }
+        return Ok(());
     }
     // The package writer receives the positional contract
     // `packages-write <source-root> <output-root> <wire-root> <revision>`
@@ -4340,7 +4380,7 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
                 }
             }
         }
-        "sdk-typescript" | "sdk-typescript-rpc-contracts" => {
+        "sdk-typescript" | "sdk-typescript-contracts" | "sdk-typescript-rpc-contracts" => {
             for path in [
                 "rust/crates/sdk-typescript",
                 "rust/crates/sdk-contract-wire",
@@ -4502,6 +4542,31 @@ fn tool_command(
             output.as_os_str().to_os_string(),
             output.join("wire").as_os_str().to_os_string(),
             OsString::from(source.revision.as_str()),
+        ]);
+    }
+    if spec.id == "sdk-typescript-contracts" {
+        let manifest = spec.manifest.as_ref()?;
+        let mode = match operation {
+            Operation::Generate => "all-write",
+            Operation::Check
+            | Operation::Drift
+            | Operation::Seal
+            | Operation::Qualify
+            | Operation::QualifyEmbedded
+            | Operation::Inventory => "all-check",
+        };
+        return Some(vec![
+            cargo_program(),
+            OsString::from("run"),
+            OsString::from("--manifest-path"),
+            manifest.as_os_str().to_os_string(),
+            OsString::from("--locked"),
+            OsString::from("--bin"),
+            OsString::from("sdk-contracts"),
+            OsString::from("--"),
+            OsString::from(mode),
+            root.as_os_str().to_os_string(),
+            output.as_os_str().to_os_string(),
         ]);
     }
     if spec.id == "sdk-typescript-rpc-contracts" {
@@ -7185,7 +7250,8 @@ mod tests {
         assert!(index("sdk-openapi-prototype") < index("sdk-language-producers"));
         assert!(index("sdk-language-producers") < index("sdk-python"));
         assert!(index("sdk-python") < index("sdk-typescript"));
-        assert!(index("sdk-typescript") < index("sdk-typescript-rpc-contracts"));
+        assert!(index("sdk-typescript") < index("sdk-typescript-contracts"));
+        assert!(index("sdk-typescript-contracts") < index("sdk-typescript-rpc-contracts"));
         assert!(index("sdk-typescript-rpc-contracts") < index("sdk-examples"));
         assert!(index("sdk-typescript") < index("sdk-examples"));
         assert!(index("sdk-examples") < index("sdk-docs"));
@@ -7493,6 +7559,43 @@ mod tests {
         assert_eq!(args[separator + 3], output.to_string_lossy());
         assert_eq!(args[separator + 4], output.join("wire").to_string_lossy());
         assert_eq!(args[separator + 5], "test");
+    }
+
+    #[test]
+    fn typescript_contracts_check_uses_all_check() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let output = root.join("target/sdk-generation-typescript-contracts-check");
+        let source = SourceIdentity {
+            revision: "test".into(),
+            dirty: false,
+            digest: "sha256:test".into(),
+        };
+        let contracts = ToolSpec {
+            id: "sdk-typescript-contracts",
+            required: true,
+            manifest: some_file(&root, "rust/crates/sdk-typescript/Cargo.toml"),
+            script: None,
+        };
+        let command = tool_command(
+            &root,
+            &contracts,
+            Operation::Check,
+            &output.join("request.json"),
+            &output,
+            &source,
+        )
+        .expect("TypeScript contracts manifest is present");
+        let args = command
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let separator = args
+            .iter()
+            .position(|argument| argument == "--")
+            .expect("cargo separator");
+        assert_eq!(args[separator + 1], "all-check");
+        assert_eq!(args[separator + 2], root.to_string_lossy());
+        assert_eq!(args[separator + 3], output.to_string_lossy());
     }
 
     #[test]
