@@ -16,12 +16,12 @@
     },
     {
       "id": "wire-compatibility",
-      "evidence": "Scoped negative compatibility gates exist; fresh full current-source suite and archived handshake checks remain required.",
+      "evidence": "Retained receipt research/acceptance/wire-product-parity-20261004.json records product parity7/7, Inference7/7 and Objects8/8, including archived descriptor immutability and extension payload preservation. Coordinator inspected receipt and current checker commits; these scopes do not establish all language transport compatibility. Fresh integration is assigned after later changes.",
       "state": "partial"
     },
     {
       "id": "clean-generation",
-      "evidence": "The retained frozen64484b generation remains failed. Required sdk-examples, sdk-python and sdk-typescript baselines are now tracked; root lock290873ab2 matches tracked manifests. Independent detached source snapshot0ef84f162 has exact own Git identity and clean status. Source archive ancestor-identity bug is rejected by docs b8b8e888a. Current full successful deterministic generation remains absent: examples archive consumption and compiler fixes, strict docs graphs and executable per-language recipes are outstanding.",
+      "evidence": "Actual detached59d8313 full run failed in sdk-examples, sdk-docs and sdk-language-producers; product, wire, validation and OpenAPI stages passed. Log retained Q:/sdk/work/rust-generation-full-59d8313.log. New fixture1167bbff9, example consumer c6fb26a50 and rustdoc128a808c5 fixes are committed; no complete successful fresh frozen run yet. Healthy independent clean b3eb0274c source checkout and receipt retained.",
       "state": "failed"
     },
     {
@@ -31,17 +31,17 @@
     },
     {
       "id": "language-packages",
-      "evidence": "Fresh Python wheel import/RECORD checks and actual Python/Go Inference and Machines mTLS checks pass in owner receipts. Java Machines mTLS passes. Windows .NET ECDSA client credential acquisition and PHP native extension shutdown remain failed; corrected RSA fixture and supported runtime lanes are assigned. Current public Rust inventory runs successfully but reports pending qualification for catalogued targets; concrete staged producer adapters and complete family/platform/snippet coverage remain required.",
+      "evidence": "Scoped owner checks: ten TypeScript packages install; installed TS Machines invokes19 modeled RPCs against matching RSA/mTLS fixture. Python/Go installed consumers and HTTP targets have scoped evidence. Current source-bound unified qualification remains incomplete: C++ dependency closure mismatch, Swift Linux toolchain/transport, PHP lifecycle, JVM/.NET current fixture verification and viable additional targets require work.",
       "state": "partial"
     },
     {
       "id": "embedded-and-platform-defaults",
-      "evidence": "Scoped installed Windows FS native/WASM and Harness Node/Bun packages pass against frozen27a2ff30c source archive with independent Git tree audit. Installed Machines TypeScript fromEnv packed fixture passes inspect/events/usage/cancellation/recovery;19 modeled identities are not all actual runtime RPCs. Linux/Darwin native prebuilds and complete browser/platform qualification remain outstanding.",
+      "evidence": "Commit f2058d3db adds Actors/Workers platform-default clients. Native checks pass in owner evidence. Stream WASM passes only existing feature profile; plain default WASM fails Tokio/mio and target dependency correction is assigned. Embedded prototype14 Rust tests and exact debug C/Python DLL consumers pass; release ABI and complete Linux/macOS/musl artifacts remain outstanding.",
       "state": "partial"
     },
     {
       "id": "snippets",
-      "evidence": "Rust-owned scenarios and package mapping present. Producer source identity repair pending coherent output; all published language snippets must execute against matching artifacts.",
+      "evidence": "Commit c6fb26a50 adds genuine deterministic consumed Rust SDK archive handling; current unified examples stage must rerun from a matching frozen source. Validator requires actual retained consumer logs/hashes/exit and consumed metadata. Complete published-language snippet execution and scenario-bound method receipts remain outstanding.",
       "state": "partial"
     },
     {
@@ -56,7 +56,7 @@
     },
     {
       "id": "website-presentation",
-      "evidence": "Website owner102d021 fixes archived sourceFiles resolution. Healthy repository verified by fsck connectivity, svelte-check0 errors, static history/isolation/bundle tests. Controlled preview session86279: latest/reference and archived source routes200, traversal404. Fresh desktop/mobile rendered proof and current strict bundle import remain pending.",
+      "evidence": "Persistent local preview receipt Q:/sdk/work/website-preview-7878.receipt.json records server32012 and output logs. HTTP/source route checks and static version/isolation/Svelte checks pass in scoped evidence. Current strict bundle import, removal of obsolete authored SDK pages and fresh desktop/mobile rendered verification remain outstanding; HTTP200 is not visual proof.",
       "state": "unverified"
     },
     {
@@ -92,7 +92,7 @@
     {
       "id": "language-inventory-completion",
       "state": "partial",
-      "evidence": "Current catalog has34 entries:32 languages and2 tooling categories. Frozen0ef84f162 CLI emits36 rows because package-name aliases jvm and dotnet are added beside canonical java and csharp; this duplication is a generation defect assigned for normalization. Executable recipes currently exist for Go, Java, CSharp and Julia; remaining adapters/catalog integration and all viable target qualifications remain outstanding. A catalog or install-only receipt cannot prove complete remote, embedded, docs or snippets coverage."
+      "evidence": "Canonical catalog c77499b95 preserves java/csharp IDs and jvm/dotnet package aliases; CLI alias normalization remains assigned. Prior inventory34 entries contained32 languages and2 tooling categories. Producer adapter recipes and all viable target remote/embedded/docs/snippet/install qualifications remain incomplete. Catalog rows or install smoke alone cannot qualify complete behavior."
     }
   ]
 }
