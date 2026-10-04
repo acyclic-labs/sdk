@@ -1984,6 +1984,7 @@ pub struct PersistentLocalSwarm {
     filesystem_host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
     conversation_stream: StreamClient<LocalStream>,
     stream_provider: ProviderRef,
+    root_conversation: Authority,
     records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
     requests: Mutex<BTreeMap<TaskId, LocalForkRequest>>,
     seeds: Mutex<BTreeMap<TaskId, ForkSeed>>,
@@ -2150,6 +2151,7 @@ impl PersistentLocalSwarm {
             )
             .await?,
         );
+        let root_conversation = root_harness.storage().conversation().clone();
         let mut opened = BTreeMap::new();
         opened.insert(root_task, root_harness);
         Ok(Self {
@@ -2162,6 +2164,7 @@ impl PersistentLocalSwarm {
             filesystem_host,
             conversation_stream,
             stream_provider,
+            root_conversation,
             records: Mutex::new(sessions),
             requests: Mutex::new(requests),
             seeds: Mutex::new(seeds),
@@ -2505,8 +2508,8 @@ impl PersistentLocalSwarm {
     }
 
     /// Finds an already-authenticated descriptor for metadata projection. A
-    /// cold child uses its persisted seed/request authority; an unbound root
-    /// has no conversation stream yet and therefore reports revision zero.
+    /// cold child uses its persisted seed/request authority; the root keeps
+    /// its bound authority in the local composition descriptor.
     async fn conversation_authority(&self, task: TaskId) -> Option<Authority> {
         if let Some(harness) = self.sessions.lock().await.get(&task).cloned() {
             return Some(harness.storage().conversation().clone());
@@ -2523,20 +2526,14 @@ impl PersistentLocalSwarm {
         {
             return Some(authority);
         }
-        let is_root = self
+        if self
             .records
             .lock()
             .await
             .get(&task)
-            .is_some_and(|session| session.parent.is_none());
-        if is_root {
-            return self
-                .seeds
-                .lock()
-                .await
-                .values()
-                .next()
-                .map(|seed| seed.parent.clone());
+            .is_some_and(|session| session.parent.is_none())
+        {
+            return Some(self.root_conversation.clone());
         }
         None
     }
