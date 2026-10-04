@@ -1042,7 +1042,7 @@ fn rpc_shapes_json(
             }
         }
     }
-    let known_rpcs = methods
+    let known_rpcs: BTreeSet<String> = methods
         .iter()
         .filter_map(|method| {
             method
