@@ -46,7 +46,9 @@ At candidate source `231de6a78`, all three production recursive tests and all fi
 
 At clean integrated source `9b9186826`, the full Windows native Harness library passes 365/365, the production recursive suite passes 3/3, and the fault suite passes 5/5, with no failures or ignored cases. See [integrated cancellation evidence](checkpoint-cancellation-integrated-native-2026-10-04.json). This closes that cancellation checkpoint, not the full acceptance matrix. A separate live cross-handle activation fence remains under verification.
 
-1. Integrate and qualify the live cross-handle activation fence. Existing durable claims alone must not admit a second journal writer while the first child turn is running.
+At candidate source `c9d107c72`, all three recursive and six fault tests pass on Windows, including a second-handle retry while the first child provider is blocked. The live per-task guard is shared across handles of one composition root; a retry returns an explicit indeterminate outcome without opening another child writer or dispatching another request. Cancellation and guards share one weakly retained live-state cache. See [live activation evidence](checkpoint-live-activation-native-2026-10-04.json). The change is integrated at `9c6a899c5`; the full integrated library run remains required.
+
+1. Qualify the integrated live cross-handle activation guard with the full Harness library and recursive/fault suites.
 2. Integrate and qualify scoped communication admission, durable resource budgeting, lazy metadata projection, pinned operator authority and approved root-writeback recovery. Worker commits remain candidates until integrated and tested.
 3. Complete recoverable process ownership, including launch-initialization failures, cancellation, overflow, descendant cleanup and installed native transport. Uncertain effects must remain uncertain.
 4. Complete the thin terminal routes and verify public inspection, exact approvals, concurrent user edits/deletions, conflicts, continuation, abort and cold recovery through installed artifacts.
