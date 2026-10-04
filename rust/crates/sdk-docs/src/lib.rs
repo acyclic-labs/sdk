@@ -996,11 +996,18 @@ pub fn to_website_json(
                 "analysisMode": crate_bundle.analysis_mode,
                 "contentBlake3": crate_bundle.content_blake3,
                 "coverage": crate_bundle.coverage,
+                "sourceCoverage": {
+                    "sourceFiles": crate_bundle.sources.len(),
+                    "referencedSourceFiles": referenced_paths.len(),
+                    "guideFiles": crate_bundle.guides.len(),
+                    "exampleFiles": crate_bundle.examples.len(),
+                },
                 "maturity": if crate_bundle.publish { "preview" } else { "source-only" },
                 "deployment": "unknown",
                 "qualification": if crate_bundle.graphs.iter().any(|graph| !graph.public_items.is_empty()) { "qualified-graph" } else { "unqualified" },
                 "summary": format!("Rust-owned API reference for {}.", crate_bundle.package_name),
                 "guides": crate_bundle.guides,
+                "examples": crate_bundle.examples,
                 "packageInstructions": crate_bundle.package_instructions,
                 "sourceFiles": source_files,
                 "items": items,
@@ -4307,15 +4314,39 @@ fn verify_release_qualification(
 }
 
 fn validate_release_tag_version(tag: &str, version: &str) -> Result<(), Error> {
-    let scope = ["acyclic-v", "cargo-v", "npm-v"]
+    // Repository and published family releases use an explicit, finite tag
+    // namespace. Keep this allowlist closed so an arbitrary branch-like tag
+    // cannot qualify a historical archive by merely ending in a version.
+    let scope = [
+        "acyclic-v",
+        "cargo-v",
+        "npm-v",
+        "fs-v",
+        "filesystem-v",
+        "harness-v",
+        "inference-v",
+        "machines-v",
+        "objects-v",
+        "stream-v",
+        "typescript-v",
+    ]
         .into_iter()
         .find(|prefix| tag.starts_with(prefix))
-        .ok_or_else(|| {
-            Error::Strict(format!(
-                "release qualification tag has no supported release identity scope: {tag}"
-            ))
-        })?;
-    let tagged_version = &tag[scope.len()..];
+        .map(|prefix| &tag[prefix.len()..]);
+    let publish_scope = [
+        "publish/acyclic-fs/",
+        "publish/acyclic-inference/",
+        "publish/acyclic-machines/",
+        "publish/acyclic-objects/",
+        "publish/acyclic-stream/",
+    ]
+    .into_iter()
+    .find_map(|prefix| tag.strip_prefix(prefix));
+    let tagged_version = scope.or(publish_scope).ok_or_else(|| {
+        Error::Strict(format!(
+            "release qualification tag has no supported release identity scope: {tag}"
+        ))
+    })?;
     if !valid_release_version(version) {
         return Err(Error::Strict(format!(
             "release qualification version is not a supported release version: {version}"
@@ -5731,6 +5762,8 @@ mod tests {
             ("acyclic-v0.1.5", "0.1.5"),
             ("cargo-v0.1.5", "0.1.5"),
             ("npm-v0.1.5-rc.1", "0.1.5-rc.1"),
+            ("fs-v0.2.0-rc.1", "0.2.0-rc.1"),
+            ("publish/acyclic-fs/0.2.0-rc.3", "0.2.0-rc.3"),
         ] {
             validate_release_tag_version(tag, version)
                 .unwrap_or_else(|error| panic!("{tag} should be accepted: {error}"));
