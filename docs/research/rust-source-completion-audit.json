@@ -61,12 +61,12 @@
     },
     {
       "id": "typescript-removal",
-      "evidence": "Public SDK commands delegate to Rust through thin launcher; live inventory and drift negative passed. Launcher frozen-source dispatch independently verified36 inventory entries from clean0ef84f162, not36 qualifications. Objects3f0ff4625 removes independent TypeScript frame limits with installed upload/download evidence. Remaining shared behavior and legacy generation wrappers require qualified replacements and removal.",
+      "evidence": "291811 Rust-owned TypeScript contract generation replaces ten JavaScript generators; thirteen artifacts and55tests pass, drift rejects modified output, two clean roots match. Full single-entrypoint run still blocked by eight downstream standalone lock closures; remaining shared behavior replacement awaits actual installed conformance.",
       "state": "partial"
     },
     {
       "id": "fast-ci",
-      "evidence": "Root reran planner16/16 and metadata gate exit0. d44eae4d6 adds source-bound qualified-state gate for release C++/Swift jobs and4 pending/stale/package regressions; ordinary PRs retain tiny policy checks. Current pending platform recipes intentionally fail release qualification until actual packages/conformance pass. Remote runner execution remains unverified.",
+      "evidence": "Independent coordinator checks pass: planner16, platform4, source closure9. Signed81b4d99 fixes declared verifier binary/base64 and locked reflection dependencies; actual cargo check --locked succeeds50.28s. Hosted c20 jobs start after permission propagation; actual fast policy failure was reproduced and repaired. Full downstream remains manual/release gated.",
       "state": "verified-scoped"
     },
     {
@@ -77,7 +77,7 @@
     {
       "id": "oss-research-selection",
       "state": "partial",
-      "evidence": "Pinned research reports and architecture-selection.md exist for Forge, OpenAPI/protobuf, Rust schema extraction and embedded bindings. Selection remains provisional in current source. Complete working prototype comparison and evidence-based promotion before broad migration remain to verify."
+      "evidence": "architecture-selection.md records selected Rust wire authoring/protobuf plugins/OpenAPI projection/C ABI cbindgen and WASM/rustdoc/Svelte composition with pinned working prototype evidence. Forge bounded resolver prototype is retained as comparison. Full installable delivery and all-target qualification remain required."
     },
     {
       "id": "generation-provenance-and-reproducibility",
@@ -96,27 +96,25 @@
     }
   ],
   "latest_coordinator_iteration": {
-    "observed_at": "2026-10-04T20:09:45.3059814Z",
+    "observed_at": "2026-10-04T21:19:54.5527728Z",
     "status": "incomplete",
     "pr": "https://github.com/acyclic-labs/sdk/pull/241",
-    "pushed_source_revision": "49d0b30169dbd4bff19b3b4b8163711384dae098",
-    "hosted_native_run": "https://github.com/acyclic-labs/sdk/actions/runs/37230477025",
-    "hosted_native_source": "39bac2d963bb1286ea591dde2fd0bcbe5a6a03c3",
-    "hosted_native_verified_scope": "Windows x64 release DLL build/upload only;7otherplatforms skipped build",
-    "hosted_startup_failures": [
-      37230202076,
-      37230197286,
-      37230193747
-    ],
-    "shared_index_repair": "Forward repair b866082321c97e26a1b4699ae3b733532aee29d2 restored unrelated680-file accidental staged tree; netbaseline39bac onlyObjectsclockexport; physicalsource preserved",
+    "verified_coordinator_revision": "81b4d99daf31c625c9a83b27e594aec24d6c7875",
+    "signature": "GOOD repository RSA allowed signer",
+    "hosted_qualification_run": "https://github.com/acyclic-labs/sdk/actions/runs/37234125974",
+    "hosted_preflight_run": "https://github.com/acyclic-labs/sdk/actions/runs/37234111281",
+    "hosted_startup": "resolved: jobs execute",
+    "hosted_preflight": "fails unsigned historical commit range; verification retained",
+    "generator_locked_build": "passed50.28seconds",
+    "fast_policy_tests": "29passed",
     "next_required": [
-      "Coherent source-bound106RPC collector and deterministic independent runtime fixtures",
-      "Rust descriptor-derived frame cardinality and legitimate error/cancellation receipts",
-      "Actual installed language package and all54snippet runtimes",
+      "Deterministic independent-process full106RPC fixtures and semantic language conformance",
+      "Actual installed language packages and all54snippet runtimes",
       "Full8RID native package installation and execution",
-      "Allreleased version Rustdoc provenance and generated website search/reference completeness",
-      "Fresh clean generation reproducibility and Rust-source propagation",
-      "Allviableinventoried targets and qualified sharedTypeScript removal"
+      "Allreleased scoped Rustdoc bundles and strict generated website scenario integration",
+      "Clean full generation reproducibility and Rust-source propagation",
+      "Complete viable-target qualification and sharedTypeScript removal",
+      "Safe signed reviewable branch history and green hosted qualification"
     ],
     "merge_performed": false,
     "goal_completed": false
