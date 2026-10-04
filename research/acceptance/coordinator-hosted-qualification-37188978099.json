@@ -1521,5 +1521,24 @@
   "qualification_claim": "none",
   "publication": false,
   "deployment": false,
-  "merge": false
+  "merge": false,
+  "local_verification": [
+    {
+      "check": "standalone Rust nominal RPC receipt validators",
+      "command": "cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked --offline qualification_receipt -- --nocapture",
+      "passed": 4,
+      "failed": 0,
+      "includes": [
+        "reject RPC errors marked as passes",
+        "reject missing RPC",
+        "reject in-process evidence for remote qualification",
+        "derive complete inventory from results"
+      ]
+    },
+    {
+      "check": "original checkout tracked changes",
+      "git_revision": "31b9ff52d63c91f2b9bf87e16b78ad682d26546f",
+      "tracked_changes": false
+    }
+  ]
 }
