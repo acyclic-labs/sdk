@@ -46,15 +46,27 @@ function Run-Checked([string] $Program, [string[]] $Arguments, [string] $Working
 
 function Copy-Package([string] $Source, [string] $Destination, [bool] $StripTooling = $true) {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    Copy-Item -Path (Join-Path $Source '*') -Destination $Destination -Recurse -Force
     if (-not $StripTooling) {
+        Copy-Item -Path (Join-Path $Source '*') -Destination $Destination -Recurse -Force
         return
     }
-    foreach ($ignored in @('.dart_tool', '.pub-cache', '.bundle', 'vendor/bundle', 'tmp', 'log')) {
-        $path = Join-Path $Destination $ignored
-        if (Test-Path -LiteralPath $path) {
-            Remove-Item -LiteralPath $path -Recurse -Force
+
+    # Exclude toolchains before copying. Dart's pinned SDK and pub cache are
+    # hundreds of megabytes, so copying then deleting them makes a producer
+    # appear hung and can leave an oversized package artifact behind.
+    $ignored = @('.dart_tool', '.pub-cache', '.toolchain', '.bundle', 'vendor/bundle', 'tmp', 'log')
+    $sourceRoot = (Resolve-Path -LiteralPath $Source).Path.TrimEnd('\', '/')
+    foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force) {
+        $relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
+        $excluded = $ignored | Where-Object {
+            $relative -eq $_ -or $relative.StartsWith("$($_)/", [StringComparison]::OrdinalIgnoreCase)
         }
+        if ($excluded) {
+            continue
+        }
+        $target = Join-Path $Destination ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        Copy-Item -LiteralPath $file.FullName -Destination $target -Force
     }
 }
 
@@ -133,11 +145,20 @@ try {
     }
     if ($languages -contains 'dart') {
         $package = Join-Path $stage 'dart'
-        Copy-Package (Join-Path $repoRoot 'dart') $package $false
+        # Keep SDK and pub caches out of the staged source package. The lock
+        # file and portable receipt carry their pinned versions, so consumers
+        # receive a normal installable Dart package rather than a toolchain
+        # archive.
+        Copy-Package (Join-Path $repoRoot 'dart') $package
         $dart = if ($env:DART) { $env:DART } else { 'dart' }
         Run-Checked $dart @('run', 'tool/generate.dart', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'dart')
-        $commands['dart'] = @{ runtime = [IO.Path]::GetFileName($dart); generator = 'tool/generate.dart'; lock = (Get-Content (Join-Path $package 'generator.lock.yaml') -Raw) }
+        $dartLockPath = Join-Path $package 'generator.lock.yaml'
+        # Windows PowerShell can preserve adapted file metadata when a raw
+        # Get-Content result is assigned directly into a hashtable. Force a
+        # scalar string so the portable receipt stays small and deterministic.
+        $dartLock = [string](Get-Content -LiteralPath $dartLockPath -Raw)
+        $commands['dart'] = @{ runtime = [IO.Path]::GetFileName($dart); generator = 'tool/generate.dart'; lock = $dartLock }
     }
     [ordered]@{
         schema = 'acyclic.ruby-php-dart.package-adapter.v1'

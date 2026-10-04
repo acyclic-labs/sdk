@@ -139,7 +139,16 @@ function runCommand(array $arguments): void
 
 $protoc = executable('protoc');
 $plugin = executable('grpc_php_plugin');
-$preserved = ['acyclic/runtime/uint64.php'];
+$preserved = [
+    // Rust-owned runtime and transport policy facades. Protobuf generation
+    // may replace message/service files, but it must not erase the facade
+    // layer that gives PHP the same automatic transport selection contract as
+    // the other generated SDKs.
+    'acyclic/runtime/uint64.php',
+    'acyclic/runtime/generatedremotepolicy.php',
+    'acyclic/runtime/remotepolicy.php',
+    'acyclic/runtime/remoteclient.php',
+];
 if (is_dir($output)) {
     $iterator = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($output, FilesystemIterator::SKIP_DOTS),
