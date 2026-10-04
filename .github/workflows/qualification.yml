@@ -392,6 +392,7 @@ jobs:
           RUST_STREAM_RESULT: ${{ needs.rust_stream_native.result }}
           ADDITIONAL_LANGUAGES_RESULT: ${{ needs.additional_languages.result }}
           DOTNET_NATIVE_RESULT: ${{ needs.dotnet_native.result }}
+          DOTNET_EMBEDDED_RESULT: ${{ needs.dotnet_embedded.result }}
           REQUIRE_RUST_RESULTS: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
         run: |
           test "$PLAN_RESULT" = success
@@ -407,6 +408,7 @@ jobs:
             test "$RUST_STREAM_RESULT" = success
             test "$ADDITIONAL_LANGUAGES_RESULT" = success
             test "$DOTNET_NATIVE_RESULT" = success
+            test "$DOTNET_EMBEDDED_RESULT" = success
           fi
 
   rust_source:
