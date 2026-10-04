@@ -1,0 +1,35 @@
+{
+  "schema": "acyclic.graphcoder.native-approval-receipt.v1",
+  "source": {
+    "worktree": "C:/Users/varun/.codex/worktrees/graphcoder-blocking-f9",
+    "commit": "bd8f3d43ab94b6e08d1ab5fe579351d0a9f05442",
+    "tree": "b743524c6931f799b5e4409ce6a28a8d605262e7"
+  },
+  "artifact": {
+    "path": "Q:/graphcoder-builds/terminal/debug/graphcoder-runtime.exe",
+    "sha256": "00b3b65d16da75e28aa55188a4cbc34652d090a846c4377b64be2a9c08e7b8ca"
+  },
+  "qualification": {
+    "platform": "windows-native",
+    "target_dir": "Q:/graphcoder-builds/terminal",
+    "rust_test": "cargo test --target-dir Q:/graphcoder-builds/terminal -p acyclic-graphcoder-cli approval_fixture_admits_exact_stage_effect_and_recovers_cancelled_turn -- --nocapture --test-threads=1",
+    "rust_test_result": "passed",
+    "native_driver": "node scripts/graphcoder-native-approval-e2e.mjs",
+    "native_driver_result": "passed",
+    "native_driver_fixture": "approval",
+    "native_driver_checkout": "GRAPHCODER_NATIVE_CHECKOUT=auto",
+    "native_driver_markers": [
+      "pending-approval",
+      "forged-identity",
+      "denied-operator",
+      "approved-stage-effect",
+      "cancelled",
+      "reopened"
+    ]
+  },
+  "process_policy": {
+    "environment": "explicit PATH/SystemRoot/WINDIR/COMSPEC/PATHEXT only",
+    "credentials": "operator token passed as an explicit control argument; no inherited credential variables",
+    "cleanup": "driver closes stdin, waits for owned process exit, force-terminates only after bounded timeout, and removes temporary roots"
+  }
+}
