@@ -2730,17 +2730,6 @@ impl PersistentLocalSwarm {
             .await
     }
 
-    async fn read_conversation_events(
-        &self,
-        harness: &PersistentLocalHarness,
-        after_revision: u64,
-        limit: usize,
-    ) -> Result<Vec<crate::core::Event>> {
-        harness
-            .conversation_events(after_revision, limit, self.config.limits)
-            .await
-    }
-
     /// Reads one page of owner-authenticated private files. The generation
     /// returned by the first page must be supplied for subsequent pages.
     pub async fn list_files(

@@ -161,7 +161,6 @@ export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"
   readonly reference_grants: readonly ReferenceGrant[];
   /** Manifest bytes and listed members are independently read-authorized. */
   readonly attachment_manifests: readonly FileRef[];
-  readonly model_boundary?: ModelBoundaryReferences;
 }
 
 /** Rust alone converts the complete capture report to its child-visible seed. */
