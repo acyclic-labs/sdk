@@ -238,3 +238,12 @@ The same checkpoint now records two actual LocalStream communication cases and s
 
 See checkpoint-integrated-native-fork-budget.json for source-bound suite/artifact digests and required failures. Actual native results: journal 6/6, Git facade 7/9, local recursive workspaces 1/2, typed model fork boundary 1/2, budget unit selection 21/23. Source GraphCoder dispatcher/UI tests pass 25/25; provenance validator passes 2/2. Required failures remain open and prevent qualification. The goal stays active; production swarming, hard resource ceilings, effect faults and fresh installed PTY evidence remain outstanding. No merge occurred.
 
+## Current scoped verification, 2026-10-04
+
+- [Actual fork suite results](checkpoint-fork-native-2026-10-04.json): held source `6c6ae5444`; nine recovery cases pass, two fork-boundary cases and the real model swarm case fail.
+- [Actual cleanup follow-up](checkpoint-cleanup-followup-native-2026-10-04.json): held source `a5188016a`; full Windows execution passes 24/28. Required failures include operator uncertainty resolution and intermittent output-limit behavior. The earlier focused run is retained separately in the same receipt.
+- [Request scope pinning](checkpoint-scope-pinning-2026-10-04.json): 84 TypeScript cases, 478 assertions, and test type checks pass using the explicitly identified existing WASM artifact.
+- [Fresh installed GraphCoder package](checkpoint-installed-graphcoder-build-2026-10-04.json): clean consumer passes 21 host calls including authenticated operator approval. Native runtime and installed ConPTY qualification remain open.
+
+These receipts qualify only their stated source and scope. They do not constitute final qualification or replace the locked 68-entry matrix.
+
