@@ -148,7 +148,10 @@ Future<void> main(List<String> arguments) async {
       'diagnostic fallback: using repository proto roots; pass --schema-root <rust-emitted-root> for qualification',
     );
   }
-  final protoc = executable('PROTOC', 'protoc');
+  // Dart can use a platform-specific wrapper when the shared protoc binary
+  // lives on a restricted workspace drive; other producers continue to use
+  // the canonical PROTOC executable.
+  final protoc = executable('PROTOC_DART', executable('PROTOC', 'protoc'));
   final plugin = dartPlugin();
   if (plugin == null) {
     stderr.writeln(
@@ -161,7 +164,7 @@ Future<void> main(List<String> arguments) async {
     output.deleteSync(recursive: true);
   }
   output.createSync(recursive: true);
-  final result = await Process.run(protoc, [
+  final protocArguments = [
     for (final schemaRoot in protocIncludeRoots(schemaRoots)) ...[
       '-I',
       schemaRoot,
@@ -169,7 +172,17 @@ Future<void> main(List<String> arguments) async {
     '--plugin=protoc-gen-dart=$plugin',
     '--dart_out=grpc:${output.path}',
     ...schemaFiles,
-  ], workingDirectory: root.path);
+  ];
+  // Windows may deny CreateProcess for an executable on a mapped workspace
+  // drive even though the same binary is runnable through the command host.
+  // Keep the producer deterministic while using the native Windows launcher.
+  final result = Platform.isWindows
+      ? await Process.run(
+          Platform.environment['COMSPEC'] ?? 'cmd.exe',
+          ['/d', '/c', protoc, ...protocArguments],
+          workingDirectory: root.path,
+        )
+      : await Process.run(protoc, protocArguments, workingDirectory: root.path);
   stdout.write(result.stdout);
   stderr.write(result.stderr);
   if (result.exitCode != 0) {

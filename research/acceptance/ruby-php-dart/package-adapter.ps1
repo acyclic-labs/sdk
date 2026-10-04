@@ -172,6 +172,10 @@ try {
         $env:DART_EXECUTABLE = $dart
         $env:PROTOC_GEN_DART = $dartShim
         $env:PROTOC_DART_SNAPSHOT = $dartPluginEntry
+        # Resolve the pinned Dart graph explicitly before `dart run`. This
+        # keeps generation offline and prevents dartdev from invoking its
+        # implicit native-assets pub subprocess on restricted Windows drives.
+        Run-Checked $dart @('pub', 'get', '--offline') $package
         Run-Checked $dart @('run', 'tool/generate.dart', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'dart')
         $dartLockPath = Join-Path $package 'generator.lock.yaml'
