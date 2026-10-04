@@ -59,7 +59,9 @@ jobs:
             native_arch: X64
             musl: false
             llvm: false
-            native_runtime: true
+            # Blacksmith's macOS image is Apple Silicon; keep Intel package
+            # execution pending until an actual x64 macOS runner is available.
+            native_runtime: false
           - package_target: darwin-arm64
             rust_target: aarch64-apple-darwin
             runner: blacksmith-6vcpu-macos-15
