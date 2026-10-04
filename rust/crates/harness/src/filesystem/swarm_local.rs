@@ -24,7 +24,10 @@ use crate::{
         ResourceRevision,
     },
     interaction::{Interaction, InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
-    host_execution::{execution_request_locator_digest, ExecutionApproval, ExecutionSpec},
+    host_execution::{
+        execution_request_locator_digest, ExecutionApproval, ExecutionSpec,
+        NativeExecutionProvider,
+    },
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
@@ -2095,6 +2098,11 @@ pub struct PersistentLocalSwarm {
     /// with the exact ticket binding so a public resolve request cannot swap
     /// an operation or action digest between the private decision and commit.
     operator_choices: Mutex<BTreeMap<String, LocalOperatorChoice>>,
+    /// Live native providers are retained by the swarm so a concurrent owner
+    /// cancellation reaches the exact admitted attempt. The provider still
+    /// owns process execution and durable receipt semantics; this cache only
+    /// preserves its cancellation lease across API calls.
+    native_execution_providers: Mutex<BTreeMap<TaskId, Arc<NativeExecutionProvider>>>,
     /// Lazily attached provider source handle. Retaining it after first use
     /// keeps native watcher continuity for the lifetime of this swarm.
     external_project: Mutex<Option<HostCheckout<LocalAuthorityBackend, LocalObjectBackend>>>,
@@ -2262,6 +2270,7 @@ impl PersistentLocalSwarm {
             sessions: Mutex::new(opened),
             task_gates: Mutex::new(BTreeMap::new()),
             operator_choices: Mutex::new(BTreeMap::new()),
+            native_execution_providers: Mutex::new(BTreeMap::new()),
             external_project: Mutex::new(None),
         })
     }
@@ -2693,6 +2702,56 @@ impl PersistentLocalSwarm {
         Ok(request.request)
     }
 
+    async fn native_execution_provider_for(
+        &self,
+        task: TaskId,
+        harness: &PersistentLocalHarness,
+    ) -> Result<Arc<NativeExecutionProvider>> {
+        let mut providers = self.native_execution_providers.lock().await;
+        if let Some(provider) = providers.get(&task) {
+            return Ok(provider.clone());
+        }
+        let provider = Arc::new(harness.native_execution_provider()?);
+        providers.insert(task, provider.clone());
+        Ok(provider)
+    }
+
+    /// Cancels one admitted native execution through the provider that owns
+    /// its live attempt. The provider persists the cancellation fence before
+    /// this method returns, so a concurrent dispatcher cannot publish a late
+    /// success and a restart cannot replay the operation silently.
+    pub async fn cancel_native_execution(
+        &self,
+        task: TaskId,
+        interaction_id: InteractionId,
+    ) -> Result<bool> {
+        let approval = self
+            .list_approvals(task)
+            .await?
+            .into_iter()
+            .find(|approval| approval.ticket.id.as_bytes() == &interaction_id.into_bytes())
+            .ok_or_else(|| Error::NotFound(format!("local swarm approval {interaction_id}")))?;
+        if !approval
+            .resolution
+            .as_ref()
+            .is_some_and(|resolution| resolution.outcome == InteractionOutcome::Approved)
+        {
+            return Err(Error::Unauthorized(
+                "native execution cancellation requires an approved owner interaction".into(),
+            ));
+        }
+        let operation = approval
+            .ticket
+            .approval
+            .ok_or_else(|| Error::Invalid("approval ticket has no operation binding".into()))?
+            .operation_id;
+        let harness = self.open_session(task).await?;
+        let provider = self
+            .native_execution_provider_for(task, &harness)
+            .await?;
+        provider.cancel_and_persist(operation).await
+    }
+
     /// Dispatches a previously prepared and durably approved host process
     /// through Harness's native execution provider. The provider's receipt
     /// store supplies at-most-once claim and restart recovery.
@@ -2747,7 +2806,9 @@ impl PersistentLocalSwarm {
                 "native execution approval is stale or bound to a different request".into(),
             ));
         }
-        let provider = harness.native_execution_provider()?;
+        let provider = self
+            .native_execution_provider_for(task, &harness)
+            .await?;
         provider
             .dispatch(EffectDispatch {
                 provider: NATIVE_EXECUTION_PROVIDER.into(),

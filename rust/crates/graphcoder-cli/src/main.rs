@@ -475,7 +475,8 @@ struct Runtime {
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
-            "echo" | "complete" | "stage" | "recursive" | "blocking" | "approval" | "native-approval" => args.model_fixture.clone(),
+            "echo" | "complete" | "stage" | "recursive" | "blocking" | "approval"
+            | "native-approval" | "native-approval-blocking" => args.model_fixture.clone(),
             value => {
                 return Err(HarnessError::Invalid(format!(
                     "unknown model fixture {value}"
@@ -502,7 +503,7 @@ impl Runtime {
                 "type": "object",
                 "required": if fixture == "approval" { json!([]) } else { json!(["fixture"]) },
                 "properties": {
-                    "fixture": {"enum": ["echo", "complete", "stage", "recursive", "blocking", "approval", "native-approval"]}
+                    "fixture": {"enum": ["echo", "complete", "stage", "recursive", "blocking", "approval", "native-approval", "native-approval-blocking"]}
                 },
                 "additionalProperties": false,
             }),
@@ -586,9 +587,13 @@ impl Runtime {
                     .await?;
             }
         }
-        if fixture == "native-approval" {
+        if matches!(fixture.as_str(), "native-approval" | "native-approval-blocking") {
             let task = swarm.root_task().await?;
-            let operation = operation_for("native-process-fixture");
+            let operation = operation_for(if fixture == "native-approval" {
+                "native-process-fixture"
+            } else {
+                "native-process-blocking-fixture"
+            });
             let already_prepared = swarm
                 .list_approvals(task)
                 .await?
@@ -608,20 +613,36 @@ impl Runtime {
                     .checkout
                     .clone()
                     .unwrap_or_else(|| args.root.clone());
+                let (arguments, output_name, timeout_ms) = if fixture == "native-approval" {
+                    (
+                        vec![
+                            "/C".into(),
+                            "echo graphcoder-native-approval>graphcoder-native-effect.txt".into(),
+                        ],
+                        "native-approval".to_owned(),
+                        10_000,
+                    )
+                } else {
+                    (
+                        vec![
+                            "/C".into(),
+                            "timeout /t 30 /nobreak >nul && echo graphcoder-native-blocking>graphcoder-native-blocking-effect.txt".into(),
+                        ],
+                        "native-approval-blocking".to_owned(),
+                        60_000,
+                    )
+                };
                 let request = ExecutionSpec {
                     executable: executable.to_string_lossy().into_owned(),
-                    arguments: vec![
-                        "/C".into(),
-                        "echo graphcoder-native-approval>graphcoder-native-effect.txt".into(),
-                    ],
+                    arguments,
                     working_directory: working_directory.to_string_lossy().into_owned(),
                     environment: ExecutionEnvironment::Explicit {
                         variables: BTreeMap::from([(
                             "GRAPHCODER_FIXTURE".into(),
-                            "native-approval".into(),
+                            output_name,
                         )]),
                     },
-                    timeout_ms: Some(10_000),
+                    timeout_ms: Some(timeout_ms),
                     max_output_bytes: 64 * 1024,
                 };
                 swarm
@@ -662,6 +683,7 @@ impl Runtime {
             "operator_approve" => self.operator_approve(&request.params).await,
             "operator_inspect_approval" => self.operator_inspect_approval(&request.params).await,
             "native_process" => self.native_process(&request.params).await,
+            "native_process_cancel" => self.native_process_cancel(&request.params).await,
             "resolve_approval" => self.resolve_approval(&request.params).await,
             "cancel_session" => self.cancel_session(&request.params).await,
             "read_file" => self.read_file(&request.params).await,
@@ -965,8 +987,10 @@ impl Runtime {
         let status = match observation.status {
             acyclic_harness::core::EffectStatus::Planned => "planned",
             acyclic_harness::core::EffectStatus::Succeeded { .. } => "succeeded",
-            acyclic_harness::core::EffectStatus::Failed { .. }
-            | acyclic_harness::core::EffectStatus::FailedWithReceipt { .. } => "failed",
+            acyclic_harness::core::EffectStatus::Failed { .. } => "failed",
+            acyclic_harness::core::EffectStatus::FailedWithReceipt { message, .. }
+                if message == "process cancelled" => "cancelled",
+            acyclic_harness::core::EffectStatus::FailedWithReceipt { .. } => "failed",
             acyclic_harness::core::EffectStatus::Indeterminate => "indeterminate",
             acyclic_harness::core::EffectStatus::Dispatched => "dispatched",
         };
@@ -977,6 +1001,27 @@ impl Runtime {
             "provider": observation.provider,
             "effect_id": observation.effect_id.to_string(),
             "attempt_id": observation.attempt_id.to_string(),
+        }))
+    }
+
+    /// Cancels a running native process through the authenticated operator
+    /// boundary. The Harness provider owns the live cancellation lease and
+    /// durable receipt; this route only supplies identity and authorization.
+    async fn native_process_cancel(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        self.authenticate_operator(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let id = InteractionId::parse(required_text(params, "approval_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let cancelled = self
+            .swarm
+            .cancel_native_execution(task, id)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        Ok(json!({
+            "session_id": task.to_string(),
+            "approval_id": id.to_string(),
+            "cancel_requested": cancelled,
         }))
     }
 
@@ -1392,7 +1437,10 @@ where
                 continue;
             }
         };
-        let is_control = request.method == "cancel_session";
+        let is_control = matches!(
+            request.method.as_str(),
+            "cancel_session" | "native_process_cancel"
+        );
         let permit = if is_control {
             control_slots.clone().try_acquire_owned()
         } else {
