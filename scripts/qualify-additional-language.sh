@@ -85,9 +85,22 @@ write_receipt() {
 EOF
 }
 
+require_stream_completion() {
+  local receipt=$1
+  if rg -q 'deferred-rust-scenario' "$receipt"; then
+    echo "Rust-owned streaming scenarios are missing from $receipt; refusing count-only qualification" >&2
+    return 1
+  fi
+}
+
 case "$language" in
   elixir)
     project="$output_root/elixir"
+    cargo test --locked --manifest-path "$source_root/rust/crates/sdk-contract-wire/Cargo.toml" \
+      semantic_oracle::tests::only_exercised_scenarios_have_expectations --lib -- --exact
+    cat >"$output_root/rust-semantic-oracle.json" <<EOF
+{"schema":"acyclic.rust-semantic-oracle.v1","source_revision":"$source_revision","status":"passed","test":"semantic_oracle::tests::only_exercised_scenarios_have_expectations"}
+EOF
     mix new "$project" --sup >/dev/null
     python3 - "$project/mix.exs" <<'PY'
 from pathlib import Path
@@ -119,6 +132,7 @@ PY
       test -s "$project/runtime-consumer-receipt.json"
       rg -q '"source_revision":"[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
       rg -q '"rpc_count":106' "$project/runtime-consumer-receipt.json"
+      require_stream_completion "$project/runtime-consumer-receipt.json"
     fi
     module=$(sed -n 's/^defmodule \([^ ]*\).*/\1/p' lib/generated/*_pb.ex | head -n 1)
     test -n "$module"
@@ -169,6 +183,7 @@ EOF
       test -s "$project/runtime-consumer-receipt.json"
       rg -q '"source_revision":"[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
       rg -q '"rpc_count":106' "$project/runtime-consumer-receipt.json"
+      require_stream_completion "$project/runtime-consumer-receipt.json"
     fi
     module=$(basename "$(find src -type f -name 'actors_pb.erl' -print -quit)" .erl)
     test -n "$module"
@@ -246,6 +261,7 @@ EOF
       test -s "$project/runtime-consumer-receipt.json"
       rg -q '"source_revision": "[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
       rg -q '"rpc_count": 106' "$project/runtime-consumer-receipt.json"
+      require_stream_completion "$project/runtime-consumer-receipt.json"
     fi
     archive_project "$project" acyclic_sdk_common_lisp.tar.gz
     ;;
