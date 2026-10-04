@@ -1,0 +1,54 @@
+{
+  "scope": "Integrated library and production recursive/fault suites only; full requirements and installed qualification remain outstanding",
+  "platform": "Windows native",
+  "source": "9b91868263688349f7756eadfcce6cdec572d1a2",
+  "source_tree": "e43f1fa119661c83e58968d66be314ee4bb58b7d",
+  "library": {
+    "ignored": 0,
+    "passed": 365,
+    "failed": 0
+  },
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "recursive": {
+    "ignored": 0,
+    "passed": 3,
+    "failed": 0
+  },
+  "exit_code": 0,
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib --test local_model_swarm --test local_swarm_faults -- --nocapture",
+  "faults": {
+    "ignored": 0,
+    "passed": 5,
+    "failed": 0
+  },
+  "artifacts": [
+    {
+      "sha256": "9ecbf0ae467749552a1cdf992606171105d8c7de97ff8cb13440573cc5331d77",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\9b9186826\\cancellation-integrated\\cancellation-integrated-9b9186826.log"
+    },
+    {
+      "sha256": "137f4e9844f953c087c4dff6a941b8738979ac55bce929f4e67cb1d458fb5cda",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\9b9186826\\cancellation-integrated\\acyclic_harness-641f85f696abacc6.exe"
+    },
+    {
+      "sha256": "eeedd03330900c96bd27c599ef56c5e86dfa7863ddb412e900d2506b95bdf05f",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\9b9186826\\cancellation-integrated\\local_model_swarm-b5d1df9216f26b8b.exe"
+    },
+    {
+      "sha256": "0b371080cf82edfe3787e0a7e7c7880b2b3d65990c9e41398581b4990547ca81",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\9b9186826\\cancellation-integrated\\local_swarm_faults-cf47ef77f7bcbf61.exe"
+    },
+    {
+      "sha256": "7033fba87526b367e176fbbee91f31942643b294a59780ede66f1b50bbd82391",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\9b9186826\\cancellation-integrated\\swarm_local.rs"
+    },
+    {
+      "sha256": "8561a52e5bd1aac0109c21d104f0c3d4da23224fe648d1d6eb8e40dd6a432aca",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\9b9186826\\cancellation-integrated\\local_model_swarm.rs"
+    },
+    {
+      "sha256": "faca452cec56e24a440df49876d1301d273f3c3d5586fecb59e92b7f4605a0ee",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\9b9186826\\cancellation-integrated\\local_swarm_faults.rs"
+    }
+  ]
+}
