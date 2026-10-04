@@ -2590,13 +2590,10 @@ impl PersistentLocalSwarm {
             ));
         }
         let harness = self.open_session(task).await?;
-        let state = harness.conversation_state(self.config.limits).await?;
-        Ok(state
-            .messages
-            .into_iter()
-            .filter(|message| message.sequence > after_sequence)
-            .take(limit)
-            .collect())
+        harness
+            .storage()
+            .conversation_messages(after_sequence, limit, self.config.limits)
+            .await
     }
 
     async fn read_conversation_events(
@@ -4780,11 +4777,72 @@ mod tests {
             Limits::default(),
         )
         .await?;
-        let (left, right) = tokio::join!(swarm.sessions(), swarm.sessions());
+        let root_task = swarm.root_task().await?;
+        let mut unseen = swarm.session(root_task).await?;
+        unseen.task_description = "unseen registry session".into();
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(&registry, StoredEvent::Session(unseen.into())).await?;
+        let start = Arc::new(tokio::sync::Barrier::new(2));
+        let left_start = start.clone();
+        let right_start = start.clone();
+        let left_read = async {
+            left_start.wait().await;
+            swarm.sessions().await
+        };
+        let right_read = async {
+            right_start.wait().await;
+            swarm.sessions().await
+        };
+        let (left, right) = tokio::join!(left_read, right_read);
         let left = left?;
         let right = right?;
         assert_eq!(left, right);
         assert_eq!(left.len(), 1);
+        assert_eq!(left[0].task_description, "unseen registry session");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cold_metadata_snapshot_does_not_open_a_child_harness() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let parent = swarm.root_task().await?;
+        let child = TaskId::new();
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: child,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "cold child".into(),
+                operation: None,
+                phase: StoredPhase::Ready,
+            }),
+        )
+        .await?;
+        let snapshot = swarm.session_snapshot(child).await?;
+        assert_eq!(snapshot.session.task, child);
+        assert_eq!(snapshot.conversation_revision, 0);
+        assert_eq!(snapshot.workspace_generation, None);
+        assert!(!swarm.sessions.lock().await.contains_key(&child));
         Ok(())
     }
 
