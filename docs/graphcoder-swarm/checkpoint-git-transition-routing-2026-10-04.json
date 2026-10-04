@@ -1,10 +1,6 @@
 {
   "passed": 1,
-  "source_tree": [
-    "0149faca1226f5facbfe857e2a7a5a385dd228fc",
-    "-encodedCommand",
-    "dAByAGUAZQA="
-  ],
+  "source_tree": "31000f79f8f61c838366b5f98446c9a7db512784",
   "suite_blob": "e7526d0184c6649541279b387099814577f9be17",
   "filtered": 104,
   "suite": "tests::root_git_conflicted_merge_can_abort_through_the_public_tool",
