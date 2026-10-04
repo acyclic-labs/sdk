@@ -263,7 +263,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         request: &ForkRequest,
     ) -> Result<ForkRebindProof> {
         self.authorize_request(request)?;
-        self.host.authenticate_rebind_records(request).await
+        self.authenticate_rebind_records(request).await
     }
 
     /// Reconstructs the rebound capability from the durable preparation

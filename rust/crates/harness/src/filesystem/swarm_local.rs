@@ -325,18 +325,7 @@ fn child_fork_operation(publication: OperationId, child: OperationId) -> Operati
 }
 
 fn rebind_report_history(report: &mut ForkReport, parent_revision: u64) -> Result<()> {
-    let captured = report
-        .captures
-        .iter()
-        .find_map(|capture| match capture {
-            Capture::Captured(resource)
-                if matches!(&resource.source, ResourceRevision::History(_)) =>
-            {
-                resource.source.as_resource().version()?.parse::<u64>().ok()
-            }
-            _ => None,
-        })
-        .ok_or_else(|| Error::Invalid("fork report has no captured history revision".into()))?;
+    let captured = report.captured_history_revision()?;
     if captured >= parent_revision {
         return Err(Error::Conflict(
             "fork report rebind requires an advanced publication revision".into(),
