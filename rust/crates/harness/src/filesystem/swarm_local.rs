@@ -2569,8 +2569,7 @@ impl PersistentLocalSwarm {
         limit: usize,
     ) -> Result<Vec<crate::core::Event>> {
         let harness = self.open_session(task).await?;
-        harness
-            .conversation_events(after_revision, limit, self.config.limits)
+        self.read_conversation_events(&harness, after_revision, limit)
             .await
     }
 
