@@ -861,6 +861,22 @@ export declare class NativeOperationWindowCoordinator {
   inspect(workspaceId: Buffer): Promise<NativeOperationWindowPhase>
 }
 
+/**
+ * A native process-tree owner that can adopt a host-created child while the
+ * host retains its own stdio streams.
+ *
+ * The returned token is an opaque ownership identity. Cleanup uses the native
+ * Job/process-group handle retained by this object, never a recovered PID.
+ */
+export declare class NativeProcessOwner {
+  /** Creates an empty native ownership registry. */
+  constructor()
+  /** Adopts a currently live host child and returns its opaque owner token. */
+  adopt(pid: number): string
+  /** Terminates the owned process tree and retires its token on proof. */
+  terminate(token: string): NativeProcessTermination
+}
+
 /** One immutable file resolved against a pinned checkout generation. */
 export declare class NativeResolvedFile {
   /** Terminal file kind authenticated by the pinned generation. */
@@ -1962,6 +1978,14 @@ export interface NativePathComponent {
   encoding: string
   /** Exact component bytes in the declared representation. */
   bytes: Buffer
+}
+
+/** Typed native process-tree termination observation. */
+export interface NativeProcessTermination {
+  /** `terminated` only after the native boundary reports no live members. */
+  kind: string
+  /** Recovery context when the outcome is `unknown`. */
+  reason?: string
 }
 
 /** Bounded native promotion planning result. */

@@ -1,4 +1,5 @@
 import { arch, platform } from "node:process";
+import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import type {
   EngineCapabilities,
   FsChangeSet,
@@ -213,7 +214,63 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
  */
 export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
   const binding = await bindings();
-  return createNativeProcessOwner((binding as NativeBindings & { readonly nativeProcessOwner?: unknown }).nativeProcessOwner);
+  const candidate = binding as NativeBindings & {
+    readonly NativeProcessOwner?: new () => {
+      adopt(pid: number): string;
+      terminate(token: string): { kind: string; reason?: string };
+    };
+  };
+  if (typeof candidate.NativeProcessOwner !== "function") {
+    throw new Error("native companion did not export a process owner");
+  }
+  const nativeOwner = new candidate.NativeProcessOwner();
+  const tokens = new WeakMap<ChildProcess, string>();
+  return createNativeProcessOwner({
+    capability: "acyclic.native-process-owner.v1",
+    version: "0.2.0",
+    spawn(executable: string, args: readonly string[], options: SpawnOptions): ChildProcess {
+      // Detached roots have a stable Unix process group for the native
+      // hand-off. Windows uses the same hand-off to assign the root to a Job.
+      const child = nodeSpawn(executable, [...args], { ...options, detached: true });
+      if (child.pid === undefined || child.pid === null) {
+        throw new Error("native process owner could not observe the child pid");
+      }
+      try {
+        tokens.set(child, nativeOwner.adopt(child.pid));
+      } catch (error) {
+        // The hand-off was not proven. Preserve the failure so the host can
+        // reconcile it through its own admission/recovery policy; this owner
+        // never substitutes an unscoped PID kill.
+        throw error;
+      }
+      return child;
+    },
+    async terminate(child: ChildProcess, graceMs = 250) {
+      const token = tokens.get(child);
+      if (token === undefined) {
+        return {
+          kind: "unknown",
+          pid: child.pid ?? -1,
+          reason: "native owner token is unavailable",
+        };
+      }
+      const deadline = Date.now() + Math.max(0, graceMs);
+      let result = nativeOwner.terminate(token);
+      while (result.kind !== "terminated" && Date.now() < deadline) {
+        await new Promise<void>(resolve => setTimeout(resolve, 10));
+        result = nativeOwner.terminate(token);
+      }
+      if (result.kind === "terminated") {
+        tokens.delete(child);
+        return { kind: "terminated", pid: child.pid ?? -1 };
+      }
+      return {
+        kind: "unknown",
+        pid: child.pid ?? -1,
+        reason: result.reason ?? "native owner could not prove termination",
+      };
+    },
+  });
 }
 
 /** Opens the durable Git-shaped compatibility state machine without invoking system Git. */

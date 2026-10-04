@@ -21,6 +21,25 @@ impl ProcessTree {
         })
     }
 
+    /// Adopts an already running process into an owned termination boundary.
+    ///
+    /// Hosts that must expose a platform-native owner while retaining their
+    /// own stdio handles (for example Node's ChildProcess) use this narrow
+    /// hand-off. The returned guard is the authority for later cleanup; the
+    /// caller never has to recover ownership from a PID after the hand-off.
+    pub fn adopt(pid: u32) -> io::Result<Self> {
+        if pid == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "process id must be nonzero",
+            ));
+        }
+        Ok(Self {
+            child: None,
+            guard: platform::adopt(pid)?,
+        })
+    }
+
     /// Polls the direct child without releasing ownership of its descendants.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child
@@ -64,6 +83,12 @@ impl ProcessTree {
             child.wait()?;
             self.child.take();
         }
+        if !self.termination_complete()? {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "process tree termination was not observed",
+            ));
+        }
         Ok(())
     }
 
@@ -71,6 +96,12 @@ impl ProcessTree {
     /// so its captured output can still be collected.
     pub fn terminate_descendants(&mut self) -> io::Result<()> {
         self.guard.terminate()
+    }
+
+    /// Returns whether the platform-owned process boundary has disappeared.
+    /// A successful termination request alone is not proof of completion.
+    pub fn termination_complete(&mut self) -> io::Result<bool> {
+        self.guard.termination_complete()
     }
 }
 
@@ -105,6 +136,30 @@ mod platform {
         ))
     }
 
+    pub(super) fn adopt(pid: u32) -> io::Result<Guard> {
+        let process_group = libc::pid_t::try_from(pid)
+            .map_err(|_| io::Error::other("process id does not fit pid_t"))?;
+        // The host launcher requests a detached root. Require the observed
+        // process-group identity before retaining the group as our authority;
+        // a bare PID is never enough to authorize later cleanup.
+        // SAFETY: querying the process group does not mutate process state.
+        let observed_group = unsafe { libc::getpgid(process_group) };
+        if observed_group != process_group {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "process is not the leader of its detached process group",
+            ));
+        }
+        // SAFETY: a zero signal is an existence probe only.
+        if unsafe { libc::kill(process_group, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Guard {
+            process_group,
+            active: true,
+        })
+    }
+
     impl Guard {
         pub(super) fn terminate(&mut self) -> io::Result<()> {
             if !self.active {
@@ -113,13 +168,32 @@ mod platform {
             // SAFETY: a negative, nonzero pid addresses exactly this owned
             // process group; SIGKILL requires no shared memory or signal data.
             if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
-                self.active = false;
                 return Ok(());
             }
             let error = io::Error::last_os_error();
             if error.raw_os_error() == Some(libc::ESRCH) {
                 self.active = false;
                 Ok(())
+            } else {
+                Err(error)
+            }
+        }
+
+        pub(super) fn termination_complete(&mut self) -> io::Result<bool> {
+            if !self.active {
+                return Ok(true);
+            }
+            // SAFETY: a negative, nonzero pid addresses exactly this process
+            // group. No signal is sent by the existence probe.
+            if unsafe { libc::kill(-self.process_group, 0) } == 0 {
+                return Ok(false);
+            }
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                self.active = false;
+                Ok(true)
+            } else if error.raw_os_error() == Some(libc::EPERM) {
+                Ok(false)
             } else {
                 Err(error)
             }
@@ -132,6 +206,8 @@ mod platform {
 mod tests {
     use super::ProcessTree;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -191,6 +267,57 @@ mod tests {
         thread::sleep(Duration::from_secs(1));
         assert!(!temporary.path().join("escaped").exists());
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn adoption_contains_descendants_without_recovering_a_pid() {
+        let temporary = tempfile::tempdir().expect("temporary process-tree directory");
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args(["--exact", "process_tree::tests::process_tree_helper"])
+            .env(MODE, "child")
+            .env(ROOT, temporary.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut child = command.spawn().expect("spawn adopted process tree");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(temporary.path().join("tree-ready").exists());
+        let mut owner = ProcessTree::adopt(child.id()).expect("adopt process tree");
+        owner.terminate().expect("terminate adopted process tree");
+        let _ = child.wait();
+        thread::sleep(Duration::from_secs(1));
+        assert!(!temporary.path().join("escaped").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn adoption_contains_descendants_without_recovering_a_pid() {
+        let temporary = tempfile::tempdir().expect("temporary process-tree directory");
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args(["--exact", "process_tree::tests::process_tree_helper"])
+            .env(MODE, "child")
+            .env(ROOT, temporary.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().expect("spawn adopted process tree");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(temporary.path().join("tree-ready").exists());
+        let mut owner = ProcessTree::adopt(child.id()).expect("adopt process tree");
+        owner.terminate().expect("terminate adopted process tree");
+        let _ = child.wait();
+        thread::sleep(Duration::from_secs(1));
+        assert!(!temporary.path().join("escaped").exists());
+    }
 }
 
 #[cfg(windows)]
@@ -202,15 +329,19 @@ mod platform {
     use std::process::{Child, Command};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+        CreateToolhelp32Snapshot, Process32First, Process32Next, Thread32First, Thread32Next,
+        PROCESSENTRY32, TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32,
     };
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+        OpenProcess, OpenThread, ResumeThread, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        THREAD_SUSPEND_RESUME,
     };
 
     pub(super) struct Guard {
@@ -238,6 +369,90 @@ mod platform {
             return Err(error);
         }
         Ok((child, guard))
+    }
+
+    pub(super) fn adopt(pid: u32) -> io::Result<Guard> {
+        let guard = Guard::new()?;
+        // Keep the process handle only for the assignment operation. The Job
+        // handle retained by `Guard` is the durable authority and cannot be
+        // redirected to a later process that reuses this PID.
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA | PROCESS_TERMINATE,
+                0,
+                pid,
+            )
+        };
+        if process.is_null() {
+            let error = io::Error::last_os_error();
+            drop(guard);
+            return Err(error);
+        }
+        let assigned = unsafe { AssignProcessToJobObject(guard.job, process) } != 0;
+        let error = if assigned {
+            assign_descendants(guard.job, pid).err()
+        } else {
+            Some(io::Error::last_os_error())
+        };
+        unsafe { CloseHandle(process) };
+        if let Some(error) = error {
+            drop(guard);
+            return Err(error);
+        }
+        Ok(guard)
+    }
+
+    fn assign_descendants(job: HANDLE, root_pid: u32) -> io::Result<()> {
+        let mut owned = vec![root_pid];
+        loop {
+            let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+            let mut entry: PROCESSENTRY32 = unsafe { zeroed() };
+            entry.dwSize = u32::try_from(size_of::<PROCESSENTRY32>())
+                .map_err(|_| io::Error::other("process entry structure is too large"))?;
+            let mut found = unsafe { Process32First(snapshot, &raw mut entry) } != 0;
+            let mut added = 0;
+            while found {
+                if owned.contains(&entry.th32ParentProcessID)
+                    && !owned.contains(&entry.th32ProcessID)
+                {
+                    let process = unsafe {
+                        OpenProcess(
+                            PROCESS_QUERY_LIMITED_INFORMATION
+                                | PROCESS_SET_QUOTA
+                                | PROCESS_TERMINATE,
+                            0,
+                            entry.th32ProcessID,
+                        )
+                    };
+                    if process.is_null() {
+                        let error = io::Error::last_os_error();
+                        unsafe { CloseHandle(snapshot) };
+                        return Err(error);
+                    }
+                    let assigned = unsafe { AssignProcessToJobObject(job, process) } != 0;
+                    let error = if assigned {
+                        None
+                    } else {
+                        Some(io::Error::last_os_error())
+                    };
+                    unsafe { CloseHandle(process) };
+                    if let Some(error) = error {
+                        unsafe { CloseHandle(snapshot) };
+                        return Err(error);
+                    }
+                    owned.push(entry.th32ProcessID);
+                    added += 1;
+                }
+                found = unsafe { Process32Next(snapshot, &raw mut entry) } != 0;
+            }
+            unsafe { CloseHandle(snapshot) };
+            if added == 0 {
+                return Ok(());
+            }
+        }
     }
 
     impl Guard {
@@ -279,8 +494,34 @@ mod platform {
             if unsafe { TerminateJobObject(self.job, 1) } == 0 {
                 Err(io::Error::last_os_error())
             } else {
-                self.active = false;
                 Ok(())
+            }
+        }
+
+        pub(super) fn termination_complete(&mut self) -> io::Result<bool> {
+            if !self.active {
+                return Ok(true);
+            }
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            let mut returned = 0;
+            let queried = unsafe {
+                QueryInformationJobObject(
+                    self.job,
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    u32::try_from(size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>())
+                        .map_err(|_| io::Error::other("Job accounting structure is too large"))?,
+                    &mut returned,
+                )
+            };
+            if queried == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if accounting.ActiveProcesses == 0 {
+                self.active = false;
+                Ok(true)
+            } else {
+                Ok(false)
             }
         }
     }

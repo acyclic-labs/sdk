@@ -44,12 +44,15 @@ use acyclic_fs::{
 };
 use acyclic_fs::{Mount as WorkspaceMount, MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
+use acyclic_native_runtime::ProcessTree;
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 #[napi]
 #[allow(clippy::needless_pass_by_value)]
@@ -147,6 +150,93 @@ pub struct NativeCapabilities {
     pub writable_mount: bool,
     /// Whether mount I/O from this provider process is observable.
     pub provider_process_io_observable: bool,
+}
+
+/// A native process-tree owner that can adopt a host-created child while the
+/// host retains its own stdio streams.
+///
+/// The returned token is an opaque ownership identity. Cleanup uses the native
+/// Job/process-group handle retained by this object, never a recovered PID.
+#[napi]
+pub struct NativeProcessOwner {
+    next_token: AtomicU64,
+    trees: Mutex<HashMap<u64, ProcessTree>>,
+}
+
+#[napi]
+impl NativeProcessOwner {
+    /// Creates an empty native ownership registry.
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            next_token: AtomicU64::new(1),
+            trees: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Adopts a currently live host child and returns its opaque owner token.
+    #[napi]
+    pub fn adopt(&self, pid: u32) -> Result<String> {
+        let tree = ProcessTree::adopt(pid).map_err(napi_error)?;
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        self.trees
+            .lock()
+            .map_err(|_| napi_error("native process owner state poisoned"))?
+            .insert(token, tree);
+        Ok(token.to_string())
+    }
+
+    /// Terminates the owned process tree and retires its token on proof.
+    #[napi]
+    pub fn terminate(&self, token: String) -> NativeProcessTermination {
+        let Ok(token) = token.parse::<u64>() else {
+            return NativeProcessTermination::unknown("invalid owner token");
+        };
+        let Ok(mut trees) = self.trees.lock() else {
+            return NativeProcessTermination::unknown("native process owner state poisoned");
+        };
+        let Some(tree) = trees.get_mut(&token) else {
+            return NativeProcessTermination::unknown("owner token is not active");
+        };
+        match tree.terminate_descendants() {
+            Ok(()) => match tree.termination_complete() {
+                Ok(true) => {
+                    trees.remove(&token);
+                    NativeProcessTermination::terminated()
+                }
+                Ok(false) => {
+                    NativeProcessTermination::unknown("native termination is still in progress")
+                }
+                Err(error) => NativeProcessTermination::unknown(&error.to_string()),
+            },
+            Err(error) => NativeProcessTermination::unknown(&error.to_string()),
+        }
+    }
+}
+
+#[napi(object)]
+/// Typed native process-tree termination observation.
+pub struct NativeProcessTermination {
+    /// `terminated` only after the native boundary reports no live members.
+    pub kind: String,
+    /// Recovery context when the outcome is `unknown`.
+    pub reason: Option<String>,
+}
+
+impl NativeProcessTermination {
+    fn terminated() -> Self {
+        Self {
+            kind: "terminated".to_owned(),
+            reason: None,
+        }
+    }
+
+    fn unknown(reason: &str) -> Self {
+        Self {
+            kind: "unknown".to_owned(),
+            reason: Some(reason.to_owned()),
+        }
+    }
 }
 
 /// Exact cumulative and resident immutable-object accelerator observations.
