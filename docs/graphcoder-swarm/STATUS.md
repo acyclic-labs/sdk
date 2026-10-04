@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Fresh Windows native CLI tests pass 7/7 at `ca8a9ed9d`, including a real staged-file tool exchange and successful cold response replay. Harness now retains the registered provider option policy when capturing completed batches and verifies the original request manifest before publication. See [checkpoint-native-cli-option-policy-2026-10-04.json](checkpoint-native-cli-option-policy-2026-10-04.json). This focused result does not qualify the still-failing recursive swarm fault matrix or installed terminal PTY gates.
+
 Fresh isolated native results exist for Rust source `454797822`: exact frozen request/manifest conformance passes 2/2, read projections pass 2/2, and real local swarm faults pass 1/5. The four failures include manifest command/revision binding and missing child dispatch. These are blocking failures with source-qualified artifacts. See [checkpoint-isolated-native-2026-10-04.json](checkpoint-isolated-native-2026-10-04.json). Final qualification remains incomplete.
 
 Goal active; qualification incomplete. Implementation stays in the managed worktree on `codex/graphcoder-sdk`, based on `31b9ff52d63c91f2b9bf87e16b78ad682d26546f`. No merge occurred.

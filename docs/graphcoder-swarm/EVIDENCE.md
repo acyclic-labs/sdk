@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+[Native CLI option-policy checkpoint](checkpoint-native-cli-option-policy-2026-10-04.json): fresh isolated Windows native execution passes all seven CLI cases, including actual staged-file effects and cold response replay. [Shared path validation](checkpoint-shared-path-validation-2026-10-04.json): 38 source transport/UI/terminal tests and TypeScript checking pass after removing the duplicate validator. Neither checkpoint qualifies the full recursive swarm, installed artifacts, or PTY matrix.
+
 [checkpoint-build-interruption-recovery-2026-10-04.json](checkpoint-build-interruption-recovery-2026-10-04.json) records a missing CLI build handle, null-byte branch-reference corruption, and an incomplete CLI artifact. The isolated branch was restored from its verified reflog with a preserved metadata backup. No CLI success is inferred; a new dedicated build remains required.
 
 [checkpoint-isolated-local-storage-2026-10-04.json](checkpoint-isolated-local-storage-2026-10-04.json) records six passing current native local-storage cases and a failed unknown-operation fencing case. Completed-turn replay is verified; full effect recovery remains incomplete.
