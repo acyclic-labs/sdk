@@ -9,30 +9,32 @@
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::expect_used, clippy::indexing_slicing))]
 
+use futures::StreamExt;
 use acyclic_harness::{
-    Error as HarnessError, InteractionId, OperationId, TaskId,
-    conversation::Limits,
-    filesystem::{LocalSessionPhase, PersistentLocalSwarm},
-    model::{
-        Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
-        ModelProvider,
+    conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
+    filesystem::{
+        LocalSessionPhase, PersistentLocalSwarm,
     },
+    model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
+        ModelProvider},
     registry::ComponentIdentity,
+    resources::ProviderRef,
+    Error as HarnessError, InteractionId, OperationId, TaskId,
 };
 use clap::Parser;
-use futures::StreamExt;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
+    fs,
     path::PathBuf,
     sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
-        atomic::{AtomicUsize, Ordering},
     },
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex, Notify, Semaphore};
 
 #[cfg(test)]
 use tokio::io::AsyncReadExt;
@@ -62,6 +64,18 @@ struct Args {
     /// Private host-to-runtime credential for operator control messages.
     #[arg(long, env = "GRAPHCODER_OPERATOR_TOKEN", hide = true)]
     operator_token: Option<String>,
+    /// Caller-declared project identity for an attached native checkout.
+    #[arg(long, env = "GRAPHCODER_PROJECT_ID", requires = "checkout")]
+    project_id: Option<String>,
+    /// Native checkout root to attach as the project source.
+    #[arg(long, env = "GRAPHCODER_CHECKOUT")]
+    checkout: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+struct BlockingFixture {
+    started: Arc<Notify>,
+    cancelled: watch::Sender<bool>,
 }
 
 #[derive(Clone)]
@@ -69,6 +83,7 @@ struct EchoModel {
     fixture: String,
     calls: Arc<AtomicUsize>,
     option_policy: ModelOptionPolicy,
+    blocking: Option<BlockingFixture>,
 }
 
 impl ModelProvider for EchoModel {
@@ -78,20 +93,28 @@ impl ModelProvider for EchoModel {
     ) -> BoxStream<'a, acyclic_harness::Result<ModelEvent>> {
         let request = prepared.request().clone();
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        if let Some(blocking) = self.blocking.clone() {
+            let mut cancelled = blocking.cancelled.subscribe();
+            blocking.started.notify_waiters();
+            return Box::pin(futures::stream::once(async move {
+                if !*cancelled.borrow() {
+                    let _ = cancelled.changed().await;
+                }
+                Err(HarnessError::Conflict(
+                    "blocking fixture model turn cancelled".into(),
+                ))
+            }));
+        }
         if self.fixture == "stage" && call > 0 {
-            let result = request
-                .messages
-                .iter()
-                .rev()
-                .find_map(|message| match &message.content {
-                    acyclic_harness::model::ModelContent::Part(
-                        acyclic_harness::model::ModelContentPart::ToolResult { value, .. },
-                    ) => Some(value),
-                    _ => None,
-                });
+            let result = request.messages.iter().rev().find_map(|message| match &message.content {
+                acyclic_harness::model::ModelContent::Part(
+                    acyclic_harness::model::ModelContentPart::ToolResult { value, .. }
+                ) => Some(value),
+                _ => None,
+            });
             if !result.is_some_and(|value| value.get("file").is_some()) {
                 return Box::pin(futures::stream::iter([Err(HarnessError::Storage(
-                    format!("stage fixture lacks successful file result: {result:?}"),
+                    format!("stage fixture lacks successful file result: {result:?}")
                 ))]));
             }
         }
@@ -114,8 +137,7 @@ impl ModelProvider for EchoModel {
             let child_b = OperationId::from_bytes([0xb1; 16]).to_string();
             let grandchild = OperationId::from_bytes([0xc1; 16]).to_string();
             let has_text = |needle: &str| {
-                request.messages.iter().any(|message| {
-                    match &message.content {
+                request.messages.iter().any(|message| match &message.content {
                     ModelContent::Text(value) => value.contains(needle),
                     ModelContent::Part(ModelContentPart::Text { text }) => text.contains(needle),
                     ModelContent::Parts(parts) => parts.iter().any(|part| {
@@ -128,7 +150,6 @@ impl ModelProvider for EchoModel {
                         arguments.to_string().contains(needle)
                     }
                     ModelContent::Part(ModelContentPart::File { .. }) => false,
-                }
                 })
             };
             let has_tool_result = |name: &str| {
@@ -290,16 +311,110 @@ impl WireResponse {
     }
 }
 
+#[derive(Default)]
+struct LazyCounters {
+    worker_starts: AtomicU64,
+    workspace_reads: AtomicU64,
+    model_dispatches: AtomicU64,
+}
+
+struct LazyObservation {
+    path: Option<PathBuf>,
+    executable: Option<PathBuf>,
+    active: AtomicBool,
+    counters: LazyCounters,
+}
+
+impl LazyObservation {
+    fn from_environment() -> Result<Self, HarnessError> {
+        let path = std::env::var_os("GRAPHCODER_LAZY_OBSERVATION_PATH").map(PathBuf::from);
+        if path.is_none() && std::env::var("GRAPHCODER_REQUIRE_LAZY_COUNTERS").ok().as_deref() == Some("1") {
+            return Err(HarnessError::Invalid(
+                "GRAPHCODER_LAZY_OBSERVATION_PATH is required when lazy counters are required".into(),
+            ));
+        }
+        let executable = path
+            .as_ref()
+            .map(|_| std::env::current_exe())
+            .transpose()
+            .map_err(|error| HarnessError::Storage(error.to_string()))?;
+        Ok(Self {
+            path,
+            executable,
+            active: AtomicBool::new(false),
+            counters: LazyCounters::default(),
+        })
+    }
+
+    fn begin(&self) {
+        if self.path.is_none() {
+            return;
+        }
+        self.counters.worker_starts.store(0, Ordering::SeqCst);
+        self.counters.workspace_reads.store(0, Ordering::SeqCst);
+        self.counters.model_dispatches.store(0, Ordering::SeqCst);
+        self.active.store(true, Ordering::SeqCst);
+    }
+
+    fn record_worker_start(&self) {
+        if self.active.load(Ordering::SeqCst) {
+            self.counters.worker_starts.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn record_workspace_read(&self) {
+        if self.active.load(Ordering::SeqCst) {
+            self.counters.workspace_reads.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn record_model_dispatch(&self) {
+        if self.active.load(Ordering::SeqCst) {
+            self.counters.model_dispatches.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn finish(&self, request_id: &str, method: &str) -> std::io::Result<()> {
+        self.active.store(false, Ordering::SeqCst);
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        let executable = self.executable.as_ref().ok_or_else(|| {
+            std::io::Error::other("lazy observation executable is not configured")
+        })?;
+        let value = json!({
+            "schema": "graphcoder.lazy-observation.v1",
+            "runtime": {
+                "pid": std::process::id(),
+                "executable": executable,
+            },
+            "request": {
+                "request_id": request_id,
+                "method": method,
+            },
+            "during_list_sessions": {
+                "worker_starts": self.counters.worker_starts.load(Ordering::SeqCst),
+                "workspace_reads": self.counters.workspace_reads.load(Ordering::SeqCst),
+                "model_dispatches": self.counters.model_dispatches.load(Ordering::SeqCst),
+            },
+        });
+        let bytes = serde_json::to_vec(&value).map_err(std::io::Error::other)?;
+        fs::write(path, bytes)
+    }
+}
+
 struct Runtime {
     swarm: Arc<PersistentLocalSwarm>,
     model_fixture: String,
     operator_token: Option<String>,
+    lazy_observation: LazyObservation,
+    blocking: Option<BlockingFixture>,
 }
 
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
-            "echo" | "complete" | "stage" | "recursive" => args.model_fixture.clone(),
+            "echo" | "complete" | "stage" | "recursive" | "blocking" => args.model_fixture.clone(),
             value => {
                 return Err(HarnessError::Invalid(format!(
                     "unknown model fixture {value}"
@@ -322,27 +437,78 @@ impl Runtime {
                 "type": "object",
                 "required": ["fixture"],
                 "properties": {
-                    "fixture": {"enum": ["echo", "complete", "stage", "recursive"]}
+                    "fixture": {"enum": ["echo", "complete", "stage", "recursive", "blocking"]}
                 },
                 "additionalProperties": false,
             }),
         )?;
+        let blocking = (fixture == "blocking").then(|| {
+            let (cancelled, _) = watch::channel(false);
+            BlockingFixture {
+                started: Arc::new(Notify::new()),
+                cancelled,
+            }
+        });
         let provider = Arc::new(EchoModel {
             fixture: fixture.clone(),
             calls: Arc::new(AtomicUsize::new(0)),
             option_policy,
+            blocking: blocking.clone(),
         });
-        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            &args.root,
-            model,
-            provider,
-            Limits::default(),
-        )
-        .await?;
+        let swarm = match (&args.checkout, &args.project_id) {
+            (Some(checkout), Some(project_id)) => {
+                let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
+                let project = VolumeRef::new(
+                    filesystem_provider,
+                    project_id.clone(),
+                    VolumeClass::Project,
+                    VolumeOwner::Project(project_id.clone()),
+                )?;
+                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_at_checkout(
+                    &args.root,
+                    model,
+                    provider,
+                    Limits::default(),
+                    project,
+                    checkout,
+                )
+                .await?
+            }
+            (Some(_), None) => {
+                return Err(HarnessError::Invalid(
+                    "--project-id is required with --checkout".into(),
+                ));
+            }
+            (None, _) => {
+                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+                    &args.root,
+                    model,
+                    provider,
+                    Limits::default(),
+                )
+                .await?
+            }
+        };
+        if blocking.is_some() {
+            let task = swarm.root_task().await?;
+            if swarm.list_approvals(task).await?.is_empty() {
+                swarm
+                    .open_approval(
+                        task,
+                        OperationId::from_bytes([0xd1; 16]),
+                        "Approve the blocking fixture operation",
+                        [0x71; 32],
+                    )
+                    .await?;
+            }
+        }
+        let lazy_observation = LazyObservation::from_environment()?;
         Ok(Self {
             swarm,
             model_fixture: fixture,
             operator_token: args.operator_token.clone(),
+            lazy_observation,
+            blocking,
         })
     }
 
@@ -355,10 +521,10 @@ impl Runtime {
             );
         }
         let result = match request.method.as_str() {
-            "list_sessions" => self.list_sessions(&request.params).await,
+            "list_sessions" => self.list_sessions(&request.request_id, &request.params).await,
             "start_session" => self.start_session(&request.params).await,
             "open_session" => self.open_session(&request.params, false).await,
-            "resume_session" => self.open_session(&request.params, true).await,
+            "resume_session" => self.resume_session(&request.params).await,
             "read_activity" => self.read_activity(&request.params).await,
             "read_messages" => self.read_messages(&request.params).await,
             "send_message" => {
@@ -383,7 +549,28 @@ impl Runtime {
         }
     }
 
-    async fn list_sessions(&self, params: &Value) -> Result<Value, DispatchError> {
+    async fn list_sessions(
+        &self,
+        request_id: &str,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        self.lazy_observation.begin();
+        let result = self.list_sessions_page(params).await;
+        let observation = self
+            .lazy_observation
+            .finish(request_id, "list_sessions")
+            .map_err(|error| DispatchError {
+                code: "transport",
+                message: format!("lazy observation could not be recorded: {error}"),
+            });
+        match (result, observation) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) => Err(error),
+            (_, Err(error)) => Err(error),
+        }
+    }
+
+    async fn list_sessions_page(&self, params: &Value) -> Result<Value, DispatchError> {
         let (after, limit) = page_bounds(params)?;
         let page = self
             .swarm
@@ -401,6 +588,64 @@ impl Runtime {
 
     async fn start_session(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
+        let (prompt, operation_id) = self.run_inputs(params)?;
+        let operation = operation_for(operation_id);
+        self.lazy_observation.record_worker_start();
+        self.lazy_observation.record_model_dispatch();
+        let output = self
+            .swarm
+            .run_root(operation, prompt)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let task = self
+            .swarm
+            .root_task()
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let mut snapshot = self.snapshot(task).await?;
+        snapshot["outcome"] = serde_json::to_value(output).map_err(|error| {
+            DispatchError::invalid(format!("outcome is not serializable: {error}"))
+        })?;
+        Ok(snapshot)
+    }
+
+    async fn resume_session(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let has_prompt = params.get("prompt").is_some();
+        let has_operation = params.get("operation_id").is_some();
+        if has_prompt != has_operation {
+            return Err(DispatchError::invalid(
+                "resume_session requires prompt and operation_id together",
+            ));
+        }
+        if !has_prompt {
+            let session = self
+                .swarm
+                .resume(task)
+                .await
+                .map_err(DispatchError::from_harness)?;
+            return self.snapshot_from_session(session).await;
+        }
+        let (prompt, operation_id) = self.run_inputs(params)?;
+        self.lazy_observation.record_worker_start();
+        self.lazy_observation.record_model_dispatch();
+        let output = self
+            .swarm
+            .run(task, operation_for(operation_id), prompt)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let mut snapshot = self.snapshot(task).await?;
+        snapshot["outcome"] = serde_json::to_value(output).map_err(|error| {
+            DispatchError::invalid(format!("outcome is not serializable: {error}"))
+        })?;
+        Ok(snapshot)
+    }
+
+    fn run_inputs<'a>(
+        &self,
+        params: &'a serde_json::Map<String, Value>,
+    ) -> Result<(&'a str, &'a str), DispatchError> {
         let prompt = required_text(params, "prompt")?;
         let operation_id = required_text(params, "operation_id")?;
         if operation_id.trim().is_empty() || operation_id.len() > 256 {
@@ -420,22 +665,7 @@ impl Runtime {
                 ));
             }
         }
-        let operation = operation_for(operation_id);
-        let output = self
-            .swarm
-            .run_root(operation, prompt)
-            .await
-            .map_err(DispatchError::from_harness)?;
-        let task = self
-            .swarm
-            .root_task()
-            .await
-            .map_err(DispatchError::from_harness)?;
-        let mut snapshot = self.snapshot(task).await?;
-        snapshot["outcome"] = serde_json::to_value(output).map_err(|error| {
-            DispatchError::invalid(format!("outcome is not serializable: {error}"))
-        })?;
-        Ok(snapshot)
+        Ok((prompt, operation_id))
     }
 
     async fn open_session(&self, params: &Value, resume: bool) -> Result<Value, DispatchError> {
@@ -474,28 +704,15 @@ impl Runtime {
         let after_sequence = parse_cursor(after, "message cursor")?;
         let messages = self
             .swarm
-            .read_messages(task, after_sequence, limit)
+            .read_messages_with_content(task, after_sequence, limit)
             .await
             .map_err(DispatchError::from_harness)?;
-        let generation = self
-            .swarm
-            .list_files(task, "", None, None, 1)
-            .await
-            .map_err(DispatchError::from_harness)?
-            .generation;
         let mut items = Vec::with_capacity(messages.len());
-        for message in messages {
-            let body = self
-                .swarm
-                .read_file(task, message.content.path(), Some(&generation))
-                .await
-                .map_err(DispatchError::from_harness)
-                .and_then(|(_, bytes)| {
-                    String::from_utf8(bytes).map_err(|_| DispatchError {
-                        code: "transport",
-                        message: "message content is not UTF-8".into(),
-                    })
-                })?;
+        for (message, bytes) in messages {
+            let body = String::from_utf8(bytes).map_err(|_| DispatchError {
+                code: "transport",
+                message: "message content is not UTF-8".into(),
+            })?;
             items.push(json!({
                 "id": message.id.to_string(),
                 "sequence": message.sequence.to_string(),
@@ -566,10 +783,9 @@ impl Runtime {
     async fn operator_approve(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let token = required_text(params, "operator_token")?;
-        let expected = self
-            .operator_token
-            .as_deref()
-            .ok_or_else(|| DispatchError::unsupported("operator control is not configured"))?;
+        let expected = self.operator_token.as_deref().ok_or_else(|| {
+            DispatchError::unsupported("operator control is not configured")
+        })?;
         if token != expected {
             return Err(DispatchError {
                 code: "denied",
@@ -584,7 +800,7 @@ impl Runtime {
             .and_then(Value::as_bool)
             .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
         self.swarm
-            .record_operator_approval(task, id, approved)
+            .resolve_authenticated_operator_approval(task, id, approved)
             .await
             .map_err(DispatchError::from_harness)?;
         Ok(json!({
@@ -623,6 +839,9 @@ impl Runtime {
     async fn cancel_session(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
+        if let Some(blocking) = &self.blocking {
+            let _ = blocking.cancelled.send(true);
+        }
         let session = self
             .swarm
             .cancel(task)
@@ -675,6 +894,7 @@ impl Runtime {
         &self,
         session: acyclic_harness::filesystem::LocalSwarmSession,
     ) -> Result<Value, DispatchError> {
+        self.lazy_observation.record_workspace_read();
         let agents = self
             .swarm
             .recursive_agent_tree(session.task)
@@ -771,9 +991,7 @@ fn page_bounds(params: &Value) -> Result<(Option<&str>, usize), DispatchError> {
     page_bounds_object(object(params)?)
 }
 
-fn page_bounds_object(
-    object: &serde_json::Map<String, Value>,
-) -> Result<(Option<&str>, usize), DispatchError> {
+fn page_bounds_object(object: &serde_json::Map<String, Value>) -> Result<(Option<&str>, usize), DispatchError> {
     let Some(query) = object.get("query") else {
         return Ok((None, 1024));
     };
@@ -949,11 +1167,10 @@ where
     let input = BufReader::new(input);
     let mut frames = BoundedFrames::new(input);
     let output = Arc::new(Mutex::new(tokio::io::BufWriter::new(output)));
-    let mut jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> =
-        futures::stream::FuturesUnordered::new();
-    let mut control_jobs: futures::stream::FuturesUnordered<
-        tokio::task::JoinHandle<std::io::Result<()>>,
-    > = futures::stream::FuturesUnordered::new();
+    let request_slots = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
+    let control_slots = Arc::new(Semaphore::new(MAX_CONTROL_IN_FLIGHT));
+    let mut jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
+    let mut control_jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
     loop {
         while let Some(job) = jobs.next().now_or_never().flatten() {
             job.map_err(std::io::Error::other)??;
@@ -967,15 +1184,13 @@ where
         let line = match frame {
             BoundedFrame::Line(line) => line,
             BoundedFrame::TooLong => {
-                let response =
-                    WireResponse::error("", "invalid_input", "request line exceeds 16 MiB");
+                let response = WireResponse::error("", "invalid_input", "request line exceeds 16 MiB");
                 let output = output.clone();
                 write_direct_error(&output, response).await?;
                 continue;
             }
             BoundedFrame::InvalidUtf8 => {
-                let response =
-                    WireResponse::error("", "invalid_input", "request line is not valid UTF-8");
+                let response = WireResponse::error("", "invalid_input", "request line is not valid UTF-8");
                 let output = output.clone();
                 write_direct_error(&output, response).await?;
                 continue;
@@ -985,9 +1200,7 @@ where
             Ok(request) => request,
             Err(error) => {
                 let response = WireResponse::error(
-                    request_id_from_malformed_line(&line)
-                        .as_deref()
-                        .unwrap_or(""),
+                    request_id_from_malformed_line(&line).as_deref().unwrap_or(""),
                     "invalid_input",
                     format!("invalid request: {error}"),
                 );
@@ -996,38 +1209,35 @@ where
             }
         };
         let is_control = request.method == "cancel_session";
-        if is_control && control_jobs.len() >= MAX_CONTROL_IN_FLIGHT {
-            write_direct_error(
-                &output,
-                WireResponse::error(
-                    &request.request_id,
-                    "invalid_input",
-                    "control request limit reached",
-                ),
-            )
-            .await?;
-            continue;
-        }
-        if !is_control && jobs.len() >= MAX_IN_FLIGHT {
-            write_direct_error(
-                &output,
-                WireResponse::error(
-                    &request.request_id,
-                    "invalid_input",
-                    "in-flight request limit reached",
-                ),
-            )
-            .await?;
-            continue;
-        }
+        let permit = if is_control {
+            control_slots.clone().try_acquire_owned()
+        } else {
+            request_slots.clone().try_acquire_owned()
+        };
+        let permit = match permit {
+            Ok(permit) => permit,
+            Err(_) => {
+                write_direct_error(
+                    &output,
+                    WireResponse::error(
+                        &request.request_id,
+                        "invalid_input",
+                        if is_control {
+                            "control request limit reached"
+                        } else {
+                            "in-flight request limit reached"
+                        },
+                    ),
+                )
+                .await?;
+                continue;
+            }
+        };
         let runtime = runtime.clone();
         let output = output.clone();
-        let target = if is_control {
-            &mut control_jobs
-        } else {
-            &mut jobs
-        };
+        let target = if is_control { &mut control_jobs } else { &mut jobs };
         target.push(tokio::spawn(async move {
+            let _permit = permit;
             let response = runtime.dispatch(request).await;
             let mut output = output.lock().await;
             write_response(&mut *output, &response).await
@@ -1076,51 +1286,47 @@ impl<R: AsyncBufRead + Unpin> BoundedFrames<R> {
 
     async fn next(&mut self) -> std::io::Result<Option<BoundedFrame>> {
         loop {
-            let available = self.input.fill_buf().await?;
-            if available.is_empty() {
-                if self.discarding {
-                    self.discarding = false;
-                    return Ok(None);
-                }
-                if self.bytes.is_empty() {
-                    return Ok(None);
-                }
-                return Ok(Some(
-                    match String::from_utf8(std::mem::take(&mut self.bytes)) {
-                        Ok(line) => BoundedFrame::Line(line),
-                        Err(_) => BoundedFrame::InvalidUtf8,
-                    },
-                ));
-            }
-            let newline = available.iter().position(|byte| *byte == b'\n');
-            let consumed = newline.map_or(available.len(), |index| index + 1);
-            let content_len = newline.map_or(available.len(), |index| index);
+        let available = self.input.fill_buf().await?;
+        if available.is_empty() {
             if self.discarding {
-                self.input.consume(consumed);
-                if newline.is_some() {
-                    self.discarding = false;
-                }
-                continue;
+                self.discarding = false;
+                return Ok(None);
             }
-            let remaining = MAX_LINE_BYTES.saturating_sub(self.bytes.len());
-            if content_len > remaining {
-                self.input.consume(consumed);
-                self.bytes.clear();
-                self.discarding = newline.is_none();
-                return Ok(Some(BoundedFrame::TooLong));
+            if self.bytes.is_empty() {
+                return Ok(None);
             }
-            self.bytes.extend_from_slice(&available[..content_len]);
+            return Ok(Some(match String::from_utf8(std::mem::take(&mut self.bytes)) {
+                Ok(line) => BoundedFrame::Line(line),
+                Err(_) => BoundedFrame::InvalidUtf8,
+            }));
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |index| index + 1);
+        let content_len = newline.map_or(available.len(), |index| index);
+        if self.discarding {
             self.input.consume(consumed);
             if newline.is_some() {
-                return Ok(Some(
-                    match String::from_utf8(std::mem::take(&mut self.bytes)) {
-                        Ok(line) => BoundedFrame::Line(line),
-                        Err(_) => BoundedFrame::InvalidUtf8,
-                    },
-                ));
+                self.discarding = false;
             }
+            continue;
+        }
+        let remaining = MAX_LINE_BYTES.saturating_sub(self.bytes.len());
+        if content_len > remaining {
+            self.input.consume(consumed);
+            self.bytes.clear();
+            self.discarding = newline.is_none();
+            return Ok(Some(BoundedFrame::TooLong));
+        }
+        self.bytes.extend_from_slice(&available[..content_len]);
+        self.input.consume(consumed);
+        if newline.is_some() {
+            return Ok(Some(match String::from_utf8(std::mem::take(&mut self.bytes)) {
+                Ok(line) => BoundedFrame::Line(line),
+                Err(_) => BoundedFrame::InvalidUtf8,
+            }));
         }
     }
+}
 }
 
 fn request_id_from_malformed_line(line: &str) -> Option<String> {
@@ -1139,9 +1345,7 @@ async fn write_response<W: AsyncWrite + Unpin>(
     let bytes = serde_json::to_vec(response).map_err(std::io::Error::other)?;
     if bytes.len() > MAX_LINE_BYTES {
         let request_id = match response {
-            WireResponse::Ok { request_id, .. } | WireResponse::Err { request_id, .. } => {
-                request_id
-            }
+            WireResponse::Ok { request_id, .. } | WireResponse::Err { request_id, .. } => request_id,
         };
         let fallback = WireResponse::error(
             request_id,
@@ -1179,10 +1383,7 @@ mod tests {
                 .write_all(&vec![b'x'; MAX_LINE_BYTES + 1])
                 .await
                 .expect("oversized frame writes");
-            writer
-                .write_all(b"\n{}\n")
-                .await
-                .expect("next frame writes");
+            writer.write_all(b"\n{}\n").await.expect("next frame writes");
             writer.shutdown().await.expect("input closes");
         });
         let mut reader = BoundedFrames::new(BufReader::new(reader));
@@ -1277,7 +1478,50 @@ mod tests {
             root,
             model_fixture: fixture.to_owned(),
             operator_token: None,
+            project_id: None,
+            checkout: None,
         }
+    }
+
+    #[test]
+    fn lazy_observation_binds_runtime_and_list_request() {
+        let directory = tempfile::tempdir().expect("observation directory");
+        let path = directory.path().join("lazy-observation.json");
+        let observation = LazyObservation {
+            path: Some(path.clone()),
+            executable: Some(std::env::current_exe().expect("test executable")),
+            active: AtomicBool::new(false),
+            counters: LazyCounters::default(),
+        };
+        observation.begin();
+        observation.finish("list-1", "list_sessions").expect("observation writes");
+        let value: Value = serde_json::from_slice(
+            &std::fs::read(path).expect("observation reads"),
+        )
+        .expect("observation JSON");
+        assert_eq!(value["schema"], "graphcoder.lazy-observation.v1");
+        assert_eq!(value["request"]["request_id"], "list-1");
+        assert_eq!(value["request"]["method"], "list_sessions");
+        assert!(value["runtime"]["pid"].as_u64().is_some_and(|pid| pid > 0));
+        assert_eq!(value["during_list_sessions"]["worker_starts"], 0);
+        assert_eq!(value["during_list_sessions"]["workspace_reads"], 0);
+        assert_eq!(value["during_list_sessions"]["model_dispatches"], 0);
+    }
+
+    #[tokio::test]
+    async fn listing_does_not_touch_an_unavailable_external_checkout() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let mut args = runtime_args(root.path().to_owned(), "echo");
+        args.checkout = Some(root.path().join("checkout-does-not-exist"));
+        args.project_id = Some("lazy-list-project".into());
+        let runtime = Arc::new(Runtime::open(&args).await.expect("runtime opens lazily"));
+        let listed = exchange(
+            runtime,
+            json!({"request_id":"list-lazy","method":"list_sessions","params":{}}),
+        )
+        .await;
+        assert_eq!(listed["ok"], true);
+        assert_eq!(listed["result"]["items"].as_array().map(Vec::len), Some(1));
     }
 
     #[tokio::test]
@@ -1301,6 +1545,7 @@ mod tests {
                 .len(),
             1
         );
+        assert!(listed["result"].get("next").is_none());
         let started = exchange(
             runtime,
             json!({
@@ -1312,16 +1557,75 @@ mod tests {
         .await;
         assert_eq!(started["ok"], true);
         assert_eq!(started["result"]["summary"]["state"], "completed");
-        assert!(listed["result"].get("next").is_none());
-        let agents = started["result"]["agents"].as_array().expect("agent tree");
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0]["id"], started["result"]["summary"]["id"]);
-        assert_eq!(agents[0]["children"], json!([]));
-        assert!(
-            started["result"]["workspace_generation"]
-                .as_str()
-                .is_some_and(|generation| !generation.is_empty())
+        assert!(started["result"]["workspace_generation"]
+            .as_str()
+            .is_some_and(|generation| !generation.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn resume_session_submits_from_ready_durable_session() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
         );
+        let listed = exchange(
+            runtime.clone(),
+            json!({"request_id":"list-1","method":"list_sessions","params":{}}),
+        )
+        .await;
+        let session_id = listed["result"]["items"][0]["id"]
+            .as_str()
+            .expect("root session id")
+            .to_owned();
+        let resumed = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"resume-1",
+                "method":"resume_session",
+                "params":{
+                    "session_id":session_id.clone(),
+                    "prompt":"resume me",
+                    "operation_id":"op-resume-1",
+                    "model_fixture":"echo"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(resumed["ok"], true);
+        assert_eq!(resumed["result"]["summary"]["state"], "completed");
+        let agents = resumed["result"]["agents"]
+            .as_array()
+            .expect("agent tree");
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0]["id"], json!(session_id));
+        assert_eq!(agents[0]["children"], json!([]));
+        let approvals = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"approvals-1",
+                "method":"list_approvals",
+                "params":{"session_id":session_id}
+            }),
+        )
+        .await;
+        assert_eq!(approvals["ok"], true);
+        assert_eq!(approvals["result"]["items"], json!([]));
+        assert!(approvals["result"].get("next").is_none());
+        let messages = exchange(
+            runtime,
+            json!({
+                "request_id":"messages-1",
+                "method":"read_messages",
+                "params":{"session_id":session_id}
+            }),
+        )
+        .await;
+        assert_eq!(messages["ok"], true);
+        assert!(messages["result"]["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["body"] == "resume me")));
     }
 
     #[tokio::test]
@@ -1380,7 +1684,7 @@ mod tests {
         );
         // Commit the durable operation, then drop the response as if the
         // connection failed after execution and before transport delivery.
-        let dropped_response = runtime
+        let _dropped_response = runtime
             .dispatch(WireRequest {
                 request_id: "stage-1".into(),
                 method: "start_session".into(),
@@ -1391,10 +1695,6 @@ mod tests {
                 }),
             })
             .await;
-        assert!(
-            matches!(dropped_response, WireResponse::Ok { ok: true, .. }),
-            "{dropped_response:?}"
-        );
         drop(runtime);
         let reopened = Arc::new(
             Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
@@ -1435,7 +1735,10 @@ mod tests {
         assert_eq!(file["ok"], true, "{file}");
         assert_eq!(file["result"]["path"], "graphcoder-fixture.txt");
         assert_eq!(file["result"]["media_type"], "text/plain");
-        assert_eq!(file["result"]["bytes"], json!(b"fixture:stage".as_slice()));
+        assert_eq!(
+            file["result"]["bytes"],
+            json!(b"fixture:stage".as_slice())
+        );
         let resumed = exchange(
             reopened.clone(),
             json!({
@@ -1457,11 +1760,154 @@ mod tests {
         )
         .await;
         assert_eq!(activity["ok"], true);
-        assert!(
-            activity["result"]["items"]
-                .as_array()
-                .is_some_and(|items| !items.is_empty())
-        );
+        assert!(activity["result"]["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn blocking_fixture_exposes_pending_approval_and_cancels_running_turn() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let mut args = runtime_args(root.path().to_owned(), "blocking");
+        args.operator_token = Some("operator-secret".to_owned());
+        let runtime = Arc::new(Runtime::open(&args).await.expect("runtime opens"));
+
+        let listed = exchange(
+            runtime.clone(),
+            json!({"request_id":"blocking-list","method":"list_sessions","params":{}}),
+        )
+        .await;
+        let session_id = listed["result"]["items"][0]["id"]
+            .as_str()
+            .expect("root session id")
+            .to_owned();
+
+        let approvals = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"blocking-approvals",
+                "method":"list_approvals",
+                "params":{"session_id":session_id.clone()}
+            }),
+        )
+        .await;
+        assert_eq!(approvals["ok"], true);
+        let approval = &approvals["result"]["items"][0];
+        assert_eq!(approval["state"], "pending");
+        let approval_id = approval["id"].as_str().expect("approval id").to_owned();
+
+        let denied = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"blocking-denied",
+                "method":"operator_approve",
+                "params":{
+                    "operator_token":"wrong",
+                    "session_id":session_id.clone(),
+                    "approval_id":approval_id.clone(),
+                    "approved":true
+                }
+            }),
+        )
+        .await;
+        assert_eq!(denied["ok"], false);
+        assert_eq!(denied["error"]["code"], "denied");
+
+        let approved = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"blocking-approved",
+                "method":"operator_approve",
+                "params":{
+                    "operator_token":"operator-secret",
+                    "session_id":session_id.clone(),
+                    "approval_id":approval_id.clone(),
+                    "approved":true
+                }
+            }),
+        )
+        .await;
+        assert_eq!(approved["ok"], true);
+        assert_eq!(approved["result"]["approved"], true);
+
+        let (mut request_writer, request_reader) = tokio::io::duplex(64 * 1024);
+        let (response_writer, response_reader) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(serve(runtime.clone(), request_reader, response_writer));
+        let blocking = runtime.blocking.as_ref().expect("blocking fixture").clone();
+        let started = blocking.started.notified();
+        request_writer
+            .write_all(
+                serde_json::to_string(&json!({
+                    "request_id":"blocking-start",
+                    "method":"start_session",
+                    "params":{
+                        "prompt":"wait for cancellation",
+                        "operation_id":"blocking-operation",
+                        "model_fixture":"blocking"
+                    }
+                }))
+                .expect("start request serializes")
+                .as_bytes(),
+            )
+            .await
+            .expect("start request writes");
+        request_writer
+            .write_all(b"\n")
+            .await
+            .expect("start request newline writes");
+        tokio::time::timeout(std::time::Duration::from_secs(2), started)
+            .await
+            .expect("blocking fixture starts");
+
+        request_writer
+            .write_all(
+                serde_json::to_string(&json!({
+                    "request_id":"blocking-cancel",
+                    "method":"cancel_session",
+                    "params":{"session_id":session_id.clone()}
+                }))
+                .expect("cancel request serializes")
+                .as_bytes(),
+            )
+            .await
+            .expect("cancel request writes");
+        request_writer
+            .write_all(b"\n")
+            .await
+            .expect("cancel request newline writes");
+
+        let mut response_reader = BufReader::new(response_reader);
+        let mut responses = Vec::new();
+        while responses.len() < 2 {
+            let mut line = String::new();
+            let read = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                response_reader.read_line(&mut line),
+            )
+            .await
+            .expect("blocking responses arrive")
+            .expect("blocking response reads");
+            assert!(read > 0, "server closed before both responses: {responses:?}");
+            responses.push(serde_json::from_str::<Value>(&line).expect("blocking response JSON"));
+        }
+        let cancel = responses
+            .iter()
+            .find(|response| response["request_id"] == "blocking-cancel")
+            .expect("cancel response");
+        assert_eq!(cancel["ok"], true);
+        assert_eq!(cancel["result"]["summary"]["state"], "cancelled");
+        let start = responses
+            .iter()
+            .find(|response| response["request_id"] == "blocking-start")
+            .expect("start response");
+        assert_eq!(start["ok"], false);
+        assert_eq!(start["error"]["code"], "stale");
+
+        request_writer.shutdown().await.expect("request closes");
+        server
+            .await
+            .expect("server joins")
+            .expect("server succeeds");
     }
 
     #[tokio::test]
@@ -1492,12 +1938,9 @@ mod tests {
 
         let empty_operation_root = tempfile::tempdir().expect("temporary root");
         let runtime = Arc::new(
-            Runtime::open(&runtime_args(
-                empty_operation_root.path().to_owned(),
-                "echo",
-            ))
-            .await
-            .expect("runtime opens"),
+            Runtime::open(&runtime_args(empty_operation_root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
         );
         let empty_operation = runtime
             .dispatch(WireRequest {
@@ -1506,16 +1949,7 @@ mod tests {
                 params: json!({"prompt":"hello", "operation_id":""}),
             })
             .await;
-        assert!(matches!(
-            empty_operation,
-            WireResponse::Err {
-                error: WireError {
-                    code: "invalid_input",
-                    ..
-                },
-                ..
-            }
-        ));
+        assert!(matches!(empty_operation, WireResponse::Err { error: WireError { code: "invalid_input", .. }, .. }));
     }
 
     #[tokio::test]
@@ -1544,4 +1978,5 @@ mod tests {
             }
         ));
     }
+
 }
