@@ -2363,8 +2363,12 @@ impl PersistentLocalSwarm {
                 (Some(limits), Some(owner), Some(source)) => {
                     let session_id = OperationId::from_bytes(root_task.into_bytes());
                     let dispatch_id = IdempotencyKey::new("local-root-dispatch")?;
+                    // The coordinated ModelStarted commit spans this budget
+                    // stream and each task's execution journal. Both must use
+                    // the same LocalStream provider; the registry's separate
+                    // store cannot provide a cross-stream CAS boundary.
                     let journal = SwarmBudgetJournal::start_with_root_dispatch_recovering(
-                        &registry,
+                        &conversation_stream,
                         session_id,
                         owner.clone(),
                         limits,
@@ -2389,7 +2393,13 @@ impl PersistentLocalSwarm {
                             let cursor = journal.root_usage_cursor()?;
                             let measured = refresh_source
                                 .cumulative_usage(refresh_session, &refresh_dispatch)?;
-                            if cursor.usage != Some(measured) {
+                            // An unopened root has no durable receipt cursor;
+                            // avoid manufacturing a zero-usage receipt before
+                            // the first model dispatch, which would advance
+                            // the journal sequence independently of the
+                            // provider meter that owns the next receipt.
+                            let measured_changed = cursor.usage.is_some_and(|previous| previous != measured);
+                            if measured_changed {
                                 let mut issuer =
                                     journal.root_usage_receipt_issuer(refresh_source.clone())?;
                                 let receipt = issuer.issue_at_least(measured)?;
@@ -3273,7 +3283,17 @@ impl PersistentLocalSwarm {
         }
         let parent = session.parent;
         self.verify_admitted_task(task, parent).await?;
-        let harness = self.open_session(task).await?;
+        let (harness, child_budget) = if parent.is_some() && self.budget_journal.is_some() {
+            let operation_id = session.operation.ok_or_else(|| {
+                Error::Conflict("child swarm operation is missing before model dispatch".into())
+            })?;
+            let token = self.child_budget_token(operation_id).await?;
+            let (provider, meter) = self.metered_child_provider(&token).await?;
+            let harness = self.open_uncached_session_with_provider(task, provider).await?;
+            (harness, Some((token, meter)))
+        } else {
+            (self.open_session(task).await?, None)
+        };
         let max_steps = u32::try_from(
             self.config
                 .run_limits
@@ -3287,6 +3307,22 @@ impl PersistentLocalSwarm {
         let result = harness.run_with_max_steps(operation, prompt, max_steps).await;
         if parent.is_none() {
             self.persist_root_budget_usage().await?;
+        } else if let Some((token, meter)) = child_budget.as_ref() {
+            match result.as_ref() {
+                Ok(_) => self.complete_child_budget(token, meter).await?,
+                Err(error) if matches!(error, Error::Storage(_) | Error::Indeterminate(_)) => {
+                    let _ = self.propagate_interrupted_provider(task).await;
+                    return Err(error.clone());
+                }
+                Err(_) => {
+                    // The model start is already durable once the permit is
+                    // committed. Preserve the reservation for explicit
+                    // recovery rather than releasing it on an unclassified
+                    // provider error.
+                    let _ = self.propagate_interrupted_provider(task).await;
+                    return result;
+                }
+            }
         }
         let output = result?;
         // The per-task mutex only fences handles in this process.  A second
@@ -3463,7 +3499,14 @@ impl PersistentLocalSwarm {
         };
         let mut journal = journal.lock().await;
         journal.refresh().await?;
-        journal.resume_unconfirmed_dispatch_token(operation, owner.clone())
+        let confirmed = journal
+            .reservation(operation)?
+            .is_some_and(|reservation| !reservation.confirmed_dispatches.is_empty());
+        if confirmed {
+            journal.resume_dispatch_token(operation, owner.clone())
+        } else {
+            journal.resume_unconfirmed_dispatch_token(operation, owner.clone())
+        }
     }
 
     async fn metered_child_provider(
@@ -4826,6 +4869,27 @@ impl PersistentLocalSwarm {
         Ok(harness)
     }
 
+    async fn open_uncached_session_with_provider(
+        &self,
+        task: TaskId,
+        provider: Arc<dyn ModelProvider>,
+    ) -> Result<Arc<PersistentLocalHarness>> {
+        Ok(Arc::new(
+            PersistentLocalHarness::open_with_tools_and_project_on_providers(
+                open_session_path(&self.root, task),
+                self.config.model.clone(),
+                provider,
+                self.config.limits,
+                self.bindings.tools_for(task)?,
+                self.config.project.clone(),
+                self.filesystem_host.clone(),
+                self.conversation_stream.clone(),
+                self.stream_provider.clone(),
+            )
+            .await?,
+        ))
+    }
+
     async fn update_session<F>(&self, task: TaskId, update: F) -> Result<()>
     where
         F: FnOnce(&mut LocalSwarmSession),
@@ -5624,6 +5688,10 @@ mod tests {
     }
 
     impl ModelProvider for MockModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+        }
+
         fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             self.requests.lock().expect("request lock").push(request);

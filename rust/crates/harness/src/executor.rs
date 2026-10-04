@@ -2133,6 +2133,13 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    /// Test providers use a one-byte-per-token wire contract.  Declaring it
+    /// explicitly keeps these fixtures subject to the same bounded-output
+    /// admission rule as production providers.
+    fn exact_test_output_bound(max_output_bytes: u64) -> Option<u32> {
+        u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+    }
+
     /// Emits two malformed calls â€” including `parameters` where the pinned
     /// schema expects a direct argument â€” then a well-formed call after both
     /// durable rejection envelopes have been returned.
@@ -2142,6 +2149,10 @@ mod tests {
     }
 
     impl ModelProvider for SlippingModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            exact_test_output_bound(max_output_bytes)
+        }
+
         fn generate<'a>(
             &'a self,
             prepared: crate::model_input::PreparedModelInput,
@@ -2203,6 +2214,10 @@ mod tests {
     }
 
     impl ModelProvider for FakeModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            exact_test_output_bound(max_output_bytes)
+        }
+
         fn generate<'a>(
             &'a self,
             prepared: crate::model_input::PreparedModelInput,
@@ -2250,6 +2265,10 @@ mod tests {
     }
 
     impl ModelProvider for ProjectionModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            exact_test_output_bound(max_output_bytes)
+        }
+
         fn generate<'a>(
             &'a self,
             prepared: crate::model_input::PreparedModelInput,
@@ -2311,6 +2330,10 @@ mod tests {
     }
 
     impl ModelProvider for ReplayModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            exact_test_output_bound(max_output_bytes)
+        }
+
         fn generate<'a>(
             &'a self,
             _: crate::model_input::PreparedModelInput,
@@ -2434,6 +2457,10 @@ mod tests {
     }
 
     impl ModelProvider for RecoverableModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            exact_test_output_bound(max_output_bytes)
+        }
+
         fn generate<'a>(
             &'a self,
             _: crate::model_input::PreparedModelInput,
