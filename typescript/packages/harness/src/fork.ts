@@ -1,6 +1,7 @@
 /** Parent-controlled, provider-neutral fork values. Rust owns durable admission. */
 import type { FileRef, ProviderRef, VolumeRef } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
+import type { WasmModelBoundaryReferences } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { ResourceKind } from "./enums.js";
 export type { ResourceKind } from "./enums.js";
 import type { AgentId, Authority, OperationId } from "./index.js";
@@ -64,6 +65,12 @@ export interface ReferenceGrant {
   readonly attachment_manifest?: FileRef;
 }
 
+/** Rust-owned evidence tying exact model files to one completed publication. */
+export type ModelBoundaryReferences = Omit<WasmModelBoundaryReferences, "publication" | "files"> & Readonly<{
+  readonly publication: OperationId;
+  readonly files: readonly FileRef[];
+}>;
+
 export interface ForkRequest {
   readonly operation_id: OperationId;
   readonly parent: Authority<"conversation">;
@@ -74,6 +81,7 @@ export interface ForkRequest {
   readonly preparation: ForkPreparation;
   readonly selections: readonly ForkSelection[];
   readonly boundary: AttestedBoundary | null;
+  readonly model_boundary?: ModelBoundaryReferences;
 }
 
 export interface ForkPreparation {
@@ -139,6 +147,7 @@ export interface ForkReport {
   readonly reference_grants: readonly ReferenceGrant[];
   /** Manifest reads need owner, selected-volume, or direct exact-ref authority. */
   readonly attachment_manifests: readonly FileRef[];
+  readonly original_request_digest?: readonly number[];
 }
 
 export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"> {
@@ -152,6 +161,7 @@ export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"
   readonly reference_grants: readonly ReferenceGrant[];
   /** Manifest bytes and listed members are independently read-authorized. */
   readonly attachment_manifests: readonly FileRef[];
+  readonly model_boundary?: ModelBoundaryReferences;
 }
 
 /** Rust alone converts the complete capture report to its child-visible seed. */

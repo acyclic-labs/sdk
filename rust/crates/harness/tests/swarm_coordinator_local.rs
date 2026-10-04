@@ -230,6 +230,7 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
         let issuer = issuer.clone();
         let request = request.clone();
         let reservation = reservation.clone();
+        let child_state = child_state.clone();
         async move {
             coordinator
                 .admit_swarm_child(

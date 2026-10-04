@@ -65,6 +65,14 @@ export interface WasmFileRefWire {
     readonly descriptor: WasmFileDescriptorWire;
     readonly display_name: string;
 }
+/** Exact file references bound to one completed model publication. */
+export interface WasmModelBoundaryReferences {
+    readonly publication: string;
+    readonly publication_digest: readonly number[];
+    readonly boundary_digest: readonly number[];
+    readonly attestation: readonly number[];
+    readonly files: readonly WasmFileRefWire[];
+}
 export interface WasmAuthorityWire {
     readonly kind: "agent";
     readonly id: string;
