@@ -327,3 +327,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - [Current native library](checkpoint-native-library-current-2026-10-04.json):441d0eff1 passes344/344 withoutskips onWindows; archived exactartifact and sourcetree/log hashes. Earlier340/344 failure retained. Production/integration/installed/WASM gates remainopen.
 
 - Harness WASM regeneration: [source-bound refresh receipt](checkpoint-harness-wasm-refresh-2026-10-04.json). Build succeeded; full generated audit remains pending.
+
+- Full generated audit after Harness refresh: [missing Inference artifact failure](checkpoint-generated-audit-missing-artifact-2026-10-04.json). Filesystem and Harness stages passed; the full gate failed and remains unqualified.

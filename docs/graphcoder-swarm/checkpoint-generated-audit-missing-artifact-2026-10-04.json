@@ -1,0 +1,10 @@
+{
+  "source_commit": "b41d27156d0139032318153b5971ee7b16d0bac0",
+  "source_rust_commit": "441d0eff1",
+  "exit_code": 1,
+  "gate": "full-generated-audit",
+  "failure": "Missing untracked inference WASM package acyclic_inference_wasm.js",
+  "log_path": "D:\\graphcoder-builds\\root-fork-20261004\\logs\\generated-audit-refreshed.txt",
+  "log_sha256": "DB5B609431581DA81C18D4CD7788B359B54155092864F70CEC3F4C8A16A209E8",
+  "scope": "Sequential audit reached inference after Filesystem and Harness checks; full gate failed, not qualified"
+}
