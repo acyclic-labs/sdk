@@ -27,11 +27,13 @@ name = "acyclic-sdk-contract-wire"
 version = "0.1.0"
 dependencies = [
  "acyclic-sdk-contract-options",
+ "base64 0.22.1",
  "prost",
  "prost-build",
  "prost-types",
  "protoc-gen-prost",
  "protoc-gen-tonic",
+ "serde_json",
  "sha2",
  "tonic-prost-build",
 ]
