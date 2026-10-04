@@ -7,8 +7,6 @@ on:
         description: Exact Rust source revision to bind to the package receipts
         required: false
         type: string
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
