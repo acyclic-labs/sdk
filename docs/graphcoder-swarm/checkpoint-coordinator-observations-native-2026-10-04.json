@@ -1,0 +1,43 @@
+{
+  "ignored": 0,
+  "source_commit": "e1c23133c52454016e52aa4176520d8a1695f8fc",
+  "source_tree": "4a351ca58ab00d6c5cdc74caa7d7ed66abe59ca1",
+  "files": [
+    {
+      "source_path": "C:\\graphcoder-builds\\coordinator-observations-e1c23133c.log",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\e1c23133c\\coordinator-observations\\coordinator-observations-e1c23133c.log",
+      "sha256": "d22b5d965f9b747bec7483af3c80c68b7e437ebdfc1eda3e583ee066046cd720"
+    },
+    {
+      "source_path": "C:\\graphcoder-builds\\coordinator-observations-3a6965ed8.log",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\e1c23133c\\coordinator-observations\\coordinator-observations-3a6965ed8.log",
+      "sha256": "9e99358395e93e8b486e16049cea04b1b4bd1846f006fae1e81a79ff141b9258"
+    },
+    {
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\acyclic_harness-641f85f696abacc6.exe",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\e1c23133c\\coordinator-observations\\acyclic_harness-641f85f696abacc6.exe",
+      "sha256": "22c438a8c7b711bde32526e486c982d336338c8caed082f6a94bd269ea890739"
+    },
+    {
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\src\\filesystem\\swarm_local.rs",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\e1c23133c\\coordinator-observations\\swarm_local.rs",
+      "sha256": "f22cf5cc0b270830ca8031e429cdeb47645c9ecf6151ad6e15da301c6c52e36c"
+    }
+  ],
+  "source_clean_after": true,
+  "limitations": [
+    "Focused coordinator and host-only observation coverage",
+    "No production recursive swarm or installed package qualification"
+  ],
+  "platform": "windows",
+  "kind": "focused-native-coordinator-checkpoint",
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib filesystem::swarm_local::tests -- --nocapture",
+  "recorded_at": "2026-10-04T20:53:38.5403411Z",
+  "historical_failures": {
+    "source": "3a6965ed836f241e3444d5c8df444c9956d24851",
+    "outcome": "Compile failure: missing test-only WorkspaceMutation name; repaired by e1c23133c"
+  },
+  "filtered": 349,
+  "failed": 0,
+  "passed": 15
+}
