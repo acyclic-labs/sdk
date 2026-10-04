@@ -374,7 +374,8 @@ public final class RustEmbedded implements AutoCloseable {
       rid = arm ? "win-aarch64" : "win-x86_64";
       file = "acyclic_sdk_embedded_prototype.dll";
     } else if (Platform.isLinux()) {
-      rid = arm ? "linux-aarch64-gnu" : "linux-x86_64-gnu";
+      String libc = isMusl() ? "musl" : "gnu";
+      rid = arm ? "linux-aarch64-" + libc : "linux-x86_64-" + libc;
       file = "libacyclic_sdk_embedded_prototype.so";
     } else if (Platform.isMac()) {
       rid = arm ? "osx-aarch64" : "osx-x86_64";
@@ -383,6 +384,13 @@ public final class RustEmbedded implements AutoCloseable {
       throw new IllegalStateException("unsupported platform for the Rust embedded ABI");
     }
     return "/native/" + rid + "/" + file;
+  }
+
+  /** Detect the host libc so Alpine consumers select the matching Rust asset. */
+  private static boolean isMusl() {
+    String arch = Platform.isARM() ? "aarch64" : "x86_64";
+    return Files.exists(Path.of("/lib/ld-musl-" + arch + ".so.1"))
+        || Files.exists(Path.of("/usr/lib/ld-musl-" + arch + ".so.1"));
   }
 }
 

@@ -24,12 +24,14 @@ $required = [ordered]@{
   'win-arm64' = @{ directory = 'win-aarch64'; file = 'acyclic_sdk_embedded_prototype.dll' }
   'linux-x64' = @{ directory = 'linux-x86_64-gnu'; file = 'libacyclic_sdk_embedded_prototype.so' }
   'linux-arm64' = @{ directory = 'linux-aarch64-gnu'; file = 'libacyclic_sdk_embedded_prototype.so' }
+  'linux-musl-x64' = @{ directory = 'linux-x86_64-musl'; file = 'libacyclic_sdk_embedded_prototype.so' }
+  'linux-musl-arm64' = @{ directory = 'linux-aarch64-musl'; file = 'libacyclic_sdk_embedded_prototype.so' }
   'osx-x64' = @{ directory = 'osx-x86_64'; file = 'libacyclic_sdk_embedded_prototype.dylib' }
   'osx-arm64' = @{ directory = 'osx-aarch64'; file = 'libacyclic_sdk_embedded_prototype.dylib' }
 }
 $assets = @($producer.native_assets)
 if ($assets.Count -lt $required.Count) {
-  throw "Rust producer receipt has $($assets.Count) native assets; six JVM resources are required."
+  throw "Rust producer receipt has $($assets.Count) native assets; eight JVM resources are required."
 }
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 $records = @()

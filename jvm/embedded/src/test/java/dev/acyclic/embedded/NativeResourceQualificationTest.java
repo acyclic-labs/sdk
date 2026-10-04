@@ -22,6 +22,8 @@ class NativeResourceQualificationTest {
       "/native/win-aarch64/acyclic_sdk_embedded_prototype.dll",
       "/native/linux-x86_64-gnu/libacyclic_sdk_embedded_prototype.so",
       "/native/linux-aarch64-gnu/libacyclic_sdk_embedded_prototype.so",
+      "/native/linux-x86_64-musl/libacyclic_sdk_embedded_prototype.so",
+      "/native/linux-aarch64-musl/libacyclic_sdk_embedded_prototype.so",
       "/native/osx-x86_64/libacyclic_sdk_embedded_prototype.dylib",
       "/native/osx-aarch64/libacyclic_sdk_embedded_prototype.dylib"
   };

@@ -14,7 +14,7 @@
     <sdk.contract.root>${project.basedir}/../../target/sdk-contract</sdk.contract.root>
     <!-- Rust-owned native assets staged with the platform RID directory names
          consumed by RustEmbedded.nativeResource(). Override this for a
-         release bundle; the package gate requires all six resources. -->
+         release bundle; the package gate requires all eight resources. -->
     <embedded.native.root>${project.basedir}/../../target/native/sdk-embedded</embedded.native.root>
   </properties>
   <build>
@@ -29,6 +29,8 @@
           <include>win-aarch64/acyclic_sdk_embedded_prototype.dll</include>
           <include>linux-x86_64-gnu/libacyclic_sdk_embedded_prototype.so</include>
           <include>linux-aarch64-gnu/libacyclic_sdk_embedded_prototype.so</include>
+          <include>linux-x86_64-musl/libacyclic_sdk_embedded_prototype.so</include>
+          <include>linux-aarch64-musl/libacyclic_sdk_embedded_prototype.so</include>
           <include>osx-x86_64/libacyclic_sdk_embedded_prototype.dylib</include>
           <include>osx-aarch64/libacyclic_sdk_embedded_prototype.dylib</include>
         </includes>
@@ -86,6 +88,12 @@
                 </fail>
                 <fail message="Rust embedded JVM package is missing linux-aarch64-gnu native resource.">
                   <condition><not><available file="${project.build.outputDirectory}/native/linux-aarch64-gnu/libacyclic_sdk_embedded_prototype.so" /></not></condition>
+                </fail>
+                <fail message="Rust embedded JVM package is missing linux-x86_64-musl native resource.">
+                  <condition><not><available file="${project.build.outputDirectory}/native/linux-x86_64-musl/libacyclic_sdk_embedded_prototype.so" /></not></condition>
+                </fail>
+                <fail message="Rust embedded JVM package is missing linux-aarch64-musl native resource.">
+                  <condition><not><available file="${project.build.outputDirectory}/native/linux-aarch64-musl/libacyclic_sdk_embedded_prototype.so" /></not></condition>
                 </fail>
                 <fail message="Rust embedded JVM package is missing osx-x86_64 native resource.">
                   <condition><not><available file="${project.build.outputDirectory}/native/osx-x86_64/libacyclic_sdk_embedded_prototype.dylib" /></not></condition>

@@ -19,8 +19,9 @@ mvn -Dembedded.native.root="$PWD/target/native/sdk-embedded" `
   -Dacyclic.embedded.native.qualification=true package
 ```
 
-The package contains all six desktop resources under `native/<platform>/`, plus the Rust source
-revision manifest. `RustEmbedded` selects the host resource from the classpath automatically, and
+The package contains all eight desktop and musl resources under `native/<platform>/`, plus the Rust
+source revision manifest. `RustEmbedded` selects the host resource and libc variant from the
+classpath automatically, and
 the release consumer gate exercises append/read through the installed JAR without a native path
 override. Typed overloads accept generated `com.google.protobuf.Message` values and parser
 responses, so callers use the generated `acyclic.stream.v2` classes directly.
