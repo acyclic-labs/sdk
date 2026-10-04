@@ -4,6 +4,8 @@ The goal remains active. All 68 entries in [requirements.json](requirements.json
 
 ## Current integrated evidence
 
+At source `ba66f9a12`, the production recursive `local_model_swarm` run fails with Windows `STATUS_STACK_OVERFLOW` (`0xc00000fd`) after the schema-declared inherited-file grant repair. The test runs with normal stack settings; this is a required runtime failure, not a qualified swarm. Runtime diagnosis must preserve recursive depth and real effects rather than increase fixture stack size or narrow the scenario.
+
 At source `99ae53078`, 13 Windows native local coordinator regressions pass with no ignored cases, including concurrent empty-registry openers, cancellation/completion preservation across late failure and restart, and direct-parent project selection. The production entrypoint's three Node contract tests also pass after removing its implicit working-directory fallback. This remains focused coordinator evidence, not full recursive swarm qualification. The native suite executable SHA256 is `4f0b43c6b832318be7b25aea06223981baecc0a35faa66dfe88e24e8011c0d32`.
 
 At source `5214f51ea`, `cargo check --workspace --all-targets` passes after the fork model-boundary bindings and async coordinator closure repair. This is native compilation evidence, not WASM execution or installed-artifact qualification.
