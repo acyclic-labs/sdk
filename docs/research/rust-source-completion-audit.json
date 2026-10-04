@@ -92,7 +92,7 @@
     {
       "id": "language-inventory-completion",
       "state": "partial",
-      "evidence": "Actual frozen0ef84f162 inventory contains36 targets with remote, embedded, installation, docs and snippet dimensions. Catalog inventory alone does not qualify any target. Every viable target must retain successful scoped package/conformance evidence or a concrete supported exclusion; pending viable entries remain outstanding."
+      "evidence": "Current catalog has34 entries:32 languages and2 tooling categories. Frozen0ef84f162 CLI emits36 rows because package-name aliases jvm and dotnet are added beside canonical java and csharp; this duplication is a generation defect assigned for normalization. Executable recipes currently exist for Go, Java, CSharp and Julia; remaining adapters/catalog integration and all viable target qualifications remain outstanding. A catalog or install-only receipt cannot prove complete remote, embedded, docs or snippets coverage."
     }
   ]
 }
