@@ -1,7 +1,7 @@
 {
   "schema": "acyclic.acceptance.bounded.v1",
   "result": "passed",
-  "scope": "Root restored and tested compiled/live identity comparison for the producer's declared source files. Full Rust path-dependency closure is not yet covered.",
+  "scope": "Bounded source-closure identity check for a crate-owned guide mutation; complete Rust path-dependency closure and producer binary qualification remain outside this receipt.",
   "source_state": "dirty-worktree",
   "command": "cargo test --manifest-path rust/crates/sdk-examples/Cargo.toml --bin sdk-examples --locked --offline",
   "tests_passed": 4,
@@ -9,6 +9,20 @@
   "log": {
     "path": "Q:/sdk/work/rust-source-root-examples-gate.log",
     "sha256": "52aa1c6f33c7ac909529cffb69ad1a5198776c7e6308d5dc69e5e836af03f92a"
+  },
+  "guide_mutation": {
+    "result": "passed",
+    "fixture": "isolated temporary Cargo workspace using the production source_closure module",
+    "retained_path": "rust/crates/sdk-examples/docs/guide.md",
+    "baseline_sha256": "sha256:b259cfccc0ad0b981a00c6936e13f3d9abf5615a041b2fda7aa7d2f7a43e3885",
+    "mutated_sha256": "sha256:95a12cd2793ded560a163f6ddce6c705e0f5fd402b66232414c6be53ddf83177",
+    "assertions": ["guide path is retained in closure", "guide mutation changes source digest"]
+  },
+  "producer_test": {
+    "status": "blocked_by_concurrent_owner_changes",
+    "command": "cargo test --manifest-path rust/crates/sdk-examples/Cargo.toml --locked --offline source_closure::tests::crate_owned_markdown_mutation_changes_source_digest -- --exact --nocapture",
+    "exit_code": 101,
+    "errors": ["std::fs::DirEntry has no map_err method in main.rs", "borrow of moved root in main.rs"]
   },
   "qualifications_excluded": ["Complete compiled Rust dependency closure", "Clean source snapshot", "Installed multilingual packages", "Exact rendered snippet execution", "Website final qualification"]
 }
