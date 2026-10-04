@@ -911,6 +911,7 @@ pub struct PersistentLocalHarness {
 pub struct LocalHarnessTools {
     tools: ToolRegistry,
     batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
+    policy: Option<Arc<dyn crate::runtime::ToolPolicy>>,
 }
 
 impl LocalHarnessTools {
@@ -920,6 +921,7 @@ impl LocalHarnessTools {
         Self {
             tools: ToolRegistry::new(),
             batch_publisher: None,
+            policy: None,
         }
     }
 
@@ -929,6 +931,7 @@ impl LocalHarnessTools {
         Self {
             tools,
             batch_publisher: None,
+            policy: None,
         }
     }
 
@@ -939,6 +942,15 @@ impl LocalHarnessTools {
         publisher: Arc<dyn crate::batch_publication::ModelBatchPublisher>,
     ) -> Self {
         self.batch_publisher = Some(publisher);
+        self
+    }
+
+    /// Binds the owner-selected policy evaluated before every tool dispatch.
+    /// The policy remains part of the immutable Harness composition and is
+    /// copied into recursive child sessions with the rest of the tools.
+    #[must_use]
+    pub fn with_policy(mut self, policy: Arc<dyn crate::runtime::ToolPolicy>) -> Self {
+        self.policy = Some(policy);
         self
     }
 
@@ -959,6 +971,11 @@ impl LocalHarnessTools {
         }
         if let Some(publisher) = &self.batch_publisher {
             builder = builder.batch_publisher(publisher.clone());
+        }
+        if let Some(policy) = &self.policy {
+            builder = builder
+                .policy(policy.clone())
+                .grant("interaction:route");
         }
         Ok(builder)
     }

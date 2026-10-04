@@ -151,6 +151,8 @@ pub struct LocalSwarmBindings {
     pub wait_store: Option<Arc<dyn crate::communication::DurableWaitStore>>,
     /// Live cancellation bridge for admitted tasks.
     pub cancellation: Option<Arc<dyn crate::communication_tools::WaitCancellationSource>>,
+    /// Owner-selected policy evaluated before every tool dispatch.
+    pub tool_policy: Option<Arc<dyn crate::runtime::ToolPolicy>>,
     /// Owner mediated publication of completed model/tool batches.
     pub model_batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
     /// Owner-prepared model fork plans made available to the authenticated
@@ -208,6 +210,7 @@ impl LocalSwarmBindings {
             communication_host: Some(host),
             wait_store,
             cancellation,
+            tool_policy: None,
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
@@ -233,6 +236,17 @@ impl LocalSwarmBindings {
         cancellation: Arc<dyn crate::communication_tools::WaitCancellationSource>,
     ) -> Self {
         self.cancellation = Some(cancellation);
+        self
+    }
+
+    /// Installs the owner-selected tool admission policy for every local
+    /// session, including recursively opened child sessions.
+    #[must_use]
+    pub fn with_tool_policy(
+        mut self,
+        policy: Arc<dyn crate::runtime::ToolPolicy>,
+    ) -> Self {
+        self.tool_policy = Some(policy);
         self
     }
 
@@ -269,8 +283,12 @@ impl LocalSwarmBindings {
                 registry.register(local_fork_tool(parent, plans.clone()))?;
                 tools = LocalHarnessTools::from_registry(registry);
             }
-            return Ok(match &self.model_batch_publisher {
+            let tools = match &self.model_batch_publisher {
                 Some(publisher) => tools.with_batch_publisher(publisher.clone()),
+                None => tools,
+            };
+            return Ok(match &self.tool_policy {
+                Some(policy) => tools.with_policy(policy.clone()),
                 None => tools,
             });
         };
@@ -284,8 +302,12 @@ impl LocalSwarmBindings {
             registry.register(local_fork_tool(parent, plans.clone()))?;
         }
         let tools = LocalHarnessTools::from_registry(registry);
-        Ok(match &self.model_batch_publisher {
+        let tools = match &self.model_batch_publisher {
             Some(publisher) => tools.with_batch_publisher(publisher.clone()),
+            None => tools,
+        };
+        Ok(match &self.tool_policy {
+            Some(policy) => tools.with_policy(policy.clone()),
             None => tools,
         })
     }

@@ -1,0 +1,34 @@
+{
+  "protocol": "acyclic.graphcoder.native-approval-scenarios.v1",
+  "purpose": "Public native GraphCoder JSON-lines qualification for exact tool approval, real staging, cancellation, and reopen",
+  "runtime": {
+    "executable_env": "GRAPHCODER_NATIVE_RUNTIME",
+    "fixture": "approval",
+    "driver": "scripts/graphcoder-native-approval-e2e.mjs",
+    "fixture_policy": "Harness installs a deterministic policy that requires approval for acyclic.stage_file. The fixture provider emits the stage_file call, the approved operation performs the real Harness filesystem effect, and the provider then remains cancellable. No host side effect is implemented by the fixture."
+  },
+  "public_routes": [
+    "list_sessions",
+    "start_session",
+    "list_approvals",
+    "operator_approve",
+    "resume_session",
+    "open_session",
+    "read_file",
+    "cancel_session"
+  ],
+  "assertions": [
+    "the first model turn persists an exact pending approval before stage_file executes",
+    "a forged approval identity returns not_found and an incorrect operator credential returns denied",
+    "the configured operator resolves the exact durable ticket",
+    "the real staged file appears before cancellation and survives reopen",
+    "cancellation persists and the resumed turn cannot report false completion",
+    "the native process is cleaned up after the public protocol completes"
+  ],
+  "evidence": {
+    "execution_kind": "native",
+    "artifact_binding": "Record the exact native executable digest and qualified source commit/tree.",
+    "declined_effect": "The deterministic Rust fixture test covers declined approval and confirms no staged file; this installed driver covers approved effect and recovery.",
+    "fixture_boundary": "This scenario proves Harness admission, durable operator authorization, real local staging, cancellation, and recovery with a deterministic provider; it does not prove production model quality."
+  }
+}

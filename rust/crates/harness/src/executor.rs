@@ -1493,7 +1493,7 @@ impl StockExecutor {
                             journal
                                 .open_interaction(
                                     approval,
-                                    Interaction::approval(prompt, operation_id, digest)?,
+                                    Interaction::approval(prompt, invocation.operation_id, digest)?,
                                 )
                                 .await?;
                             check_tool_approval(

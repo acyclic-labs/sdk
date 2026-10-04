@@ -21,6 +21,8 @@ use acyclic_harness::{
         ModelProvider},
     registry::ComponentIdentity,
     resources::ProviderRef,
+    runtime::{RuntimeScope, ToolPolicy, ToolPolicyDecision},
+    tool::ToolInvocation,
     Error as HarnessError, InteractionId, OperationId, TaskId,
 };
 use clap::Parser;
@@ -81,6 +83,35 @@ struct BlockingFixture {
     task: Arc<std::sync::Mutex<Option<TaskId>>>,
 }
 
+struct ApprovalFixturePolicy;
+
+impl ToolPolicy for ApprovalFixturePolicy {
+    fn identity(&self) -> ComponentIdentity {
+        ComponentIdentity {
+            name: "graphcoder.mock.approval-policy".into(),
+            version: "1".into(),
+            digest: [0x68; 32],
+        }
+    }
+
+    fn evaluate<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+        _scope: &'a RuntimeScope,
+    ) -> BoxFuture<'a, Result<ToolPolicyDecision, HarnessError>> {
+        async move {
+            if invocation.name == "acyclic.stage_file" {
+                Ok(ToolPolicyDecision::RequireApproval {
+                    prompt: "Approve the approval fixture stage_file effect".into(),
+                })
+            } else {
+                Ok(ToolPolicyDecision::Allow)
+            }
+        }
+        .boxed()
+    }
+}
+
 #[derive(Clone)]
 struct EchoModel {
     fixture: String,
@@ -110,15 +141,28 @@ impl ModelProvider for EchoModel {
                     ))
                 }));
             };
-            blocking.started.notify_waiters();
-            return Box::pin(futures::stream::once(async move {
-                if !*cancelled.borrow() {
-                    let _ = cancelled.changed().await;
-                }
-                Err(HarnessError::Conflict(
-                    "blocking fixture model turn cancelled".into(),
-                ))
-            }));
+            if self.fixture == "blocking" {
+                blocking.started.notify_waiters();
+                return Box::pin(futures::stream::once(async move {
+                    if !*cancelled.borrow() {
+                        let _ = cancelled.changed().await;
+                    }
+                    Err(HarnessError::Conflict(
+                        "blocking fixture model turn cancelled".into(),
+                    ))
+                }));
+            }
+            if self.fixture == "approval" && call > 0 {
+                blocking.started.notify_waiters();
+                return Box::pin(futures::stream::once(async move {
+                    if !*cancelled.borrow() {
+                        let _ = cancelled.changed().await;
+                    }
+                    Err(HarnessError::Conflict(
+                        "approval fixture model turn cancelled".into(),
+                    ))
+                }));
+            }
         }
         if self.fixture == "stage" && call > 0 {
             let result = request.messages.iter().rev().find_map(|message| match &message.content {
@@ -235,7 +279,7 @@ impl ModelProvider for EchoModel {
                 }),
             ]));
         }
-        if self.fixture == "stage" && call == 0 {
+        if matches!(self.fixture.as_str(), "stage" | "approval") && call == 0 {
             return Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content {
                     delta: "fixture:stage".to_owned(),
@@ -429,7 +473,7 @@ struct Runtime {
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
-            "echo" | "complete" | "stage" | "recursive" | "blocking" => args.model_fixture.clone(),
+            "echo" | "complete" | "stage" | "recursive" | "blocking" | "approval" => args.model_fixture.clone(),
             value => {
                 return Err(HarnessError::Invalid(format!(
                     "unknown model fixture {value}"
@@ -440,7 +484,11 @@ impl Runtime {
             "graphcoder.mock",
             format!("fixture:{fixture}"),
             "1",
-            json!({ "fixture": fixture }),
+            if fixture == "approval" {
+                json!({})
+            } else {
+                json!({ "fixture": fixture })
+            },
         )?;
         let option_policy = ModelOptionPolicy::new(
             ComponentIdentity {
@@ -450,14 +498,14 @@ impl Runtime {
             },
             json!({
                 "type": "object",
-                "required": ["fixture"],
+                "required": if fixture == "approval" { json!([]) } else { json!(["fixture"]) },
                 "properties": {
-                    "fixture": {"enum": ["echo", "complete", "stage", "recursive", "blocking"]}
+                    "fixture": {"enum": ["echo", "complete", "stage", "recursive", "blocking", "approval"]}
                 },
                 "additionalProperties": false,
             }),
         )?;
-        let blocking = (fixture == "blocking").then(|| {
+        let blocking = matches!(fixture.as_str(), "blocking" | "approval").then(|| {
             BlockingFixture {
                 started: Arc::new(Notify::new()),
                 cancellation: Arc::new(LocalTaskCancellationSource::default()),
@@ -473,7 +521,13 @@ impl Runtime {
         let bindings = blocking
             .as_ref()
             .map(|blocking| {
-                LocalSwarmBindings::default().with_cancellation(blocking.cancellation.clone())
+                let bindings = LocalSwarmBindings::default()
+                    .with_cancellation(blocking.cancellation.clone());
+                if fixture == "approval" {
+                    bindings.with_tool_policy(Arc::new(ApprovalFixturePolicy))
+                } else {
+                    bindings
+                }
             })
             .unwrap_or_default();
         let swarm = match (&args.checkout, &args.project_id) {
@@ -518,7 +572,7 @@ impl Runtime {
             {
                 *bound_task = Some(task);
             }
-            if swarm.list_approvals(task).await?.is_empty() {
+            if fixture == "blocking" && swarm.list_approvals(task).await?.is_empty() {
                 swarm
                     .open_approval(
                         task,
@@ -1787,6 +1841,224 @@ mod tests {
         assert!(activity["result"]["items"]
             .as_array()
             .is_some_and(|items| !items.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn approval_fixture_admits_exact_stage_effect_and_recovers_cancelled_turn() {
+        let declined_root = tempfile::tempdir().expect("declined root");
+        let mut declined_args = runtime_args(declined_root.path().to_owned(), "approval");
+        declined_args.operator_token = Some("operator-secret".to_owned());
+        let declined = Arc::new(Runtime::open(&declined_args).await.expect("runtime opens"));
+        let listed = exchange(
+            declined.clone(),
+            json!({"request_id":"approval-declined-list","method":"list_sessions","params":{}}),
+        )
+        .await;
+        let declined_session = listed["result"]["items"][0]["id"]
+            .as_str()
+            .expect("declined session id")
+            .to_owned();
+        let pending = exchange(
+            declined.clone(),
+            json!({
+                "request_id":"approval-declined-start",
+                "method":"start_session",
+                "params":{"prompt":"write through approval","operation_id":"approval-declined-operation","model_fixture":"approval"}
+            }),
+        )
+        .await;
+        assert_eq!(pending["ok"], false, "{pending}");
+        assert_eq!(pending["error"]["code"], "transport", "{pending}");
+        assert!(pending["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("indeterminate")),
+            "{pending}");
+        let approvals = exchange(
+            declined.clone(),
+            json!({"request_id":"approval-declined-list-approvals","method":"list_approvals","params":{"session_id":declined_session.clone()}}),
+        )
+        .await;
+        let approval = &approvals["result"]["items"][0];
+        assert_eq!(approval["state"], "pending");
+        assert!(!approval["operation_id"].as_str().unwrap_or_default().is_empty());
+        assert!(!approval["action_digest"].as_str().unwrap_or_default().is_empty());
+        let approval_id = approval["id"].as_str().expect("approval id").to_owned();
+        let forged = exchange(
+            declined.clone(),
+            json!({
+                "request_id":"approval-forged-id",
+                "method":"operator_approve",
+                "params":{
+                    "operator_token":"operator-secret",
+                    "session_id":declined_session.clone(),
+                    "approval_id":"00000000-0000-0000-0000-000000000001",
+                    "approved":true
+                }
+            }),
+        )
+        .await;
+        assert_eq!(forged["ok"], false);
+        assert_eq!(forged["error"]["code"], "not_found");
+        let denied = exchange(
+            declined.clone(),
+            json!({
+                "request_id":"approval-declined-choice",
+                "method":"operator_approve",
+                "params":{
+                    "operator_token":"operator-secret",
+                    "session_id":declined_session.clone(),
+                    "approval_id":approval_id,
+                    "approved":false
+                }
+            }),
+        )
+        .await;
+        assert_eq!(denied["ok"], true, "{denied}");
+        let declined_retry = exchange(
+            declined.clone(),
+            json!({
+                "request_id":"approval-declined-retry",
+                "method":"resume_session",
+                "params":{
+                    "session_id":declined_session.clone(),
+                    "prompt":"write through approval",
+                    "operation_id":"approval-declined-operation",
+                    "model_fixture":"approval"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(declined_retry["ok"], false, "{declined_retry}");
+        let declined_snapshot = exchange(
+            declined.clone(),
+            json!({"request_id":"approval-declined-open","method":"open_session","params":{"session_id":declined_session.clone()}}),
+        )
+        .await;
+        let declined_generation = declined_snapshot["result"]["workspace_generation"]
+            .as_str()
+            .expect("declined generation")
+            .to_owned();
+        let declined_file = exchange(
+            declined,
+            json!({
+                "request_id":"approval-declined-file",
+                "method":"read_file",
+                "params":{"session_id":declined_session,"path":"graphcoder-fixture.txt","generation":declined_generation}
+            }),
+        )
+        .await;
+        assert_eq!(declined_file["ok"], false, "declined approval executed an effect: {declined_file}");
+
+        let approved_root = tempfile::tempdir().expect("approved root");
+        let mut approved_args = runtime_args(approved_root.path().to_owned(), "approval");
+        approved_args.operator_token = Some("operator-secret".to_owned());
+        let approved = Arc::new(Runtime::open(&approved_args).await.expect("runtime opens"));
+        let listed = exchange(
+            approved.clone(),
+            json!({"request_id":"approval-approved-list","method":"list_sessions","params":{}}),
+        )
+        .await;
+        let approved_session = listed["result"]["items"][0]["id"]
+            .as_str()
+            .expect("approved session id")
+            .to_owned();
+        let first = exchange(
+            approved.clone(),
+            json!({
+                "request_id":"approval-approved-start",
+                "method":"start_session",
+                "params":{"prompt":"write through approval","operation_id":"approval-approved-operation","model_fixture":"approval"}
+            }),
+        )
+        .await;
+        assert_eq!(first["ok"], false, "{first}");
+        let approvals = exchange(
+            approved.clone(),
+            json!({"request_id":"approval-approved-list-approvals","method":"list_approvals","params":{"session_id":approved_session.clone()}}),
+        )
+        .await;
+        let approval_id = approvals["result"]["items"][0]["id"]
+            .as_str()
+            .expect("approved approval id")
+            .to_owned();
+        let approval = exchange(
+            approved.clone(),
+            json!({
+                "request_id":"approval-approved-choice",
+                "method":"operator_approve",
+                "params":{
+                    "operator_token":"operator-secret",
+                    "session_id":approved_session.clone(),
+                    "approval_id":approval_id,
+                    "approved":true
+                }
+            }),
+        )
+        .await;
+        assert_eq!(approval["ok"], true, "{approval}");
+
+        let blocking = approved.blocking.as_ref().expect("approval fixture state").clone();
+        let started = blocking.started.notified();
+        let retry = tokio::spawn({
+            let approved = approved.clone();
+            let session = approved_session.clone();
+            async move {
+                approved
+                    .dispatch(WireRequest {
+                        request_id: "approval-approved-retry".into(),
+                        method: "resume_session".into(),
+                        params: json!({
+                            "session_id": session,
+                            "prompt":"write through approval",
+                            "operation_id":"approval-approved-operation",
+                            "model_fixture":"approval"
+                        }),
+                    })
+                    .await
+            }
+        });
+        if tokio::time::timeout(std::time::Duration::from_secs(5), started)
+            .await
+            .is_err()
+        {
+            let retry = retry.await.expect("approval retry joins after timeout");
+            panic!("approval fixture did not reach post-effect model turn: {retry:?}");
+        }
+        let cancelled = approved
+            .dispatch(WireRequest {
+                request_id: "approval-approved-cancel".into(),
+                method: "cancel_session".into(),
+                params: json!({"session_id":approved_session.clone()}),
+            })
+            .await;
+        assert!(matches!(cancelled, WireResponse::Ok { .. }), "{cancelled:?}");
+        let retry = retry.await.expect("approval retry joins");
+        assert!(matches!(retry, WireResponse::Err { .. }), "{retry:?}");
+        drop(approved);
+
+        let reopened = Arc::new(Runtime::open(&approved_args).await.expect("approved runtime reopens"));
+        let reopened_snapshot = exchange(
+            reopened.clone(),
+            json!({"request_id":"approval-approved-reopen","method":"open_session","params":{"session_id":approved_session.clone()}}),
+        )
+        .await;
+        assert_eq!(reopened_snapshot["ok"], true, "{reopened_snapshot}");
+        assert_eq!(reopened_snapshot["result"]["summary"]["state"], "cancelled");
+        let generation = reopened_snapshot["result"]["workspace_generation"]
+            .as_str()
+            .expect("approved generation")
+            .to_owned();
+        let file = exchange(
+            reopened,
+            json!({
+                "request_id":"approval-approved-file",
+                "method":"read_file",
+                "params":{"session_id":approved_session,"path":"graphcoder-fixture.txt","generation":generation}
+            }),
+        )
+        .await;
+        assert_eq!(file["ok"], true, "approved effect was not durable: {file}");
+        assert_eq!(file["result"]["bytes"], json!(b"fixture:stage".as_slice()));
     }
 
     #[tokio::test]
