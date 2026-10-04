@@ -55,6 +55,15 @@ product_manifest="$product_root/rust-authority.json"
 manifest_digest=$(hash_file "$product_manifest")
 export ACYCLIC_RUST_SOURCE_REVISION="$source_revision"
 export ACYCLIC_RUST_AUTHORITY_MANIFEST_SHA256="$manifest_digest"
+stream_request_frames="$output_root/rust-stream-request-frames.tsv"
+if [[ -n "${ACYCLIC_RUST_TYPED_REQUEST_MANIFEST:-}" && -s "$ACYCLIC_RUST_TYPED_REQUEST_MANIFEST" ]]; then
+  python3 "$source_root/scripts/write-rust-stream-request-scenarios.py" \
+    "$ACYCLIC_RUST_TYPED_REQUEST_MANIFEST" "$stream_request_frames"
+  if [[ -s "$stream_request_frames" ]]; then
+    export ACYCLIC_RUST_STREAM_REQUEST_FRAMES="$stream_request_frames"
+    export ACYCLIC_STREAM_SCENARIO_RPCS="$(cut -f1 "$stream_request_frames" | paste -sd, -)"
+  fi
+fi
 
 run_runtime_probe() {
   local endpoint=${ACYCLIC_FIXTURE_GRPC_ENDPOINT:-}
