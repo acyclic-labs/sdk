@@ -25,6 +25,32 @@
     "cmake_ctest": { "status": "passed", "passed": 3, "total": 3 },
     "clean_prefix_cpp_consumer": { "status": "passed" }
   },
+  "consumer_receipts": {
+    "c": {
+      "status": "passed",
+      "language": "C",
+      "source": "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+      "command": "clang -I<prefix>/include tests/c_consumer.c <prefix>/lib/acyclic_sdk_embedded_prototype.dll.lib -o c-consumer.exe",
+      "package_artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+      "checks": ["layout", "append", "read", "release", "stale_handles"]
+    },
+    "python": {
+      "status": "passed",
+      "language": "Python ctypes",
+      "source": "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+      "command": "python tests/python_consumer.py <prefix>/bin/acyclic_sdk_embedded_prototype.dll",
+      "package_artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+      "checks": ["append", "follow", "owned_buffers", "cancel", "stale_handles"]
+    },
+    "cpp": {
+      "status": "passed",
+      "language": "C++",
+      "source": "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp",
+      "command": "ctest --test-dir <build>/consumer --output-on-failure",
+      "package_artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+      "checks": ["blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install"]
+    }
+  },
   "reproducibility": {
     "independent_clean_builds": 2,
     "source_digests_equal": true,
@@ -40,6 +66,11 @@
     "lib/acyclic_sdk_embedded_prototype.dll.lib": "67ae3ed7a570c2bf1961c234b21ef1af15204cd84c5ecab9b499fe73c9b7eefc",
     "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfig.cmake": "0836e861a779ceede1c0624507125c50ead8182ae99e00b716415fd3d5e1f066",
     "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfigVersion.cmake": "c626df80d51f26a450ee36ae47e466121b32f0a9a98894687c0b7edc332170c4"
+  },
+  "validation": {
+    "normalized_pe": { "mz": true, "pe": true, "export": "acyclic_embedded_abi_version" },
+    "normalized_consumers": { "c": "passed", "python": "passed", "cpp": "passed" },
+    "tampered_artifact_rejected": true
   },
   "publication": {
     "registry_published": false,
