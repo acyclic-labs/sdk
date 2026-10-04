@@ -172,10 +172,31 @@ try {
         $env:DART_EXECUTABLE = $dart
         $env:PROTOC_GEN_DART = $dartShim
         $env:PROTOC_DART_SNAPSHOT = $dartPluginEntry
-        # Resolve the pinned Dart graph explicitly before `dart run`. This
-        # keeps generation offline and prevents dartdev from invoking its
-        # implicit native-assets pub subprocess on restricted Windows drives.
+        # Resolve the pinned Dart graph before invoking the plugin entrypoint.
         Run-Checked $dart @('pub', 'get', '--offline') $package
+        $dartGenerated = Join-Path $package 'lib/src/generated'
+        New-Item -ItemType Directory -Path $dartGenerated -Force | Out-Null
+        $dartProtoArgs = @(
+            '-I', $sourceRoot
+            '--plugin=protoc-gen-dart=' + $dartShim
+            '--dart_out=grpc:' + $dartGenerated
+        )
+        $protobufCache = Join-Path ($env:PUB_CACHE ?? '') 'hosted/pub.dev'
+        if (Test-Path -LiteralPath $protobufCache) {
+            foreach ($protobufRoot in Get-ChildItem -LiteralPath $protobufCache -Directory -Filter 'protobuf-*') {
+                if (Test-Path -LiteralPath (Join-Path $protobufRoot.FullName 'google')) {
+                    $dartProtoArgs += @('-I', $protobufRoot.FullName)
+                }
+            }
+        }
+        foreach ($family in @($authorityDocument.families)) {
+            $dartProtoArgs += [string]$family.source
+        }
+        $dartProtoc = if ($env:PROTOC) { $env:PROTOC } else { 'protoc' }
+        Run-Checked $dartProtoc $dartProtoArgs $package
+        $env:PROTOC_SKIP = '1'
+        # Keep the postprocessor offline and prevent dartdev from invoking
+        # its implicit native-assets pub subprocess on restricted drives.
         Run-Checked $dart @('run', 'tool/generate.dart', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'dart')
         $dartLockPath = Join-Path $package 'generator.lock.yaml'

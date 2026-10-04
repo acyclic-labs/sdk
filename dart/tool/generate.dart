@@ -176,18 +176,20 @@ Future<void> main(List<String> arguments) async {
   // Windows may deny CreateProcess for an executable on a mapped workspace
   // drive even though the same binary is runnable through the command host.
   // Keep the producer deterministic while using the native Windows launcher.
-  final result = Platform.isWindows
-      ? await Process.run(
-          Platform.environment['COMSPEC'] ?? 'cmd.exe',
-          ['/d', '/c', protoc, ...protocArguments],
-          workingDirectory: root.path,
-        )
-      : await Process.run(protoc, protocArguments, workingDirectory: root.path);
-  stdout.write(result.stdout);
-  stderr.write(result.stderr);
-  if (result.exitCode != 0) {
-    exitCode = result.exitCode;
-    return;
+  if (Platform.environment['PROTOC_SKIP'] != '1') {
+    final result = Platform.isWindows
+        ? await Process.run(
+            Platform.environment['COMSPEC'] ?? 'cmd.exe',
+            ['/d', '/c', protoc, ...protocArguments],
+            workingDirectory: root.path,
+          )
+        : await Process.run(protoc, protocArguments, workingDirectory: root.path);
+    stdout.write(result.stdout);
+    stderr.write(result.stderr);
+    if (result.exitCode != 0) {
+      exitCode = result.exitCode;
+      return;
+    }
   }
   final schemaInputs = <String, String>{};
   for (final relative in schemaFiles) {
