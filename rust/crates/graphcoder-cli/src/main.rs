@@ -1169,6 +1169,141 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_harness::{
+        conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+        filesystem::LocalSwarmBindings,
+        resources::ProviderRef,
+        runtime::DurableTaskHost,
+        AgentId,
+    };
+    use std::sync::atomic::AtomicBool;
+
+    struct InboxHost {
+        payload: FileRef,
+        body: Vec<u8>,
+        reject_body: AtomicBool,
+    }
+
+    impl InboxHost {
+        fn new() -> Self {
+            let payload = FileRef::new(
+                VolumeRef::new(
+                    ProviderRef::new("test", "messages", "1").expect("message provider"),
+                    "mailbox",
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(AgentId::from_bytes([0x55; 16])),
+                )
+                .expect("message volume"),
+                "message.txt",
+                "version-1",
+                FileDescriptor::from_bytes(b"hello from inbox", "text/plain")
+                    .expect("message descriptor"),
+                "message.txt",
+            )
+            .expect("message payload");
+            Self {
+                payload,
+                body: b"hello from inbox".to_vec(),
+                reject_body: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl DurableTaskHost for InboxHost {
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, acyclic_harness::Result<Option<acyclic_harness::Outcome<Value>>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, acyclic_harness::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn inbox<'a>(
+            &'a self,
+            task_id: TaskId,
+            after: u64,
+            _limit: usize,
+        ) -> BoxFuture<'a, acyclic_harness::Result<Vec<InboxItem>>> {
+            let payload = self.payload.clone();
+            Box::pin(async move {
+                if after >= 1 {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![InboxItem {
+                    task_id,
+                    sender: TaskId::from_bytes([0x44; 16]),
+                    delivered_at_epoch_ms: 123,
+                    sequence: 1,
+                    message_id: OperationId::from_bytes([0x33; 16]).to_string(),
+                    payload,
+                }])
+            })
+        }
+
+        fn read_message_bodies<'a>(
+            &'a self,
+            _task_id: TaskId,
+            _items: &'a [InboxItem],
+        ) -> BoxFuture<'a, acyclic_harness::Result<Vec<Vec<u8>>>> {
+            let body = self.body.clone();
+            let reject = self.reject_body.load(Ordering::Acquire);
+            Box::pin(async move {
+                if reject {
+                    return Err(HarnessError::Unauthorized(
+                        "message payload is not authorized for this recipient".into(),
+                    ));
+                }
+                Ok(vec![body])
+            })
+        }
+    }
+
+    async fn runtime_with_inbox_host(root: PathBuf, host: Arc<InboxHost>) -> Arc<Runtime> {
+        let fixture = "echo";
+        let model = Model::new(
+            "graphcoder.mock",
+            "fixture:echo",
+            "1",
+            json!({ "fixture": fixture }),
+        )
+        .expect("mock model");
+        let option_policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "graphcoder.mock.options".into(),
+                version: "1".into(),
+                digest: [0x67; 32],
+            },
+            json!({
+                "type": "object",
+                "required": ["fixture"],
+                "properties": {"fixture": {"enum": ["echo", "complete", "stage", "recursive"]}},
+                "additionalProperties": false,
+            }),
+        )
+        .expect("mock option policy");
+        let provider = Arc::new(EchoModel {
+            fixture: fixture.to_owned(),
+            calls: Arc::new(AtomicUsize::new(0)),
+            option_policy,
+        });
+        let swarm = PersistentLocalSwarm::open_shared_with_model_and_bindings(
+            root,
+            model,
+            provider,
+            Limits::default(),
+            LocalSwarmBindings::communication(host, None, None),
+        )
+        .await
+        .expect("runtime opens with communication host");
+        Arc::new(Runtime {
+            swarm,
+            model_fixture: fixture.to_owned(),
+            operator_token: None,
+        })
+    }
 
     #[tokio::test]
     async fn bounded_frames_drain_oversized_input_before_next_request() {
@@ -1320,6 +1455,35 @@ mod tests {
         // workspace generation yet. Generation-bearing operations obtain an
         // explicit pinned generation through their own Filesystem projection.
         assert!(started["result"]["workspace_generation"].is_null());
+    }
+
+    #[tokio::test]
+    async fn json_lines_reads_authenticated_inbox_after_restart() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let host = Arc::new(InboxHost::new());
+        let runtime = runtime_with_inbox_host(root.path().to_owned(), host.clone()).await;
+        let task = runtime.swarm.root_task().await.expect("root task");
+        let request = json!({
+            "request_id": "messages-1",
+            "method": "read_messages",
+            "params": {"session_id": task.to_string(), "query": {"limit": 1}}
+        });
+        let page = exchange(runtime, request.clone()).await;
+        assert_eq!(page["ok"], true, "{page}");
+        assert_eq!(page["result"]["items"][0]["body"], "hello from inbox");
+        assert_eq!(
+            page["result"]["items"][0]["sender_id"],
+            TaskId::from_bytes([0x44; 16]).to_string()
+        );
+        assert_eq!(page["result"]["items"][0]["recipient_id"], task.to_string());
+        assert_eq!(page["result"]["items"][0]["delivered_at"], "123");
+        assert_eq!(page["result"]["next"], "1");
+
+        host.reject_body.store(true, Ordering::Release);
+        let reopened = runtime_with_inbox_host(root.path().to_owned(), host).await;
+        let denied = exchange(reopened, request).await;
+        assert_eq!(denied["ok"], false, "{denied}");
+        assert_eq!(denied["error"]["code"], "denied");
     }
 
     #[tokio::test]
