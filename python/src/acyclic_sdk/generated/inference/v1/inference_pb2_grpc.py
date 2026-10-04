@@ -26,7 +26,7 @@ if _version_not_supported:
 
 
 class ModelsServiceStub:
-    """Remote operations for the Inference customer v1 contract.
+    """Lists model capabilities and retention profiles.
     """
 
     def __init__(self, channel):
@@ -43,11 +43,11 @@ class ModelsServiceStub:
 
 
 class ModelsServiceServicer:
-    """Remote operations for the Inference customer v1 contract.
+    """Lists model capabilities and retention profiles.
     """
 
     def List(self, request, context):
-        """ModelsService.List operation.
+        """Lists model capabilities and retention profiles.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -70,7 +70,7 @@ def add_ModelsServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class ModelsService:
-    """Remote operations for the Inference customer v1 contract.
+    """Lists model capabilities and retention profiles.
     """
 
     @staticmethod
@@ -102,7 +102,7 @@ class ModelsService:
 
 
 class ContextsServiceStub:
-    """Remote operations for the Inference customer v1 contract.
+    """Creates, inspects, and mutates immutable context revisions.
     """
 
     def __init__(self, channel):
@@ -129,25 +129,25 @@ class ContextsServiceStub:
 
 
 class ContextsServiceServicer:
-    """Remote operations for the Inference customer v1 contract.
+    """Creates, inspects, and mutates immutable context revisions.
     """
 
     def Create(self, request, context):
-        """ContextsService.Create operation.
+        """Creates an immutable context revision.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Inspect(self, request, context):
-        """ContextsService.Inspect operation.
+        """Reads an immutable context revision by digest.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Mutate(self, request, context):
-        """ContextsService.Mutate operation.
+        """Admits one immutable context mutation or release.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -180,7 +180,7 @@ def add_ContextsServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class ContextsService:
-    """Remote operations for the Inference customer v1 contract.
+    """Creates, inspects, and mutates immutable context revisions.
     """
 
     @staticmethod
@@ -266,7 +266,7 @@ class ContextsService:
 
 
 class WarmContextsServiceStub:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits and manages explicit warm-retention commitments.
     """
 
     def __init__(self, channel):
@@ -298,32 +298,32 @@ class WarmContextsServiceStub:
 
 
 class WarmContextsServiceServicer:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits and manages explicit warm-retention commitments.
     """
 
     def Retain(self, request, context):
-        """WarmContextsService.Retain operation.
+        """Admits an explicit warm-retention commitment.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Inspect(self, request, context):
-        """WarmContextsService.Inspect operation.
+        """Reads the current warm-retention commitment.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Renew(self, request, context):
-        """WarmContextsService.Renew operation.
+        """Extends a warm-retention commitment.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Release(self, request, context):
-        """WarmContextsService.Release operation.
+        """Releases a warm-retention commitment.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -361,7 +361,7 @@ def add_WarmContextsServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class WarmContextsService:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits and manages explicit warm-retention commitments.
     """
 
     @staticmethod
@@ -474,7 +474,7 @@ class WarmContextsService:
 
 
 class RunsServiceStub:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits, inspects, watches, and cancels recoverable generation runs.
     """
 
     def __init__(self, channel):
@@ -506,32 +506,32 @@ class RunsServiceStub:
 
 
 class RunsServiceServicer:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits, inspects, watches, and cancels recoverable generation runs.
     """
 
     def Generate(self, request, context):
-        """RunsService.Generate operation.
+        """Admits a recoverable generation run.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Inspect(self, request, context):
-        """RunsService.Inspect operation.
+        """Reads the current generation run view.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Watch(self, request, context):
-        """RunsService.Watch operation.
+        """Streams ordered run events from a sequence cursor.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Cancel(self, request, context):
-        """RunsService.Cancel operation.
+        """Requests cancellation of a generation run.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -569,7 +569,7 @@ def add_RunsServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class RunsService:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits, inspects, watches, and cancels recoverable generation runs.
     """
 
     @staticmethod
@@ -682,7 +682,7 @@ class RunsService:
 
 
 class EvaluationsServiceStub:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits and inspects immutable evaluation results.
     """
 
     def __init__(self, channel):
@@ -704,18 +704,18 @@ class EvaluationsServiceStub:
 
 
 class EvaluationsServiceServicer:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits and inspects immutable evaluation results.
     """
 
     def Create(self, request, context):
-        """EvaluationsService.Create operation.
+        """Admits an immutable evaluation specification.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Inspect(self, request, context):
-        """EvaluationsService.Inspect operation.
+        """Reads an immutable evaluation view.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -743,7 +743,7 @@ def add_EvaluationsServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class EvaluationsService:
-    """Remote operations for the Inference customer v1 contract.
+    """Admits and inspects immutable evaluation results.
     """
 
     @staticmethod

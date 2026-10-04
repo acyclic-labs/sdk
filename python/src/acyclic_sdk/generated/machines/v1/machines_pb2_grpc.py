@@ -26,7 +26,7 @@ if _version_not_supported:
 
 
 class MachinesServiceStub:
-    """Remote operations for the Machines v1 contract.
+    """Qualifies images and manages machine, checkpoint, fork, operation, event, and usage lifecycles.
     """
 
     def __init__(self, channel):
@@ -133,25 +133,25 @@ class MachinesServiceStub:
 
 
 class MachinesServiceServicer:
-    """Remote operations for the Machines v1 contract.
+    """Qualifies images and manages machine, checkpoint, fork, operation, event, and usage lifecycles.
     """
 
     def QualifyImage(self, request, context):
-        """MachinesService.QualifyImage operation.
+        """Qualifies an image against the protocol and capability contract.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Create(self, request, context):
-        """MachinesService.Create operation.
+        """Admits a machine with lifecycle and budget policy.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Checkpoint(self, request, context):
-        """MachinesService.Checkpoint operation.
+        """Creates an immutable checkpoint for a machine.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -172,98 +172,98 @@ class MachinesServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Suspend(self, request, context):
-        """MachinesService.Suspend operation.
+        """Requests suspension of a machine.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Wake(self, request, context):
-        """MachinesService.Wake operation.
+        """Requests wake of a suspended machine.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def SetSuspensionPolicy(self, request, context):
-        """MachinesService.SetSuspensionPolicy operation.
+        """Replaces a machine suspension policy.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def DestroyMachine(self, request, context):
-        """MachinesService.DestroyMachine operation.
+        """Destroys a machine and records the mutation outcome.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def DestroyCheckpoint(self, request, context):
-        """MachinesService.DestroyCheckpoint operation.
+        """Destroys a checkpoint and records the mutation outcome.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Recover(self, request, context):
-        """MachinesService.Recover operation.
+        """Recovers the outcome of an indeterminate operation.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def InspectMachine(self, request, context):
-        """MachinesService.InspectMachine operation.
+        """Reads the current machine state.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def InspectCheckpoint(self, request, context):
-        """MachinesService.InspectCheckpoint operation.
+        """Reads the current checkpoint state.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def ListMachines(self, request, context):
-        """MachinesService.ListMachines operation.
+        """Lists a bounded page of machines.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Events(self, request, context):
-        """MachinesService.Events operation.
+        """Reads a bounded machine event page.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Usage(self, request, context):
-        """MachinesService.Usage operation.
+        """Reads usage for a bounded machine time interval.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Cancel(self, request, context):
-        """MachinesService.Cancel operation.
+        """Requests cancellation of an admitted operation.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def InspectOperation(self, request, context):
-        """MachinesService.InspectOperation operation.
+        """Reads the current operation state.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def WatchOperation(self, request, context):
-        """MachinesService.WatchOperation operation.
+        """Streams ordered operation state from a sequence cursor.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -376,7 +376,7 @@ def add_MachinesServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class MachinesService:
-    """Remote operations for the Machines v1 contract.
+    """Qualifies images and manages machine, checkpoint, fork, operation, event, and usage lifecycles.
     """
 
     @staticmethod

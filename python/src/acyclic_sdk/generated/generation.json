@@ -12,13 +12,13 @@
       "descriptor": "stream/v2/stream.fds.bin",
       "descriptor_sha256": "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c",
       "source": "stream/v2/stream.proto",
-      "source_sha256": "3047fe47eb65dc734298f907a02184c67147febd6bfd85b13fa3a6243608f578"
+      "source_sha256": "11623803a9684b5f1fc10326b058fbb82619f276f9884e1522c1632d18c4c06a"
     },
     {
       "descriptor": "objects/v2/objects.fds.bin",
       "descriptor_sha256": "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f",
       "source": "objects/v2/objects.proto",
-      "source_sha256": "23e4db40df19793bf8a0de95a83f23a05308c4e8be2299c6a239ac52c606d8f9"
+      "source_sha256": "7b99984637dbefd98388332066c970dc94e61f946b6a2a3b508344f81a28bf4a"
     },
     {
       "descriptor": "workers/v1/workers.fds.bin",
@@ -42,24 +42,24 @@
       "descriptor": "protocol/v1/protocol.fds.bin",
       "descriptor_sha256": "ce697a9dede342fa869397ca984dd148d6c6375d33a0a633483615a506398660",
       "source": "protocol/v1/protocol.proto",
-      "source_sha256": "e9b3abd5386a875799cfedaf0245998724bc3f5e48a4c6dd43f05c0539262497"
+      "source_sha256": "2b93c1a061699b37893edef65fb989d06925f581e8dde60536d2a762cefd07f7"
     },
     {
       "descriptor": "inference/v1/inference.fds.bin",
-      "descriptor_sha256": "2dc76c646796f90a69f037a46df8945633593a22301b88847b52b17d219e6682",
+      "descriptor_sha256": "5f02501c4b99f496ed3acc3276c744569d4c198c091dcca7da71e146e84b4633",
       "source": "inference/v1/inference.proto",
-      "source_sha256": "de2a9b3895b94e94c4ac44c5b278bee47133bac4a91091f8eaf5f3c30e55567e"
+      "source_sha256": "7c33c2398b984c2f70bba3f514aa8d1743cd10871ea7062fc454d858aa2f3f3b"
     },
     {
       "descriptor": "machines/v1/machines.fds.bin",
       "descriptor_sha256": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7",
       "source": "machines/v1/machines.proto",
-      "source_sha256": "4c293693004f5b430c9706cc6f13eaa2cac1f593a698d52fce5c50deae37e0fc"
+      "source_sha256": "fc9bc630cfad179224694cdc788d81dd1a98ac123af1c170499ce348272a8068"
     }
   ],
   "generator": "sdk-python-generator@0.1.0",
   "grpcio-tools": "1.83.0",
   "protobuf": "7.36.0",
-  "source_revision": "6370d9add8bb88edb0f14c77841bf60fac0b0c4bc33ea7cc9e4104cfa50f1770",
+  "source_revision": "2c16f2538ddfbe89bd73235b9184bb872b21d13659e1a57910bd9fc0ad1bc47c",
   "source_revision_kind": "rust-model-sha256"
 }
