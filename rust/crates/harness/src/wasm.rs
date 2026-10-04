@@ -2625,7 +2625,8 @@ pub fn validate_user_input(
     content.validate_user_input().map_err(js_error)
 }
 
-/// Admits an already projected, provider-proven context with native model bounds.
+/// Checks projected context shape and native model bounds. Durable rejection
+/// provenance is authenticated by the owning journal, outside this WASM API.
 #[wasm_bindgen(js_name = validateSelectedModelContext)]
 pub fn validate_selected_model_context(selected: JsValue, limits: JsValue) -> Result<(), JsValue> {
     let selected: WasmPublicSelectedModelContext = from_js(selected)?;
@@ -2636,6 +2637,7 @@ pub fn validate_selected_model_context(selected: JsValue, limits: JsValue) -> Re
             message_ids: selected.selection.message_ids,
         },
         messages: selected.messages,
+        rejection_evidence: Vec::new(),
     }
     .validate_for_dispatch(limits)
     .map_err(js_error)
