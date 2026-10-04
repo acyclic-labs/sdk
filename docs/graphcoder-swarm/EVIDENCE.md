@@ -331,3 +331,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Full generated audit after Harness refresh: [missing Inference artifact failure](checkpoint-generated-audit-missing-artifact-2026-10-04.json). Filesystem and Harness stages passed; the full gate failed and remains unqualified.
 
 - Windows host launch: [26/26 focused regression receipt](checkpoint-windows-hidden-host-2026-10-04.json). Existing native launch sets CREATE_NO_WINDOW; installed process ownership qualification remains open.
+
+- Published inherited-prefix port: [native 2/3 failure receipt](checkpoint-published-prefix-port-2026-10-04.json). The private-journal rejection is no longer reported; recursive handoff still fails and qualification remains open.
