@@ -26,7 +26,3 @@ path = "src/main.rs"
 
 [lints.rust]
 unsafe_code = "deny"
-
-[[bin]]
-name = "sdk-stream-native-receipt"
-path = "src/bin/sdk-stream-native-receipt.rs"

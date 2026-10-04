@@ -83,7 +83,7 @@ Copy-Item -LiteralPath $jar -Destination $consumerArtifact -Force
   "-Dacyclic.source.revision=$sourceRevision" `
   "-Dacyclic.scenario.output=$output" `
   '-Dacyclic.consumer.artifact=qualification/consumers/jvm-transport.jar' `
-  '-Dtest=RpcScenarioEvidenceTest' 'test'
+  '-Dtest=RpcScenarioEvidenceTest,GeneratedTransportTest' 'test'
 if ($LASTEXITCODE -ne 0) {
   throw "JVM RPC scenario evidence failed with exit code $LASTEXITCODE."
 }
