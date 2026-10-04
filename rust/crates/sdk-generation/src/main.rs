@@ -33,9 +33,11 @@ const REQUIRED_TOOL_IDS: &[&str] = &[
     "sdk-examples",
     "sdk-docs-rustdoc",
     "sdk-docs",
+    "sdk-language-producers",
+    "sdk-python",
     "sdk-typescript",
 ];
-const OPTIONAL_TOOL_IDS: &[&str] = &["sdk-python"];
+const OPTIONAL_TOOL_IDS: &[&str] = &[];
 
 // These values are qualification metadata for the remote HTTP projection. The
 // orchestration stage does not pretend to be the OpenAPI Generator CLI: the
@@ -1524,8 +1526,14 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
             script: first_file(root, &["docs/sdk-docs.py", "scripts/sdk-docs.py"]),
         },
         ToolSpec {
+            id: "sdk-language-producers",
+            required: true,
+            manifest: some_file(root, "languages/generation-targets.json"),
+            script: None,
+        },
+        ToolSpec {
             id: "sdk-python",
-            required: false,
+            required: true,
             manifest: some_file(root, "rust/crates/sdk-python/Cargo.toml"),
             script: first_file(
                 root,
@@ -1797,6 +1805,17 @@ fn run_tools(
                 output,
                 &spec,
                 relative_request,
+                operation,
+            )?);
+            continue;
+        }
+        if spec.id == "sdk-language-producers" {
+            results.push(run_language_producers(
+                root,
+                output,
+                &spec,
+                relative_request,
+                source,
                 operation,
             )?);
             continue;
@@ -2170,6 +2189,169 @@ fn run_product_artifacts(
     })
 }
 
+/// Emit the Rust-owned language producer plan. This is a cheap generation
+/// stage: it binds every catalogued language target to its pinned generator
+/// recipe and the current Rust source identity. It does not claim that a
+/// package was generated or installed; those expensive consumer checks remain
+/// qualification evidence for the individual language.
+fn run_language_producers(
+    root: &Path,
+    output: &Path,
+    spec: &ToolSpec,
+    request: String,
+    source: &SourceIdentity,
+    operation: Operation,
+) -> Result<ToolResult, CliError> {
+    let Some(targets_path) = spec.manifest.as_ref() else {
+        return Ok(ToolResult {
+            id: spec.id.into(),
+            status: "failed".into(),
+            required: spec.required,
+            command: Vec::new(),
+            request,
+            stdout_sha256: None,
+            stderr_sha256: None,
+            exit_code: Some(1),
+            message: Some("language generation target catalog is missing".into()),
+        });
+    };
+    let catalog: Value = read_json(targets_path).map_err(|error| {
+        CliError::new(format!(
+            "cannot read language generation target catalog {}: {error}",
+            targets_path.display()
+        ))
+    })?;
+    let targets = catalog
+        .get("targets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::new("language generation target catalog has no targets array"))?;
+    if targets.is_empty() {
+        return Err(CliError::new(
+            "language generation target catalog must contain at least one target",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut plans = Vec::with_capacity(targets.len());
+    for target in targets {
+        let id = target
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("language generation target has no string id"))?;
+        if !is_language_target_id(id) || !seen.insert(id.to_owned()) {
+            return Err(CliError::new(format!(
+                "language generation target id is unsafe or duplicated: {id}"
+            )));
+        }
+        let family = target
+            .get("language_family")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new(format!("language target {id} has no language_family")))?;
+        let status = target
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new(format!("language target {id} has no status")))?;
+        let generator = target
+            .get("generator")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                CliError::new(format!("language target {id} has no generator recipe"))
+            })?;
+        for field in ["name", "version", "source", "license", "pin"] {
+            if generator
+                .get(field)
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(CliError::new(format!(
+                    "language target {id} generator recipe is missing {field}"
+                )));
+            }
+        }
+        let package = target
+            .get("package")
+            .and_then(Value::as_object)
+            .ok_or_else(|| CliError::new(format!("language target {id} has no package recipe")))?;
+        for field in ["ecosystem", "artifact"] {
+            if package
+                .get(field)
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(CliError::new(format!(
+                    "language target {id} package recipe is missing {field}"
+                )));
+            }
+        }
+        plans.push(json!({
+            "id": id,
+            "language_family": family,
+            "status": status,
+            "generator": generator,
+            "package": package,
+            "request": {
+                "schema": REQUEST_SCHEMA,
+                "operation": operation_name(operation),
+                "source_revision": source.revision,
+                "source_digest": source.digest,
+                "contract_scope": "rust-authority",
+                "contract_inputs": [
+                    "rust/crates/sdk-contract-wire",
+                    "languages/generation-targets.json"
+                ]
+            }
+        }));
+    }
+    let plan = json!({
+        "schema": "acyclic.sdk.language-producer-plan.v1",
+        "operation": operation_name(operation),
+        "source": source,
+        "authority": "rust",
+        "qualification": "pending-until-language-consumer-receipt",
+        "targets": plans,
+    });
+    let plan_path = output.join("language-producers/plan.json");
+    write_json_value(&plan_path, &plan)?;
+    let stdout = serde_json::to_vec_pretty(&json!({
+        "stage": spec.id,
+        "operation": operation_name(operation),
+        "targets": seen.len(),
+        "plan": relative_or_absolute(&plan_path, output),
+    }))?;
+    let stderr = Vec::new();
+    let logs = output.join("logs");
+    fs::create_dir_all(&logs)?;
+    fs::write(logs.join("sdk-language-producers.stdout"), &stdout)?;
+    fs::write(logs.join("sdk-language-producers.stderr"), &stderr)?;
+    Ok(ToolResult {
+        id: spec.id.into(),
+        status: "passed".into(),
+        required: spec.required,
+        command: vec![
+            "sdk-generation".into(),
+            "language-producers".into(),
+            "--source-root".into(),
+            root.to_string_lossy().into_owned(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+        ],
+        request,
+        stdout_sha256: Some(hash_bytes(&stdout)),
+        stderr_sha256: Some(hash_bytes(&stderr)),
+        exit_code: Some(0),
+        message: Some(
+            "pinned language producer requests emitted; package qualification remains pending"
+                .into(),
+        ),
+    })
+}
+
+fn is_language_target_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 fn run_openapi_projections(
     root: &Path,
     output: &Path,
@@ -2489,6 +2671,17 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
                 "rust/crates/inference",
                 "rust/crates/machines/src/generated",
                 "generated/rust",
+            ] {
+                if root.join(path).exists() {
+                    inputs.push(path.into());
+                }
+            }
+        }
+        "sdk-language-producers" => {
+            for path in [
+                "languages/generation-targets.json",
+                "languages/package-names.json",
+                "compatibility/manifest.json",
             ] {
                 if root.join(path).exists() {
                     inputs.push(path.into());
@@ -4266,6 +4459,98 @@ mod tests {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();
             assert!(spec.required, "{id} must be a required source-bound stage");
         }
+    }
+
+    #[test]
+    fn language_producer_plan_covers_primary_and_http_targets() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let output = test_directory("language-producer-plan");
+        let spec = tool_specs(&root)
+            .into_iter()
+            .find(|spec| spec.id == "sdk-language-producers")
+            .expect("language producer stage is registered");
+        let source = SourceIdentity {
+            revision: "test-revision".into(),
+            digest: "sha256:test-source".into(),
+            dirty: false,
+        };
+        let result = run_language_producers(
+            &root,
+            &output,
+            &spec,
+            "requests/sdk-language-producers.json".into(),
+            &source,
+            Operation::Generate,
+        )
+        .expect("target catalog is valid");
+        assert_eq!(result.status, "passed");
+        let plan: Value = read_json(&output.join("language-producers/plan.json"))
+            .expect("language producer plan");
+        assert_eq!(
+            plan["qualification"],
+            "pending-until-language-consumer-receipt"
+        );
+        let ids = plan["targets"]
+            .as_array()
+            .expect("target plan array")
+            .iter()
+            .filter_map(|target| target["id"].as_str())
+            .collect::<BTreeSet<_>>();
+        for id in [
+            "go", "java", "csharp", "swift", "cpp", "ruby", "php", "dart",
+        ] {
+            assert!(ids.contains(id), "missing planned target {id}");
+        }
+        cleanup(&output);
+    }
+
+    #[test]
+    fn language_producer_plan_rejects_missing_generator_pin() {
+        let root = test_directory("language-producer-invalid");
+        fs::create_dir_all(root.join("languages")).expect("create language catalog");
+        write_json_value(
+            &root.join("languages/generation-targets.json"),
+            &json!({
+                "targets": [{
+                    "id": "python",
+                    "language_family": "Python",
+                    "status": "candidate",
+                    "generator": {
+                        "name": "grpcio-tools",
+                        "version": "1",
+                        "source": "https://example.invalid/python",
+                        "license": "Apache-2.0"
+                    },
+                    "package": {
+                        "ecosystem": "PyPI",
+                        "artifact": "acyclic-sdk"
+                    }
+                }]
+            }),
+        )
+        .expect("write target catalog");
+        let spec = ToolSpec {
+            id: "sdk-language-producers",
+            required: true,
+            manifest: Some(root.join("languages/generation-targets.json")),
+            script: None,
+        };
+        let source = SourceIdentity {
+            revision: "test-revision".into(),
+            digest: "sha256:test-source".into(),
+            dirty: false,
+        };
+        let error = run_language_producers(
+            &root,
+            &root.join("output"),
+            &spec,
+            "requests/sdk-language-producers.json".into(),
+            &source,
+            Operation::Generate,
+        )
+        .expect_err("missing generator pin must fail closed");
+        assert!(error.message.contains("missing pin"));
+        cleanup(&root);
     }
 
     #[test]

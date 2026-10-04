@@ -15,6 +15,36 @@ generator, and avoids editing the root manifest or lockfile as a side effect.
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- inventory --source-root . --output target/sdk-generation
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- qualify --source-root . --output target/sdk-generation
 
+The repository-level `generate` and `check:generated` scripts are currently
+compatibility wrappers around the pre-migration Bun projections. They are not
+the Rust authority entrypoint. During the migration, package owners should
+wire one public SDK command to the Rust CLI and keep the operation mapping
+explicit:
+
+```text
+generate:sdk  -> sdk-generation generate --source-root . --output <output>
+check:sdk     -> sdk-generation check   --source-root . --output <output>
+drift:sdk     -> sdk-generation drift   --source-root . --output <output>
+```
+
+The wrapper may select the pinned Cargo executable and output directory, but
+it must not add an independent contract generator or silently fall back to a
+legacy projection. Legacy Bun commands can remain named migration adapters
+until their outputs are emitted by a Rust stage; they must not be presented as
+the source of truth for qualification. `generate` may write staged outputs,
+`check` must compare regenerated staged outputs without repairing the checked
+tree, and `drift` must inspect an existing generated manifest without invoking
+downstream generators.
+
+The Rust `sdk-language-producers` stage emits
+`language-producers/plan.json` from every entry in
+`languages/generation-targets.json`. Each plan entry carries the target's
+generator name, version, source, license, pin, package ecosystem and artifact,
+plus the current Rust source identity. This is a source-bound request plan;
+it does not claim that a language package was built or installed. Per-language
+consumer receipts remain required for qualification, and missing toolchains
+stay pending rather than being converted into a successful package result.
+
 inventory can report pending work. generate and check fail closed when a
 delegated stage fails or remains pending; check also fails on source or
 artifact drift. drift is the fast, non-generating artifact gate: it verifies
