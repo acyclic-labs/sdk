@@ -1,8 +1,8 @@
-import type { ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_process";
+import type { ChildProcess, ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { GraphCoderError } from "./api.js";
 import { checkedRequestId, type GraphCoderBridge, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
-import { defaultOwnedProcessOwner, type OwnedProcessOwner, type OwnedProcessTermination } from "./owned-process.js";
+import { defaultOwnedProcessOwner, getOwnedProcessRecovery, type OwnedProcessOwner, type OwnedProcessTermination } from "./owned-process.js";
 
 export interface GraphCoderProcessBridgeOptions {
   readonly executable: string;
@@ -63,7 +63,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #processOwner: OwnedProcessOwner;
   readonly #cancelled = new Set<string>();
   readonly #cancelControls = new Map<string, string>();
-  readonly #exitWaiters = new Set<(exit: GraphCoderProcessExit) => void>();
+  readonly #exitWaiters = new Set<{
+    readonly resolve: (exit: GraphCoderProcessExit) => void;
+    readonly reject: (error: GraphCoderError) => void;
+  }>();
   #stdoutBuffer = Buffer.alloc(0);
   #closed = false;
   #exit: GraphCoderProcessExit | undefined;
@@ -90,8 +93,22 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     };
-    const child = this.#processOwner.spawn(options.executable, options.args ?? [], spawnOptions);
-    if (child.stdin === null || child.stdout === null || child.stderr === null) throw new GraphCoderError("transport", "bridge process did not expose piped stdio");
+    let child: ChildProcess;
+    try {
+      child = this.#processOwner.spawn(options.executable, options.args ?? [], spawnOptions);
+    } catch (error) {
+      const recovery = getOwnedProcessRecovery(error);
+      if (recovery !== undefined && this.#processOwner.recoverLaunch !== undefined) {
+        void this.#processOwner.recoverLaunch(recovery).catch(() => undefined);
+      }
+      throw error instanceof GraphCoderError
+        ? error
+        : new GraphCoderError("transport", error instanceof Error ? error.message : String(error));
+    }
+    if (child.stdin === null || child.stdout === null || child.stderr === null) {
+      void this.#processOwner.terminate(child).catch(() => undefined);
+      throw new GraphCoderError("transport", "bridge process did not expose piped stdio");
+    }
     this.#child = child as ChildProcessWithoutNullStreams;
     this.#child.stdout.on("data", chunk => this.#consumeStdout(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     this.#child.stderr.on("data", chunk => this.#emitDiagnostic({ kind: "stderr", text: Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk) }));
@@ -122,19 +139,32 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     return new Promise<GraphCoderProcessExit>((resolve, reject) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const resolveExit = (exit: GraphCoderProcessExit): void => {
-        if (settled) return;
-        settled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        this.#exitWaiters.delete(resolveExit);
-        resolve(exit);
+      let waiter: {
+        readonly resolve: (exit: GraphCoderProcessExit) => void;
+        readonly reject: (error: GraphCoderError) => void;
       };
-      this.#exitWaiters.add(resolveExit);
+      waiter = {
+        resolve: (exit: GraphCoderProcessExit): void => {
+          if (settled) return;
+          settled = true;
+          if (timer !== undefined) clearTimeout(timer);
+          this.#exitWaiters.delete(waiter);
+          resolve(exit);
+        },
+        reject: (error: GraphCoderError): void => {
+          if (settled) return;
+          settled = true;
+          if (timer !== undefined) clearTimeout(timer);
+          this.#exitWaiters.delete(waiter);
+          reject(error);
+        },
+      };
+      this.#exitWaiters.add(waiter);
       if (timeoutMs !== undefined) {
         timer = setTimeout(() => {
           if (settled) return;
           settled = true;
-          this.#exitWaiters.delete(resolveExit);
+          this.#exitWaiters.delete(waiter);
           reject(new GraphCoderError("transport", "timed out waiting for bridge process exit"));
         }, timeoutMs);
       }
@@ -319,6 +349,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
           signal: this.#child.signalCode,
         });
       }
+      if (outcome.kind !== "terminated" && this.#exit === undefined) {
+        this.#rejectExitWaiters(new GraphCoderError("transport", `bridge cleanup is uncertain: ${outcome.kind}`));
+        return;
+      }
       this.#resolveExitWaiters();
     });
   }
@@ -333,7 +367,12 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (this.#exit === undefined || (this.#termination !== undefined && !this.#terminationDone)) {
       return;
     }
-    for (const resolve of this.#exitWaiters) resolve(this.#exit);
+    for (const waiter of this.#exitWaiters) waiter.resolve(this.#exit);
+    this.#exitWaiters.clear();
+  }
+
+  #rejectExitWaiters(error: GraphCoderError): void {
+    for (const waiter of this.#exitWaiters) waiter.reject(error);
     this.#exitWaiters.clear();
   }
 
