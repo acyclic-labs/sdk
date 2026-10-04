@@ -9,6 +9,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const vectorPath = join(root, modelInputVector);
 const crateVectorPath = join(root, "rust/crates/harness/conformance/model-input-v3.json");
 const nativeTestPath = join(root, "rust/crates/harness/tests/model_input_conformance_v3.rs");
+const rejectionTestPath = join(root, "rust/crates/harness/tests/model_input_rejection_conformance_v3.rs");
 const typescriptTestPath = join(root, "typescript/packages/harness/test/model-input-conformance-v3.test.ts");
 const bytes = path => readFileSync(path);
 const sha256 = value => createHash("sha256").update(value).digest("hex");
@@ -28,9 +29,12 @@ if (!bytes(vectorPath).equals(bytes(crateVectorPath))) {
   throw new Error("Harness crate model-input-v3 copy drifted from the canonical vector");
 }
 const nativeTest = bytes(nativeTestPath).toString("utf8");
+const rejectionTest = bytes(rejectionTestPath).toString("utf8");
 const typescriptTest = bytes(typescriptTestPath).toString("utf8");
-if (!nativeTest.includes("model-input-v3.json") || !typescriptTest.includes("model-input-v3.json")) {
-  throw new Error("native and TypeScript conformance tests must consume the frozen vector");
+if (!nativeTest.includes("model-input-v3.json")
+  || !rejectionTest.includes("model-input-v3.json")
+  || !typescriptTest.includes("model-input-v3.json")) {
+  throw new Error("native, rejection, and TypeScript conformance tests must consume the frozen vector");
 }
 if (!packagedSourceCopies.some(([source, destination]) => source === modelInputVector
   && destination === "rust/crates/harness/conformance/model-input-v3.json")) {
@@ -51,6 +55,7 @@ const report = {
   vector_sha256: sha256(bytes(vectorPath)),
   crate_vector_sha256: sha256(bytes(crateVectorPath)),
   native_test_sha256: sha256(bytes(nativeTestPath)),
+  rejection_test_sha256: sha256(bytes(rejectionTestPath)),
   typescript_test_sha256: sha256(bytes(typescriptTestPath)),
   typescript_executed: process.argv.includes("--run-typescript"),
 };
