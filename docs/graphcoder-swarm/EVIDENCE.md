@@ -319,3 +319,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 - [Current model boundary contracts](checkpoint-model-boundary-contracts-current-2026-10-04.json): 6ebee3fd3 passes20/20 native request/policy regressions; generated audit fails during D: WASM rebuild with disk-full OS112; native artifact archived on C:. Preserved historical journal runtime; recursive authority gate remains unmet.
 
+
+- [Generated WASM projection repair](checkpoint-generated-wasm-projection-repair-2026-10-04.json): recovered-space audit at5894dee4b fails E0063 missing rejection-evidence initializer; c08a37726 repairs constructor, fresh audit pending. Public WASM validates shape, not durable rejection provenance.
