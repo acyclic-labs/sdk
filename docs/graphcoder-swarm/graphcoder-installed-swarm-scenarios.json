@@ -3,7 +3,7 @@
   "driver": "scripts/graphcoder-installed-swarm-e2e.mjs",
   "execution_kind": "native",
   "fixture": "recursive",
-  "required_effects": ["two direct children", "one grandchild", "ordered messages", "approved native execution", "root writeback"],
+  "required_effects": ["two direct children with exact tasks child-a and child-b", "grandchild with exact parent child-a", "ordered messages", "typed command or writeback approval with operation/action binding", "host approval before public resolution", "exact root writeback operation/generation", "concurrent-user reconciliation", "verified bridge cleanup"],
   "required_routes": ["list_sessions", "start_session", "read_activity", "read_messages", "list_approvals", "list_changes", "read_change", "approve_writeback"],
   "failure_policy": "The driver fails closed on missing recursive agents, missing pending approval, unsupported changes, stale generations, failed writeback, or unverified bridge cleanup. Transport/package smoke output cannot satisfy this scenario."
 }
