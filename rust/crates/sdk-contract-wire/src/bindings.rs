@@ -354,8 +354,14 @@ pub fn generate_product_bindings(
             .out_dir(out_dir)
             .build_client(config.client)
             .build_server(config.server)
-            .compile_fds_with_config(descriptors, prost)
+            .compile_fds_with_config(descriptors.clone(), prost)
             .map_err(BindingGenerationError::Io)?;
+    }
+    if matches!(family, BindingFamily::Actors | BindingFamily::Workers) {
+        fs::write(
+            out_dir.join("platform-client-methods.rs"),
+            platform_client_methods(&descriptors),
+        )?;
     }
     Ok(BindingOutput {
         family,
@@ -363,6 +369,49 @@ pub fn generate_product_bindings(
         model_descriptor,
         archived_runtime_descriptor: family.archived_runtime_descriptor(),
     })
+}
+
+fn platform_client_methods(descriptors: &FileDescriptorSet) -> String {
+    let mut source =
+        String::from("// Generated from the Rust-owned descriptor. Do not edit.\nimpl Client {\n");
+    for file in &descriptors.file {
+        for service in &file.service {
+            for method in &service.method {
+                assert!(
+                    !method.client_streaming.unwrap_or(false)
+                        && !method.server_streaming.unwrap_or(false),
+                    "platform unary facade requires an explicit streaming implementation"
+                );
+                let name = method.name.as_deref().expect("model method name");
+                let mut rust_name = String::new();
+                for (index, character) in name.chars().enumerate() {
+                    if character.is_ascii_uppercase() && index != 0 {
+                        rust_name.push('_');
+                    }
+                    rust_name.push(character.to_ascii_lowercase());
+                }
+                let input = method
+                    .input_type
+                    .as_deref()
+                    .expect("model input")
+                    .rsplit('.')
+                    .next()
+                    .expect("input name");
+                let output = method
+                    .output_type
+                    .as_deref()
+                    .expect("model output")
+                    .rsplit('.')
+                    .next()
+                    .expect("output name");
+                source.push_str(&format!(
+                    "    /// Execute the canonical `{name}` operation using the platform default transport.\n    ///\n    /// # Errors\n    /// Returns a transport or canonical service error.\n    pub async fn {rust_name}(&self, request: &crate::wire::{input}) -> Result<crate::wire::{output}, Error> {{\n        #[cfg(not(target_arch = \"wasm32\"))]\n        {{\n            self.inner.clone().{rust_name}(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc)\n        }}\n        #[cfg(target_arch = \"wasm32\")]\n        {{\n            self.inner.{rust_name}(request).await.map_err(Error::from_http)\n        }}\n    }}\n"
+                ));
+            }
+        }
+    }
+    source.push_str("}\n");
+    source
 }
 
 fn generate_plugin_files(
@@ -464,7 +513,9 @@ fn write_plugin_files(
         } else {
             let content = file.content.unwrap_or_default();
             let content = match guard_cfg {
-                Some(cfg) if name.ends_with(".tonic.rs") => guard_tonic_modules_with_cfg(&content, cfg),
+                Some(cfg) if name.ends_with(".tonic.rs") => {
+                    guard_tonic_modules_with_cfg(&content, cfg)
+                }
                 Some(cfg) => guard_tonic_include_with_cfg(&content, cfg),
                 None => content,
             };
