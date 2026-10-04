@@ -383,14 +383,55 @@ jobs:
         run: |
           $package = Get-ChildItem -LiteralPath $env:PACKAGE_ROOT -Filter '*.nupkg' -File -Recurse | Select-Object -First 1
           if (-not $package) { throw "The assembled embedded package was not downloaded." }
+          $producer = Get-Content -LiteralPath (Join-Path $env:PACKAGE_ROOT 'producer-output.json') -Raw | ConvertFrom-Json
+          $reproducibility = Get-Content -LiteralPath (Join-Path $env:PACKAGE_ROOT 'package-reproducibility.json') -Raw | ConvertFrom-Json
+          $sourceRevision = (& git rev-parse HEAD).Trim()
+          if ($producer.source_revision -ne $sourceRevision) { throw 'The installed package provenance does not match the checked-out source revision.' }
+          $nupkgHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $package.FullName).Hash.ToLowerInvariant()
+          if ($reproducibility.package_sha256 -ne $nupkgHash) { throw 'The downloaded NuGet package differs from the reproducibility receipt.' }
+          $expectedAsset = @($producer.native_assets | Where-Object { $_.rid -eq $env:RID })
+          if ($expectedAsset.Count -ne 1) { throw "The producer manifest has no unique asset for RID $env:RID." }
           $project = $env:TEST_ROOT
           dotnet new console --framework net8.0 --output $project --force --no-restore | Out-Host
           $source = $package.DirectoryName
           dotnet add $project package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source $source | Out-Host
+          dotnet restore $project | Out-Host
+          $globalPackagesLine = (& dotnet nuget locals global-packages --list | Select-String 'global-packages' | Select-Object -First 1).ToString()
+          $globalPackages = ($globalPackagesLine -split ':', 2)[1].Trim()
+          $installedNativeRoot = Join-Path $globalPackages "acyclic.sdk.embedded\0.2.0-alpha.1\runtimes\$($env:RID)\native"
+          $installedNative = Get-ChildItem -LiteralPath $installedNativeRoot -File | Select-Object -First 1
+          if (-not $installedNative) { throw "NuGet did not install a native asset for RID $env:RID." }
+          $installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedNative.FullName).Hash.ToLowerInvariant()
+          if ($installedHash -ne ([string]$expectedAsset[0].sha256).ToLowerInvariant()) { throw "Installed native asset hash differs from the producer manifest for RID $env:RID." }
+          $env:RUST_NATIVE_ASSET = $installedNative.FullName
           @'
           using Acyclic.Sdk.Embedded;
+          using System;
+          using System.IO;
           using System.Linq;
           using System.Runtime.InteropServices;
+
+          var nativePath = Environment.GetEnvironmentVariable("RUST_NATIVE_ASSET");
+          if (string.IsNullOrWhiteSpace(nativePath) || !File.Exists(nativePath) ||
+              !NativeLibrary.TryLoad(nativePath, out var nativeHandle))
+              throw new InvalidOperationException("The installed Rust native asset could not be loaded directly.");
+          try
+          {
+              var exports = new[] {
+                  "acyclic_embedded_abi_version", "acyclic_embedded_engine_open",
+                  "acyclic_embedded_engine_close", "acyclic_embedded_engine_append",
+                  "acyclic_embedded_reader_open", "acyclic_embedded_reader_next",
+                  "acyclic_embedded_reader_cancel", "acyclic_embedded_reader_close",
+                  "acyclic_buffer_release", "acyclic_append_result_release",
+                  "acyclic_open_result_release", "acyclic_open_result_take_reader",
+                  "acyclic_next_result_release", "acyclic_embedded_engine_wire_call",
+                  "acyclic_wire_result_release"
+              };
+              foreach (var export in exports)
+                  if (!NativeLibrary.TryGetExport(nativeHandle, export, out _))
+                      throw new InvalidOperationException($"Installed native asset is missing Rust ABI export {export}.");
+          }
+          finally { NativeLibrary.Free(nativeHandle); }
 
           using var engine = new EmbeddedStreamEngine();
           var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x52, 0x49, 0x44 };
@@ -424,17 +465,55 @@ jobs:
             --env RID="$RID" \
             "$DOTNET_IMAGE" sh -euxc '
               test "$(dotnet --version)" = "8.0.425"
+              apk add --no-cache git python3
               mkdir -p /tmp/embedded-consumer
               package="$(find /pkg -name "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg" -type f -print -quit)"
               test -n "$package"
+              source_revision="$(git -C /src rev-parse HEAD)"
+              producer_revision="$(python3 -c "import json; print(json.load(open('/pkg/producer-output.json'))['source_revision'])")"
+              test "$producer_revision" = "$source_revision"
+              receipt_hash="$(python3 -c "import json; print(json.load(open('/pkg/package-reproducibility.json'))['package_sha256'])")"
+              test "$(sha256sum "$package" | awk '{print $1}')" = "$receipt_hash"
+              expected_hash="$(RID="$RID" python3 -c "import json, os; assets=[a for a in json.load(open('/pkg/producer-output.json'))['native_assets'] if a['rid']==os.environ['RID']]; assert len(assets)==1; print(assets[0]['sha256'])")"
               dotnet new console --framework net8.0 --output /tmp/embedded-consumer --force --no-restore
               source="$(dirname "$package")"
               dotnet add /tmp/embedded-consumer package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source "$source"
               sed -i "s#</Project>#  <PropertyGroup><RuntimeIdentifier>$RID</RuntimeIdentifier></PropertyGroup></Project>#" /tmp/embedded-consumer/embedded-consumer.csproj
+              dotnet restore /tmp/embedded-consumer
+              global_packages="$(dotnet nuget locals global-packages --list | sed -n 's/.*: //p' | head -n 1)"
+              installed_native="$global_packages/acyclic.sdk.embedded/0.2.0-alpha.1/runtimes/$RID/native/libacyclic_sdk_embedded_prototype.so"
+              test -f "$installed_native"
+              test "$(sha256sum "$installed_native" | awk '{print $1}')" = "$expected_hash"
+              python3 /src/rust/crates/sdk-embedded-prototype/tests/python_consumer.py "$installed_native"
+              export RUST_NATIVE_ASSET="$installed_native"
               cat > /tmp/embedded-consumer/Program.cs <<'CS'
               using Acyclic.Sdk.Embedded;
+              using System;
+              using System.IO;
               using System.Linq;
               using System.Runtime.InteropServices;
+
+              var nativePath = Environment.GetEnvironmentVariable("RUST_NATIVE_ASSET");
+              if (string.IsNullOrWhiteSpace(nativePath) || !File.Exists(nativePath) ||
+                  !NativeLibrary.TryLoad(nativePath, out var nativeHandle))
+                  throw new InvalidOperationException("The installed Rust native asset could not be loaded directly.");
+              try
+              {
+                  var exports = new[] {
+                      "acyclic_embedded_abi_version", "acyclic_embedded_engine_open",
+                      "acyclic_embedded_engine_close", "acyclic_embedded_engine_append",
+                      "acyclic_embedded_reader_open", "acyclic_embedded_reader_next",
+                      "acyclic_embedded_reader_cancel", "acyclic_embedded_reader_close",
+                      "acyclic_buffer_release", "acyclic_append_result_release",
+                      "acyclic_open_result_release", "acyclic_open_result_take_reader",
+                      "acyclic_next_result_release", "acyclic_embedded_engine_wire_call",
+                      "acyclic_wire_result_release"
+                  };
+                  foreach (var export in exports)
+                      if (!NativeLibrary.TryGetExport(nativeHandle, export, out _))
+                          throw new InvalidOperationException($"Installed native asset is missing Rust ABI export {export}.");
+              }
+              finally { NativeLibrary.Free(nativeHandle); }
 
               using var engine = new EmbeddedStreamEngine();
               var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x4D, 0x55, 0x53, 0x4C };
