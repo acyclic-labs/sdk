@@ -339,3 +339,8 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Private suffix correction: [native 2/3 follow-up failure](checkpoint-prefix-private-suffix-2026-10-04.json). Recursive handoff is reached; child rejection follow-up still fails private-journal authority validation.
 
 - Native recursive boundary: [3/3 archived passing evidence](checkpoint-native-recursive-prefix-pass-2026-10-04.json). All captured child requests preserve the frozen prefix, including rejection follow-up. Production coordinator and installed gates remain separate.
+
+- Latest production coordinator: [0/1 coordinator and 1/5 fault cases, archived executables](checkpoint-production-prefix-failures-2026-10-04.json). Captured publication repair remains open.
+
+- Focused rejection provenance: [12/12 native memory composition cases](checkpoint-rejection-provenance-strengthening-2026-10-04.json). Exact cross-operation and missing selected inherited-ID negatives; not cold recursive reopen or installed qualification.
+
