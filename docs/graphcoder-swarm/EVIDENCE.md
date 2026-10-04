@@ -333,3 +333,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Windows host launch: [26/26 focused regression receipt](checkpoint-windows-hidden-host-2026-10-04.json). Existing native launch sets CREATE_NO_WINDOW; installed process ownership qualification remains open.
 
 - Published inherited-prefix port: [native 2/3 failure receipt](checkpoint-published-prefix-port-2026-10-04.json). The private-journal rejection is no longer reported; recursive handoff still fails and qualification remains open.
+
+- Recursive handoff cause: [archived native 2/3 failure](checkpoint-prefix-child-history-cause-2026-10-04.json). Child history differs from or lacks frozen prefix messages; exact boundary qualification remains open.
