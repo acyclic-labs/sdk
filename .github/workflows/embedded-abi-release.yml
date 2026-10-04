@@ -78,14 +78,6 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
-      - name: Install musl linker
-        if: matrix.kind == 'unix' && endsWith(matrix.rust_target, '-musl')
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends musl-tools
-
       - name: Install pinned Windows ARM64 LLVM
         if: matrix.kind == 'windows-arm'
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
