@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Integrated Git transition routing](checkpoint-git-transition-routing-2026-10-04.json) records 1/1 actual Windows public-dispatch abort regression at `275fe2da5`. An ordinary local Git merge abort now falls through to its workspace facade unless a parent publication conflict exists. Root writeback approval, child continuation, rebase, and installed packaging remain separate required gates.
+
 [Fresh production swarm and faults](checkpoint-current-production-swarm-2026-10-04.json) records actual Windows execution at `ee7cb5f40`: recursive model swarm 0/1 and recovery faults 1/5, with no ignored tests. The inherited-history admission failure, missing child dispatches, and cancellation dispatch timeout remain required failures. Logs and executables were copied into an immutable checkpoint directory and SHA256 digests recorded before further source changes.
 
 [Fork rebind concurrency review](checkpoint-fork-rebind-review-2026-10-04.json) holds isolated checkpoint `f5dd2a108`: seed validation and replacement do not use the same pinned generation, and the publication lookup discards errors. This is source-review evidence, not a test result. Deterministic concurrent-owner and corrupt-publication tests are required before integration.
