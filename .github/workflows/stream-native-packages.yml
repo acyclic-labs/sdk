@@ -30,41 +30,49 @@ jobs:
             runner: blacksmith-4vcpu-ubuntu-2404
             musl: false
             llvm: false
+            native_runtime: true
           - package_target: linux-x64-musl
             rust_target: x86_64-unknown-linux-musl
             runner: blacksmith-4vcpu-ubuntu-2404
             musl: true
             llvm: false
+            native_runtime: true
           - package_target: linux-arm64-gnu
             rust_target: aarch64-unknown-linux-gnu
             runner: blacksmith-4vcpu-ubuntu-2404-arm
             musl: false
             llvm: false
+            native_runtime: true
           - package_target: linux-arm64-musl
             rust_target: aarch64-unknown-linux-musl
             runner: blacksmith-4vcpu-ubuntu-2404-arm
             musl: true
             llvm: false
+            native_runtime: true
           - package_target: darwin-x64
             rust_target: x86_64-apple-darwin
             runner: blacksmith-6vcpu-macos-15
             musl: false
             llvm: false
+            native_runtime: true
           - package_target: darwin-arm64
             rust_target: aarch64-apple-darwin
             runner: blacksmith-6vcpu-macos-15
             musl: false
             llvm: false
+            native_runtime: true
           - package_target: win32-x64
             rust_target: x86_64-pc-windows-msvc
             runner: blacksmith-4vcpu-windows-2025
             musl: false
             llvm: false
+            native_runtime: true
           - package_target: win32-arm64
             rust_target: aarch64-pc-windows-msvc
             runner: blacksmith-4vcpu-windows-2025
             musl: false
             llvm: true
+            native_runtime: false
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out exact source
@@ -119,7 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           verify_install=''
-          if [[ "${{ matrix.package_target }}" == 'win32-x64' ]]; then
+          if [[ "${{ matrix.native_runtime }}" == 'true' ]]; then
             verify_install='--verify-install'
           fi
           if [[ "${{ matrix.musl }}" == 'true' ]]; then
@@ -148,13 +156,57 @@ jobs:
           cd "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}"
           npm pack --ignore-scripts --offline --cache "$NPM_CACHE" --pack-destination "$STREAM_NATIVE_OUTPUT"
 
+      - name: Run the full ten-RPC native Stream consumer
+        if: matrix.native_runtime
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-runtime-target
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          package_root="$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}"
+          package_name=$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1])).name)' "$package_root/package.json")
+          export ACYCLIC_STREAM_NATIVE_PACKAGE="$package_name"
+          export ACYCLIC_STREAM_NATIVE_PACKAGE_SOURCE="$package_root"
+          export ACYCLIC_STREAM_NATIVE_MODULE="$package_name"
+          export ACYCLIC_STREAM_NATIVE_MODULE_OVERRIDE="$package_root/acyclic_stream_native.node"
+          export ACYCLIC_STREAM_SCENARIO_DIR="$STREAM_NATIVE_OUTPUT/scenarios/stream"
+          export ACYCLIC_STREAM_SCENARIO_PREFIX=stream
+          export ACYCLIC_STREAM_CONSUMER_OUTPUT="$STREAM_NATIVE_OUTPUT/scenarios/stream-native-consumer.json"
+          cargo test --locked --offline \
+            --manifest-path rust/crates/sdk-stream-native/Cargo.toml \
+            --test runtime_fixture -- --nocapture
+
+      - name: Verify the Rust-owned ten-RPC qualification receipt
+        if: matrix.native_runtime
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-receipt-target
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          archive=$(find "$STREAM_NATIVE_OUTPUT" -maxdepth 1 -name '*.tgz' -type f | head -n 1)
+          test -n "$archive"
+          mkdir -p "$STREAM_NATIVE_OUTPUT/qualification"
+          cargo run --locked --offline \
+            --manifest-path rust/crates/sdk-generation/Cargo.toml \
+            --bin sdk-stream-native-receipt -- verify \
+            --provenance "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}.provenance.json" \
+            --package-root "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}" \
+            --scenario "$STREAM_NATIVE_OUTPUT/scenarios/stream-native-consumer.json" \
+            --archive "$archive" \
+            --source-revision "$SOURCE_REVISION" \
+            --output "$STREAM_NATIVE_OUTPUT/qualification/${{ matrix.package_target }}.native-qualification.json"
+
       - name: Verify the packed archive in a clean consumer
         if: matrix.package_target == 'win32-x64'
         shell: bash
         env:
           STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
           NPM_CACHE: ${{ runner.temp }}/stream-native-npm-cache
-          SOURCE_REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
         run: |
           set -euo pipefail
           archive=$(find "$STREAM_NATIVE_OUTPUT" -maxdepth 1 -name '*.tgz' -type f | head -n 1)

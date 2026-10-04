@@ -76,13 +76,19 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         "acyclic-stream-native-installed-consumer-{}",
         std::process::id()
     ));
-    let fixture_package = consumer_root.join(
-        "node_modules/@acyclic-labs/stream-win32-x64",
+    let fixture_package = consumer_root.join("node_modules").join(
+        std::env::var("ACYCLIC_STREAM_NATIVE_PACKAGE")
+            .unwrap_or_else(|_| "@acyclic-labs/stream-win32-x64".to_owned()),
     );
     std::fs::create_dir_all(&fixture_package)?;
-    let package_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("npm/win32-x64");
-    for file in ["package.json", "index.js"] {
-        std::fs::copy(package_source.join(file), fixture_package.join(file))?;
+    let package_source = std::env::var("ACYCLIC_STREAM_NATIVE_PACKAGE_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("npm/win32-x64"));
+    for file in ["package.json", "index.js", "BUILD.json"] {
+        let source = package_source.join(file);
+        if source.exists() {
+            std::fs::copy(source, fixture_package.join(file))?;
+        }
     }
     std::fs::copy(
         &module_source,
@@ -121,7 +127,8 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         .current_dir(&consumer_root)
         .env(
             "ACYCLIC_STREAM_NATIVE_MODULE",
-            "@acyclic-labs/stream-win32-x64",
+            std::env::var("ACYCLIC_STREAM_NATIVE_PACKAGE")
+                .unwrap_or_else(|_| "@acyclic-labs/stream-win32-x64".to_owned()),
         )
         .env("ACYCLIC_STREAM_FIXTURE_ENDPOINT", endpoint)
         .env(
@@ -133,7 +140,10 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
             base64(&commit_request_bytes),
         );
     for (name, value) in [
-        ("ACYCLIC_STREAM_SOURCE_REVISION", std::env::var("SOURCE_REVISION").ok()),
+        (
+            "ACYCLIC_STREAM_SOURCE_REVISION",
+            std::env::var("SOURCE_REVISION").ok(),
+        ),
         (
             "ACYCLIC_STREAM_SCENARIO_DIR",
             std::env::var("ACYCLIC_STREAM_SCENARIO_DIR").ok(),

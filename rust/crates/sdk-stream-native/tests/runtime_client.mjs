@@ -176,7 +176,7 @@ if (process.env.ACYCLIC_STREAM_CONSUMER_OUTPUT !== undefined) {
     status: "passed",
     invoked: true,
     exit_code: 0,
-    package: "@acyclic-labs/stream-win32-x64",
+    package: process.env.ACYCLIC_STREAM_NATIVE_MODULE,
     resolution: "node_modules package name",
     scenarios: scenarioRecords,
     checks: ["package-install", "napi-loader", "tls", "serialization", "cancellation", "recovery"],
