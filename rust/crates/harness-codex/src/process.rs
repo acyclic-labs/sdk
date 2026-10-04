@@ -150,14 +150,14 @@ impl CodexProcess {
     pub(crate) async fn terminate(&mut self) {
         #[cfg(unix)]
         {
-        signal_group(&self.child, rustix::process::Signal::TERM);
-        if tokio::time::timeout(GRACE, self.child.wait())
-            .await
-            .is_err()
-        {
-            signal_group(&self.child, rustix::process::Signal::KILL);
-            let _ = self.child.wait().await;
-        }
+            signal_group(&self.child, rustix::process::Signal::TERM);
+            if tokio::time::timeout(GRACE, self.child.wait())
+                .await
+                .is_err()
+            {
+                signal_group(&self.child, rustix::process::Signal::KILL);
+                let _ = self.child.wait().await;
+            }
         }
         #[cfg(not(unix))]
         {

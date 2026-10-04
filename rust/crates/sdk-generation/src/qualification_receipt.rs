@@ -36,6 +36,15 @@ struct ScenarioEvidence {
     checks: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone)]
+struct AuthorityMethod {
+    shape: String,
+    response: String,
+    response_fields: BTreeSet<String>,
+    allow_empty_response: bool,
+    response_rules: BTreeSet<String>,
+}
+
 pub fn write(options: &Options) -> Result<PathBuf, String> {
     let source_root = canonical_dir(&options.source_root, "source root")?;
     let output = canonical_dir(&options.output, "generation output")?;
@@ -166,8 +175,49 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .get(&family)
             .and_then(|methods| methods.get(&rpc))
             .ok_or_else(|| format!("scenario {family}/{rpc} is absent from Rust authority"))?;
-        if authority_shape != &shape {
-            return Err(format!("scenario {family}/{rpc} has shape {shape}, authority says {authority_shape}"));
+        if authority_shape.shape != shape {
+            return Err(format!(
+                "scenario {family}/{rpc} has shape {shape}, authority says {}",
+                authority_shape.shape
+            ));
+        }
+        let semantic = result
+            .get("semantic_evidence")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("scenario {family}/{rpc} has no semantic evidence"))?;
+        let response_type = nonempty_string(semantic, "response_type")?;
+        if response_type != authority_shape.response {
+            return Err(format!(
+                "scenario {family}/{rpc} response type {response_type} differs from Rust authority {}",
+                authority_shape.response
+            ));
+        }
+        let present_fields = string_set(semantic, "present_fields")?;
+        if !present_fields.is_subset(&authority_shape.response_fields) {
+            return Err(format!(
+                "scenario {family}/{rpc} reported response fields outside the Rust descriptor"
+            ));
+        }
+        if authority_shape.allow_empty_response != present_fields.is_empty() {
+            return Err(format!(
+                "scenario {family}/{rpc} violates the Rust descriptor empty-response rule"
+            ));
+        }
+        let checked_rules = string_set(semantic, "checked_rules")?;
+        if !authority_shape.response_rules.is_subset(&checked_rules) {
+            return Err(format!(
+                "scenario {family}/{rpc} omitted Rust response rules"
+            ));
+        }
+        if authority_shape
+            .response_rules
+            .iter()
+            .any(|rule| rule.contains("identity"))
+            && semantic.get("identity_matches").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(format!(
+                "scenario {family}/{rpc} did not prove Rust identity preservation"
+            ));
         }
         let transport = nonempty_string(&result, "transport")?;
         if !matches!(transport.as_str(), "grpc" | "http" | "http-json" | "grpc-web") {
@@ -188,7 +238,7 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 .ok_or_else(|| format!("scenario {family}/{rpc} has a non-string check"))?;
             if !matches!(
                 check,
-                "invocation" | "transport" | "serialization" | "cancellation" | "recovery"
+                "invocation" | "transport" | "receiver-response" | "serialization" | "cancellation" | "recovery"
             )
                 || !check_set.insert(check.to_owned())
             {
@@ -227,7 +277,15 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
     let service_authority = authority
         .iter()
         .filter(|(_, methods)| !methods.is_empty())
-        .map(|(family, methods)| (family.clone(), methods.clone()))
+        .map(|(family, methods)| {
+            (
+                family.clone(),
+                methods
+                    .iter()
+                    .map(|(rpc, method)| (rpc.clone(), method.shape.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     if observed != service_authority {
         return Err("scenario log does not cover exactly the Rust authority RPC inventory".into());
@@ -251,7 +309,7 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 "family": family,
                 "methods": methods.keys().collect::<Vec<_>>(),
                 "features": features.into_iter().collect::<Vec<_>>(),
-                "rpc_shapes": methods.values().collect::<Vec<_>>(),
+                "rpc_shapes": methods.values().map(|method| method.shape.clone()).collect::<Vec<_>>(),
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -321,11 +379,16 @@ fn nonempty_string(value: &impl JsonObject, field: &str) -> Result<String, Strin
 
 trait JsonObject {
     fn string_field(&self, field: &str) -> Result<String, String>;
+    fn value_field(&self, field: &str) -> Option<&Value>;
 }
 
 impl JsonObject for Value {
     fn string_field(&self, field: &str) -> Result<String, String> {
         string_field(self, field)
+    }
+
+    fn value_field(&self, field: &str) -> Option<&Value> {
+        self.get(field)
     }
 }
 
@@ -336,6 +399,10 @@ impl JsonObject for serde_json::Map<String, Value> {
             .filter(|text| !text.trim().is_empty())
             .map(str::to_owned)
             .ok_or_else(|| format!("missing non-empty string field {field}"))
+    }
+
+    fn value_field(&self, field: &str) -> Option<&Value> {
+        self.get(field)
     }
 }
 
@@ -403,7 +470,7 @@ fn read_output_file(output: &Path, relative: &str, label: &str) -> Result<Vec<u8
     fs::read(&path).map_err(|error| format!("{label} {}: {error}", path.display()))
 }
 
-fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
+fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, AuthorityMethod>>, String> {
     let value = read_json(path)?;
     let mut inventory = BTreeMap::new();
     for family in value
@@ -425,7 +492,26 @@ fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, 
         {
             let rpc = string_field(method, "rpc")?;
             let shape = string_field(method, "shape")?;
-            if methods.insert(rpc.clone(), shape).is_some() {
+            let response = string_field(method, "response")?;
+            let response_fields = string_set(method, "response_fields")?;
+            let allow_empty_response = method
+                .get("allow_empty_response")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| format!("authority RPC {rpc} has no empty-response rule"))?;
+            let response_rules = string_set(method, "response_rules")?;
+            if methods
+                .insert(
+                    rpc.clone(),
+                    AuthorityMethod {
+                        shape,
+                        response,
+                        response_fields,
+                        allow_empty_response,
+                        response_rules,
+                    },
+                )
+                .is_some()
+            {
                 return Err(format!("authority family {family_name} contains duplicate RPC {rpc}"));
             }
         }
@@ -434,6 +520,24 @@ fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, 
         }
     }
     Ok(inventory)
+}
+
+fn string_set(value: &impl JsonObject, field: &str) -> Result<BTreeSet<String>, String> {
+    let values = value
+        .value_field(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("missing array field {field}"))?;
+    let mut result = BTreeSet::new();
+    for item in values {
+        let item = item
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| format!("array field {field} contains a non-string value"))?;
+        if !result.insert(item.to_owned()) {
+            return Err(format!("array field {field} contains duplicate value {item}"));
+        }
+    }
+    Ok(result)
 }
 
 fn portable_consumer_path(path: String) -> Result<String, String> {
@@ -600,7 +704,7 @@ mod tests {
 
         let consumer_bytes = b"consumer";
         let execution_mode = if in_process { "in-process" } else { "remote" };
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"checks":["invocation","transport","serialization"]}"#;
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.CreateActorResponse","present_fields":["actor"],"checked_rules":[],"identity_matches":false},"checks":["invocation","transport","serialization"]}"#;
         let revision = git_head(&root).expect("fixture revision");
         let outcome = if rpc_error {
             r#"{"status":"ok","code":12,"response_count":0}"#
@@ -631,7 +735,7 @@ mod tests {
         let actor_methods = if missing_rpc {
             json!([])
         } else {
-            json!([{"rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary"}])
+            json!([{"rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","response":"acyclic.actors.v1.CreateActorResponse","response_fields":["actor"],"allow_empty_response":false,"response_rules":[]}])
         };
         let authority = json!({"schema":"acyclic.sdk.rust-authority.v1","families":[
             {"source":"actors/v1/actors.proto","rpc_methods":actor_methods},

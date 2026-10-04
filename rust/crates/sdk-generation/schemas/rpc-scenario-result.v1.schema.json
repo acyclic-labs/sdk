@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schema", "source_revision", "status", "invoked", "exit_code",
-    "family", "rpc", "shape", "transport", "execution_mode", "rpc_outcome", "checks"
+    "family", "rpc", "shape", "transport", "execution_mode", "rpc_outcome", "semantic_evidence", "checks"
   ],
   "properties": {
     "schema": { "const": "acyclic.sdk.rpc-scenario-result.v1" },
@@ -29,6 +29,17 @@
         "response_count": { "type": "integer", "minimum": 1 }
       }
     },
+    "semantic_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["response_type", "present_fields", "checked_rules", "identity_matches"],
+      "properties": {
+        "response_type": { "type": "string", "minLength": 1 },
+        "present_fields": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "checked_rules": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "identity_matches": { "type": "boolean" }
+      }
+    },
     "checks": {
       "type": "array",
       "minItems": 3,
@@ -39,7 +50,7 @@
         { "contains": { "const": "serialization" } }
       ],
       "items": {
-        "enum": ["invocation", "transport", "serialization", "cancellation", "recovery"]
+        "enum": ["invocation", "transport", "receiver-response", "serialization", "cancellation", "recovery"]
       }
     }
   },

@@ -142,10 +142,10 @@ final class RpcScenarioEvidenceTest {
     try {
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
-        int responseCount = invoke(channel, method, false, expectations);
+        InvocationResult invocation = invoke(channel, method, false, expectations);
         String rpc = method.getFullMethodName();
         scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
-            shape(method.getType()), "in-process", responseCount));
+            shape(method.getType()), "in-process", invocation.responseCount(), invocation.semantic()));
       }
       return scenarios;
     } finally {
@@ -162,10 +162,10 @@ final class RpcScenarioEvidenceTest {
     try {
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
-        int responseCount = invoke(channel, method, true, expectations);
+        InvocationResult invocation = invoke(channel, method, true, expectations);
         String rpc = method.getFullMethodName();
         scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
-            shape(method.getType()), "remote", responseCount));
+            shape(method.getType()), "remote", invocation.responseCount(), invocation.semantic()));
       }
       return scenarios;
     } finally {
@@ -204,12 +204,12 @@ final class RpcScenarioEvidenceTest {
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static int invoke(Channel channel, MethodDescriptor method) throws Exception {
+  private static InvocationResult invoke(Channel channel, MethodDescriptor method) throws Exception {
     return invoke(channel, method, false, authorityExpectations());
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static int invoke(Channel channel, MethodDescriptor method, boolean remote,
+  private static InvocationResult invoke(Channel channel, MethodDescriptor method, boolean remote,
       Map<String, ResponseExpectation> expectations) throws Exception {
     ResponseExpectation expectation = expectations.get(method.getFullMethodName());
     if (expectation == null) {
@@ -221,19 +221,21 @@ final class RpcScenarioEvidenceTest {
     return switch (method.getType()) {
       case UNARY -> {
         Object response = ClientCalls.blockingUnaryCall(channel, method, options, request);
-        assertPopulatedResponse(response, method.getFullMethodName(), expectation, request, remote);
-        yield response == null ? 0 : 1;
+        ResponseObservation semantic = assertPopulatedResponse(response, method.getFullMethodName(), expectation, request, remote);
+        yield new InvocationResult(response == null ? 0 : 1, semantic);
       }
       case SERVER_STREAMING -> {
         java.util.Iterator<?> responses = ClientCalls.blockingServerStreamingCall(
             channel, method, options, request);
         int count = 0;
+        ResponseObservation semantic = null;
         while (responses.hasNext()) {
           Object response = responses.next();
-          assertPopulatedResponse(response, method.getFullMethodName(), expectation, request, remote);
+          ResponseObservation current = assertPopulatedResponse(response, method.getFullMethodName(), expectation, request, remote);
+          if (semantic == null) semantic = current;
           count++;
         }
-        yield count;
+        yield new InvocationResult(count, semantic);
       }
       case CLIENT_STREAMING -> streamCall(channel, method, request, false, options, expectation, remote);
       case BIDI_STREAMING -> streamCall(channel, method, request, true, options, expectation, remote);
@@ -260,7 +262,7 @@ final class RpcScenarioEvidenceTest {
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static int streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi)
+  private static InvocationResult streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi)
       throws Exception {
     return streamCall(channel, method, request, bidi,
         CallOptions.DEFAULT.withDeadlineAfter(10, TimeUnit.SECONDS),
@@ -268,15 +270,17 @@ final class RpcScenarioEvidenceTest {
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static int streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi,
+  private static InvocationResult streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi,
       CallOptions options, ResponseExpectation expectation, boolean remote) throws Exception {
     CountDownLatch done = new CountDownLatch(1);
     AtomicReference<Throwable> failure = new AtomicReference<>();
     AtomicInteger responses = new AtomicInteger();
+    AtomicReference<ResponseObservation> semantic = new AtomicReference<>();
     StreamObserver response = new StreamObserver() {
       @Override public void onNext(Object value) {
         try {
-          assertPopulatedResponse(value, method.getFullMethodName(), expectation, request, remote);
+          ResponseObservation current = assertPopulatedResponse(value, method.getFullMethodName(), expectation, request, remote);
+          semantic.compareAndSet(null, current);
           responses.incrementAndGet();
         } catch (Throwable error) {
           failure.set(error);
@@ -294,10 +298,10 @@ final class RpcScenarioEvidenceTest {
     requests.onCompleted();
     assertTrue(done.await(5, TimeUnit.SECONDS), method.getFullMethodName() + " did not complete");
     if (failure.get() != null) throw new AssertionError(method.getFullMethodName(), failure.get());
-    return responses.get();
+    return new InvocationResult(responses.get(), semantic.get());
   }
 
-  private static void assertPopulatedResponse(Object response, String rpc,
+  private static ResponseObservation assertPopulatedResponse(Object response, String rpc,
       ResponseExpectation expectation, Object request, boolean remote) {
     if (!(response instanceof Message message)) {
       throw new AssertionError(rpc + " returned a non-protobuf response");
@@ -316,7 +320,11 @@ final class RpcScenarioEvidenceTest {
     // message has fields. A genuinely fieldless protobuf response is valid;
     // for every typed response, a default instance is evidence that the
     // fixture never exercised the Rust wire contract.
-    if (expectation.allowEmptyResponse()) return;
+    boolean identityMatches = true;
+    boolean hasIdentityRule = expectation.responseRules().stream().anyMatch(rule -> rule.contains("identity"));
+    if (expectation.allowEmptyResponse()) {
+      return new ResponseObservation(descriptor.getFullName(), fields, expectation.responseRules(), true);
+    }
     if (message.getAllFields().isEmpty() || message.getSerializedSize() == 0) {
       throw new AssertionError(rpc + " returned a default protobuf response with no populated Rust wire fields");
     }
@@ -329,7 +337,10 @@ final class RpcScenarioEvidenceTest {
         }
         assertMatchingIdentityFields(requestMessage, message, rpc);
       }
+      if (rule.contains("identity")) identityMatches = true;
     }
+    return new ResponseObservation(descriptor.getFullName(), fields, expectation.responseRules(),
+        !hasIdentityRule || identityMatches);
   }
 
   private static void requireResponseField(Message response, String rpc, String name) {
@@ -460,8 +471,13 @@ final class RpcScenarioEvidenceTest {
       List<String> responseFields, boolean allowEmptyResponse, List<String> validations,
       List<String> responseRules) {}
 
+  private record InvocationResult(int responseCount, ResponseObservation semantic) {}
+
+  private record ResponseObservation(String responseType, List<String> presentFields,
+      List<String> checkedRules, boolean identityMatches) {}
+
   private record Scenario(String revision, String family, String rpc, String shape,
-      String executionMode, int responseCount) {
+      String executionMode, int responseCount, ResponseObservation semantic) {
     String json() {
       return "{\"schema\":\"acyclic.sdk.rpc-scenario-result.v1\",\"source_revision\":\""
           + RpcScenarioEvidenceTest.json(revision) + "\",\"status\":\"passed\",\"invoked\":true,\"exit_code\":0,"
@@ -469,9 +485,22 @@ final class RpcScenarioEvidenceTest {
           + "\",\"shape\":\"" + shape + "\",\"transport\":\"grpc\",\"execution_mode\":\""
           + RpcScenarioEvidenceTest.json(executionMode) + "\","
           + "\"rpc_outcome\":{\"status\":\"ok\",\"code\":0,\"response_count\":"
-          + responseCount + "},"
+          + responseCount + "},\"semantic_evidence\":{\"response_type\":\""
+          + RpcScenarioEvidenceTest.json(semantic.responseType()) + "\",\"present_fields\":"
+          + stringArray(semantic.presentFields()) + ",\"checked_rules\":"
+          + stringArray(semantic.checkedRules()) + ",\"identity_matches\":"
+          + semantic.identityMatches() + "},"
           + "\"checks\":[\"invocation\",\"transport\",\"receiver-response\",\"serialization\"]}\n";
     }
+  }
+
+  private static String stringArray(List<String> values) {
+    StringBuilder result = new StringBuilder("[");
+    for (int index = 0; index < values.size(); index++) {
+      if (index > 0) result.append(',');
+      result.append('"').append(json(values.get(index))).append('"');
+    }
+    return result.append(']').toString();
   }
 
   private static String requiredProperty(String name) {
