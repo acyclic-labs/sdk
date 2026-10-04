@@ -43,3 +43,5 @@ Models are mocked. No sandbox or cloud is implemented. Workspace routing is not 
 
 Latest focused checkpoint: source39707322e passes 34/34 native storage, message-page and communication cases; receipt and archived artifact recorded. No production or installed gate is closed by this focused run.
 
+
+Cold recursive boundary checkpoint: source9dfc54cb5 passes 3/3 with fresh providers after releasing original handles. The production coordinator and fault-injection failures remain independent open gates.

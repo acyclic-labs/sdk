@@ -352,3 +352,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 - Bounded cached message paging: [34/34 native focused cases](checkpoint-bounded-messages-native-2026-10-04.json), source39707322e and archived executable. Production and installed qualification remain open.
 
+
+- Genuine cold recursive reopen: [3/3 native boundary cases](checkpoint-cold-prefix-native-pass-2026-10-04.json), source9dfc54cb5 and archived executable. Every cold request preserves prefix/serialized bytes and binding; observed full manifests equal durable records. Prior failures remain retained. Production coordinator and installed qualification remain open.

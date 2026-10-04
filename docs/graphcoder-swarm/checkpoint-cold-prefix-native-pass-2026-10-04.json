@@ -1,0 +1,19 @@
+{
+  "source_commit": "9dfc54cb5643ec6d7ebbb6dad2a4ffdbc0e5941e",
+  "scope": "Real native recursive siblings/grandchild boundaries and genuine cold provider reopen after original handles are released. Every cold request retains frozen prefix bytes, serialized request equality, binding digest and canonical manifest validation; complete observed manifests equal durable journal content. Production coordinator and installed terminal qualification remain separate and open.",
+  "artifact_sha256": "19AD96F0C74F4FD35D6566AFAFB9F0564A8CA4A6D0975AA6BB75CE9D771B343C",
+  "log_sha256": "CA403746383BD034530707D3448CFB2FF8B950ECA79F98E7C86253D3D42D575E",
+  "suite_sha256": "2EC3C29CADD848C4AA84C19AAEED72C18B604FA9FE6B4E6170C89AAC1C39929A",
+  "platform": "Windows native",
+  "lock_sha256": "48095856B845B20159465F61CEBB719DDCEB5E7D77B277FAA5DB663AC6D1E4C9",
+  "log_path": "C:\\graphcoder-builds\\root-qualification-artifacts\\9dfc54cb5\\cold-prefix.txt",
+  "ignored": 0,
+  "gate": "recursive prefix and cold manifest boundary",
+  "passed": 3,
+  "exit_code": 0,
+  "requirements_sha256": "4D723C6391A234D8CF18C149960C3D45EB19459A642FF326CB8DC439DC1605EF",
+  "artifact_path": "C:\\graphcoder-builds\\root-qualification-artifacts\\9dfc54cb5\\model_fork_boundary-42e6a945b5a7d783.exe",
+  "failed": 0,
+  "source_tree": "57e7024b0121a8e1ff5f71f8d1057fe3e46a69bb",
+  "command": "cargo test --locked -p acyclic-harness --features filesystem-local --test model_fork_boundary"
+}
