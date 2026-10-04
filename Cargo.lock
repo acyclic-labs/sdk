@@ -437,10 +437,15 @@ dependencies = [
 name = "acyclic-sdk-luajit-remote"
 version = "0.2.0"
 dependencies = [
+ "acyclic-sdk-contract-wire",
  "acyclic-stream",
  "bytes",
  "futures",
+ "prost",
+ "prost-reflect",
  "rcgen",
+ "reqwest",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tonic",
