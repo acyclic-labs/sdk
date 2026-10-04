@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnOwnedProcess, terminateOwnedProcess } from "./owned-process.js";
+import { spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "./owned-process.js";
 
 const executable = process.env.GRAPHCODER_RUNTIME;
 const args = process.argv.slice(2);
@@ -20,21 +20,35 @@ if (executable === undefined || executable.trim() === "") {
     stdio: "inherit",
   });
   let finished = false;
-  const cleanup = (): void => {
-    if (finished) return;
-    void terminateOwnedProcess(child);
+  let cleanupPromise: Promise<OwnedProcessTermination> | undefined;
+  let cleanupReported = false;
+  const cleanup = (): Promise<OwnedProcessTermination> => {
+    cleanupPromise ??= terminateOwnedProcess(child);
+    return cleanupPromise;
   };
-  process.once("SIGINT", cleanup);
-  process.once("SIGTERM", cleanup);
+  const surfaceCleanup = (outcome: OwnedProcessTermination): void => {
+    if (cleanupReported) return;
+    cleanupReported = true;
+    if (outcome.kind === "terminated") return;
+    process.stderr.write(`runtime process cleanup ${outcome.kind}\n`);
+    if (process.exitCode === undefined || process.exitCode === 0) process.exitCode = 1;
+  };
+  const onSignal = (): void => {
+    if (finished) return;
+    void cleanup().then(surfaceCleanup);
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
   child.once("error", error => {
     finished = true;
     process.stderr.write(`failed to start graphcoder-runtime: ${error.message}\n`);
     process.exitCode = 1;
   });
-  child.once("close", (code, signal) => {
+  child.once("close", async (code, signal) => {
     finished = true;
-    process.removeListener("SIGINT", cleanup);
-    process.removeListener("SIGTERM", cleanup);
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
     process.exitCode = code ?? (signal === null ? 1 : 1);
+    if (cleanupPromise !== undefined) surfaceCleanup(await cleanup());
   });
 }

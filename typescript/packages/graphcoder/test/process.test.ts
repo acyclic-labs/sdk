@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "../src/owned-process.js";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { createNodeGraphCoderConnection as createConnection, JsonLineGraphCoderBridge, type GraphCoderProcessDiagnostic, type GraphCoderProcessBridgeOptions } from "../src/node.js";
@@ -95,15 +96,43 @@ process.stdin.on("data", chunk => {
 });
 `;
 
+async function waitForStableSize(path: string, stableMs = 150, maximumMs = 1_000): Promise<number> {
+  const deadline = Date.now() + maximumMs;
+  let previous = (await stat(path)).size;
+  let stableSince = Date.now();
+  while (Date.now() < deadline) {
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
+    const current = (await stat(path)).size;
+    if (current !== previous) {
+      previous = current;
+      stableSince = Date.now();
+    } else if (Date.now() - stableSince >= stableMs) {
+      return current;
+    }
+  }
+  throw new Error(`file remained active: ${path}`);
+}
+
+async function waitForChildClose(child: ReturnType<typeof spawnOwnedProcess>, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await Promise.race([
+    new Promise<void>(resolve => child.once("close", resolve)),
+    new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 describe("JSON-lines process bridge", () => {
   test("terminates descendants that retain the owned bridge pipes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "graphcoder-owned-process-"));
     const marker = join(directory, "descendant-alive");
+    const pidFile = join(directory, "descendant.pid");
     await writeFile(marker, "", "utf8");
-    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; setInterval(() => fs.appendFileSync(marker, 'x'), 20);";
+    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; const pidFile = process.argv[2]; fs.writeFileSync(pidFile, String(process.pid)); setInterval(() => fs.appendFileSync(marker, 'x'), 20);";
     const systemRoot = process.env.SystemRoot ?? "";
-    const owner = `const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1]], { env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); process.stdin.resume(); setInterval(() => {}, 100000);`;
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", owner, marker], env: env() });
+    const owner = `const fs = require('node:fs'); const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1], process.argv[2]], { detached: true, windowsHide: true, env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); const deadline = Date.now() + 5000; const wait = setInterval(() => { if (fs.existsSync(process.argv[2]) || Date.now() >= deadline) { clearInterval(wait); process.exit(0); } }, 10);`;
+    const outcomes: OwnedProcessTermination[] = [];
+    let descendantPid: number | undefined;
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", owner, marker, pidFile], env: env(), onDiagnostic: event => { if (event.kind === "termination") outcomes.push(event.outcome); } });
     try {
       for (let attempt = 0; attempt < 50 && (await stat(marker)).size === 0; attempt += 1) {
         await new Promise<void>(resolve => setTimeout(resolve, 20));
@@ -111,13 +140,56 @@ describe("JSON-lines process bridge", () => {
       const before = (await stat(marker)).size;
       expect(before).toBeGreaterThan(0);
       bridge.close("descendant cleanup");
-      await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
-      const cleaned = (await stat(marker)).size;
-      await new Promise<void>(resolve => setTimeout(resolve, 150));
-      expect((await stat(marker)).size).toBe(cleaned);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]?.pid).toBeGreaterThan(0);
+      if (process.platform === "win32") {
+        expect(outcomes[0]?.kind).toBe("unknown");
+        await expect(bridge.waitForExit(250)).rejects.toMatchObject({ code: "transport" });
+        descendantPid = Number(await readFile(pidFile, "utf8"));
+        expect(Number.isSafeInteger(descendantPid)).toBe(true);
+        try { process.kill(descendantPid); } catch { /* the fixture may have exited between observation and cleanup */ }
+        await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+      } else {
+        await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+      }
+      await expect(waitForStableSize(marker)).resolves.toBeGreaterThan(0);
     } finally {
       bridge.close("descendant cleanup fallback");
+      if (process.platform === "win32" && descendantPid !== undefined) {
+        try { process.kill(descendantPid); } catch { /* the fixture may have exited between observation and cleanup */ }
+      }
+      await bridge.waitForExit(2_000).catch(() => undefined);
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("shares one bounded cleanup operation across repeated termination requests", async () => {
+    const child = spawnOwnedProcess(process.execPath, ["-e", "setInterval(() => {}, 100000)"], { env: env(), stdio: "ignore" });
+    try {
+      const first = terminateOwnedProcess(child, 50);
+      expect(terminateOwnedProcess(child, 50)).toBe(first);
+      const outcome = await first;
+      expect(["terminated", "timeout", "unknown"]).toContain(outcome.kind);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        try { child.kill(); } catch { /* cleanup remains bounded */ }
+        await waitForChildClose(child, 1_000);
+      }
+    }
+  });
+
+  test("reports a failed Windows tree command without claiming cleanup", async () => {
+    if (process.platform !== "win32") return;
+    const child = spawnOwnedProcess(process.execPath, ["-e", "setInterval(() => {}, 100000)"], { env: env(), stdio: "ignore" });
+    const previousSystemRoot = process.env.SystemRoot;
+    process.env.SystemRoot = join(tmpdir(), "graphcoder-missing-system-root");
+    try {
+      await expect(terminateOwnedProcess(child, 50)).resolves.toMatchObject({ kind: "unknown", reason: expect.stringContaining("taskkill could not start") });
+    } finally {
+      if (previousSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = previousSystemRoot;
+      try { if (child.exitCode === null && child.signalCode === null) child.kill(); } catch { /* fixture cleanup is best effort after the typed outcome */ }
+      await waitForChildClose(child, 1_000);
     }
   });
 

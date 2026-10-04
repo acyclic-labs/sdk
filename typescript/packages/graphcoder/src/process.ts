@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_pr
 import { randomUUID } from "node:crypto";
 import { GraphCoderError } from "./api.js";
 import { checkedRequestId, type GraphCoderBridge, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
-import { spawnOwnedProcess, terminateOwnedProcess } from "./owned-process.js";
+import { spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "./owned-process.js";
 
 export interface GraphCoderProcessBridgeOptions {
   readonly executable: string;
@@ -26,6 +26,7 @@ export type GraphCoderProcessDiagnostic =
   | { readonly kind: "unmatched_response"; readonly requestId: string }
   | { readonly kind: "cancelled_response"; readonly requestId: string }
   | { readonly kind: "cancel_control_failed"; readonly requestId: string; readonly message: string }
+  | { readonly kind: "termination"; readonly outcome: OwnedProcessTermination }
   | { readonly kind: "exit"; readonly code: number | null; readonly signal: NodeJS.Signals | null };
 
 /** The terminal state observed from the owned child process. */
@@ -63,7 +64,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   #stdoutBuffer = Buffer.alloc(0);
   #closed = false;
   #exit: GraphCoderProcessExit | undefined;
-  #termination: Promise<void> | undefined;
+  #termination: Promise<OwnedProcessTermination> | undefined;
   #terminationDone = false;
 
   constructor(options: GraphCoderProcessBridgeOptions) {
@@ -91,10 +92,11 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     this.#child.stdout.on("data", chunk => this.#consumeStdout(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     this.#child.stderr.on("data", chunk => this.#emitDiagnostic({ kind: "stderr", text: Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk) }));
     this.#child.on("error", error => this.#finish(new GraphCoderError("transport", `bridge process error: ${error.message}`)));
+    this.#child.on("exit", () => this.#requestTermination());
     this.#child.on("close", (code, signal) => {
       this.#emitDiagnostic({ kind: "exit", code, signal });
-      this.#recordExit({ kind: "closed", code, signal });
       this.#finish(new GraphCoderError("transport", code === 0 ? "bridge process closed before replying" : `bridge process exited with code ${code ?? "unknown"}`));
+      this.#recordExit({ kind: "closed", code, signal });
     });
   }
 
@@ -288,14 +290,22 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   }
 
   #requestTermination(): void {
-    if (this.#termination !== undefined || this.#child.exitCode !== null || this.#child.signalCode !== null) return;
+    if (this.#termination !== undefined) return;
     this.#terminationDone = false;
-    this.#termination = terminateOwnedProcess(this.#child).catch(() => {
+    this.#termination = terminateOwnedProcess(this.#child).catch(error => {
       try { this.#child.kill(); }
       catch { /* The close event remains the authoritative termination signal. */ }
+      return {
+        kind: "unknown",
+        pid: this.#child.pid ?? -1,
+        reason: error instanceof Error ? error.message : String(error),
+      } satisfies OwnedProcessTermination;
     });
-    void this.#termination.then(() => {
+    void this.#termination.then(outcome => {
       this.#terminationDone = true;
+      // The helper reports an explicit typed outcome through the diagnostic
+      // channel so hosts can retain ownership when cleanup is uncertain.
+      this.#emitDiagnostic({ kind: "termination", outcome });
       this.#resolveExitWaiters();
     });
   }
