@@ -398,10 +398,14 @@ impl ForkAtBatch {
         let mut unallocated = seed.clone();
         unallocated.operation_id = OperationId::from_bytes([252; 16]);
         unallocated.validate()?;
-        assert!(matches!(HarnessStorage::from_published_fork(
+        let unallocated_error = HarnessStorage::from_published_fork(
             self.limits.file_bytes, self.host.clone(), self.stream.clone(),
             issuer.clone(), parent, &unallocated,
-        ).await, Err(Error::Conflict(message)) if message.contains("another preparation")));
+        ).await.err().ok_or_else(|| Error::Storage("unallocated fork was accepted".into()))?;
+        assert!(
+            matches!(&unallocated_error, Error::Conflict(message) if message.contains("another preparation")),
+            "unexpected unallocated fork error: {unallocated_error:?}"
+        );
         self.assert_child_unbound(&seed, issuer).await?;
         let mut changed_project = seed.clone();
         for resource in &mut changed_project.resources {
