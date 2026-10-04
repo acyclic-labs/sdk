@@ -14,6 +14,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = true }
 acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
+acyclic-objects = { version = "=0.2.0", path = "../objects" }
 bytes.workspace = true
 futures.workspace = true
 prost.workspace = true
