@@ -485,6 +485,9 @@ fn invalid_wire(text: &'static str) -> AcyclicWireResult {
 }
 
 fn provider_wire(error: StreamError) -> AcyclicWireResult {
+    if error == StreamError::InvalidArgument {
+        return invalid_wire("invalid argument");
+    }
     AcyclicWireResult {
         status: AcyclicStatus::ProviderError,
         response: empty_buffer(),
@@ -1140,9 +1143,9 @@ mod tests {
         assert_ne!(engine, 0);
         let append = acyclic_stream::wire::AppendRequest {
             path: "wire/test".to_owned(),
-            records: vec![b"value".to_vec()],
+            records: vec![b"value".to_vec().into()],
             if_tail: None,
-            idempotency_key: Some(b"wire-append".to_vec()),
+            idempotency_key: Some(b"wire-append".to_vec().into()),
         }
         .encode_to_vec();
         let operation = b"append";
