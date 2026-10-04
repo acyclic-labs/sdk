@@ -110,9 +110,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       return Promise.reject(new GraphCoderError("invalid_input", "exit wait timeout must be a nonnegative safe integer"));
     }
     if (this.#exit !== undefined) {
-      return this.#termination === undefined || this.#terminationDone
+      const observed = this.#termination === undefined || this.#terminationDone
         ? Promise.resolve(this.#exit)
         : this.#termination.then(() => this.#exit!);
+      return timeoutMs === undefined ? observed : waitWithTimeout(observed, timeoutMs);
     }
     return new Promise<GraphCoderProcessExit>((resolve, reject) => {
       let settled = false;
@@ -363,4 +364,17 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
     }
   }
+}
+
+function waitWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new GraphCoderError("transport", "timed out waiting for bridge process exit")), timeoutMs);
+    promise.then(value => {
+      clearTimeout(timer);
+      resolve(value);
+    }, error => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
 }

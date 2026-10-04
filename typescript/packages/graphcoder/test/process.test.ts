@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { spawn as spawnChild } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "../src/owned-process.js";
+import { retryOwnedProcessTermination, spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "../src/owned-process.js";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { createNodeGraphCoderConnection as createConnection, JsonLineGraphCoderBridge, type GraphCoderProcessDiagnostic, type GraphCoderProcessBridgeOptions } from "../src/node.js";
 import { GraphCoderTerminal } from "../src/terminal.js";
 import type { GraphCoderWireRequest } from "../src/bridge.js";
@@ -129,10 +131,13 @@ describe("JSON-lines process bridge", () => {
     await writeFile(marker, "", "utf8");
     const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; const pidFile = process.argv[2]; fs.writeFileSync(pidFile, String(process.pid)); setInterval(() => fs.appendFileSync(marker, 'x'), 20);";
     const systemRoot = process.env.SystemRoot ?? "";
-    const owner = `const fs = require('node:fs'); const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1], process.argv[2]], { detached: true, windowsHide: true, env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); const deadline = Date.now() + 5000; const wait = setInterval(() => { if (fs.existsSync(process.argv[2]) || Date.now() >= deadline) { clearInterval(wait); process.exit(0); } }, 10);`;
+    const detached = process.platform === "win32";
+    const owner = `const fs = require('node:fs'); const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1], process.argv[2]], { detached: ${detached}, windowsHide: true, env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); const deadline = Date.now() + 5000; const wait = setInterval(() => { if (fs.existsSync(process.argv[2]) || Date.now() >= deadline) { clearInterval(wait); process.exit(0); } }, 10);`;
     const outcomes: OwnedProcessTermination[] = [];
+    let terminationResolve: ((outcome: OwnedProcessTermination) => void) | undefined;
+    const terminationObserved = new Promise<OwnedProcessTermination>(resolve => { terminationResolve = resolve; });
     let descendantPid: number | undefined;
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", owner, marker, pidFile], env: env(), onDiagnostic: event => { if (event.kind === "termination") outcomes.push(event.outcome); } });
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", owner, marker, pidFile], env: env(), onDiagnostic: event => { if (event.kind === "termination") { outcomes.push(event.outcome); terminationResolve?.(event.outcome); } } });
     try {
       for (let attempt = 0; attempt < 50 && (await stat(marker)).size === 0; attempt += 1) {
         await new Promise<void>(resolve => setTimeout(resolve, 20));
@@ -140,10 +145,11 @@ describe("JSON-lines process bridge", () => {
       const before = (await stat(marker)).size;
       expect(before).toBeGreaterThan(0);
       bridge.close("descendant cleanup");
+      const termination = await terminationObserved;
       expect(outcomes).toHaveLength(1);
-      expect(outcomes[0]?.pid).toBeGreaterThan(0);
+      expect(termination.pid).toBeGreaterThan(0);
       if (process.platform === "win32") {
-        expect(outcomes[0]?.kind).toBe("unknown");
+        expect(termination.kind).toBe("unknown");
         await expect(bridge.waitForExit(250)).rejects.toMatchObject({ code: "transport" });
         descendantPid = Number(await readFile(pidFile, "utf8"));
         expect(Number.isSafeInteger(descendantPid)).toBe(true);
@@ -191,6 +197,36 @@ describe("JSON-lines process bridge", () => {
       try { if (child.exitCode === null && child.signalCode === null) child.kill(); } catch { /* fixture cleanup is best effort after the typed outcome */ }
       await waitForChildClose(child, 1_000);
     }
+  });
+
+  test("does not cache invalid cleanup input and keeps terminal outcomes reusable", async () => {
+    const child = spawnOwnedProcess(process.execPath, ["-e", "setInterval(() => {}, 100000)"], { env: env(), stdio: "ignore" });
+    try {
+      await expect(terminateOwnedProcess(child, -1)).rejects.toThrow("nonnegative safe integer");
+      const first = await terminateOwnedProcess(child, 50);
+      expect(["terminated", "timeout", "unknown"]).toContain(first.kind);
+      const second = await retryOwnedProcessTermination(child, 50);
+      expect(["terminated", "timeout", "unknown"]).toContain(second.kind);
+    } finally {
+      try { if (child.exitCode === null && child.signalCode === null) child.kill(); } catch { /* cleanup remains bounded */ }
+      await waitForChildClose(child, 1_000);
+    }
+  });
+
+  test("native CLI awaits cleanup on a natural runtime exit", async () => {
+    const cli = fileURLToPath(new URL("../src/native-cli.ts", import.meta.url));
+    const child = spawnChild(process.execPath, [cli, "-e", "process.exit(0)", "--model-fixture=test"], {
+      cwd: process.cwd(),
+      env: { ...env(), GRAPHCODER_RUNTIME: process.execPath },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stderr = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", chunk => { stderr += String(chunk); });
+    await waitForChildClose(child, 5_000);
+    expect(child.exitCode).toBe(0);
+    expect(stderr).toBe("");
   });
 
   test("composes the process bridge with the public transport adapter", async () => {

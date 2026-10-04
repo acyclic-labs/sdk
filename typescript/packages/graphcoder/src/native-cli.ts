@@ -49,6 +49,6 @@ if (executable === undefined || executable.trim() === "") {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
     process.exitCode = code ?? (signal === null ? 1 : 1);
-    if (cleanupPromise !== undefined) surfaceCleanup(await cleanup());
+    surfaceCleanup(await cleanup());
   });
 }

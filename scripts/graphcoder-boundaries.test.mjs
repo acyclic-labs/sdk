@@ -128,6 +128,7 @@ test("host subpaths are lazy and own the only process integration", () => {
     "node:child_process",
     "node:crypto",
     "node:process",
+    "node:path",
     "node:readline/promises",
     "node:stream",
   ]);
@@ -136,7 +137,7 @@ test("host subpaths are lazy and own the only process integration", () => {
     assert.equal(rootGraph.files.has(resolve(sourceRoot, entry)), false, entry + " is eagerly reachable from the root API");
     for (const { file, specifier } of graph.nodeImports) {
       assert.ok(allowedNodeImports.has(specifier), file + " imports forbidden host capability " + specifier);
-      assert.ok(/(?:^|\/)(?:terminal|process|node|node-dispatcher|native-cli|cli)\.ts$/u.test(file), file + " owns a Node import outside the host adapter");
+      assert.ok(/(?:^|\/)(?:terminal|process|node|node-dispatcher|native-cli|cli|owned-process)\.ts$/u.test(file), file + " owns a Node import outside the host adapter");
     }
     assert.deepEqual(
       graph.externalImports.filter(({ specifier }) => !specifier.startsWith("node:")),

@@ -6,15 +6,19 @@ export type OwnedProcessTermination =
   | { readonly kind: "timeout"; readonly pid: number; readonly phase: "command" | "pipes" }
   | { readonly kind: "unknown"; readonly pid: number; readonly reason: string; readonly exitCode?: number | null };
 
-type OwnedProcessState = { closed: boolean };
-type ProcessWait = "closed" | "timeout";
+type OwnedProcessState = { closed: boolean; errored: boolean };
+type ProcessWait = "closed" | "timeout" | "error";
 type TaskkillOutcome =
   | { readonly kind: "closed"; readonly code: number | null }
   | { readonly kind: "error"; readonly message: string }
   | { readonly kind: "timeout" };
 
 const states = new WeakMap<ChildProcess, OwnedProcessState>();
-const terminations = new WeakMap<ChildProcess, Promise<OwnedProcessTermination>>();
+interface TerminationRecord {
+  readonly promise: Promise<OwnedProcessTermination>;
+  outcome?: OwnedProcessTermination;
+}
+const terminations = new WeakMap<ChildProcess, TerminationRecord>();
 
 /** Start a host-owned process in its own process group. This is lifecycle ownership, not a sandbox. */
 export function spawnOwnedProcess(
@@ -37,11 +41,34 @@ export function spawnOwnedProcess(
  * competing cleanup commands.
  */
 export function terminateOwnedProcess(child: ChildProcess, graceMs = 250): Promise<OwnedProcessTermination> {
+  if (!Number.isSafeInteger(graceMs) || graceMs < 0) {
+    return Promise.reject(new RangeError("process cleanup grace must be a nonnegative safe integer"));
+  }
   const existing = terminations.get(child);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) return existing.promise;
   const pending = terminateOwnedProcessOnce(child, graceMs);
-  terminations.set(child, pending);
+  const record: TerminationRecord = { promise: pending };
+  terminations.set(child, record);
+  void pending.then(outcome => { record.outcome = outcome; });
   return pending;
+}
+
+/**
+ * Retry an incomplete cleanup after its host has resolved the ownership
+ * condition. A pending operation is still shared; a confirmed termination is
+ * never replayed. On Windows a root-exit uncertainty remains safe and typed
+ * until a native boundary supplies stronger ownership evidence.
+ */
+export function retryOwnedProcessTermination(child: ChildProcess, graceMs = 250): Promise<OwnedProcessTermination> {
+  if (!Number.isSafeInteger(graceMs) || graceMs < 0) {
+    return Promise.reject(new RangeError("process cleanup grace must be a nonnegative safe integer"));
+  }
+  const existing = terminations.get(child);
+  if (existing === undefined || existing.outcome?.kind === "terminated") {
+    return terminateOwnedProcess(child, graceMs);
+  }
+  terminations.delete(child);
+  return terminateOwnedProcess(child, graceMs);
 }
 
 async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): Promise<OwnedProcessTermination> {
@@ -60,6 +87,7 @@ async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): 
     // recycle a PID through taskkill in that state; surface uncertainty until
     // the host's native process boundary can resolve ownership safely.
     if (!isAlive(child)) {
+      if (track(child).closed) return { kind: "terminated", pid };
       return { kind: "unknown", pid, reason: "owned process root exited before Windows tree cleanup" };
     }
     const command = await terminateWindowsProcessTree(pid, child, Math.max(graceMs, 1_000));
@@ -70,14 +98,20 @@ async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): 
     if (isAlive(child)) {
       try { child.kill(); } catch { /* close remains authoritative */ }
     }
-    if (await waitForClose(child, graceMs) === "closed") return { kind: "terminated", pid };
+    const pipeWait = await waitForClose(child, graceMs);
+    if (pipeWait === "closed") return { kind: "terminated", pid };
+    if (pipeWait === "error") return { kind: "unknown", pid, reason: "owned process emitted an error during termination" };
     return { kind: "timeout", pid, phase: "pipes" };
   }
 
   const softSignal = signalProcessGroup(pid, "SIGTERM", child);
-  if (await waitForClose(child, graceMs) === "closed") return { kind: "terminated", pid };
+  const softWait = await waitForClose(child, graceMs);
+  if (softWait === "closed") return { kind: "terminated", pid };
+  if (softWait === "error") return { kind: "unknown", pid, reason: "owned process emitted an error during termination" };
   const hardSignal = signalProcessGroup(pid, "SIGKILL", child);
-  if (await waitForClose(child, graceMs) === "closed") return { kind: "terminated", pid };
+  const hardWait = await waitForClose(child, graceMs);
+  if (hardWait === "closed") return { kind: "terminated", pid };
+  if (hardWait === "error") return { kind: "unknown", pid, reason: "owned process emitted an error during termination" };
   if (softSignal === "error" || hardSignal === "error") {
     return { kind: "unknown", pid, reason: "owned process group rejected termination" };
   }
@@ -106,14 +140,17 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals, child: ChildPro
 function track(child: ChildProcess): OwnedProcessState {
   const existing = states.get(child);
   if (existing !== undefined) return existing;
-  const state: OwnedProcessState = { closed: false };
+  const state: OwnedProcessState = { closed: false, errored: false };
   states.set(child, state);
   child.once("close", () => { state.closed = true; });
+  child.once("error", () => { state.errored = true; });
   return state;
 }
 
 function waitForClose(child: ChildProcess, timeoutMs: number): Promise<ProcessWait> {
-  if (track(child).closed) return Promise.resolve("closed");
+  const state = track(child);
+  if (state.errored) return Promise.resolve("error");
+  if (state.closed) return Promise.resolve("closed");
   if (timeoutMs === 0) return Promise.resolve("timeout");
   return new Promise(resolve => {
     let settled = false;
@@ -125,7 +162,7 @@ function waitForClose(child: ChildProcess, timeoutMs: number): Promise<ProcessWa
     };
     const timer = setTimeout(() => finish("timeout"), timeoutMs);
     child.once("close", () => finish("closed"));
-    child.once("error", () => finish("closed"));
+    child.once("error", () => finish("error"));
   });
 }
 
