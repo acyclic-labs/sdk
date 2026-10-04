@@ -3056,6 +3056,24 @@ mod tests {
             Some(EffectStatus::Succeeded { .. })
         ));
 
+        // Reconciliation has no original dispatch to compare against. A
+        // substituted store record must still bind operation and effect.
+        let original = store.state.lock().unwrap().records[0].clone();
+        for change_operation in [false, true] {
+            let mut forged = original.clone();
+            if change_operation {
+                forged.key.operation_id = OperationId::from_bytes([57; 16]);
+            } else {
+                forged.key.effect_id = EffectId::from_bytes([58; 16]);
+            }
+            store.state.lock().unwrap().records[0] = forged;
+            assert!(matches!(
+                provider.reconcile(dispatch.attempt_id).await,
+                Err(Error::Conflict(message)) if message.contains("effect identity")
+            ));
+        }
+        store.state.lock().unwrap().records[0] = original;
+
         let replay_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let restarted = NativeExecutionProvider::new_with_receipt_store(
             content,
