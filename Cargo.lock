@@ -437,6 +437,7 @@ dependencies = [
 name = "acyclic-sdk-luajit-remote"
 version = "0.2.0"
 dependencies = [
+ "acyclic-objects",
  "acyclic-sdk-contract-wire",
  "acyclic-stream",
  "bytes",
