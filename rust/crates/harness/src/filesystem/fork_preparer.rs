@@ -44,6 +44,21 @@ struct SeedBinding {
     digest: [u8; 32],
 }
 
+/// Durable intent for changing an already allocated seed to the exact
+/// publication boundary selected by the parent. The intent is written before
+/// `/seed.json` is changed, so recovery can finish the same transition without
+/// guessing whether the seed mutation happened.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeedRebindIntent {
+    operation_id: OperationId,
+    parent: Authority,
+    child: Authority,
+    volume: VolumeRef,
+    from: [u8; 32],
+    to: [u8; 32],
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureAttempt {
@@ -845,27 +860,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     async fn bind_fork_seed(&self, seed: &ForkSeed) -> Result<()> {
         let binding = seed_binding(seed)?;
-        for volume in [
-            &seed.child_private_volume,
-            seed.resources
-                .iter()
-                .find_map(|resource| {
-                    if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                        Some(volume)
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| Error::Invalid("fork has no child project".into()))?,
-        ] {
-            let journal = allocation_ref(self.provider.clone(), volume)?;
+        for volume in seed_allocation_volumes(seed)? {
+            let journal = allocation_ref(self.provider.clone(), &volume)?;
             let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096)
                 .await?
                 .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
             if claim.operation_id != seed.operation_id
                 || claim.parent != seed.parent
                 || claim.child != seed.child
-                || claim.volume != *volume
+                || claim.volume != volume
             {
                 return Err(Error::Conflict(
                     "fork child volume belongs to another preparation".into(),
@@ -897,6 +900,214 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(prior) if prior == binding => {}
                 Some(_) => return Err(Error::Conflict("fork allocation has another seed".into())),
                 None => return Err(Error::Indeterminate(seed.operation_id)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Rebinds an allocated seed after another child has advanced the parent
+    /// stream. The rebind intent is durable before either allocation journal
+    /// mutates its seed binding. A retry therefore either observes the exact
+    /// same intent and finishes the write, or fails closed on a different
+    /// transition.
+    pub(crate) async fn rebind_fork_seed(
+        &self,
+        old_seed: &ForkSeed,
+        new_seed: &ForkSeed,
+    ) -> Result<()> {
+        old_seed.validate()?;
+        new_seed.validate()?;
+        let old_binding = seed_binding(old_seed)?;
+        let new_binding = seed_binding(new_seed)?;
+        if old_seed.operation_id != new_seed.operation_id
+            || old_seed.parent != new_seed.parent
+            || old_seed.child != new_seed.child
+            || old_seed.child_agent != new_seed.child_agent
+            || old_seed.child_private_volume != new_seed.child_private_volume
+            || seed_allocation_volumes(old_seed)?[1] != seed_allocation_volumes(new_seed)?[1]
+            || old_seed.attached_agents != new_seed.attached_agents
+            || old_seed.omissions != new_seed.omissions
+            || old_seed.child_private_generation != new_seed.child_private_generation
+            || old_seed.inherited_context != new_seed.inherited_context
+            || old_seed.inherited_through_sequence != new_seed.inherited_through_sequence
+            || old_seed.shared_grants != new_seed.shared_grants
+            || old_seed.reference_grants != new_seed.reference_grants
+            || old_seed.model_boundary != new_seed.model_boundary
+            || old_seed.attachment_manifests != new_seed.attachment_manifests
+            || old_seed.boundary != new_seed.boundary
+            || old_seed.resources.len() != new_seed.resources.len()
+            || old_seed
+                .resources
+                .iter()
+                .zip(&new_seed.resources)
+                .any(|(old, new)| !captured_resource_rebind_shape_equal(old, new))
+        {
+            return Err(Error::Conflict(
+                "fork seed rebind changes data outside its parent history boundary".into(),
+            ));
+        }
+        if old_binding == new_binding {
+            return Ok(());
+        }
+        let volumes = seed_allocation_volumes(new_seed)?;
+        let mut journals = Vec::with_capacity(volumes.len());
+        // Phase one: every allocation records the same authenticated intent.
+        // No seed file is changed until all journals have acknowledged it.
+        for volume in &volumes {
+            let journal = allocation_ref(self.provider.clone(), volume)?;
+            let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096)
+                .await?
+                .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
+            if claim.operation_id != new_seed.operation_id
+                || claim.parent != new_seed.parent
+                || claim.child != new_seed.child
+                || claim.volume != *volume
+            {
+                return Err(Error::Conflict(
+                    "fork child volume belongs to another preparation".into(),
+                ));
+            }
+            let current =
+                read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", 4_096).await?;
+            // Keep each transition as an immutable receipt. A single mutable
+            // intent file would permanently fence a later retry if the
+            // parent advanced again before the earlier publication reconciled.
+            let path = seed_rebind_path(new_binding.digest);
+            let same_identity = |intent: &SeedRebindIntent| {
+                intent.operation_id == new_seed.operation_id
+                    && intent.parent == new_seed.parent
+                    && intent.child == new_seed.child
+                    && intent.volume == *volume
+            };
+            if current
+                .as_ref()
+                .is_some_and(|binding| binding.digest == new_binding.digest)
+            {
+                let prior = read_record::<A, O, SeedRebindIntent>(self, &journal, &path, 4_096)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Conflict(
+                            "fork seed reached a rebound value without its durable intent".into(),
+                        )
+                    })?;
+                if !same_identity(&prior) || prior.to != new_binding.digest {
+                    return Err(Error::Conflict(
+                        "fork allocation has another seed rebind intent".into(),
+                    ));
+                }
+                journals.push((journal, prior));
+                continue;
+            }
+            let from = match current {
+                None => old_binding.digest,
+                Some(binding) if binding.digest == old_binding.digest => binding.digest,
+                Some(binding) => {
+                    let prior_path = seed_rebind_path(binding.digest);
+                    let prior =
+                        read_record::<A, O, SeedRebindIntent>(self, &journal, &prior_path, 4_096)
+                            .await?
+                            .ok_or_else(|| {
+                                Error::Conflict(
+                                    "fork seed changed without a durable rebind intent".into(),
+                                )
+                            })?;
+                    if !same_identity(&prior) || prior.to != binding.digest {
+                        return Err(Error::Conflict(
+                            "fork allocation has another seed rebind intent".into(),
+                        ));
+                    }
+                    binding.digest
+                }
+            };
+            let intent = SeedRebindIntent {
+                operation_id: new_seed.operation_id,
+                parent: new_seed.parent.clone(),
+                child: new_seed.child.clone(),
+                volume: volume.clone(),
+                from,
+                to: new_binding.digest,
+            };
+            match read_record::<A, O, SeedRebindIntent>(self, &journal, &path, 4_096).await? {
+                Some(prior) if prior == intent => {}
+                Some(_) => {
+                    return Err(Error::Conflict(
+                        "fork allocation has another seed rebind intent".into(),
+                    ));
+                }
+                None => {
+                    let observed = self.resolve(&journal).await?;
+                    let key = IdempotencyKey::new(format!(
+                        "fork:{}:seed-rebind-intent:{}",
+                        new_seed.operation_id,
+                        blake3::Hash::from_bytes(new_binding.digest).to_hex(),
+                    ))?;
+                    match self
+                        .apply(
+                            &journal,
+                            Some(&observed.generation),
+                            &[WorkspaceMutation::PutFile {
+                                path: path.clone(),
+                                bytes: encode_record(&intent, 4_096)?,
+                            }],
+                            &key,
+                        )
+                        .await
+                    {
+                        Ok(_) | Err(Error::Conflict(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                    match read_record::<A, O, SeedRebindIntent>(self, &journal, &path, 4_096)
+                        .await?
+                    {
+                        Some(prior) if prior == intent => {}
+                        Some(_) => {
+                            return Err(Error::Conflict(
+                                "fork allocation has another seed rebind intent".into(),
+                            ));
+                        }
+                        None => return Err(Error::Indeterminate(new_seed.operation_id)),
+                    }
+                }
+            }
+            journals.push((journal, intent));
+        }
+        // Phase two: the intent makes this mutation replayable. An absent
+        // seed is allowed because a crash may have occurred before the first
+        // preparer binding; a different binding is never overwritten.
+        for (journal, intent) in journals {
+            let binding_path = "/seed.json";
+            match read_record::<A, O, SeedBinding>(self, &journal, binding_path, 4_096).await? {
+                Some(prior) if prior.digest == intent.to => continue,
+                Some(prior) if prior.digest != intent.from => {
+                    return Err(Error::Conflict("fork allocation has another seed".into()));
+                }
+                Some(_) | None => {}
+            }
+            let observed = self.resolve(&journal).await?;
+            let key = IdempotencyKey::new(format!(
+                "fork:{}:seed-rebind:{}",
+                new_seed.operation_id,
+                blake3::Hash::from_bytes(intent.to).to_hex(),
+            ))?;
+            match self
+                .apply(
+                    &journal,
+                    Some(&observed.generation),
+                    &[WorkspaceMutation::PutFile {
+                        path: binding_path.into(),
+                        bytes: encode_record(&SeedBinding { digest: intent.to }, 4_096)?,
+                    }],
+                    &key,
+                )
+                .await
+            {
+                Ok(_) | Err(Error::Conflict(_)) => {}
+                Err(error) => return Err(error),
+            }
+            match read_record::<A, O, SeedBinding>(self, &journal, binding_path, 4_096).await? {
+                Some(prior) if prior.digest == intent.to => {}
+                Some(_) => return Err(Error::Conflict("fork allocation has another seed".into())),
+                None => return Err(Error::Indeterminate(new_seed.operation_id)),
             }
         }
         Ok(())
@@ -964,6 +1175,43 @@ fn seed_binding(seed: &ForkSeed) -> Result<SeedBinding> {
     Ok(SeedBinding {
         digest: *blake3::hash(&encode_record(seed, MAX_REPORT_BYTES)?).as_bytes(),
     })
+}
+
+fn seed_allocation_volumes(seed: &ForkSeed) -> Result<[VolumeRef; 2]> {
+    let child_project = seed
+        .resources
+        .iter()
+        .find_map(|resource| {
+            if let ResourceRevision::Project { volume, .. } = &resource.revision {
+                Some(volume.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
+    Ok([seed.child_private_volume.clone(), child_project])
+}
+
+fn seed_rebind_path(digest: [u8; 32]) -> String {
+    format!(
+        "/seed-rebind-intent-{}.json",
+        blake3::Hash::from_bytes(digest).to_hex()
+    )
+}
+
+fn captured_resource_rebind_shape_equal(old: &CapturedResource, new: &CapturedResource) -> bool {
+    resource_revision_rebind_equal(&old.source, &new.source)
+        && resource_revision_rebind_equal(&old.revision, &new.revision)
+}
+
+fn resource_revision_rebind_equal(old: &ResourceRevision, new: &ResourceRevision) -> bool {
+    match (old, new) {
+        (ResourceRevision::History(old), ResourceRevision::History(new)) => {
+            old.as_resource().provider() == new.as_resource().provider()
+                && old.as_resource().key() == new.as_resource().key()
+        }
+        _ => old == new,
+    }
 }
 
 fn validate_capture(selection: &ForkSelection, capture: &Capture) -> Result<()> {
