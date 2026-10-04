@@ -19,6 +19,8 @@ done
 : "${output:?--output is required}"
 root=$(cd "$root" && pwd)
 mkdir -p "$output"
+source_revision=$(git -C "$root" rev-parse HEAD)
+[[ "$source_revision" =~ ^[0-9a-fA-F]{40}$ ]]
 target_dir=${target_dir:-"$output/rust-target"}
 manifest="$root/rust/crates/sdk-embedded-prototype/Cargo.toml"
 
@@ -60,6 +62,8 @@ bytes=$(stat -c '%s' "$destination/$file")
 cat > "$output/native/$rid/native-producer.json" <<EOF
 {
   "schema": "acyclic.sdk.dotnet.embedded.native.v1",
+  "source_revision": "$source_revision",
+  "source_revision_kind": "git-oid",
   "rust_target": "$target",
   "rid": "$rid",
   "file": "$file",
@@ -67,6 +71,24 @@ cat > "$output/native/$rid/native-producer.json" <<EOF
   "dynamic_musl": true,
   "sha256": "$sha256",
   "bytes": $bytes
+}
+EOF
+cat > "$output/native/native-manifest.json" <<EOF
+{
+  "schema": "acyclic.sdk.dotnet.embedded.native-manifest.v1",
+  "source_revision": "$source_revision",
+  "source_revision_kind": "git-oid",
+  "assets": [
+    {
+      "rust_target": "$target",
+      "rid": "$rid",
+      "file": "$file",
+      "machine": "$machine",
+      "dynamic_musl": true,
+      "sha256": "$sha256",
+      "bytes": $bytes
+    }
+  ]
 }
 EOF
 echo "staged $target -> $destination/$file"

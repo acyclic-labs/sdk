@@ -9,6 +9,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$sourceRevision = (& git -C $root rev-parse HEAD).Trim()
+if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$') { throw "The embedded package requires an exact Git source revision" }
 $out = if ([System.IO.Path]::IsPathRooted($Output)) { [System.IO.Path]::GetFullPath($Output) } else { [System.IO.Path]::GetFullPath((Join-Path $root $Output)) }
 $targetMap = [ordered]@{
   "x86_64-pc-windows-msvc" = @{ Rid = "win-x64"; File = "acyclic_sdk_embedded_prototype.dll" }
@@ -116,7 +118,15 @@ foreach ($targetName in $targets) {
   }
 }
 
-$records | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $nativeRoot "native-manifest.json") -Encoding utf8NoBOM
+$nativeManifest = [ordered]@{
+  schema = "acyclic.sdk.dotnet.embedded.native-manifest.v1"
+  source_revision = $sourceRevision
+  source_revision_kind = "git-oid"
+  assets = @($records)
+}
+$nativeManifestPath = Join-Path $nativeRoot "native-manifest.json"
+$nativeManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $nativeManifestPath -Encoding utf8NoBOM
+$nativeManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $nativeManifestPath).Hash.ToLowerInvariant()
 if ($NativeOnly) {
   Write-Output "staged native embedded assets under $nativeRoot"
   exit 0
@@ -163,8 +173,13 @@ if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "Embedded pac
 $manifestOutput = [ordered]@{
   schema = "acyclic.sdk.dotnet.embedded.producer-output.v2"
   source = "rust/crates/sdk-embedded-prototype"
+  source_revision = $sourceRevision
+  source_revision_kind = "git-oid"
   package = "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg"
   package_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash.ToLowerInvariant()
+  native_manifest = "native/native-manifest.json"
+  native_manifest_sha256 = $nativeManifestSha256
+  native_assets = @($records)
   dotnet_sdk = $dotnetVersion
   targets = @($targets)
   native_root = "native"
