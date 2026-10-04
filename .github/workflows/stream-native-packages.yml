@@ -374,6 +374,14 @@ jobs:
             --packages-root "$RUNNER_TEMP/rust-typescript/typescript/packages" \
             --output "$RUNNER_TEMP/qualification/typescript-remote-defaults.json"
 
+      - name: Compile generated TypeScript consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/qualify-typescript-generated-consumer.mjs \
+            --packages-root "$RUNNER_TEMP/rust-typescript/typescript/packages" \
+            --output "$RUNNER_TEMP/qualification/typescript-generated-consumer.json"
+
       - name: Upload TypeScript native and WASM receipt
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
