@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Held activation recovery commits `3017f4438` and `afe10d592` have four P1 integration blockers: public attestation without authoritative boundary verification, owner-service substitution, cross-process duplicate dispatch, and missing direct activation recovery tests. See [held source review](checkpoint-held-activation-review-2026-10-04.json). Existing root recovery passes do not establish child activation correctness.
+
 Current root real swarm fault verification still passes only 1/5 after the executor fixes. The four required failures remain fork manifest binding, two missing child dispatches, and cancellation never reaching the child provider. See [current source-bound fault results](checkpoint-current-swarm-faults-2026-10-04.json). This replaces the older-source baseline for these five cases; the recursive worker's unintegrated repairs remain separately qualified.
 
 Latest root checkpoint: isolated executor contracts pass 25/25 at `48e079fae`, including repeated rejection occurrences, actual serialized provider input, cold replay, and duplicate preparation refusal. These tests use an in-memory executor journal and do not prove real swarm recovery. The normal native application build finished successfully; [build provenance](checkpoint-native-distributable-build-2026-10-04.json) identifies its exact binary. Installed package and ConPTY execution against that binary are pending.

@@ -1,0 +1,38 @@
+{
+  "scope": "Read-only review of held child activation recovery checkpoints",
+  "commits": ["3017f443891b3642ed7aa5d90d445b48a1df0db4", "afe10d59290f29d43fefc95686fbb1b0879fd439"],
+  "integration_status": "held",
+  "verification_kind": "source review, not runtime qualification",
+  "blockers": [
+    {
+      "priority": "P1",
+      "source": "rust/crates/harness/src/filesystem/model_fork.rs:61",
+      "contract": "Public attachment helper accepts ordinary boundary/publication parts and attests their digests without authoritative journal admission verification",
+      "required_proof": "Unadmitted and mismatched boundary/publication produce no attestation; public path retains opaque verified authority"
+    },
+    {
+      "priority": "P1",
+      "source": "rust/crates/harness/src/filesystem/swarm_local.rs:4182",
+      "contract": "Service-taking activation routes bypass durable plan binding and permit host, stream, or issuer substitution",
+      "required_proof": "Changed issuer, stream, and host are refused before publication or dispatch"
+    },
+    {
+      "priority": "P1",
+      "source": "rust/crates/harness/src/filesystem/swarm_local.rs:3110",
+      "contract": "Process-local task gate does not fence two independently opened swarms dispatching the same activating child",
+      "required_proof": "Durable exact-request owner claim; concurrent recovery produces one provider call and one terminal publication"
+    },
+    {
+      "priority": "P1",
+      "source": "rust/crates/harness/tests/local_swarm_recovery.rs:234",
+      "contract": "Existing root recovery tests do not exercise the new recover_activation path or recursive restart",
+      "required_proof": "Direct activation recovery, authority swaps, publication crash windows, concurrent recovery, and recursive restart tests"
+    }
+  ],
+  "boundaries": [
+    "Held worker source is not integrated into the root branch",
+    "Reported root-session recovery passes do not qualify child activation",
+    "Strict recursive composition mismatch remains a separate required failure",
+    "All findings were assigned to the owning fork worker; no contract is waived"
+  ]
+}
