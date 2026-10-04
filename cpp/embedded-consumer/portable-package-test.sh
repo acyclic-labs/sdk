@@ -23,6 +23,44 @@ esac
 CXX="${CXX:-c++}"
 CC="${CC:-cc}"
 
+# Rust's Linux musl target defaults to crt-static, which suppresses cdylib
+# output.  Embedded packages intentionally ship a shared C ABI, so request
+# the dynamic musl CRT from the producer.  Keep this entirely inside the
+# package recipe; consumers never need a Rust feature flag.
+MUSL_DYNAMIC=0
+if [[ "$RUST_TARGET" == *-unknown-linux-musl ]]; then
+  MUSL_DYNAMIC=1
+  case "$RUST_TARGET" in
+    x86_64-unknown-linux-musl)
+      MUSL_CC="${MUSL_CC:-$(command -v x86_64-linux-musl-gcc || command -v musl-gcc || true)}"
+      ;;
+    aarch64-unknown-linux-musl)
+      MUSL_CC="${MUSL_CC:-$(command -v aarch64-linux-musl-gcc || true)}"
+      if [[ -z "$MUSL_CC" && "$(uname -m)" == "aarch64" ]]; then
+        MUSL_CC="$(command -v musl-gcc || true)"
+      fi
+      ;;
+    *)
+      echo "unsupported musl target: $RUST_TARGET" >&2
+      exit 2
+      ;;
+  esac
+  if [[ -z "$MUSL_CC" ]]; then
+    echo "no pinned musl C compiler is available for $RUST_TARGET" >&2
+    exit 2
+  fi
+  export MUSL_CC
+  export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=-crt-static"
+  target_env="${RUST_TARGET//-/_}"
+  export "CC_${target_env}=$MUSL_CC"
+  export "CARGO_TARGET_${target_env^^}_LINKER=$MUSL_CC"
+  # The embedded C++ consumers only use the C ABI and C headers.  Alpine's
+  # musl-gcc can compile these translation units without introducing a glibc
+  # linker; a dedicated MUSL_CXX may be supplied by a pinned cross toolchain.
+  CXX="${MUSL_CXX:-$MUSL_CC}"
+  CC="$MUSL_CC"
+fi
+
 case "$RUST_TARGET" in
   *-apple-darwin) RUNTIME_NAME="libacyclic_sdk_embedded_prototype.dylib"; RUNTIME_ENV="DYLD_LIBRARY_PATH" ;;
   *-linux-*) RUNTIME_NAME="libacyclic_sdk_embedded_prototype.so"; RUNTIME_ENV="LD_LIBRARY_PATH" ;;
@@ -38,8 +76,13 @@ PREFIX="$BUILD_DIRECTORY/prefix"
 INSTALLED_BUILD="$BUILD_DIRECTORY/installed-consumer"
 
 CMAKE_PLATFORM_ARGS=()
+C_CONSUMER_PLATFORM_ARGS=()
 if [[ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]]; then
   CMAKE_PLATFORM_ARGS+=("-DCMAKE_OSX_ARCHITECTURES=$CMAKE_OSX_ARCHITECTURES")
+  # The installed C consumer is compiled directly rather than through CMake;
+  # keep its architecture identical to the package and CMake consumers when a
+  # macOS x64 lane runs on an Apple Silicon host.
+  C_CONSUMER_PLATFORM_ARGS+=("-arch" "$CMAKE_OSX_ARCHITECTURES")
 fi
 
 mkdir -p "$BUILD_DIRECTORY"
@@ -66,6 +109,23 @@ RUNTIME="$RELEASE_DIRECTORY/$RUNTIME_NAME"
 HEADER="$(find "$RELEASE_DIRECTORY/build" -type f -name acyclic_embedded_prototype.h -print -quit)"
 test -f "$RUNTIME"
 test -n "$HEADER"
+if (( MUSL_DYNAMIC )); then
+  command -v readelf >/dev/null || {
+    echo "readelf is required to verify the dynamic musl ABI" >&2
+    exit 2
+  }
+  readelf -d "$RUNTIME" | grep -Eq 'Shared library: \[libc\.so\]' || {
+    echo "musl runtime is not dynamically linked to musl libc: $RUNTIME" >&2
+    exit 2
+  }
+fi
+
+assert_musl_executable() {
+  if (( MUSL_DYNAMIC )) && ! readelf -l "$1" | grep -Eq 'Requesting program interpreter: .*/ld-musl([^/]*)?\.so\.1'; then
+    echo "consumer is not a musl executable: $1" >&2
+    exit 2
+  fi
+}
 
 cmake -S "$CONSUMER_SOURCE" -B "$CONSUMER_BUILD" -G Ninja \
   -DCMAKE_CXX_COMPILER="$CXX" \
@@ -73,6 +133,9 @@ cmake -S "$CONSUMER_SOURCE" -B "$CONSUMER_BUILD" -G Ninja \
   -DACYCLIC_EMBEDDED_HEADER="$HEADER" \
   "${CMAKE_PLATFORM_ARGS[@]}"
 cmake --build "$CONSUMER_BUILD"
+assert_musl_executable "$CONSUMER_BUILD/acyclic_cpp_embedded_consumer"
+assert_musl_executable "$CONSUMER_BUILD/acyclic_cpp_embedded_negative"
+assert_musl_executable "$CONSUMER_BUILD/acyclic_cpp_embedded_cross_thread"
 ctest --test-dir "$CONSUMER_BUILD" --output-on-failure
 cmake --install "$CONSUMER_BUILD" --prefix "$PREFIX"
 
@@ -82,9 +145,10 @@ test -f "$INSTALLED_RUNTIME"
 test -f "$INSTALLED_HEADER"
 INSTALLED_LIBRARY_DIRECTORY="$(dirname "$INSTALLED_RUNTIME")"
 C_CONSUMER="$BUILD_DIRECTORY/c-consumer"
-"$CC" -std=c11 -I"$PREFIX/include" \
+"$CC" "${C_CONSUMER_PLATFORM_ARGS[@]}" -std=c11 -I"$PREFIX/include" \
   "$ROOT/rust/crates/sdk-embedded-prototype/tests/c_consumer.c" \
   "$INSTALLED_RUNTIME" -o "$C_CONSUMER"
+assert_musl_executable "$C_CONSUMER"
 env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" "$C_CONSUMER"
 env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" \
   python3 "$ROOT/rust/crates/sdk-embedded-prototype/tests/python_consumer.py" "$INSTALLED_RUNTIME"
@@ -93,6 +157,7 @@ cmake -S "$CONSUMER_SOURCE/install-consumer" -B "$INSTALLED_BUILD" -G Ninja \
   -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_PREFIX_PATH="$PREFIX" \
   "${CMAKE_PLATFORM_ARGS[@]}"
 cmake --build "$INSTALLED_BUILD"
+assert_musl_executable "$INSTALLED_BUILD/acyclic_cpp_installed_consumer"
 env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" "$INSTALLED_BUILD/acyclic_cpp_installed_consumer"
 
 python3 - "$BUILD_DIRECTORY/platform-package.json" "$PREFIX" "$RUST_TARGET" "$RUNTIME_NAME" "$ROOT" "$INSTALLED_RUNTIME" <<'PY'
@@ -112,6 +177,7 @@ source_inputs = [
     "rust/crates/sdk-embedded-prototype/Cargo.lock",
     "rust/crates/sdk-embedded-prototype/build.rs",
     "rust/crates/sdk-embedded-prototype/src/lib.rs",
+    "rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs",
     "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
     "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
     "cpp/embedded-consumer/CMakeLists.txt",
