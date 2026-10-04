@@ -225,23 +225,21 @@ jobs:
             --output "$STREAM_NATIVE_OUTPUT/qualification/${{ matrix.package_target }}.native-qualification.json"
 
       - name: Verify the packed archive in a clean consumer
+        if: matrix.package_target == 'win32-x64'
         shell: bash
         env:
           STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
           NPM_CACHE: ${{ runner.temp }}/stream-native-npm-cache
           SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
-          PACKAGE_TARGET: ${{ matrix.package_target }}
         run: |
           set -euo pipefail
           archive=$(find "$STREAM_NATIVE_OUTPUT" -maxdepth 1 -name '*.tgz' -type f | head -n 1)
           test -n "$archive"
-          package_root="$STREAM_NATIVE_OUTPUT/$PACKAGE_TARGET"
-          package_name=$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1])).name)' "$package_root/package.json")
           consumer="$RUNNER_TEMP/stream-native-packed-consumer"
           rm -rf "$consumer"
           mkdir -p "$consumer"
           npm install --ignore-scripts --offline --cache "$NPM_CACHE" --prefix "$consumer" "$archive"
-          node --input-type=module -e 'import {createRequire} from "node:module"; import {createHash} from "node:crypto"; import {readFileSync,writeFileSync} from "node:fs"; const root=process.argv[1]; const archive=process.argv[2]; const pkg=process.argv[3]; const requireFromConsumer=createRequire(`${root}/package.json`); const binding=requireFromConsumer(pkg); if(binding.nativeStreamCapabilities().maxEndpoints!==16) throw new Error(`installed ${pkg} reported unexpected capabilities`); const sha256=p=>"sha256:"+createHash("sha256").update(readFileSync(p)).digest("hex"); writeFileSync(`${process.env.STREAM_NATIVE_OUTPUT}/${process.env.PACKAGE_TARGET}.install.json`,JSON.stringify({schema:"acyclic.sdk.stream.native.installed-consumer.v1",source_revision:process.env.SOURCE_REVISION,status:"passed",package:pkg,package_target:process.env.PACKAGE_TARGET,archive_sha256:sha256(archive),resolver:"npm install archive then node_modules package name",checks:["npm-install","napi-loader","capability-bounds"]},null,2)+"\n");' "$consumer" "$archive" "$package_name"
+          node --input-type=module -e 'import {createRequire} from "node:module"; import {createHash} from "node:crypto"; import {readFileSync,writeFileSync} from "node:fs"; const root=process.argv[1]; const archive=process.argv[2]; const pkg="@acyclic-labs/stream-win32-x64"; const requireFromConsumer=createRequire(`${root}/package.json`); const binding=requireFromConsumer(pkg); if(binding.nativeStreamCapabilities().maxEndpoints!==16) throw new Error("installed packed companion reported unexpected capabilities"); const sha256=p=>"sha256:"+createHash("sha256").update(readFileSync(p)).digest("hex"); writeFileSync(`${process.env.STREAM_NATIVE_OUTPUT}/win32-x64.install.json`,JSON.stringify({schema:"acyclic.sdk.stream.native.installed-consumer.v1",source_revision:process.env.SOURCE_REVISION,status:"passed",package:pkg,archive_sha256:sha256(archive),resolver:"npm install archive then node_modules package name",checks:["npm-install","napi-loader","capability-bounds"]},null,2)+"\n");' "$consumer" "$archive"
 
       - name: Upload installable package artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

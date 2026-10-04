@@ -241,3 +241,80 @@ impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
         Ok(Response::new(workers_wire::InvokeResponse { status: 200, headers: vec![workers_wire::Header { name: "content-type".into(), value: "application/octet-stream".into() }], body: if request.body.is_empty() { b"fixture-response".to_vec() } else { request.body }, resolved_sha256: version.sha256, resolved_revision: Some(deployment.revision) }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_actors::wire::actors_service_server::ActorsService;
+    use acyclic_workers::wire::workers_service_server::WorkersService;
+
+    #[tokio::test]
+    async fn actors_cover_all_operations_and_preserve_state() {
+        let fixture = ActorsFixture::new();
+        let created = fixture.create_actor(Request::new(actors_wire::CreateActorRequest {
+            code_sha256: vec![7, 8],
+            home_region: "eu-west".into(),
+            bindings: Vec::new(),
+            limits: None,
+            subscriptions: vec![actors_wire::SubscriptionSpec {
+                subscription_id: "events".into(),
+                stream_path: "/events".into(),
+                start: None,
+                placement_anchor: true,
+            }],
+            idempotency_key: "create-1".into(),
+        })).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(created.home_region, "eu-west");
+        assert_eq!(created.subscriptions.len(), 1);
+
+        let updated = fixture.update_actor(Request::new(actors_wire::UpdateActorRequest {
+            actor_id: created.actor_id.clone(),
+            code_sha256: vec![9],
+            bindings: Vec::new(),
+            limits: None,
+            expected_configuration_revision: created.configuration_revision,
+            idempotency_key: "update-1".into(),
+        })).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(updated.configuration_revision, created.configuration_revision + 1);
+        assert_eq!(fixture.inspect_actor(Request::new(actors_wire::InspectActorRequest { actor_id: created.actor_id.clone() })).await.unwrap().into_inner().actor.unwrap().code_sha256, vec![9]);
+
+        let added = fixture.add_subscription(Request::new(actors_wire::AddSubscriptionRequest {
+            actor_id: created.actor_id.clone(),
+            subscription: Some(actors_wire::SubscriptionSpec { subscription_id: "audit".into(), stream_path: "/audit".into(), start: None, placement_anchor: false }),
+            idempotency_key: "add-1".into(),
+        })).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(added.subscriptions.len(), 2);
+        let removed = fixture.remove_subscription(Request::new(actors_wire::RemoveSubscriptionRequest { actor_id: created.actor_id.clone(), subscription_id: "audit".into(), idempotency_key: "remove-1".into() })).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(removed.subscriptions.len(), 1);
+        let resumed = fixture.resume_subscription(Request::new(actors_wire::ResumeSubscriptionRequest { actor_id: created.actor_id.clone(), subscription_id: "events".into(), idempotency_key: "resume-1".into() })).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(resumed.subscriptions[0].state, actors_wire::SubscriptionState::Active as i32);
+        let checkpointed = fixture.checkpoint_actor(Request::new(actors_wire::CheckpointActorRequest { actor_id: created.actor_id.clone(), idempotency_key: "checkpoint-1".into() })).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(checkpointed.checkpoint_epoch, 1);
+        let invocation = fixture.invoke_actor(Request::new(actors_wire::InvokeActorRequest { actor_id: created.actor_id, method: "POST".into(), url: "/echo".into(), body: b"payload".to_vec(), headers: Vec::new() })).await.unwrap().into_inner();
+        assert_eq!(invocation.status, 200);
+        assert_eq!(invocation.body, b"payload");
+    }
+
+    #[tokio::test]
+    async fn workers_cover_all_operations_and_bind_outputs_to_version() {
+        let fixture = WorkersFixture::new();
+        let module = b"export default { fetch() { return new Response('ok') } }".to_vec();
+        let published = fixture.publish_version(Request::new(workers_wire::PublishVersionRequest { javascript_module: module.clone(), expected_sha256: Sha256::digest(&module).to_vec(), idempotency_key: "publish-1".into() })).await.unwrap().into_inner().version.unwrap();
+        assert_eq!(published.size_bytes, module.len() as u64);
+        let selected = fixture.select_deployment(Request::new(workers_wire::SelectDeploymentRequest { alias: "production".into(), version_sha256: published.sha256.clone(), expected_revision: None, idempotency_key: "select-1".into() })).await.unwrap().into_inner().deployment.unwrap();
+        assert_eq!(selected.version.as_ref().unwrap().sha256, published.sha256);
+        let submitted = fixture.submit_job(Request::new(workers_wire::SubmitJobRequest { target: None, input: Some(workers_wire::Payload { source: Some(workers_wire::payload::Source::InlineBytes(b"job-input".to_vec())) }), limits: None, retry: None, idempotency_key: "job-1".into() })).await.unwrap().into_inner().job.unwrap();
+        assert_eq!(submitted.state, workers_wire::JobState::Succeeded as i32);
+        assert_eq!(submitted.resolved_sha256, published.sha256);
+        let inspected = fixture.inspect_job(Request::new(workers_wire::InspectJobRequest { job_id: submitted.job_id.clone() })).await.unwrap().into_inner().job.unwrap();
+        assert_eq!(inspected.result.unwrap().body, b"job-input");
+        let cancelled = fixture.cancel_job(Request::new(workers_wire::CancelJobRequest { job_id: submitted.job_id, idempotency_key: "cancel-1".into() })).await.unwrap().into_inner().job.unwrap();
+        assert!(cancelled.cancellation_requested);
+        let invoked = fixture.invoke_version(Request::new(workers_wire::InvokeVersionRequest { version_sha256: published.sha256.clone(), method: "POST".into(), url: "/run".into(), headers: Vec::new(), body: b"invoke-input".to_vec() })).await.unwrap().into_inner();
+        assert_eq!(invoked.status, 200);
+        assert_eq!(invoked.resolved_sha256, published.sha256);
+        let deployment_invoked = fixture.invoke_deployment(Request::new(workers_wire::InvokeDeploymentRequest { alias: "production".into(), method: "GET".into(), url: "/".into(), headers: Vec::new(), body: Vec::new() })).await.unwrap().into_inner();
+        assert_eq!(deployment_invoked.resolved_revision, Some(selected.revision));
+        assert!(!deployment_invoked.body.is_empty());
+    }
+}
