@@ -9,36 +9,37 @@
 
 use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_harness::{
+    Error, IdempotencyKey, OperationId, Result, TaskId,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{
-        workspace_ref, FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase,
-        LocalSwarmBindings, LocalSwarmConfig, PersistentLocalSwarm, WorkspaceMutation,
+        FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
+        LocalSwarmConfig, PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
     },
     model::{Model, ModelContent, ModelEvent, ModelProvider, ModelRequest},
     resources::ProviderRef,
     swarm_budget::{
-        SwarmBudgetLimits, SwarmForkRequest, SwarmResourceRequest, SwarmUsage, SwarmUsageSource,
+        DispatchPermitFactory, RootBudgetRefresh, SwarmBudgetLimits, SwarmForkRequest,
+        SwarmResourceRequest, SwarmUsage, SwarmUsageSource,
     },
     swarm_budget_journal::SwarmBudgetJournal,
-    Error, IdempotencyKey, OperationId, Result, TaskId,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{
+    StreamExt as _,
     future::BoxFuture,
     stream::{self, BoxStream},
-    StreamExt as _,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tempfile::tempdir;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 fn operation(byte: u8) -> OperationId {
     OperationId::from_bytes([byte; 16])
@@ -61,6 +62,7 @@ enum ProviderMode {
     StorageFailureForChild,
     InvalidFailureForChild,
     Recursive,
+    ReconcileOversized,
 }
 
 /// A deterministic provider that exposes real dispatch concurrency and
@@ -72,6 +74,8 @@ struct BudgetProvider {
     released: Arc<AtomicBool>,
     child_started: AtomicUsize,
     calls: AtomicUsize,
+    before_prepare_calls: AtomicUsize,
+    prepare_dispatch_calls: AtomicUsize,
     requests: Mutex<Vec<Vec<u8>>>,
 }
 
@@ -84,6 +88,8 @@ impl BudgetProvider {
             released: Arc::new(AtomicBool::new(false)),
             child_started: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
+            before_prepare_calls: AtomicUsize::new(0),
+            prepare_dispatch_calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
         })
     }
@@ -230,6 +236,44 @@ impl ModelProvider for BudgetProvider {
         &'a self,
         _attempt: acyclic_harness::model::ModelAttempt,
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        if matches!(self.mode, ProviderMode::ReconcileOversized) {
+            return Box::pin(async {
+                Ok(Some(vec![ModelEvent::Content {
+                    delta: "x".repeat(512),
+                }]))
+            });
+        }
+        Box::pin(async { Ok(None) })
+    }
+
+    fn reconcile_admitted<'a>(
+        &'a self,
+        request: ModelRequest,
+        attempt: acyclic_harness::model::ModelAttempt,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async move {
+            self.admit(&request)?;
+            if matches!(self.mode, ProviderMode::ReconcileOversized) {
+                return Ok(Some(vec![ModelEvent::Content {
+                    delta: "x".repeat(512),
+                }]));
+            }
+            self.reconcile(attempt).await
+        })
+    }
+
+    fn before_model_prepare<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
+        self.before_prepare_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn prepare_model_dispatch<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _step: u32,
+        _request_digest: [u8; 32],
+    ) -> BoxFuture<'a, Result<Option<acyclic_harness::model::ModelDispatchPermit>>> {
+        self.prepare_dispatch_calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(None) })
     }
 }
@@ -446,12 +490,22 @@ async fn persistent_local_budget_binds_owner_source_and_reopens_without_redispat
     assert!(usage.consumed.model_steps >= 3);
     assert!(usage.consumed.output_bytes > 0);
     assert!(usage.consumed.execution_time_ms <= budget.max_execution_time_ms);
+    assert!(
+        provider.before_prepare_calls.load(Ordering::SeqCst) > 0,
+        "the wrapped root provider must invoke the inner preparation hook"
+    );
+    assert!(
+        provider.prepare_dispatch_calls.load(Ordering::SeqCst) > 0,
+        "the wrapped root provider must invoke the inner dispatch preparation hook"
+    );
     assert_eq!(swarm.sessions().await.len(), 3);
-    assert!(swarm
-        .sessions()
-        .await
-        .into_iter()
-        .all(|session| session.phase == LocalSessionPhase::Completed));
+    assert!(
+        swarm
+            .sessions()
+            .await
+            .into_iter()
+            .all(|session| session.phase == LocalSessionPhase::Completed)
+    );
     let calls_before_reopen = provider.calls.load(Ordering::SeqCst);
     drop(swarm);
 
@@ -478,8 +532,125 @@ async fn persistent_local_budget_binds_owner_source_and_reopens_without_redispat
 }
 
 #[tokio::test]
-async fn persistent_local_budget_holds_one_sibling_active_and_releases_after_completion(
-) -> Result<()> {
+async fn persistent_local_budget_public_child_run_cannot_dispatch_after_terminal_completion()
+-> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let budget = limits(3, 4, 2);
+    let owner =
+        acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-direct-child-owner", 0)?;
+    let source = Arc::new(RecordingUsageSource::default());
+    let provider = BudgetProvider::new(ProviderMode::Normal);
+    let swarm = open_swarm(
+        directory.path(),
+        provider.clone(),
+        ProviderMode::Normal,
+        budget,
+        owner,
+        source,
+    )
+    .await?;
+
+    swarm
+        .run_root(operation(0x17), "complete child before direct run")
+        .await?;
+    let calls_before = provider.calls.load(Ordering::SeqCst);
+    let error = swarm
+        .run(task(0xA1), operation(0xF7), "unmetered direct child run")
+        .await
+        .expect_err("a terminal child cannot be dispatched under a fresh operation");
+    assert!(matches!(error, Error::Conflict(_)));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), calls_before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn metered_reconcile_admitted_enforces_output_bound_before_returning_events() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (_host, stream, _project) = local_project(directory.path()).await?;
+    let mut budget = limits(1, 1, 1);
+    budget.max_output_bytes = 8;
+    let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-reconcile-owner", 0)?;
+    let session = operation(0xF8);
+    let journal = SwarmBudgetJournal::start_with_root_dispatch(
+        &stream,
+        session,
+        owner,
+        budget,
+        IdempotencyKey::new("root-reconcile")?,
+    )
+    .await?;
+    let provider = BudgetProvider::new(ProviderMode::ReconcileOversized);
+    let source = Arc::new(RecordingUsageSource::default());
+    let (metered, _meter) = journal.metered_root_provider(provider, source)?;
+    let request = ModelRequest {
+        model: Model::new("mock", "reconcile", "1", json!({}))?,
+        messages: vec![acyclic_harness::model::ModelMessage {
+            role: acyclic_harness::model::ModelRole::User,
+            content: ModelContent::Text("resume".into()),
+        }],
+        tools: Vec::new(),
+        max_output_tokens: None,
+    };
+    let result = metered
+        .reconcile_admitted(
+            request,
+            acyclic_harness::model::ModelAttempt {
+                operation_id: session,
+                step: 0,
+                request_digest: [0xF9; 32],
+                observed: Vec::new(),
+            },
+        )
+        .await;
+    assert!(
+        matches!(result, Err(Error::Conflict(ref message)) if message.contains("output")),
+        "oversized reconciled output must be rejected by the metered boundary: {result:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn metered_root_permit_path_invokes_inner_prepare_hook_before_factory() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (_host, stream, _project) = local_project(directory.path()).await?;
+    let budget = limits(1, 1, 1);
+    let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-prepare-owner", 0)?;
+    let session = operation(0xFA);
+    let journal = SwarmBudgetJournal::start_with_root_dispatch(
+        &stream,
+        session,
+        owner,
+        budget,
+        IdempotencyKey::new("root-prepare")?,
+    )
+    .await?;
+    let provider = BudgetProvider::new(ProviderMode::Normal);
+    let source = Arc::new(RecordingUsageSource::default());
+    let refresh: RootBudgetRefresh = Arc::new(|| {
+        Box::pin(async {
+            Ok(SwarmResourceRequest {
+                model_steps: 1,
+                output_bytes: 64,
+                execution_time_ms: 1_000,
+            })
+        })
+    });
+    let permit_factory: DispatchPermitFactory =
+        Arc::new(|_, _, _| Box::pin(async { Err(Error::Conflict("test permit stop".into())) }));
+    let (wrapped, _meter) = journal.metered_root_provider_with_refresh_and_permit(
+        provider.clone(),
+        source,
+        refresh,
+        permit_factory,
+    )?;
+    let _ = wrapped.prepare_model_dispatch(session, 0, [0xFA; 32]).await;
+    assert_eq!(provider.prepare_dispatch_calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn persistent_local_budget_holds_one_sibling_active_and_releases_after_completion()
+-> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let budget = limits(2, 3, 1);
     let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-capacity-owner", 0)?;
@@ -568,8 +739,8 @@ async fn persistent_local_budget_retains_capacity_when_measurement_is_uncertain(
 }
 
 #[tokio::test]
-async fn persistent_local_budget_cancels_before_release_for_non_storage_provider_error(
-) -> Result<()> {
+async fn persistent_local_budget_cancels_before_release_for_non_storage_provider_error()
+-> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let budget = limits(2, 3, 1);
     let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-error-owner", 0)?;
@@ -672,16 +843,22 @@ async fn persistent_local_budget_usage_failure_is_bound_to_exact_dispatch_identi
         .run_root(operation(0x06), "fail only child A measurement")
         .await;
     let reads = source.reads();
-    assert!(reads
-        .iter()
-        .any(|(operation_id, _)| *operation_id == operation(0xA1)));
-    assert!(reads
-        .iter()
-        .any(|(operation_id, _)| *operation_id == operation(0xB1)));
-    assert!(reads
-        .iter()
-        .filter(|(operation_id, _)| *operation_id == operation(0xB1))
-        .all(|(_, dispatch_id)| !dispatch_id.is_empty()));
+    assert!(
+        reads
+            .iter()
+            .any(|(operation_id, _)| *operation_id == operation(0xA1))
+    );
+    assert!(
+        reads
+            .iter()
+            .any(|(operation_id, _)| *operation_id == operation(0xB1))
+    );
+    assert!(
+        reads
+            .iter()
+            .filter(|(operation_id, _)| *operation_id == operation(0xB1))
+            .all(|(_, dispatch_id)| !dispatch_id.is_empty())
+    );
     assert!(
         swarm
             .sessions()
