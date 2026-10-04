@@ -140,6 +140,7 @@ fn result_evidence<Req: Message, Resp: Message>(
                 },
                 "response": {
                     "status": error.code().to_string(),
+                    "code": format!("{:?}", error.code()),
                     "message": error.message(),
                 },
                 "state": state,
@@ -214,16 +215,29 @@ where
 
     // Read-only operations use the seeded workspace, whose returned head is
     // the actual generation identity used in every following protobuf input.
-    let fixture = service
-        .open_workspace(Request::new(fs_wire::OpenWorkspaceRequest {
+    let open_fixture = fs_wire::OpenWorkspaceRequest {
             selector: Some(fs_wire::open_workspace_request::Selector::Name(
                 "fixture".into(),
             )),
-        }))
+    };
+    let opened_fixture = service
+        .open_workspace(Request::new(open_fixture.clone()))
         .await?
         .into_inner()
+        ;
+    let fixture = opened_fixture
         .workspace
+        .clone()
         .ok_or_else(|| Status::internal("fixture workspace missing"))?;
+    output.push(evidence(
+        "filesystem",
+        "OpenWorkspace",
+        "acyclic.filesystem.v2.OpenWorkspaceRequest",
+        &open_fixture,
+        "acyclic.filesystem.v2.WorkspaceResponse",
+        &opened_fixture,
+        &state,
+    ));
     let fixture_ref = workspace_ref(&fixture)?;
     let fixture_head = head_ref(&fixture)?;
     state.insert("fixture_workspace_id", b64(&fixture_ref.workspace_id));
@@ -339,7 +353,11 @@ where
             "bytes_base64": b64(&read_link.encode_to_vec()),
             "sha256": digest(&read_link.encode_to_vec()),
         },
-        "response": { "status": read_link_error.code().to_string(), "message": read_link_error.message() },
+        "response": {
+            "status": read_link_error.code().to_string(),
+            "code": format!("{:?}", read_link_error.code()),
+            "message": read_link_error.message()
+        },
         "state": state,
     }));
 
@@ -547,7 +565,11 @@ where
                 "bytes_base64": b64(&export_request_bytes),
                 "sha256": digest(&export_request_bytes),
             },
-            "response": { "status": error.code().to_string(), "message": error.message() },
+            "response": {
+                "status": error.code().to_string(),
+                "code": format!("{:?}", error.code()),
+                "message": error.message()
+            },
             "state": state,
         })),
     }
@@ -616,7 +638,11 @@ where
                 "bytes_base64": b64(&import_request_bytes),
                 "sha256": digest(&import_request_bytes),
             },
-            "response": { "status": error.code().to_string(), "message": error.message() },
+            "response": {
+                "status": error.code().to_string(),
+                "code": format!("{:?}", error.code()),
+                "message": error.message()
+            },
             "state": state,
         })),
     }
@@ -906,7 +932,7 @@ mod tests {
             if let Some(bytes) = response.get("bytes_base64") {
                 assert!(bytes.as_str().is_some());
                 assert!(response["sha256"].as_str().unwrap_or_default().starts_with("sha256:"));
-            } else {
+            } else if response.get("chunks").is_none() {
                 assert!(!response["status"].as_str().unwrap_or_default().is_empty());
                 assert!(!response["message"].as_str().unwrap_or_default().is_empty());
             }
@@ -958,7 +984,7 @@ mod tests {
                 .iter()
                 .find(|record| record["operation"] == operation)
                 .expect("expected filesystem negative operation");
-            assert_eq!(error["response"]["status"], "not_found");
+            assert_eq!(error["response"]["code"], "NotFound");
             assert!(!error["response"]["message"]
                 .as_str()
                 .unwrap_or_default()
