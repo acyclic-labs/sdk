@@ -42,6 +42,38 @@ String? dartPlugin() {
   return null;
 }
 
+List<String> protocIncludeRoots(List<String> schemaRoots) {
+  final roots = <String>[...schemaRoots];
+  final explicit = Platform.environment['PROTOC_INCLUDE'];
+  if (explicit != null && explicit.isNotEmpty) {
+    roots.add(Directory(explicit).absolute.path);
+  }
+
+  final pubCache =
+      Platform.environment['PUB_CACHE'] ??
+      (Platform.isWindows
+          ? '${Platform.environment['LOCALAPPDATA']}${Platform.pathSeparator}Pub${Platform.pathSeparator}Cache'
+          : '${Platform.environment['HOME']}${Platform.pathSeparator}.pub-cache');
+  final hosted = Directory(
+    '$pubCache${Platform.pathSeparator}hosted${Platform.pathSeparator}pub.dev',
+  );
+  if (hosted.existsSync()) {
+    for (final entity in hosted.listSync()) {
+      if (entity is Directory &&
+          entity.path
+              .split(Platform.pathSeparator)
+              .last
+              .startsWith('protobuf-') &&
+          Directory(
+            '${entity.path}${Platform.pathSeparator}google',
+          ).existsSync()) {
+        roots.add(entity.path);
+      }
+    }
+  }
+  return roots.toSet().toList();
+}
+
 Future<void> main(List<String> arguments) async {
   final explicitIndex = arguments.indexOf('--schema-root');
   final explicitRaw = explicitIndex >= 0 && explicitIndex + 1 < arguments.length
@@ -130,7 +162,10 @@ Future<void> main(List<String> arguments) async {
   }
   output.createSync(recursive: true);
   final result = await Process.run(protoc, [
-    for (final schemaRoot in schemaRoots) ...['-I', schemaRoot],
+    for (final schemaRoot in protocIncludeRoots(schemaRoots)) ...[
+      '-I',
+      schemaRoot,
+    ],
     '--plugin=protoc-gen-dart=$plugin',
     '--dart_out=grpc:${output.path}',
     ...schemaFiles,
@@ -192,6 +227,45 @@ Future<void> main(List<String> arguments) async {
   final manifestSha256 = manifestFile != null && manifestFile.existsSync()
       ? sha256.convert(manifestFile.readAsBytesSync()).toString()
       : null;
+  if (explicitSchemaRoot == null) {
+    stderr.writeln(
+      'Rust-emitted schema root is required so generated tests stay bound to Rust-owned fixtures',
+    );
+    exitCode = 2;
+    return;
+  }
+  final fixtureSource = File(
+    '$explicitSchemaRoot${Platform.pathSeparator}rust-family-goldens.json',
+  );
+  if (!fixtureSource.existsSync()) {
+    stderr.writeln('Rust-owned fixture missing: ${fixtureSource.path}');
+    exitCode = 2;
+    return;
+  }
+  final fixtureBytes = fixtureSource.readAsBytesSync();
+  final fixture = jsonDecode(utf8.decode(fixtureBytes));
+  if (fixture is! List || fixture.length != 9) {
+    stderr.writeln('Rust-owned fixture must contain nine family goldens');
+    exitCode = 2;
+    return;
+  }
+  if (manifestSha256 != null &&
+      fixture.any(
+        (entry) =>
+            entry is! Map ||
+            entry['authority_manifest_sha256'] != manifestSha256,
+      )) {
+    stderr.writeln(
+      'Rust-owned fixture is bound to a different authority manifest',
+    );
+    exitCode = 2;
+    return;
+  }
+  final fixtureDestination = File(
+    '${package.path}${Platform.pathSeparator}test${Platform.pathSeparator}fixtures${Platform.pathSeparator}rust-family-goldens.json',
+  );
+  fixtureDestination.parent.createSync(recursive: true);
+  fixtureDestination.writeAsBytesSync(fixtureBytes);
   final lock = File(
     '${package.path}${Platform.pathSeparator}generator.lock.yaml',
   ).readAsStringSync();
@@ -200,6 +274,10 @@ Future<void> main(List<String> arguments) async {
     'source_revision': Platform.environment['GIT_COMMIT'] ?? 'unknown',
     'schema_root': explicitSchemaRoot ?? 'diagnostic repository proto roots',
     'schema_inputs_sha256': schemaInputs,
+    'rust_family_goldens': fixtureDestination.path
+        .substring(package.path.length + 1)
+        .replaceAll(Platform.pathSeparator, '/'),
+    'rust_family_goldens_sha256': sha256.convert(fixtureBytes).toString(),
     if (manifestFile != null) ...{
       'authority_manifest': manifestFile.path.replaceAll(
         Platform.pathSeparator,
