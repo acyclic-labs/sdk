@@ -72,6 +72,8 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
   const baseDescriptor = {
     protocol: "acyclic.graphcoder.suite-descriptor.v1",
     id: "native-stage",
+    execution_kind: "native",
+    platform: "windows",
     source_commit: source.commit,
     source_tree: source.tree,
     command: { executable: "node", args: [lane.driver], cwd: process.cwd(), env: [] },
