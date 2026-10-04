@@ -1,11 +1,12 @@
 export * from "./process.js";
 
-import { HarnessGraphCoderTransport, type GraphCoderBridge } from "./bridge.js";
+import { HarnessGraphCoderTransport } from "./bridge.js";
 import { JsonLineGraphCoderBridge, type GraphCoderProcessBridgeOptions } from "./process.js";
 
 /** A host-owned Node connection over the durable local runtime bridge. */
 export interface NodeGraphCoderConnection {
-  readonly bridge: GraphCoderBridge;
+  /** The concrete owner-controlled process bridge exposes close/waitForExit. */
+  readonly bridge: JsonLineGraphCoderBridge;
   readonly transport: HarnessGraphCoderTransport;
 }
 
