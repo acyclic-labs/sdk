@@ -1093,6 +1093,13 @@ fn run_rust(
         .output()
         .map_err(|error| format!("run installed Rust consumer: {error}"))?;
 
+    let stdout_path = consumers.join(format!("{}-stdout.log", snippet.metadata.id));
+    let stderr_path = consumers.join(format!("{}-stderr.log", snippet.metadata.id));
+    fs::write(&stdout_path, &output.stdout)
+        .map_err(|error| format!("write Rust consumer stdout: {error}"))?;
+    fs::write(&stderr_path, &output.stderr)
+        .map_err(|error| format!("write Rust consumer stderr: {error}"))?;
+
     let compile_path = consumers.join(format!("{}-compile.bin", snippet.metadata.id));
     let runtime_path = consumers.join(format!("{}-runtime.bin", snippet.metadata.id));
     fs::copy(&installed, &compile_path)
@@ -1156,9 +1163,19 @@ fn run_rust(
             "consumer_manifest_sha256": hash(&fs::read(&consumer_manifest).map_err(|error| error.to_string())?),
             "consumer_lock_path": portable_output_path(&consumer_lock, &qualification),
             "consumer_lock_sha256": hash(&fs::read(&consumer_lock).map_err(|error| error.to_string())?),
+            "consumer_exit_code": output.status.code(),
+            "consumer_stdout_path": portable_output_path(&stdout_path, &qualification),
+            "consumer_stdout_sha256": hash(&output.stdout),
+            "consumer_stderr_path": portable_output_path(&stderr_path, &qualification),
+            "consumer_stderr_sha256": hash(&output.stderr),
         },
         "stdout_sha256": hash(&output.stdout),
         "stderr_sha256": hash(&output.stderr),
+        "consumer_exit_code": output.status.code(),
+        "consumer_stdout_path": portable_output_path(&stdout_path, &qualification),
+        "consumer_stdout_sha256": hash(&output.stdout),
+        "consumer_stderr_path": portable_output_path(&stderr_path, &qualification),
+        "consumer_stderr_sha256": hash(&output.stderr),
     });
     if !output.status.success() {
         receipt["message"] = json!(String::from_utf8_lossy(&output.stderr).trim());
