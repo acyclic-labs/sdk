@@ -346,6 +346,10 @@ pub struct RustdocGraph {
     pub features: Vec<String>,
     pub profile_blake3: String,
     pub public_items: Vec<PublicItem>,
+    /// Graph-local diagnostics. A package-owned generated source gap makes
+    /// this graph incomplete even when other declarations were retained.
+    #[serde(default)]
+    pub diagnostics: Vec<Diagnostic>,
     pub rustdoc: RustdocProvenance,
 }
 
@@ -2029,7 +2033,6 @@ fn scan_crate(
     let mut sources = Vec::new();
     let mut guides = Vec::new();
     let mut examples = Vec::new();
-    let mut generated_source_aliases = HashMap::new();
     for path in &files {
         let bytes = fs::read(path)?;
         let relative = relative_path(repository_root, path);
@@ -2094,15 +2097,6 @@ fn scan_crate(
     for json_path in &json_matches {
         let bytes = fs::read(json_path)?;
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        collect_rustdoc_generated_sources(
-            &value,
-            repository_root,
-            crate_dir,
-            &package_name,
-            &mut sources,
-            &mut generated_source_aliases,
-            &mut diagnostics,
-        )?;
         let index_items = value
             .get("index")
             .and_then(serde_json::Value::as_object)
@@ -2122,6 +2116,18 @@ fn scan_crate(
         else {
             continue;
         };
+        let mut graph_generated_source_aliases = HashMap::new();
+        let graph_diagnostic_start = diagnostics.len();
+        collect_rustdoc_generated_sources(
+            &value,
+            repository_root,
+            crate_dir,
+            &package_name,
+            &receipt.profile,
+            &mut sources,
+            &mut graph_generated_source_aliases,
+            &mut diagnostics,
+        )?;
         let format_version = value
             .get("format_version")
             .and_then(serde_json::Value::as_u64);
@@ -2130,7 +2136,7 @@ fn scan_crate(
             &value,
             repository_root,
             crate_dir,
-            &generated_source_aliases,
+            &graph_generated_source_aliases,
             true,
             &mut graph_diagnostics,
         );
@@ -2174,6 +2180,11 @@ fn scan_crate(
             features: receipt.features,
             profile_blake3: receipt.profile_blake3,
             public_items: graph_items,
+            diagnostics: diagnostics[graph_diagnostic_start..]
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "rustdoc_generated_source_missing")
+                .cloned()
+                .collect(),
             rustdoc: provenance,
         });
     }
@@ -2591,13 +2602,24 @@ fn evaluate_profiles(
                                     .is_none_or(|toolchain| graph.rustdoc.toolchain.as_deref() == Some(toolchain))
                                 && !graph.public_items.is_empty()
                         });
-                        if graph.is_none() {
+                        let generated_source_gap = graph.is_some_and(|graph| {
+                            graph
+                                .diagnostics
+                                .iter()
+                                .any(|diagnostic| diagnostic.code == "rustdoc_generated_source_missing")
+                        });
+                        if graph.is_none() || generated_source_gap {
                             unresolved_packages.push(package.package.clone());
                             diagnostics.push(Diagnostic {
                                 severity: "error".to_owned(),
-                                code: "profile_public_graph_unresolved".to_owned(),
+                                code: if generated_source_gap {
+                                    "profile_generated_source_missing"
+                                } else {
+                                    "profile_public_graph_unresolved"
+                                }
+                                .to_owned(),
                                 message: format!(
-                                    "profile {} ({}; features: {}) has no source-bound resolved public graph for package {}",
+                                    "profile {} ({}; features: {}) has no complete source-bound public graph for package {}{}",
                                     profile.name,
                                     package.target,
                                     if package.features.is_empty() {
@@ -2605,7 +2627,12 @@ fn evaluate_profiles(
                                     } else {
                                         package.features.join(",")
                                     },
-                                    package.package
+                                    package.package,
+                                    if generated_source_gap {
+                                        "; a package-owned generated source referenced by rustdoc is missing"
+                                    } else {
+                                        ""
+                                    }
                                 ),
                                 path: Some(crate_bundle.path.clone()),
                                 line: None,
@@ -2663,6 +2690,7 @@ fn collect_rustdoc_generated_sources(
     repository_root: &Path,
     crate_dir: &Path,
     package_name: &str,
+    profile_name: &str,
     sources: &mut Vec<SourceFile>,
     aliases: &mut HashMap<String, String>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -2721,8 +2749,9 @@ fn collect_rustdoc_generated_sources(
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| Error::Strict("generated rustdoc source has no file name".to_owned()))?;
+        let profile_segment = generated_source_profile_segment(profile_name);
         let logical_path = format!(
-            "{}/src/generated/{file_name}",
+            "{}/src/generated/{profile_segment}/{file_name}",
             relative_path(repository_root, crate_dir)
         );
         if let Some(existing) = aliases.get(&path_identity(&normalized)) {
@@ -2746,6 +2775,24 @@ fn collect_rustdoc_generated_sources(
         aliases.insert(path_identity(&normalized), logical_path);
     }
     Ok(())
+}
+
+fn generated_source_profile_segment(profile_name: &str) -> String {
+    let segment = profile_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if segment.is_empty() {
+        "profile".to_owned()
+    } else {
+        segment
+    }
 }
 
 /// Resolve generated compiler spans to retained, content-addressed source
@@ -3328,6 +3375,14 @@ fn rustdoc_generics_text(value: &serde_json::Value) -> String {
             if kind.contains_key("lifetime") || name.starts_with('\'') {
                 return Some(name.to_owned());
             }
+            if kind
+                .get("type")
+                .and_then(|kind| kind.get("is_synthetic"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                return None;
+            }
             let bounds = kind
                 .get("type")
                 .and_then(|kind| kind.get("bounds"))
@@ -3495,7 +3550,7 @@ fn rustdoc_type_text(value: &serde_json::Value) -> String {
             })
             .unwrap_or_else(|| "()".to_owned()),
         "function_pointer" => "fn(...)".to_owned(),
-        "impl_trait" => "impl Trait".to_owned(),
+        "impl_trait" => format!("impl {}", rustdoc_bounds_text(inner)),
         "infer" => "_".to_owned(),
         "qualified_path" => {
             let name = inner
@@ -3510,7 +3565,11 @@ fn rustdoc_type_text(value: &serde_json::Value) -> String {
                 .get("trait")
                 .map(rustdoc_trait_text)
                 .unwrap_or_else(|| "Trait".to_owned());
-            format!("<{self_type} as {trait_name}>::{name}")
+            if trait_name.is_empty() {
+                format!("{self_type}::{name}")
+            } else {
+                format!("<{self_type} as {trait_name}>::{name}")
+            }
         }
         "dyn_trait" => {
             let traits = inner
@@ -4304,6 +4363,7 @@ mod tests {
             &root,
             &crate_dir,
             "acyclic-stream",
+            "host-default",
             &mut sources,
             &mut aliases,
             &mut diagnostics,
@@ -4311,7 +4371,10 @@ mod tests {
         .unwrap();
         assert!(diagnostics.is_empty());
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].path, "rust/crates/stream/src/generated/wire.rs");
+        assert_eq!(
+            sources[0].path,
+            "rust/crates/stream/src/generated/host-default/wire.rs"
+        );
         assert_eq!(sources[0].contents, "pub struct Wire;\n");
         let items = rustdoc_public_items_with_sources(
             &value,
@@ -4325,7 +4388,7 @@ mod tests {
         assert_eq!(items[0].name, "Wire");
         assert_eq!(
             items[0].source_path.as_deref(),
-            Some("rust/crates/stream/src/generated/wire.rs")
+            Some("rust/crates/stream/src/generated/host-default/wire.rs")
         );
         assert!(diagnostics
             .iter()
@@ -4571,6 +4634,36 @@ mod tests {
             .as_deref(),
             Some("type Item: Future = Output")
         );
+        let synthetic_function = serde_json::json!({
+            "sig": {
+                "inputs": [["value", {"impl_trait": [{"trait_bound": {"trait": {"path": "AsRef", "args": {"angle_bracketed": {"args": [{"type": {"primitive": "str"}}], "constraints": []}}}, "modifier": "none"}}]}]],
+                "output": null
+            },
+            "generics": {"params": [{"name": "impl AsRef<str>", "kind": {"type": {"bounds": [], "is_synthetic": true}}}], "where_predicates": []},
+            "header": {"is_const": false, "is_unsafe": false, "is_async": false}
+        });
+        let mut synthetic_inner = serde_json::Map::new();
+        synthetic_inner.insert("function".to_owned(), synthetic_function);
+        assert_eq!(
+            rustdoc_signature_text(
+                "take",
+                "function",
+                &synthetic_inner,
+                &serde_json::Map::new()
+            )
+            .as_deref(),
+            Some("pub fn take(value: impl AsRef<str>)")
+        );
+        assert_eq!(
+            rustdoc_type_text(&serde_json::json!({
+                "qualified_path": {
+                    "name": "Output",
+                    "self_type": {"generic": "Self"},
+                    "trait": {"path": "", "args": null}
+                }
+            })),
+            "Self::Output"
+        );
     }
 
     #[test]
@@ -4597,6 +4690,7 @@ mod tests {
                 features: Vec::new(),
                 profile_blake3: "default".to_owned(),
                 public_items: vec![item.clone()],
+                diagnostics: Vec::new(),
                 rustdoc: test_rustdoc_provenance(),
             },
             RustdocGraph {
@@ -4605,6 +4699,7 @@ mod tests {
                 features: vec!["grpc".to_owned()],
                 profile_blake3: "capabilities".to_owned(),
                 public_items: vec![item, second],
+                diagnostics: Vec::new(),
                 rustdoc: test_rustdoc_provenance(),
             },
         ];
@@ -4680,6 +4775,87 @@ mod tests {
         assert!(!statuses[0].complete);
         assert_eq!(statuses[0].unresolved_packages, vec!["demo-wasm"]);
         assert_eq!(diagnostics[0].code, "profile_public_graph_unresolved");
+    }
+
+    #[test]
+    fn profile_status_fails_closed_for_missing_generated_source() {
+        let profile = AnalysisProfile {
+            name: "wasm".to_owned(),
+            packages: vec![ProfilePackage {
+                package: "demo-wasm".to_owned(),
+                target: "wasm32-unknown-unknown".to_owned(),
+                features: vec!["wasm32".to_owned()],
+                default_features: false,
+            }],
+        };
+        let item = PublicItem {
+            name: "Demo".to_owned(),
+            module_path: Some("demo_wasm".to_owned()),
+            kind: "struct".to_owned(),
+            signature: Some(serde_json::json!({"kind": "plain"})),
+            signature_text: Some("pub struct Demo".to_owned()),
+            source_path: Some("rust/crates/demo-wasm/src/lib.rs".to_owned()),
+            source_line: Some(1),
+            docs: Some("Demo type.".to_owned()),
+            conditional: false,
+            generated: false,
+            reexport: None,
+        };
+        let crate_bundle = CrateBundle {
+            package_name: "demo-wasm".to_owned(),
+            crate_name: Some("demo_wasm".to_owned()),
+            path: "rust/crates/demo-wasm".to_owned(),
+            publish: false,
+            version: Some("0.1.0".to_owned()),
+            availability: "source-only".to_owned(),
+            analysis_mode: "rustdoc-json".to_owned(),
+            sources: Vec::new(),
+            guides: Vec::new(),
+            examples: Vec::new(),
+            package_instructions: Vec::new(),
+            navigation: "crates/demo-wasm".to_owned(),
+            public_items: vec![item.clone()],
+            graphs: vec![RustdocGraph {
+                profile: profile.name.clone(),
+                target: "wasm32-unknown-unknown".to_owned(),
+                features: vec!["wasm32".to_owned()],
+                profile_blake3: profile_blake3(&profile),
+                public_items: vec![item],
+                diagnostics: vec![Diagnostic {
+                    severity: "error".to_owned(),
+                    code: "rustdoc_generated_source_missing".to_owned(),
+                    message: "generated source is missing".to_owned(),
+                    path: Some("/out/demo-wasm/generated.rs".to_owned()),
+                    line: None,
+                }],
+                rustdoc: RustdocProvenance {
+                    source_revision: "revision".to_owned(),
+                    ..test_rustdoc_provenance()
+                },
+            }],
+            rustdoc: None,
+            diagnostics: Vec::new(),
+            content_blake3: "hash".to_owned(),
+            coverage: DocCoverage {
+                guides: 0,
+                examples: 0,
+                public_items: 1,
+                documented_items: 1,
+                conditional_items: 0,
+            },
+        };
+        let mut diagnostics = Vec::new();
+        let statuses = evaluate_profiles(
+            &[profile],
+            &[crate_bundle],
+            &mut diagnostics,
+            "revision",
+            None,
+        )
+        .expect("profile evaluation");
+        assert!(!statuses[0].complete);
+        assert_eq!(statuses[0].unresolved_packages, vec!["demo-wasm"]);
+        assert_eq!(diagnostics[0].code, "profile_generated_source_missing");
     }
 
     fn test_rustdoc_provenance() -> RustdocProvenance {
