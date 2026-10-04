@@ -1,0 +1,70 @@
+{
+  "faults": {
+    "failed": 0,
+    "passed": 6,
+    "ignored": 0
+  },
+  "communication": {
+    "failed": 0,
+    "passed": 4,
+    "ignored": 0
+  },
+  "source": "51987376fb0147042fdf030442091c1529ee13db",
+  "recursive": {
+    "failed": 0,
+    "passed": 4,
+    "ignored": 0
+  },
+  "library": {
+    "failed": 0,
+    "passed": 368,
+    "ignored": 0
+  },
+  "platform": "Windows native",
+  "artifacts": [
+    {
+      "sha256": "6ae29bcf66c42f431d9b150769f9889e650efae83d3a30478fb3a0cff3cdcefc",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\wait-v3-reference-native.log"
+    },
+    {
+      "sha256": "ae7205c60d941940d3f4b142ffbd018e47e0ee04ff90e66c4ba7ef2f39e15f30",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\tool.rs"
+    },
+    {
+      "sha256": "497fdbed276c18a1a945cff75be2d63a32e5bf753de93c3677ac0fcc01e8d9c6",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\communication_tools.rs"
+    },
+    {
+      "sha256": "c845ee21f43abe96c0aa0c9e48dbf8ea28cd7fa134ce94ca6d69409a273cd70d",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\communication_local.rs"
+    },
+    {
+      "sha256": "62afbcfaa359e48e16eddf100271342a906719162e5a07d0c06f568336b41b2b",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\local_model_swarm.rs"
+    },
+    {
+      "sha256": "a9f382ef1bdd286757e2b5b5ad448ef77bc4c4f6b317139bbc0db91474b73735",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\local_swarm_faults.rs"
+    },
+    {
+      "sha256": "b0f9a0578f10279fa358ae5e09df0fe60dce466846190ba34b9ca7ae51212f4c",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\acyclic_harness-641f85f696abacc6.exe"
+    },
+    {
+      "sha256": "b35ab7f194edb19b5d832dfe5b8ca539b4c8e1ac196e62ed38473b77aa47648c",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\communication_local-d6ca4897ba985235.exe"
+    },
+    {
+      "sha256": "a90e6f5fd30e3438a63cd1a7739ce9170b2a6d83745fb793ea6e3a4bf27eca9f",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\local_model_swarm-b5d1df9216f26b8b.exe"
+    },
+    {
+      "sha256": "4f1fc521b2878c0e09b435fad9d384b40fd5c7732449012808364dace47cc564",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\51987376f\\wait-v3\\local_swarm_faults-cf47ef77f7bcbf61.exe"
+    }
+  ],
+  "exit_code": 0,
+  "scope": "Wait v3 declares immutable delivered FileRefs in strict tagged model-output schema; focused durable communication, recursive and fault regressions. Default swarm communication and installed runtime remain incomplete.",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib --test local_model_swarm --test local_swarm_faults --test communication_local -- --nocapture"
+}

@@ -1,0 +1,86 @@
+{
+  "platform": "Windows native",
+  "command": "cargo test -p acyclic-harness --features filesystem-local,test-support --test persistent_model_input_admission_v3 --test model_input_conformance_v3 --test model_input_rejection_conformance_v3 -- --nocapture",
+  "assertions": [
+    "Captured provider bytes equal journaled step-one request bytes",
+    "Journaled manifest matches the exact captured request and digest",
+    "Wait v3 definition is pinned in the actual serialized request",
+    "Manifest declares the explicit older message FileRef, not its newer mutable-path replacement",
+    "Tool call/result identity and structured result preserved"
+  ],
+  "source": "b1136c59b252250e5c89f711930bf1e3f8792328",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "exit_code": 0,
+  "preserved_failure": {
+    "kind": "Compile failure: fixture used private FileRef.version field; repaired to use public accessor",
+    "source": "96d4dc612e572ced4438d4cc57b94816701ee2a8"
+  },
+  "suites": {
+    "rejection": {
+      "failed": 0,
+      "ignored": 0,
+      "passed": 3
+    },
+    "persistent": {
+      "failed": 0,
+      "ignored": 0,
+      "passed": 7
+    },
+    "frozen": {
+      "failed": 0,
+      "ignored": 0,
+      "passed": 3
+    }
+  },
+  "scope": "Actual serialized provider boundary and durable request/manifest equality for wait v3 payloads, frozen exact-input and negative corruption/rejection contracts. Result adapter is a fixture; default swarm mailbox delivery is not qualified.",
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\wait-v3-exact-input-native.log",
+      "sha256": "48e86c54609c91676d2981b1c7902e9b974a8a9a54942ef066d7d78ec4ac6298"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\wait-v3-provider-boundary-native.log",
+      "sha256": "826676a6dce61b8c228dd8b0f3895d932fd3c519ec87f1b38dd187208a81ea48"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\wait-v3-provider-boundary-compile-failure.log",
+      "sha256": "91d42370c320997af950d47a8d817ae26bb3597a06dfbcc6765228856adf07f7"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\persistent_model_input_admission_v3.rs",
+      "sha256": "0a6b7f27b816623348e474619bdc4380179988c5111cfb8ba19cf9d37a8d1f3b"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\model_input_conformance_v3.rs",
+      "sha256": "af5eced283e594fff54f0c55c722f16e19dc716c3d0f1599b7fb7dc497a149ef"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\model_input_rejection_conformance_v3.rs",
+      "sha256": "3432902d90cfb48dd5871157ce7610182ddbd9154092bf3647a184230bbd1dcd"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\tool.rs",
+      "sha256": "ae7205c60d941940d3f4b142ffbd018e47e0ee04ff90e66c4ba7ef2f39e15f30"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\communication_tools.rs",
+      "sha256": "497fdbed276c18a1a945cff75be2d63a32e5bf753de93c3677ac0fcc01e8d9c6"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\model-input-v3.json",
+      "sha256": "3b7133eaba5c237ba98646129df8201f88c51e8ceaef22b8fcc7c1d620148c0a"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\model_input_conformance_v3-01bd8d857976bf1f.exe",
+      "sha256": "2431c2320217512077bc530eff975189d0e2a4c26d5fef9ab4840068eaafd2ab"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\model_input_rejection_conformance_v3-52e7a356a9d9f22c.exe",
+      "sha256": "1b2501524487ae1843ff747bd9f4cb16d558bde8e4f2d552b88ec896487d7eb1"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\b1136c59b\\wait-provider-input\\persistent_model_input_admission_v3-32296dede51fc4e9.exe",
+      "sha256": "057f37495b9f38c5125d590d99943378eb67bd3cc9580925864f7a7fb5adeebc"
+    }
+  ]
+}
