@@ -133,6 +133,15 @@ pub mod speculation;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod staged_objects;
+#[cfg(all(
+    feature = "test-support",
+    feature = "local",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+pub mod test_support {
+    pub use acyclic_objects::test_support::*;
+}
 pub mod storage;
 pub mod streams_record;
 #[cfg(all(test, feature = "memory"))]

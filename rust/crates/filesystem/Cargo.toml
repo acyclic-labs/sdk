@@ -101,6 +101,7 @@ local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:fs
 memory = ["distributed"]
 native-watch = ["dep:notify"]
 native-mount = ["native-watch", "dep:fs2", "dep:fuser"]
+test-support = ["local", "acyclic-objects/test-support"]
 s3-http = ["distributed", "dep:base64", "dep:crc-fast", "dep:s3s", "dep:serde_urlencoded", "dep:subtle", "dep:sync_wrapper", "dep:time", "dep:urlencoding"]
 distributed = ["dep:acyclic-objects", "dep:acyclic-stream"]
 typescript = ["dep:tsify-next", "dep:wasm-bindgen"]

@@ -7,6 +7,18 @@ pub use v2::*;
 mod local_options;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod physical;
+#[cfg(all(
+    feature = "test-support",
+    feature = "local",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+pub mod test_support {
+    pub use crate::physical::{
+        SegmentBody, corrupt_segment_body_for_test, delete_segment_for_test,
+        locate_segment_body_for_test,
+    };
+}
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use local_options::{LocalDurability, LocalObjectsGarbageCollection, LocalObjectsLimits};
 #[cfg(feature = "grpc")]

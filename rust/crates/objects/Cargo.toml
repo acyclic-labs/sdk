@@ -18,6 +18,9 @@ grpc = ["dep:tonic", "dep:tonic-prost"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
+# Internal conformance hooks for authenticated physical-store fault injection.
+# This is intentionally opt-in and does not alter the production API surface.
+test-support = ["local"]
 
 [dependencies]
 async-trait.workspace = true

@@ -4,7 +4,7 @@ use crate::{LocalDurability, LocalObjectsGarbageCollection};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, Write},
+    io::{self, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -584,6 +584,121 @@ fn read_exact_at_unsequenced(file: &File, offset: u64, bytes: &mut [u8]) -> Resu
 
 fn segment_path(root: &Path, id: &[u8; 32]) -> PathBuf {
     root.join("segments").join(format!("{}.segment", hex(id)))
+}
+
+/// Opaque location of one authenticated immutable body record.
+///
+/// This is exposed only through the opt-in `test-support` feature so storage
+/// conformance suites can inject faults into the exact body selected by an
+/// object identity without duplicating the private segment format parser.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct SegmentBody {
+    path: PathBuf,
+    offset: u64,
+    length: usize,
+    digest: [u8; 32],
+}
+
+/// Resolve the authenticated segment record for `expected_digest` and bytes.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn locate_segment_body_for_test(
+    root: &Path,
+    expected_digest: &[u8; 32],
+    expected_bytes: &[u8],
+) -> io::Result<SegmentBody> {
+    if blake3::hash(expected_bytes).as_bytes() != expected_digest {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected bytes do not match the requested object digest",
+        ));
+    }
+    let mut matches = Vec::new();
+    let mut candidates_seen = 0_u64;
+    let mut ignored_temporary = Vec::new();
+    let segments = scan_segments(root, u64::MAX, &mut candidates_seen, &mut ignored_temporary)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    for (id, path) in segments {
+        let records = validate_segment_records(&path, &id, u64::MAX)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        for ((offset, digest), length) in records {
+            let length = usize::try_from(length).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "segment body length is too large",
+                )
+            })?;
+            if digest == *expected_digest
+                && length == expected_bytes.len()
+                && read_segment_body(&path, offset, length)? == expected_bytes
+            {
+                matches.push(SegmentBody {
+                    path: path.clone(),
+                    offset,
+                    length,
+                    digest,
+                });
+            }
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.pop().expect("one segment body candidate")),
+        0 => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "requested object body is not segment resident",
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "requested object body has multiple segment locations",
+        )),
+    }
+}
+
+#[cfg(feature = "test-support")]
+fn read_segment_body(path: &Path, offset: u64, length: usize) -> io::Result<Vec<u8>> {
+    let mut file = File::open(path)?;
+    file.seek(std::io::SeekFrom::Start(offset))?;
+    let mut body = vec![0_u8; length];
+    file.read_exact(&mut body)?;
+    Ok(body)
+}
+
+/// Replace one already-resolved body with same-length bytes for fault injection.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn corrupt_segment_body_for_test(body: &SegmentBody, replacement: &[u8]) -> io::Result<()> {
+    if replacement.len() != body.length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "replacement changes the object body length",
+        ));
+    }
+    let mut physical = fs::read(&body.path)?;
+    let start = usize::try_from(body.offset)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "body offset is too large"))?;
+    let end = start
+        .checked_add(body.length)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "body range overflowed"))?;
+    let current = physical
+        .get(start..end)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "body disappeared"))?;
+    if blake3::hash(current).as_bytes() != &body.digest {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "resolved body changed before corruption",
+        ));
+    }
+    physical[start..end].copy_from_slice(replacement);
+    fs::write(&body.path, physical)
+}
+
+/// Delete the segment containing one already-resolved body for fault injection.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn delete_segment_for_test(body: SegmentBody) -> io::Result<()> {
+    fs::remove_file(body.path)
 }
 
 #[allow(
