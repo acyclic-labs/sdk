@@ -3347,6 +3347,13 @@ impl PersistentLocalSwarm {
         ) else {
             return Ok(());
         };
+        // A concurrent handle can lose the durable root claim before it ever
+        // invokes the provider. Its freshly opened meter has no local usage;
+        // emitting a zero receipt from that stale cursor would race the
+        // winning handle's receipt and surface a false stale-sequence error.
+        if meter.usage()? == SwarmUsage::default() {
+            return Ok(());
+        }
         let receipt = meter.issue_usage_receipt()?;
         let mut journal = journal.lock().await;
         journal.refresh().await?;
@@ -5586,6 +5593,10 @@ mod tests {
     }
 
     impl ModelProvider for CommunicationModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+        }
+
         fn generate<'a>(
             &'a self,
             _prepared: crate::model_input::PreparedModelInput,

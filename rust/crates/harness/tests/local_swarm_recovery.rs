@@ -111,6 +111,10 @@ impl RecoveryProvider {
 }
 
 impl ModelProvider for RecoveryProvider {
+    fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+        u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+    }
+
     fn admit(&self, _request: &ModelRequest) -> Result<()> {
         self.admissions.fetch_add(1, Ordering::SeqCst);
         Ok(())

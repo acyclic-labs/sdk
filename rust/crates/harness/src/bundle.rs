@@ -908,6 +908,10 @@ mod tests {
         let model = Model::new("example", "model", "1", Value::Null)?;
         struct Provider;
         impl ModelProvider for Provider {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+            }
+
             fn generate<'a>(
                 &'a self,
                 _: crate::model_input::PreparedModelInput,

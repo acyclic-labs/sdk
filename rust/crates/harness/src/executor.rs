@@ -2358,6 +2358,10 @@ mod tests {
     }
 
     impl ModelProvider for OversizedOutputModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            exact_test_output_bound(max_output_bytes)
+        }
+
         fn generate<'a>(
             &'a self,
             _: crate::model_input::PreparedModelInput,
@@ -2382,6 +2386,10 @@ mod tests {
     }
 
     impl ModelProvider for PersistedCaptureModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            exact_test_output_bound(max_output_bytes)
+        }
+
         fn generate<'a>(
             &'a self,
             _: crate::model_input::PreparedModelInput,
@@ -3533,6 +3541,10 @@ mod tests {
             duplicate_batch: bool,
         }
         impl ModelProvider for RepeatedModel {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                exact_test_output_bound(max_output_bytes)
+            }
+
             fn generate<'a>(
                 &'a self,
                 prepared: crate::model_input::PreparedModelInput,

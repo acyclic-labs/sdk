@@ -1860,6 +1860,10 @@ mod tests {
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     impl ModelProvider for TextModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+        }
+
         fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             self.0
@@ -2248,6 +2252,10 @@ mod tests {
     }
 
     impl ModelProvider for ReadFileModel {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+        }
+
         fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
