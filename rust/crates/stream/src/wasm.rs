@@ -628,12 +628,12 @@ pub fn project_grpc_read_response(input: &[u8], expected: u64) -> Result<JsValue
             .ok_or(StreamError::Unavailable)
             .map_err(js_error)?,
     )
-        .and_then(|record| {
-            (record.sequence == expected)
-                .then_some(record)
-                .ok_or(StreamError::Unavailable)
-        })
-        .map_err(js_error)?;
+    .and_then(|record| {
+        (record.sequence == expected)
+            .then_some(record)
+            .ok_or(StreamError::Unavailable)
+    })
+    .map_err(js_error)?;
     let result = Object::new();
     Reflect::set(
         result.as_ref(),

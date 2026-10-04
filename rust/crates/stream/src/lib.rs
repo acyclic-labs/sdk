@@ -1,14 +1,20 @@
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/quickstart.md")]
+#![doc = include_str!("../docs/topics.md")]
 
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
 use futures::stream::BoxStream;
+#[cfg(target_arch = "wasm32")]
+use futures::stream::LocalBoxStream;
 use thiserror::Error;
 
+pub mod client;
 pub mod conformance;
-#[cfg(feature = "grpc")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 pub mod http_response;
 pub mod persistence;
@@ -16,7 +22,6 @@ pub mod preparation;
 pub mod request;
 // The WASM adapter consumes this module on browser builds; native builds keep
 // it available for contract tests without pulling in JS bindings.
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 #[allow(dead_code)]
 mod http_codec;
@@ -25,7 +30,7 @@ mod http_validation;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod local;
 mod memory;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 mod wasm;
 #[allow(dead_code)]
 mod wire_codec;
@@ -37,6 +42,7 @@ pub mod wire {
 }
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
+pub use client::{Client, ConnectError, DEFAULT_TRANSPORT, connect};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
@@ -515,13 +521,34 @@ pub struct IdempotencyObservation {
 }
 
 /// Backpressured finite read or long-lived follow.
+#[cfg(not(target_arch = "wasm32"))]
 pub type RecordStream = BoxStream<'static, Result<Record, StreamError>>;
+#[cfg(target_arch = "wasm32")]
+/// Backpressured finite read or long-lived follow on browser targets.
+pub type RecordStream = LocalBoxStream<'static, Result<Record, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
+#[cfg(not(target_arch = "wasm32"))]
 pub type ChildStream = BoxStream<'static, Result<Child, StreamError>>;
+#[cfg(target_arch = "wasm32")]
+/// Backpressured fixed-snapshot direct-child listing on browser targets.
+pub type ChildStream = LocalBoxStream<'static, Result<Child, StreamError>>;
+
+/// Platform capability bound for a provider implementation.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub trait PlatformProvider: Send + Sync {}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub trait PlatformProvider {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync> PlatformProvider for T {}
+#[cfg(target_arch = "wasm32")]
+impl<T> PlatformProvider for T {}
 
 /// Canonical provider contract. Placement and transport remain invisible.
-#[async_trait]
-pub trait StreamProvider: Send + Sync + 'static {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait StreamProvider: PlatformProvider + 'static {
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,
@@ -664,7 +691,7 @@ impl<P: StreamProvider> StreamClient<P> {
     }
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(not(target_arch = "wasm32"))]
 impl StreamClient<grpc::Client> {
     /// Connects the high-level API to an authenticated managed or customer-hosted endpoint.
     pub async fn connect(
@@ -924,7 +951,8 @@ mod replay_tests {
         missing: u64,
     }
 
-    #[async_trait]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl StreamProvider for Gapped {
         async fn inspect_idempotency(
             &self,
