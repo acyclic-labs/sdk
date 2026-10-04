@@ -1589,17 +1589,10 @@ impl Reducer {
         // relabel a later conversation as an earlier fork boundary. Replay
         // the retained event prefix once and validate the digest against that
         // authoritative historical conversation.
-        let historical = self.conversation_at_revision(model_boundary.inherited_parent_revision)?;
-        let historical_agent = historical
-            .agent
-            .ok_or_else(|| Error::Invalid("historical parent conversation agent is missing".into()))?;
-        let prefix = InheritedConversationPrefix::select(
-            self.authority.clone(),
+        let (_historical, prefix) = self.conversation_prefix_at_revision(
             model_boundary.inherited_parent_revision,
-            historical_agent,
             model_boundary.inherited_through_sequence,
             attached_agents,
-            &historical.messages,
         )?;
         if crate::contract::canonical_json_digest(&prefix)?
             != model_boundary.inherited_prefix_digest
@@ -1625,8 +1618,12 @@ impl Reducer {
             self.authority_verifier.clone(),
             self.schemas.clone(),
         );
-        for event in self.events.iter().take_while(|event| event.revision <= revision) {
-            historical.apply_committed(event.clone())?;
+        for event in self
+            .events
+            .iter()
+            .take_while(|event| event.revision <= revision)
+        {
+            historical.apply_committed_inner(event.clone(), false)?;
         }
         if historical.revision != revision {
             return Err(Error::Conflict(
@@ -1634,6 +1631,31 @@ impl Reducer {
             ));
         }
         Ok(historical.conversation)
+    }
+
+    /// Reconstructs one immutable conversation boundary and its canonical
+    /// inherited prefix from the retained event history. Callers that admit
+    /// forks must use this pair together so the selected messages and the
+    /// prefix descriptor cannot drift to different revisions.
+    pub(crate) fn conversation_prefix_at_revision(
+        &self,
+        revision: u64,
+        through_sequence: u64,
+        attached_agents: &[crate::AgentId],
+    ) -> Result<(ConversationState, InheritedConversationPrefix)> {
+        let historical = self.conversation_at_revision(revision)?;
+        let parent_agent = historical
+            .agent
+            .ok_or_else(|| Error::Conflict("parent conversation is unbound".into()))?;
+        let prefix = InheritedConversationPrefix::select(
+            self.authority.clone(),
+            revision,
+            parent_agent,
+            through_sequence,
+            attached_agents,
+            &historical.messages,
+        )?;
+        Ok((historical, prefix))
     }
 
     /// Validates exact staged extension bytes at the provider admission boundary.
@@ -2002,6 +2024,21 @@ impl Reducer {
 
     /// Applies an event only after its canonical Stream append commits.
     pub fn apply_committed(&mut self, event: Event) -> Result<ApplyResult> {
+        self.apply_committed_inner(event, true)
+    }
+
+    /// Replays an authenticated retained event while reconstructing an older
+    /// conversation boundary. Cross-revision fork ownership validation is
+    /// intentionally deferred to the live aggregate: recursively rebuilding
+    /// that proof for every historical fork would replay the same prefix again
+    /// and can grow exponentially with completed fork batches. Event
+    /// signatures, capabilities, causal ordering, seed shape, and payload
+    /// application remain verified here.
+    fn apply_committed_inner(
+        &mut self,
+        event: Event,
+        validate_fork_references: bool,
+    ) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
         if let Some((digest, existing)) = self.operation_intents.get(&event.operation_id) {
             if digest == &event.intent_digest && existing == &event {
@@ -2072,7 +2109,8 @@ impl Reducer {
                 || seed.operation_id != event.operation_id
                 || seed.parent != self.authority
                 || seed.parent_revision != self.revision
-                || self.validate_fork_reference_ownership(seed).is_err())
+                || (validate_fork_references
+                    && self.validate_fork_reference_ownership(seed).is_err()))
         {
             return Err(Error::Invalid("fork event binding is invalid".into()));
         }
@@ -2167,7 +2205,11 @@ impl Reducer {
         }
         // Validate transcript-derived references against the immutable
         // capture revision rather than the current conversation tail.
-        let historical = self.conversation_at_revision(seed.inherited_parent_revision)?;
+        let (historical, prefix) = self.conversation_prefix_at_revision(
+            seed.inherited_parent_revision,
+            seed.inherited_through_sequence,
+            &seed.attached_agents,
+        )?;
         let parent_agent = historical
             .agent
             .ok_or_else(|| Error::Conflict("fork parent conversation is unbound".into()))?;
@@ -2191,14 +2233,6 @@ impl Reducer {
             ));
         }
         if let Some(file) = materialized {
-            let prefix = InheritedConversationPrefix::select(
-                self.authority.clone(),
-                seed.inherited_parent_revision,
-                parent_agent,
-                seed.inherited_through_sequence,
-                &seed.attached_agents,
-                &historical.messages,
-            )?;
             let bytes = prefix.canonical_bytes()?;
             let expected = FileDescriptor::from_bytes(
                 &bytes,
@@ -2268,21 +2302,12 @@ impl Reducer {
         };
         if let Some(model_boundary) = &seed.model_boundary {
             if model_boundary.inherited_parent_revision != seed.inherited_parent_revision
-                || model_boundary.inherited_through_sequence
-                    != seed.inherited_through_sequence
+                || model_boundary.inherited_through_sequence != seed.inherited_through_sequence
             {
                 return Err(Error::Invalid(
                     "model boundary inherited prefix binding differs from the fork seed".into(),
                 ));
             }
-            let prefix = InheritedConversationPrefix::select(
-                self.authority.clone(),
-                model_boundary.inherited_parent_revision,
-                parent_agent,
-                model_boundary.inherited_through_sequence,
-                &seed.attached_agents,
-                &historical.messages,
-            )?;
             if crate::contract::canonical_json_digest(&prefix)?
                 != model_boundary.inherited_prefix_digest
             {
@@ -5153,7 +5178,10 @@ mod tests {
 
         let historical = reducer.conversation_at_revision(captured_revision)?;
         assert_eq!(historical.messages, vec![first]);
-        assert_eq!(reducer.conversation().map(|state| state.messages.len()), Some(2));
+        assert_eq!(
+            reducer.conversation().map(|state| state.messages.len()),
+            Some(2)
+        );
         Ok(())
     }
 }

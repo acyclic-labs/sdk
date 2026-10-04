@@ -772,17 +772,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let bytes = self.read_pinned(file, 64 * 1_024 * 1_024).await?;
             let actual: InheritedConversationPrefix = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("inherited conversation is malformed".into()))?;
-            let historical = parent.conversation_at_revision(seed.inherited_parent_revision)?;
-            let historical_agent = historical.agent.ok_or_else(|| {
-                Error::Invalid("historical parent conversation agent is missing".into())
-            })?;
-            let expected = InheritedConversationPrefix::select(
-                seed.parent.clone(),
+            let (_historical, expected) = parent.conversation_prefix_at_revision(
                 seed.inherited_parent_revision,
-                historical_agent,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,
-                &historical.messages,
             )?;
             if actual.parent != expected.parent
                 || actual.parent_revision != expected.parent_revision
