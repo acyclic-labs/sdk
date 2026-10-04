@@ -26,6 +26,17 @@ pub struct GuideProjection {
     pub code: String,
 }
 
+/// Typed request identity consumed by package and documentation validators.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuideRemoteRequestSpec {
+    pub scenario_id: &'static str,
+    pub family: &'static str,
+    pub operation: &'static str,
+    pub service: &'static str,
+    pub method: &'static str,
+    pub request: &'static str,
+}
+
 /// The six guide families with a generated remote or native facade.
 pub const GUIDE_PROJECTION_SCENARIOS: [(&str, &str, &str); 6] = [
     (
@@ -58,6 +69,58 @@ pub const GUIDE_PROJECTION_SCENARIOS: [(&str, &str, &str); 6] = [
         "workers",
         workers_scenarios::SOURCE,
     ),
+];
+
+/// One typed request manifest for each remote guide scenario.
+pub const GUIDE_REMOTE_REQUESTS: [GuideRemoteRequestSpec; 6] = [
+    GuideRemoteRequestSpec {
+        scenario_id: filesystem_scenarios::SCENARIO_ID,
+        family: "filesystem",
+        operation: "acyclic.filesystem.v2.FilesystemService/Handshake",
+        service: "FilesystemService",
+        method: "Handshake",
+        request: "HandshakeRequest",
+    },
+    GuideRemoteRequestSpec {
+        scenario_id: harness_scenarios::SCENARIO_ID,
+        family: "harness",
+        operation: "acyclic.harness.v2.HarnessService/Submit",
+        service: "HarnessService",
+        method: "Submit",
+        request: "CommandEnvelope",
+    },
+    GuideRemoteRequestSpec {
+        scenario_id: inference_scenarios::SCENARIO_ID,
+        family: "inference",
+        operation: "acyclic.inference.v1.RunsService/Watch",
+        service: "RunsService",
+        method: "Watch",
+        request: "WatchRunRequest",
+    },
+    GuideRemoteRequestSpec {
+        scenario_id: machines_scenarios::SCENARIO_ID,
+        family: "machines",
+        operation: "acyclic.machines.v1.MachinesService/Create",
+        service: "MachinesService",
+        method: "Create",
+        request: "CreateMachineRequest",
+    },
+    GuideRemoteRequestSpec {
+        scenario_id: objects_scenarios::SCENARIO_ID,
+        family: "objects",
+        operation: "acyclic.objects.v2.ObjectsService/PutObject",
+        service: "ObjectsService",
+        method: "PutObject",
+        request: "PutObjectRequest",
+    },
+    GuideRemoteRequestSpec {
+        scenario_id: workers_scenarios::SCENARIO_ID,
+        family: "workers",
+        operation: "acyclic.workers.v1.WorkersService/PublishVersion",
+        service: "WorkersService",
+        method: "PublishVersion",
+        request: "PublishVersionRequest",
+    },
 ];
 
 fn rust_body(scenario_id: &str) -> Option<String> {
@@ -431,6 +494,23 @@ mod tests {
                 projection.code,
                 rust_body(scenario_id).expect("Rust scenario body")
             );
+        }
+    }
+
+    #[test]
+    fn request_manifest_matches_every_remote_projection() {
+        assert_eq!(
+            GUIDE_REMOTE_REQUESTS.len(),
+            GUIDE_PROJECTION_SCENARIOS.len()
+        );
+        for spec in GUIDE_REMOTE_REQUESTS {
+            for language in Language::ALL {
+                let projection = project(spec.scenario_id, language).expect("projection");
+                assert_eq!(projection.operation, spec.operation);
+                if language != Language::Rust {
+                    assert!(projection.code.contains(spec.request));
+                }
+            }
         }
     }
 }
