@@ -21,7 +21,7 @@ success alone.
 
 The smallest integration sequence is:
 
-1. Add a source-bound installed swarm driver beside
+1. Use the source-bound `graphcoder-installed-swarm-e2e.mjs` driver beside
    `graphcoder-native-stage-e2e.mjs`. It sends `start_session` with the
    explicit recursive model fixture, then reads the agent tree/activity and
    message pages until root, two children, and a grandchild complete. It must
@@ -40,6 +40,10 @@ The smallest integration sequence is:
 5. Bind the new driver to a fresh qualification-suite receipt with the native
    runtime and installed package artifacts. Only then map the relevant locked
    rows to native/package/PTY evidence.
+
+The platform descriptor now requires that receipt as
+`GRAPHCODER_INSTALLED_SWARM_RECEIPT`; `run windows` cannot complete while it is
+missing or failed.
 
 The deterministic provider remains an allowed mock model for this goal. A
 fixture transport or a package-export smoke test cannot substitute for the

@@ -30,6 +30,7 @@ test("qualification lanes require real installed drivers and keep mock fixtures 
   assert.deepEqual(manifest.qualification_lanes.map(lane => lane.id), [
     "installed-native-stage",
     "installed-headless",
+    "installed-recursive-swarm",
     "installed-pty",
     "installed-transport-faults",
     "filesystem-plugin-ignored",
