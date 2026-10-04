@@ -109,6 +109,22 @@ jobs:
           components: rustfmt
           targets: wasm32-unknown-unknown
 
+      - name: Preflight locked Rust metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/rust-workspace-metadata.json"
+          cargo metadata --locked --format-version 1 > "$metadata"
+          python - "$metadata" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              metadata = json.load(handle)
+          assert metadata["packages"], "locked metadata returned no packages"
+          assert metadata["workspace_members"], "locked metadata returned no workspace members"
+          PY
+
       - name: Verify pinned platform toolchain
         shell: bash
         run: |
@@ -403,3 +419,10 @@ jobs:
           path: ${{ runner.temp }}/platform-package/${{ matrix.package }}
           if-no-files-found: error
           retention-days: 7
+
+  dotnet-embedded-rid:
+    name: .NET embedded eight-RID qualification
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
+    uses: ./.github/workflows/dotnet-embedded-rid-manual.yml
+    with:
+      target: all
