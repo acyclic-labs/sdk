@@ -1545,6 +1545,10 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct Script(Mutex<Vec<ModelRequest>>);
         impl ModelProvider for Script {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+            }
+
             fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
                 let request = prepared.request().clone();
                 let mut requests = self.0.lock().unwrap();
@@ -1659,6 +1663,10 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct Capture(Mutex<Vec<(ModelRequest, Vec<u8>, [u8; 32])>>);
         impl ModelProvider for Capture {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+            }
+
             fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
                 self.0
                     .lock()
