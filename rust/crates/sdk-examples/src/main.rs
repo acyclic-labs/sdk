@@ -1578,7 +1578,7 @@ tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
         );
         fs::write(staging.join("Cargo.toml"), manifest)
             .map_err(|error| format!("write guide consumer manifest: {error}"))?;
-        let code = rewrite_guide_imports(source_code);
+        let code = rewrite_guide_imports(source_code.clone());
         let main = format!(
             r#"#![allow(unused_imports)]
 use std::error::Error;
@@ -1623,7 +1623,7 @@ Ok(())
             .output()
             .map_err(|error| format!("start guide consumer test: {error}"))?;
         if !test.status.success() {
-            let stderr = String::from_utf8_lossy(&test.stderr);
+            let stderr = String::from_utf8_lossy(&test.stderr).into_owned();
             let _ = fs::write(guide_root.join(format!("{scenario_id}.stderr.log")), test.stderr);
             return Err(format!("guide {scenario_id} test failed: {}", stderr.trim()));
         }
@@ -2966,4 +2966,5 @@ mod tests {
         fs::remove_dir_all(relocated).expect("clean relocated source closure fixture");
     }
 }
+
 
