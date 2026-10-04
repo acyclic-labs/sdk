@@ -16,6 +16,26 @@ export type NativeProcessTermination =
 export interface NativeProcessLaunch {
   readonly token: string;
   readonly pid: number;
+  /** Native owner retained this token while launch initialization failed. */
+  readonly recovery?: NativeProcessLaunchRecovery;
+}
+
+/** Structured native authority that must be reconciled after an uncertain launch. */
+export interface NativeProcessLaunchRecovery {
+  readonly source: string;
+  readonly token: string;
+  readonly pid?: number;
+}
+
+/** Launch failure carrying the retained native owner instead of hiding it in text. */
+export class NativeProcessLaunchError extends Error {
+  readonly recovery: NativeProcessLaunchRecovery;
+
+  constructor(recovery: NativeProcessLaunchRecovery) {
+    super(recovery.source);
+    this.name = "NativeProcessLaunchError";
+    this.recovery = recovery;
+  }
 }
 
 /** Native token-scoped stdio operations for a suspended native launch. */
@@ -91,7 +111,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         closed: false,
         stopping: false,
         failed: false,
-        termination: undefined,
+        termination: undefined as Promise<NativeProcessTermination> | undefined,
         stdoutBlocked: false,
         stderrBlocked: false,
         resume: (): void => undefined,
@@ -109,14 +129,11 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         child.emit("close", child.exitCode, child.signalCode);
       };
       state.finish = finish;
-      const failAndTerminate = (message: string): void => {
-        state.failed = true;
-        state.stopping = true;
-        if (state.timer !== undefined) {
-          clearInterval(state.timer);
-          state.timer = undefined;
-        }
-        child.emit("error", new Error(message));
+      const reconcileNaturalExit = (): void => {
+        // Root exit is only an observation. Start reconciliation before
+        // waiting for both pipes: a descendant can keep a captured pipe open.
+        // Close is emitted after proven termination or explicit uncertainty,
+        // so a caller never waits forever while the token remains registered.
         if (state.termination !== undefined) return;
         const operation = Promise.resolve().then(() => {
           const result = io.terminate(launch.token);
@@ -130,11 +147,43 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         } satisfies NativeProcessTermination));
         state.termination = operation;
         void operation.then(result => {
+          if (result.kind === "terminated") tokens.delete(child);
+          if (state.termination === operation) state.termination = undefined;
+          state.finish();
+        });
+      };
+      const failAndTerminate = (message: string): void => {
+        state.failed = true;
+        state.stopping = true;
+        if (state.timer !== undefined) {
+          clearInterval(state.timer);
+          state.timer = undefined;
+        }
+        if (state.termination !== undefined) return;
+        const operation = Promise.resolve().then(() => {
+          const result = io.terminate(launch.token);
+          return result.kind === "terminated"
+            ? { kind: "terminated", pid: child.pid ?? -1 } satisfies NativeProcessTermination
+            : result;
+        }).catch(error => ({
+          kind: "unknown",
+          pid: child.pid ?? -1,
+          reason: error instanceof Error ? error.message : String(error),
+        } satisfies NativeProcessTermination));
+        state.termination = operation;
+        // Claim the one cleanup operation before notifying listeners. An
+        // error listener may synchronously request termination again.
+        child.emit("error", new Error(message));
+        void operation.then(result => {
           if (result.kind === "terminated") {
             tokens.delete(child);
             state.finish();
           } else if (state.termination === operation) {
             state.termination = undefined;
+            // The caller must observe explicit uncertainty and retain the
+            // token for a later retry; do not leave the ChildProcess hanging
+            // forever after a reader failure.
+            state.finish();
           }
         });
       };
@@ -172,7 +221,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
           const exit = io.pollExit(launch.token);
           if (exit.kind === "exited") {
             (child as ChildProcess & { exitCode: number | null }).exitCode = exit.code ?? null;
-            if (stdoutDone && stderrDone) finish();
+            reconcileNaturalExit();
           }
         } catch (error) {
           failAndTerminate(error instanceof Error ? error.message : String(error));

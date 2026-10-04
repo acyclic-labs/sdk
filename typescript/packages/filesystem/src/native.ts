@@ -88,7 +88,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
-import { createNativeProcessOwner, createNativeProcessOwnerAdapter, type NativeProcessIo, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
+import { createNativeProcessOwner, createNativeProcessOwnerAdapter, NativeProcessLaunchError, type NativeProcessIo, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
 export { createNativeProcessOwnerAdapter } from "./native-process.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
@@ -239,7 +239,14 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
       : typeof options.cwd === "string"
         ? options.cwd
         : fileURLToPath(options.cwd);
-    return nativeOwner.spawn(executable, [...args], cwd, environment);
+    const launch = nativeOwner.spawn(executable, [...args], cwd, environment);
+    if (launch.recovery !== undefined) {
+      const recovery = launch.recovery.pid === undefined
+        ? { source: launch.recovery.source, token: launch.recovery.token }
+        : { source: launch.recovery.source, token: launch.recovery.token, pid: launch.recovery.pid };
+      throw new NativeProcessLaunchError(recovery);
+    }
+    return launch;
   };
   const io: NativeProcessIo = {
     launch,

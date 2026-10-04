@@ -2010,12 +2010,28 @@ export interface NativeProcessOutput {
   reason?: string
 }
 
+/** Durable recovery context for an uncertain native launch. */
+export interface NativeProcessRecovery {
+  /** Original launch or ownership initialization failure. */
+  source: string
+  /** Token retained in the native process-owner registry. */
+  token: string
+  /** Direct root PID when it was observed before the failure. */
+  pid?: number
+}
+
 /** Native process identity returned after atomic platform ownership. */
 export interface NativeProcessSpawn {
   /** Opaque operation identity retained by the native owner. */
   token: string
   /** Direct root PID for observation only. */
   pid: number
+  /**
+   * Structured recovery authority when launch initialization failed after
+   * a native owner was created. Callers must reconcile this token; it is
+   * never encoded only in diagnostic text.
+   */
+  recovery?: NativeProcessRecovery
 }
 
 /** Typed native process-tree termination observation. */

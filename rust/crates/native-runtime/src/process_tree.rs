@@ -25,6 +25,12 @@ pub struct ProcessTree {
     guard: platform::Guard,
 }
 
+// ProcessTree is moved between the launcher and Harness recovery worker while
+// its OS boundary remains exclusively owned by the value. No platform handle
+// is accessed concurrently; the mutex around retained owners supplies that
+// exclusive transfer discipline.
+unsafe impl Send for ProcessTree {}
+
 /// A native launch failure that retains the process-tree owner when launch
 /// initialization or cleanup became uncertain. Callers must transfer the
 /// recovery owner to their durable uncertainty registry before dropping this
@@ -123,13 +129,14 @@ impl ProcessTree {
         })
     }
 
-    /// Adopts an already running process into an owned termination boundary.
+    /// Test-only adoption hook for exercising platform containment checks.
     ///
-    /// Hosts that must expose a platform-native owner while retaining their
-    /// own stdio handles (for example Node's ChildProcess) use this narrow
-    /// hand-off. The returned guard is the authority for later cleanup; the
-    /// caller never has to recover ownership from a PID after the hand-off.
-    pub fn adopt(pid: u32) -> io::Result<Self> {
+    /// Production callers must launch through [`Self::spawn_owned`]. Taking
+    /// ownership from an arbitrary PID cannot prove that the PID still names
+    /// the intended operation, so the API is deliberately unavailable to
+    /// dependants of this crate.
+    #[cfg(test)]
+    pub(crate) fn adopt(pid: u32) -> io::Result<Self> {
         if pid == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -357,6 +364,7 @@ mod platform {
         ))
     }
 
+    #[cfg(test)]
     pub(super) fn adopt(pid: u32) -> io::Result<Guard> {
         let process_group = libc::pid_t::try_from(pid)
             .map_err(|_| io::Error::other("process id does not fit pid_t"))?;
@@ -1063,6 +1071,7 @@ mod platform {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn adopt(pid: u32) -> io::Result<Guard> {
         let guard = Guard::new()?;
         // Keep the process handle only for the assignment operation. The Job

@@ -25,6 +25,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
+        OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -1036,6 +1037,30 @@ pub trait ExecutionRunner: Send + Sync {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeExecutionRunner;
 
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+static RETAINED_NATIVE_RECOVERIES: OnceLock<Mutex<BTreeMap<u64, ProcessTree>>> = OnceLock::new();
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+static NEXT_NATIVE_RECOVERY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn retained_native_recoveries() -> std::sync::MutexGuard<'static, BTreeMap<u64, ProcessTree>> {
+    let mutex = RETAINED_NATIVE_RECOVERIES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    match mutex.lock() {
+        Ok(guard) => guard,
+        // A poisoned registry still owns the process boundaries. Recover its
+        // guard rather than dropping the retained owners on the error path.
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn reconcile_retained_native_recoveries() {
+    let mut recoveries = retained_native_recoveries();
+    recoveries.retain(|_, owner| owner.terminate().is_err());
+}
+
 impl ExecutionRunner for NativeExecutionRunner {
     fn run(&self, request: &ExecutionSpec) -> Result<RunnerOutcome> {
         self.run_with_cancellation(request, &ExecutionCancellation::new())
@@ -1046,6 +1071,8 @@ impl ExecutionRunner for NativeExecutionRunner {
         request: &ExecutionSpec,
         cancellation: &ExecutionCancellation,
     ) -> Result<RunnerOutcome> {
+        #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+        reconcile_retained_native_recoveries();
         request.validate()?;
         if cancellation.is_cancelled() {
             return Ok(RunnerOutcome::Cancelled {
@@ -1296,17 +1323,18 @@ impl ManagedChild {
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
 fn recover_spawn_error(error: ProcessTreeSpawnError) -> std::io::Error {
     let (source, recovery) = error.into_parts();
-    let Some(mut recovery) = recovery else {
+    let Some(recovery) = recovery else {
         return source;
     };
-    match recovery.terminate() {
-        Ok(()) => std::io::Error::other(format!(
-            "{source}; retained native owner was reconciled before returning the launch failure"
-        )),
-        Err(cleanup) => std::io::Error::other(format!(
-            "{source}; retained native owner cleanup is uncertain: {cleanup}"
-        )),
-    }
+    // Launch recovery is an ownership transfer, not a diagnostic string. The
+    // owner stays in this process-local durable registry until a later runner
+    // invocation proves termination. This also keeps an unknown cleanup
+    // outcome from being silently retried or dropped with the error value.
+    let token = NEXT_NATIVE_RECOVERY.fetch_add(1, Ordering::Relaxed);
+    retained_native_recoveries().insert(token, recovery);
+    std::io::Error::other(format!(
+        "{source}; retained native owner recovery token {token} requires reconciliation"
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

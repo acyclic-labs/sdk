@@ -321,7 +321,25 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   const { mock } = await import("bun:test");
   const binding = createRequire(import.meta.url)(bindingPath);
   mock.module(`@acyclic-labs/fs-${process.platform}-${process.arch}`, () => binding);
-  const { openNativeFs, openNativeWorkspaceGraph, DEFAULT_OBJECT_CACHE_OPTIONS, portableVolumeOptions } = await import("../typescript/packages/filesystem/dist/native.js");
+  const { openNativeFs, openNativeWorkspaceGraph, openNativeProcessOwner, DEFAULT_OBJECT_CACHE_OPTIONS, portableVolumeOptions } = await import("../typescript/packages/filesystem/dist/native.js");
+  const nativeProcessOwner = await openNativeProcessOwner();
+  const nativeChild = nativeProcessOwner.spawn(process.execPath, ["-e", "process.exit(0)"], {
+    cwd: engineRoot,
+    env: {
+      PATH: process.env.PATH ?? "",
+      ...(process.platform === "win32" ? { SystemRoot: process.env.SystemRoot ?? "" } : {}),
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  await new Promise((resolveChild, rejectChild) => {
+    const timer = setTimeout(() => rejectChild(new Error("native adapter natural-exit cleanup timed out")), 5_000);
+    nativeChild.once("error", error => { clearTimeout(timer); rejectChild(error); });
+    nativeChild.once("close", (...args) => { clearTimeout(timer); resolveChild(args); });
+  });
+  const retired = await nativeProcessOwner.terminate(nativeChild);
+  if (retired.kind !== "unknown") {
+    throw new Error(`native adapter natural-exit token was not retired: ${JSON.stringify(retired)}`);
+  }
   const engine = await openNativeFs({
     root: join(engineRoot, "public-adapter"),
     objectCache: {

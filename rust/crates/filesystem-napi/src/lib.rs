@@ -285,24 +285,29 @@ impl NativeProcessOwner {
         }
     }
 
-    fn retain_failed_launch(&self, error: ProcessTreeSpawnError) -> Error {
+    fn retain_failed_launch(&self, error: ProcessTreeSpawnError) -> Result<NativeProcessSpawn> {
         let (source, recovery) = error.into_parts();
         let Some(tree) = recovery else {
-            return napi_error(source);
+            return Err(napi_error(source));
         };
         let pid = tree.id();
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         let entry = NativeProcessEntry::with_io(tree);
         let Ok(mut trees) = self.trees.lock() else {
-            return napi_error(format!(
+            return Err(napi_error(format!(
                 "{source}; failed to retain native recovery owner in the process registry"
-            ));
+            )));
         };
         trees.insert(token, entry);
-        napi_error(format!(
-            "{source}; native recovery owner retained under token {token} (pid={})",
-            pid.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
-        ))
+        Ok(NativeProcessSpawn {
+            token: token.to_string(),
+            pid: pid.unwrap_or(0),
+            recovery: Some(NativeProcessRecovery {
+                source: source.to_string(),
+                token: token.to_string(),
+                pid,
+            }),
+        })
     }
 
     /// Spawns an explicitly described process inside a native ownership
@@ -349,7 +354,7 @@ impl NativeProcessOwner {
             .stderr(Stdio::piped());
         let tree = match spawn_process_tree_owned(command) {
             Ok(tree) => tree,
-            Err(error) => return Err(self.retain_failed_launch(error)),
+            Err(error) => return self.retain_failed_launch(error),
         };
         let pid = tree
             .id()
@@ -363,6 +368,7 @@ impl NativeProcessOwner {
         Ok(NativeProcessSpawn {
             token: token.to_string(),
             pid,
+            recovery: None,
         })
     }
 
@@ -597,6 +603,21 @@ pub struct NativeProcessSpawn {
     pub token: String,
     /// Direct root PID for observation only.
     pub pid: u32,
+    /// Structured recovery authority when launch initialization failed after
+    /// a native owner was created. Callers must reconcile this token; it is
+    /// never encoded only in diagnostic text.
+    pub recovery: Option<NativeProcessRecovery>,
+}
+
+#[napi(object)]
+/// Durable recovery context for an uncertain native launch.
+pub struct NativeProcessRecovery {
+    /// Original launch or ownership initialization failure.
+    pub source: String,
+    /// Token retained in the native process-owner registry.
+    pub token: String,
+    /// Direct root PID when it was observed before the failure.
+    pub pid: Option<u32>,
 }
 
 #[napi(object)]
