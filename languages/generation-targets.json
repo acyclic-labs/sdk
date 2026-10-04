@@ -602,7 +602,7 @@
           "bidi"
         ],
         "wire": "protobuf-grpc",
-        "notes": "ScalaPB 0.11.17 native protobuf/gRPC generation and the authorized Rust fixture receipt pass bounded Actors/bytes/optional/server-stream checks; HTTP scala-sttp loopback also passes. Full target qualification and cancellation recovery remain pending.",
+        "notes": "ScalaPB 0.11.17 native protobuf/gRPC generation compiles 70 Rust Actors and Stream sources; the published artifact is consumed from an isolated Ivy resolver against the Rust fixture with auth, bytes, uint64 and Stream append/read checks. Full target qualification and cancellation recovery remain pending.",
         "qualification": "prototype"
       },
       "embedded": {
@@ -622,7 +622,7 @@
         "ecosystem": "Maven Central/SBT",
         "artifact": "dev.acyclic:sdk-scala_2.13",
         "installable": true,
-        "notes": "The OAG scala-sttp Actors prototype compiles and publishes to an isolated Ivy cache with sbt 1.10.11."
+        "notes": "The ScalaPB artifact dev.acyclic:acyclic-sdk-scala-grpc-prototype_2.13:0.1.0 compiles, publishes and is consumed from an isolated Ivy resolver with sbt 1.10.11; receipt: research/additional-languages/scala-receipt.json."
       },
       "evidence": [
         {
@@ -640,10 +640,14 @@
         {
           "url": "https://github.com/acyclic-labs/sdk/blob/main/rust/crates/sdk-examples/src/bin/fixture-server.rs",
           "claim": "Rust-owned loopback fixture exposes the generated Actors and Stream tonic services for bounded ScalaPB gRPC consumption."
+        },
+        {
+          "url": "research/additional-languages/scala-receipt.json",
+          "claim": "ScalaPB package was consumed from an isolated local Ivy resolver against the Rust fixture with auth, bytes, uint64 and Stream append/read vectors."
         }
       ],
       "outstanding": [
-        "Run ScalaPB generated transport against Stream and Objects service vectors, including client/server streaming.",
+        "Run generated transport against Objects and remaining Stream service vectors, including client/server streaming.",
         "Verify custom validation options, descriptor digest handshake, metadata, cancellation and recovery before promotion."
       ]
     },

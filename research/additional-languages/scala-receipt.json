@@ -1,0 +1,352 @@
+{
+  "schema_version": 1,
+  "status": "local-prototype-passed",
+  "generator": {
+    "scalapb": "0.11.17",
+    "sbt_protoc": "1.0.7",
+    "sbt": "1.10.11",
+    "protoc": "3.25.5"
+  },
+  "source_digest": "c17c0a0cc939ea4e81e6c4f695f616550617191d1f3df8f87d4590cb09d0f49a",
+  "proto_files": [
+    {
+      "path": "proto/actors/v1/actors.proto",
+      "sha256": "06ceab3f17010830f61a8c0ed1d52d2b2ef7e7fa261807cf407e6615f7b17064"
+    },
+    {
+      "path": "proto/filesystem/v2/filesystem.proto",
+      "sha256": "55af9e1ecef11637555fcc12b983baa5f88368c78d34f8787afadba99a136b31"
+    },
+    {
+      "path": "proto/harness/v2/harness.proto",
+      "sha256": "392131d024fafd9e947343fee2fbbdaaef868afaf82ac8e42ecb180af741b1e5"
+    },
+    {
+      "path": "proto/inference/v1/inference.proto",
+      "sha256": "cba2f8caede087bb696dec024e559df6355e817e9b9a6e4933c7140b19e96841"
+    },
+    {
+      "path": "proto/machines/v1/machines.proto",
+      "sha256": "4891b8988e76618b1c87f261921b26d6d7d708f3f2aab348b0ca19aed7acba77"
+    },
+    {
+      "path": "proto/objects/v1/objects.proto",
+      "sha256": "89f9ce2677e2d6d28c3b3db176cc74dec0efdedbe98e6c2c3aeab9230b863809"
+    },
+    {
+      "path": "proto/objects/v2/objects.proto",
+      "sha256": "79c07290100c4ab775526f951be27eb6e067d31a02424010ea68d75c46f80f35"
+    },
+    {
+      "path": "proto/protocol/v1/protocol.proto",
+      "sha256": "725c7a96f90cebfa2cdce790cce4392c1f1e676959e5ead0bd49d0c4fc289b89"
+    },
+    {
+      "path": "proto/validation/v1/options.proto",
+      "sha256": "3bc88dd7527243ae1bf8f1ce052f4191b67b0f73f94ce6f82ce275571a2d1f9a"
+    },
+    {
+      "path": "proto/workers/v1/workers.proto",
+      "sha256": "8d3904f1645d795678b234e65165e36fec468d5bf563bada2f2e2bfdf4751b51"
+    }
+  ],
+  "generated_files": [
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/ActorLimits.scala",
+      "sha256": "06838889aaa47767c51794dfbadd5337a4b1326b56202f27013148e5d589098d"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/ActorObservation.scala",
+      "sha256": "9f7f5e267dffc966eb2be4af2b81f7975397e30d6e8b3ed396c096e4a0029396"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/ActorsProto.scala",
+      "sha256": "429f331be46333733c106c17c1ed410198ec347c5e18676c120dfe27c8f51066"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/ActorsServiceGrpc.scala",
+      "sha256": "6fcbe79bf530bcd81df4b42b7697cdddf846f0403445a104e25b5630929d4776"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/ActorState.scala",
+      "sha256": "5b82041e20ee672babe024834334f040eb1f0c8a0671280f4088a6edfe4e395e"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/AddSubscriptionRequest.scala",
+      "sha256": "5adf7c80afa7972bd835cc543748d093de063d89bc3fa155f0216c9f69b8cd80"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/AddSubscriptionResponse.scala",
+      "sha256": "e69697f26dcf931f4fc4366d9051f1cdb0b4c150cb8c332ab0a538950202c2e3"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/Binding.scala",
+      "sha256": "c955bb591cb5e1fb1c90352827280cc35c118c8bce19f4dc7d148acb42d2e593"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/CheckpointActorRequest.scala",
+      "sha256": "933038d1ec5e2011b251b46b29f9a0de9e1b2d8e511d77d47d81e86bdeb0a8a6"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/CheckpointActorResponse.scala",
+      "sha256": "0d6e02b35f10d7ec78cb3c0b1ba0c504fbf0b21cccd3220e779a7d4afad9118d"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/CreateActorRequest.scala",
+      "sha256": "c379d24f074173a2f12856b0eb6d6645b04b2d65c3f1c98b3912cc2b59439540"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/CreateActorResponse.scala",
+      "sha256": "afee487bbf87a6f0e2e71ea1a7ff72458ebff7f91eda8490c03648ed12feec6d"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/Error.scala",
+      "sha256": "4fdf42bbe46510a950a59455a9f3a5d79f228a732305fb690832ca1113d09396"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/ErrorCode.scala",
+      "sha256": "e19bb98cb71882e6a04b4baa4160d71208a2dcfe0187b269399447db935211db"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/Header.scala",
+      "sha256": "3f84ab8c7f4e3a7b25bac0efa0d99b9090bbf425ce7cb0f7618868cd0262ea9c"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/InspectActorRequest.scala",
+      "sha256": "6a1129ee9afc1fc27d6b9d668e6f60c3a0849b14de188fbca74ef81adc7a9d20"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/InspectActorResponse.scala",
+      "sha256": "92073f3f89b95c897bb09b2a9380d5bd9597a8fdeacc183850146dc45762e3db"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/InvokeActorRequest.scala",
+      "sha256": "f6a9ae628b1c213212674e5ffc8611b243078b13033463b7af6105a64746713c"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/InvokeActorResponse.scala",
+      "sha256": "8ad857d4b47f5e48bf54aed4c3b046b7850535601049347a8758aa81676c5758"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/RemoveSubscriptionRequest.scala",
+      "sha256": "f541ebe0459ac33f4abeb773cf1910d0d9e72f082010860d80e36f33c283b15d"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/RemoveSubscriptionResponse.scala",
+      "sha256": "fcbbdaaef5bd68826186e244093c73c9effd5499e17baa1de97bc92ba1814e94"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/ResumeSubscriptionRequest.scala",
+      "sha256": "dd09ca8af225129d6116f0e6698d2c3a7cf598e1753b113c0594a62b73450875"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/ResumeSubscriptionResponse.scala",
+      "sha256": "08d820bee38f672f4c719f97e34b2bb8f5d3580fd9a2afb2bab8e8febf477965"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/SubscriptionObservation.scala",
+      "sha256": "5574a186c2b45df9e8f5bf45ede606ac35729f464d98c2de3380724efdc9bb30"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/SubscriptionSpec.scala",
+      "sha256": "84c1c0d8b271b7013ceca13a8bbf3f0876923c607bf39e0ff587235328a6cfe9"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/SubscriptionStart.scala",
+      "sha256": "d7dfde82bc9525faea42ec9b95c8aa9b34fcd0def731b415d3bc706645501a86"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/SubscriptionState.scala",
+      "sha256": "f01abf68e013e193b46e88785bc215e54a9983fca406f9a1ba0b00191e6e4f16"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/UpdateActorRequest.scala",
+      "sha256": "b722dcda6d0ca01b813459bb27292f4f7e9eb243214b2f1e2ffe366b2194a256"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/actors/v1/actors/UpdateActorResponse.scala",
+      "sha256": "a3897794c312e84de49c5427e6610e290ea042eade81eb1ccf4d788d7aefd987"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/AbsentCondition.scala",
+      "sha256": "053798e418583d493cda75acfc9989afec90a219dfda35dc14df75a6ae8d52f7"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/AppendMutation.scala",
+      "sha256": "17a1a39c95bcc558ae6520ee32b6c4cd23e3b4db7e6b04488c79fdd602dd3a5a"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/AppendReceipt.scala",
+      "sha256": "099698ab5baf12cc261ff38f5d92ada7a408b85d82917e96bf193ee4f71df534"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/AppendRequest.scala",
+      "sha256": "89cd62e5fa7002e588d0aab804e054a6018a76f6e45e5b178caf837a373e4597"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/AppendResponse.scala",
+      "sha256": "4c81ccf6dfd6f488f65bb8884e9341a48e2d88728fe755798610cb63bc92548c"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/Child.scala",
+      "sha256": "21777e5facb8e440d442d182b60b8a9f75a340f83f93ac5eab398474998471f8"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ChildrenPageRequest.scala",
+      "sha256": "70bd1c98cd068ee414fc949d9f5adcee878e3dde87f96139e9705c9237e8b738"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ChildrenPageResponse.scala",
+      "sha256": "0971b086112a3bb01b2a97466076238608a2a4ce94633b1bd4e567e33211d49f"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ChildrenRequest.scala",
+      "sha256": "06736745cef809085359354d2731a88b161091d649653ccc959649ad93fe7d2f"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ChildrenResponse.scala",
+      "sha256": "e102314f9cf9c15981af3cee654e59bff3ad46409f17bbb8eb4104d2731d781a"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommitCondition.scala",
+      "sha256": "ea421d76e101e9442ef10f8c5336365d7a68c7226e544c76063997345f5dd88d"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommitConflict.scala",
+      "sha256": "9532290e8817d427a671d5638fbdbddf79cdfc2c5b3d5d92b465668b985fe62a"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommitConflicts.scala",
+      "sha256": "2a423337f0b08d227223bfb99e4c27b1cfb81d1c0116bf6b12aeade944815642"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommitMutation.scala",
+      "sha256": "7a2b4b078846a69106376d6e1318541c5adb9cd4a2d4d2a8abb7811e62902dba"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommitRequest.scala",
+      "sha256": "996155cf9d88487aa5266e41d55e5021a489e58d4b656850d3d429fe1dcd0cf7"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommitResponse.scala",
+      "sha256": "ac84d476795b1470fe68048e5f456887960ad46ace6b41b190acf8ffcb737eba"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommittedAppend.scala",
+      "sha256": "46fb9c2f3f2b1ce697251f63afae2f0d6bf51852fecb3b52c9c0344cfc67259d"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommittedEnvelope.scala",
+      "sha256": "5a14ec3cf95e8ae1eee170329cfdbfac9aae9c16c2221810c6e2a449db226146"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommittedFork.scala",
+      "sha256": "ac33f146ea342c1556923626448685894f57014aef42878bf5fe73b508ef4398"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CommittedMutation.scala",
+      "sha256": "1525420a9f44339c983dd586318c3670f2be2e134311d57f4f6499a2ff9c80da"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/CreateTokenRequest.scala",
+      "sha256": "5796a73ba6b681b0b0b660de2da9a95f233b111443d430ae047b7125f0699223"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ExistsCommitConflict.scala",
+      "sha256": "42f1b14fe48e0cdf5f8d75c3b601820ad9f61e48d464555ff2c732a45e7479ec"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/FollowRequest.scala",
+      "sha256": "e569ff0b73cebad8060082e2e1f8b2816a83fcb1393b631ad5b8a04ab8f50b32"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ForkMutation.scala",
+      "sha256": "ecb088596b9ad8cb45d4aad2d541e47c12754f2ae7610fb4042c89d537db4759"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ForkReceipt.scala",
+      "sha256": "da6e98d7f0156381e717e88b19fb7b16f84d07d20ab107017212a76eafd02e72"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ForkRequest.scala",
+      "sha256": "ef05f7a6f7c5882611820eb59eb97bd54e3e3f0a928009f753e867edfc797a04"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/IdempotencyObservation.scala",
+      "sha256": "b5ac7aed7541972daca9ebb6ec3895bacbe57cae1d3cc4a923fc89c196fd9c94"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/InspectIdempotencyRequest.scala",
+      "sha256": "4e6f8cecb724e83d78eb64b4958c64c51befdd5ff50d51f3085bde4e70a7665a"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/InspectIdempotencyResponse.scala",
+      "sha256": "3c48fd50c35ed5ba13b7e0fbdb1573a36e3eecbd4a5641273b08f7b866d0aca6"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ReadCommitRequest.scala",
+      "sha256": "2c7e70865ac6ca98d75d3f44a93c9cd6fa94913e80fd180db4217fa3dc37aad5"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ReadRequest.scala",
+      "sha256": "bda788860b3deea3eef43aba13235fe141de64a3f852727a7db6c3ac8a69c9c3"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/ReadResponse.scala",
+      "sha256": "43edc848d3d81eafff962b5b1627e61d383314368ab1634f2594b23541b4780f"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/Record.scala",
+      "sha256": "3fea6fc5f2565d471a05be02a82e5c8809d09acc45144a127281f2f3e81dc15f"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/StreamLimit.scala",
+      "sha256": "fde2b5f76c330c82531ebb8df1d6b8cf70949ec51fd3806924467bfcb504b50a"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/StreamProto.scala",
+      "sha256": "43fdc309d89e51b9bc26a96ad91db1045ea110479b08d6b2227d53cf306a6499"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/StreamServiceGrpc.scala",
+      "sha256": "ff1952ab005ec585891f4b3115d1a455809710c7c9e7ecd77234d6872dbb008f"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/TailCommitConflict.scala",
+      "sha256": "99cf897c40c3de7b886aa6d7210630ce43c58e4e32c07554a1859266a95c2850"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/TailCondition.scala",
+      "sha256": "c45fef97bebab09931ddcc21a683bb5a8260334bb861f971d85832370acc42e2"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/TailConflict.scala",
+      "sha256": "ee9082543a555e76992a258a3299ce565d97f0fd9ac9d7e18cd596d89e77ed66"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/TailRequest.scala",
+      "sha256": "45b15a34c4b62ec59765c7baed4160de171eaf740a2f194c9081a91ef0829884"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/TailResponse.scala",
+      "sha256": "25c0a378b63179eae5d329e02dba820fe264e0c30b907e25428593c03409c1b9"
+    },
+    {
+      "path": "target/scala-2.13/src_managed/main/scalapb/acyclic/stream/v2/stream/TokenGrant.scala",
+      "sha256": "57c48a3977f1814f5ed43e2012f0345854e6035c916ea99ae093cb514283d130"
+    }
+  ],
+  "artifact": {
+    "coordinate": "dev.acyclic:acyclic-sdk-scala-grpc-prototype_2.13:0.1.0",
+    "sha256": "e5d6385e482cc242d845bdf1cad4a04e3a674ab52996e2d5cb2afa533526155a"
+  },
+  "installed_consumer": {
+    "source": "research/additional-languages/scala-installed-consumer.scala",
+    "source_sha256": "d2e181f87d477e071ce9a07941c03d64acb977a035da93daf9e04ddfd7ea67a5",
+    "resolver": "isolated Ivy resolver from the local publishLocal repository",
+    "status": "passed against the Rust fixture over network gRPC"
+  },
+  "loopback": "Rust fixture auth, bytes, uint64, optional presence and server stream passed; cancellation remains a separate gate",
+  "rust_fixture": true,
+  "publication": "isolated publishLocal only"
+}

@@ -24,12 +24,16 @@ The Scala HTTP projection is the first executable prototype. [`scala-prototype.p
 
 The independent protobuf/gRPC lane now also has a real ScalaPB build:
 [`scala-grpc-prototype.ps1`](../../research/additional-languages/scala-grpc-prototype.ps1)
-uses ScalaPB `0.11.17` and `sbt-protoc` `1.0.7` to generate and compile 29
-Scala sources from the Actors protobuf fixture, then packages and publishes
-only to an isolated Ivy cache. [`scala-receipt.json`](../../research/additional-languages/scala-receipt.json)
-binds both prototype artifacts to their source and generator hashes. Neither
-prototype is full SDK qualification until shared conformance, custom-option,
-descriptor-digest and recovery tests pass.
+uses ScalaPB `0.11.17`, `sbt-protoc` `1.0.7`, and pinned `protoc` `3.25.5` to
+generate and compile 70 Scala sources from the Rust Actors and Stream protobuf
+fixtures. It packages and publishes
+`dev.acyclic:acyclic-sdk-scala-grpc-prototype_2.13:0.1.0` to an isolated Ivy
+cache, then consumes that published artifact from a separate resolver against
+the Rust tonic fixture. The installed consumer passes bearer metadata, bytes,
+uint64 and Stream append/read vectors. [`scala-receipt.json`](../../research/additional-languages/scala-receipt.json)
+binds the artifact, generated source hashes, consumer source and Rust-owned
+protobuf inputs. Full SDK qualification still requires shared conformance,
+custom-option, descriptor-digest, recovery and cancellation tests.
 
 Erlang (`grpcbox`), OCaml (`ocaml-grpc`) and Common Lisp (`ag-gRPC`) remain experimental. Their upstreams demonstrate useful generated or streaming behavior, but release cadence, package reproducibility, custom-option handling and descriptor compatibility still need evidence. Haskell and Lua remain blocked for full SDK status: the available gRPC or protobuf paths are explicitly incomplete or lack a maintained generated gRPC runtime.
 
