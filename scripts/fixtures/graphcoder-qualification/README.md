@@ -48,9 +48,10 @@ targets are parsed and compared with the installed package before the fixture
 starts; it remains a protocol fixture until paired with a real
 local-runtime host. A real host can additionally write a lazy observation file
 using schema `graphcoder.lazy-observation.v1`. It must identify the host PID and
-executable, the exact `list_sessions` request, and counters (`worker_starts`,
-`workspace_reads`, and `model_dispatches`) measured during that request; pass it
-as `--lazy-observation` to require all three to be zero. The native stage driver
+executable, the exact `list_sessions` request, and before/after snapshots for
+the counters (`worker_starts`, `workspace_reads`, and `model_dispatches`). The
+reported fields are checked as measured deltas, and `--lazy-observation` then
+requires all three deltas to be zero. The native stage driver
 forwards `GRAPHCODER_LAZY_OBSERVATION_PATH` and, in strict mode,
 `GRAPHCODER_REQUIRE_LAZY_COUNTERS=1` to the runtime, then checks that the
 receipt names the runtime executable and `list-1` request. `harness-model-consumer.mjs` uses a local

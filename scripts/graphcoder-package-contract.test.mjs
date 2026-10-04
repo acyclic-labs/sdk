@@ -77,7 +77,11 @@ test("real-host lazy observations require zero listing side effects", () => {
       schema: "graphcoder.lazy-observation.v1",
       runtime: { pid: 42, executable: process.execPath },
       request: { request_id: "list-1", method: "list_sessions" },
-      during_list_sessions: { worker_starts: 0, workspace_reads: 0, model_dispatches: 0 },
+      during_list_sessions: {
+        counters_before: { worker_starts: 4, workspace_reads: 7, model_dispatches: 2 },
+        counters_after: { worker_starts: 4, workspace_reads: 7, model_dispatches: 2 },
+        worker_starts: 0, workspace_reads: 0, model_dispatches: 0,
+      },
     })}\n`);
     assert.deepEqual(assertLazyCounters(observation, {
       require: true,
@@ -93,7 +97,11 @@ test("real-host lazy observations require zero listing side effects", () => {
       schema: "graphcoder.lazy-observation.v1",
       runtime: { pid: 42, executable: process.execPath },
       request: { request_id: "list-1", method: "list_sessions" },
-      during_list_sessions: { worker_starts: 1, workspace_reads: 0, model_dispatches: 0 },
+      during_list_sessions: {
+        counters_before: { worker_starts: 4, workspace_reads: 7, model_dispatches: 2 },
+        counters_after: { worker_starts: 5, workspace_reads: 7, model_dispatches: 2 },
+        worker_starts: 1, workspace_reads: 0, model_dispatches: 0,
+      },
     })}\n`);
     assert.throws(() => assertLazyCounters(observation, { require: true }), /worker starts/u);
   } finally {

@@ -171,9 +171,21 @@ export function assertLazyCounters(observationPath, {
   }
   const listing = observation?.during_list_sessions;
   if (listing === null || typeof listing !== "object" || Array.isArray(listing)) fail("lazy observation must contain during_list_sessions");
+  const before = listing.counters_before;
+  const after = listing.counters_after;
+  if (before === null || typeof before !== "object" || Array.isArray(before)) fail("lazy observation must contain counters_before");
+  if (after === null || typeof after !== "object" || Array.isArray(after)) fail("lazy observation must contain counters_after");
   for (const field of ["worker_starts", "workspace_reads", "model_dispatches"]) {
-    if (!Number.isSafeInteger(listing[field]) || listing[field] < 0) fail(`lazy observation ${field} must be a nonnegative integer`);
-    if (listing[field] !== 0) fail(`session listing performed ${listing[field]} ${field.replaceAll("_", " ")}`);
+    if (!Number.isSafeInteger(before[field]) || before[field] < 0) fail(`lazy observation counters_before.${field} must be a nonnegative integer`);
+    if (!Number.isSafeInteger(after[field]) || after[field] < 0) fail(`lazy observation counters_after.${field} must be a nonnegative integer`);
+    if (after[field] < before[field]) fail(`lazy observation counters_after.${field} precedes counters_before`);
+    const delta = after[field] - before[field];
+    if (!Number.isSafeInteger(listing[field]) || listing[field] < 0) fail(`lazy observation ${field} must be a nonnegative integer delta`);
+    if (listing[field] !== delta) fail(`lazy observation ${field} does not equal its measured counter delta`);
+    if (delta !== 0) fail(`session listing performed ${delta} ${field.replaceAll("_", " ")}`);
   }
-  return { path, during_list_sessions: listing };
+  return {
+    path,
+    during_list_sessions: Object.fromEntries(["worker_starts", "workspace_reads", "model_dispatches"].map(field => [field, listing[field]])),
+  };
 }

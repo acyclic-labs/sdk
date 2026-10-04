@@ -58,6 +58,7 @@ function handle(request) {
       if (request.method === "open_session") return respond(request, snapshot("session-1"));
       return respond(request, approval("session-2"));
     case "missing-approval-session":
+      if (request.params?.session_id === undefined) return fail(request, "invalid_input", "session_id is required");
       return respond(request, approval("session-2"));
     case "bad-bytes":
       return respond(request, { path: "README.md", media_type: "text/markdown", bytes: [-1, 256, 1.5], generation: "7" });

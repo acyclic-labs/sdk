@@ -51,7 +51,7 @@ uses schema `graphcoder.lazy-observation.v1` and binds the measurement to the
 host PID/executable and exact request:
 
 ```json
-{"schema":"graphcoder.lazy-observation.v1","runtime":{"pid":1234,"executable":"<runtime>"},"request":{"request_id":"list-1","method":"list_sessions"},"during_list_sessions":{"worker_starts":0,"workspace_reads":0,"model_dispatches":0}}
+{"schema":"graphcoder.lazy-observation.v1","runtime":{"pid":1234,"executable":"<runtime>"},"request":{"request_id":"list-1","method":"list_sessions"},"during_list_sessions":{"counters_before":{"worker_starts":4,"workspace_reads":7,"model_dispatches":2},"counters_after":{"worker_starts":4,"workspace_reads":7,"model_dispatches":2},"worker_starts":0,"workspace_reads":0,"model_dispatches":0}}
 ```
 
 Set `GRAPHCODER_REQUIRE_LAZY_COUNTERS=1` to require this observation. The

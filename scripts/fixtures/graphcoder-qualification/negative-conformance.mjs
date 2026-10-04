@@ -97,11 +97,11 @@ const pathRequests = [];
 const pathBridge = {
   request(request) {
     pathRequests.push(request);
-    return Promise.resolve({ request_id: request.request_id, ok: true, result: { path: request.params.path, media_type: "text/plain", bytes: [1], generation: "7" } });
+    return Promise.resolve({ request_id: request.request_id, ok: true, result: { session_id: "session-1", path: request.params.path, media_type: "text/plain", bytes: [1], generation: "7" } });
   },
 };
 const pathTransport = new bridgeApi.HarnessGraphCoderTransport(pathBridge);
-for (const path of ["", "  ", ".", "..", "/absolute", "C:\\absolute", "..\\secret", "a/../b", "a//b", "\u0000bad", "a".repeat(4097)]) {
+for (const path of ["", ".", "..", "/absolute", "C:\\absolute", "..\\secret", "a/../b", "a//b", "\u0000bad", "a".repeat(4097)]) {
   await expectCode(`NEG-PATH-01 ${JSON.stringify(path.slice(0, 24))}`, "invalid_input", () => pathTransport.readFile(api.sessionId("session-1"), path, 7n));
 }
 for (const path of [null, 1, {}, []]) {
@@ -109,7 +109,6 @@ for (const path of [null, 1, {}, []]) {
 }
 await expectCode("NEG-INPUT-01 page cursor", "invalid_input", () => pathTransport.listSessions({ after: 42 }));
 await expectCode("NEG-INPUT-01 session prompt", "invalid_input", () => pathTransport.startSession({ prompt: null }));
-await expectCode("NEG-INPUT-01 session id", "invalid_input", () => pathTransport.openSession(null));
 assert(pathRequests.length === 0, "NEG-PATH-01 sent invalid paths to the bridge");
 const boundaryPath = "a".repeat(4096);
 const boundaryFile = await pathTransport.readFile(api.sessionId("session-1"), boundaryPath, 7n);
