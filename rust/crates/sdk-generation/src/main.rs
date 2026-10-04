@@ -6,10 +6,10 @@
 //! artifact hashes in a manifest. Missing tools and missing qualification
 //! evidence remain "pending"; they are never represented as successful output.
 
-use acyclic_sdk_contract_wire::{FAMILY_VIEWS, explicit_http_family_views};
+use acyclic_sdk_contract_wire::{explicit_http_family_views, FAMILY_VIEWS};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -332,11 +332,7 @@ fn run() -> Result<(), CliError> {
         Operation::Generate => generate(&source_root, &output),
         Operation::Check => check(&source_root, &output),
         Operation::Drift => drift(&source_root, &output),
-        Operation::Qualify => qualify(
-            &source_root,
-            &output,
-            args.package_root.as_deref(),
-        ),
+        Operation::Qualify => qualify(&source_root, &output, args.package_root.as_deref()),
         Operation::QualifyEmbedded => qualify_embedded(
             &source_root,
             &output,
@@ -346,9 +342,9 @@ fn run() -> Result<(), CliError> {
             args.evidence
                 .as_deref()
                 .ok_or_else(|| CliError::new("qualify-embedded requires --evidence PATH"))?,
-            args.package_root.as_deref().ok_or_else(|| {
-                CliError::new("qualify-embedded requires --package-root PATH")
-            })?,
+            args.package_root
+                .as_deref()
+                .ok_or_else(|| CliError::new("qualify-embedded requires --package-root PATH"))?,
             args.platform_receipt.as_deref(),
         ),
         Operation::Inventory => inventory_command(&source_root, &output),
@@ -404,25 +400,22 @@ fn parse_args() -> Result<Args, CliError> {
                 ))
             }
             "--evidence" => {
-                evidence = Some(PathBuf::from(
-                    values
-                        .next()
-                        .ok_or_else(|| CliError::new("--evidence requires a path"))?,
-                ))
+                evidence =
+                    Some(PathBuf::from(values.next().ok_or_else(|| {
+                        CliError::new("--evidence requires a path")
+                    })?))
             }
             "--package-root" => {
-                package_root = Some(PathBuf::from(
-                    values
-                        .next()
-                        .ok_or_else(|| CliError::new("--package-root requires a path"))?,
-                ))
+                package_root =
+                    Some(PathBuf::from(values.next().ok_or_else(|| {
+                        CliError::new("--package-root requires a path")
+                    })?))
             }
             "--platform-receipt" => {
-                platform_receipt = Some(PathBuf::from(
-                    values
-                        .next()
-                        .ok_or_else(|| CliError::new("--platform-receipt requires a path"))?,
-                ))
+                platform_receipt =
+                    Some(PathBuf::from(values.next().ok_or_else(|| {
+                        CliError::new("--platform-receipt requires a path")
+                    })?))
             }
             "--help" | "-h" => {
                 return Err(CliError::new(
@@ -676,15 +669,11 @@ fn drift(source_root: &Path, output: &Path) -> Result<(), CliError> {
     print_json(&report)
 }
 
-fn qualify(
-    source_root: &Path,
-    output: &Path,
-    package_root: Option<&Path>,
-) -> Result<(), CliError> {
+fn qualify(source_root: &Path, output: &Path, package_root: Option<&Path>) -> Result<(), CliError> {
     check(source_root, output)?;
     let source = source_identity(source_root)?;
-    let package_root = package_root
-        .ok_or_else(|| CliError::new("qualify requires --package-root PATH"))?;
+    let package_root =
+        package_root.ok_or_else(|| CliError::new("qualify requires --package-root PATH"))?;
     let installed_packages = installed_package_receipts::validate_installed_package_receipts(
         package_root,
         &source.revision,
@@ -771,7 +760,9 @@ fn qualify_embedded(
     if receipt_schema != "acyclic.sdk.embedded.release-abi.v1"
         || receipt_status != "qualified-local-release-package"
     {
-        return Err(CliError::new("embedded ABI receipt schema or status is invalid"));
+        return Err(CliError::new(
+            "embedded ABI receipt schema or status is invalid",
+        ));
     }
     let source_record = receipt
         .get("source")
@@ -782,7 +773,9 @@ fn qualify_embedded(
         .and_then(Value::as_str)
         .ok_or_else(|| CliError::new("embedded ABI receipt source revision is missing"))?;
     if !is_commit_revision(source_revision) {
-        return Err(CliError::new("embedded ABI source revision is not immutable"));
+        return Err(CliError::new(
+            "embedded ABI source revision is not immutable",
+        ));
     }
     let source_digest = source_record
         .get("source_digest")
@@ -828,14 +821,18 @@ fn qualify_embedded(
         }
         let path = source.join(relative);
         let metadata = fs::symlink_metadata(&path).map_err(|error| {
-            CliError::new(format!("embedded ABI source input is missing: {relative}: {error}"))
+            CliError::new(format!(
+                "embedded ABI source input is missing: {relative}: {error}"
+            ))
         })?;
         if !metadata.file_type().is_file() {
             return Err(CliError::new(format!(
                 "embedded ABI source input is not a file: {relative}"
             )));
         }
-        let digest = hash_bytes(&fs::read(&path)?).trim_start_matches("sha256:").to_owned();
+        let digest = hash_bytes(&fs::read(&path)?)
+            .trim_start_matches("sha256:")
+            .to_owned();
         source_digest_lines.push(format!("{relative} {digest}"));
     }
     let observed_source_digest = hash_bytes(source_digest_lines.join("\n").as_bytes())
@@ -850,14 +847,20 @@ fn qualify_embedded(
         .get("foreign_consumers")
         .and_then(Value::as_object)
         .ok_or_else(|| CliError::new("embedded consumer receipts are missing"))?;
-    for name in ["c_consumer", "python_ctypes_consumer", "cpp_cross_thread_consumer"] {
+    for name in [
+        "c_consumer",
+        "python_ctypes_consumer",
+        "cpp_cross_thread_consumer",
+    ] {
         if consumers
             .get(name)
             .and_then(|value| value.get("status"))
             .and_then(Value::as_str)
             != Some("passed")
         {
-            return Err(CliError::new(format!("embedded consumer receipt did not pass: {name}")));
+            return Err(CliError::new(format!(
+                "embedded consumer receipt did not pass: {name}"
+            )));
         }
     }
     let actual_consumers = receipt
@@ -868,7 +871,11 @@ fn qualify_embedded(
         let consumer = actual_consumers
             .get(name)
             .and_then(Value::as_object)
-            .ok_or_else(|| CliError::new(format!("actual embedded consumer receipt is missing: {name}")))?;
+            .ok_or_else(|| {
+                CliError::new(format!(
+                    "actual embedded consumer receipt is missing: {name}"
+                ))
+            })?;
         validate_embedded_consumer_receipt(
             &source,
             &package,
@@ -884,7 +891,9 @@ fn qualify_embedded(
         .and_then(Value::as_bool)
         != Some(true)
     {
-        return Err(CliError::new("embedded ABI reproducibility evidence is missing"));
+        return Err(CliError::new(
+            "embedded ABI reproducibility evidence is missing",
+        ));
     }
     let artifacts = receipt
         .get("artifacts")
@@ -894,25 +903,33 @@ fn qualify_embedded(
     let mut artifact_count = 0usize;
     for (path, expected) in artifacts {
         if !is_portable_relative(path) {
-            return Err(CliError::new(format!("embedded artifact path is not portable: {path}")));
+            return Err(CliError::new(format!(
+                "embedded artifact path is not portable: {path}"
+            )));
         }
         let expected = expected
             .as_str()
             .ok_or_else(|| CliError::new(format!("embedded artifact hash is invalid: {path}")))?;
         if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(CliError::new(format!("embedded artifact hash is invalid: {path}")));
+            return Err(CliError::new(format!(
+                "embedded artifact hash is invalid: {path}"
+            )));
         }
         let artifact_path = package.join(path);
         let metadata = fs::symlink_metadata(&artifact_path).map_err(|error| {
             CliError::new(format!("embedded artifact is missing: {path}: {error}"))
         })?;
         if !metadata.file_type().is_file() {
-            return Err(CliError::new(format!("embedded artifact is not a file: {path}")));
+            return Err(CliError::new(format!(
+                "embedded artifact is not a file: {path}"
+            )));
         }
         let bytes = fs::read(&artifact_path)?;
         let actual = hash_bytes(&bytes);
         if actual != format!("sha256:{}", expected.to_ascii_lowercase()) {
-            return Err(CliError::new(format!("embedded artifact hash mismatch: {path}")));
+            return Err(CliError::new(format!(
+                "embedded artifact hash mismatch: {path}"
+            )));
         }
         canonical.push_str(path);
         canonical.push('\0');
@@ -927,8 +944,7 @@ fn qualify_embedded(
         .map(|(path, hash)| {
             Ok((
                 path.clone(),
-                hash
-                    .as_str()
+                hash.as_str()
                     .ok_or_else(|| CliError::new("embedded artifact hash is not a string"))?
                     .to_ascii_lowercase(),
             ))
@@ -948,8 +964,10 @@ fn qualify_embedded(
     let evidence_ok = evidence.get("schema").and_then(Value::as_str) == Some(EVIDENCE_SCHEMA)
         && evidence.get("language").and_then(Value::as_str) == Some("cpp")
         && evidence.get("source_revision").and_then(Value::as_str) == Some(source_revision)
-        && evidence.get("contract_digest").and_then(Value::as_str) == Some(evidence_contract.as_str())
-        && evidence.get("artifact_digest").and_then(Value::as_str) == Some(expected_artifact_digest.as_str())
+        && evidence.get("contract_digest").and_then(Value::as_str)
+            == Some(evidence_contract.as_str())
+        && evidence.get("artifact_digest").and_then(Value::as_str)
+            == Some(expected_artifact_digest.as_str())
         && evidence
             .get("embedded")
             .and_then(|value| value.get("status"))
@@ -1033,17 +1051,23 @@ fn validate_embedded_platform_receipt(
         != Some("acyclic.sdk.embedded.platform-package.v1")
         || receipt.get("status").and_then(Value::as_str) != Some("passed")
     {
-        return Err(CliError::new("embedded platform receipt schema or status is invalid"));
+        return Err(CliError::new(
+            "embedded platform receipt schema or status is invalid",
+        ));
     }
     if receipt.get("source_revision").and_then(Value::as_str) != Some(source_revision) {
-        return Err(CliError::new("embedded platform receipt source revision is stale"));
+        return Err(CliError::new(
+            "embedded platform receipt source revision is stale",
+        ));
     }
     let platform_digest = receipt
         .get("source_digest")
         .and_then(Value::as_str)
         .ok_or_else(|| CliError::new("embedded platform receipt source digest is missing"))?;
     if platform_digest != format!("sha256:{source_digest}") {
-        return Err(CliError::new("embedded platform receipt source digest is stale"));
+        return Err(CliError::new(
+            "embedded platform receipt source digest is stale",
+        ));
     }
     let platform_inputs = receipt
         .get("source_inputs")
@@ -1090,13 +1114,20 @@ fn validate_embedded_platform_receipt(
         let expected = expected
             .as_str()
             .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .ok_or_else(|| CliError::new(format!("embedded platform artifact hash is invalid: {relative}")))?;
+            .ok_or_else(|| {
+                CliError::new(format!(
+                    "embedded platform artifact hash is invalid: {relative}"
+                ))
+            })?;
         let artifact = package_root.join(relative);
         let metadata = fs::symlink_metadata(&artifact).map_err(|error| {
-            CliError::new(format!("embedded platform artifact is missing: {relative}: {error}"))
+            CliError::new(format!(
+                "embedded platform artifact is missing: {relative}: {error}"
+            ))
         })?;
         if !metadata.file_type().is_file()
-            || hash_bytes(&fs::read(&artifact)?) != format!("sha256:{}", expected.to_ascii_lowercase())
+            || hash_bytes(&fs::read(&artifact)?)
+                != format!("sha256:{}", expected.to_ascii_lowercase())
         {
             return Err(CliError::new(format!(
                 "embedded platform artifact hash mismatch: {relative}"
@@ -1105,7 +1136,9 @@ fn validate_embedded_platform_receipt(
     }
     let runtime = package_root.join(runtime_artifact);
     let runtime_bytes = fs::read(&runtime).map_err(|error| {
-        CliError::new(format!("embedded platform runtime artifact is missing: {error}"))
+        CliError::new(format!(
+            "embedded platform runtime artifact is missing: {error}"
+        ))
     })?;
     let valid_format = if runtime_artifact.ends_with(".dll") {
         runtime_bytes.len() >= 64
@@ -1146,7 +1179,11 @@ fn validate_embedded_platform_receipt(
         let consumer = consumers
             .get(name)
             .and_then(Value::as_object)
-            .ok_or_else(|| CliError::new(format!("embedded platform consumer receipt is missing: {name}")))?;
+            .ok_or_else(|| {
+                CliError::new(format!(
+                    "embedded platform consumer receipt is missing: {name}"
+                ))
+            })?;
         validate_embedded_consumer_receipt(
             source_root,
             package_root,
@@ -1205,10 +1242,14 @@ fn validate_embedded_consumer_receipt(
         .get("source_sha256")
         .and_then(Value::as_str)
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| CliError::new(format!("embedded consumer source hash is invalid: {name}")))?;
+        .ok_or_else(|| {
+            CliError::new(format!("embedded consumer source hash is invalid: {name}"))
+        })?;
     let source_file = source_root.join(source_path);
     let source_metadata = fs::symlink_metadata(&source_file).map_err(|error| {
-        CliError::new(format!("embedded consumer source is missing: {source_path}: {error}"))
+        CliError::new(format!(
+            "embedded consumer source is missing: {source_path}: {error}"
+        ))
     })?;
     if !source_metadata.file_type().is_file() {
         return Err(CliError::new(format!(
@@ -1232,7 +1273,11 @@ fn validate_embedded_consumer_receipt(
     let artifact_path = consumer
         .get("package_artifact")
         .and_then(Value::as_str)
-        .ok_or_else(|| CliError::new(format!("embedded consumer package artifact is missing: {name}")))?;
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "embedded consumer package artifact is missing: {name}"
+            ))
+        })?;
     if !is_portable_relative(artifact_path) {
         return Err(CliError::new(format!(
             "embedded consumer package artifact path is not portable: {artifact_path}"
@@ -1247,10 +1292,16 @@ fn validate_embedded_consumer_receipt(
         .get("package_artifact_sha256")
         .and_then(Value::as_str)
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| CliError::new(format!("embedded consumer artifact hash is invalid: {name}")))?;
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "embedded consumer artifact hash is invalid: {name}"
+            ))
+        })?;
     let artifact = package_root.join(artifact_path);
     let artifact_metadata = fs::symlink_metadata(&artifact).map_err(|error| {
-        CliError::new(format!("embedded consumer artifact is missing: {artifact_path}: {error}"))
+        CliError::new(format!(
+            "embedded consumer artifact is missing: {artifact_path}: {error}"
+        ))
     })?;
     if !artifact_metadata.file_type().is_file() {
         return Err(CliError::new(format!(
@@ -1289,11 +1340,24 @@ fn validate_embedded_consumer_receipt(
     }
     let required_checks: &[&str] = match name {
         "c" => &["layout", "append", "read", "release", "stale_handles"],
-        "python" => &["append", "follow", "owned_buffers", "cancel", "stale_handles"],
-        "cpp" => &["blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install"],
+        "python" => &[
+            "append",
+            "follow",
+            "owned_buffers",
+            "cancel",
+            "stale_handles",
+        ],
+        "cpp" => &[
+            "blocked_pull_wakeup",
+            "cross_thread_cancel",
+            "clean_prefix_install",
+        ],
         _ => &[],
     };
-    if !required_checks.iter().all(|required| seen_checks.contains(required)) {
+    if !required_checks
+        .iter()
+        .all(|required| seen_checks.contains(required))
+    {
         return Err(CliError::new(format!(
             "embedded consumer behavior checks are incomplete: {name}"
         )));
@@ -1497,8 +1561,7 @@ fn is_generated_output_path(path: &str) -> bool {
         || path.starts_with("typescript/packages/harness/generated/")
         || path.starts_with("typescript/packages/machines/generated/")
         || path.starts_with("typescript/packages/inference/generated/")
-        || (path.starts_with("typescript/packages/")
-            && path.ends_with("/src/generated-client.ts"))
+        || (path.starts_with("typescript/packages/") && path.ends_with("/src/generated-client.ts"))
         || matches!(
             path.as_str(),
             "rust/crates/actors/src/generated/acyclic.actors.v1.rs"
@@ -2783,13 +2846,9 @@ fn run_tools(
             .iter()
             .map(|part| part.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        if let Err(error) = ensure_generation_destination(
-            root,
-            output,
-            spec.id,
-            operation,
-            &command,
-        ) {
+        if let Err(error) =
+            ensure_generation_destination(root, output, spec.id, operation, &command)
+        {
             results.push(ToolResult {
                 id: spec.id.into(),
                 status: "failed".into(),
@@ -3026,19 +3085,15 @@ fn ensure_generation_destination(
             "{tool} generation command must use packages-write <source-root> <output-root> <wire-root> <revision>"
         )));
     }
-    let source_argument = canonical_existing_directory(
-        Path::new(&package_args[1]),
-        "generation source root",
-    )?;
+    let source_argument =
+        canonical_existing_directory(Path::new(&package_args[1]), "generation source root")?;
     if source_argument != root {
         return Err(CliError::new(format!(
             "{tool} generation source root must resolve to the frozen source checkout"
         )));
     }
-    let destination = canonical_existing_directory(
-        Path::new(&package_args[2]),
-        "generation destination",
-    )?;
+    let destination =
+        canonical_existing_directory(Path::new(&package_args[2]), "generation destination")?;
     if destination != output {
         return Err(CliError::new(format!(
             "{tool} generation command must target the isolated output tree"
@@ -3342,9 +3397,8 @@ fn ensure_product_destination(
         let parent = destination.parent().ok_or_else(|| {
             CliError::new("product output has no parent directory for containment check")
         })?;
-        fs::canonicalize(parent).map(|parent| {
-            parent.join(destination.file_name().unwrap_or_default())
-        })
+        fs::canonicalize(parent)
+            .map(|parent| parent.join(destination.file_name().unwrap_or_default()))
     }
     .map_err(|error| {
         CliError::new(format!(
@@ -4317,7 +4371,10 @@ fn tool_command(
             // orchestrator; a destination-only check would always fail before
             // drift comparison because the tree starts empty.
             Operation::Generate | Operation::Check => "packages-write",
-            Operation::Drift | Operation::Qualify | Operation::QualifyEmbedded | Operation::Inventory => "packages-check",
+            Operation::Drift
+            | Operation::Qualify
+            | Operation::QualifyEmbedded
+            | Operation::Inventory => "packages-check",
         };
         return Some(vec![
             cargo_program(),
@@ -4352,7 +4409,10 @@ fn tool_command(
             OsString::from("--source-root"),
             root.as_os_str().to_os_string(),
             OsString::from("--output"),
-            output.join("typescript/rpc-contracts.json").as_os_str().to_os_string(),
+            output
+                .join("typescript/rpc-contracts.json")
+                .as_os_str()
+                .to_os_string(),
         ]);
     }
     if let Some(script) = &spec.script {
@@ -5192,6 +5252,30 @@ fn verify_authority_manifest(source_root: &Path, output: &Path) -> Result<(), Cl
         || value.get("authority").and_then(Value::as_str) != Some("rust")
     {
         return Err(CliError::new("invalid Rust authority manifest identity"));
+    }
+    let source_git_sha_kind = value
+        .get("source_git_sha_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("Rust authority manifest has no source Git SHA kind"))?;
+    if source_git_sha_kind != "git-revision" {
+        return Err(CliError::new(
+            "Rust authority manifest source Git SHA kind must be git-revision",
+        ));
+    }
+    let source_git_sha = value
+        .get("source_git_sha")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("Rust authority manifest has no source Git SHA"))?;
+    if !is_commit_revision(source_git_sha) {
+        return Err(CliError::new(
+            "Rust authority manifest has an invalid source Git SHA",
+        ));
+    }
+    let expected_source_git_sha = command_stdout(source_root, "git", &["rev-parse", "HEAD"])?;
+    if source_git_sha != expected_source_git_sha {
+        return Err(CliError::new(format!(
+            "Rust authority source Git SHA differs from checkout HEAD: manifest {source_git_sha}, checkout {expected_source_git_sha}"
+        )));
     }
     let model_revision = value
         .get("source_revision")
@@ -6295,7 +6379,7 @@ fn clear_repository_selection_environment(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::{Compression, write::GzEncoder};
+    use flate2::{write::GzEncoder, Compression};
     use tar::Builder;
 
     fn test_directory(name: &str) -> PathBuf {
@@ -6654,12 +6738,10 @@ mod tests {
         fs::create_dir_all(&external).expect("create product output root");
 
         assert!(ensure_product_destination(&root, &external, Operation::Generate).is_ok());
-        assert!(ensure_product_destination(
-            &root,
-            &root.join("generated"),
-            Operation::Generate
-        )
-        .is_err());
+        assert!(
+            ensure_product_destination(&root, &root.join("generated"), Operation::Generate)
+                .is_err()
+        );
         assert!(ensure_product_destination(&root, &root, Operation::Check).is_err());
         assert!(ensure_product_destination(&root, &root, Operation::Drift).is_ok());
 
@@ -6676,7 +6758,9 @@ mod tests {
         assert!(!first_output.starts_with(&first));
         assert!(!second_output.starts_with(&second));
         assert_ne!(first_output, second_output);
-        assert!(first_output.to_string_lossy().contains("acyclic-sdk-generation-"));
+        assert!(first_output
+            .to_string_lossy()
+            .contains("acyclic-sdk-generation-"));
         cleanup(&first);
         cleanup(&second);
     }
@@ -6869,10 +6953,9 @@ mod tests {
             args[rustdoc_index + 1],
             output.join("rustdoc-json").to_string_lossy()
         );
-        assert!(
-            args.iter()
-                .any(|argument| argument == "--strict-rustdoc-json")
-        );
+        assert!(args
+            .iter()
+            .any(|argument| argument == "--strict-rustdoc-json"));
         let registry_index = args
             .iter()
             .position(|argument| argument == "--registry-manifest")
@@ -6927,9 +7010,14 @@ mod tests {
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(args.iter().any(|argument| argument == "sdk-rpc-contracts"));
-        assert!(args.iter().any(|argument| argument == &root.to_string_lossy()));
+        assert!(args
+            .iter()
+            .any(|argument| argument == &root.to_string_lossy()));
         assert!(args.iter().any(|argument| {
-            argument == &output.join("typescript/rpc-contracts.json").to_string_lossy()
+            argument
+                == &output
+                    .join("typescript/rpc-contracts.json")
+                    .to_string_lossy()
         }));
     }
 
@@ -7198,7 +7286,8 @@ mod tests {
             )
         ));
         fs::write(&scenario, scenario_bytes).expect("restore scenario result");
-        fs::write(&receipt, receipt_bytes.as_bytes()).expect("restore receipt after scenario check");
+        fs::write(&receipt, receipt_bytes.as_bytes())
+            .expect("restore receipt after scenario check");
         let mut missing_scenarios: Value =
             serde_json::from_str(&receipt_bytes).expect("parse receipt for scenario mutation");
         missing_scenarios["consumer"]
@@ -7567,70 +7656,60 @@ mod tests {
                 }
             }]
         });
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &manifest,
-                revision
-            )
-            .is_ok()
-        );
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &manifest,
+            revision
+        )
+        .is_ok());
         let mut missing_consumer_log = manifest.clone();
         missing_consumer_log["snippets"][0]["validation"]["receipt"]["package_resolution"]
             .as_object_mut()
             .expect("package resolution object")
             .remove("consumer_stdout_path");
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &missing_consumer_log,
-                revision
-            )
-            .is_err()
-        );
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &missing_consumer_log,
+            revision
+        )
+        .is_err());
         fs::write(&consumer_stdout_path, b"tampered consumer output\n")
             .expect("tamper consumer stdout");
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &manifest,
-                revision
-            )
-            .is_err()
-        );
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &manifest,
+            revision
+        )
+        .is_err());
         fs::write(&consumer_stdout_path, consumer_stdout_bytes).expect("restore consumer stdout");
         let mut generic_identity = manifest.clone();
-        generic_identity["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_name"] =
-            Value::String("sdk-example-consumer".to_owned());
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &generic_identity,
-                revision
-            )
-            .is_err()
-        );
+        generic_identity["snippets"][0]["validation"]["receipt"]["package_resolution"]
+            ["package_name"] = Value::String("sdk-example-consumer".to_owned());
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &generic_identity,
+            revision
+        )
+        .is_err());
         let mut unbound_package = manifest.clone();
-        unbound_package["snippets"][0]["validation"]["receipt"]["package_resolution"]["compiled_snippet_sha256"] =
-            Value::String(hash_bytes(b"different snippet"));
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &unbound_package,
-                revision
-            )
-            .is_err()
-        );
+        unbound_package["snippets"][0]["validation"]["receipt"]["package_resolution"]
+            ["compiled_snippet_sha256"] = Value::String(hash_bytes(b"different snippet"));
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &unbound_package,
+            revision
+        )
+        .is_err());
 
         // A package with the same Cargo name/version is not interchangeable:
         // the consumer path, extracted tree, and archive metadata must all
@@ -7665,31 +7744,27 @@ mod tests {
         coincident_resolution["package_tree_sha256"] = Value::String(unrelated_tree_digest);
         coincident_resolution["consumer_manifest_sha256"] =
             Value::String(hash_bytes(unrelated_consumer_manifest));
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &coincident_package,
-                revision
-            )
-            .is_err()
-        );
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &coincident_package,
+            revision
+        )
+        .is_err());
         fs::write(&consumer_manifest_path, consumer_manifest_bytes)
             .expect("restore consumer manifest");
 
         fs::write(package_root.join("src.rs"), b"pub fn changed_actors() {}\n")
             .expect("alter extracted package source");
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &manifest,
-                revision
-            )
-            .is_err()
-        );
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &manifest,
+            revision
+        )
+        .is_err());
         fs::write(package_root.join("src.rs"), b"pub fn actors() {}\n")
             .expect("restore extracted package source");
 
@@ -7700,18 +7775,16 @@ mod tests {
         let mut mismatched_archive = manifest.clone();
         mismatched_archive["snippets"][0]["validation"]["receipt"]["package_artifact_sha256"] =
             Value::String(hash_bytes(&mismatched_package_bytes));
-        mismatched_archive["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_artifact_sha256"] =
-            Value::String(hash_bytes(&mismatched_package_bytes));
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &mismatched_archive,
-                revision
-            )
-            .is_err()
-        );
+        mismatched_archive["snippets"][0]["validation"]["receipt"]["package_resolution"]
+            ["package_artifact_sha256"] = Value::String(hash_bytes(&mismatched_package_bytes));
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &mismatched_archive,
+            revision
+        )
+        .is_err());
         fs::write(&package_path, &package_bytes).expect("restore package archive");
 
         let mut trailing_archive = package_bytes.clone();
@@ -7720,50 +7793,44 @@ mod tests {
         let mut trailing_receipt = manifest.clone();
         trailing_receipt["snippets"][0]["validation"]["receipt"]["package_artifact_sha256"] =
             Value::String(hash_bytes(&trailing_archive));
-        trailing_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_artifact_sha256"] =
-            Value::String(hash_bytes(&trailing_archive));
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &trailing_receipt,
-                revision
-            )
-            .is_err()
-        );
+        trailing_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]
+            ["package_artifact_sha256"] = Value::String(hash_bytes(&trailing_archive));
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &trailing_receipt,
+            revision
+        )
+        .is_err());
         fs::write(&package_path, &package_bytes).expect("restore package archive after junk test");
 
         let changed_lock =
             b"# disposable locked consumer\nversion = 4\n\n[[package]]\nname = \"actors-sdk\"\nversion = \"0.1.0\"\nsource = \"registry+https://example.invalid/index\"\n";
         fs::write(&consumer_lock_path, changed_lock).expect("alter lock source");
         let mut changed_lock_receipt = manifest.clone();
-        changed_lock_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]["consumer_lock_sha256"] =
-            Value::String(hash_bytes(changed_lock));
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &changed_lock_receipt,
-                revision
-            )
-            .is_err()
-        );
+        changed_lock_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]
+            ["consumer_lock_sha256"] = Value::String(hash_bytes(changed_lock));
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &changed_lock_receipt,
+            revision
+        )
+        .is_err());
         fs::write(&consumer_lock_path, consumer_lock_bytes).expect("restore consumer lock");
 
         fs::write(&snippet_path, b"fn main() { println!(\"changed\"); }\n")
             .expect("change rendered snippet");
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &manifest,
-                revision
-            )
-            .is_err()
-        );
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &manifest,
+            revision
+        )
+        .is_err());
         fs::write(&snippet_path, snippet_bytes).expect("restore rendered snippet");
         let generic = json!({
             "source": { "revision": revision },
@@ -7783,16 +7850,14 @@ mod tests {
                 }
             }]
         });
-        assert!(
-            verify_rust_snippet_receipts(
-                &root,
-                &root,
-                &root.join("sdk-examples-manifest.json"),
-                &generic,
-                revision
-            )
-            .is_err()
-        );
+        assert!(verify_rust_snippet_receipts(
+            &root,
+            &root,
+            &root.join("sdk-examples-manifest.json"),
+            &generic,
+            revision
+        )
+        .is_err());
         cleanup(&root);
     }
 
@@ -7805,6 +7870,8 @@ mod tests {
         let descriptor_path = output.join("wire/actors/v1/actors.fds.bin");
         fs::create_dir_all(source_path.parent().expect("source parent")).expect("source directory");
         fs::write(&source_path, b"model").expect("write source");
+        fs::write(source_root.join("existing.rs"), b"test").expect("write Git source");
+        initialize_git_source(&source_root);
         fs::create_dir_all(output.join("wire/validation/v1")).expect("options directory");
         fs::write(
             output.join("wire/validation/v1/options.proto"),
@@ -7853,6 +7920,9 @@ mod tests {
         let manifest = json!({
             "schema": "acyclic.sdk.rust-authority.v1",
             "authority": "rust",
+            "source_git_sha_kind": "git-revision",
+            "source_git_sha": command_stdout(&source_root, "git", &["rev-parse", "HEAD"])
+                .expect("read source Git revision"),
             "source_revision": hash_bytes(&canonical).strip_prefix("sha256:").unwrap(),
             "source_files": ["model.rs"],
             "source_file_hashes": {"model.rs": source_hash},
@@ -7864,6 +7934,24 @@ mod tests {
         )
         .expect("write authority manifest");
         assert!(verify_authority_manifest(&source_root, &output).is_ok());
+        let mut missing_git_identity = manifest.clone();
+        missing_git_identity
+            .as_object_mut()
+            .expect("authority object")
+            .remove("source_git_sha");
+        fs::write(
+            output.join("wire/rust-authority.json"),
+            serde_json::to_vec(&missing_git_identity).expect("encode missing Git identity"),
+        )
+        .expect("write missing Git identity");
+        let git_error = verify_authority_manifest(&source_root, &output)
+            .expect_err("authority without Git identity must fail closed");
+        assert!(git_error.to_string().contains("source Git SHA"));
+        fs::write(
+            output.join("wire/rust-authority.json"),
+            serde_json::to_vec(&manifest).expect("restore authority manifest"),
+        )
+        .expect("restore authority manifest");
         let mut missing_family = manifest.clone();
         missing_family["families"]
             .as_array_mut()
@@ -8045,20 +8133,16 @@ mod tests {
         )
         .expect("write tampered authority manifest");
         let error = authority_rpc_inventory(&root).expect_err("tampered method metadata rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("RPC methods do not match descriptor")
-        );
+        assert!(error
+            .to_string()
+            .contains("RPC methods do not match descriptor"));
 
         let actual_methods = descriptor_rpc_methods(descriptor, "actors/v1/actors.proto")
             .expect("derive methods from Rust descriptor");
-        manifest["families"][0]["rpc_methods"] = json!(
-            actual_methods
-                .iter()
-                .map(|(rpc, shape)| json!({ "rpc": rpc, "shape": shape }))
-                .collect::<Vec<_>>()
-        );
+        manifest["families"][0]["rpc_methods"] = json!(actual_methods
+            .iter()
+            .map(|(rpc, shape)| json!({ "rpc": rpc, "shape": shape }))
+            .collect::<Vec<_>>());
         manifest["families"][0]["source"] = json!("stream/v2/stream.proto");
         fs::write(
             root.join("wire/rust-authority.json"),
@@ -8241,6 +8325,8 @@ mod tests {
         )
         .expect("write options proto");
         fs::write(source_root.join("model.rs"), b"model").expect("write source");
+        fs::write(source_root.join("existing.rs"), b"test").expect("write Git source");
+        initialize_git_source(&source_root);
         let mut canonical = Vec::new();
         canonical.extend_from_slice(b"model.rs");
         canonical.push(0);
@@ -8257,6 +8343,9 @@ mod tests {
         let manifest = json!({
             "schema": "acyclic.sdk.rust-authority.v1",
             "authority": "rust",
+            "source_git_sha_kind": "git-revision",
+            "source_git_sha": command_stdout(&source_root, "git", &["rev-parse", "HEAD"])
+                .expect("read source Git revision"),
             "source_revision": model_revision,
             "source_files": ["model.rs"],
             "source_file_hashes": {"model.rs": source_hash},
@@ -8324,11 +8413,9 @@ mod tests {
         fs::create_dir_all(&nested).expect("create nested source path");
         let error =
             source_identity(&nested).expect_err("nested path must not inherit parent Git root");
-        assert!(
-            error
-                .to_string()
-                .contains("does not match requested source root")
-        );
+        assert!(error
+            .to_string()
+            .contains("does not match requested source root"));
         cleanup(&root);
     }
 

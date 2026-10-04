@@ -3,10 +3,11 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
-    BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
+    actors_descriptor, actors_proto, descriptor_set_with_docs,
     filesystem::{filesystem_descriptor, filesystem_proto},
     generate_product_bindings, generate_remote_facades,
     harness::{harness_descriptor, harness_proto},
@@ -16,6 +17,7 @@ use acyclic_sdk_contract_wire::{
     protocol::{protocol_descriptor, protocol_proto},
     stream::{stream_descriptor, stream_proto},
     workers::{workers_descriptor, workers_proto},
+    BindingFamily,
 };
 use prost::Message;
 use prost_types::FileDescriptorSet;
@@ -41,6 +43,7 @@ const PROTOCOL_PROTO_PATH: &str = "protocol/v1/protocol.proto";
 const PROTOCOL_DESCRIPTOR_PATH: &str = "protocol/v1/protocol.fds.bin";
 const VALIDATION_OPTIONS_PROTO_PATH: &str = "validation/v1/options.proto";
 const AUTHORITY_MANIFEST: &str = "rust-authority.json";
+const RUST_FAMILY_GOLDENS: &str = "rust-family-goldens.json";
 const FILESYSTEM_PRODUCT_DESCRIPTOR: &str =
     "rust/crates/filesystem/src/generated/rust-model-filesystem-v2.bin";
 const HARNESS_PRODUCT_DESCRIPTOR: &str =
@@ -189,10 +192,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     match command.as_str() {
-        "generate" => generate(&out.ok_or("generate requires --out")?),
-        "check" => check(&out.ok_or("check requires --out")?),
-        "generate-products" => generate_products(&root.ok_or("generate-products requires --root")?),
-        "check-products" => check_products(&root.ok_or("check-products requires --root")?),
+        "generate" => generate(
+            &out.ok_or("generate requires --out")?,
+            root.as_deref(),
+        ),
+        "check" => check(&out.ok_or("check requires --out")?, root.as_deref()),
+        "generate-products" => {
+            let root = root.ok_or("generate-products requires --root")?;
+            let destination = out.as_deref().unwrap_or(root.as_path());
+            generate_products(&root, destination)
+        }
+        "check-products" => {
+            let root = root.ok_or("check-products requires --root")?;
+            let destination = out.as_deref().unwrap_or(root.as_path());
+            check_products(&root, destination)
+        }
         _ => Err(format!(
             "unknown command: {command}; expected generate, check, generate-products, or check-products"
         )
@@ -291,9 +305,9 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
     Ok(artifacts)
 }
 
-fn generate_products(root: &Path) -> Result<(), Box<dyn Error>> {
+fn generate_products(root: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
     for (relative, expected) in product_artifacts(root)? {
-        let path = root.join(relative);
+        let path = destination.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -303,10 +317,10 @@ fn generate_products(root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn check_products(root: &Path) -> Result<(), Box<dyn Error>> {
+fn check_products(root: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
     let mut drifted = Vec::new();
     for (relative, expected) in product_artifacts(root)? {
-        let path = root.join(relative);
+        let path = destination.join(relative);
         match fs::read(&path) {
             Ok(actual) if actual == expected => println!("checked {}", path.display()),
             Ok(_) => drifted.push((path, None)),
@@ -328,7 +342,7 @@ fn check_products(root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn generate(out: &Path) -> Result<(), Box<dyn Error>> {
+fn generate(out: &Path, source_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
     generate_source(out, VALIDATION_OPTIONS_PROTO_PATH, options_proto())?;
     generate_contract(
         out,
@@ -393,13 +407,19 @@ fn generate(out: &Path) -> Result<(), Box<dyn Error>> {
         machines_proto(),
         machines_descriptor(),
     )?;
-    let manifest = authority_manifest(out)?;
-    fs::write(out.join(AUTHORITY_MANIFEST), manifest)?;
+    let manifest = authority_manifest(out, source_root)?;
+    fs::write(out.join(AUTHORITY_MANIFEST), &manifest)?;
+    let manifest_hash = sha256_hex(manifest.as_bytes());
+    fs::write(
+        out.join(RUST_FAMILY_GOLDENS),
+        rust_family_goldens_json(&manifest_hash),
+    )?;
     println!("generated {}", out.join(AUTHORITY_MANIFEST).display());
+    println!("generated {}", out.join(RUST_FAMILY_GOLDENS).display());
     Ok(())
 }
 
-fn check(out: &Path) -> Result<(), Box<dyn Error>> {
+fn check(out: &Path, source_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
     check_source(out, VALIDATION_OPTIONS_PROTO_PATH, options_proto())?;
     check_contract(
         out,
@@ -471,7 +491,7 @@ fn check(out: &Path) -> Result<(), Box<dyn Error>> {
             out.join(AUTHORITY_MANIFEST).display()
         )
     })?;
-    let expected = authority_manifest(out)?;
+    let expected = authority_manifest(out, source_root)?;
     if manifest != expected {
         return Err(format!(
             "authority manifest is stale or does not bind Rust artifacts: {}",
@@ -479,7 +499,22 @@ fn check(out: &Path) -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
+    let goldens = fs::read_to_string(out.join(RUST_FAMILY_GOLDENS)).map_err(|error| {
+        format!(
+            "cannot read {}: {error}",
+            out.join(RUST_FAMILY_GOLDENS).display()
+        )
+    })?;
+    let expected_goldens = rust_family_goldens_json(&sha256_hex(expected.as_bytes()));
+    if goldens != expected_goldens {
+        return Err(format!(
+            "Rust family goldens are stale or do not bind the authority manifest: {}",
+            out.join(RUST_FAMILY_GOLDENS).display()
+        )
+        .into());
+    }
     println!("checked {}", out.join(AUTHORITY_MANIFEST).display());
+    println!("checked {}", out.join(RUST_FAMILY_GOLDENS).display());
     Ok(())
 }
 
@@ -505,6 +540,7 @@ fn reject_extra_artifacts(out: &Path) -> Result<(), Box<dyn Error>> {
         MACHINES_PROTO_PATH,
         MACHINES_DESCRIPTOR_PATH,
         AUTHORITY_MANIFEST,
+        RUST_FAMILY_GOLDENS,
     ]
     .into_iter()
     .map(str::to_owned)
@@ -545,7 +581,7 @@ fn reject_extra_artifacts(out: &Path) -> Result<(), Box<dyn Error>> {
 /// normalized source-of-truth descriptor role; runtime handshake descriptors
 /// remain external compatibility fixtures until a protocol transition adopts
 /// the new bytes explicitly.
-fn authority_manifest(out: &Path) -> Result<String, Box<dyn Error>> {
+fn authority_manifest(out: &Path, source_root: Option<&Path>) -> Result<String, Box<dyn Error>> {
     let families = [
         (
             PROTO_PATH,
@@ -603,6 +639,7 @@ fn authority_manifest(out: &Path) -> Result<String, Box<dyn Error>> {
         ),
     ];
     let source_revision = model_source_revision();
+    let source_git_sha = source_git_sha(source_root)?;
     let mut entries = String::new();
     for (index, (source, descriptor, handshake_descriptor, handshake_bytes)) in
         families.iter().enumerate()
@@ -624,11 +661,38 @@ fn authority_manifest(out: &Path) -> Result<String, Box<dyn Error>> {
         ));
     }
     Ok(format!(
-        "{{\n  \"schema\": \"acyclic.sdk.rust-authority.v1\",\n  \"authority\": \"rust\",\n  \"schema_root\": \"rust/crates/sdk-contract-wire\",\n  \"source_revision\": \"{source_revision}\",\n  \"source_revision_kind\": \"rust-model-sha256\",\n  \"source_files\": {source_files},\n  \"source_file_hashes\": {source_file_hashes},\n  \"exporter\": \"acyclic-sdk-contract-wire@{version}\",\n  \"families\": [\n{entries}\n  ]\n}}\n",
+        "{{\n  \"schema\": \"acyclic.sdk.rust-authority.v1\",\n  \"authority\": \"rust\",\n  \"schema_root\": \"rust/crates/sdk-contract-wire\",\n  \"source_git_sha\": \"{source_git_sha}\",\n  \"source_git_sha_kind\": \"git-revision\",\n  \"source_revision\": \"{source_revision}\",\n  \"source_revision_kind\": \"rust-model-sha256\",\n  \"source_files\": {source_files},\n  \"source_file_hashes\": {source_file_hashes},\n  \"exporter\": \"acyclic-sdk-contract-wire@{version}\",\n  \"families\": [\n{entries}\n  ]\n}}\n",
         source_files = model_source_files_json(),
         source_file_hashes = model_source_hashes_json(),
+        source_git_sha,
         version = env!("CARGO_PKG_VERSION")
     ))
+}
+
+fn source_git_sha(source_root: Option<&Path>) -> Result<String, Box<dyn Error>> {
+    let root = source_root
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("ACYCLIC_SDK_SOURCE_ROOT").map(PathBuf::from))
+        .or_else(|| env::current_dir().ok())
+        .ok_or("cannot determine Rust source root for Git provenance")?;
+    let output = Command::new("git")
+        .args(["-C", root.to_string_lossy().as_ref(), "rev-parse", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot determine Rust source Git revision in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let revision = String::from_utf8(output.stdout)?.trim().to_owned();
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            format!("Rust source Git revision is not a 40-character SHA: {revision}").into(),
+        );
+    }
+    Ok(revision.to_lowercase())
 }
 
 fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn Error>> {
@@ -695,6 +759,27 @@ fn model_source_hashes_json() -> String {
         .map(|(path, bytes)| format!("\"{path}\": \"{}\"", sha256_hex(bytes)))
         .collect::<Vec<_>>();
     format!("{{{}}}", hashes.join(", "))
+}
+
+/// Emit the cross-language wire and protobuf-JSON fixtures from the Rust
+/// authority.  Keeping this artifact beside the authority manifest prevents
+/// language packages from reaching into another package's test tree for
+/// compatibility inputs.
+fn rust_family_goldens_json(authority_manifest_sha256: &str) -> String {
+    format!(
+        r#"[
+  {{"family":"actors","kind":"uint64","authority_manifest_sha256":"{authority_manifest_sha256}","message":"acyclic.actors.v1.ActorLimits","field":"handlerTimeoutMillis","value":"18446744073709551615","wire_hex":"08ffffffffffffffffff01","json":"{{\"handlerTimeoutMillis\":\"18446744073709551615\"}}"}},
+  {{"family":"stream","kind":"uint64","authority_manifest_sha256":"{authority_manifest_sha256}","message":"acyclic.stream.v2.Record","field":"sequence","value":"18446744073709551615","wire_hex":"08ffffffffffffffffff01","json":"{{\"sequence\":\"18446744073709551615\"}}"}},
+  {{"family":"objects","kind":"uint64","authority_manifest_sha256":"{authority_manifest_sha256}","message":"acyclic.objects.v2.ObjectInfo","field":"size","value":"18446744073709551615","wire_hex":"10ffffffffffffffffff01","json":"{{\"size\":\"18446744073709551615\"}}"}},
+  {{"family":"workers","kind":"uint64","authority_manifest_sha256":"{authority_manifest_sha256}","message":"acyclic.workers.v1.CodeVersion","field":"sizeBytes","value":"18446744073709551615","wire_hex":"10ffffffffffffffffff01","json":"{{\"sizeBytes\":\"18446744073709551615\"}}"}},
+  {{"family":"filesystem","kind":"uint64","authority_manifest_sha256":"{authority_manifest_sha256}","message":"acyclic.filesystem.v2.WorkspaceContextSnapshot","field":"revision","value":"18446744073709551615","wire_hex":"10ffffffffffffffffff01","json":"{{\"revision\":\"18446744073709551615\"}}"}},
+  {{"family":"harness","kind":"uint64","authority_manifest_sha256":"{authority_manifest_sha256}","message":"acyclic.harness.v2.OperationStatus","field":"revision","value":"18446744073709551615","wire_hex":"38ffffffffffffffffff01","json":"{{\"revision\":\"18446744073709551615\"}}"}},
+  {{"family":"inference","kind":"uint64","authority_manifest_sha256":"{authority_manifest_sha256}","message":"inference.customer.v1.ModelCapability","field":"maximumContext","value":"18446744073709551615","wire_hex":"18ffffffffffffffffff01","json":"{{\"maximumContext\":\"18446744073709551615\"}}"}},
+  {{"family":"machines","kind":"uint64","authority_manifest_sha256":"{authority_manifest_sha256}","message":"acyclic.machines.v1.SuspensionPolicy","field":"afterIdleMs","value":"18446744073709551615","wire_hex":"10ffffffffffffffffff01","json":"{{\"afterIdleMs\":\"18446744073709551615\"}}"}},
+  {{"family":"protocol","kind":"string","authority_manifest_sha256":"{authority_manifest_sha256}","message":"acyclic.protocol.v1.ProtocolIdentity","field":"version","value":"rust-golden","wire_hex":"0a0b727573742d676f6c64656e","json":"{{\"version\":\"rust-golden\"}}"}}
+]
+"#
+    )
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

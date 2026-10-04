@@ -10,11 +10,11 @@ use acyclic_sdk_contract_wire::{
     stream::{stream_descriptor, stream_proto},
     workers::{workers_descriptor, workers_proto},
 };
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use sha2::{Digest, Sha256};
 
 fn temporary_output(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("acyclic-sdk-wire-{name}-{}", std::process::id()));
@@ -100,6 +100,7 @@ fn assert_clean_output(root: &Path) {
         if relative == "rust-authority.json" {
             let manifest = fs::read_to_string(root.join(relative)).expect("authority manifest");
             assert!(manifest.contains("\"authority\": \"rust\""));
+            assert!(manifest.contains("\"source_git_sha\": \""));
             assert!(manifest.contains("\"source_revision\""));
         } else if relative == "rust-family-goldens.json" {
             let manifest = fs::read_to_string(root.join("rust-authority.json"))
@@ -111,8 +112,15 @@ fn assert_clean_output(root: &Path) {
                 "\"authority_manifest_sha256\":\"{manifest_hash}\""
             )));
             for family in [
-                "actors", "stream", "objects", "workers", "filesystem", "harness",
-                "inference", "machines", "protocol",
+                "actors",
+                "stream",
+                "objects",
+                "workers",
+                "filesystem",
+                "harness",
+                "inference",
+                "machines",
+                "protocol",
             ] {
                 assert!(goldens.contains(&format!("\"family\":\"{family}\"")));
             }
