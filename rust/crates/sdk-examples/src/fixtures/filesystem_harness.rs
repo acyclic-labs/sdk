@@ -838,6 +838,8 @@ pub fn harness_server()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemService;
+    use tonic::Request;
 
     #[test]
     fn fixture_binds_all_generated_handlers_and_archives() {
@@ -943,6 +945,119 @@ mod tests {
         assert_eq!(
             cancelled.status.expect("status").state,
             wire::CompletionState::Cancelled as i32
+        );
+        assert_eq!(
+            scenario_expectation(HARNESS_SCENARIOS[1]).status,
+            "accepted;revision=1"
+        );
+        assert_eq!(
+            scenario_expectation(HARNESS_SCENARIOS[2]).output,
+            "live=true;events=1;event=fixture.command.accepted"
+        );
+        assert_eq!(
+            scenario_expectation(HARNESS_SCENARIOS[3]).output,
+            "operation=fixture-op;state=succeeded;revision=1"
+        );
+        assert_eq!(
+            scenario_expectation(HARNESS_SCENARIOS[4]).output,
+            "operation=fixture-op;state=cancelled;revision=2"
+        );
+        assert_eq!(cancelled.status.expect("status").revision, 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn production_filesystem_wire_service_matches_seed_expectations() {
+        let service = filesystem_service().expect("filesystem service");
+        let workspace = service
+            .filesystem()
+            .open_workspace("fixture")
+            .await
+            .expect("seeded workspace");
+        let workspace_ref = acyclic_fs::wire::filesystem::v2::WorkspaceRef {
+            workspace_id: workspace.id().into_bytes().to_vec(),
+            name: "fixture".into(),
+        };
+        let head = service
+            .get_head(Request::new(
+                acyclic_fs::wire::filesystem::v2::GetHeadRequest {
+                    workspace: Some(workspace_ref.clone()),
+                },
+            ))
+            .await
+            .expect("head")
+            .into_inner()
+            .generation
+            .expect("head generation");
+        let read = service
+            .read(Request::new(
+                acyclic_fs::wire::filesystem::v2::ReadRequest {
+                    generation: Some(head.clone()),
+                    path: "/hello".into(),
+                    range: None,
+                    maximum_bytes: 1024,
+                },
+            ))
+            .await
+            .expect("read")
+            .into_inner();
+        assert_eq!(read.contents, b"rust-fixture");
+        assert_eq!(
+            scenario_expectation(FILESYSTEM_SCENARIOS[5]).output,
+            format!("path=/hello;bytes={}", String::from_utf8_lossy(&read.contents))
+        );
+        let stat = service
+            .stat(Request::new(
+                acyclic_fs::wire::filesystem::v2::StatRequest {
+                    generation: Some(head.clone()),
+                    path: "/hello".into(),
+                },
+            ))
+            .await
+            .expect("stat")
+            .into_inner()
+            .stat
+            .expect("file stat");
+        let size = stat
+            .logical_bytes
+            .and_then(|value| value.value)
+            .and_then(|value| match value {
+                acyclic_fs::wire::filesystem::v2::optional_u64::Value::Present(value) => {
+                    Some(value)
+                }
+                acyclic_fs::wire::filesystem::v2::optional_u64::Value::Unavailable(_) => None,
+            })
+            .expect("logical byte count");
+        assert_eq!(size, 12);
+        assert_eq!(
+            scenario_expectation(FILESYSTEM_SCENARIOS[6]).output,
+            "path=/hello;size=12"
+        );
+        let page = service
+            .list_directory(Request::new(
+                acyclic_fs::wire::filesystem::v2::ListDirectoryRequest {
+                    generation: Some(head),
+                    path: "/".into(),
+                    page: Some(acyclic_fs::wire::filesystem::v2::PageOptions {
+                        maximum_items: 32,
+                        after: None,
+                    }),
+                },
+            ))
+            .await
+            .expect("directory")
+            .into_inner()
+            .page
+            .expect("directory page");
+        let names: Vec<_> = page
+            .entries
+            .iter()
+            .filter_map(|entry| entry.name.as_ref())
+            .map(|name| String::from_utf8_lossy(&name.bytes).into_owned())
+            .collect();
+        assert_eq!(names, vec!["hello"]);
+        assert_eq!(
+            scenario_expectation(FILESYSTEM_SCENARIOS[7]).output,
+            "entries=[hello]"
         );
     }
 }
