@@ -126,6 +126,24 @@ impl PluginGitExecutor<'_> {
                 }
                 let current = self.current.head().await.map_err(display)?;
                 if current.id() != reference.generation {
+                    // A conflicted local join publishes a new working
+                    // generation while its durable transition still points
+                    // at the pre-conflict target. Continue/abort owns that
+                    // transition and must validate the live workspace again
+                    // at its own dispatch boundary; do not reject it merely
+                    // because the retained target is older.
+                    if self
+                        .distributed
+                        .git(self.repository_id)
+                        .pending_transition()
+                        .await
+                        .map_err(display)?
+                        .is_some_and(|pending| {
+                            matches!(pending.mutation, acyclic_fs::GitPendingMutation::Join { .. })
+                        })
+                    {
+                        return Ok(());
+                    }
                     return Err(Self::error(
                         "Git workspace generation changed before the operation",
                     ));
@@ -162,6 +180,14 @@ impl PluginGitExecutor<'_> {
 }
 
 pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
+    if matches!(
+        argv,
+        [command, option]
+            if matches!(command.as_str(), "merge" | "rebase")
+                && matches!(option.as_str(), "--continue" | "--abort")
+    ) {
+        return false;
+    }
     matches!(
         argv.first().map(String::as_str),
         Some(
