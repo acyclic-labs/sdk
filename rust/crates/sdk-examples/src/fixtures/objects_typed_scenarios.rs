@@ -20,9 +20,8 @@ type CandidateResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 /// Rust provider.  The sequence contains the thirteen unique RPCs plus the
 /// setup calls and stream-validation failures used by the remote fixture.
 async fn collect_full_qualification() -> CandidateResult<Vec<Value>> {
-    let (provider, _bucket) = MemoryObjects::with_default_bucket_clock(
-        crate::fixtures::fixture_clock::objects_clock(),
-    );
+    let (provider, _bucket) =
+        MemoryObjects::with_default_bucket_clock(crate::fixtures::fixture_clock::objects_clock());
     let created = wire::CreateBucketRequest {
         name: BUCKET.to_owned(),
         mutation: None,
@@ -207,7 +206,7 @@ async fn collect_full_qualification() -> CandidateResult<Vec<Value>> {
     observations.push(streaming(
         "acyclic.objects.v2.MultipartService/UploadPart",
         "acyclic.objects.v2.UploadPartRequest",
-        &[upload_request, upload_body, upload_complete],
+        &[upload_request, upload_body.clone(), upload_complete.clone()],
         "acyclic.objects.v2.UploadedPart",
         std::slice::from_ref(&uploaded),
     ));
@@ -493,12 +492,7 @@ fn streaming<I: Message, O: Message>(
     })
 }
 
-fn stream_error<I: Message>(
-    rpc: &str,
-    request_type: &str,
-    requests: &[I],
-    details: &str,
-) -> Value {
+fn stream_error<I: Message>(rpc: &str, request_type: &str, requests: &[I], details: &str) -> Value {
     let request_bytes = requests
         .first()
         .map(Message::encode_to_vec)
@@ -616,7 +610,10 @@ mod tests {
             .expect("repeat Objects qualification sequence");
         assert_eq!(first.len(), 18);
         assert_eq!(second.len(), 18);
-        assert_eq!(normalized_network_signature(&first), normalized_network_signature(&second));
+        assert_eq!(
+            normalized_network_signature(&first),
+            normalized_network_signature(&second)
+        );
 
         let rpcs = first
             .iter()
@@ -653,7 +650,9 @@ mod tests {
         assert!(negatives.iter().all(|record| {
             record["response"]["code"] == "INVALID_ARGUMENT"
                 && record["terminal_code"] == 3
-                && record["response_frames"].as_array().is_some_and(Vec::is_empty)
+                && record["response_frames"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
         }));
     }
 }
