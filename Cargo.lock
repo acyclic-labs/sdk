@@ -172,6 +172,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
+ "async-trait",
  "blake3",
  "bytes",
  "futures",
