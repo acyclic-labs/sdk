@@ -10,6 +10,7 @@ use acyclic_sdk_examples::{
     GUIDE_SCENARIOS, Language, RenderedSnippet, TransportFixture, execute_actors_roundtrip,
     execute_stream_append_read, render_all, transport_fixtures,
 };
+use acyclic_sdk_examples::fixtures::qualification_scenarios;
 use prost::Message;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -408,6 +409,17 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
             "code_sha256": hash(snippet.code.as_bytes()),
         }));
     }
+    let rpc_scenarios = qualification_scenarios()
+        .map(|scenario| {
+            json!({
+                "family": scenario.family,
+                "operation": scenario.operation,
+                "input": scenario.input,
+                "expected": scenario.expected,
+                "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
+            })
+        })
+        .collect::<Vec<_>>();
     ensure_source_unchanged(source_root, &source_sha256)?;
     Ok(json!({
         "schema": "acyclic.sdk.examples.bundle.v1",
@@ -500,6 +512,11 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
         "qualification": {
             "scope": "loopback-local",
             "service_availability": "not_claimed",
+            "rpc_scenarios": {
+                "schema": "acyclic.sdk.rust-rpc-scenarios.v1",
+                "count": rpc_scenarios.len(),
+                "scenarios": rpc_scenarios,
+            },
             "fixture_server": {
                 "command": "cargo run --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- --port 0",
                 "bind": "127.0.0.1",
