@@ -546,6 +546,13 @@ where
                     })
                     .collect();
                 for candidate in fenced_keys {
+                    if let Some(record) = self.terminal_for(&events, &candidate).await? {
+                        return Ok(if matches!(record.receipt, ExecutionReceipt::Unknown { .. }) {
+                            ExecutionClaim::Completed(record)
+                        } else {
+                            ExecutionClaim::Pending
+                        });
+                    }
                     if events.iter().any(|event| {
                         matches!(
                             event,
@@ -554,11 +561,6 @@ where
                         )
                     }) {
                         return Ok(ExecutionClaim::Pending);
-                    }
-                    if let Some(record) = self.terminal_for(&events, &candidate).await?
-                        && matches!(record.receipt, ExecutionReceipt::Unknown { .. })
-                    {
-                        return Ok(ExecutionClaim::Completed(record));
                     }
                 }
                 let handle = ExecutionClaimHandle::issue(key.clone(), tail);
