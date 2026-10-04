@@ -221,3 +221,231 @@ mod tests {
         assert!(handshake_http_route("unknown").is_none());
     }
 }
+/// A versioned capability required before selecting an application transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequiredCapability<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+}
+
+/// Identity and capabilities verified against the selected Rust-owned archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedHandshake {
+    pub family: crate::BindingFamily,
+    pub version: String,
+    pub descriptor_digest: String,
+    pub supported: Vec<(String, String)>,
+}
+
+/// A terminal negotiation failure; none authorizes replaying an application call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakeValidationError {
+    InvalidExpectation,
+    ResponseTooLarge,
+    MalformedResponse,
+    MissingIdentity,
+    VersionMismatch,
+    DescriptorMismatch,
+    MissingCapabilities,
+    InvalidCapability,
+    MissingRequiredCapability,
+}
+
+/// Verify the actual Protocol response before treating a transport as compatible.
+/// The descriptor digest is always derived from the explicit archived runtime
+/// descriptor, never from a freshly generated schema. The transport adapter
+/// authenticates its endpoint and applies its deadline before calling this.
+///
+/// # Errors
+/// Rejects oversized or malformed responses, missing message presence, changed
+/// wire identities, ambiguous capabilities, and unsupported requirements.
+pub fn validate_handshake_response(
+    family: crate::BindingFamily,
+    expected_version: &str,
+    required: &[RequiredCapability<'_>],
+    response: &[u8],
+    maximum_response_bytes: usize,
+) -> Result<ValidatedHandshake, HandshakeValidationError> {
+    use HandshakeValidationError as E;
+    use prost_reflect::{DescriptorPool, DynamicMessage, Value};
+    use sha2::{Digest, Sha256};
+    if expected_version.is_empty()
+        || maximum_response_bytes == 0
+        || required
+            .iter()
+            .any(|cap| cap.name.is_empty() || cap.version.is_empty())
+    {
+        return Err(E::InvalidExpectation);
+    }
+    if response.len() > maximum_response_bytes {
+        return Err(E::ResponseTooLarge);
+    }
+    let pool = DescriptorPool::decode(crate::protocol::protocol_descriptor().as_slice())
+        .map_err(|_| E::MalformedResponse)?;
+    let descriptor = pool
+        .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+        .ok_or(E::MalformedResponse)?;
+    let decoded = DynamicMessage::decode(descriptor, response).map_err(|_| E::MalformedResponse)?;
+    if !decoded.has_field_by_name("protocol") {
+        return Err(E::MissingIdentity);
+    }
+    let protocol = decoded
+        .get_field_by_name("protocol")
+        .ok_or(E::MissingIdentity)?;
+    let Value::Message(identity) = protocol.as_ref() else {
+        return Err(E::MalformedResponse);
+    };
+    let string = |message: &DynamicMessage, field: &str| -> Result<String, E> {
+        match message.get_field_by_name(field).as_deref() {
+            Some(Value::String(value)) => Ok(value.clone()),
+            _ => Err(E::MalformedResponse),
+        }
+    };
+    let version = string(identity, "version")?;
+    if version != expected_version {
+        return Err(E::VersionMismatch);
+    }
+    let descriptor_digest = string(identity, "descriptor_digest")?;
+    if descriptor_digest != format!("{:x}", Sha256::digest(family.archived_runtime_descriptor())) {
+        return Err(E::DescriptorMismatch);
+    }
+    if !decoded.has_field_by_name("supported") {
+        return Err(E::MissingCapabilities);
+    }
+    let supported_field = decoded
+        .get_field_by_name("supported")
+        .ok_or(E::MissingCapabilities)?;
+    let Value::Message(capability_set) = supported_field.as_ref() else {
+        return Err(E::MalformedResponse);
+    };
+    let capabilities = capability_set
+        .get_field_by_name("capabilities")
+        .ok_or(E::MalformedResponse)?;
+    let Value::List(capabilities) = capabilities.as_ref() else {
+        return Err(E::MalformedResponse);
+    };
+    let mut names = std::collections::BTreeSet::new();
+    let mut supported = Vec::with_capacity(capabilities.len());
+    for capability in capabilities {
+        let Value::Message(capability) = capability else {
+            return Err(E::MalformedResponse);
+        };
+        let name = string(capability, "name")?;
+        let version = string(capability, "version")?;
+        if name.is_empty() || version.is_empty() || !names.insert(name.clone()) {
+            return Err(E::InvalidCapability);
+        }
+        supported.push((name, version));
+    }
+    if required.iter().any(|cap| {
+        !supported
+            .iter()
+            .any(|(name, version)| name == cap.name && version == cap.version)
+    }) {
+        return Err(E::MissingRequiredCapability);
+    }
+    Ok(ValidatedHandshake {
+        family,
+        version,
+        descriptor_digest,
+        supported,
+    })
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use prost_reflect::{DescriptorPool, DynamicMessage};
+    use sha2::{Digest, Sha256};
+
+    fn response(
+        family: crate::BindingFamily,
+        version: &str,
+        supported: serde_json::Value,
+    ) -> Vec<u8> {
+        let json = serde_json::json!({
+            "protocol": { "version": version, "descriptorDigest": format!("{:x}", Sha256::digest(family.archived_runtime_descriptor())) },
+            "supported": { "capabilities": supported }
+        }).to_string();
+        let pool =
+            DescriptorPool::decode(crate::protocol::protocol_descriptor().as_slice()).unwrap();
+        let descriptor = pool
+            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+            .unwrap();
+        let mut deserializer = serde_json::Deserializer::from_str(&json);
+        DynamicMessage::deserialize(descriptor, &mut deserializer)
+            .unwrap()
+            .encode_to_vec()
+    }
+
+    #[test]
+    fn validates_each_exact_archived_identity_before_transport_selection() {
+        for family in crate::BindingFamily::ALL {
+            let bytes = response(
+                *family,
+                "test-v1",
+                serde_json::json!([{"name": "read", "version": "1"}]),
+            );
+            let required = [RequiredCapability {
+                name: "read",
+                version: "1",
+            }];
+            let verified =
+                validate_handshake_response(*family, "test-v1", &required, &bytes, 4096).unwrap();
+            assert_eq!(verified.family, *family);
+            assert_eq!(verified.supported, vec![("read".into(), "1".into())]);
+            assert_eq!(
+                validate_handshake_response(*family, "test-v2", &required, &bytes, 4096),
+                Err(HandshakeValidationError::VersionMismatch)
+            );
+            assert_eq!(
+                validate_handshake_response(*family, "test-v1", &required, &bytes, bytes.len() - 1),
+                Err(HandshakeValidationError::ResponseTooLarge)
+            );
+            let other = crate::BindingFamily::ALL
+                .iter()
+                .find(|candidate| *candidate != family)
+                .unwrap();
+            assert_eq!(
+                validate_handshake_response(*other, "test-v1", &required, &bytes, 4096),
+                Err(HandshakeValidationError::DescriptorMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_missing_presence_capability_mismatch_and_duplicate_capabilities() {
+        use HandshakeValidationError as E;
+        let family = crate::BindingFamily::Actors;
+        let required = [RequiredCapability {
+            name: "write",
+            version: "1",
+        }];
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &[], 4096),
+            Err(E::MissingIdentity)
+        );
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &[0xff], 4096),
+            Err(E::MalformedResponse)
+        );
+        let bytes = response(
+            family,
+            "v1",
+            serde_json::json!([{"name": "write", "version": "2"}]),
+        );
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &bytes, 4096),
+            Err(E::MissingRequiredCapability)
+        );
+        let bytes = response(
+            family,
+            "v1",
+            serde_json::json!([{"name": "write", "version": "1"}, {"name": "write", "version": "1"}]),
+        );
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &bytes, 4096),
+            Err(E::InvalidCapability)
+        );
+    }
+}
