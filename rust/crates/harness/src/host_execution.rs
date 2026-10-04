@@ -12,7 +12,7 @@ use crate::{
     effects::{EffectDispatch, EffectObservation, EffectProvider},
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use acyclic_native_runtime::{ProcessTree, spawn_process_tree_owned};
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -1063,7 +1063,7 @@ impl ExecutionRunner for NativeExecutionRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         request.environment.apply(&mut command);
-        let mut child = ManagedChild::spawn(&mut command).map_err(|error| {
+        let mut child = ManagedChild::spawn(command).map_err(|error| {
             Error::Storage(format!("failed to start approved process: {error}"))
         })?;
         let stdout = child
@@ -1157,10 +1157,10 @@ enum ManagedChild {
 }
 
 impl ManagedChild {
-    fn spawn(command: &mut Command) -> std::io::Result<Self> {
+    fn spawn(command: Command) -> std::io::Result<Self> {
         #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
         {
-            return spawn_process_tree(command).map(Self::Tree);
+            return spawn_process_tree_owned(command).map(Self::Tree);
         }
         #[allow(unreachable_code)]
         command.spawn().map(Self::Direct)
