@@ -1,0 +1,50 @@
+{
+  "source_tree": "fd59189466ee3775009e5517666cc79f7457ea43",
+  "source_clean_after": true,
+  "platform": "windows",
+  "faults": {
+    "passed": 5,
+    "ignored": 0,
+    "failed": 0
+  },
+  "kind": "native-harness-recovery-checkpoint",
+  "recorded_at": "2026-10-04T21:06:59.7610672Z",
+  "limitations": [
+    "Production recursive swarm repair not yet integrated",
+    "Installed artifacts and full requirements matrix not qualified"
+  ],
+  "source_commit": "3d0a42bffec6ef28b073a45255a250e4c51f597d",
+  "library": {
+    "passed": 365,
+    "ignored": 0,
+    "failed": 0
+  },
+  "files": [
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\3d0a42bff\\recovery-foundation\\recovery-foundation-3d0a42bff.log",
+      "sha256": "9e3314a586a1ad3c8585304a2af51fbbbb9afc6b582ab4600a92bb638c21bd0f",
+      "source_path": "C:\\graphcoder-builds\\recovery-foundation-3d0a42bff.log"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\3d0a42bff\\recovery-foundation\\acyclic_harness-641f85f696abacc6.exe",
+      "sha256": "492082510afcddea59b1dd4a1b289223e0f0d2520bbe2092acb9800fd45744c9",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\acyclic_harness-641f85f696abacc6.exe"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\3d0a42bff\\recovery-foundation\\local_swarm_faults-cf47ef77f7bcbf61.exe",
+      "sha256": "ecbdaf88b5345830abec1a0decb7db1b8cb3cb31fb7253459c84a5f20245cdc0",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\local_swarm_faults-cf47ef77f7bcbf61.exe"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\3d0a42bff\\recovery-foundation\\swarm_local.rs",
+      "sha256": "958690c84779edcb8af39656435fea24e6c9e156db529d3a9f21734cde6a7372",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\src\\filesystem\\swarm_local.rs"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\3d0a42bff\\recovery-foundation\\local_swarm_faults.rs",
+      "sha256": "55fd37b2f08bd744b1829ce3949093c2a2bc1765bdd6522bb925d8f3906f89a8",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\tests\\local_swarm_faults.rs"
+    }
+  ],
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib --test local_swarm_faults -- --nocapture"
+}
