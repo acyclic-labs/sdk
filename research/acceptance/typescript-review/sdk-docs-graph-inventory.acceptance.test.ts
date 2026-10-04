@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const REQUIRED_PROFILE_NAMES = [
@@ -54,6 +55,7 @@ type CrateBundle = {
   package_name?: string;
   analysis_mode?: string;
   content_blake3?: string;
+  diagnostics?: Array<{ code?: string; path?: string; severity?: string }>;
   sources?: Array<{ path: string; blake3: string; contents: string }>;
   public_items?: PublicItem[];
   graphs?: Graph[];
@@ -163,6 +165,17 @@ test("synthetic validator fixture covers required package/facade inventory and s
   if (!outOfRangeGraph?.public_items?.[0]) throw new Error("synthetic fixture did not contain a source-bound item");
   outOfRangeGraph.public_items[0].source_line = 99;
   expect(() => validateStrictDocsBundle(outOfRangeSource, manifest, "synthetic validator fixture")).toThrow(/exceeds retained source/);
+
+  const missingGeneratedSource = structuredClone(fixture);
+  const missingGeneratedCrate = missingGeneratedSource.crates?.[0];
+  if (!missingGeneratedCrate) throw new Error("synthetic fixture did not contain a crate");
+  missingGeneratedCrate.diagnostics = [{
+    severity: "error",
+    code: "rustdoc_generated_source_missing",
+    path: "rustdoc-json/host-default/out/generated.rs",
+  }];
+  expect(() => validateStrictDocsBundle(missingGeneratedSource, manifest, "synthetic validator fixture"))
+    .toThrow(/missing generated source/);
 });
 
 const liveOutput = process.env.SDK_DOCS_FULL_OUTPUT;
@@ -172,3 +185,23 @@ test.skipIf(!liveOutput)("retained real sdk-docs full output has complete packag
   const bundle = JSON.parse(await readFile(outputPath, "utf8")) as unknown;
   validateStrictDocsBundle(bundle, manifest, `real sdk-docs output at ${outputPath}`);
 });
+
+const retainedMissingGeneratedSourceOutput = process.env.SDK_DOCS_MISSING_GENERATED_SOURCE_OUTPUT
+  ?? "Q:/sdk/work/rust-docs-ae53-small.json";
+test.skipIf(!existsSync(retainedMissingGeneratedSourceOutput))(
+  "release graph validation rejects retained generated-source omissions even when profiles claim complete",
+  { timeout: 30_000 },
+  async () => {
+    const manifest = await loadProfileManifest();
+    const bundle = JSON.parse(await readFile(retainedMissingGeneratedSourceOutput, "utf8")) as unknown;
+    expect(() => validateStrictDocsBundle(bundle, manifest, retainedMissingGeneratedSourceOutput))
+      .toThrow(/missing generated source/);
+    const cli = spawnSync("node", [
+      join(root, "scripts/validate-rustdoc-graphs.mjs"),
+      "--bundle", retainedMissingGeneratedSourceOutput,
+      "--profiles", join(root, "docs/rustdoc-profiles.json"),
+    ], { cwd: root, encoding: "utf8" });
+    expect(cli.status, `${cli.stdout}\n${cli.stderr}`).toBe(1);
+    expect(`${cli.stdout}\n${cli.stderr}`).toContain("missing generated source");
+  },
+);

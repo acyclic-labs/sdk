@@ -30,6 +30,18 @@ function isBlake3Digest(value) {
   return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
 }
 
+function rejectOwnedSourceDiagnostics(diagnostics, label) {
+  for (const diagnostic of diagnostics ?? []) {
+    // This diagnostic is emitted when a rustdoc graph points at generated
+    // source owned by the selected crate but that source was not retained.
+    // External dependency omissions use separate rustdoc_external_* codes and
+    // remain valid exclusions from the source closure.
+    if (diagnostic?.code === "rustdoc_generated_source_missing") {
+      assertionFailure(`${label}: retained source closure has missing generated source${diagnostic.path ? `: ${diagnostic.path}` : ""}`);
+    }
+  }
+}
+
 /**
  * Validate the package/facade inventory and compiler-resolved graph metadata
  * emitted by sdk-docs. This consumes JSON so it can validate retained CLI
@@ -42,6 +54,7 @@ export function validateStrictDocsBundle(value, manifest, label = "sdk-docs outp
     assertionFailure(`${label}: source_revision must identify the producer snapshot`);
   }
   if (manifest?.schema_version !== 1) assertionFailure(`${label}: profile manifest must use schema 1`);
+  rejectOwnedSourceDiagnostics(bundle.diagnostics, label);
 
   const profileNames = (manifest.profiles ?? []).map(profile => profile.name);
   if (JSON.stringify(profileNames) !== JSON.stringify(REQUIRED_PROFILE_NAMES)) {
@@ -53,6 +66,7 @@ export function validateStrictDocsBundle(value, manifest, label = "sdk-docs outp
     if (!isNonEmptyString(crate.package_name)) assertionFailure(`${label}: crate has no package_name`);
     if (byPackage.has(crate.package_name)) assertionFailure(`${label}: duplicate package ${crate.package_name}`);
     byPackage.set(crate.package_name, crate);
+    rejectOwnedSourceDiagnostics(crate.diagnostics, `${label}: package ${crate.package_name}`);
     if (crate.analysis_mode !== "rustdoc-json") {
       assertionFailure(`${label}: package ${crate.package_name} is not backed by rustdoc-json`);
     }
@@ -95,6 +109,12 @@ export function validateStrictDocsBundle(value, manifest, label = "sdk-docs outp
         || JSON.stringify(normalizedFeatures(graph.rustdoc.features)) !== JSON.stringify(normalizedFeatures(graph.features))
         || graph.profile_blake3 !== graph.rustdoc.profile_blake3) {
         assertionFailure(`${label}: ${packageName}/${profile.name} has incomplete rustdoc source binding`);
+      }
+      const generatedSourceGap = (graph.diagnostics ?? []).some(diagnostic =>
+        diagnostic?.code === "rustdoc_generated_source_missing",
+      );
+      if (generatedSourceGap) {
+        assertionFailure(`${label}: ${packageName}/${profile.name} references a missing package-owned generated source`);
       }
       for (const item of graph.public_items ?? []) {
         if (!isNonEmptyString(item.name) || !isNonEmptyString(item.kind)) {
