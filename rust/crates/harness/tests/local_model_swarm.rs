@@ -409,6 +409,20 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
             .iter()
             .all(|bytes| serde_json::from_slice::<ModelRequest>(bytes).is_ok())
     );
+    for bytes in &serialized_requests {
+        let serialized = String::from_utf8(bytes.clone()).expect("model request is UTF-8 JSON");
+        for metadata in [
+            "worker_starts",
+            "workspace_reads",
+            "model_dispatches",
+            "graphcoder.lazy-observation",
+        ] {
+            assert!(
+                !serialized.contains(metadata),
+                "host qualification metadata leaked into the actual provider request: {metadata}"
+            );
+        }
+    }
 
     // The child request sent to the provider must contain the exact frozen
     // parent wire prefix followed by the persisted declaration suffix. A

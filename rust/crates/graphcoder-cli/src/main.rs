@@ -12,7 +12,10 @@
 use acyclic_harness::{
     Error as HarnessError, InteractionId, OperationId, TaskId,
     conversation::Limits,
-    filesystem::{LocalSessionPhase, PersistentLocalSwarm},
+    filesystem::{
+        LocalSessionPhase, LocalSwarmBindings, LocalSwarmObservationCounts,
+        LocalSwarmObservationCounters, PersistentLocalSwarm,
+    },
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
         ModelProvider,
@@ -62,6 +65,9 @@ struct Args {
     /// Private host-to-runtime credential for operator control messages.
     #[arg(long, env = "GRAPHCODER_OPERATOR_TOKEN", hide = true)]
     operator_token: Option<String>,
+    /// Optional host-side lazy qualification receipt path.
+    #[arg(long, env = "GRAPHCODER_LAZY_OBSERVATION_PATH", hide = true)]
+    lazy_observation_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -294,6 +300,8 @@ struct Runtime {
     swarm: Arc<PersistentLocalSwarm>,
     model_fixture: String,
     operator_token: Option<String>,
+    lazy_observation_path: Option<PathBuf>,
+    lazy_observation_counters: Option<Arc<LocalSwarmObservationCounters>>,
 }
 
 impl Runtime {
@@ -332,17 +340,28 @@ impl Runtime {
             calls: Arc::new(AtomicUsize::new(0)),
             option_policy,
         });
-        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+        let lazy_observation_counters = args
+            .lazy_observation_path
+            .as_ref()
+            .map(|_| Arc::new(LocalSwarmObservationCounters::default()));
+        let bindings = lazy_observation_counters.as_ref().map_or_else(
+            LocalSwarmBindings::default,
+            |counters| LocalSwarmBindings::default().with_observer(counters.clone()),
+        );
+        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_with_bindings(
             &args.root,
             model,
             provider,
             Limits::default(),
+            bindings,
         )
         .await?;
         Ok(Self {
             swarm,
             model_fixture: fixture,
             operator_token: args.operator_token.clone(),
+            lazy_observation_path: args.lazy_observation_path.clone(),
+            lazy_observation_counters,
         })
     }
 
@@ -355,7 +374,7 @@ impl Runtime {
             );
         }
         let result = match request.method.as_str() {
-            "list_sessions" => self.list_sessions(&request.params).await,
+            "list_sessions" => self.list_sessions(&request.request_id, &request.params).await,
             "start_session" => self.start_session(&request.params).await,
             "open_session" => self.open_session(&request.params, false).await,
             "resume_session" => self.open_session(&request.params, true).await,
@@ -383,7 +402,15 @@ impl Runtime {
         }
     }
 
-    async fn list_sessions(&self, params: &Value) -> Result<Value, DispatchError> {
+    async fn list_sessions(
+        &self,
+        request_id: &str,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        let counters_before = self
+            .lazy_observation_counters
+            .as_ref()
+            .map(|counters| counters.snapshot());
         let (after, limit) = page_bounds(params)?;
         let page = self
             .swarm
@@ -395,6 +422,13 @@ impl Runtime {
         });
         if let Some(next) = page.next {
             result["next"] = Value::String(next);
+        }
+        if let (Some(path), Some(counters), Some(before)) = (
+            self.lazy_observation_path.as_ref(),
+            self.lazy_observation_counters.as_ref(),
+            counters_before,
+        ) {
+            write_lazy_observation(path, request_id, before, counters.snapshot())?;
         }
         Ok(result)
     }
@@ -707,6 +741,40 @@ impl Runtime {
     }
 }
 
+fn write_lazy_observation(
+    path: &std::path::Path,
+    request_id: &str,
+    before: LocalSwarmObservationCounts,
+    after: LocalSwarmObservationCounts,
+) -> Result<(), DispatchError> {
+    let observation = json!({
+        "schema": "graphcoder.lazy-observation.v1",
+        "runtime": {
+            "pid": std::process::id(),
+            "executable": std::env::current_exe()
+                .map_err(|error| DispatchError::transport(format!("current executable: {error}")))?,
+        },
+        "request": {
+            "request_id": request_id,
+            "method": "list_sessions",
+        },
+        "during_list_sessions": {
+            "counters_before": before,
+            "counters_after": after,
+            "worker_starts": after.worker_starts.saturating_sub(before.worker_starts),
+            "workspace_reads": after.workspace_reads.saturating_sub(before.workspace_reads),
+            "model_dispatches": after.model_dispatches.saturating_sub(before.model_dispatches),
+        },
+    });
+    let bytes = serde_json::to_vec(&observation)
+        .map_err(|error| DispatchError::transport(format!("lazy observation encode: {error}")))?;
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, bytes)
+        .map_err(|error| DispatchError::transport(format!("lazy observation write: {error}")))?;
+    std::fs::rename(&temporary, path)
+        .map_err(|error| DispatchError::transport(format!("lazy observation publish: {error}")))
+}
+
 #[derive(Debug)]
 struct DispatchError {
     code: &'static str,
@@ -724,6 +792,13 @@ impl DispatchError {
     fn unsupported(message: impl Into<String>) -> Self {
         Self {
             code: "unsupported",
+            message: message.into(),
+        }
+    }
+
+    fn transport(message: impl Into<String>) -> Self {
+        Self {
+            code: "transport",
             message: message.into(),
         }
     }
@@ -1276,14 +1351,18 @@ mod tests {
             root,
             model_fixture: fixture.to_owned(),
             operator_token: None,
+            lazy_observation_path: None,
         }
     }
 
     #[tokio::test]
     async fn json_lines_lists_lazily_then_runs_echo_fixture() {
         let root = tempfile::tempdir().expect("temporary root");
+        let observation_path = root.path().join("lazy-observation.json");
+        let mut args = runtime_args(root.path().to_owned(), "echo");
+        args.lazy_observation_path = Some(observation_path.clone());
         let runtime = Arc::new(
-            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+            Runtime::open(&args)
                 .await
                 .expect("runtime opens"),
         );
@@ -1300,6 +1379,20 @@ mod tests {
                 .len(),
             1
         );
+        let observation: Value = serde_json::from_slice(
+            &std::fs::read(&observation_path).expect("lazy observation receipt"),
+        )
+        .expect("lazy observation JSON");
+        assert_eq!(observation["schema"], "graphcoder.lazy-observation.v1");
+        assert_eq!(observation["request"]["request_id"], "list-1");
+        assert_eq!(observation["request"]["method"], "list_sessions");
+        for field in ["worker_starts", "workspace_reads", "model_dispatches"] {
+            assert_eq!(observation["during_list_sessions"][field], 0);
+            assert_eq!(
+                observation["during_list_sessions"]["counters_before"][field],
+                observation["during_list_sessions"]["counters_after"][field]
+            );
+        }
         let started = exchange(
             runtime,
             json!({

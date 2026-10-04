@@ -165,29 +165,120 @@ pub struct LocalSwarmConfig {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum LocalSwarmObservation {
     /// A complete metadata session listing was returned.
-    SessionList { returned: usize },
+    SessionList {
+        /// Number of descriptors returned.
+        returned: usize,
+    },
     /// A bounded metadata session page was returned.
-    SessionPage { returned: usize },
+    SessionPage {
+        /// Number of descriptors returned.
+        returned: usize,
+    },
     /// A metadata-only task snapshot was returned.
-    SessionSnapshot { task: TaskId },
+    SessionSnapshot {
+        /// Task whose metadata snapshot was returned.
+        task: TaskId,
+    },
     /// A bounded event history page was returned.
-    HistoryPage { task: TaskId, returned: usize },
+    HistoryPage {
+        /// Task whose history was returned.
+        task: TaskId,
+        /// Number of events returned.
+        returned: usize,
+    },
     /// A bounded canonical message page was returned.
-    MessagePage { task: TaskId, returned: usize },
+    MessagePage {
+        /// Task whose messages were returned.
+        task: TaskId,
+        /// Number of messages returned.
+        returned: usize,
+    },
     /// A bounded workspace directory page was returned.
-    WorkspacePage { task: TaskId, returned: usize },
+    WorkspacePage {
+        /// Task whose directory page was returned.
+        task: TaskId,
+        /// Number of entries returned.
+        returned: usize,
+    },
     /// One workspace file body was read explicitly.
-    WorkspaceFile { task: TaskId, bytes: usize },
+    WorkspaceFile {
+        /// Task whose file was read.
+        task: TaskId,
+        /// Number of bytes returned.
+        bytes: usize,
+    },
     /// A cold task harness was opened.
-    HarnessOpened { task: TaskId },
+    HarnessOpened {
+        /// Task whose private harness was opened.
+        task: TaskId,
+    },
     /// A model worker was about to be dispatched for a task.
-    ModelWorkerStarted { task: TaskId },
+    ModelWorkerStarted {
+        /// Task whose model worker was started.
+        task: TaskId,
+    },
 }
 
 /// Receives host-only local swarm observations for qualification and metrics.
 pub trait LocalSwarmObserver: Send + Sync {
     /// Records one observation outside the model-visible request path.
     fn observe(&self, observation: LocalSwarmObservation);
+}
+
+/// Cumulative host-side counters for qualifying lazy projections.
+///
+/// The counters are deliberately owned by Harness and are never serialized
+/// into a model request, durable task record, or wire response.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalSwarmObservationCounts {
+    /// Number of model workers admitted for execution.
+    pub worker_starts: u64,
+    /// Number of explicit workspace page or file reads.
+    pub workspace_reads: u64,
+    /// Number of model dispatches started.
+    pub model_dispatches: u64,
+}
+
+/// Host-side counter sink that can be attached to a durable local composition.
+#[derive(Clone, Default)]
+pub struct LocalSwarmObservationCounters {
+    counts: Arc<StdMutex<LocalSwarmObservationCounts>>,
+}
+
+impl LocalSwarmObservationCounters {
+    /// Returns a consistent snapshot for an external qualification receipt.
+    #[must_use]
+    pub fn snapshot(&self) -> LocalSwarmObservationCounts {
+        *self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl LocalSwarmObserver for LocalSwarmObservationCounters {
+    fn observe(&self, observation: LocalSwarmObservation) {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match observation {
+            LocalSwarmObservation::WorkspacePage { .. }
+            | LocalSwarmObservation::WorkspaceFile { .. } => {
+                counts.workspace_reads = counts.workspace_reads.saturating_add(1);
+            }
+            LocalSwarmObservation::ModelWorkerStarted { .. } => {
+                counts.worker_starts = counts.worker_starts.saturating_add(1);
+                counts.model_dispatches = counts.model_dispatches.saturating_add(1);
+            }
+            LocalSwarmObservation::SessionList { .. }
+            | LocalSwarmObservation::SessionPage { .. }
+            | LocalSwarmObservation::SessionSnapshot { .. }
+            | LocalSwarmObservation::HistoryPage { .. }
+            | LocalSwarmObservation::MessagePage { .. }
+            | LocalSwarmObservation::HarnessOpened { .. } => {}
+        }
+    }
 }
 
 /// Owner authenticated services shared by every local session.
@@ -2463,6 +2554,26 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
     ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_with_bindings(
+            root,
+            model,
+            provider,
+            limits,
+            LocalSwarmBindings::default(),
+        )
+        .await
+    }
+
+    /// Opens the shared recursive local composition with explicit host
+    /// bindings. Bindings are retained across the bootstrap and final reopen,
+    /// so host-only qualification sinks observe the installed composition.
+    pub async fn open_shared_with_model_and_recursive_filesystem_with_bindings(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let root = root.as_ref().to_path_buf();
@@ -2484,7 +2595,7 @@ impl PersistentLocalSwarm {
             root.clone(),
             config,
             provider.clone(),
-            LocalSwarmBindings::default(),
+            bindings.clone(),
         )
         .await?;
         let root_task = base.root_task().await?;
@@ -2499,7 +2610,7 @@ impl PersistentLocalSwarm {
             model,
             provider,
             limits,
-            LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+            bindings.with_filesystem_fork_resolver(resolver),
         )
         .await
     }
