@@ -5440,6 +5440,55 @@ async fn recursive_publication_case() {
     let child_path = route_path(&control.state.routes["child"]);
     control
         .pre_tool(json!({
+            "session_id":"session","turn_id":"root-turn",
+            "tool_use_id":"spawn-sibling","tool_name":"spawn_agent","tool_input":{}
+        }))
+        .await
+        .expect("sibling spawn");
+    control
+        .subagent_start(json!({
+            "session_id":"session","turn_id":"sibling-turn",
+            "agent_id":"sibling","agent_type":"explorer"
+        }))
+        .await
+        .expect("sibling start");
+    let sibling = control
+        .workspace(&control.state.routes["sibling"])
+        .await
+        .expect("sibling workspace");
+    let mut sibling_transaction = sibling
+        .begin_transaction(IdempotencyKey::new())
+        .await
+        .expect("sibling transaction");
+    sibling_transaction
+        .write_text("/sibling-only.txt", "sibling")
+        .await
+        .expect("sibling file");
+    sibling_transaction
+        .commit()
+        .await
+        .expect("sibling commit");
+    drop(sibling_transaction);
+    assert!(
+        control
+            .agent_merge(json!({
+                "agent":"sibling","_caller_turn_id":"child-turn"
+            }))
+            .await
+            .is_err(),
+        "a sibling agent cannot publish another sibling"
+    );
+    assert!(
+        !root.join("sibling-only.txt").exists(),
+        "rejected sibling publication must leave the root untouched"
+    );
+    control
+        .agent_discard(json!({"agent":"sibling","_caller_turn_id":"root-turn"}))
+        .await
+        .expect("discard rejected sibling publication");
+    drop(sibling);
+    control
+        .pre_tool(json!({
             "session_id":"session",
             "turn_id":"child-turn","tool_use_id":"git-commit",
             "tool_name":"exec_command",
@@ -5623,6 +5672,10 @@ async fn recursive_publication_case() {
         fs::read(root.join("base.txt")).expect("base after unauthorized merge"),
         b"base"
     );
+    assert!(
+        !root.join("nested.txt").exists(),
+        "rejected grandchild publication must not create its exact file"
+    );
     control
         .agent_merge(json!({
             "agent":"grandchild","_caller_turn_id":"child-turn"
@@ -5632,6 +5685,10 @@ async fn recursive_publication_case() {
     assert_eq!(
         fs::read(root.join("base.txt")).expect("base before root merge"),
         b"base"
+    );
+    assert!(
+        !root.join("nested.txt").exists(),
+        "grandchild content remains unpublished until its direct parent merges"
     );
     control
         .agent_merge(json!({
@@ -5674,6 +5731,10 @@ async fn recursive_publication_case() {
     let control = ControlPlane::open(data)
         .await
         .expect("recover recursive discard after durable delete");
+    assert_eq!(
+        fs::read(root.join("nested.txt")).expect("published root file survives discard"),
+        b"nested"
+    );
     assert!(control.state.pending_discards.is_empty());
     assert!(control.state.routes.is_empty());
     assert!(control.state.turns.is_empty());
