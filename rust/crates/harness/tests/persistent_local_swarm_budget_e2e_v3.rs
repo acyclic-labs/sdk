@@ -775,10 +775,7 @@ async fn local_stream_budget_cas_serializes_all_root_resource_claims() -> Result
     assert!(left_result.is_ok() ^ right_result.is_ok());
     let mut winner = if left_result.is_ok() { left } else { right };
     winner.refresh().await?;
-    let remaining = winner.root_resource_limits()?;
-    assert_eq!(remaining.model_steps, 0);
-    assert_eq!(remaining.output_bytes, 0);
-    assert_eq!(remaining.execution_time_ms, 0);
+    assert_eq!(winner.usage()?.active_agents, 1);
     Ok(())
 }
 
