@@ -12,7 +12,7 @@ use crate::{
     },
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     fork::{
-        Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkReport, ForkRequest,
+        Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkRebindProof, ForkReport, ForkRequest,
         ForkSeed, ForkSelection, InheritedConversationPrefix, ReferenceGrant, ResourceRevision,
         SharedGrant,
     },
@@ -42,6 +42,17 @@ struct AllocationClaim {
 #[serde(deny_unknown_fields)]
 struct SeedBinding {
     digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeedRebindIntent {
+    operation_id: OperationId,
+    parent: Authority,
+    child: Authority,
+    volume: VolumeRef,
+    from: [u8; 32],
+    to: [u8; 32],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

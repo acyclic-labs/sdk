@@ -324,19 +324,13 @@ fn child_fork_operation(publication: OperationId, child: OperationId) -> Operati
     OperationId::from_bytes(bytes)
 }
 
-fn rebind_report_history(report: &mut ForkReport, parent_revision: u64) -> Result<()> {
-    let captured = report
-        .captures
-        .iter()
-        .find_map(|capture| match capture {
-            Capture::Captured(resource)
-                if matches!(&resource.source, ResourceRevision::History(_)) =>
-            {
-                resource.source.as_resource().version()?.parse::<u64>().ok()
-            }
-            _ => None,
-        })
-        .ok_or_else(|| Error::Invalid("fork report has no captured history revision".into()))?;
+fn rebind_report_history(
+    report: &mut ForkReport,
+    parent_revision: u64,
+    proof: &ForkRebindProof,
+) -> Result<()> {
+    report.validate_with_rebind_proof(proof)?;
+    let captured = report.captured_history_revision()?;
     if captured >= parent_revision {
         return Err(Error::Conflict(
             "fork report rebind requires an advanced publication revision".into(),
@@ -346,7 +340,7 @@ fn rebind_report_history(report: &mut ForkReport, parent_revision: u64) -> Resul
         report.original_request_digest = Some(crate::contract::canonical_json_digest(&report.request)?);
     }
     report.request.parent_revision = parent_revision;
-    report.validate()
+    report.validate_with_rebind_proof(proof)
 }
 
 /// Owner allocator invoked only after the parent completed batch is
@@ -1397,7 +1391,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                         Error::Conflict("rebound fork plan has no preparation proof".into())
                     })?;
                     let old_seed = plan.report.clone().into_seed_with_rebind_proof(proof)?;
-                    rebind_report_history(&mut plan.report, current_revision)?;
+                    rebind_report_history(&mut plan.report, current_revision, proof)?;
                     let rebound_seed = plan.report.clone().into_seed_with_rebind_proof(proof)?;
                     // Persist an authenticated rebind intent before changing
                     // either allocation journal, so a crash between report
