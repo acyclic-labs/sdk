@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +15,12 @@ function binEntries(cargo) {
 test("every generation binary declared by Cargo has a source file", () => {
   const cargo = read("rust/crates/sdk-generation/Cargo.toml");
   const entries = binEntries(cargo);
+  const sourceBinDir = join(root, "rust/crates/sdk-generation/src/bin");
+  const sourceBins = readdirSync(sourceBinDir)
+    .filter((name) => name.endsWith(".rs"))
+    .map((name) => basename(name, ".rs"))
+    .sort();
+  assert.ok(sourceBins.includes("sdk-qualification-receipt"), "qualification receipt source must remain in the crate");
   assert.deepEqual(entries.map(({ name }) => name), [
     "sdk-generation",
     "sdk-platform-receipt",
@@ -23,7 +29,36 @@ test("every generation binary declared by Cargo has a source file", () => {
   for (const entry of entries) {
     assert.equal(existsSync(join(root, "rust/crates/sdk-generation", entry.path)), true, entry.path);
   }
+  for (const sourceBin of sourceBins) {
+    assert.equal(
+      sourceBin === "sdk-qualification-receipt" || entries.some(({ name }) => name === sourceBin),
+      true,
+      `untracked generation binary source: ${sourceBin}`,
+    );
+  }
   assert.match(cargo, /edition\s*=\s*"2024"/);
+});
+
+test("README and package hooks document one Rust-owned generation path", () => {
+  const readme = read("rust/crates/sdk-generation/README.md");
+  assert.match(readme, /cargo run --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml -- generate --source-root/);
+  assert.match(readme, /cargo run --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml -- drift --source-root/);
+
+  const main = read("rust/crates/sdk-generation/src/main.rs");
+  for (const marker of [
+    'id: "sdk-language-producers"',
+    'id: "sdk-python"',
+    'id: "sdk-typescript"',
+    'id: "sdk-typescript-rpc-contracts"',
+    '"packages-write"',
+    '"packages-check"',
+    '"--schema-root"',
+    '"--source-authority"',
+    'id: "sdk-examples"',
+    'id: "sdk-docs"',
+  ]) {
+    assert.match(main, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), marker);
+  }
 });
 
 test("source closure keeps Rust provenance and Seal/exclusion guards", () => {
@@ -75,4 +110,6 @@ test("workflow pins actions, aligns Rust edition, and keeps downstream work out 
   const fastPolicy = workflow.split(/\n\s{2}qualify:/, 1)[0];
   assert.doesNotMatch(fastPolicy, /cargo\s+(test|run|build)/);
   assert.match(workflow, /if: github\.event_name == 'release' \|\| github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'workflow_call'/);
+  assert.match(workflow, /generate --source-root "\$GITHUB_WORKSPACE" --output "\$out"/);
+  assert.match(workflow, /drift --source-root "\$GITHUB_WORKSPACE" --output "\$out"/);
 });
