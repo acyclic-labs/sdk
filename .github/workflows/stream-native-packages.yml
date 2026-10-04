@@ -1,6 +1,12 @@
 name: Stream native package qualification
 
 on:
+  workflow_call:
+    inputs:
+      source_revision:
+        description: Exact Rust source revision to bind to the package receipts
+        required: false
+        type: string
   release:
     types: [published]
   workflow_dispatch:
@@ -109,7 +115,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-target
           STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
-          SOURCE_REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
         run: |
           set -euo pipefail
           verify_install=''
