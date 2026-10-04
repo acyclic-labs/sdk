@@ -341,7 +341,11 @@ func NewClient(ctx context.Context, endpoint string, c Credentials) (*Client, er
 
 func (c *Client) Close() error { return c.conn.Close() }
 
-type OperationPolicy struct { ClientStreaming, ServerStreaming, BearerAuth bool; Cancellation string }
+type OperationPolicy struct {
+    ClientStreaming, ServerStreaming, BearerAuth bool
+    Cancellation string
+    Capabilities, Errors, Validations []string
+}
 var Operations = map[string]OperationPolicy{
 #OPERATIONS#
 }
@@ -377,12 +381,15 @@ fn python_operations() -> String {
         output.push_str(&format!("    {:?}: {{\n", family.name));
         for operation in facade_operations(family) {
             output.push_str(&format!(
-                "        {:?}: {{'client_streaming': {}, 'server_streaming': {}, 'bearer_auth': {}, 'cancellation': {:?}}},\n",
+                "        {:?}: {{'client_streaming': {}, 'server_streaming': {}, 'bearer_auth': {}, 'cancellation': {:?}, 'capabilities': {}, 'errors': {}, 'validations': {}}},\n",
                 operation.rpc,
                 py_bool(operation.client_streaming),
                 py_bool(operation.server_streaming),
                 py_bool(operation.bearer_auth),
                 operation.cancellation.name(),
+                py_strings(operation.capabilities),
+                py_strings(operation.errors),
+                py_strings(operation.validations),
             ));
         }
         output.push_str("    },\n");
@@ -395,12 +402,15 @@ fn go_operations() -> String {
     for family in FAMILY_VIEWS {
         for operation in facade_operations(family) {
             output.push_str(&format!(
-                "    {:?}: {{ClientStreaming: {}, ServerStreaming: {}, BearerAuth: {}, Cancellation: {:?}}},\n",
+                "    {:?}: {{ClientStreaming: {}, ServerStreaming: {}, BearerAuth: {}, Cancellation: {:?}, Capabilities: {}, Errors: {}, Validations: {}}},\n",
                 operation.rpc,
                 operation.client_streaming,
                 operation.server_streaming,
                 operation.bearer_auth,
                 operation.cancellation.name(),
+                go_strings(operation.capabilities),
+                go_strings(operation.errors),
+                go_strings(operation.validations),
             ));
         }
     }
@@ -477,4 +487,22 @@ fn transport_name(kind: TransportKind) -> &'static str {
 
 fn py_bool(value: bool) -> &'static str {
     if value { "True" } else { "False" }
+}
+
+fn py_strings(values: &[&str]) -> String {
+    let values = values
+        .iter()
+        .map(|value| format!("{:?}", value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{}]", values)
+}
+
+fn go_strings(values: &[&str]) -> String {
+    let values = values
+        .iter()
+        .map(|value| format!("{:?}", value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[]string{{{}}}", values)
 }
