@@ -73,6 +73,25 @@ cpSync(join(packageSource, "index.js"), join(packageRoot, "index.js"));
 cpSync(binarySource, join(packageRoot, "acyclic_stream_native.node"));
 
 const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+let installedConsumerVerified = false;
+
+if (verifyInstall) {
+  const packageName = packageManifest.name.split("/");
+  const consumer = join(targetRoot, `${packageTarget}-consumer`);
+  rmSync(consumer, { recursive: true, force: true });
+  const installed = join(consumer, "node_modules", ...packageName);
+  mkdirSync(join(consumer, "node_modules"), { recursive: true });
+  cpSync(packageRoot, installed, { recursive: true });
+  const requireFromConsumer = createRequire(join(consumer, "index.js"));
+  const binding = requireFromConsumer(packageManifest.name);
+  if (binding.nativeStreamCapabilities().maxEndpoints !== 16) {
+    throw new Error(`installed ${packageManifest.name} reported an unexpected capability bound`);
+  }
+  installedConsumerVerified = true;
+  // Windows keeps a loaded N-API DLL locked until this process exits. Leave the
+  // installed tree available as a local consumer receipt on that platform.
+  if (process.platform !== "win32") rmSync(consumer, { recursive: true, force: true });
+}
 const binaryHash = createHash("sha256").update(readFileSync(join(packageRoot, "acyclic_stream_native.node"))).digest("hex");
 const manifestHash = createHash("sha256").update(readFileSync(join(packageRoot, "package.json"))).digest("hex");
 const loaderHash = createHash("sha256").update(readFileSync(join(packageRoot, "index.js"))).digest("hex");
@@ -110,7 +129,7 @@ const build = {
     node: process.version,
   },
   install: {
-    verified: verifyInstall,
+    verified: installedConsumerVerified,
     resolver: "node_modules package name",
   },
 };
@@ -133,33 +152,16 @@ if (provenancePath) {
     build_sha256: `sha256:${createHash("sha256").update(readFileSync(join(packageRoot, "BUILD.json"))).digest("hex")}`,
     binary_sha256: `sha256:${binaryHash}`,
     installed_consumer: {
-      verified: verifyInstall,
+      verified: installedConsumerVerified,
       resolver: "node_modules package name",
     },
   }, null, 2)}\n`);
 }
-if (verifyInstall) {
-  const packageName = packageManifest.name.split("/");
-  const consumer = join(targetRoot, `${packageTarget}-consumer`);
-  rmSync(consumer, { recursive: true, force: true });
-  const installed = join(consumer, "node_modules", ...packageName);
-  mkdirSync(join(consumer, "node_modules"), { recursive: true });
-  cpSync(packageRoot, installed, { recursive: true });
-  const requireFromConsumer = createRequire(join(consumer, "index.js"));
-  const binding = requireFromConsumer(packageManifest.name);
-  if (binding.nativeStreamCapabilities().maxEndpoints !== 16) {
-    throw new Error(`installed ${packageManifest.name} reported an unexpected capability bound`);
-  }
-  // Windows keeps a loaded N-API DLL locked until this process exits. Leave the
-  // installed tree available as a local consumer receipt on that platform.
-  if (process.platform !== "win32") rmSync(consumer, { recursive: true, force: true });
-}
-
 console.log(JSON.stringify({
   schema: "acyclic.sdk.stream.native.build-result.v1",
   packageTarget,
   rustTarget: target.rust,
   packageRoot,
   provenance: provenancePath ? resolve(provenancePath) : undefined,
-  installedConsumerVerified: verifyInstall,
+  installedConsumerVerified,
 }));
