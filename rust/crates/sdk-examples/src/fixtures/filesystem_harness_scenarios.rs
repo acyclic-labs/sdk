@@ -932,6 +932,18 @@ mod tests {
             .as_str()
             .is_some_and(|hash| hash.starts_with("sha256:")));
 
+        for operation in ["ReadLink", "Observe", "Cancel"] {
+            let error = records
+                .iter()
+                .find(|record| record["operation"] == operation)
+                .expect("expected filesystem negative operation");
+            assert_eq!(error["response"]["status"], "not_found");
+            assert!(!error["response"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty());
+        }
+
         let harness_cancel = records
             .iter()
             .rev()
