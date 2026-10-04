@@ -765,11 +765,8 @@ impl ForkAtBatch {
             assert_ne!(references.attestation, [0; 32]);
             let mut forged = request.clone();
             forged.operation_id = OperationId::from_bytes([45 + index; 16]);
-            // Keep this publication-admission negative independent from the
-            // preparer's allocation idempotency. A forged request must have
-            // fresh child destinations so preparing it cannot claim the
-            // destinations reserved by the valid request below; publication
-            // still rejects the tampered parent attestation.
+            // A forged request must be rejected before allocating either
+            // child destination or advancing the parent's history.
             forged.preparation.child_private_volume = VolumeRef::new(
                 private.provider().clone(),
                 format!("forged-private-{index}"),
@@ -787,18 +784,27 @@ impl ForkAtBatch {
                 .as_mut()
                 .ok_or_else(|| Error::Storage("model boundary attestation missing".into()))?
                 .attestation[0] ^= 1;
-            let forged_report = parent.prepare_fork(&preparer, forged).await?;
-            let forged_seed = forged_report.clone().into_seed()?;
-            self.assert_child_unbound(&forged_seed, &child_issuer)
-                .await?;
+            let forged_private = workspace_ref(
+                private.provider().clone(),
+                &forged.preparation.child_private_volume.storage_name()?,
+            )?;
+            let forged_project = workspace_ref(
+                project.provider().clone(),
+                &forged.preparation.child_project_volume.storage_name()?,
+            )?;
+            let parent_revision = parent.reducer().revision();
             let forged_error = parent
-                .publish_fork_report(forged_report, parent_scope.clone())
+                .prepare_fork(&preparer, forged)
                 .await
-                .expect_err("forged model boundary was published");
+                .expect_err("forged model boundary reached allocation");
             assert!(
-                matches!(forged_error, Error::Invalid(ref message) if message.contains("manifest")),
+                matches!(forged_error, Error::Unauthorized(ref message) if message.contains("attestation")),
                 "unexpected forged model boundary error: {forged_error:?}"
             );
+            assert_eq!(parent.reducer().revision(), parent_revision);
+            for destination in [forged_private, forged_project] {
+                assert!(matches!(self.host.resolve(&destination).await, Err(Error::NotFound(_))));
+            }
             let report = parent.prepare_fork(&preparer, request).await?;
             self.prebind_rejections(&parent, &report, &child_issuer)
                 .await?;
@@ -1113,7 +1119,7 @@ impl ForkAtBatch {
             .await?;
 
         // Model-boundary attestations bind the exact child identity and must
-        // be rejected at publication admission before the child is visible.
+        // be rejected before allocation or publication.
         let mut forged = request.clone();
         forged.operation_id = OperationId::from_bytes([145; 16]);
         // Use distinct destinations so this negative reaches publication
@@ -1136,18 +1142,27 @@ impl ForkAtBatch {
             .as_mut()
             .ok_or_else(|| Error::Storage("model boundary attestation missing".into()))?
             .attestation[0] ^= 1;
-        let forged_report = parent.prepare_fork(&preparer, forged).await?;
-        let forged_seed = forged_report.clone().into_seed()?;
-        self.assert_child_unbound(&forged_seed, &grandchild_issuer)
-            .await?;
+        let forged_private = workspace_ref(
+            private.provider().clone(),
+            &forged.preparation.child_private_volume.storage_name()?,
+        )?;
+        let forged_project = workspace_ref(
+            project.provider().clone(),
+            &forged.preparation.child_project_volume.storage_name()?,
+        )?;
+        let parent_revision = parent.reducer().revision();
         let forged_error = parent
-            .publish_fork_report(forged_report, parent_scope.clone())
+            .prepare_fork(&preparer, forged)
             .await
-            .expect_err("forged recursive model boundary was published");
+            .expect_err("forged recursive model boundary reached allocation");
         assert!(
-            matches!(forged_error, Error::Invalid(ref message) if message.contains("manifest")),
+            matches!(forged_error, Error::Unauthorized(ref message) if message.contains("attestation")),
             "unexpected forged recursive boundary error: {forged_error:?}"
         );
+        assert_eq!(parent.reducer().revision(), parent_revision);
+        for destination in [forged_private, forged_project] {
+            assert!(matches!(self.host.resolve(&destination).await, Err(Error::NotFound(_))));
+        }
 
         let report = parent.prepare_fork(&preparer, request).await?;
         let seed = report.clone().into_seed()?;

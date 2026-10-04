@@ -2930,12 +2930,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &CancellationToken::new(),
             )
             .await
-            .map_err(crate::workspace::WorkspaceError::engine)?
+            .map_err(|failure| crate::workspace::WorkspaceError::from(failure.error))?
             .value;
         volume
             .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
+            .map_err(|failure| crate::workspace::WorkspaceError::from(failure.error))?;
         Ok(crate::Workspace {
             name,
             id,

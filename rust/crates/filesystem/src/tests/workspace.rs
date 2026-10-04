@@ -37,6 +37,11 @@ fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>
 #[tokio::test]
 async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
+    assert!(matches!(fs.open_workspace("absent").await, Err(WorkspaceError::NotFound)));
+    assert!(matches!(
+        WorkspaceError::from(FsError::Authority(crate::storage::AuthorityStoreError::Corrupt("bad creation".into()))),
+        WorkspaceError::Engine(_)
+    ));
     let main = fs.create_workspace("repo").await?;
     let base = main.head().await?;
     let fork_key = IdempotencyKey::from_bytes([0x42; 16]);

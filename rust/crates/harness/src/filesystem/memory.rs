@@ -266,6 +266,15 @@ fn require_volume_grant(
     Ok(())
 }
 
+fn require_file_read_grant(scope: Option<&RuntimeScope>, file: &FileRef) -> Result<()> {
+    let scope =
+        scope.ok_or_else(|| Error::Unauthorized("file tool requires a scoped caller".into()))?;
+    if scope.grants().contains(&file.read_capability()?) {
+        return Ok(());
+    }
+    require_volume_grant(Some(scope), file.volume(), VolumeOperation::Read)
+}
+
 impl<A, O> ToolExecutor for LocalListFilesTool<A, O>
 where
     A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
@@ -458,7 +467,7 @@ where
     fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
         let input: ReadFileInput = serde_json::from_value(invocation.arguments.clone())
             .map_err(|error| Error::Invalid(format!("read_file input is invalid: {error}")))?;
-        require_volume_grant(scope, input.file.volume(), VolumeOperation::Read)
+        require_file_read_grant(scope, &input.file)
     }
 
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
@@ -831,6 +840,18 @@ where
                 host.verify_fork_allocation(seed, project).await?;
             }
         }
+        let mut inherited_reads = seed.reference_capabilities(seed.child_agent)?
+            .iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        for resource in &seed.resources {
+            if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.revision {
+                inherited_reads.extend([
+                    volume.capability(VolumeOperation::Read)?,
+                    volume.capability(VolumeOperation::Write)?,
+                ]);
+            }
+        }
         let scope = issuer.root_for_agent(
             seed.child_agent,
             "fork-bind",
@@ -852,7 +873,7 @@ where
             volume,
             seed.child.clone(),
             issuer,
-            seed.reference_capabilities(seed.child_agent)?,
+            Capabilities::new(inherited_reads),
         )
         .await
     }
@@ -1974,6 +1995,21 @@ mod tests {
             name: "acyclic.read_file".into(),
             arguments: json!({"file": file}),
         };
+        let exact_read = RuntimeScope::new(Capabilities::new([file.read_capability()?]), limits)?;
+        tool.executor.authorize(Some(&exact_read), &invocation)?;
+        assert!(matches!(
+            tool.executor.authorize(None, &invocation),
+            Err(Error::Unauthorized(_))
+        ));
+        let another = owner
+            .stage(OperationId::new(), "notes/two.txt", b"other", "text/plain", "two.txt")
+            .await?;
+        let mut unauthorized = invocation.clone();
+        unauthorized.arguments = json!({"file": another});
+        assert!(matches!(
+            tool.executor.authorize(Some(&exact_read), &unauthorized),
+            Err(Error::Unauthorized(_))
+        ));
         let result = tool.executor.execute(invocation.clone()).await?;
         assert_eq!(result.value["text"], "pinned text");
         assert_eq!(
