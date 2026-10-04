@@ -11,7 +11,7 @@
     },
     {
       "id": "rust-contract-authority",
-      "evidence": "Rust contract-wire model, transport policies, JVM/CSharp/Ruby/PHP/Dart emitters inspected. Full current artifact parity remains pending concurrent emitter changes.",
+      "evidence": "Rust contract-wire model, transport policies, JVM/CSharp/Ruby/PHP/Dart emitters inspected. Full current artifact parity remains pending concurrent emitter changes. Coordinator commit56ccff87ce1db6acd153714726f87ecd25617889 builds Machines messages and SourceCodeInfo directly from the Rust contract model, replacing checked-in model descriptor/environment override authority. Archived runtime descriptor remains unchanged; native unit25/25 and wire fixture1/1 pass.",
       "state": "partial"
     },
     {
@@ -31,12 +31,12 @@
     },
     {
       "id": "language-packages",
-      "evidence": "Scoped owner checks: ten TypeScript packages install; installed TS Machines invokes19 modeled RPCs against matching RSA/mTLS fixture. Python/Go installed consumers and HTTP targets have scoped evidence. Current source-bound unified qualification remains incomplete: C++ dependency closure mismatch, Swift Linux toolchain/transport, PHP lifecycle, JVM/.NET current fixture verification and viable additional targets require work.",
+      "evidence": "Scoped owner checks: ten TypeScript packages install; installed TS Machines invokes19 modeled RPCs against matching RSA/mTLS fixture. Python/Go installed consumers and HTTP targets have scoped evidence. Current source-bound unified qualification remains incomplete: C++ dependency closure mismatch, Swift Linux toolchain/transport, PHP lifecycle, JVM/.NET current fixture verification and viable additional targets require work. Root independently read current hosted37243443818 jobs: eight individual native .NET RID successes, combined all-eight package failure111557382833 and skipped installed consumers. Separate Rust embedded/JVM/musl aggregation failures remain under repair. Individual build lanes do not prove complete installable packages.",
       "state": "partial"
     },
     {
       "id": "embedded-and-platform-defaults",
-      "evidence": "Root locked default wasm32 Actors and Workers checks passed at49d0b301, native tests Actors2/Workers5 passed. Root independently checked default Stream wasm32 exit0 on2026-10-04. Combined remaining6family wasm check failed native mio/getrandom dependencies in Objects/Machines/Inference; complete seamless remote and embedded platform qualification remains outstanding. Hosted39bac2d single Windows x64 release native build/upload succeeded; other7matrix jobs skipped build and cannot qualify their RIDs. Signed0e253465 adds Rust-owned bounded handshake response validation against exact archived identity and required capability versions; six focused control tests pass. Endpoint registration and seamless adapter selection still require implementation and runtime verification. Coordinator ec5a603545b602650333b3984bff4f585da3b015 adds Actors/Workers authenticated pre-operation control negotiation and generated runtime backend dispatch. Actual locked default native and wasm32 builds pass for both crates; three live HTTP tests verify selected HTTP, authenticated application dispatch, and terminal archive substitution rejection. Native/browser request deadlines compile. Authenticated gRPC fixture integration and all other family runtime defaults remain outstanding. Coordinator dccc9515596e85f51aff8c7e24458549a29854e7 and ddb37c8a9662f460bc2d56f9bc9a9fe541d0039f verify real connection-scoped-trust TLS gRPC: Actors chooses gRPC, receives an authenticated typed ActorObservation, propagates later application rejection without changing transport; Workers verifies the same control service; wrong archive and unauthenticated negotiation fail terminally. Three TLS runtime tests pass0.04s. Default Actors/Workers wasm32 builds pass after trust-seam changes13.39s. This does not qualify other families or full language/package runtime semantics. Coordinator Stream uniform HostedProvider facade now dispatches all canonical provider operations through Rust with verified independent control-plane selection. Default wasm32 build passes without consumer features. Actual HTTP tests pass2/2 for authenticated selection/application ordering and terminal archive identity mismatch. Actual TLS tests pass2/2 for preferred gRPC with real append/finite streaming read and terminal authentication/identity rejection. These tests do not establish all-family or all-language transport completion; Objects browser support and Inference control negotiation remain assigned.",
+      "evidence": "Root locked default wasm32 Actors and Workers checks passed at49d0b301, native tests Actors2/Workers5 passed. Root independently checked default Stream wasm32 exit0 on2026-10-04. Combined remaining6family wasm check failed native mio/getrandom dependencies in Objects/Machines/Inference; complete seamless remote and embedded platform qualification remains outstanding. Hosted39bac2d single Windows x64 release native build/upload succeeded; other7matrix jobs skipped build and cannot qualify their RIDs. Signed0e253465 adds Rust-owned bounded handshake response validation against exact archived identity and required capability versions; six focused control tests pass. Endpoint registration and seamless adapter selection still require implementation and runtime verification. Coordinator ec5a603545b602650333b3984bff4f585da3b015 adds Actors/Workers authenticated pre-operation control negotiation and generated runtime backend dispatch. Actual locked default native and wasm32 builds pass for both crates; three live HTTP tests verify selected HTTP, authenticated application dispatch, and terminal archive substitution rejection. Native/browser request deadlines compile. Authenticated gRPC fixture integration and all other family runtime defaults remain outstanding. Coordinator dccc9515596e85f51aff8c7e24458549a29854e7 and ddb37c8a9662f460bc2d56f9bc9a9fe541d0039f verify real connection-scoped-trust TLS gRPC: Actors chooses gRPC, receives an authenticated typed ActorObservation, propagates later application rejection without changing transport; Workers verifies the same control service; wrong archive and unauthenticated negotiation fail terminally. Three TLS runtime tests pass0.04s. Default Actors/Workers wasm32 builds pass after trust-seam changes13.39s. This does not qualify other families or full language/package runtime semantics. Coordinator Stream uniform HostedProvider facade now dispatches all canonical provider operations through Rust with verified independent control-plane selection. Default wasm32 build passes without consumer features. Actual HTTP tests pass2/2 for authenticated selection/application ordering and terminal archive identity mismatch. Actual TLS tests pass2/2 for preferred gRPC with real append/finite streaming read and terminal authentication/identity rejection. These tests do not establish all-family or all-language transport completion; Objects browser support and Inference control negotiation remain assigned. Machines native transport compilation is target-owned with compatibility grpc feature a no-op; default wasm checked types/messages compile. This does not prove browser remote transport, which still has no canonical implementation. Hosted37243443818 eight individual native .NET RID jobs succeeded, but combined package job111557382833 failed and installed consumer matrix skipped; aggregation/package proof remains incomplete.",
       "state": "partial"
     },
     {
@@ -180,6 +180,41 @@
       "matching19graph/54scenario documentation bundle",
       "complete single-entrypoint frozen generation",
       "language strongest typing at actual public API signatures"
+    ]
+  },
+  "latest_machines_source_iteration": {
+    "status": "incomplete",
+    "implementation_commit": "56ccff87ce1db6acd153714726f87ecd25617889",
+    "native_unit_tests": {
+      "passed": 25,
+      "failed": 0
+    },
+    "wire_fixture_tests": {
+      "passed": 1,
+      "failed": 0
+    },
+    "wasm32_default_checked_api_build": "passed",
+    "browser_remote_transport": "outstanding",
+    "filesystem_harness_receipt": "research/acceptance/filesystem-harness-rust-30-step-20261005.json",
+    "hosted_run": "37243443818",
+    "hosted_native_rid_jobs_succeeded": [
+      111556666711,
+      111556666743,
+      111556666745,
+      111556666762,
+      111556666774,
+      111556666807,
+      111556666817,
+      111556666861
+    ],
+    "hosted_eight_rid_package_job_failed": 111557382833,
+    "remaining": [
+      "all installed language and embedded package proofs",
+      "54 executed source-aligned snippets",
+      "2484 Rust public declaration summary gaps",
+      "full current frozen reproducible generation",
+      "real strongest-language public SDK signatures",
+      "remaining browser remote defaults"
     ]
   }
 }
