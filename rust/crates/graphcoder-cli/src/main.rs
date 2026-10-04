@@ -544,41 +544,62 @@ impl Runtime {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
         let (after, limit) = page_bounds_object(params)?;
+        let include_body = message_body_requested(params)?;
         let after_sequence = parse_cursor(after, "message cursor")?;
         let messages = self
             .swarm
-            .read_messages(task, after_sequence, limit)
+            .read_inbox(task, after_sequence, limit)
             .await
             .map_err(DispatchError::from_harness)?;
-        let generation = self
-            .swarm
-            .list_files(task, "", None, None, 1)
-            .await
-            .map_err(DispatchError::from_harness)?
-            .generation;
+        let generation = if include_body {
+            Some(
+                self.swarm
+                    .list_files(task, "", None, None, 1)
+                    .await
+                    .map_err(DispatchError::from_harness)?
+                    .generation,
+            )
+        } else {
+            None
+        };
         let mut items = Vec::with_capacity(messages.len());
         for message in messages {
-            let body = self
-                .swarm
-                .read_file(task, message.content.path(), Some(&generation))
-                .await
-                .map_err(DispatchError::from_harness)
-                .and_then(|(_, bytes)| {
-                    String::from_utf8(bytes)
-                        .map_err(|_| DispatchError {
+            let sender = message.sender.ok_or_else(|| DispatchError {
+                code: "storage",
+                message: "mail projection is missing authenticated sender metadata".into(),
+            })?;
+            let content = serde_json::to_value(&message.payload).map_err(|error| {
+                DispatchError::invalid(format!(
+                    "message content reference is not serializable: {error}"
+                ))
+            })?;
+            let mut projected = json!({
+                "id": message.message_id,
+                "sequence": message.sequence.to_string(),
+                "session_id": task.to_string(),
+                "sender_id": sender.to_string(),
+                "recipient_id": task.to_string(),
+                "content": content,
+                "delivered_at": message
+                    .delivered_at_epoch_ms
+                    .map(|value| Value::String(value.to_string()))
+                    .unwrap_or(Value::Null),
+            });
+            if let Some(generation) = generation.as_ref() {
+                let body = self
+                    .swarm
+                    .read_file(task, message.payload.path(), Some(generation))
+                    .await
+                    .map_err(DispatchError::from_harness)
+                    .and_then(|(_, bytes)| {
+                        String::from_utf8(bytes).map_err(|_| DispatchError {
                             code: "transport",
                             message: "message content is not UTF-8".into(),
                         })
-                })?;
-            items.push(json!({
-                "id": message.id.to_string(),
-                "sequence": message.sequence.to_string(),
-                "session_id": task.to_string(),
-                "sender_id": task.to_string(),
-                "recipient_id": task.to_string(),
-                "body": body,
-                "delivered_at": Value::Null,
-            }));
+                    })?;
+                projected["body"] = Value::String(body);
+            }
+            items.push(projected);
         }
         let next = (items.len() == limit)
             .then(|| messages_last_sequence(&items))
@@ -864,6 +885,22 @@ fn page_bounds_object(object: &serde_json::Map<String, Value>) -> Result<(Option
             .ok_or_else(|| DispatchError::invalid("page limit must be between 1 and 1024"))
     })?;
     Ok((after, limit))
+}
+
+fn message_body_requested(
+    object: &serde_json::Map<String, Value>,
+) -> Result<bool, DispatchError> {
+    let Some(query) = object.get("query") else {
+        return Ok(false);
+    };
+    let query = query
+        .as_object()
+        .ok_or_else(|| DispatchError::invalid("query must be an object"))?;
+    query.get("include_body").map_or(Ok(false), |value| {
+        value
+            .as_bool()
+            .ok_or_else(|| DispatchError::invalid("include_body must be a boolean"))
+    })
 }
 
 fn parse_cursor(value: Option<&str>, label: &str) -> Result<u64, DispatchError> {

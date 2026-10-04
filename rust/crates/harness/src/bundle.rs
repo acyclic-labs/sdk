@@ -1,7 +1,7 @@
 //! Code-defined named bundles; bundles are constructors, not a configuration language.
 
 use crate::{
-    Capabilities, Error, Result,
+    Capabilities, Error, Result, TaskId,
     agent_loop::{AgentInput, AgentLoop, AgentRunOutput},
     context::ContextPipeline,
     conversation::Limits,
@@ -205,6 +205,7 @@ pub struct HarnessBuilder {
     capabilities: Vec<String>,
     limits: Limits,
     batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
+    authenticated_task: Option<TaskId>,
     bound_scope: Option<RuntimeScope>,
     extensions: Option<ExtensionAdmission>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
@@ -275,6 +276,15 @@ impl HarnessBuilder {
         value: Arc<dyn crate::batch_publication::ModelBatchPublisher>,
     ) -> Self {
         self.batch_publisher = Some(value);
+        self
+    }
+
+    /// Internal owner binding for model-facing communication tools. The
+    /// identity is transport provenance and is included in the stock
+    /// executor request binding.
+    #[must_use]
+    pub(crate) fn authenticated_task(mut self, task_id: TaskId) -> Self {
+        self.authenticated_task = Some(task_id);
         self
     }
 
@@ -496,6 +506,7 @@ impl HarnessBuilder {
         let mut bindings = self.bindings;
         bindings.scope = scope.clone();
         let agent_loop = self.agent_loop;
+        let authenticated_task = self.authenticated_task;
         if let Some(component) = &agent_loop {
             let component = Arc::clone(component);
             bindings.tasks.register(TaskDefinition::live(
@@ -541,12 +552,15 @@ impl HarnessBuilder {
                 ));
             }
             tools.definitions()?;
-            Some(Arc::new(
-                StockExecutor::new(model, provider, self.context, tools)
-                    .with_limits(self.limits)
-                    .with_tool_authority(scope, policy)?
-                    .with_batch_publisher(self.batch_publisher)?,
-            ) as Arc<dyn Executor>)
+            let executor = StockExecutor::new(model, provider, self.context, tools)
+                .with_limits(self.limits)
+                .with_tool_authority(scope, policy)?;
+            let executor = match authenticated_task {
+                Some(task_id) => executor.with_authenticated_task(task_id),
+                None => executor,
+            };
+            Some(Arc::new(executor.with_batch_publisher(self.batch_publisher)?)
+                as Arc<dyn Executor>)
         };
         if executor.is_some() && journal.is_none() {
             return Err(Error::Invalid(

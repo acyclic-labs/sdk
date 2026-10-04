@@ -2144,6 +2144,17 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
 pub struct InboxItem {
     /// Owning task.
     pub task_id: TaskId,
+    /// Authenticated sender retained by hosts that expose communication
+    /// metadata to an owner-facing projection. Model wait results continue
+    /// to use the ref-only subset below; keeping this optional preserves
+    /// compatibility with host implementations that only expose inbox
+    /// ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<TaskId>,
+    /// Owner clock captured when the mail event was published, when the host
+    /// retains this optional UI projection metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_at_epoch_ms: Option<u64>,
     /// Gapless one-based sequence.
     pub sequence: u64,
     /// Sender-defined idempotency identity.
@@ -2734,6 +2745,8 @@ mod tests {
         let task_id = TaskId::from_bytes([4; 16]);
         let item = InboxItem {
             task_id,
+            sender: None,
+            delivered_at_epoch_ms: None,
             sequence: 1,
             message_id: "message-1".into(),
             payload: state_ref()?,

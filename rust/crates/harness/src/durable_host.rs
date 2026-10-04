@@ -43,6 +43,11 @@ struct MailEvent {
     sender: TaskId,
     message_id: OperationId,
     payload: FileRef,
+    /// Owner clock captured at the publication barrier. Older mail records
+    /// may omit this optional projection metadata and therefore expose a
+    /// null delivery timestamp to UI callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivered_at_epoch_ms: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1027,6 +1032,11 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 sender,
                 message_id,
                 payload,
+                // Delivery time comes from the committed stream record. It
+                // must not be included in the idempotent request bytes: a
+                // retry with the same message identity must reproduce the
+                // exact original append arguments.
+                delivered_at_epoch_ms: None,
             };
             let bytes = crate::contract::canonical_json_bytes(&event)?;
             let mailbox = self.mailbox(recipient)?;
@@ -1090,6 +1100,11 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     .await?;
                 items.push(InboxItem {
                     task_id,
+                    sender: Some(event.sender),
+                    delivered_at_epoch_ms: event.delivered_at_epoch_ms.or_else(|| {
+                        let committed_at_epoch_ms = record.committed_at_micros / 1_000;
+                        (committed_at_epoch_ms > 0).then_some(committed_at_epoch_ms)
+                    }),
                     sequence: record
                         .sequence
                         .checked_add(1)

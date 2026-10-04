@@ -220,7 +220,7 @@ impl LocalSwarmBindings {
         if let Some(plans) = &self.model_fork_plans {
             registry.register(local_fork_tool(parent, plans.clone()))?;
         }
-        let tools = LocalHarnessTools::from_registry(registry);
+        let tools = LocalHarnessTools::from_registry(registry).with_authenticated_task(parent);
         Ok(match &self.model_batch_publisher {
             Some(publisher) => tools.with_batch_publisher(publisher.clone()),
             None => tools,
@@ -2325,6 +2325,28 @@ impl PersistentLocalSwarm {
             .collect())
     }
 
+    /// Reads the authenticated task mailbox without resolving message bodies.
+    ///
+    /// Conversation history and task mail are separate projections. Keeping
+    /// this endpoint explicit prevents an owner-facing messages page from
+    /// accidentally treating model history as communication or hydrating
+    /// private payloads while it is only listing metadata.
+    pub async fn read_inbox(
+        &self,
+        task: TaskId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::scheduler::InboxItem>> {
+        let host = self
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        DurableCommunication::new(host)
+            .inbox(task, after_sequence, limit)
+            .await
+    }
+
     /// Reads one page of owner-authenticated private files. The generation
     /// returned by the first page must be supplied for subsequent pages.
     pub async fn list_files(
@@ -2496,22 +2518,6 @@ impl PersistentLocalSwarm {
             message_id,
             payload,
         })
-    }
-
-    /// Reads a bounded durable inbox page for a task.
-    pub async fn read_inbox(
-        &self,
-        task: TaskId,
-        after_sequence: u64,
-        limit: usize,
-    ) -> Result<Vec<crate::scheduler::InboxItem>> {
-        let host =
-            self.bindings.communication_host.clone().ok_or_else(|| {
-                Error::Unsupported("durable communication host is not bound".into())
-            })?;
-        DurableCommunication::new(host)
-            .inbox(task, after_sequence, limit)
-            .await
     }
 
     /// Durably cancels one task and propagates the owner cancellation signal
