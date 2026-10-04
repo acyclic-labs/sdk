@@ -887,7 +887,7 @@ pub trait DurableTaskHost: Send + Sync {
                     .checked_add(item.payload.descriptor().byte_length())
                     .ok_or_else(|| Error::Invalid("message body aggregate is too large".into()))
             })?;
-            if total > crate::conversation::MAX_LIMIT_RENDER_BYTES {
+            if total > crate::conversation::Limits::default().render_bytes {
                 return Err(Error::Invalid(
                     "message body aggregate exceeds the model output bound".into(),
                 ));

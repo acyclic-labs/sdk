@@ -706,15 +706,16 @@ fn wait_output_schema() -> Value {
 mod tests {
     use super::*;
     use crate::{
-        OperationId,
+        AgentId, OperationId,
         conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
         resources::ProviderRef,
         runtime::{DurableTaskHost, TaskAdmissionRecord},
+        scheduler::InboxItem,
         tool::ModelToolContext,
     };
     use futures::future::BoxFuture;
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 
     fn task(value: u8) -> TaskId {
         TaskId::from_bytes([value; 16])
@@ -736,6 +737,52 @@ mod tests {
         fn cancel<'a>(&'a self, _task_id: TaskId) -> futures::future::BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    struct BodyHost {
+        reads: AtomicUsize,
+    }
+
+    impl DurableTaskHost for BodyHost {
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> futures::future::BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> futures::future::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn read_message_body<'a>(
+            &'a self,
+            _task_id: TaskId,
+            sequence: u64,
+            _message_id: OperationId,
+            _payload: &'a FileRef,
+        ) -> futures::future::BoxFuture<'a, Result<Vec<u8>>> {
+            Box::pin(async move {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                Ok(sequence.to_string().into_bytes())
+            })
+        }
+    }
+
+    fn body_ref(bytes: &[u8]) -> Result<FileRef> {
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "messages", "1")?,
+            "mail",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([9; 16])),
+        )?;
+        FileRef::new(
+            volume,
+            "messages/body.bin",
+            "v1",
+            FileDescriptor::from_bytes(bytes, "application/octet-stream")?,
+            "body.bin",
+        )
     }
 
     #[test]
@@ -786,6 +833,53 @@ mod tests {
         assert_eq!(value["kind"], "tasks");
         assert_eq!(value["outcomes"][0]["task_id"], task(2).to_string());
         assert_eq!(value["outcomes"][1]["status"], "indeterminate");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retained_message_batch_accepts_sequence_beyond_first_page() -> Result<()> {
+        let host = BodyHost {
+            reads: AtomicUsize::new(0),
+        };
+        let payload = body_ref(b"message")?;
+        let item = InboxItem {
+            task_id: task(9),
+            sender: task(8),
+            delivered_at_epoch_ms: 1,
+            sequence: 1_025,
+            message_id: operation(7).to_string(),
+            payload,
+        };
+        let bodies = host.read_message_bodies(task(9), &[item]).await?;
+        assert_eq!(bodies, vec![b"1025".to_vec()]);
+        assert_eq!(host.reads.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retained_message_batch_preflights_before_provider_reads() -> Result<()> {
+        let host = BodyHost {
+            reads: AtomicUsize::new(0),
+        };
+        let bytes = vec![0_u8; 65_537];
+        let first = InboxItem {
+            task_id: task(9),
+            sender: task(8),
+            delivered_at_epoch_ms: 1,
+            sequence: 1,
+            message_id: operation(1).to_string(),
+            payload: body_ref(&bytes)?,
+        };
+        let second = InboxItem {
+            sequence: 2,
+            message_id: operation(2).to_string(),
+            ..first.clone()
+        };
+        assert!(matches!(
+            host.read_message_bodies(task(9), &[first, second]).await,
+            Err(Error::Invalid(message)) if message.contains("aggregate")
+        ));
+        assert_eq!(host.reads.load(Ordering::SeqCst), 0);
         Ok(())
     }
 
