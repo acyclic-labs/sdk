@@ -1,0 +1,80 @@
+name: .NET native transport RID qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Rust target triple to build, or all for the full RID matrix
+        required: true
+        default: x86_64-unknown-linux-gnu
+        type: choice
+        options:
+          - all
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+      publish_artifact:
+        description: Upload the RID assets and hashes for review
+        required: true
+        default: true
+        type: boolean
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-native-rid-${{ github.ref }}-${{ github.event.inputs.target || 'release' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    if: github.event_name == 'release' || inputs.target == 'all' || inputs.target == matrix.target
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            runner: macos-14
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - target: aarch64-pc-windows-msvc
+            runner: windows-2025
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl linker
+        if: startsWith(matrix.target, 'x86_64-unknown-linux-musl') || startsWith(matrix.target, 'aarch64-unknown-linux-musl')
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Build RID asset
+        shell: pwsh
+        run: ./scripts/build-dotnet-native-transport.ps1 -Target '${{ matrix.target }}' -Output '${{ runner.temp }}/dotnet-native'
+      - name: Upload RID asset and hash
+        if: github.event_name == 'release' || inputs.publish_artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-native-${{ matrix.target }}
+          path: ${{ runner.temp }}/dotnet-native
