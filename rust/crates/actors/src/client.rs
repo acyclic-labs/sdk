@@ -103,11 +103,19 @@ pub async fn connect(
     endpoint: impl AsRef<str>,
     token: impl AsRef<str>,
 ) -> Result<Client, ConnectError> {
-    let endpoint = endpoint.as_ref();
-    let token = token.as_ref();
+    connect_with_trust(endpoint.as_ref(), token.as_ref(), None).await
+}
+
+async fn connect_with_trust(
+    endpoint: &str,
+    token: &str,
+    ca: Option<&[u8]>,
+) -> Result<Client, ConnectError> {
+    #[cfg(target_arch = "wasm32")]
+    let _ = ca;
     #[cfg(not(target_arch = "wasm32"))]
     if endpoint.starts_with("https://") {
-        match crate::grpc::connect_verified(endpoint, token).await {
+        match crate::grpc::connect_verified_with_ca_certificate(endpoint, token, ca).await {
             Ok(Some(inner)) => {
                 return Ok(Client {
                     inner: Backend::Grpc(inner),
@@ -130,3 +138,7 @@ pub async fn connect(
 }
 
 include!("generated/platform-client-methods.rs");
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "client_tests.rs"]
+mod tests;

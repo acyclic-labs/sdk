@@ -122,13 +122,25 @@ pub async fn connect_with_ca_certificate(
 /// Authentication and contract identity failures are terminal. An absent or
 /// unavailable control service returns `None` before any application call.
 pub async fn connect_verified(endpoint: &str, token: &str) -> Result<Option<Client>, ConnectError> {
+    connect_verified_with_ca_certificate(endpoint, token, None).await
+}
+
+/// Verify the control handshake with an optional connection-scoped private CA.
+///
+/// # Errors
+/// Returns authentication, TLS, or contract negotiation failures.
+pub async fn connect_verified_with_ca_certificate(
+    endpoint: &str,
+    token: &str,
+    ca: Option<&[u8]>,
+) -> Result<Option<Client>, ConnectError> {
     use crate::control_wire::protocol::v1::{
         Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity,
     };
     use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
     let family = BindingFamily::Workers;
     let version = control::control_protocol_version(family);
-    let (channel, auth) = authenticated_channel(endpoint, token, None).await?;
+    let (channel, auth) = authenticated_channel(endpoint, token, ca).await?;
     let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::with_interceptor(channel.clone(), auth.clone())
         .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
     let mut request = Request::new(HandshakeRequest {
