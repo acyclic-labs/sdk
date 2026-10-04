@@ -977,6 +977,23 @@ impl LocalHarnessTools {
     }
 }
 
+fn default_local_builder(
+    storage: &DurableHarnessStorage,
+    model: Model,
+    provider: Arc<dyn ModelProvider>,
+    limits: Limits,
+) -> Result<crate::bundle::HarnessBuilder> {
+    Ok(storage
+        .builder()
+        .model(model, provider)
+        .tools(storage.default_tools(limits)?)
+        .grant("model:generate")
+        .grant("tool:call:acyclic.read_file")
+        .grant("tool:call:acyclic.stage_file")
+        .grant("tool:call:acyclic.list_files")
+        .limits(limits))
+}
+
 impl PersistentLocalHarness {
     /// Composes a durable harness from provider and identity descriptors that
     /// the application has already persisted.
@@ -1083,16 +1100,7 @@ impl PersistentLocalHarness {
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
-        let tools = storage.default_tools(limits)?;
-        let builder = storage
-            .builder()
-            .model(model, provider)
-            .tools(tools)
-            .grant("model:generate")
-            .grant("tool:call:acyclic.read_file")
-            .grant("tool:call:acyclic.stage_file")
-            .grant("tool:call:acyclic.list_files")
-            .limits(limits);
+        let builder = default_local_builder(&storage, model, provider, limits)?;
         let bundle = extension.install_into(builder)?.build()?;
         Ok(Self { storage, bundle })
     }
@@ -1186,16 +1194,7 @@ impl PersistentLocalHarness {
             stream_provider,
             limits.file_bytes,
         )?);
-        let tools = storage.default_tools(limits)?;
-        let builder = storage
-            .builder()
-            .model(model, provider)
-            .tools(tools)
-            .grant("model:generate")
-            .grant("tool:call:acyclic.read_file")
-            .grant("tool:call:acyclic.stage_file")
-            .grant("tool:call:acyclic.list_files")
-            .limits(limits);
+        let builder = default_local_builder(&storage, model, provider, limits)?;
         let bundle = extension.install_into(builder)?.build()?;
         Ok(Self { storage, bundle })
     }
@@ -1349,16 +1348,7 @@ impl PersistentLocalHarness {
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host, limits.file_bytes)?);
-        let tools = storage.default_tools(limits)?;
-        let builder = storage
-            .builder()
-            .model(model, provider)
-            .tools(tools)
-            .grant("model:generate")
-            .grant("tool:call:acyclic.read_file")
-            .grant("tool:call:acyclic.stage_file")
-            .grant("tool:call:acyclic.list_files")
-            .limits(limits);
+        let builder = default_local_builder(&storage, model, provider, limits)?;
         let bundle = extension.install_into(builder)?.build()?;
         Ok(Self { storage, bundle })
     }
@@ -1486,16 +1476,7 @@ impl PersistentLocalHarness {
             stream_provider,
             limits.file_bytes,
         )?);
-        let tools = storage.default_tools(limits)?;
-        let builder = storage
-            .builder()
-            .model(model, provider)
-            .tools(tools)
-            .grant("model:generate")
-            .grant("tool:call:acyclic.read_file")
-            .grant("tool:call:acyclic.stage_file")
-            .grant("tool:call:acyclic.list_files")
-            .limits(limits);
+        let builder = default_local_builder(&storage, model, provider, limits)?;
         let bundle = extension.install_into(builder)?.build()?;
         Ok(Self { storage, bundle })
     }
