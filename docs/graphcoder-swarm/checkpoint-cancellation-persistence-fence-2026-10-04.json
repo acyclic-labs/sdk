@@ -1,0 +1,36 @@
+{
+  "ignored": 0,
+  "exit_code": 101,
+  "failure": {
+    "test": "native_runner_reports_unknown_for_hidden_descendant_held_pipe",
+    "outcome": "Storage: held-pipe marker was not written, os error 2"
+  },
+  "artifacts": [
+    {
+      "sha256": "f24b4a6520e705ab937da52344b369a2be6d3030ca2eeb5d742b954ea1237f09",
+      "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\f97519f57\\acyclic_harness-8839286032972dd7.exe"
+    },
+    {
+      "sha256": "a917e695af08a0705843e25ccd218b3e2e6326a432874f6d77501378bffb289b",
+      "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\f97519f57\\root-cancellation-fence.txt"
+    }
+  ],
+  "passed": 25,
+  "schema": "graphcoder.qualification.checkpoint.v1",
+  "failed": 1,
+  "focused_passes": [
+    "production_cancel_persistence_failure_keeps_late_success_unknown_and_fenced",
+    "production_receipt_fence_maps_late_success_after_cancel",
+    "protected_local_store_unknown_reopens_for_operator_resolution_without_rerun"
+  ],
+  "source_commit": "f97519f5702acb2de1f30f9457b0f2214752d91b",
+  "boundaries": [
+    "Real local persistence with cancellation fault-injected receipt store and controlled runner",
+    "Existing actual subprocess cases also executed; full cleanup qualification failed",
+    "No installed artifact or Unix execution qualification claimed"
+  ],
+  "suite_blob": "4a4fa9e61ce7983c160c0bc112c7084dfe01e13a",
+  "source_tree": "75660587d6701d105d12d99a20ba47ac3d4f5ab1",
+  "suite": "host_execution::",
+  "platform": "Windows native execution"
+}
