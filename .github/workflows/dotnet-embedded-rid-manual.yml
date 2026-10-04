@@ -69,7 +69,7 @@ jobs:
             musl_image: rust:1.98.1-alpine3.22@sha256:8c8136ecbaef3c248920e564a832a5217ff95819fa351984b48d39def57db223
           - rid: osx-x64
             rust_target: x86_64-apple-darwin
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15-intel
             kind: native
           - rid: osx-arm64
             rust_target: aarch64-apple-darwin
@@ -370,7 +370,7 @@ jobs:
             musl_image: rust:1.98.1-alpine3.22@sha256:8c8136ecbaef3c248920e564a832a5217ff95819fa351984b48d39def57db223
             dotnet_image: mcr.microsoft.com/dotnet/sdk@sha256:566b0dd501284d96c6e2fef35e1bd23c4f53e6699d1b76b9f7d7da56af723287
           - rid: osx-x64
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15-intel
             kind: dotnet
           - rid: osx-arm64
             runner: blacksmith-6vcpu-macos-15
