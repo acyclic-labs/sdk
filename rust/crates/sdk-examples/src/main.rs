@@ -7,8 +7,10 @@
 #![recursion_limit = "256"]
 
 use acyclic_sdk_examples::{
-    GUIDE_SCENARIOS, Language, RenderedSnippet, TransportFixture, execute_actors_roundtrip,
-    execute_stream_append_read, render_all, transport_fixtures,
+    filesystem_scenarios, harness_scenarios, inference_scenarios, machines_scenarios,
+    objects_scenarios, workers_scenarios, GUIDE_SCENARIOS, Language, RenderedSnippet,
+    TransportFixture, execute_actors_roundtrip, execute_stream_append_read, render_all,
+    transport_fixtures,
 };
 use acyclic_sdk_examples::fixtures::qualification_scenarios;
 use prost::Message;
@@ -1003,6 +1005,7 @@ fn run_rust(
     let package_dir_name = format!("{}-sdk-package", snippet.metadata.id);
     let package_root = packages.join(&package_dir_name);
     let package_manifest = package_root.join("Cargo.toml");
+
     let package_path = packages.join(format!("{}-sdk-package.tgz", snippet.metadata.id));
     let package_name = "acyclic-sdk-bundle";
     fs::create_dir_all(package_root.join("src"))
@@ -1020,14 +1023,14 @@ fn run_rust(
         .map(|index| &workspace_manifest[index..])
         .ok_or("Rust workspace manifest is missing [workspace.package]")?;
     let package_manifest_contents = format!(
-        "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\nlicense = \"Apache-2.0\"\npublish = false\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nacyclic-actors = {{ path = \"crates/actors\" }}\nacyclic-stream = {{ path = \"crates/stream\", features = [\"grpc\"] }}\n\n[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n\n{workspace_tail}",
+        "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\nlicense = \"Apache-2.0\"\npublish = false\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nacyclic-actors = {{ path = \"crates/actors\" }}\nacyclic-fs = {{ path = \"crates/filesystem\" }}\nacyclic-harness = {{ path = \"crates/harness\" }}\nacyclic-inference = {{ path = \"crates/inference\" }}\nacyclic-machines = {{ path = \"crates/machines\" }}\nacyclic-objects = {{ path = \"crates/objects\" }}\nacyclic-stream = {{ path = \"crates/stream\", features = [\"grpc\"] }}\nacyclic-workers = {{ path = \"crates/workers\" }}\n\n[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n\n{workspace_tail}",
         workspace_tail = workspace_tail.trim_start(),
     );
     fs::write(&package_manifest, package_manifest_contents)
         .map_err(|error| format!("write SDK package manifest: {error}"))?;
     fs::write(
         package_root.join("src/lib.rs"),
-        b"//! Bundled generated Rust SDK facade.\npub use acyclic_actors::{validate_create, wire};\npub use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};\n",
+        b"//! Bundled generated Rust SDK facade.\npub use acyclic_actors::{validate_create, wire};\npub use acyclic_fs;\npub use acyclic_harness;\npub use acyclic_inference;\npub use acyclic_machines;\npub use acyclic_objects;\npub use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};\npub use acyclic_workers;\n",
     )
     .map_err(|error| format!("write SDK package library: {error}"))?;
     let crates_root = source_root.join("rust/crates");
@@ -1101,6 +1104,16 @@ fn run_rust(
         ));
     }
     let package_manifest = package_root.join("Cargo.toml");
+    if snippet.metadata.id == "actors-create-roundtrip" {
+        run_guide_rust_consumers(
+            source_root,
+            source_sha256,
+            &package_root,
+            &package_path,
+            &qualification,
+        )?;
+    }
+
     let consumer_manifest = consumers.join(format!("{}-Cargo.toml", snippet.metadata.id));
     let consumer_lock = consumers.join(format!("{}-Cargo.lock", snippet.metadata.id));
     let consumer_metadata = consumers.join(format!("{}-cargo-metadata.json", snippet.metadata.id));
@@ -1418,6 +1431,21 @@ fn run_rust(
         "consumer_stderr_path": portable_output_path(&stderr_path, &qualification),
         "consumer_stderr_sha256": hash(&output.stderr),
     });
+    if snippet.metadata.id == "actors-create-roundtrip" {
+        let guide_receipts = guide_rust_cases()
+            .into_iter()
+            .map(|(scenario_id, _, _)| {
+                let receipt_path = qualification
+                    .join("guide-consumers")
+                    .join(format!("{scenario_id}.receipt.json"));
+                let receipt = fs::read(&receipt_path)
+                    .map_err(|error| format!("read guide receipt {scenario_id}: {error}"))?;
+                serde_json::from_slice::<Value>(&receipt)
+                    .map_err(|error| format!("decode guide receipt {scenario_id}: {error}"))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        receipt["guide_consumers"] = json!(guide_receipts);
+    }
     if !output.status.success() {
         receipt["message"] = json!(String::from_utf8_lossy(&output.stderr).trim());
     }
@@ -1425,6 +1453,256 @@ fn run_rust(
     Ok(receipt)
 }
 
+fn guide_rust_cases() -> Vec<(&'static str, &'static str, String)> {
+    let filesystem = format!(
+        "let root = std::env::temp_dir().join(format!(\"acyclic-sdk-guide-fs-{}\", std::process::id()));
+{}",
+        filesystem_scenarios::QUICKSTART_SNIPPET
+    );
+    let harness = r#"use acyclic_harness::{Admission, Outcome, TaskGroup};
+
+let group = TaskGroup::new(1);
+let first = group.try_spawn(async { 7_u8 }).await;
+if let Admission::Accepted(handle) = first {
+    assert!(matches!(handle.result().await, Outcome::Succeeded(7)));
+} else {
+    panic!("initial task was not admitted");
+}
+group.cancel();
+assert!(matches!(
+    group.try_spawn(async { 9_u8 }).await,
+    Admission::Rejected { .. }
+));
+let recovered = TaskGroup::new(1).try_spawn(async { 11_u8 }).await;
+assert!(matches!(recovered, Admission::Accepted(_)));
+"#.to_owned();
+    vec![
+        (
+            filesystem_scenarios::SCENARIO_ID,
+            filesystem_scenarios::SOURCE,
+            filesystem,
+        ),
+        (
+            harness_scenarios::SCENARIO_ID,
+            harness_scenarios::SOURCE,
+            harness,
+        ),
+        (
+            inference_scenarios::SCENARIO_ID,
+            inference_scenarios::SOURCE,
+            inference_scenarios::rust_snippet().to_owned(),
+        ),
+        (
+            machines_scenarios::SCENARIO_ID,
+            machines_scenarios::SOURCE,
+            machines_scenarios::rust_snippet().to_owned(),
+        ),
+        (
+            objects_scenarios::SCENARIO_ID,
+            objects_scenarios::SOURCE,
+            objects_scenarios::rust_snippet().to_owned(),
+        ),
+        (
+            workers_scenarios::SCENARIO_ID,
+            workers_scenarios::SOURCE,
+            workers_scenarios::rust_snippet(),
+        ),
+    ]
+}
+
+fn rewrite_guide_imports(mut code: String) -> String {
+    for crate_name in [
+        "acyclic_fs",
+        "acyclic_harness",
+        "acyclic_inference",
+        "acyclic_machines",
+        "acyclic_objects",
+        "acyclic_workers",
+    ] {
+        code = code.replace(
+            &format!("use {crate_name}::"),
+            &format!("use acyclic_sdk_bundle::{crate_name}::"),
+        );
+    }
+    code
+}
+
+fn run_guide_rust_consumers(
+    source_root: &Path,
+    source_sha256: &str,
+    package_root: &Path,
+    package_path: &Path,
+    qualification: &Path,
+) -> Result<(), String> {
+    let package_bytes =
+        fs::read(package_path).map_err(|error| format!("read guide package archive: {error}"))?;
+    let package_sha256 = hash(&package_bytes);
+    let package_root = package_root
+        .canonicalize()
+        .map_err(|error| format!("canonicalize guide package root: {error}"))?;
+    let guide_root = qualification.join("guide-consumers");
+    fs::create_dir_all(&guide_root)
+        .map_err(|error| format!("create guide consumer root: {error}"))?;
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let rustflags = deterministic_rustflags();
+
+    for (scenario_id, source, source_code) in guide_rust_cases() {
+        let staging = guide_root.join(scenario_id);
+        if staging.exists() {
+            fs::remove_dir_all(&staging)
+                .map_err(|error| format!("remove guide staging: {error}"))?;
+        }
+        fs::create_dir_all(staging.join("src"))
+            .map_err(|error| format!("create guide staging: {error}"))?;
+        let package_path_text = package_root.to_string_lossy().replace('\\', '/');
+        let manifest = format!(
+            r#"[package]
+name = "guide-{scenario_id}"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+acyclic-sdk-bundle = {{ path = "{package_path_text}" }}
+bytes = "1.10.1"
+futures = "0.3.31"
+prost = "0.14.4"
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
+"#,
+            scenario_id = scenario_id,
+            package_path_text = package_path_text,
+        );
+        fs::write(staging.join("Cargo.toml"), manifest)
+            .map_err(|error| format!("write guide consumer manifest: {error}"))?;
+        let code = rewrite_guide_imports(source_code);
+        let main = format!(
+            r#"#![allow(unused_imports)]
+use std::error::Error;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {{
+{code}
+Ok(())
+}}
+"#,
+            code = code,
+        );
+        fs::write(staging.join("src/main.rs"), main)
+            .map_err(|error| format!("write guide consumer source: {error}"))?;
+
+        let lock = Command::new(&cargo)
+            .args(["generate-lockfile", "--offline"])
+            .env("CARGO_NET_OFFLINE", "true")
+            .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
+            .current_dir(&staging)
+            .output()
+            .map_err(|error| format!("start guide lockfile generation: {error}"))?;
+        if !lock.status.success() {
+            return Err(format!(
+                "guide {scenario_id} lockfile failed: {}",
+                String::from_utf8_lossy(&lock.stderr).trim()
+            ));
+        }
+        let test = Command::new(&cargo)
+            .args([
+                "test",
+                "--manifest-path",
+                "Cargo.toml",
+                "--locked",
+                "--offline",
+                "--quiet",
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .env("RUSTFLAGS", &rustflags)
+            .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
+            .current_dir(&staging)
+            .output()
+            .map_err(|error| format!("start guide consumer test: {error}"))?;
+        if !test.status.success() {
+            let stderr = String::from_utf8_lossy(&test.stderr);
+            let _ = fs::write(guide_root.join(format!("{scenario_id}.stderr.log")), test.stderr);
+            return Err(format!("guide {scenario_id} test failed: {}", stderr.trim()));
+        }
+        let install = Command::new(&cargo)
+            .args([
+                "install",
+                "--offline",
+                "--path",
+                ".",
+                "--root",
+                "install-root",
+                "--force",
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .env("RUSTFLAGS", &rustflags)
+            .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
+            .current_dir(&staging)
+            .output()
+            .map_err(|error| format!("start guide consumer install: {error}"))?;
+        if !install.status.success() {
+            return Err(format!(
+                "guide {scenario_id} install failed: {}",
+                String::from_utf8_lossy(&install.stderr).trim()
+            ));
+        }
+        let executable_name = if cfg!(windows) {
+            format!("guide-{scenario_id}.exe")
+        } else {
+            format!("guide-{scenario_id}")
+        };
+        let executable = staging.join("install-root").join("bin").join(executable_name);
+        if !executable.is_file() {
+            return Err(format!("guide {scenario_id} install produced no executable"));
+        }
+        let output = Command::new(&executable)
+            .current_dir(&staging)
+            .output()
+            .map_err(|error| format!("run guide {scenario_id} consumer: {error}"))?;
+        let stdout_path = guide_root.join(format!("{scenario_id}.stdout.log"));
+        let stderr_path = guide_root.join(format!("{scenario_id}.stderr.log"));
+        fs::write(&stdout_path, &output.stdout)
+            .map_err(|error| format!("write guide stdout: {error}"))?;
+        fs::write(&stderr_path, &output.stderr)
+            .map_err(|error| format!("write guide stderr: {error}"))?;
+        let receipt = json!({
+            "schema": "acyclic.sdk.guide-consumer-receipt.v1",
+            "scenario_id": scenario_id,
+            "source_path": source,
+            "source_revision": git_revision(source_root),
+            "source_sha256": source_sha256,
+            "snippet_sha256": hash(source_code.as_bytes()),
+            "package_artifact_path": portable_output_path(package_path, qualification),
+            "package_artifact_sha256": package_sha256,
+            "package_root_path": portable_output_path(&package_root, qualification),
+            "command": "cargo test --manifest-path Cargo.toml --locked --offline --quiet; cargo install --offline --path .; installed consumer",
+            "executed": true,
+            "status": if output.status.success() { "qualified" } else { "failed" },
+            "exit_code": output.status.code(),
+            "stdout_path": portable_output_path(&stdout_path, qualification),
+            "stdout_sha256": hash(&output.stdout),
+            "stderr_path": portable_output_path(&stderr_path, qualification),
+            "stderr_sha256": hash(&output.stderr),
+        });
+        let receipt_path = guide_root.join(format!("{scenario_id}.receipt.json"));
+        let receipt_bytes = serde_json::to_vec_pretty(&receipt)
+            .map_err(|error| format!("encode guide receipt: {error}"))?;
+        fs::write(receipt_path, receipt_bytes)
+            .map_err(|error| format!("write guide receipt: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "guide {scenario_id} consumer failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        fs::remove_dir_all(&staging)
+            .map_err(|error| format!("remove guide staging: {error}"))?;
+    }
+    Ok(())
+}
 fn add_snippet_binding(
     receipt: &mut Value,
     source_root: &Path,
