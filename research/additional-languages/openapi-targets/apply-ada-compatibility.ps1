@@ -121,7 +121,7 @@ package body $rootUnit.Streams is
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString) is begin null; end;
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer) is begin null; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString) is begin Value := $rootUnit.To_UString (""); end;
-   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.One_Of_String_Integer) is begin Value := $rootUnit.One_Of_String_Integer'(Ada.Strings.Unbounded.To_Unbounded_String ("")); end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.One_Of_String_Integer) is begin null; end;
 end $rootUnit.Streams;
 "@
     Set-Content -LiteralPath (Join-Path $src (($rootUnit.ToLowerInvariant()) + '-streams.ads')) -Value $streamsSpec -Encoding utf8NoBOM
@@ -147,8 +147,12 @@ end $rootUnit.Streams;
         if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-client.adb')) {
             $text = [regex]::Replace($text, "(?m)^\s*C\.Set_Credentials \(Cred'Unchecked_Access\);\r?\n", "      null;`n")
         }
-        $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*)\.Is_Null", "$rootUnit.Is_Null(`$1)")
-        $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*)\.Set_Path \(", "$rootUnit.Set_Path (`$1,")
+        if ($text -notmatch [regex]::Escape("$rootUnit.Is_Null(")) {
+            $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*)\.Is_Null", "$rootUnit.Is_Null(`$1)")
+        }
+        if ($text -notmatch [regex]::Escape("$rootUnit.Set_Path (")) {
+            $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*)\.Set_Path \(", "$rootUnit.Set_Path (`$1,")
+        }
         Set-Content -LiteralPath $_.FullName -Value $text -Encoding utf8NoBOM
     }
 
