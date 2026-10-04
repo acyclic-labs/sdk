@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { test } from "node:test";
 
 const scenario = JSON.parse(readFileSync("docs/graphcoder-swarm/graphcoder-installed-swarm-scenarios.json", "utf8"));
@@ -35,4 +38,36 @@ test("installed swarm driver rejects ambient bridge configuration and unsupporte
   assert.match(driver, /list_changes is not available/u);
   assert.match(driver, /read_change is not available/u);
   assert.doesNotMatch(driver, /responseError\(/u);
+});
+
+test("driver rejects invalid qualification configuration before launching or publishing evidence", () => {
+  const evidencePath = resolve("target", `rejected-swarm-${randomUUID()}.json`);
+  const base = {
+    ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+    GRAPHCODER_PACKAGE_ROOT: process.cwd(),
+    GRAPHCODER_BRIDGE_EXECUTABLE: process.execPath,
+    GRAPHCODER_BRIDGE_CWD: process.cwd(),
+    GRAPHCODER_SWARM_CHECKOUT_ROOT: process.cwd(),
+    GRAPHCODER_BRIDGE_ENV_JSON: JSON.stringify({ GRAPHCODER_OPERATOR_TOKEN: "test-only" }),
+    GRAPHCODER_SWARM_EXPECTED_FILES_JSON: JSON.stringify({ "fixture.txt": {} }),
+    GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON: JSON.stringify({ command: {}, writeback: {} }),
+    GRAPHCODER_SWARM_EXPECTED_COMMAND_JSON: "{}",
+    GRAPHCODER_SWARM_CONCURRENT_EDIT_JSON: "{}",
+    GRAPHCODER_SWARM_EVIDENCE_PATH: evidencePath,
+  };
+  for (const [patch, expected] of [
+    [{ GRAPHCODER_BRIDGE_CWD: "" }, /GRAPHCODER_BRIDGE_CWD is required/u],
+    [{ GRAPHCODER_SWARM_EXPECTED_FILES_JSON: "{}" }, /at least one checkout file/u],
+    [{ GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON: "{}" }, /EXPECTED_APPROVAL_JSON.command/u],
+    [{ GRAPHCODER_BRIDGE_ENV_JSON: JSON.stringify({ GRAPHCODER_OPERATOR_TOKEN: "test-only", OPENAI_API_KEY: "not-a-real-key" }) }, /undeclared key/u],
+    [{ GRAPHCODER_BRIDGE_ENV_JSON: "{}" }, /explicit operator approval token/u],
+  ]) {
+    const result = spawnSync(process.execPath, ["scripts/graphcoder-installed-swarm-e2e.mjs"], {
+      cwd: process.cwd(), env: { ...base, ...patch }, encoding: "utf8", timeout: 10_000, windowsHide: true,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+    assert.equal(existsSync(evidencePath), false);
+  }
 });

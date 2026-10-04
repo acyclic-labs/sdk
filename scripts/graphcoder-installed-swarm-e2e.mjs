@@ -187,12 +187,7 @@ try {
   });
   responseValue(approved.response, approved.requestId, "approve_writeback");
   if (!approved.response.result?.applied || approved.response.result.operation_id !== writeback.operation_id || approved.response.result.generation !== generation || approved.response.result.concurrent_user_edit_preserved !== true) fail("writeback did not return exact operation/generation and concurrent-user reconciliation evidence");
-  const afterChanges = await request("list_changes", { session_id: rootId });
-  const afterPage = object(responseValue(afterChanges.response, afterChanges.requestId, "list_changes after writeback"), "post-writeback change page");
   for (const [path, expectation] of Object.entries(expectedFiles)) {
-    const file = await request("read_file", { session_id: rootId, path, generation: afterPage.generation });
-    const body = responseValue(file.response, file.requestId, `read_file after writeback ${path}`);
-    responseValue(file.response, file.requestId, `read_file after writeback ${path}`);
     if (checkoutDigest(checkoutRoot, path, "post-writeback checkout file") !== expectation.after_sha256) fail(`checkout file ${path} does not match exact post-writeback bytes`);
   }
   if (checkoutDigest(checkoutRoot, concurrentPath, "post-writeback concurrent-edit file") !== concurrentEdit.after_sha256) fail("concurrent user edit was not preserved on disk");
