@@ -51,6 +51,7 @@ const CONTROL_DESCRIPTOR_PATH: &str = "transport/v1/transport.fds.bin";
 const VALIDATION_OPTIONS_PROTO_PATH: &str = "validation/v1/options.proto";
 const AUTHORITY_MANIFEST: &str = "rust-authority.json";
 const RUST_FAMILY_GOLDENS: &str = "rust-family-goldens.json";
+const TYPE_POLICY_PATH: &str = "type-policy.json";
 const FILESYSTEM_PRODUCT_DESCRIPTOR: &str =
     "rust/crates/filesystem/src/generated/rust-model-filesystem-v2.bin";
 const HARNESS_PRODUCT_DESCRIPTOR: &str =
@@ -87,6 +88,79 @@ const FILESYSTEM_ARCHIVED_DESCRIPTOR: &[u8] =
     include_bytes!("../../../filesystem/src/generated/acyclic-filesystem-v2.bin");
 const PROTOCOL_ARCHIVED_FIXTURE: &[u8] =
     include_bytes!("../../tests/fixtures/protocol-v1.descriptor.bin");
+
+fn type_policy_json() -> Vec<u8> {
+    let language_profiles = TypePolicyLanguage::ALL
+        .iter()
+        .map(|language| {
+            let profile = TYPE_PROJECTION_PROFILES
+                .iter()
+                .find(|candidate| candidate.language == *language)
+                .expect("every Rust-owned language has a type projection profile");
+            serde_json::json!({
+                "language": language.id(),
+                "nominal_types": profile.nominal_types,
+                "unions": profile.unions,
+                "refinements": profile.refinements,
+                "presence": profile.presence,
+                "unknown_values": profile.unknown_values,
+                "integers": profile.integers,
+                "checker": profile.checker,
+            })
+        })
+        .collect::<Vec<_>>();
+    let semantic_types = SEMANTIC_TYPES
+        .iter()
+        .map(|semantic_type| {
+            let wire_kind = match semantic_type.wire_kind {
+                WireValueKind::String => "string",
+                WireValueKind::Bytes => "bytes",
+                WireValueKind::SignedInteger => "signed_integer",
+                WireValueKind::UnsignedInteger => "unsigned_integer",
+                WireValueKind::Boolean => "boolean",
+                WireValueKind::Timestamp => "timestamp",
+                WireValueKind::Enum => "enum",
+                WireValueKind::Message => "message",
+                WireValueKind::Oneof => "oneof",
+            };
+            let rules = semantic_type
+                .rules
+                .iter()
+                .map(|rule| match rule {
+                    SemanticRule::NonEmpty => serde_json::json!({ "kind": "non_empty" }),
+                    SemanticRule::Utf8 => serde_json::json!({ "kind": "utf8" }),
+                    SemanticRule::NonNegative => serde_json::json!({ "kind": "non_negative" }),
+                    SemanticRule::StrictlyPositive => serde_json::json!({ "kind": "strictly_positive" }),
+                    SemanticRule::FixedLength(length) => serde_json::json!({ "kind": "fixed_length", "length": length }),
+                    SemanticRule::MaxBytes(max) => serde_json::json!({ "kind": "max_bytes", "max": max }),
+                    SemanticRule::MaxItems(max) => serde_json::json!({ "kind": "max_items", "max": max }),
+                    SemanticRule::BoundedInteger { min, max } => serde_json::json!({ "kind": "bounded_integer", "min": min, "max": max }),
+                    SemanticRule::Sha256Digest => serde_json::json!({ "kind": "sha256_digest" }),
+                    SemanticRule::Immutable => serde_json::json!({ "kind": "immutable" }),
+                    SemanticRule::Monotonic => serde_json::json!({ "kind": "monotonic" }),
+                    SemanticRule::CanonicalResourceName => serde_json::json!({ "kind": "canonical_resource_name" }),
+                    SemanticRule::ExactOneof => serde_json::json!({ "kind": "exact_oneof" }),
+                    SemanticRule::ExplicitPresence => serde_json::json!({ "kind": "explicit_presence" }),
+                    SemanticRule::PreserveUnknownEnum => serde_json::json!({ "kind": "preserve_unknown_enum" }),
+                    SemanticRule::PreserveUnknownOneof => serde_json::json!({ "kind": "preserve_unknown_oneof" }),
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "id": semantic_type.id,
+                "rust_name": semantic_type.rust_name,
+                "wire_kind": wire_kind,
+                "rules": rules,
+            })
+        })
+        .collect::<Vec<_>>();
+    let document = serde_json::json!({
+        "schema": "acyclic.sdk.type-policy.v1",
+        "source": "rust/crates/sdk-contract-wire/src/type_policy.rs",
+        "languages": language_profiles,
+        "semantic_types": semantic_types,
+    });
+    serde_json::to_vec_pretty(&document).expect("type policy JSON is serializable")
+}
 
 // Keep the provenance revision tied to the Rust model itself.  A Git commit
 // can remain unchanged while a worktree is edited, so a commit-only marker is
@@ -241,6 +315,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Error>> {
     let mut artifacts = vec![
+        ("generated/sdk/type-policy.json".to_owned(), type_policy_json()),
         (
             FILESYSTEM_PRODUCT_DESCRIPTOR.to_owned(),
             filesystem_descriptor(),
@@ -457,6 +532,7 @@ fn generate(
     )?;
     let manifest = authority_manifest(out, source_root, evidence_path)?;
     fs::write(out.join(AUTHORITY_MANIFEST), &manifest)?;
+    fs::write(out.join(TYPE_POLICY_PATH), type_policy_json())?;
     let manifest_hash = sha256_hex(manifest.as_bytes());
     fs::write(
         out.join(RUST_FAMILY_GOLDENS),
@@ -544,6 +620,16 @@ fn check(
         machines_descriptor(),
     )?;
     reject_extra_artifacts(out)?;
+    let type_policy = fs::read(out.join(TYPE_POLICY_PATH)).map_err(|error| {
+        format!("cannot read {}: {error}", out.join(TYPE_POLICY_PATH).display())
+    })?;
+    if type_policy != type_policy_json() {
+        return Err(format!(
+            "Rust type policy is stale or does not bind the Rust model: {}",
+            out.join(TYPE_POLICY_PATH).display()
+        )
+        .into());
+    }
     let manifest = fs::read_to_string(out.join(AUTHORITY_MANIFEST)).map_err(|error| {
         format!(
             "cannot read {}: {error}",
@@ -602,6 +688,7 @@ fn reject_extra_artifacts(out: &Path) -> Result<(), Box<dyn Error>> {
         MACHINES_DESCRIPTOR_PATH,
         AUTHORITY_MANIFEST,
         RUST_FAMILY_GOLDENS,
+        TYPE_POLICY_PATH,
     ]
     .into_iter()
     .map(str::to_owned)

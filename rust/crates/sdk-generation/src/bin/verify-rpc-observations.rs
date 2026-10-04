@@ -185,7 +185,7 @@ fn validate_producer_provenance(
             failures.push(format!("{language}: executed package {field} provenance differs from the producer record"));
         }
     }
-    for field in ["generator_executable_sha256", "toolchain", "producer_source_file_hashes"] {
+    for field in ["generator_executable_sha256", "toolchain", "producer_source_file_hashes", "type_policy"] {
         if let Some(expected_value) = expected_provenance.get(field) {
             if observed_provenance.get(field) != Some(expected_value) {
                 failures.push(format!("{language}: executed package {field} provenance differs from the producer record"));

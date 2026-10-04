@@ -112,6 +112,50 @@ foreach ($expectedDescriptorHashes as $relative => $expected) {
     }
 }
 
+$typePolicyMetadata = null;
+if ($manifestPath !== null) {
+    $typePolicySource = null;
+    foreach ($schemaRoots as $candidate) {
+        $path = $candidate . DIRECTORY_SEPARATOR . 'type-policy.json';
+        if (is_file($path)) {
+            $typePolicySource = $path;
+            break;
+        }
+    }
+    if ($typePolicySource === null) {
+        throw new RuntimeException('Rust-owned type policy missing from schema root');
+    }
+    $typePolicyBytes = file_get_contents($typePolicySource);
+    if ($typePolicyBytes === false) {
+        throw new RuntimeException('unable to read Rust-owned type policy: ' . $typePolicySource);
+    }
+    $typePolicy = json_decode($typePolicyBytes, true, 512, JSON_THROW_ON_ERROR);
+    if (($typePolicy['schema'] ?? null) !== 'acyclic.sdk.type-policy.v1') {
+        throw new RuntimeException('unexpected Rust type policy schema');
+    }
+    $profile = null;
+    foreach (($typePolicy['languages'] ?? []) as $entry) {
+        if (is_array($entry) && ($entry['language'] ?? null) === 'php') {
+            $profile = $entry;
+            break;
+        }
+    }
+    if (!is_array($profile) || !is_string($profile['nominal_types'] ?? null) || !is_string($profile['refinements'] ?? null) || !is_string($profile['unions'] ?? null)) {
+        throw new RuntimeException('Rust type policy has no PHP profile');
+    }
+    $typePolicyDestination = $root . '/type-policy.json';
+    if (file_put_contents($typePolicyDestination, $typePolicyBytes) === false) {
+        throw new RuntimeException('unable to write Rust-owned type policy');
+    }
+    $typePolicyMetadata = [
+        'path' => 'type-policy.json',
+        'sha256' => hash('sha256', $typePolicyBytes),
+        'schema' => $typePolicy['schema'],
+        'language' => 'php',
+        'profile' => $profile,
+    ];
+}
+
 function executable(string $name): string
 {
     $override = getenv(strtoupper(str_replace('-', '_', $name)));
@@ -244,6 +288,7 @@ $provenance = [
     'authority_source_revision' => $authority['source_revision'] ?? null,
     'authority_exporter' => $authority['exporter'] ?? null,
     'rust_family_goldens' => $rustFamilyGoldens,
+    'type_policy' => $typePolicyMetadata,
     'generated_files' => $generated,
 ];
 if (!preg_match('/^[0-9a-f]{40}$/i', $provenance['source_git_sha'])) {

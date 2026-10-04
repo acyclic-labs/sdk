@@ -160,7 +160,8 @@ Future<void> main(List<String> arguments) async {
     exitCode = 2;
     return;
   }
-  if (output.existsSync()) {
+  final protocSkipped = Platform.environment['PROTOC_SKIP'] == '1';
+  if (!protocSkipped && output.existsSync()) {
     output.deleteSync(recursive: true);
   }
   output.createSync(recursive: true);
@@ -176,7 +177,7 @@ Future<void> main(List<String> arguments) async {
   // Windows may deny CreateProcess for an executable on a mapped workspace
   // drive even though the same binary is runnable through the command host.
   // Keep the producer deterministic while using the native Windows launcher.
-  if (Platform.environment['PROTOC_SKIP'] != '1') {
+  if (!protocSkipped) {
     final result = Platform.isWindows
         ? await Process.run(
             Platform.environment['COMSPEC'] ?? 'cmd.exe',
@@ -190,6 +191,14 @@ Future<void> main(List<String> arguments) async {
       exitCode = result.exitCode;
       return;
     }
+  } else if (!output.listSync(recursive: true).any(
+        (entity) => entity is File && entity.path.endsWith('.pb.dart'),
+      )) {
+    stderr.writeln(
+      'PROTOC_SKIP=1 requires generated Dart protobuf files in ${output.path}',
+    );
+    exitCode = 2;
+    return;
   }
   final schemaInputs = <String, String>{};
   for (final relative in schemaFiles) {
@@ -276,6 +285,51 @@ Future<void> main(List<String> arguments) async {
     exitCode = 2;
     return;
   }
+  final typePolicyCandidates = schemaRoots
+      .map(
+        (candidate) => File(
+          '$candidate${Platform.pathSeparator}type-policy.json',
+        ),
+      )
+      .where((candidate) => candidate.existsSync())
+      .toList();
+  final typePolicySource = typePolicyCandidates.isEmpty
+      ? null
+      : typePolicyCandidates.first;
+  if (manifestFile != null && typePolicySource == null) {
+    stderr.writeln('Rust-owned type policy missing from schema root');
+    exitCode = 2;
+    return;
+  }
+  Map<String, dynamic>? typePolicyMetadata;
+  if (typePolicySource != null) {
+    final typePolicyBytes = typePolicySource.readAsBytesSync();
+    final decoded = jsonDecode(utf8.decode(typePolicyBytes));
+    if (decoded is! Map || decoded['schema'] != 'acyclic.sdk.type-policy.v1') {
+      stderr.writeln('unexpected Rust type policy schema');
+      exitCode = 2;
+      return;
+    }
+    final profiles = decoded['languages'];
+    final profileCandidates = profiles is List
+        ? profiles.whereType<Map>().where((entry) => entry['language'] == 'dart').toList()
+        : <Map>[];
+    final profile = profileCandidates.isEmpty ? null : profileCandidates.first;
+    if (profile == null || profile['nominal_types'] is! String || profile['refinements'] is! String || profile['unions'] is! String) {
+      stderr.writeln('Rust type policy has no Dart profile');
+      exitCode = 2;
+      return;
+    }
+    final destination = File('${package.path}${Platform.pathSeparator}type-policy.json');
+    destination.writeAsBytesSync(typePolicyBytes);
+    typePolicyMetadata = {
+      'path': 'type-policy.json',
+      'sha256': sha256.convert(typePolicyBytes).toString(),
+      'schema': decoded['schema'],
+      'language': 'dart',
+      'profile': profile,
+    };
+  }
   final fixtureDestination = File(
     '${package.path}${Platform.pathSeparator}test${Platform.pathSeparator}fixtures${Platform.pathSeparator}rust-family-goldens.json',
   );
@@ -296,6 +350,7 @@ Future<void> main(List<String> arguments) async {
         .substring(package.path.length + 1)
         .replaceAll(Platform.pathSeparator, '/'),
     'rust_family_goldens_sha256': sha256.convert(fixtureBytes).toString(),
+    'type_policy': typePolicyMetadata,
     if (manifestFile != null) ...{
       'authority_manifest': manifestFile.path.replaceAll(
         Platform.pathSeparator,

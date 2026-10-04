@@ -77,6 +77,27 @@ schema_names.each do |relative|
   abort "schema hash mismatch: #{relative}" if expected && Digest::SHA256.file(source).hexdigest != expected
   schema_files[relative] = source
 end
+
+type_policy = nil
+type_policy_metadata = nil
+if manifest_path
+  type_policy_source = schema_roots.map { |candidate| File.join(candidate, "type-policy.json") }.find { |path| File.file?(path) }
+  abort "Rust-owned type policy missing from schema root" unless type_policy_source
+  type_policy_bytes = File.binread(type_policy_source)
+  type_policy = JSON.parse(type_policy_bytes)
+  abort "unexpected Rust type policy schema" unless type_policy["schema"] == "acyclic.sdk.type-policy.v1"
+  profile = type_policy["languages"].find { |entry| entry.is_a?(Hash) && entry["language"] == "ruby" }
+  abort "Rust type policy has no Ruby profile" unless profile.is_a?(Hash) && profile["nominal_types"] && profile["refinements"] && profile["unions"]
+  type_policy_destination = File.join(ROOT, "type-policy.json")
+  File.binwrite(type_policy_destination, type_policy_bytes)
+  type_policy_metadata = {
+    "path" => "type-policy.json",
+    "sha256" => Digest::SHA256.hexdigest(type_policy_bytes),
+    "schema" => type_policy["schema"],
+    "language" => "ruby",
+    "profile" => profile
+  }
+end
 expected_descriptor_hashes.each do |relative, expected|
   descriptor = schema_roots.map { |root| File.join(root, relative) }.find { |path| File.file?(path) }
   abort "descriptor input missing: #{relative}" unless descriptor
@@ -134,6 +155,7 @@ provenance = {
   "authority_source_revision" => authority && authority["source_revision"],
   "authority_exporter" => authority && authority["exporter"],
   "rust_family_goldens" => rust_family_goldens,
+  "type_policy" => type_policy_metadata,
   "generated_files" => Dir[File.join(OUT, "**", "*.rb")].sort.map { |path| path.tr('\\', '/').delete_prefix(root_prefix) }
 }
 unless provenance["source_git_sha"].match?(/\A[0-9a-f]{40}\z/i)
