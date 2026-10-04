@@ -194,9 +194,14 @@ jobs:
       matrix:
         include:
           - package: cpp
+            host: linux
             runner: blacksmith-4vcpu-ubuntu-2404
           - package: swift
+            host: linux
             runner: blacksmith-4vcpu-ubuntu-2404
+          - package: swift
+            host: macos
+            runner: blacksmith-6vcpu-macos-15
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
@@ -352,8 +357,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          name: rust-source-qualification-${{ matrix.package }}
+          name: rust-source-qualification-${{ matrix.package }}-${{ matrix.host }}
           path: ${{ runner.temp }}/platform-package/${{ matrix.package }}
           if-no-files-found: error
           retention-days: 7
+
 
