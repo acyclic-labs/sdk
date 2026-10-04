@@ -1260,10 +1260,7 @@ fn captured_resource_rebind_shape_equal(old: &CapturedResource, new: &CapturedRe
 
 fn resource_revision_rebind_equal(old: &ResourceRevision, new: &ResourceRevision) -> bool {
     match (old, new) {
-        (ResourceRevision::History(old), ResourceRevision::History(new)) => {
-            old.as_resource().provider() == new.as_resource().provider()
-                && old.as_resource().key() == new.as_resource().key()
-        }
+        (ResourceRevision::History(old), ResourceRevision::History(new)) => old == new,
         _ => old == new,
     }
 }
@@ -1275,7 +1272,7 @@ mod rebind_shape_tests {
     use crate::{core::AggregateKind, resources::{GenerationRef, StreamRef}};
 
     #[test]
-    fn only_history_version_may_advance_during_rebind() -> Result<()> {
+    fn history_capture_revision_cannot_change_during_rebind() -> Result<()> {
         let stream_provider = ProviderRef::new("test", "stream", "1")?;
         let old_history = ResourceRevision::History(StreamRef::new(
             stream_provider.clone(),
@@ -1287,7 +1284,7 @@ mod rebind_shape_tests {
             b"parent".to_vec(),
             Some("8".into()),
         )?);
-        assert!(resource_revision_rebind_equal(&old_history, &new_history));
+        assert!(!resource_revision_rebind_equal(&old_history, &new_history));
 
         let fs_provider = ProviderRef::new("test", "filesystem", "1")?;
         let volume = VolumeRef::new(
@@ -1344,7 +1341,28 @@ mod rebind_shape_tests {
         Ok(())
     }
 
-    fn seed(parent_revision: u64) -> Result<ForkSeed> {
+    #[test]
+    fn history_capture_requires_exact_source_and_revision() -> Result<()> {
+        let stream_provider = ProviderRef::new("test", "stream", "1")?;
+        let source = ResourceRevision::History(StreamRef::new(
+            stream_provider.clone(),
+            b"parent".to_vec(),
+            Some("7".into()),
+        )?);
+        let changed = ResourceRevision::History(StreamRef::new(
+            stream_provider,
+            b"parent".to_vec(),
+            Some("8".into()),
+        )?);
+        let capture = CapturedResource {
+            source,
+            revision: changed,
+        };
+        assert!(capture.validate().is_err());
+        Ok(())
+    }
+
+    fn seed(parent_revision: u64, history_revision: u64) -> Result<ForkSeed> {
         let filesystem = ProviderRef::new("test", "filesystem", "1")?;
         let stream = ProviderRef::new("test", "stream", "1")?;
         let parent = Authority {
@@ -1377,7 +1395,7 @@ mod rebind_shape_tests {
         let history = ResourceRevision::History(StreamRef::new(
             stream,
             parent.stream_path()?.into_bytes(),
-            Some(parent_revision.to_string()),
+            Some(history_revision.to_string()),
         )?);
         let source_generation = GenerationRef::new(filesystem.clone(), [3; 32], None)?;
         let child_generation = GenerationRef::new(filesystem.clone(), [4; 32], None)?;
@@ -1423,9 +1441,9 @@ mod rebind_shape_tests {
     async fn durable_rebind_supports_sequential_history_transitions() -> Result<()> {
         let provider = ProviderRef::new("test", "filesystem", "1")?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
-        let first = seed(1)?;
-        let second = seed(2)?;
-        let third = seed(3)?;
+        let first = seed(1, 1)?;
+        let second = seed(2, 1)?;
+        let third = seed(3, 1)?;
         let old_binding = seed_binding(&first)?;
         for volume in seed_allocation_volumes(&first)? {
             let journal = allocation_ref(provider.clone(), &volume)?;

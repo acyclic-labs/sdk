@@ -658,7 +658,7 @@ where
                         ));
                     }
                     if inherited.parent != seed.parent
-                        || inherited.parent_revision != seed.parent_revision
+                        || inherited.parent_revision != seed.captured_history_revision()?
                         || inherited.parent_agent == seed.child_agent
                         || inherited.through_sequence != seed.inherited_through_sequence
                         || inherited.attached_agents != seed.attached_agents
