@@ -287,6 +287,37 @@ pub struct PackageInstruction {
     pub package: String,
     /// Exact install command.
     pub command: String,
+    /// Rust-owned registry publication evidence for this package/version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistryPackageMetadata>,
+}
+
+/// Registry evidence attached to a generated package instruction.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryPackageMetadata {
+    pub registry: String,
+    pub version: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// Rust-owned registry publication manifest consumed by docs generation.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryManifest {
+    pub schema_version: u32,
+    pub entries: Vec<RegistryManifestEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryManifestEntry {
+    pub ecosystem: String,
+    pub registry: String,
+    pub package: String,
+    pub version: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// Documentation and SDK inputs for one Rust crate.
@@ -303,8 +334,8 @@ pub struct CrateBundle {
     pub publish: bool,
     /// Cargo package version, when declared by the manifest.
     pub version: Option<String>,
-    /// `registry-unverified` or `source-only`; this is never inferred from a
-    /// website route or a generated binding package.
+    /// `registry-verified`, `registry-unverified`, or `source-only`; registry
+    /// status comes from the Rust-owned publication manifest.
     pub availability: String,
     /// `source-fallback` or `rustdoc-json`.
     pub analysis_mode: String,
@@ -427,6 +458,8 @@ pub struct BuildOptions {
     /// Explicit release qualification manifest. A release bundle requires a
     /// verified Git tag, matching HEAD, and a clean worktree.
     pub release_manifest: Option<PathBuf>,
+    /// Optional Rust-owned registry publication manifest.
+    pub registry_manifest: Option<PathBuf>,
 }
 
 /// Inputs for the docs-only rustdoc JSON generation command.
@@ -436,6 +469,10 @@ pub struct GenerateOptions {
     pub profile_manifest: PathBuf,
     pub output_dir: PathBuf,
     pub toolchain: String,
+    /// External Cargo target/cache root. Generated JSON and receipts remain
+    /// in `output_dir`; compiler intermediates never become bundle inputs.
+    /// The CLI also accepts `SDK_DOCS_RUSTDOC_CACHE_DIR` for CI reuse.
+    pub compiler_cache_dir: Option<PathBuf>,
 }
 
 /// One generated artifact recorded in the reproducibility receipt.
@@ -482,8 +519,80 @@ impl BuildOptions {
             source_authority: None,
             source_authority_sha256: None,
             release_manifest: None,
+            registry_manifest: None,
         }
     }
+}
+
+type RegistryLookup = BTreeMap<(String, String, String), RegistryPackageMetadata>;
+
+fn load_registry_manifest(path: &Path) -> Result<RegistryLookup, Error> {
+    let manifest: RegistryManifest = serde_json::from_slice(&fs::read(path)?)?;
+    if manifest.schema_version != 1 {
+        return Err(Error::Strict(format!(
+            "unsupported registry manifest schema: {}",
+            manifest.schema_version
+        )));
+    }
+    let mut lookup = BTreeMap::new();
+    for entry in manifest.entries {
+        if entry.ecosystem.is_empty()
+            || entry.registry.is_empty()
+            || entry.package.is_empty()
+            || entry.version.is_empty()
+        {
+            return Err(Error::Strict(
+                "registry manifest entries require ecosystem, registry, package, and version"
+                    .to_owned(),
+            ));
+        }
+        if !matches!(
+            entry.status.as_str(),
+            "published" | "yanked" | "unavailable"
+        ) {
+            return Err(Error::Strict(format!(
+                "invalid registry status for {}@{}: {}",
+                entry.package, entry.version, entry.status
+            )));
+        }
+        if entry.status == "published" && !entry.sha256.as_deref().is_some_and(is_sha256) {
+            return Err(Error::Strict(format!(
+                "published registry entry has no valid SHA-256: {}@{}",
+                entry.package, entry.version
+            )));
+        }
+        if entry.status == "unavailable" && entry.sha256.is_some() {
+            return Err(Error::Strict(format!(
+                "unavailable registry entry cannot carry a SHA-256: {}@{}",
+                entry.package, entry.version
+            )));
+        }
+        let package = entry.package.clone();
+        let version = entry.version.clone();
+        let key = (entry.ecosystem.clone(), package.clone(), version.clone());
+        if lookup
+            .insert(
+                key,
+                RegistryPackageMetadata {
+                    registry: entry.registry,
+                    version,
+                    status: entry.status,
+                    sha256: entry.sha256,
+                },
+            )
+            .is_some()
+        {
+            return Err(Error::Strict(format!(
+                "duplicate registry manifest entry: {}@{}",
+                package, entry.version
+            )));
+        }
+    }
+    Ok(lookup)
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Build a deterministic bundle from all immediate crates under
@@ -519,6 +628,11 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         });
     let expected_toolchain = rust_toolchain(&options.repository_root);
     let dirty_worktree = git_worktree_dirty(&options.repository_root);
+    let registry_manifest = options
+        .registry_manifest
+        .as_deref()
+        .map(load_registry_manifest)
+        .transpose()?;
     let release = options
         .release_manifest
         .as_deref()
@@ -548,6 +662,7 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
             expected_toolchain.as_deref(),
             &options.source_state,
             dirty_worktree,
+            registry_manifest.as_ref(),
         ) {
             Ok(crate_bundle) => crates.push(crate_bundle),
             Err(error) => diagnostics.push(Diagnostic {
@@ -666,12 +781,28 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
     fs::create_dir_all(&options.output_dir)?;
     let source_revision =
         git_revision(&options.repository_root).unwrap_or_else(|| "unknown".to_owned());
+    let compiler_cache_root = options
+        .compiler_cache_dir
+        .clone()
+        .or_else(|| std::env::var_os("SDK_DOCS_RUSTDOC_CACHE_DIR").map(PathBuf::from));
+    let compiler_cache_root = compiler_cache_root.unwrap_or_else(|| {
+        options
+            .output_dir
+            .parent()
+            .map(|parent| parent.join(".sdk-docs-rustdoc-cache"))
+            .unwrap_or_else(|| options.output_dir.join(".cargo-target"))
+    });
+    fs::create_dir_all(&compiler_cache_root)?;
     let mut artifacts = Vec::new();
     for profile in profiles {
         let profile_output = options.output_dir.join(&profile.name);
         fs::create_dir_all(&profile_output)?;
-        let target_dir = options.output_dir.join(".cargo-target").join(&profile.name);
         let profile_blake3 = profile_blake3(&profile);
+        let target_dir = compiler_cache_root.join(format!(
+            "toolchain-{}-profile-{}",
+            cache_path_component(&options.toolchain),
+            profile_blake3
+        ));
         for package in &profile.packages {
             let package_name = &package.package;
             let crate_dir = find_package_dir(&options.repository_root, package_name)?;
@@ -768,6 +899,19 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
         serde_json::to_string_pretty(&result)? + "\n",
     )?;
     Ok(result)
+}
+
+fn cache_path_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Serialize a bundle in stable pretty-printed JSON.
@@ -2018,6 +2162,7 @@ fn scan_crate(
     expected_toolchain: Option<&str>,
     source_state: &str,
     dirty_worktree: bool,
+    registry_manifest: Option<&RegistryLookup>,
 ) -> Result<CrateBundle, Error> {
     let manifest = fs::read_to_string(crate_dir.join("Cargo.toml"))?;
     let package_name = manifest_value(&manifest, "name").unwrap_or_else(|| {
@@ -2268,11 +2413,31 @@ fn scan_crate(
         &public_items,
     ));
     guides.sort_by(|left, right| left.path.cmp(&right.path));
+    let registry = registry_manifest
+        .and_then(|manifest| {
+            manifest.get(&(
+                "cargo".to_owned(),
+                package_name.clone(),
+                version.clone().unwrap_or_default(),
+            ))
+        })
+        .cloned();
+    let registry_verified = registry
+        .as_ref()
+        .is_some_and(|entry| entry.status == "published");
     let package_instructions = if publish {
         vec![PackageInstruction {
             ecosystem: "cargo".to_owned(),
             package: package_name.clone(),
-            command: if dirty_worktree
+            command: if registry_verified {
+                format!(
+                    "cargo add {package_name}@={}",
+                    registry
+                        .as_ref()
+                        .map(|entry| entry.version.as_str())
+                        .unwrap_or_default()
+                )
+            } else if dirty_worktree
                 || source_state == "working-tree"
                 || source_revision == "unknown"
             {
@@ -2282,6 +2447,7 @@ fn scan_crate(
                     "cargo add {package_name} --git https://github.com/acyclic-labs/sdk --rev {source_revision}"
                 )
             },
+            registry,
         }]
     } else {
         Vec::new()
@@ -2307,7 +2473,9 @@ fn scan_crate(
         path: relative_path(repository_root, crate_dir),
         publish,
         version,
-        availability: if publish {
+        availability: if publish && registry_verified {
+            "registry-verified".to_owned()
+        } else if publish {
             "registry-unverified".to_owned()
         } else {
             "source-only".to_owned()
@@ -2617,12 +2785,20 @@ fn evaluate_profiles(
                                 .iter()
                                 .any(|diagnostic| diagnostic.code == "rustdoc_generated_source_missing")
                         });
-                        if graph.is_none() || generated_source_gap {
+                        let public_identity_gap = graph.is_some_and(|graph| {
+                            graph
+                                .public_items
+                                .iter()
+                                .any(|item| !rustdoc_public_item_identity_complete(item))
+                        });
+                        if graph.is_none() || generated_source_gap || public_identity_gap {
                             unresolved_packages.push(package.package.clone());
                             diagnostics.push(Diagnostic {
                                 severity: "error".to_owned(),
                                 code: if generated_source_gap {
                                     "profile_generated_source_missing"
+                                } else if public_identity_gap {
+                                    "profile_public_identity_incomplete"
                                 } else {
                                     "profile_public_graph_unresolved"
                                 }
@@ -2639,6 +2815,8 @@ fn evaluate_profiles(
                                     package.package,
                                     if generated_source_gap {
                                         "; a package-owned generated source referenced by rustdoc is missing"
+                                    } else if public_identity_gap {
+                                        "; at least one public compiler item lacks a module path or semantic signature"
                                     } else {
                                         ""
                                     }
@@ -2662,6 +2840,18 @@ fn evaluate_profiles(
         .collect::<Result<Vec<_>, Error>>()?;
     statuses.sort_by(|left, right| left.profile.name.cmp(&right.profile.name));
     Ok(statuses)
+}
+
+fn rustdoc_public_item_identity_complete(item: &PublicItem) -> bool {
+    item.module_path
+        .as_deref()
+        .is_some_and(|path| !path.trim().is_empty())
+        && (item.signature.is_some()
+            || item
+                .signature_text
+                .as_deref()
+                .is_some_and(|signature| !signature.trim().is_empty())
+            || item.reexport.is_some())
 }
 
 /// Extract the compiler-resolved public graph from rustdoc JSON. The JSON
@@ -3157,6 +3347,10 @@ fn rustdoc_signature(
             serde_json::Value::Object(selected)
         }
         "type_alias" => value.clone(),
+        // Keep the compiler's alias/source identity for public `use` items.
+        // Without this, an otherwise resolvable re-export is emitted with no
+        // semantic payload and cannot satisfy strict graph qualification.
+        "use" => value.clone(),
         _ => return None,
     };
     Some(signature)
@@ -3310,7 +3504,14 @@ fn rustdoc_signature_text(
                 .map(rustdoc_type_text)
                 .unwrap_or_else(|| rustdoc_type_text(value))
         ),
-        "use" => return None,
+        "use" => format!(
+            "pub use {}",
+            object
+                .and_then(|object| object.get("source"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|source| !source.trim().is_empty())
+                .unwrap_or(name)
+        ),
         _ => format!("pub {kind} {name}{generics}"),
     };
     Some(text)
@@ -4204,6 +4405,122 @@ fn canonical_json(value: &serde_json::Value) -> String {
 mod tests {
     use super::*;
 
+    fn registry_fixture(name: &str, package: &str, version: &str, status: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("sdk-docs-registry-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("create registry fixture");
+        fs::write(
+            root.join("Cargo.toml"),
+            format!("[package]\nname = \"{package}\"\nversion = \"{version}\"\n"),
+        )
+        .expect("write manifest");
+        fs::write(
+            root.join("src/lib.rs"),
+            "//! Fixture crate.\npub struct Item;\n",
+        )
+        .expect("write source");
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{
+                "ecosystem": "cargo",
+                "registry": "crates.io",
+                "package": package,
+                "version": version,
+                "status": status,
+                "sha256": if status == "published" {
+                    Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                } else {
+                    None
+                }
+            }]
+        });
+        fs::write(
+            root.join("registry.json"),
+            serde_json::to_vec_pretty(&manifest).expect("serialize registry fixture"),
+        )
+        .expect("write registry manifest");
+        root
+    }
+
+    #[test]
+    fn registry_manifest_rejects_published_without_checksum() {
+        let path = std::env::temp_dir().join(format!(
+            "sdk-docs-registry-invalid-{}.json",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"entries":[{"ecosystem":"cargo","registry":"crates.io","package":"demo","version":"0.1.0","status":"published"}]}"#,
+        )
+        .expect("write invalid registry manifest");
+        let error = load_registry_manifest(&path).expect_err("missing checksum must fail");
+        assert!(error.to_string().contains("no valid SHA-256"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn scan_crate_uses_verified_registry_install_instruction() {
+        let root = registry_fixture("published", "demo-published", "0.1.5", "published");
+        let lookup = load_registry_manifest(&root.join("registry.json")).expect("load registry");
+        let bundle = scan_crate(
+            &root,
+            &root,
+            None,
+            false,
+            "release-revision",
+            None,
+            "release",
+            false,
+            Some(&lookup),
+        )
+        .expect("scan fixture");
+        assert_eq!(bundle.availability, "registry-verified");
+        assert_eq!(
+            bundle.package_instructions[0].command,
+            "cargo add demo-published@=0.1.5"
+        );
+        assert_eq!(
+            bundle.package_instructions[0]
+                .registry
+                .as_ref()
+                .and_then(|entry| entry.sha256.as_deref()),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_crate_preserves_source_install_for_unavailable_registry_package() {
+        let root = registry_fixture("unavailable", "demo-unavailable", "0.1.4", "unavailable");
+        let lookup = load_registry_manifest(&root.join("registry.json")).expect("load registry");
+        let bundle = scan_crate(
+            &root,
+            &root,
+            None,
+            false,
+            "release-revision",
+            None,
+            "release",
+            false,
+            Some(&lookup),
+        )
+        .expect("scan fixture");
+        assert_eq!(bundle.availability, "registry-unverified");
+        assert_eq!(
+            bundle.package_instructions[0].command,
+            "cargo add demo-unavailable --git https://github.com/acyclic-labs/sdk --rev release-revision"
+        );
+        assert_eq!(
+            bundle.package_instructions[0]
+                .registry
+                .as_ref()
+                .map(|entry| entry.status.as_str()),
+            Some("unavailable")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn source_parser_preserves_docs_and_marks_cfg() {
         let source = "/// A documented type.\n#[cfg(feature = \"native\")]\npub struct NativeThing;\n\npub use other::Thing;\n";
@@ -4879,6 +5196,30 @@ mod tests {
             resolve_profile_target("wasm32-unknown-unknown", None).unwrap(),
             "wasm32-unknown-unknown"
         );
+    }
+
+    #[test]
+    fn rustdoc_public_item_identity_requires_path_and_semantics() {
+        let mut item = PublicItem {
+            name: "Demo".to_owned(),
+            module_path: None,
+            kind: "struct".to_owned(),
+            signature: None,
+            signature_text: None,
+            source_path: None,
+            source_line: None,
+            docs: None,
+            conditional: false,
+            generated: false,
+            reexport: None,
+        };
+        assert!(!rustdoc_public_item_identity_complete(&item));
+
+        item.module_path = Some("demo::Demo".to_owned());
+        assert!(!rustdoc_public_item_identity_complete(&item));
+
+        item.signature_text = Some("pub struct Demo".to_owned());
+        assert!(rustdoc_public_item_identity_complete(&item));
     }
 
     #[test]
