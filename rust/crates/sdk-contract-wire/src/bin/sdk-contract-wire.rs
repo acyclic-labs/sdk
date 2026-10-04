@@ -18,6 +18,8 @@ use acyclic_sdk_contract_wire::{
     protocol::{protocol_descriptor, protocol_proto},
     semantic_oracle,
     stream::{stream_descriptor, stream_proto},
+    transport_control::{control_descriptor, control_proto},
+    type_policy::{SemanticRule, TypePolicyLanguage, WireValueKind, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES},
     workers::{workers_descriptor, workers_proto},
 };
 use base64::Engine;
@@ -44,6 +46,8 @@ const HARNESS_PROTO_PATH: &str = "harness/v2/harness.proto";
 const HARNESS_DESCRIPTOR_PATH: &str = "harness/v2/harness.fds.bin";
 const PROTOCOL_PROTO_PATH: &str = "protocol/v1/protocol.proto";
 const PROTOCOL_DESCRIPTOR_PATH: &str = "protocol/v1/protocol.fds.bin";
+const CONTROL_PROTO_PATH: &str = "transport/v1/transport.proto";
+const CONTROL_DESCRIPTOR_PATH: &str = "transport/v1/transport.fds.bin";
 const VALIDATION_OPTIONS_PROTO_PATH: &str = "validation/v1/options.proto";
 const AUTHORITY_MANIFEST: &str = "rust-authority.json";
 const RUST_FAMILY_GOLDENS: &str = "rust-family-goldens.json";
@@ -97,6 +101,10 @@ const MODEL_SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("../credential.rs"),
     ),
     (
+        "rust/crates/sdk-contract-wire/src/type_policy.rs",
+        include_bytes!("../type_policy.rs"),
+    ),
+    (
         "rust/crates/sdk-contract-wire/src/lib.rs",
         include_bytes!("../lib.rs"),
     ),
@@ -131,6 +139,10 @@ const MODEL_SOURCES: &[(&str, &[u8])] = &[
     (
         "rust/crates/sdk-contract-wire/src/machines.rs",
         include_bytes!("../machines.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/transport_control.rs",
+        include_bytes!("../transport_control.rs"),
     ),
     (
         "rust/crates/sdk-contract-wire/src/protocol.rs",
@@ -312,7 +324,10 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
         artifacts.push((package_tonic, tonic_source));
         if matches!(family, BindingFamily::Actors | BindingFamily::Workers) {
             artifacts.push((
-                format!("rust/crates/{}/src/generated/platform-client-methods.rs", family.name()),
+                format!(
+                    "rust/crates/{}/src/generated/platform-client-methods.rs",
+                    family.name()
+                ),
                 fs::read(family_root.join("platform-client-methods.rs"))?,
             ));
         }
@@ -421,6 +436,13 @@ fn generate(
     )?;
     generate_contract(
         out,
+        CONTROL_PROTO_PATH,
+        CONTROL_DESCRIPTOR_PATH,
+        control_proto(),
+        control_descriptor(),
+    )?;
+    generate_contract(
+        out,
         INFERENCE_PROTO_PATH,
         INFERENCE_DESCRIPTOR_PATH,
         inference_proto(),
@@ -502,6 +524,13 @@ fn check(
     )?;
     check_contract(
         out,
+        CONTROL_PROTO_PATH,
+        CONTROL_DESCRIPTOR_PATH,
+        control_proto(),
+        control_descriptor(),
+    )?;
+    check_contract(
+        out,
         INFERENCE_PROTO_PATH,
         INFERENCE_DESCRIPTOR_PATH,
         inference_proto(),
@@ -565,6 +594,8 @@ fn reject_extra_artifacts(out: &Path) -> Result<(), Box<dyn Error>> {
         HARNESS_DESCRIPTOR_PATH,
         PROTOCOL_PROTO_PATH,
         PROTOCOL_DESCRIPTOR_PATH,
+        CONTROL_PROTO_PATH,
+        CONTROL_DESCRIPTOR_PATH,
         INFERENCE_PROTO_PATH,
         INFERENCE_DESCRIPTOR_PATH,
         MACHINES_PROTO_PATH,
@@ -703,10 +734,22 @@ fn authority_manifest(
         .keys()
         .find(|rpc| !known_rpcs.contains(*rpc))
     {
-        return Err(format!("typed wire evidence RPC is absent from Rust descriptors: {unknown}").into());
+        return Err(
+            format!("typed wire evidence RPC is absent from Rust descriptors: {unknown}").into(),
+        );
     }
+    let control_plane = serde_json::json!({
+        "source": CONTROL_PROTO_PATH,
+        "source_sha256": sha256_hex(&fs::read(out.join(CONTROL_PROTO_PATH))?),
+        "descriptor": CONTROL_DESCRIPTOR_PATH,
+        "descriptor_sha256": sha256_hex(&fs::read(out.join(CONTROL_DESCRIPTOR_PATH))?),
+        "descriptor_role": "independent_control_schema",
+        "handshake_rpc": acyclic_sdk_contract_wire::transport_control::HANDSHAKE_RPC_PATH,
+        "family_metadata_key": acyclic_sdk_contract_wire::transport_control::FAMILY_METADATA_KEY,
+        "non_mutating": true
+    });
     Ok(format!(
-        "{{\n  \"schema\": \"acyclic.sdk.rust-authority.v1\",\n  \"authority\": \"rust\",\n  \"schema_root\": \"rust/crates/sdk-contract-wire\",\n  \"source_git_sha\": \"{source_git_sha}\",\n  \"source_git_sha_kind\": \"git-revision\",\n  \"source_revision\": \"{source_revision}\",\n  \"source_revision_kind\": \"rust-model-sha256\",\n  \"source_files\": {source_files},\n  \"source_file_hashes\": {source_file_hashes},\n  \"exporter\": \"acyclic-sdk-contract-wire@{version}\",\n  \"typed_wire_evidence\": {typed_wire_evidence},\n  \"families\": [\n{entries}\n  ]\n}}\n",
+        "{{\n  \"schema\": \"acyclic.sdk.rust-authority.v1\",\n  \"authority\": \"rust\",\n  \"schema_root\": \"rust/crates/sdk-contract-wire\",\n  \"source_git_sha\": \"{source_git_sha}\",\n  \"source_git_sha_kind\": \"git-revision\",\n  \"source_revision\": \"{source_revision}\",\n  \"source_revision_kind\": \"rust-model-sha256\",\n  \"source_files\": {source_files},\n  \"source_file_hashes\": {source_file_hashes},\n  \"exporter\": \"acyclic-sdk-contract-wire@{version}\",\n  \"typed_wire_evidence\": {typed_wire_evidence},\n  \"control_plane\": {control_plane},\n  \"families\": [\n{entries}\n  ]\n}}\n",
         source_files = model_source_files_json(),
         source_file_hashes = model_source_hashes_json(),
         source_git_sha = source_git_sha,
@@ -734,14 +777,10 @@ fn load_typed_wire_evidence(
     };
     let bytes = fs::read(path)?;
     let document: Value = serde_json::from_slice(&bytes)?;
-    if document.get("schema").and_then(Value::as_str)
-        != Some("acyclic.sdk.transport-fixtures.v1")
-    {
+    if document.get("schema").and_then(Value::as_str) != Some("acyclic.sdk.transport-fixtures.v1") {
         return Err("evidence must be an sdk-examples transport-fixtures manifest".into());
     }
-    if document.get("generator").and_then(Value::as_str)
-        != Some("acyclic-sdk-examples@0.2.0")
-    {
+    if document.get("generator").and_then(Value::as_str) != Some("acyclic-sdk-examples@0.2.0") {
         return Err("evidence must be emitted by the pinned Rust sdk-examples producer".into());
     }
     let source = document
@@ -776,16 +815,16 @@ fn load_typed_wire_evidence(
         .pointer("/qualification/fixture_server")
         .ok_or("evidence must contain qualification.fixture_server")?;
     if fixture_server.get("source_sha256").and_then(Value::as_str) != Some(source_sha256) {
-        return Err(
-            "evidence fixture_server.source_sha256 does not match source.sha256".into(),
-        );
+        return Err("evidence fixture_server.source_sha256 does not match source.sha256".into());
     }
     if fixture_server.get("command").and_then(Value::as_str)
         != Some(
             "cargo run --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- --port 0",
         )
     {
-        return Err("evidence fixture_server.command is not the Rust fixture-server command".into());
+        return Err(
+            "evidence fixture_server.command is not the Rust fixture-server command".into(),
+        );
     }
     let source_files = source
         .get("files")
@@ -801,9 +840,9 @@ fn load_typed_wire_evidence(
                 .ok_or("evidence source.files entries must be strings")?;
             let relative_path = Path::new(relative);
             if relative_path.is_absolute()
-                || relative_path.components().any(|component| {
-                    matches!(component, std::path::Component::ParentDir)
-                })
+                || relative_path
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
             {
                 return Err(format!("evidence source file escapes Rust root: {relative}").into());
             }
@@ -974,7 +1013,9 @@ fn rpc_shapes_json(
                     let evidence_request = evidence
                         .pointer("/request/type")
                         .and_then(Value::as_str)
-                        .ok_or_else(|| format!("typed wire evidence {rpc} request type is missing"))?;
+                        .ok_or_else(|| {
+                            format!("typed wire evidence {rpc} request type is missing")
+                        })?;
                     if evidence_request != request {
                         return Err(format!(
                             "typed wire evidence {rpc} request type {evidence_request} does not match Rust descriptor {request}"
@@ -984,7 +1025,9 @@ fn rpc_shapes_json(
                     let evidence_response = evidence
                         .pointer("/response/type")
                         .and_then(Value::as_str)
-                        .ok_or_else(|| format!("typed wire evidence {rpc} response type is missing"))?;
+                        .ok_or_else(|| {
+                            format!("typed wire evidence {rpc} response type is missing")
+                        })?;
                     if evidence_response != response {
                         return Err(format!(
                             "typed wire evidence {rpc} response type {evidence_response} does not match Rust descriptor {response}"
@@ -1062,7 +1105,9 @@ fn rpc_shapes_json(
         .keys()
         .find(|rpc| !known_rpcs.contains(*rpc))
     {
-        return Err(format!("typed wire evidence RPC is absent from Rust descriptors: {unknown}").into());
+        return Err(
+            format!("typed wire evidence RPC is absent from Rust descriptors: {unknown}").into(),
+        );
     }
     Ok((
         format!(
@@ -1317,13 +1362,12 @@ mod tests {
     #[test]
     fn evidence_loader_accepts_byte_bound_fixture_output() {
         let path = write_evidence("valid", vec![evidence_item()]);
-        let loaded =
-            load_typed_wire_evidence(
-                Some(&path),
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                None,
-            )
-            .expect("valid evidence");
+        let loaded = load_typed_wire_evidence(
+            Some(&path),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        )
+        .expect("valid evidence");
         assert_eq!(loaded.entries.len(), 1);
         let _ = fs::remove_file(path);
     }
@@ -1333,13 +1377,12 @@ mod tests {
         let mut item = evidence_item();
         item["request"]["sha256"] = Value::String("sha256:forged".to_owned());
         let path = write_evidence("tampered", vec![item]);
-        let error =
-            load_typed_wire_evidence(
-                Some(&path),
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                None,
-            )
-            .expect_err("tampered evidence must fail");
+        let error = load_typed_wire_evidence(
+            Some(&path),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        )
+        .expect_err("tampered evidence must fail");
         assert!(error.to_string().contains("sha256"));
         let _ = fs::remove_file(path);
     }
@@ -1347,14 +1390,16 @@ mod tests {
     #[test]
     fn evidence_loader_rejects_forged_source_hash() {
         let path = write_evidence("source-hash", vec![evidence_item()]);
-        let mut document: Value = serde_json::from_slice(&fs::read(&path).expect("test JSON"))
-            .expect("decode test JSON");
+        let mut document: Value =
+            serde_json::from_slice(&fs::read(&path).expect("test JSON")).expect("decode test JSON");
         document["source"]["sha256"] = Value::String(
-            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-                .to_owned(),
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_owned(),
         );
-        fs::write(&path, serde_json::to_vec(&document).expect("encode test JSON"))
-            .expect("rewrite test JSON");
+        fs::write(
+            &path,
+            serde_json::to_vec(&document).expect("encode test JSON"),
+        )
+        .expect("rewrite test JSON");
         let error = load_typed_wire_evidence(
             Some(&path),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1369,13 +1414,12 @@ mod tests {
     fn evidence_loader_rejects_duplicate_rpc_records() {
         let item = evidence_item();
         let path = write_evidence("duplicate", vec![item.clone(), item]);
-        let error =
-            load_typed_wire_evidence(
-                Some(&path),
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                None,
-            )
-            .expect_err("duplicate RPC evidence must fail");
+        let error = load_typed_wire_evidence(
+            Some(&path),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        )
+        .expect_err("duplicate RPC evidence must fail");
         assert!(error.to_string().contains("duplicate"));
         let _ = fs::remove_file(path);
     }
@@ -1389,7 +1433,7 @@ mod tests {
         );
         entries
             .get_mut("acyclic.actors.v1.ActorsService/CreateActor")
-            .expect("evidence") ["request"]["type"] = Value::String("forged.Request".to_owned());
+            .expect("evidence")["request"]["type"] = Value::String("forged.Request".to_owned());
         let error = rpc_shapes_json(&actors_descriptor(), &entries)
             .expect_err("wrong request type must fail closed");
         assert!(error.to_string().contains("request type"));
@@ -1404,7 +1448,7 @@ mod tests {
         );
         entries
             .get_mut("acyclic.actors.v1.ActorsService/CreateActor")
-            .expect("evidence") ["response"]["type"] = Value::String("forged.Response".to_owned());
+            .expect("evidence")["response"]["type"] = Value::String("forged.Response".to_owned());
         let error = rpc_shapes_json(&actors_descriptor(), &entries)
             .expect_err("wrong response type must fail closed");
         assert!(error.to_string().contains("response type"));
