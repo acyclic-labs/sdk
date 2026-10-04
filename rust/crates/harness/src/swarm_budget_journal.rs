@@ -267,15 +267,17 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         &mut self,
         owner: &SwarmOwnerFence,
         provider: impl Into<String>,
+        fingerprint: [u8; 32],
     ) -> Result<()> {
         self.refresh().await?;
         let provider = provider.into();
         let projected = SwarmBudget::replay(self.events.clone())?;
-        projected.bind_root_provider_identity(owner, provider.clone())?;
+        projected.bind_root_provider_identity(owner, provider.clone(), fingerprint)?;
         self.commit(
             SwarmBudgetEvent::RootProviderBound {
                 owner: owner.clone(),
                 provider,
+                fingerprint,
             },
             self.session_id,
         )
@@ -727,6 +729,15 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         step: u32,
         request_digest: [u8; 32],
     ) -> Result<crate::model::ModelDispatchPermit> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        // Check the authenticated source binding before consulting replay
+        // identities. Otherwise an old claim could be returned as
+        // `Indeterminate` and bypass the current prebinding gate.
+        if projected.root_source_fingerprint()?.is_none() {
+            return Err(Error::Unauthorized(
+                "root usage source must be bound before root dispatch permits".into(),
+            ));
+        }
         // A settled claim is still a consumed provider right.  Consult the
         // durable history before projecting a fresh claim so replaying the
         // same operation/step cannot reopen a provider call after its receipt
@@ -749,7 +760,6 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 ));
             }
         }
-        let projected = SwarmBudget::replay(self.events.clone())?;
         let dispatch_id = IdempotencyKey::new(format!("root:{operation_id}:{step}"))?;
         let usage = projected.claim_root_model_step(
             owner,
@@ -983,6 +993,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: &SwarmOwnerFence,
         receipt: VerifiedSwarmUsageReceipt,
     ) -> Result<SwarmUsage> {
+        let fingerprint = receipt.source_fingerprint();
         let receipt = receipt.into_receipt();
         let projected = SwarmBudget::replay(self.events.clone())?;
         let root_dispatch_id = projected.root_dispatch_id()?.ok_or_else(|| {
@@ -993,14 +1004,16 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 "swarm root usage receipt is not bound to the canonical root lease".into(),
             ));
         }
+        projected.require_root_source(&receipt.provider, fingerprint)?;
         if self.root_receipt_replayed(owner, &receipt) {
-            return projected.report_root_usage(owner, receipt.usage);
+            return projected.root_usage();
         }
         self.validate_receipt(self.session_id, receipt.usage, &receipt)?;
         let event = SwarmBudgetEvent::RootUsageReported {
             owner: owner.clone(),
             usage: receipt.usage,
             receipt: receipt.clone(),
+            fingerprint,
         };
         projected.apply_event(event.clone())?;
         self.commit(event, self.session_id).await?;

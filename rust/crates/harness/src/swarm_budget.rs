@@ -357,19 +357,30 @@ impl SwarmUsageReceipt {
 /// mutation APIs accept this crate-visible proof wrapper so callers cannot
 /// manufacture a budget release by passing an arbitrary usage value.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VerifiedSwarmUsageReceipt(SwarmUsageReceipt);
+pub struct VerifiedSwarmUsageReceipt {
+    receipt: SwarmUsageReceipt,
+    source_fingerprint: [u8; 32],
+}
 
 impl VerifiedSwarmUsageReceipt {
     /// Binds a provider receipt after the host verifies its measurement.
-    fn from_verified(receipt: SwarmUsageReceipt) -> Result<Self> {
+    fn from_verified(receipt: SwarmUsageReceipt, source_fingerprint: [u8; 32]) -> Result<Self> {
         receipt.validate()?;
-        Ok(Self(receipt))
+        Ok(Self {
+            receipt,
+            source_fingerprint,
+        })
     }
 
     /// Returns the durable receipt for the compound scheduler event.
     #[must_use]
     pub(crate) fn into_receipt(self) -> SwarmUsageReceipt {
-        self.0
+        self.receipt
+    }
+
+    /// Returns the authenticated source capability bound by the issuer.
+    pub(crate) fn source_fingerprint(&self) -> [u8; 32] {
+        self.source_fingerprint
     }
 }
 
@@ -381,6 +392,13 @@ impl VerifiedSwarmUsageReceipt {
 pub trait SwarmUsageSource {
     /// Stable provider identity retained in each receipt.
     fn provider_identity(&self) -> &str;
+
+    /// Authenticated capability identity for this measurement source. Durable
+    /// local sources override this with a journal-bound fingerprint; the
+    /// provider label alone is never sufficient for root accounting.
+    fn source_fingerprint(&self) -> [u8; 32] {
+        [0; 32]
+    }
 
     /// Reads cumulative usage for the exact operation and dispatch attempt.
     fn cumulative_usage(
@@ -417,6 +435,10 @@ pub trait SwarmUsageSource {
 impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
     fn provider_identity(&self) -> &str {
         (**self).provider_identity()
+    }
+
+    fn source_fingerprint(&self) -> [u8; 32] {
+        (**self).source_fingerprint()
     }
 
     fn cumulative_usage(
@@ -615,7 +637,7 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         )?;
         self.sequence = sequence;
         self.last_usage = Some(usage);
-        VerifiedSwarmUsageReceipt::from_verified(receipt)
+        VerifiedSwarmUsageReceipt::from_verified(receipt, self.source.source_fingerprint())
     }
 
     fn record_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
@@ -1793,6 +1815,8 @@ pub enum SwarmBudgetEvent {
         owner: SwarmOwnerFence,
         /// Stable host/provider capability identity.
         provider: String,
+        /// Durable source fingerprint tied to the local usage journal.
+        fingerprint: [u8; 32],
     },
     /// Persists an admission before a fork is dispatched.
     ChildReserved {
@@ -1857,6 +1881,9 @@ pub enum SwarmBudgetEvent {
         usage: SwarmUsage,
         /// Provider evidence retained with the durable usage transition.
         receipt: SwarmUsageReceipt,
+        /// Source capability that issued the root receipt.
+        #[serde(default)]
+        fingerprint: [u8; 32],
     },
     /// Marks a child complete and releases only its unconsumed reservation.
     ChildCompleted {
@@ -2039,6 +2066,7 @@ struct SwarmBudgetState {
     /// Provider identity pinned by the first authenticated root receipt.
     /// Reopened issuers must continue using the same host capability.
     root_provider_identity: Option<String>,
+    root_source_fingerprint: Option<[u8; 32]>,
     /// Durable root step claims that have not yet been reflected in a
     /// cumulative provider usage receipt.
     root_claims: BTreeMap<(OperationId, u32), ([u8; 32], IdempotencyKey, SwarmUsage)>,
@@ -2099,6 +2127,7 @@ impl SwarmBudget {
                 root_usage_sequence: 0,
                 root_dispatch_id,
                 root_provider_identity: None,
+                root_source_fingerprint: None,
                 root_claims: BTreeMap::new(),
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
@@ -2171,12 +2200,33 @@ impl SwarmBudget {
         Ok(self.lock()?.root_dispatch_id.clone())
     }
 
+    /// Returns the authenticated source capability bound to root usage.
+    pub fn root_source_fingerprint(&self) -> Result<Option<[u8; 32]>> {
+        Ok(self.lock()?.root_source_fingerprint)
+    }
+
+    /// Requires the exact authenticated root source capability.
+    pub fn require_root_source(
+        &self,
+        provider: &str,
+        fingerprint: [u8; 32],
+    ) -> Result<()> {
+        let state = self.lock()?;
+        require_root_source_matches(&state, provider, fingerprint)
+    }
+
+    /// Returns cumulative root usage after a verified receipt has settled.
+    pub fn root_usage(&self) -> Result<SwarmUsage> {
+        Ok(self.lock()?.root_usage)
+    }
+
     /// Binds the root usage source before the first provider dispatch or
     /// receipt. The binding is immutable for the lifetime of the session.
     pub fn bind_root_provider_identity(
         &self,
         owner: &SwarmOwnerFence,
         provider: impl Into<String>,
+        fingerprint: [u8; 32],
     ) -> Result<()> {
         owner.validate()?;
         let provider = provider.into();
@@ -2185,12 +2235,20 @@ impl SwarmBudget {
                 "swarm root provider identity is invalid".into(),
             ));
         }
+        if fingerprint == [0; 32] {
+            return Err(Error::Invalid("swarm root source fingerprint is empty".into()));
+        }
         let mut state = self.lock()?;
         if state.owner != *owner {
             return Err(Error::Conflict("stale swarm owner generation".into()));
         }
+        if !state.root_claims.is_empty() || state.root_usage_sequence != 0 {
+            return Err(Error::Conflict(
+                "root usage source must be bound before root dispatch".into(),
+            ));
+        }
         if let Some(existing) = &state.root_provider_identity {
-            if existing != &provider {
+            if existing != &provider || state.root_source_fingerprint != Some(fingerprint) {
                 return Err(Error::Conflict(
                     "swarm root provider identity changed across recovery".into(),
                 ));
@@ -2198,6 +2256,7 @@ impl SwarmBudget {
             return Ok(());
         }
         state.root_provider_identity = Some(provider);
+        state.root_source_fingerprint = Some(fingerprint);
         Ok(())
     }
 
@@ -2226,6 +2285,7 @@ impl SwarmBudget {
     /// and excludes capacity already consumed or reserved by descendants.
     pub fn root_usage_limiter(&self) -> Result<SwarmUsageLimiter> {
         let state = self.lock()?;
+        require_root_provider_bound(&state, "metering")?;
         let limits = root_resource_limits(&state)?;
         SwarmUsageLimiter::resume(limits, state.root_usage)
     }
@@ -2237,6 +2297,8 @@ impl SwarmBudget {
         source: S,
     ) -> Result<SwarmUsageReceiptIssuer<S>> {
         let state = self.lock()?;
+        let source_fingerprint = source.source_fingerprint();
+        require_root_source_matches(&state, source.provider_identity(), source_fingerprint)?;
         let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
             Error::Unauthorized("canonical root dispatch lease required".into())
         })?;
@@ -2262,6 +2324,8 @@ impl SwarmBudget {
         source: S,
     ) -> Result<SwarmRootDispatchContext<S>> {
         let state = self.lock()?;
+        let source_fingerprint = source.source_fingerprint();
+        require_root_source_matches(&state, source.provider_identity(), source_fingerprint)?;
         let limits = root_resource_limits(&state)?;
         let limiter = SwarmUsageLimiter::resume(limits, state.root_usage)?;
         let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
@@ -2703,6 +2767,7 @@ impl SwarmBudget {
         IdempotencyKey::new(dispatch_id.0.clone())?;
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
+        require_root_provider_bound(&state, "model claims")?;
         let key = (operation_id, step);
         if let Some((existing_digest, existing_id, _)) = state.root_claims.get(&key) {
             if *existing_digest == request_digest && existing_id == &dispatch_id {
@@ -2783,7 +2848,7 @@ impl SwarmBudget {
     ) -> Result<SwarmUsage> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
-        update_root_usage(&mut state, owner, usage, None)
+        update_root_usage(&mut state, owner, usage, None, None)
     }
 
     fn report_usage_event(
@@ -2815,10 +2880,11 @@ impl SwarmBudget {
         owner: &SwarmOwnerFence,
         usage: SwarmUsage,
         receipt: Option<&SwarmUsageReceipt>,
+        fingerprint: Option<[u8; 32]>,
     ) -> Result<SwarmUsage> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
-        update_root_usage(&mut state, owner, usage, receipt)
+        update_root_usage(&mut state, owner, usage, receipt, fingerprint)
     }
 
     /// Cancels a child and releases active/unconsumed resources without refunding consumed usage.
@@ -2906,8 +2972,12 @@ impl SwarmBudget {
             SwarmBudgetEvent::Started { .. } => {
                 Err(Error::Conflict("swarm session already exists".into()))
             }
-            SwarmBudgetEvent::RootProviderBound { owner, provider } => {
-                self.bind_root_provider_identity(&owner, provider)
+            SwarmBudgetEvent::RootProviderBound {
+                owner,
+                provider,
+                fingerprint,
+            } => {
+                self.bind_root_provider_identity(&owner, provider, fingerprint)
             }
             SwarmBudgetEvent::ChildReserved { reservation } => {
                 let request = request_from_reservation(&reservation)?;
@@ -2971,8 +3041,9 @@ impl SwarmBudget {
                 owner,
                 usage,
                 receipt,
+                fingerprint,
             } => self
-                .report_root_usage_event(&owner, usage, Some(&receipt))
+                .report_root_usage_event(&owner, usage, Some(&receipt), Some(fingerprint))
                 .map(|_| ()),
             SwarmBudgetEvent::ChildCompleted {
                 operation_id,
@@ -3039,6 +3110,37 @@ fn request_from_reservation(reservation: &SwarmForkReservation) -> Result<SwarmF
 fn require_owner(state: &SwarmBudgetState, owner: &SwarmOwnerFence) -> Result<()> {
     if &state.owner != owner {
         return Err(Error::Conflict("stale swarm owner generation".into()));
+    }
+    Ok(())
+}
+
+fn require_root_provider_bound(state: &SwarmBudgetState, operation: &str) -> Result<[u8; 32]> {
+    let Some(fingerprint) = state.root_source_fingerprint else {
+        return Err(Error::Unauthorized(format!(
+            "root usage source must be bound before {operation}"
+        )));
+    };
+    if fingerprint == [0; 32] || state.root_provider_identity.is_none() {
+        return Err(Error::Unauthorized(
+            "root usage source binding is incomplete".into(),
+        ));
+    }
+    Ok(fingerprint)
+}
+
+fn require_root_source_matches(
+    state: &SwarmBudgetState,
+    provider: &str,
+    fingerprint: [u8; 32],
+) -> Result<()> {
+    require_root_provider_bound(state, "using a provider")?;
+    if fingerprint == [0; 32]
+        || state.root_source_fingerprint != Some(fingerprint)
+        || state.root_provider_identity.as_deref() != Some(provider)
+    {
+        return Err(Error::Unauthorized(
+            "root usage source is not bound to this budget".into(),
+        ));
     }
     Ok(())
 }
@@ -3453,16 +3555,27 @@ fn update_root_usage(
     _owner: &SwarmOwnerFence,
     usage: SwarmUsage,
     receipt: Option<&SwarmUsageReceipt>,
+    fingerprint: Option<[u8; 32]>,
 ) -> Result<SwarmUsage> {
+    let bound_fingerprint = require_root_provider_bound(state, "usage reports")?;
     if let Some(receipt) = receipt {
         receipt.validate()?;
-        if let Some(provider) = &state.root_provider_identity {
-            if provider != &receipt.provider {
-                return Err(Error::Conflict(
-                    "swarm root usage provider identity changed across receipts".into(),
-                ));
-            }
+        let fingerprint = fingerprint.ok_or_else(|| {
+            Error::Unauthorized("root usage source binding is required".into())
+        })?;
+        if fingerprint != bound_fingerprint {
+            return Err(Error::Conflict(
+                "swarm root usage source fingerprint changed across receipts".into(),
+            ));
         }
+        require_root_source_matches(state, &receipt.provider, fingerprint).map_err(|error| {
+            match error {
+                Error::Unauthorized(_) => Error::Conflict(
+                    "swarm root usage provider identity changed across receipts".into(),
+                ),
+                other => other,
+            }
+        })?;
         let expected_sequence = state
             .root_usage_sequence
             .checked_add(1)
@@ -3479,6 +3592,10 @@ fn update_root_usage(
                 "swarm root usage receipt is stale or mismatched".into(),
             ));
         }
+    } else if state.root_source_fingerprint.is_some() {
+        return Err(Error::Unauthorized(
+            "root usage receipt required after source binding".into(),
+        ));
     }
     let delta = usage.checked_delta(state.root_usage)?;
     let next = add_usage(state.usage.consumed, delta)?;
@@ -3616,6 +3733,36 @@ mod tests {
     }
 
     #[test]
+    fn root_dispatch_requires_explicit_source_binding() -> Result<()> {
+        let session = id(90);
+        let root_owner = owner(0);
+        let dispatch = IdempotencyKey::new("root-lease")?;
+        let budget = SwarmBudget::new_with_root_dispatch(
+            session,
+            root_owner.clone(),
+            limits(),
+            Some(dispatch),
+        )?;
+        assert!(matches!(
+            budget.claim_root_model_step(&root_owner, session, 0, [9; 32], IdempotencyKey::new("step")?),
+            Err(Error::Unauthorized(_))
+        ));
+        budget.bind_root_provider_identity(&root_owner, "same-label", [7; 32])?;
+        assert!(matches!(
+            budget.bind_root_provider_identity(&root_owner, "same-label", [8; 32]),
+            Err(Error::Conflict(_))
+        ));
+        assert!(budget
+            .claim_root_model_step(&root_owner, session, 0, [9; 32], IdempotencyKey::new("step")?)
+            .is_ok());
+        assert!(matches!(
+            budget.bind_root_provider_identity(&root_owner, "same-label", [7; 32]),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn child_resources_cannot_widen_canonical_task_limits() -> Result<()> {
         let admission = TaskAdmissionRecord::from_parts(
             id(8),
@@ -3671,6 +3818,10 @@ mod tests {
     impl SwarmUsageSource for MeasuredSource {
         fn provider_identity(&self) -> &str {
             "local-provider"
+        }
+
+        fn source_fingerprint(&self) -> [u8; 32] {
+            [17; 32]
         }
 
         fn cumulative_usage(

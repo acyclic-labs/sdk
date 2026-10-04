@@ -395,6 +395,9 @@ pub enum SchedulerEvent {
         /// Provider-issued usage evidence; legacy reducer fixtures may omit it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         receipt: Option<SwarmUsageReceipt>,
+        /// Authenticated source capability that issued the root receipt.
+        #[serde(default)]
+        fingerprint: [u8; 32],
     },
     /// Completes a child and releases only its unconsumed budget reservation.
     SwarmCompleted {
@@ -1075,6 +1078,7 @@ impl Scheduler {
                 fence,
                 usage,
                 receipt,
+                fingerprint,
             } => {
                 let mut next = self.clone();
                 let root = next.mutable(session_id)?;
@@ -1086,7 +1090,13 @@ impl Scheduler {
                     usage,
                     receipt.as_ref(),
                 )?;
-                next.apply_swarm_root_usage(session_id, owner, usage, receipt.as_ref())?;
+                next.apply_swarm_root_usage(
+                    session_id,
+                    owner,
+                    usage,
+                    receipt.as_ref(),
+                    fingerprint,
+                )?;
                 if let Some(receipt) = receipt {
                     next.mutable(session_id)?.swarm_usage_sequence = receipt.sequence;
                 }
@@ -1412,6 +1422,7 @@ impl Scheduler {
         owner: SwarmOwnerFence,
         usage: SwarmUsage,
         receipt: Option<&SwarmUsageReceipt>,
+        fingerprint: [u8; 32],
     ) -> Result<()> {
         let receipt = receipt.ok_or_else(|| {
             Error::Unauthorized("provider usage receipt required for swarm root usage".into())
@@ -1438,11 +1449,17 @@ impl Scheduler {
                 "terminal or cancelled swarm session cannot report usage".into(),
             ));
         }
-        budget.report_root_usage(&owner, usage)?;
+        budget.apply_event(SwarmBudgetEvent::RootUsageReported {
+            owner: owner.clone(),
+            usage,
+            receipt: receipt.clone(),
+            fingerprint,
+        })?;
         self.swarm_events.push(SwarmBudgetEvent::RootUsageReported {
             owner,
             usage,
             receipt: receipt.clone(),
+            fingerprint,
         });
         if let Some(operation) = self.operations.get_mut(&session_id) {
             operation.revision = operation
@@ -2452,6 +2469,7 @@ mod tests {
                     execution_time_ms: 1,
                 },
                 receipt: None,
+                fingerprint: [0; 32],
             }),
             Err(Error::Conflict(_))
         ));

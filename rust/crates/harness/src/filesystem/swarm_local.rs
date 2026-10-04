@@ -49,8 +49,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
 };
@@ -85,7 +85,11 @@ pub struct LocalSwarmUsageSource {
     usage: Arc<StdMutex<BTreeMap<(OperationId, String), SwarmUsage>>>,
     durable_root: Option<PathBuf>,
     provider: String,
+    fingerprint: [u8; 32],
 }
+
+#[cfg(feature = "filesystem-local")]
+const LOCAL_USAGE_SNAPSHOT_VERSION: u16 = 1;
 
 impl Default for LocalSwarmUsageSource {
     fn default() -> Self {
@@ -93,20 +97,46 @@ impl Default for LocalSwarmUsageSource {
             usage: Arc::new(StdMutex::new(BTreeMap::new())),
             durable_root: None,
             provider: "local.runtime.meter".into(),
+            fingerprint: [0; 32],
         }
     }
 }
 
 impl LocalSwarmUsageSource {
+    /// Creates an explicitly ephemeral source for memory/WASM compositions.
+    /// The capability is unique to this source instance and is intentionally
+    /// not recoverable across a cold restart; native local composition uses
+    /// [`Self::durable`] instead.
+    pub fn ephemeral() -> Self {
+        let nonce = OperationId::new();
+        let fingerprint = *blake3::hash(
+            format!("local.runtime.ephemeral:{}", nonce).as_bytes(),
+        )
+        .as_bytes();
+        Self {
+            usage: Arc::new(StdMutex::new(BTreeMap::new())),
+            durable_root: None,
+            provider: "local.runtime.ephemeral".into(),
+            fingerprint,
+        }
+    }
+
     #[cfg(feature = "filesystem-local")]
     pub fn durable(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)
             .map_err(|error| Error::Storage(format!("local usage journal directory failed: {error}")))?;
+        let canonical_root = fs::canonicalize(&root)
+            .map_err(|error| Error::Storage(format!("local usage journal identity failed: {error}")))?;
+        let fingerprint = *blake3::hash(
+            format!("local.runtime.meter:{}", canonical_root.display()).as_bytes(),
+        )
+        .as_bytes();
         let source = Self {
             usage: Arc::new(StdMutex::new(BTreeMap::new())),
             durable_root: Some(root),
             provider: "local.runtime.meter".into(),
+            fingerprint,
         };
         source.ensure_durable_identity()?;
         Ok(source)
@@ -147,37 +177,37 @@ impl LocalSwarmUsageSource {
     }
 
     #[cfg(feature = "filesystem-local")]
-    fn read_durable_locked(
+    fn read_snapshot_file(
         &self,
-        root: &Path,
+        path: &Path,
     ) -> Result<BTreeMap<(OperationId, String), SwarmUsage>> {
-        let file = match File::open(root.join("usage.jsonl")) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(BTreeMap::new());
+        let bytes = fs::read(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::NotFound("local usage snapshot".into())
+            } else {
+                Error::Storage(format!("local usage snapshot read failed: {error}"))
             }
-            Err(error) => {
-                return Err(Error::Storage(format!("local usage journal read failed: {error}")));
-            }
-        };
-        let mut records: BTreeMap<(OperationId, String), SwarmUsage> = BTreeMap::new();
-        for line in BufReader::new(file).lines() {
-            let line = line.map_err(|error| {
-                Error::Storage(format!("local usage journal line failed: {error}"))
-            })?;
-            let record: LocalUsageRecord = serde_json::from_str(&line).map_err(|error| {
-                Error::Storage(format!("local usage journal is corrupt: {error}"))
-            })?;
-            if record.provider != self.provider {
-                return Err(Error::Conflict("local usage provider identity changed".into()));
-            }
+        })?;
+        let snapshot: LocalUsageSnapshot = serde_json::from_slice(&bytes).map_err(|error| {
+            Error::Storage(format!("local usage snapshot is corrupt: {error}"))
+        })?;
+        if snapshot.version != LOCAL_USAGE_SNAPSHOT_VERSION {
+            return Err(Error::Conflict("local usage snapshot version changed".into()));
+        }
+        if snapshot.provider != self.provider || snapshot.fingerprint != self.fingerprint {
+            return Err(Error::Conflict("local usage source identity changed".into()));
+        }
+        if snapshot.digest != snapshot_digest(&snapshot)? {
+            return Err(Error::Storage("local usage snapshot integrity mismatch".into()));
+        }
+        let mut records = BTreeMap::new();
+        for record in snapshot.records {
             let operation_id: OperationId = serde_json::from_str(&format!(
                 "\"{}\"",
                 record.operation_id
             ))
-            .map_err(|_| {
-                Error::Storage("local usage journal operation identity is invalid".into())
-            })?;
+            .map_err(|_| Error::Storage("local usage operation identity is invalid".into()))?;
+            IdempotencyKey::new(record.dispatch_id.clone())?;
             let entry = records
                 .entry((operation_id, record.dispatch_id))
                 .or_default();
@@ -191,17 +221,120 @@ impl LocalSwarmUsageSource {
     }
 
     #[cfg(feature = "filesystem-local")]
+    fn read_durable_locked(
+        &self,
+        root: &Path,
+    ) -> Result<BTreeMap<(OperationId, String), SwarmUsage>> {
+        let current = root.join("usage.snapshot");
+        match self.read_snapshot_file(&current) {
+            Ok(records) => Ok(records),
+            Err(Error::NotFound(_)) => {
+                let backup = root.join("usage.snapshot.bak");
+                match self.read_snapshot_file(&backup) {
+                    Ok(records) => Ok(records),
+                    Err(Error::NotFound(_)) => {
+                        if root.join("usage.jsonl").exists() {
+                            return Err(Error::Conflict(
+                                "legacy local usage journal requires explicit migration".into(),
+                            ));
+                        }
+                        Ok(BTreeMap::new())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => {
+                let backup = root.join("usage.snapshot.bak");
+                match self.read_snapshot_file(&backup) {
+                    Ok(records) => Ok(records),
+                    Err(Error::NotFound(_)) => Err(error),
+                    Err(_) => Err(error),
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    fn write_snapshot_locked(
+        &self,
+        root: &Path,
+        records: &BTreeMap<(OperationId, String), SwarmUsage>,
+    ) -> Result<()> {
+        let mut values = records
+            .iter()
+            .map(|((operation_id, dispatch_id), usage)| LocalUsageRecord {
+                operation_id: operation_id.to_string(),
+                dispatch_id: dispatch_id.clone(),
+                usage: *usage,
+            })
+            .collect::<Vec<_>>();
+        values.sort_by(|left, right| {
+            left.operation_id
+                .cmp(&right.operation_id)
+                .then_with(|| left.dispatch_id.cmp(&right.dispatch_id))
+        });
+        let snapshot = LocalUsageSnapshot {
+            version: LOCAL_USAGE_SNAPSHOT_VERSION,
+            provider: self.provider.clone(),
+            fingerprint: self.fingerprint,
+            records: values,
+            digest: [0; 32],
+        };
+        let snapshot = LocalUsageSnapshot {
+            digest: snapshot_digest(&snapshot)?,
+            ..snapshot
+        };
+        let temp = root.join("usage.snapshot.tmp");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temp)
+            .map_err(|error| Error::Storage(format!("local usage snapshot create failed: {error}")))?;
+        serde_json::to_writer(&mut file, &snapshot)
+            .map_err(|error| Error::Storage(format!("local usage snapshot encode failed: {error}")))?;
+        file.write_all(b"\n")
+            .and_then(|_| file.sync_all())
+            .map_err(|error| Error::Storage(format!("local usage snapshot sync failed: {error}")))?;
+        let current = root.join("usage.snapshot");
+        let backup = root.join("usage.snapshot.bak");
+        if self.read_snapshot_file(&current).is_ok() {
+            if let Err(error) = fs::remove_file(&backup)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(Error::Storage(format!(
+                    "local usage snapshot backup cleanup failed: {error}"
+                )));
+            }
+            fs::rename(&current, &backup).map_err(|error| {
+                Error::Storage(format!("local usage snapshot backup failed: {error}"))
+            })?;
+        } else if current.exists() {
+            // A verified backup is retained while replacing a torn/corrupt
+            // current file. The backup is the recovery authority until the
+            // new snapshot has been durably published.
+            fs::remove_file(&current).map_err(|error| {
+                Error::Storage(format!("local usage snapshot quarantine failed: {error}"))
+            })?;
+        }
+        fs::rename(&temp, &current)
+            .map_err(|error| Error::Storage(format!("local usage snapshot publish failed: {error}")))?;
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem-local")]
     fn ensure_durable_identity(&self) -> Result<()> {
         self.with_durable_lock(true, |root| {
-            let path = root.join("usage.jsonl");
-            if path.exists() {
-                let _ = self.read_durable_locked(root)?;
+            let path = root.join("usage.snapshot");
+            if !path.exists() && !root.join("usage.snapshot.bak").exists() {
+                if root.join("usage.jsonl").exists() {
+                    return Err(Error::Conflict(
+                        "legacy local usage journal requires explicit migration".into(),
+                    ));
+                }
+                self.write_snapshot_locked(root, &BTreeMap::new())?;
             } else {
-                File::create(path)
-                    .and_then(|file| file.sync_all())
-                    .map_err(|error| {
-                        Error::Storage(format!("local usage journal initialize failed: {error}"))
-                    })?;
+                let _ = self.read_durable_locked(root)?;
             }
             Ok(())
         })
@@ -238,22 +371,7 @@ impl LocalSwarmUsageSource {
                 };
                 if merged != *durable {
                     *durable = merged;
-                    let record = LocalUsageRecord {
-                        provider: self.provider.clone(),
-                        operation_id: operation_id.to_string(),
-                        dispatch_id: dispatch_id.0.clone(),
-                        usage: merged,
-                    };
-                    let mut file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(root.join("usage.jsonl"))
-                        .map_err(|error| Error::Storage(format!("local usage journal append failed: {error}")))?;
-                    serde_json::to_writer(&mut file, &record)
-                        .map_err(|error| Error::Storage(format!("local usage journal encode failed: {error}")))?;
-                    file.write_all(b"\n")
-                        .and_then(|_| file.sync_all())
-                        .map_err(|error| Error::Storage(format!("local usage journal sync failed: {error}")))?;
+                    self.write_snapshot_locked(root, &records)?;
                 }
                 Ok(())
             });
@@ -265,15 +383,44 @@ impl LocalSwarmUsageSource {
 #[cfg(feature = "filesystem-local")]
 #[derive(Serialize, Deserialize)]
 struct LocalUsageRecord {
-    provider: String,
     operation_id: String,
     dispatch_id: String,
     usage: SwarmUsage,
 }
 
+#[cfg(feature = "filesystem-local")]
+#[derive(Serialize, Deserialize)]
+struct LocalUsageSnapshot {
+    version: u16,
+    provider: String,
+    fingerprint: [u8; 32],
+    records: Vec<LocalUsageRecord>,
+    digest: [u8; 32],
+}
+
+#[cfg(feature = "filesystem-local")]
+fn snapshot_digest(snapshot: &LocalUsageSnapshot) -> Result<[u8; 32]> {
+    let mut unsigned = Vec::new();
+    serde_json::to_writer(
+        &mut unsigned,
+        &(
+            snapshot.version,
+            &snapshot.provider,
+            snapshot.fingerprint,
+            &snapshot.records,
+        ),
+    )
+    .map_err(|error| Error::Storage(format!("local usage snapshot digest failed: {error}")))?;
+    Ok(*blake3::hash(&unsigned).as_bytes())
+}
+
 impl SwarmUsageSource for LocalSwarmUsageSource {
     fn provider_identity(&self) -> &str {
         &self.provider
+    }
+
+    fn source_fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
     }
 
     fn cumulative_usage(
@@ -2386,7 +2533,7 @@ impl PersistentLocalSwarm {
             }
             #[cfg(not(feature = "filesystem-local"))]
             {
-                bindings.swarm_usage_source = Some(Arc::new(LocalSwarmUsageSource::default()));
+                bindings.swarm_usage_source = Some(Arc::new(LocalSwarmUsageSource::ephemeral()));
             }
         }
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
@@ -2560,7 +2707,11 @@ impl PersistentLocalSwarm {
                     .await?;
                     let mut journal = journal;
                     journal
-                        .bind_root_provider_identity(&owner, source.provider_identity())
+                        .bind_root_provider_identity(
+                            &owner,
+                            source.provider_identity(),
+                            source.source_fingerprint(),
+                        )
                         .await?;
                     let (_, owner, _) = journal.descriptor()?;
                     let journal = Arc::new(Mutex::new(journal));
@@ -5726,6 +5877,91 @@ mod tests {
             reopened.cumulative_usage(operation, &dispatch)?,
             usage,
             "durable local composition must retain usage across a cold reopen"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[test]
+    fn local_usage_source_rejects_torn_current_and_preserves_verified_backup() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let operation = OperationId::new();
+        let dispatch = IdempotencyKey::new("torn-tail")?;
+        let first = SwarmUsage {
+            model_steps: 1,
+            output_bytes: 3,
+            execution_time_ms: 5,
+        };
+        let second = SwarmUsage {
+            model_steps: 2,
+            output_bytes: 7,
+            execution_time_ms: 11,
+        };
+        let source = LocalSwarmUsageSource::durable(root.path())?;
+        source.record_runtime_usage(operation, &dispatch, first)?;
+        source.record_runtime_usage(operation, &dispatch, second)?;
+        drop(source);
+        fs::write(root.path().join("usage.snapshot"), b"{\"version\":1")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let reopened = LocalSwarmUsageSource::durable(root.path())?;
+        assert_eq!(
+            reopened.cumulative_usage(operation, &dispatch)?,
+            first,
+            "a torn current record must recover the last verified snapshot"
+        );
+        reopened.record_runtime_usage(operation, &dispatch, second)?;
+        assert_eq!(reopened.cumulative_usage(operation, &dispatch)?, second);
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[test]
+    fn local_usage_source_fingerprint_separates_same_label_roots() -> Result<()> {
+        let first = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let second = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let first = LocalSwarmUsageSource::durable(first.path())?;
+        let second = LocalSwarmUsageSource::durable(second.path())?;
+        assert_eq!(first.provider_identity(), second.provider_identity());
+        assert_ne!(first.source_fingerprint(), second.source_fingerprint());
+        Ok(())
+    }
+
+    #[test]
+    fn local_usage_source_instances_share_durable_records_without_cross_keying() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let first = LocalSwarmUsageSource::durable(root.path())?;
+        let second = LocalSwarmUsageSource::durable(root.path())?;
+        let first_operation = OperationId::new();
+        let second_operation = OperationId::new();
+        let first_dispatch = IdempotencyKey::new("first-dispatch")?;
+        let second_dispatch = IdempotencyKey::new("second-dispatch")?;
+        let first_usage = SwarmUsage {
+            model_steps: 1,
+            output_bytes: 2,
+            execution_time_ms: 3,
+        };
+        let second_usage = SwarmUsage {
+            model_steps: 4,
+            output_bytes: 5,
+            execution_time_ms: 6,
+        };
+        first.record_runtime_usage(first_operation, &first_dispatch, first_usage)?;
+        second.record_runtime_usage(second_operation, &second_dispatch, second_usage)?;
+        assert_eq!(
+            first.cumulative_usage(first_operation, &first_dispatch)?,
+            first_usage
+        );
+        assert_eq!(
+            first.cumulative_usage(second_operation, &second_dispatch)?,
+            second_usage
+        );
+        assert_eq!(
+            second.cumulative_usage(first_operation, &first_dispatch)?,
+            first_usage
+        );
+        assert_eq!(
+            second.cumulative_usage(first_operation, &second_dispatch)?,
+            SwarmUsage::default()
         );
         Ok(())
     }
