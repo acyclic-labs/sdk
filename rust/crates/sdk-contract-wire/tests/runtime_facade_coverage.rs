@@ -11,10 +11,31 @@ fn cancellation_name(cancellation: CancellationKind) -> &'static str {
     }
 }
 
+fn java_strings(values: &[&str]) -> String {
+    let values = values
+        .iter()
+        .map(|value| format!("{:?}", value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("List.of({values})")
+}
+
+fn csharp_strings(values: &[&str]) -> String {
+    if values.is_empty() {
+        return "Array.Empty<string>()".to_owned();
+    }
+    let values = values
+        .iter()
+        .map(|value| format!("{value:#?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("new[] {{ {values} }}")
+}
+
 fn rendered_operation_line<'a>(source: &'a str, rpc: &str, language: &str) -> &'a str {
     source
         .lines()
-        .find(|line| line.contains(rpc))
+        .find(|line| line.contains(&format!("\"{rpc}\"")) || line.contains(&format!("'{rpc}'")))
         .unwrap_or_else(|| panic!("{language} facade omitted Rust-authority RPC {rpc}"))
 }
 
@@ -88,20 +109,26 @@ fn every_rendered_operation_preserves_rust_policy_metadata() {
                     }
                     FacadeLanguage::Java => {
                         assert!(line.contains(&format!(
-                            "new Operation({}, {}, {}, {:?})",
+                            "new Operation({}, {}, {}, {:?}, {}, {}, {})",
                             operation.client_streaming,
                             operation.server_streaming,
                             operation.bearer_auth,
                             cancellation,
+                            java_strings(operation.capabilities),
+                            java_strings(operation.errors),
+                            java_strings(operation.validations),
                         )));
                     }
                     FacadeLanguage::Csharp => {
                         assert!(line.contains(&format!(
-                            "new({}, {}, {}, {:#?})",
+                            "new({}, {}, {}, {:#?}, {}, {}, {})",
                             operation.client_streaming,
                             operation.server_streaming,
                             operation.bearer_auth,
                             cancellation,
+                            csharp_strings(operation.capabilities),
+                            csharp_strings(operation.errors),
+                            csharp_strings(operation.validations),
                         )));
                     }
                 }

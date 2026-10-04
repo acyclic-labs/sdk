@@ -223,6 +223,58 @@ fn authority_manifest_binds_rust_models_without_authored_proto_inputs() {
     }
     assert!(manifest.contains("\"descriptor_role\": \"canonical_schema\""));
     assert!(
+        !manifest.contains("\"handshake_descriptor\": null"),
+        "every family must bind an explicit immutable handshake descriptor"
+    );
+    for (path, bytes) in [
+        (
+            "rust/crates/actors/src/generated/acyclic-actors-v1.bin",
+            include_bytes!("../../actors/src/generated/acyclic-actors-v1.bin").as_slice(),
+        ),
+        (
+            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            include_bytes!("../../stream/proto/stream/v2/stream_descriptor.bin").as_slice(),
+        ),
+        (
+            "rust/crates/objects/src/generated/acyclic-objects-v2.bin",
+            include_bytes!("../../objects/src/generated/acyclic-objects-v2.bin").as_slice(),
+        ),
+        (
+            "rust/crates/workers/src/generated/acyclic-workers-v1.bin",
+            include_bytes!("../../workers/src/generated/acyclic-workers-v1.bin").as_slice(),
+        ),
+        (
+            "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
+            include_bytes!("../../filesystem/src/generated/acyclic-filesystem-v2.bin").as_slice(),
+        ),
+        (
+            "rust/crates/harness/src/generated/harness-archived-v2.bin",
+            include_bytes!("../../harness/src/generated/harness-archived-v2.bin").as_slice(),
+        ),
+        (
+            "rust/crates/sdk-contract-wire/tests/fixtures/protocol-v1.descriptor.bin",
+            include_bytes!("fixtures/protocol-v1.descriptor.bin").as_slice(),
+        ),
+        (
+            "rust/crates/inference/inference_descriptor.bin",
+            include_bytes!("../../inference/inference_descriptor.bin").as_slice(),
+        ),
+        (
+            "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
+            include_bytes!("../../machines/src/generated/acyclic-machines-v1.bin").as_slice(),
+        ),
+    ] {
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        assert!(
+            manifest.contains(&format!("\"handshake_descriptor\": \"{path}\"")),
+            "missing handshake descriptor identity: {path}"
+        );
+        assert!(
+            manifest.contains(&format!("\"handshake_descriptor_sha256\": \"{digest}\"")),
+            "missing handshake descriptor digest: {path}"
+        );
+    }
+    assert!(
         !manifest.contains("proto/inference") && !manifest.contains("proto/machines"),
         "generation authority must not consult authored proto paths"
     );

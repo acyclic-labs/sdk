@@ -65,6 +65,18 @@ const INFERENCE_ARCHIVED_FIXTURE: &[u8] =
     include_bytes!("../../tests/fixtures/inference-v1.descriptor.bin");
 const MACHINES_ARCHIVED_FIXTURE: &[u8] =
     include_bytes!("../../tests/fixtures/machines-v1.descriptor.bin");
+const ACTORS_ARCHIVED_DESCRIPTOR: &[u8] =
+    include_bytes!("../../../actors/src/generated/acyclic-actors-v1.bin");
+const WORKERS_ARCHIVED_DESCRIPTOR: &[u8] =
+    include_bytes!("../../../workers/src/generated/acyclic-workers-v1.bin");
+const OBJECTS_ARCHIVED_DESCRIPTOR: &[u8] =
+    include_bytes!("../../../objects/src/generated/acyclic-objects-v2.bin");
+const STREAM_ARCHIVED_DESCRIPTOR: &[u8] =
+    include_bytes!("../../../stream/proto/stream/v2/stream_descriptor.bin");
+const FILESYSTEM_ARCHIVED_DESCRIPTOR: &[u8] =
+    include_bytes!("../../../filesystem/src/generated/acyclic-filesystem-v2.bin");
+const PROTOCOL_ARCHIVED_FIXTURE: &[u8] =
+    include_bytes!("../../tests/fixtures/protocol-v1.descriptor.bin");
 
 // Keep the provenance revision tied to the Rust model itself.  A Git commit
 // can remain unchanged while a worktree is edited, so a commit-only marker is
@@ -535,19 +547,66 @@ fn reject_extra_artifacts(out: &Path) -> Result<(), Box<dyn Error>> {
 /// the new bytes explicitly.
 fn authority_manifest(out: &Path) -> Result<String, Box<dyn Error>> {
     let families = [
-        (PROTO_PATH, DESCRIPTOR_PATH),
-        (STREAM_PROTO_PATH, STREAM_DESCRIPTOR_PATH),
-        (OBJECTS_PROTO_PATH, OBJECTS_DESCRIPTOR_PATH),
-        (WORKERS_PROTO_PATH, WORKERS_DESCRIPTOR_PATH),
-        (FILESYSTEM_PROTO_PATH, FILESYSTEM_DESCRIPTOR_PATH),
-        (HARNESS_PROTO_PATH, HARNESS_DESCRIPTOR_PATH),
-        (PROTOCOL_PROTO_PATH, PROTOCOL_DESCRIPTOR_PATH),
-        (INFERENCE_PROTO_PATH, INFERENCE_DESCRIPTOR_PATH),
-        (MACHINES_PROTO_PATH, MACHINES_DESCRIPTOR_PATH),
+        (
+            PROTO_PATH,
+            DESCRIPTOR_PATH,
+            "rust/crates/actors/src/generated/acyclic-actors-v1.bin",
+            ACTORS_ARCHIVED_DESCRIPTOR,
+        ),
+        (
+            STREAM_PROTO_PATH,
+            STREAM_DESCRIPTOR_PATH,
+            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            STREAM_ARCHIVED_DESCRIPTOR,
+        ),
+        (
+            OBJECTS_PROTO_PATH,
+            OBJECTS_DESCRIPTOR_PATH,
+            "rust/crates/objects/src/generated/acyclic-objects-v2.bin",
+            OBJECTS_ARCHIVED_DESCRIPTOR,
+        ),
+        (
+            WORKERS_PROTO_PATH,
+            WORKERS_DESCRIPTOR_PATH,
+            "rust/crates/workers/src/generated/acyclic-workers-v1.bin",
+            WORKERS_ARCHIVED_DESCRIPTOR,
+        ),
+        (
+            FILESYSTEM_PROTO_PATH,
+            FILESYSTEM_DESCRIPTOR_PATH,
+            "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
+            FILESYSTEM_ARCHIVED_DESCRIPTOR,
+        ),
+        (
+            HARNESS_PROTO_PATH,
+            HARNESS_DESCRIPTOR_PATH,
+            "rust/crates/harness/src/generated/harness-archived-v2.bin",
+            HARNESS_ARCHIVED_FIXTURE,
+        ),
+        (
+            PROTOCOL_PROTO_PATH,
+            PROTOCOL_DESCRIPTOR_PATH,
+            "rust/crates/sdk-contract-wire/tests/fixtures/protocol-v1.descriptor.bin",
+            PROTOCOL_ARCHIVED_FIXTURE,
+        ),
+        (
+            INFERENCE_PROTO_PATH,
+            INFERENCE_DESCRIPTOR_PATH,
+            "rust/crates/inference/inference_descriptor.bin",
+            INFERENCE_ARCHIVED_FIXTURE,
+        ),
+        (
+            MACHINES_PROTO_PATH,
+            MACHINES_DESCRIPTOR_PATH,
+            "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
+            MACHINES_ARCHIVED_FIXTURE,
+        ),
     ];
     let source_revision = model_source_revision();
     let mut entries = String::new();
-    for (index, (source, descriptor)) in families.iter().enumerate() {
+    for (index, (source, descriptor, handshake_descriptor, handshake_bytes)) in
+        families.iter().enumerate()
+    {
         let source_bytes = fs::read(out.join(source))?;
         let descriptor_bytes = fs::read(out.join(descriptor))?;
         if index != 0 {
@@ -555,10 +614,11 @@ fn authority_manifest(out: &Path) -> Result<String, Box<dyn Error>> {
         }
         let (rpc_shapes, rpc_methods) = rpc_shapes_json(&descriptor_bytes)?;
         entries.push_str(&format!(
-            "    {{\n      \"source\": \"{source}\",\n      \"source_sha256\": \"{}\",\n      \"descriptor\": \"{descriptor}\",\n      \"descriptor_sha256\": \"{}\",\n      \"schema_descriptor\": \"{descriptor}\",\n      \"schema_descriptor_sha256\": \"{}\",\n      \"descriptor_role\": \"canonical_schema\",\n      \"handshake_descriptor\": null,\n      \"handshake_descriptor_role\": \"preserved_runtime_fixture\",\n      \"rpc_shapes\": {},\n      \"rpc_methods\": {}\n    }}",
+            "    {{\n      \"source\": \"{source}\",\n      \"source_sha256\": \"{}\",\n      \"descriptor\": \"{descriptor}\",\n      \"descriptor_sha256\": \"{}\",\n      \"schema_descriptor\": \"{descriptor}\",\n      \"schema_descriptor_sha256\": \"{}\",\n      \"descriptor_role\": \"canonical_schema\",\n      \"handshake_descriptor\": \"{handshake_descriptor}\",\n      \"handshake_descriptor_sha256\": \"{}\",\n      \"handshake_descriptor_role\": \"preserved_runtime_fixture\",\n      \"rpc_shapes\": {},\n      \"rpc_methods\": {}\n    }}",
             sha256_hex(&source_bytes),
             sha256_hex(&descriptor_bytes),
             sha256_hex(&descriptor_bytes),
+            sha256_hex(handshake_bytes),
             rpc_shapes,
             rpc_methods,
         ));

@@ -172,6 +172,7 @@ try {
     $sourcePath = Join-Path $mutatedRoot "rust/crates/sdk-contract-wire/src/lib.rs"
     $source = Get-Content -LiteralPath $sourcePath -Raw
     $source = Replace-Once $source '"memoryBytes"' '"memoryBytesMutation"' "field JSON identity mutation"
+    $source = Replace-Once $source '&["actors.read"]' '&["actors.readMutation"]' "operation capability mutation"
     $source = Replace-Once $source '"ActorLimits" => "Resource and checkpoint limits for an actor."' '"ActorLimits" => "Resource and checkpoint limits for an actor (mutation probe)."' "message documentation mutation"
     $source = Replace-Once $source 'path: "/v1/actors/create",' 'path: "/v1/actors/create-mutation",' "route mutation"
     Set-Content -LiteralPath $sourcePath -Value $source -NoNewline
@@ -182,6 +183,7 @@ try {
     Assert-Contains $baselineSourcePath '"memoryBytes"' "detached baseline Rust model"
     Assert-NotContains $baselineSourcePath '"memoryBytesMutation"' "detached baseline Rust model"
     Assert-Contains $sourcePath '"memoryBytesMutation"' "detached mutated Rust model"
+    Assert-Contains $sourcePath 'actors.readMutation' "detached mutated Rust policy model"
 
     Write-Host "Generating mutated projections from the detached Rust model copy..."
     Invoke-WireGeneration $mutatedRoot $mutatedTarget $mutatedWire $mutatedProducts
@@ -217,7 +219,11 @@ try {
         "dotnet/GeneratedRemotePolicy.cs"
     )
     foreach ($relative in $policyPaths) {
-        Assert-Different (Join-Path $baselineProducts $relative) (Join-Path $mutatedProducts $relative) "generated policy $relative"
+        $baselinePolicy = Join-Path $baselineProducts $relative
+        $mutatedPolicy = Join-Path $mutatedProducts $relative
+        Assert-Different $baselinePolicy $mutatedPolicy "generated policy $relative"
+        Assert-Contains $baselinePolicy '"actors.read"' "baseline Rust capability in $relative"
+        Assert-Contains $mutatedPolicy '"actors.readMutation"' "mutated Rust capability in $relative"
     }
 
     $baselineFixtures = @{}
