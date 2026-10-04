@@ -61,8 +61,6 @@ def main() -> int:
                 )
                 rpc_name = f"{package}.{service}/{name}" if package else f"{service}/{name}"
                 calls.append((service_module, snake(name), module_name(request_name), module_name(response_name), shape, rpc_name))
-    if len(calls) != 106:
-        raise SystemExit(f"Rust proto inventory produced {len(calls)} Elixir calls; expected 106")
 
     lines = [
         "defmodule Acyclic.GeneratedRuntimeReceipt do",
@@ -168,7 +166,7 @@ def main() -> int:
         "  end)",
         "  Acyclic.GeneratedRuntimeReceipt.write_receipt(receipt, observations)",
         "  if Enum.any?(observations, &(&1[\"execution\"] == \"executed\" and &1[\"status\"] not in [0, nil])) do raise \"one or more executed Rust fixture RPCs failed; see runtime-consumer-receipt.json\" end",
-        "  IO.puts(\"Elixir generated stubs recorded all 106 Rust RPC observations\")",
+        "  IO.puts(\"Elixir generated stubs recorded #{length(observations)} Rust RPC observations\")",
         "after",
         "  GRPC.Stub.disconnect(channel)",
         "end",

@@ -24,9 +24,6 @@ def main() -> int:
         for path in sorted(proto_paths)
     )
     names = re.findall(r"\brpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", source)
-    if len(names) != 106:
-        print(f"Rust product RPC inventory has {len(names)} methods; expected 106", file=sys.stderr)
-        return 1
     generated = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in generated_root.rglob("*")

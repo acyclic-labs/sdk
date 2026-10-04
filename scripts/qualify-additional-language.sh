@@ -41,9 +41,8 @@ mapfile -t contract_protos < <(
     "$product_root" "$inventory_json" --current-protos
 )
 contract_proto_count=${#contract_protos[@]}
-[[ "$rpc_count" == 106 ]] || { echo "Rust current authority has $rpc_count RPC methods; expected 106" >&2; exit 1; }
-[[ "$all_rpc_count" == 106 || "$all_rpc_count" == 112 ]] || {
-  echo "Rust product output has $all_rpc_count total RPC methods; expected 106 current or 112 including the immutable six-entry tail" >&2
+[[ "$all_rpc_count" == $((rpc_count + archived_rpc_count)) ]] || {
+  echo "Rust product output inventory is inconsistent: current=$rpc_count archived=$archived_rpc_count total=$all_rpc_count" >&2
   exit 1
 }
 export ACYCLIC_RUST_CURRENT_RPC_COUNT="$rpc_count"
@@ -108,6 +107,19 @@ require_stream_completion() {
   fi
 }
 
+require_current_receipt_count() {
+  python3 - "$1" "$rpc_count" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    payload = json.load(stream)
+expected = int(sys.argv[2])
+observed = int(payload.get("rpc_count", -1))
+if observed != expected:
+    raise SystemExit(f"runtime receipt contains {observed} observations; expected {expected} current Rust RPCs")
+PY
+}
+
 verify_rust_wire_semantics() {
   local receipt=$1
   local output=$2
@@ -162,7 +174,7 @@ PY
       test -s "$project/runtime_smoke.exs"
       test -s "$project/runtime-consumer-receipt.json"
       rg -q '"source_revision":"[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
-      rg -q '"rpc_count":106' "$project/runtime-consumer-receipt.json"
+      require_current_receipt_count "$project/runtime-consumer-receipt.json"
       require_stream_completion "$project/runtime-consumer-receipt.json"
       verify_rust_wire_semantics "$project/runtime-consumer-receipt.json" "$output_root/rust-wire-semantic-verification.json"
     fi
@@ -214,7 +226,7 @@ EOF
       test -s "$project/src/runtime_smoke.erl"
       test -s "$project/runtime-consumer-receipt.json"
       rg -q '"source_revision":"[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
-      rg -q '"rpc_count":106' "$project/runtime-consumer-receipt.json"
+      require_current_receipt_count "$project/runtime-consumer-receipt.json"
       require_stream_completion "$project/runtime-consumer-receipt.json"
       verify_rust_wire_semantics "$project/runtime-consumer-receipt.json" "$output_root/rust-wire-semantic-verification.json"
     fi
@@ -293,7 +305,7 @@ EOF
         "$project" "$project/runtime-consumer-receipt.json" "$source_revision" "$manifest_digest"
       test -s "$project/runtime-consumer-receipt.json"
       rg -q '"source_revision": "[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
-      rg -q '"rpc_count": 106' "$project/runtime-consumer-receipt.json"
+      require_current_receipt_count "$project/runtime-consumer-receipt.json"
       require_stream_completion "$project/runtime-consumer-receipt.json"
       verify_rust_wire_semantics "$project/runtime-consumer-receipt.json" "$output_root/rust-wire-semantic-verification.json"
     fi

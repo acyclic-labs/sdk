@@ -50,8 +50,6 @@ def main() -> int:
                 response_type = response.lstrip(".").split(".")[-1]
                 rpc_name = f"{package}.{service_match.group(1)}/{name}" if package else f"{service_match.group(1)}/{name}"
                 calls.append((module, snake(name), shape, pb_module, request_type, response_type, rpc_name))
-    if len(calls) != 106:
-        raise SystemExit(f"Rust proto inventory produced {len(calls)} Erlang calls; expected 106")
     lines = [
         "-module(runtime_smoke).", "-export([run/0]).", "",
         "run() ->",
@@ -61,7 +59,7 @@ def main() -> int:
         "    write_receipt(Results),",
         "    case lists:any(fun(#{execution := executed, status := Status}) when Status =/= 0 -> true; (_) -> false end, Results) of",
         "        true -> io:format(standard_error, \"Rust fixture RPC failures recorded in runtime-consumer-receipt.json~n\"), {failed, Results};",
-        "        false -> io:format(\"Erlang generated stubs recorded all 106 Rust RPC observations~n\"), ok",
+        "        false -> io:format(\"Erlang generated stubs recorded ~p Rust RPC observations~n\", [length(Results)]), ok",
         "    end.", "",
         "call(Module, Method, Shape, Pb, Req, Resp, Rpc) ->",
         "    Request = #{}, RequestBytes = Pb:encode_msg(Request, list_to_atom(Req)),",

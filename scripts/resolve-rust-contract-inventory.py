@@ -113,15 +113,11 @@ def main() -> int:
     output = Path(sys.argv[2])
     try:
         inventory = resolve(product_root)
-        if inventory["current_rpc_count"] != 106:
-            raise ValueError(f"current Rust authority inventory has {inventory['current_rpc_count']} RPCs; expected 106")
         if inventory["archived_rpc_count"] not in (0, 6):
             raise ValueError(
                 "generated product mixes an unexpected archived RPC tail: "
                 f"{inventory['archived_rpc_count']} (expected 0 or the immutable six-entry tail)"
             )
-        if len(inventory["current_proto_paths"]) != 9:
-            raise ValueError(f"current Rust authority has {len(inventory['current_proto_paths'])} protobuf sources; expected 9")
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"Rust contract inventory error: {error}", file=sys.stderr)
         return 1

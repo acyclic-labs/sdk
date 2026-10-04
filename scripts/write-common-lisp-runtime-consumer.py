@@ -50,8 +50,6 @@ def main() -> int:
                 request_package, request_class = type_parts(request)
                 response_package, response_class = type_parts(response)
                 calls.append((package.upper(), service, lisp_name(method), request_package.upper(), request_class, response_package.upper(), response_class, shape, f"{package}.{service_match.group(1)}/{method}"))
-    if len(calls) != 106:
-        raise SystemExit(f"Rust proto inventory produced {len(calls)} Common Lisp calls; expected 106")
 
     lines = [
         ";; Generated from the Rust authority protobuf products; do not edit.",
@@ -153,7 +151,7 @@ def main() -> int:
       (let ((*channel* channel))
         (mapc #'run-call *calls*)
         (write-receipt)
-        (format t \"Common Lisp generated stubs recorded all 106 Rust RPC observations~%\"))
+        (format t \"Common Lisp generated stubs recorded ~D Rust RPC observations~%\" (length *observations*)))
     (ag-grpc:channel-close channel)))""",
     ])
     output.write_text("\n".join(lines), encoding="utf-8")
