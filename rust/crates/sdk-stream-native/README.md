@@ -10,7 +10,7 @@ are returned as decimal strings so Node and Bun callers cannot lose `u64` precis
 `NativeStreamCancellation` handle wakes a Rust `follow` operation and lets the canonical gRPC
 stream be dropped from Rust.
 
-The `npm/` fixtures describe the six platform companion packages expected by a later package
+The `npm/` fixtures describe the eight platform companion packages expected by a later package
 publisher. The native `.node` file is produced by the N-API build for the matching target and is
 loaded by each fixture's `index.js`.
 

@@ -27,6 +27,18 @@ const TARGETS: &[(&str, &str, &str, &str)] = &[
         "@acyclic-labs/stream-linux-arm64-gnu",
     ),
     (
+        "linux-x64-musl",
+        "linux",
+        "x64",
+        "@acyclic-labs/stream-linux-x64-musl",
+    ),
+    (
+        "linux-arm64-musl",
+        "linux",
+        "arm64",
+        "@acyclic-labs/stream-linux-arm64-musl",
+    ),
+    (
         "darwin-x64",
         "darwin",
         "x64",
