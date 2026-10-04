@@ -40,6 +40,13 @@ impl ProcessTree {
         })
     }
 
+    /// Returns the direct child identity while the tree retains its launch
+    /// handle. Native callers use this value only as an observation; cleanup
+    /// remains authorized by the retained process-group or Job guard.
+    pub fn id(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
+    }
+
     /// Polls the direct child without releasing ownership of its descendants.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child
@@ -227,6 +234,24 @@ mod tests {
             fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
             return;
         }
+        if mode == "orphan" {
+            let mut grandchild = Command::new(std::env::current_exe().expect("test executable"));
+            grandchild
+                .args(["--exact", "process_tree::tests::process_tree_helper"])
+                .env(MODE, "grandchild")
+                .env(ROOT, &root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let _ = grandchild.spawn().expect("spawn orphan descendant");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(root.join("grandchild-ready").exists());
+            fs::write(root.join("orphan-ready"), b"ready").expect("orphan ready");
+            return;
+        }
         assert_eq!(mode, "child");
         let mut grandchild = Command::new(std::env::current_exe().expect("test executable"));
         grandchild
@@ -264,6 +289,32 @@ mod tests {
         }
         assert!(temporary.path().join("tree-ready").exists());
         tree.terminate().expect("terminate process tree");
+        thread::sleep(Duration::from_secs(1));
+        assert!(!temporary.path().join("escaped").exists());
+    }
+
+    #[test]
+    fn termination_contains_descendants_after_root_exit() {
+        let temporary = tempfile::tempdir().expect("temporary process-tree directory");
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args(["--exact", "process_tree::tests::process_tree_helper"])
+            .env(MODE, "orphan")
+            .env(ROOT, temporary.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn root-exits-first tree");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !temporary.path().join("orphan-ready").exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(temporary.path().join("orphan-ready").exists());
+        while tree.try_wait().expect("observe root exit").is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(tree.try_wait().expect("observe root exit").is_some());
+        tree.terminate().expect("terminate after root exit");
         thread::sleep(Duration::from_secs(1));
         assert!(!temporary.path().join("escaped").exists());
     }

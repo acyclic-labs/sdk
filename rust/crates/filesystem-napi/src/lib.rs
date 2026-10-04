@@ -44,13 +44,14 @@ use acyclic_fs::{
 };
 use acyclic_fs::{Mount as WorkspaceMount, MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
-use acyclic_native_runtime::ProcessTree;
+use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -186,6 +187,63 @@ impl NativeProcessOwner {
         Ok(token.to_string())
     }
 
+    /// Spawns an explicitly described process inside a native ownership
+    /// boundary before it is resumed. Environment inheritance is disabled;
+    /// callers must provide every variable the process may receive.
+    #[napi]
+    pub fn spawn(
+        &self,
+        executable: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        environment: Vec<String>,
+    ) -> Result<NativeProcessSpawn> {
+        if executable.trim().is_empty() {
+            return Err(napi_error("native process executable must be non-empty"));
+        }
+        let mut command = Command::new(&executable);
+        command.args(args);
+        command.env_clear();
+        for entry in environment {
+            let Some((key, value)) = entry.split_once('=') else {
+                return Err(napi_error(
+                    "native process environment entries must be KEY=VALUE",
+                ));
+            };
+            if key.is_empty() || key.contains('\0') || value.contains('\0') {
+                return Err(napi_error(
+                    "native process environment contains an invalid entry",
+                ));
+            }
+            command.env(key, value);
+        }
+        if let Some(cwd) = cwd {
+            if cwd.trim().is_empty() {
+                return Err(napi_error(
+                    "native process working directory must be non-empty",
+                ));
+            }
+            command.current_dir(cwd);
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let tree = spawn_process_tree(&mut command).map_err(napi_error)?;
+        let pid = tree
+            .id()
+            .ok_or_else(|| napi_error("native process did not expose a PID"))?;
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        self.trees
+            .lock()
+            .map_err(|_| napi_error("native process owner state poisoned"))?
+            .insert(token, tree);
+        Ok(NativeProcessSpawn {
+            token: token.to_string(),
+            pid,
+        })
+    }
+
     /// Terminates the owned process tree and retires its token on proof.
     #[napi]
     pub fn terminate(&self, token: String) -> NativeProcessTermination {
@@ -212,6 +270,15 @@ impl NativeProcessOwner {
             Err(error) => NativeProcessTermination::unknown(&error.to_string()),
         }
     }
+}
+
+#[napi(object)]
+/// Native process identity returned after atomic platform ownership.
+pub struct NativeProcessSpawn {
+    /// Opaque operation identity retained by the native owner.
+    pub token: String,
+    /// Direct root PID for observation only.
+    pub pid: u32,
 }
 
 #[napi(object)]

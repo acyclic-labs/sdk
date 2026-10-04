@@ -10,6 +10,12 @@ export type NativeProcessTermination =
   | { readonly kind: "timeout"; readonly pid: number; readonly phase: "command" | "pipes" }
   | { readonly kind: "unknown"; readonly pid: number; readonly reason: string; readonly exitCode?: number | null };
 
+/** Identity returned by the native suspended-spawn path. */
+export interface NativeProcessLaunch {
+  readonly token: string;
+  readonly pid: number;
+}
+
 /**
  * Node-facing owner supplied by the native companion.
  *
@@ -23,12 +29,19 @@ export interface NativeProcessOwnerBinding {
   readonly version: string;
   readonly spawn: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly terminate: (child: ChildProcess, graceMs?: number) => Promise<NativeProcessTermination>;
+  /** Launches without inheriting environment or host stdio. */
+  readonly launch?: (
+    executable: string,
+    args: readonly string[],
+    options: SpawnOptions,
+  ) => NativeProcessLaunch;
 }
 
 /** Structural owner contract accepted by GraphCoder's process bridge. */
 export interface NativeProcessOwner {
   readonly spawn: NativeProcessOwnerBinding["spawn"];
   readonly terminate: NativeProcessOwnerBinding["terminate"];
+  readonly launch?: NativeProcessOwnerBinding["launch"];
 }
 
 /**
@@ -53,5 +66,6 @@ export function createNativeProcessOwner(binding: unknown): NativeProcessOwner {
   return Object.freeze({
     spawn: candidate.spawn,
     terminate: candidate.terminate,
+    ...(typeof candidate.launch === "function" ? { launch: candidate.launch } : {}),
   });
 }

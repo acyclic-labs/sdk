@@ -1,5 +1,6 @@
 import { arch, platform } from "node:process";
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
   EngineCapabilities,
   FsChangeSet,
@@ -87,7 +88,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
-import { createNativeProcessOwner, type NativeProcessOwner } from "./native-process.js";
+import { createNativeProcessOwner, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
   validateJoinOptions, validateWorkspaceRebaseOptions } from "./workspace-results.js";
@@ -217,6 +218,7 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
   const candidate = binding as NativeBindings & {
     readonly NativeProcessOwner?: new () => {
       adopt(pid: number): string;
+      spawn(executable: string, args: readonly string[], cwd: string | null, environment: readonly string[]): NativeProcessLaunch;
       terminate(token: string): { kind: string; reason?: string };
     };
   };
@@ -228,6 +230,17 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
   return createNativeProcessOwner({
     capability: "acyclic.native-process-owner.v1",
     version: "0.2.0",
+    launch(executable: string, args: readonly string[], options: SpawnOptions): NativeProcessLaunch {
+      const environment = Object.entries(options.env ?? {}).flatMap(([key, value]) =>
+        value === undefined ? [] : [`${key}=${String(value)}`],
+      );
+      const cwd = options.cwd === undefined
+        ? null
+        : typeof options.cwd === "string"
+          ? options.cwd
+          : fileURLToPath(options.cwd);
+      return nativeOwner.spawn(executable, [...args], cwd, environment);
+    },
     spawn(executable: string, args: readonly string[], options: SpawnOptions): ChildProcess {
       // Detached roots have a stable Unix process group for the native
       // hand-off. Windows uses the same hand-off to assign the root to a Job.

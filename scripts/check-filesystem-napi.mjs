@@ -1,5 +1,5 @@
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -105,7 +105,57 @@ async function qualify(bindingPath, engineRoot) {
     throw new Error("N-API change set omitted the authored file");
   }
   fs.cancel();
+  await qualifyProcessOwner(binding);
   console.log(`acyclic-fs N-API ABI passed on ${process.platform}-${process.arch}`);
+}
+
+async function qualifyProcessOwner(binding) {
+  if (typeof binding.NativeProcessOwner !== "function") {
+    throw new Error("N-API companion did not export NativeProcessOwner");
+  }
+  const owner = new binding.NativeProcessOwner();
+  const directory = await mkdtemp(join(tmpdir(), "acyclic-native-owner-"));
+  const pidFile = join(directory, "grandchild.pid");
+  const rootExitFile = join(directory, "root-exit");
+  const grandchild = "const fs=require('node:fs'); fs.writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 100000);";
+  const root = `const fs=require('node:fs'); const {spawn}=require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}, process.argv[1]], { detached: true, windowsHide: true, stdio: 'ignore', env: {} }); fs.writeFileSync(process.argv[2], 'exited');`;
+  try {
+    const environment = [
+      `PATH=${process.env.PATH ?? ""}`,
+      ...(process.platform === "win32" ? [`SystemRoot=${process.env.SystemRoot ?? ""}`] : []),
+    ];
+    const spawned = owner.spawn(process.execPath, ["-e", root, pidFile, rootExitFile], null, environment);
+    const deadline = Date.now() + 5_000;
+    while (!exists(pidFile) && Date.now() < deadline) await delay(20);
+    if (!exists(pidFile)) throw new Error("native process owner fixture did not start its descendant");
+    while (!exists(rootExitFile) && Date.now() < deadline) await delay(20);
+    if (!exists(rootExitFile)) throw new Error("native process owner fixture root did not exit");
+    const descendantPid = Number(await readFile(pidFile, "utf8"));
+    if (!Number.isSafeInteger(descendantPid) || descendantPid <= 0) throw new Error("native process owner fixture wrote an invalid descendant PID");
+    let result;
+    while (Date.now() < deadline) {
+      result = owner.terminate(spawned.token);
+      if (result.kind === "terminated") break;
+      await delay(20);
+    }
+    if (result?.kind !== "terminated") throw new Error(`native process owner did not prove cleanup: ${JSON.stringify(result)}`);
+    if (processAlive(descendantPid)) throw new Error("native process owner left a root-exits-first descendant alive");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+function exists(path) {
+  return existsSync(path);
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function qualifyAdapter(bindingPath, engineRoot) {

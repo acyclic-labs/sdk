@@ -873,6 +873,12 @@ export declare class NativeProcessOwner {
   constructor()
   /** Adopts a currently live host child and returns its opaque owner token. */
   adopt(pid: number): string
+  /**
+   * Spawns an explicitly described process inside a native ownership
+   * boundary before it is resumed. Environment inheritance is disabled;
+   * callers must provide every variable the process may receive.
+   */
+  spawn(executable: string, args: Array<string>, cwd: string | undefined | null, environment: Array<string>): NativeProcessSpawn
   /** Terminates the owned process tree and retires its token on proof. */
   terminate(token: string): NativeProcessTermination
 }
@@ -1978,6 +1984,14 @@ export interface NativePathComponent {
   encoding: string
   /** Exact component bytes in the declared representation. */
   bytes: Buffer
+}
+
+/** Native process identity returned after atomic platform ownership. */
+export interface NativeProcessSpawn {
+  /** Opaque operation identity retained by the native owner. */
+  token: string
+  /** Direct root PID for observation only. */
+  pid: number
 }
 
 /** Typed native process-tree termination observation. */
