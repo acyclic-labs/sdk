@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "source_commit": "024e26e348fa619225cd6409c1674d4cae7e714c",
+  "source_tree": "4e19c2ca44c1d4da81d3833499c84fabb958fc57",
+  "suite": "rust/crates/harness/tests/model_fork_boundary.rs",
+  "suite_blob": "c66d046a872628f2f32ab766882c4e52a7db3a19",
+  "platform": "Windows native execution",
+  "features": [
+    "filesystem-local"
+  ],
+  "configuration": "No RUST_MIN_STACK; test-only dedicated 16 MiB thread and current-thread Tokio runtime",
+  "passed": 2,
+  "failed": 1,
+  "ignored": 0,
+  "exit_code": 101,
+  "failure": "initial root conversation failed: child rejection follow-up failed: unauthorized: journal event refers to another private volume",
+  "artifact": {
+    "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\024e26e34\\model_fork_boundary-8cacd7eb8492e452.exe",
+    "sha256": "641be878facac4656bc878e060a7a488d038e618fa7dc8549eed4ec5fad2b36b"
+  },
+  "log": {
+    "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\024e26e34\\context-boundary-dedicated-stack-024e.txt",
+    "sha256": "4a79bc053ead651f3efbbae43c28e3f83d53c57b2c5e8c2eb185970768c08f15"
+  },
+  "scope": "Default invocation now executes all cases without fixture stack overflow. No production stack changes; recursive authority failure remains unmet."
+}
