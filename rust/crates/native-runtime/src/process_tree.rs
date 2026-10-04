@@ -127,7 +127,11 @@ impl Drop for ProcessTree {
 
 #[cfg(unix)]
 mod platform {
+    #[cfg(target_os = "linux")]
+    use std::ffi::CString;
     use std::io;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Child, Command};
 
@@ -147,27 +151,54 @@ mod platform {
 
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Guard)> {
         command.process_group(0);
-        let mut child = command.spawn()?;
+        #[cfg(target_os = "linux")]
+        let cgroup = match configured_cgroup_root() {
+            Some(root) => {
+                let value = Cgroup::prepare(&root)?;
+                let procs_path = value.procs_path()?;
+                // The child has not executed user code when this hook runs.
+                // Moving it into the cgroup here closes the post-spawn fork
+                // window that made parent-side attachment unsafe.
+                unsafe {
+                    command.pre_exec(move || attach_current_process(&procs_path));
+                }
+                Some(value)
+            }
+            None => None,
+        };
+        let mut child = match command.spawn() {
+            Ok(value) => value,
+            Err(error) => {
+                #[cfg(target_os = "linux")]
+                if let Some(value) = &cgroup {
+                    value.discard();
+                }
+                return Err(error);
+            }
+        };
         let process_group = libc::pid_t::try_from(child.id())
-            .map_err(|_| io::Error::other("child process id does not fit pid_t"))?;
+            .map_err(|_| io::Error::other("child process id does not fit pid_t"));
+        let process_group = match process_group {
+            Ok(value) => value,
+            Err(error) => {
+                stop_child(&mut child);
+                #[cfg(target_os = "linux")]
+                if let Some(value) = &cgroup {
+                    value.discard();
+                }
+                return Err(error);
+            }
+        };
         #[cfg(target_os = "linux")]
         let root_start_time = match process_start_time(child.id()) {
             Ok(value) => Some(value),
             Err(error) => {
                 stop_child(&mut child);
+                if let Some(value) = &cgroup {
+                    value.discard();
+                }
                 return Err(error);
             }
-        };
-        #[cfg(target_os = "linux")]
-        let cgroup = match configured_cgroup_root() {
-            Some(root) => match Cgroup::assign(&root, child.id()) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    stop_child(&mut child);
-                    return Err(error);
-                }
-            },
-            None => None,
         };
         Ok((
             child,
@@ -231,10 +262,39 @@ mod platform {
             .map_err(|_| io::Error::other("process identity start time is malformed"))
     }
 
-    #[cfg(target_os = "linux")]
     fn stop_child(child: &mut Child) {
         let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
         let _ = child.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn attach_current_process(path: &CString) -> io::Result<()> {
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let pid = unsafe { libc::getpid() } as u32;
+        let mut digits = [0_u8; 20];
+        let mut end = digits.len();
+        let mut value = pid;
+        loop {
+            end -= 1;
+            digits[end] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        let bytes = &digits[end..];
+        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        let close_result = unsafe { libc::close(fd) };
+        if written != bytes.len() as isize {
+            return Err(io::Error::last_os_error());
+        }
+        if close_result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
@@ -244,7 +304,7 @@ mod platform {
 
     #[cfg(target_os = "linux")]
     impl Cgroup {
-        fn assign(root: &Path, pid: u32) -> io::Result<Self> {
+        fn prepare(root: &Path) -> io::Result<Self> {
             if !root.is_dir() {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -252,13 +312,9 @@ mod platform {
                 ));
             }
             for suffix in 0..100_u32 {
-                let path = root.join(format!("acyclic-process-{pid}-{suffix}"));
+                let path = root.join(format!("acyclic-process-{}-{suffix}", std::process::id()));
                 match create_dir(&path) {
                     Ok(()) => {
-                        if let Err(error) = write(path.join("cgroup.procs"), pid.to_string()) {
-                            let _ = remove_dir(&path);
-                            return Err(error);
-                        }
                         return Ok(Self { path });
                     }
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -269,6 +325,16 @@ mod platform {
                 io::ErrorKind::AlreadyExists,
                 "could not allocate a unique process cgroup",
             ))
+        }
+
+        fn procs_path(&self) -> io::Result<CString> {
+            CString::new(self.path.join("cgroup.procs").as_os_str().as_bytes()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "cgroup path contains NUL")
+            })
+        }
+
+        fn discard(&self) {
+            let _ = remove_dir(&self.path);
         }
 
         fn terminate(&self) -> io::Result<()> {

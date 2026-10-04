@@ -224,17 +224,6 @@ impl Drop for NativeProcessWriteTask {
 const MAX_NATIVE_PROCESS_WRITE_BYTES: usize = 64 * 1024;
 
 impl NativeProcessEntry {
-    fn without_io(tree: ProcessTree) -> Self {
-        Self {
-            tree,
-            stdin: None,
-            write_in_flight: Arc::new(AtomicBool::new(false)),
-            terminating: Arc::new(AtomicBool::new(false)),
-            stdout: None,
-            stderr: None,
-        }
-    }
-
     fn with_io(mut tree: ProcessTree) -> Self {
         let stdin = tree.take_stdin().map(|value| Arc::new(Mutex::new(value)));
         let stdout = tree.take_stdout().map(native_process_reader);
@@ -294,18 +283,6 @@ impl NativeProcessOwner {
             next_token: AtomicU64::new(1),
             trees: Mutex::new(HashMap::new()),
         }
-    }
-
-    /// Adopts a currently live host child and returns its opaque owner token.
-    #[napi]
-    pub fn adopt(&self, pid: u32) -> Result<String> {
-        let tree = ProcessTree::adopt(pid).map_err(napi_error)?;
-        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-        self.trees
-            .lock()
-            .map_err(|_| napi_error("native process owner state poisoned"))?
-            .insert(token, NativeProcessEntry::without_io(tree));
-        Ok(token.to_string())
     }
 
     /// Spawns an explicitly described process inside a native ownership

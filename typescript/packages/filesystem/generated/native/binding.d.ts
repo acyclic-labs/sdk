@@ -871,8 +871,6 @@ export declare class NativeOperationWindowCoordinator {
 export declare class NativeProcessOwner {
   /** Creates an empty native ownership registry. */
   constructor()
-  /** Adopts a currently live host child and returns its opaque owner token. */
-  adopt(pid: number): string
   /**
    * Spawns an explicitly described process inside a native ownership
    * boundary before it is resumed. Environment inheritance is disabled;

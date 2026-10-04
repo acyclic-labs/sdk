@@ -1,5 +1,5 @@
 import { arch, platform } from "node:process";
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import type { SpawnOptions } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type {
   EngineCapabilities,
@@ -88,7 +88,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
-import { createNativeProcessOwner, type NativeProcessIo, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
+import { createNativeProcessOwner, createNativeProcessOwnerAdapter, type NativeProcessIo, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
 export { createNativeProcessOwnerAdapter } from "./native-process.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
@@ -218,7 +218,6 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
   const binding = await bindings();
   const candidate = binding as NativeBindings & {
     readonly NativeProcessOwner?: new () => {
-      adopt(pid: number): string;
       spawn(executable: string, args: readonly string[], cwd: string | null, environment: readonly string[]): NativeProcessLaunch;
       writeStdin(token: string, bytes: Uint8Array): Promise<unknown>;
       closeStdin(token: string): void;
@@ -231,7 +230,6 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
     throw new Error("native companion did not export a process owner");
   }
   const nativeOwner = new candidate.NativeProcessOwner();
-  const tokens = new WeakMap<ChildProcess, string>();
   const launch = (executable: string, args: readonly string[], options: SpawnOptions): NativeProcessLaunch => {
     const environment = Object.entries(options.env ?? {}).flatMap(([key, value]) =>
       value === undefined ? [] : [`${key}=${String(value)}`],
@@ -265,65 +263,14 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
       return { kind: "unknown", pid: -1, reason: result.reason ?? "native termination is uncertain" };
     },
   };
+  const adapter = createNativeProcessOwnerAdapter(io);
   return createNativeProcessOwner({
     capability: "acyclic.native-process-owner.v1",
     version: "0.2.0",
     launch,
     io,
-    spawn(executable: string, args: readonly string[], options: SpawnOptions): ChildProcess {
-      // Detached roots have a stable Unix process group for the native
-      // hand-off. Windows uses the same hand-off to assign the root to a Job.
-      const child = nodeSpawn(executable, [...args], {
-        ...options,
-        // Native tools receive only explicitly granted variables. This keeps
-        // launcher credentials out of model/tool processes by default.
-        env: options.env ?? {},
-        detached: true,
-      });
-      if (child.pid === undefined || child.pid === null) {
-        throw new Error("native process owner could not observe the child pid");
-      }
-      try {
-        tokens.set(child, nativeOwner.adopt(child.pid));
-      } catch (error) {
-        // The hand-off was not proven. Close the direct Node handle and await
-        // its close event in the background; no PID or descendant cleanup is
-        // authorized because native ownership was never established.
-        try { child.kill(); } catch { /* preserve the adoption failure */ }
-        const close = new Promise<void>(resolve => {
-          child.once("close", () => resolve());
-          setTimeout(resolve, 1_000);
-        });
-        void close;
-        throw error;
-      }
-      return child;
-    },
-    async terminate(child: ChildProcess, graceMs = 250) {
-      const token = tokens.get(child);
-      if (token === undefined) {
-        return {
-          kind: "unknown",
-          pid: child.pid ?? -1,
-          reason: "native owner token is unavailable",
-        };
-      }
-      const deadline = Date.now() + Math.max(0, graceMs);
-      let result = nativeOwner.terminate(token);
-      while (result.kind !== "terminated" && Date.now() < deadline) {
-        await new Promise<void>(resolve => setTimeout(resolve, 10));
-        result = nativeOwner.terminate(token);
-      }
-      if (result.kind === "terminated") {
-        tokens.delete(child);
-        return { kind: "terminated", pid: child.pid ?? -1 };
-      }
-      return {
-        kind: "unknown",
-        pid: child.pid ?? -1,
-        reason: result.reason ?? "native owner could not prove termination",
-      };
-    },
+    spawn: adapter.spawn,
+    terminate: adapter.terminate,
   });
 }
 
