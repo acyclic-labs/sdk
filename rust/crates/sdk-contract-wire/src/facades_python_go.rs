@@ -93,8 +93,8 @@ class InferenceServices:
 class ActorInvokeRequest:
     """Strongly typed public request bridge for the Actors invoke RPC."""
 
-    actor_id: ActorIdValue
-    method: MethodNameValue
+    actor_id: ActorId
+    method: MethodName
     url: str = ""
     body: bytes = b""
     headers: tuple[object, ...] = ()
@@ -274,6 +274,7 @@ import (
     "context"
     "crypto/tls"
     "crypto/x509"
+    "encoding/json"
     "fmt"
     "net/url"
     "strings"
@@ -564,7 +565,7 @@ fn python_type_projection() -> String {
     let mut emitted_python_types = Vec::new();
     for item in SEMANTIC_TYPES {
         if item.wire_kind == WireValueKind::Oneof {
-            output.push_str("WireChoice: TypeAlias = KnownOneof | UnknownOneof\n\n");
+            output.push_str("WireChoiceValue: TypeAlias = KnownOneof | UnknownOneof\nWireChoice: TypeAlias = WireChoiceValue\n\n");
             continue;
         }
         if emitted_python_types.contains(&item.rust_name) {
@@ -768,7 +769,7 @@ fn go_type_projection() -> String {
     }
     output.push_str("}\n\n");
     output.push_str(&format!(
-        "type UnknownEnumValue struct {{ RawValue int32 }}\n\ntype WireChoice interface {{ isWireChoice() }}\n\ntype KnownOneof struct {{ Tag string; Payload any }}\n\nfunc (KnownOneof) isWireChoice() {{}}\n\ntype UnknownOneof struct {{ Tag string; RawPayload []byte }}\n\nfunc (UnknownOneof) isWireChoice() {{}}\n\nfunc NewKnownOneof(payload any) KnownOneof {{ return KnownOneof{{Tag: {known_tag:?}, Payload: payload}} }}\n\nfunc NewUnknownOneof(rawPayload []byte) UnknownOneof {{ return UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), rawPayload...)}} }}\n\n"
+        "type UnknownEnumValue struct {{ RawValue int32 }}\n\ntype WireChoice interface {{ isWireChoice() }}\n\ntype KnownOneof struct {{ Tag string; Payload any }}\n\nfunc (KnownOneof) isWireChoice() {{}}\n\ntype UnknownOneof struct {{ Tag string; RawPayload []byte }}\n\nfunc (UnknownOneof) isWireChoice() {{}}\n\nfunc NewKnownOneof(payload any) KnownOneof {{ return KnownOneof{{Tag: {known_tag:?}, Payload: payload}} }}\n\nfunc NewUnknownOneof(rawPayload []byte) UnknownOneof {{ return UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), rawPayload...)}} }}\n\ntype WireChoiceEnvelope struct {{\n\tTag string `json:\"tag\"`\n\tPayload any `json:\"payload,omitempty\"`\n\tRawPayload []byte `json:\"raw_payload,omitempty\"`\n}}\n\nfunc EncodeWireChoice(value WireChoice) (WireChoiceEnvelope, error) {{\n\tif value == nil {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice must be present\") }}\n\tswitch choice := value.(type) {{\n\tcase KnownOneof:\n\t\tif choice.Tag != {known_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"known oneof has invalid tag\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {known_tag:?}, Payload: choice.Payload}}, nil\n\tcase UnknownOneof:\n\t\tif choice.Tag != {unknown_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"unknown oneof has invalid tag\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), choice.RawPayload...)}}, nil\n\tdefault:\n\t\treturn WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice has an unsupported variant\")\n\t}}\n}}\n\nfunc EncodeWireChoiceJSON(value WireChoice) ([]byte, error) {{\n\tenvelope, err := EncodeWireChoice(value)\n\tif err != nil {{ return nil, err }}\n\treturn json.Marshal(envelope)\n}}\n\nfunc DecodeWireChoice(envelope WireChoiceEnvelope) (WireChoice, error) {{\n\tswitch envelope.Tag {{\n\tcase {known_tag:?}:\n\t\treturn KnownOneof{{Tag: {known_tag:?}, Payload: envelope.Payload}}, nil\n\tcase {unknown_tag:?}:\n\t\treturn UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), envelope.RawPayload...)}}, nil\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"wire_choice has an unknown discriminant\")\n\t}}\n}}\n\nfunc DecodeWireChoiceJSON(payload []byte) (WireChoice, error) {{\n\tvar envelope WireChoiceEnvelope\n\tif err := json.Unmarshal(payload, &envelope); err != nil {{ return nil, err }}\n\treturn DecodeWireChoice(envelope)\n}}\n\n"
     ));
     let mut emitted_go_types = Vec::new();
     for item in SEMANTIC_TYPES {
@@ -870,8 +871,13 @@ func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
 	if _, err := NewPageLimit(1); err != nil { t.Fatal(err) }
 	if _, err := NewRevisionDigest(make([]byte, 32)); err != nil { t.Fatal(err) }
 	if _, err := NewSha256Digest(make([]byte, 32)); err != nil { t.Fatal(err) }
-	if _, err := NewOneofArm(NewKnownOneof(map[string]any{"payload": 1})); err != nil { t.Fatal(err) }
-	if _, err := NewOneofArm(NewUnknownOneof([]byte("future"))); err != nil { t.Fatal(err) }
+	if _, err := NewWireChoice(NewKnownOneof(map[string]any{"payload": 1})); err != nil { t.Fatal(err) }
+	if _, err := NewWireChoice(NewUnknownOneof([]byte("future"))); err != nil { t.Fatal(err) }
+	payload, err := EncodeWireChoiceJSON(NewUnknownOneof([]byte("future")))
+	if err != nil { t.Fatal(err) }
+	decoded, err := DecodeWireChoiceJSON(payload)
+	if err != nil { t.Fatal(err) }
+	if unknown, ok := decoded.(UnknownOneof); !ok || string(unknown.RawPayload) != "future" { t.Fatal("unknown oneof JSON bridge failed") }
 	request, err := (ActorInvokeRequest{ActorID: ActorID("actor"), Method: MethodName("run")}).toWire()
 	if err != nil || request.GetActorId() != "actor" { t.Fatalf("typed request bridge failed: %v", err) }
 	response := actorInvokeResponseFromWire(&actorsv1.InvokeActorResponse{Status: 200, Body: []byte("ok")})
@@ -885,7 +891,8 @@ func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
 	if _, err := NewPageLimit(1001); err == nil { t.Fatal("oversized page limit accepted") }
 	if _, err := NewRevisionDigest([]byte("short")); err == nil { t.Fatal("short revision digest accepted") }
 	if _, err := NewSha256Digest([]byte("short")); err == nil { t.Fatal("short digest accepted") }
-	if _, err := NewOneofArm(KnownOneof{Tag: "wrong"}); err == nil { t.Fatal("invalid known oneof tag accepted") }
+	if _, err := NewWireChoice(KnownOneof{Tag: "wrong"}); err == nil { t.Fatal("invalid known oneof tag accepted") }
+	if _, err := DecodeWireChoice(WireChoiceEnvelope{Tag: "future"}); err == nil { t.Fatal("unknown oneof discriminant accepted") }
 	if _, err := (ActorInvokeRequest{ActorID: ActorID(""), Method: MethodName("run")}).toWire(); err == nil { t.Fatal("empty actor id accepted by request bridge") }
 }
 "#
