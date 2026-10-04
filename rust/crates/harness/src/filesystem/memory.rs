@@ -1791,16 +1791,52 @@ where
                 "conversation event page limit must be between 1 and 1024".into(),
             ));
         }
-        limits.validate()?;
-        let mut cached = self.conversation_projection.lock().await;
-        if cached.as_ref().is_none_or(|(configured, _)| *configured != limits) {
-            *cached = Some((limits, self.open_conversation(limits).await?));
-        }
+        let mut cached = self.cached_conversation_projection(limits).await?;
         let (_, aggregate) = cached.as_mut().ok_or_else(|| {
             Error::Storage("authenticated conversation projection is unavailable".into())
         })?;
         aggregate.refresh().await?;
         aggregate.reducer().events_after(after_revision, limit)
+    }
+
+    /// Reads a bounded message page from the configured cached reducer. The
+    /// sequence index is searched without cloning the full conversation; only
+    /// the requested message metadata is copied for the caller.
+    pub async fn conversation_messages(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+        limits: Limits,
+    ) -> Result<Vec<ConversationMessage>> {
+        if limit == 0 || limit > 1_024 {
+            return Err(Error::Invalid(
+                "conversation message page limit must be between 1 and 1024".into(),
+            ));
+        }
+        let mut cached = self.cached_conversation_projection(limits).await?;
+        let (_, aggregate) = cached.as_mut().ok_or_else(|| {
+            Error::Storage("authenticated conversation projection is unavailable".into())
+        })?;
+        aggregate.refresh().await?;
+        let conversation = aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
+        let start = conversation.messages.partition_point(|message| message.sequence <= after_sequence);
+        let end = start.saturating_add(limit).min(conversation.messages.len());
+        Ok(conversation.messages[start..end].to_vec())
+    }
+
+    async fn cached_conversation_projection(
+        &self,
+        limits: Limits,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<(Limits, StreamAggregate<P>)>>> {
+        limits.validate()?;
+        let mut cached = self.conversation_projection.lock().await;
+        if cached.as_ref().is_none_or(|(configured, _)| *configured != limits) {
+            *cached = Some((limits, self.open_conversation(limits).await?));
+        }
+        Ok(cached)
     }
 
     /// Reads one authenticated private file at a pinned generation. The
@@ -2544,6 +2580,7 @@ mod tests {
         let limits = Limits::default();
         let invalid = Limits { model_steps: 0, ..limits };
         assert!(matches!(storage.conversation_events(0, 1, invalid).await, Err(Error::Invalid(_))));
+        assert!(matches!(storage.conversation_messages(0, 1, invalid).await, Err(Error::Invalid(_))));
         assert_eq!(storage.conversation_events(0, 1, limits).await?.len(), 1);
 
         let content = storage.stage(OperationId::new(), "page.txt", b"new message", "text/plain", "page.txt").await?;
@@ -2565,6 +2602,10 @@ mod tests {
                 }),
             },
         ).await?;
+        let message_page = storage.conversation_messages(0, 1, limits).await?;
+        assert_eq!(message_page.len(), 1);
+        assert_eq!(message_page[0].sequence, 1);
+        assert!(storage.conversation_messages(1, 1, limits).await?.is_empty());
         let page = storage.conversation_events(1, 1, limits).await?;
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].revision, 2);
