@@ -1721,9 +1721,12 @@ pub struct LocalSwarmSnapshot {
     pub session: LocalSwarmSession,
     /// Direct children retained by the owner admission index.
     pub children: Vec<LocalSwarmSession>,
-    /// Current authoritative conversation revision.
+    /// Current authoritative conversation stream event tail. This is an
+    /// event cursor, not the model message sequence or message count.
     pub conversation_revision: u64,
-    /// Generation observed from the task's private filesystem volume.
+    /// Generation observed from the task's private filesystem volume. A
+    /// metadata-only snapshot leaves this unknown rather than fabricating a
+    /// generation value.
     pub workspace_generation: Option<GenerationRef>,
 }
 
@@ -2846,6 +2849,7 @@ impl PersistentLocalSwarm {
             }
             return Err(error);
         }
+        let _refresh = self.registry_refresh.lock().await;
         if let Some(current) = self.records.lock().await.get_mut(&task) {
             current.phase = LocalSessionPhase::Cancelled;
         }
@@ -2938,6 +2942,7 @@ impl PersistentLocalSwarm {
                 "durable child completion artifact operation changed".into(),
             ));
         }
+        let _refresh = self.registry_refresh.lock().await;
         self.outcomes.lock().await.insert(task, output.clone());
         Ok(output)
     }
@@ -3247,6 +3252,7 @@ impl PersistentLocalSwarm {
                             "child operation was cancelled during admission".into(),
                         ));
                     }
+                    let _refresh = self.registry_refresh.lock().await;
                     self.records.lock().await.insert(
                         child,
                         LocalSwarmSession {
@@ -3474,6 +3480,7 @@ impl PersistentLocalSwarm {
                 "child operation was cancelled during admission preparation".into(),
             ));
         }
+        let _refresh = self.registry_refresh.lock().await;
         self.records.lock().await.insert(
             child,
             LocalSwarmSession {
@@ -3730,6 +3737,7 @@ impl PersistentLocalSwarm {
         )
         .await?;
         self.refresh_registry_state().await?;
+        let _refresh = self.registry_refresh.lock().await;
         self.outcomes.lock().await.insert(child, output.clone());
         Ok(LocalForkOutcome {
             child,
@@ -3813,7 +3821,10 @@ impl PersistentLocalSwarm {
             recovered = Some(output);
         }
         if let Some(output) = recovered.clone() {
-            self.outcomes.lock().await.insert(child, output);
+            {
+                let _refresh = self.registry_refresh.lock().await;
+                self.outcomes.lock().await.insert(child, output);
+            }
             if self
                 .records
                 .lock()
@@ -4007,6 +4018,7 @@ impl PersistentLocalSwarm {
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
+        let _refresh = self.registry_refresh.lock().await;
         let mut records = self.records.lock().await;
         let current = records
             .get_mut(&task)
@@ -4164,6 +4176,7 @@ impl PersistentLocalSwarm {
             },
         )
         .await?;
+        let _refresh = self.registry_refresh.lock().await;
         let mut records = self.records.lock().await;
         if let Some(session) = records.get_mut(&task) {
             session.phase = LocalSessionPhase::Failed(bounded);
@@ -4843,6 +4856,44 @@ mod tests {
         assert_eq!(snapshot.conversation_revision, 0);
         assert_eq!(snapshot.workspace_generation, None);
         assert!(!swarm.sessions.lock().await.contains_key(&child));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_cannot_overwrite_a_direct_session_publication() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        let start = Arc::new(tokio::sync::Barrier::new(2));
+        let refresh_start = start.clone();
+        let write_start = start.clone();
+        let refresh = async {
+            refresh_start.wait().await;
+            swarm.sessions().await
+        };
+        let write = async {
+            write_start.wait().await;
+            swarm
+                .update_session(task, |session| {
+                    session.task_description = "direct publication".into();
+                })
+                .await
+        };
+        let (sessions, written) = tokio::join!(refresh, write);
+        let sessions = sessions?;
+        written?;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(swarm.session(task).await?.task_description, "direct publication");
         Ok(())
     }
 
