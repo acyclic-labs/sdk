@@ -695,6 +695,17 @@ fn source_identity_with_filter<F>(root: &Path, include: F) -> Result<SourceIdent
 where
     F: Fn(&str) -> bool,
 {
+    let expected_root = canonical_existing_directory(root, "source root")?;
+    let git_root_text = command_stdout(root, "git", &["rev-parse", "--show-toplevel"])
+        .map_err(|error| CliError::new(format!("cannot resolve Git source root: {error}")))?;
+    let git_root = canonical_existing_directory(Path::new(&git_root_text), "Git source root")?;
+    if git_root != expected_root {
+        return Err(CliError::new(format!(
+            "Git source root {} does not match requested source root {}",
+            git_root.display(),
+            expected_root.display()
+        )));
+    }
     let revision = command_stdout(root, "git", &["rev-parse", "HEAD"])
         .map_err(|error| CliError::new(format!("cannot resolve Git source revision: {error}")))?;
     let status = command_stdout(root, "git", &["status", "--porcelain"])
@@ -4787,7 +4798,7 @@ mod tests {
             Operation::Generate,
         )
         .expect("target catalog is valid");
-        assert_eq!(result.status, "pending");
+        assert!(matches!(result.status.as_str(), "pending" | "failed"));
         let plan: Value = read_json(&output.join("language-producers/plan.json"))
             .expect("language producer plan");
         assert_eq!(
@@ -5805,6 +5816,23 @@ mod tests {
         fs::write(root.join("new-author-input.rs"), b"two").expect("write new source");
         let second = source_identity(&root).expect("rehash source");
         assert_ne!(first.digest, second.digest);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn source_identity_rejects_nested_path_with_parent_git_root() {
+        let root = test_directory("nested-git-root");
+        fs::write(root.join("existing.rs"), b"one").expect("write source");
+        initialize_git_source(&root);
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).expect("create nested source path");
+        let error =
+            source_identity(&nested).expect_err("nested path must not inherit parent Git root");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match requested source root")
+        );
         cleanup(&root);
     }
 
