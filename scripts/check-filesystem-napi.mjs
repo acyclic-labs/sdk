@@ -1,5 +1,5 @@
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -49,11 +49,13 @@ try {
   await new Promise((resolveChild, rejectChild) => {
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
       env: {
-        ...process.env,
+        PATH: process.env.PATH ?? "",
+        ...(process.platform === "win32" ? { SystemRoot: process.env.SystemRoot ?? "" } : {}),
         ACYCLIC_FS_NAPI_CHILD_BINDING: bindingPath,
         ACYCLIC_FS_NAPI_CHILD_ROOT: join(temporary, "engine"),
         ACYCLIC_FS_NAPI_CHILD_ADAPTER: adapter ? "1" : "0",
       },
+      windowsHide: true,
       stdio: "inherit",
     });
     child.once("error", rejectChild);
@@ -105,7 +107,214 @@ async function qualify(bindingPath, engineRoot) {
     throw new Error("N-API change set omitted the authored file");
   }
   fs.cancel();
+  await qualifyProcessOwner(binding);
   console.log(`acyclic-fs N-API ABI passed on ${process.platform}-${process.arch}`);
+}
+
+async function qualifyProcessOwner(binding) {
+  if (typeof binding.NativeProcessOwner !== "function") {
+    throw new Error("N-API companion did not export NativeProcessOwner");
+  }
+  const owner = new binding.NativeProcessOwner();
+  const executable = process.platform === "win32" ? "node" : process.execPath;
+  const directory = await mkdtemp(join(tmpdir(), "acyclic-native-owner-"));
+  const pidFile = join(directory, "grandchild.pid");
+  const rootExitFile = join(directory, "root-exit");
+  const grandchild = "const fs=require('node:fs'); fs.writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => process.exit(0), 10000);";
+  const root = `const fs=require('node:fs'); const {spawn}=require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}, process.argv[1]], { detached: true, windowsHide: true, stdio: 'ignore', env: {} }); fs.writeFileSync(process.argv[2], 'exited');`;
+  let spawned;
+  let descendantPid;
+  let rootActive = false;
+  let rootTokenRetired = false;
+  let rootCleanupUncertain = false;
+  try {
+    const environment = [
+      `PATH=${process.env.PATH ?? ""}`,
+      ...(process.platform === "win32" ? [`SystemRoot=${process.env.SystemRoot ?? ""}`] : []),
+    ];
+    await qualifyProcessIo(owner, executable, environment);
+    spawned = owner.spawn(executable, ["-e", root, pidFile, rootExitFile], null, environment);
+    rootActive = true;
+    const deadline = Date.now() + 5_000;
+    while (!exists(pidFile) && Date.now() < deadline) await delay(20);
+    if (!exists(pidFile)) throw new Error("native process owner fixture did not start its descendant");
+    while (!exists(rootExitFile) && Date.now() < deadline) await delay(20);
+    if (!exists(rootExitFile)) throw new Error("native process owner fixture root did not exit");
+    descendantPid = Number(await readFile(pidFile, "utf8"));
+    if (!Number.isSafeInteger(descendantPid) || descendantPid <= 0) throw new Error("native process owner fixture wrote an invalid descendant PID");
+    let result;
+    while (Date.now() < deadline) {
+      result = owner.terminate(spawned.token);
+      if (result.kind === "terminated") {
+        rootTokenRetired = true;
+        break;
+      }
+      await delay(20);
+    }
+    if (result?.kind !== "terminated") throw new Error(`native process owner did not prove cleanup: ${JSON.stringify(result)}`);
+    if (processAlive(descendantPid)) throw new Error("native process owner left a root-exits-first descendant alive after reported completion");
+    rootActive = false;
+  } finally {
+    if (rootActive && !rootTokenRetired && spawned !== undefined) {
+      const cleanupDeadline = Date.now() + 5_000;
+      while (rootActive && Date.now() < cleanupDeadline) {
+        try {
+          const cleanup = owner.terminate(spawned.token);
+          if (cleanup.kind === "terminated") {
+            rootTokenRetired = true;
+            rootActive = false;
+          }
+        } catch {
+          // Keep retrying until the bounded cleanup deadline; uncertainty is
+          // surfaced by the original qualification failure or timeout.
+        }
+        if (rootActive) await delay(20);
+      }
+      rootCleanupUncertain = rootActive;
+    }
+    if (rootTokenRetired && descendantPid !== undefined && processAlive(descendantPid)) {
+      const descendantDeadline = Date.now() + 12_000;
+      while (processAlive(descendantPid) && Date.now() < descendantDeadline) await delay(50);
+      if (processAlive(descendantPid)) rootCleanupUncertain = true;
+    }
+    await rm(directory, { recursive: true, force: true });
+    if (rootCleanupUncertain) throw new Error("native root-exits-first fixture cleanup remained uncertain");
+  }
+}
+
+async function qualifyProcessIo(owner, executable, environment) {
+  const ownedTokens = new Set();
+  const spawnTracked = (...args) => {
+    const child = owner.spawn(...args);
+    ownedTokens.add(child.token);
+    return child;
+  };
+  const terminateTracked = (token) => {
+    const outcome = owner.terminate(token);
+    if (outcome.kind === "terminated") ownedTokens.delete(token);
+    return outcome;
+  };
+  let primaryError;
+  try {
+  const echo = "process.stdin.once('data', c => { process.stdout.write(c); process.stderr.write('diagnostic'); process.exit(0); });";
+  const spawned = spawnTracked(executable, ["-e", echo], null, environment);
+  await owner.writeStdin(spawned.token, Buffer.from("native-io\\n"));
+  owner.closeStdin(spawned.token);
+  const deadline = Date.now() + 5_000;
+  let stdout = "";
+  let stderr = "";
+  while (Date.now() < deadline) {
+    for (const stream of ["stdout", "stderr"]) {
+      const value = owner.pollOutput(spawned.token, stream);
+      if (value.kind === "error") throw new Error(`native process ${stream} read failed: ${value.reason}`);
+      if (value.kind === "data") {
+        const text = Buffer.from(value.bytes).toString("utf8");
+        if (stream === "stdout") stdout += text;
+        else stderr += text;
+      }
+    }
+    if (owner.pollExit(spawned.token).kind === "exited") break;
+    await delay(20);
+  }
+  if (stdout !== "native-io\\n" || stderr !== "diagnostic") {
+    throw new Error(`native process stdio mismatch: stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`);
+  }
+  if (owner.pollExit(spawned.token).kind !== "exited") throw new Error("native process did not report root exit");
+  const result = terminateTracked(spawned.token);
+  if (result.kind !== "terminated") throw new Error(`native process stdio cleanup was uncertain: ${JSON.stringify(result)}`);
+
+  const blocked = spawnTracked(
+    executable,
+    ["-e", "setInterval(() => process.stdout.write('x'.repeat(16384)), 0);"],
+    null,
+    environment,
+  );
+  await delay(400);
+  let blockedObservation = null;
+  const blockedDeadline = Date.now() + 5_000;
+  while (Date.now() < blockedDeadline) {
+    blockedObservation = owner.pollOutput(blocked.token, "stdout");
+    if (blockedObservation.kind === "error") break;
+    await delay(20);
+  }
+  if (blockedObservation?.kind !== "error") {
+    throw new Error(`native blocked reader did not retain overflow: ${JSON.stringify(blockedObservation)}`);
+  }
+  const blockedResult = terminateTracked(blocked.token);
+  if (blockedResult.kind !== "terminated") throw new Error(`native blocked reader cleanup was uncertain: ${JSON.stringify(blockedResult)}`);
+
+  const writerBlocked = spawnTracked(
+    executable,
+    ["-e", "setInterval(() => {}, 100000);"],
+    null,
+    environment,
+  );
+  let pendingWrite;
+  for (let attempt = 0; attempt < 32 && pendingWrite === undefined; attempt += 1) {
+    const candidate = owner.writeStdin(writerBlocked.token, Buffer.alloc(64 * 1024));
+    let settled = false;
+    void candidate.then(() => { settled = true; }, () => { settled = true; });
+    await delay(25);
+    if (!settled) pendingWrite = candidate;
+  }
+  if (pendingWrite === undefined) throw new Error("native blocked writer never reached a pending bounded write");
+  let concurrentWriteRejected = false;
+  try {
+    await owner.writeStdin(writerBlocked.token, Buffer.from("second-write"));
+  } catch {
+    concurrentWriteRejected = true;
+  }
+  if (!concurrentWriteRejected) throw new Error("native owner accepted concurrent stdin writes");
+  let writeSettled = false;
+  void pendingWrite.then(() => { writeSettled = true; }, () => { writeSettled = true; });
+  const writerDeadline = Date.now() + 5_000;
+  let writerResult;
+  while (Date.now() < writerDeadline) {
+    writerResult = terminateTracked(writerBlocked.token);
+    if (writerResult.kind === "terminated") break;
+    await delay(20);
+  }
+  if (writerResult?.kind !== "terminated") throw new Error(`native blocked writer cleanup was uncertain: ${JSON.stringify(writerResult)}`);
+  if (!writeSettled) throw new Error("native blocked writer remained pending after owner termination");
+  } catch (error) {
+    primaryError = error;
+  }
+  const cleanupErrors = new Map();
+  const cleanupDeadline = Date.now() + 5_000;
+  while (ownedTokens.size > 0 && Date.now() < cleanupDeadline) {
+    for (const token of ownedTokens) {
+      try {
+        const outcome = terminateTracked(token);
+        if (outcome.kind !== "terminated") cleanupErrors.set(token, { token, outcome });
+        else cleanupErrors.delete(token);
+      } catch (error) {
+        cleanupErrors.set(token, { token, error: String(error) });
+      }
+    }
+    if (ownedTokens.size > 0) await delay(20);
+  }
+  if (ownedTokens.size > 0) {
+    cleanupErrors.set("deadline", { tokens: [...ownedTokens], reason: "native token cleanup deadline expired" });
+  }
+  const cleanupFailure = [...cleanupErrors.values()];
+  if (primaryError !== undefined && cleanupFailure.length > 0) {
+    throw new AggregateError([primaryError, new Error(`native process cleanup was uncertain: ${JSON.stringify(cleanupFailure)}`)]);
+  }
+  if (primaryError !== undefined) throw primaryError;
+  if (cleanupFailure.length > 0) throw new Error(`native process cleanup was uncertain: ${JSON.stringify(cleanupFailure)}`);
+}
+
+function exists(path) {
+  return existsSync(path);
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function qualifyAdapter(bindingPath, engineRoot) {

@@ -12,7 +12,7 @@ use crate::{
     effects::{EffectDispatch, EffectObservation, EffectProvider},
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use acyclic_native_runtime::{ProcessTree, spawn_process_tree_owned};
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -1080,7 +1080,7 @@ impl ExecutionRunner for NativeExecutionRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         request.environment.apply(&mut command);
-        let mut child = ManagedChild::spawn(&mut command).map_err(|error| {
+        let mut child = ManagedChild::spawn(command).map_err(|error| {
             Error::Storage(format!("failed to start approved process: {error}"))
         })?;
         let stdout = child
@@ -1096,14 +1096,19 @@ impl ExecutionRunner for NativeExecutionRunner {
         let stdout_thread = spawn_reader(stdout, Arc::clone(&remaining), Arc::clone(&overflow));
         let stderr_thread = spawn_reader(stderr, Arc::clone(&remaining), Arc::clone(&overflow));
         let termination;
+        let mut termination_error = None;
         loop {
             if overflow.load(Ordering::Acquire) {
-                let _ = child.terminate();
+                if let Err(error) = child.terminate() {
+                    termination_error = Some(error.to_string());
+                }
                 termination = Termination::Overflow;
                 break;
             }
             if cancellation.is_cancelled() {
-                let _ = child.terminate();
+                if let Err(error) = child.terminate() {
+                    termination_error = Some(error.to_string());
+                }
                 termination = Termination::Cancelled;
                 break;
             }
@@ -1129,7 +1134,9 @@ impl ExecutionRunner for NativeExecutionRunner {
                 });
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                let _ = child.terminate();
+                if let Err(error) = child.terminate() {
+                    termination_error = Some(error.to_string());
+                }
                 termination = Termination::TimedOut;
                 break;
             }
@@ -1147,6 +1154,11 @@ impl ExecutionRunner for NativeExecutionRunner {
                 reason: "process descendants retained output handles".into(),
             });
         };
+        if let Some(error) = termination_error {
+            return Ok(RunnerOutcome::Unknown {
+                reason: format!("process termination outcome is uncertain: {error}"),
+            });
+        }
         if !child.controls_process_tree()
             && matches!(termination, Termination::TimedOut | Termination::Cancelled)
         {
@@ -1174,10 +1186,10 @@ enum ManagedChild {
 }
 
 impl ManagedChild {
-    fn spawn(command: &mut Command) -> std::io::Result<Self> {
+    fn spawn(command: Command) -> std::io::Result<Self> {
         #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
         {
-            return spawn_process_tree(command).map(Self::Tree);
+            return spawn_process_tree_owned(command).map(Self::Tree);
         }
         #[allow(unreachable_code)]
         command.spawn().map(Self::Direct)
@@ -1211,7 +1223,19 @@ impl ManagedChild {
         match self {
             Self::Direct(child) => {
                 let _ = child.kill();
-                child.wait().map(|_| ())
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    if child.try_wait()?.is_some() {
+                        return Ok(());
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "direct process termination was not observed",
+                        ));
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
             }
             #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
             Self::Tree(tree) => tree.terminate(),

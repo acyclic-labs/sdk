@@ -861,6 +861,34 @@ export declare class NativeOperationWindowCoordinator {
   inspect(workspaceId: Buffer): Promise<NativeOperationWindowPhase>
 }
 
+/**
+ * A native process-tree owner that launches children with native ownership
+ * before user code can create descendants.
+ *
+ * The returned token is an opaque ownership identity. Cleanup uses the native
+ * Job/process-group handle retained by this object, never a recovered PID.
+ */
+export declare class NativeProcessOwner {
+  /** Creates an empty native ownership registry. */
+  constructor()
+  /**
+   * Spawns an explicitly described process inside a native ownership
+   * boundary before it is resumed. Environment inheritance is disabled;
+   * callers must provide every variable the process may receive.
+   */
+  spawn(executable: string, args: Array<string>, cwd: string | undefined | null, environment: Array<string>): NativeProcessSpawn
+  /** Terminates the owned process tree and retires its token on proof. */
+  terminate(token: string): NativeProcessTermination
+  /** Writes bytes to the native process stdin owned by `token`. */
+  writeStdin(token: string, bytes: Buffer): Promise<unknown>
+  /** Closes the native process stdin owned by `token`. */
+  closeStdin(token: string): void
+  /** Polls one bounded output chunk without blocking the JavaScript thread. */
+  pollOutput(token: string, stream: string): NativeProcessOutput
+  /** Observes the direct root without changing native ownership. */
+  pollExit(token: string): NativeProcessExit
+}
+
 /** One immutable file resolved against a pinned checkout generation. */
 export declare class NativeResolvedFile {
   /** Terminal file kind authenticated by the pinned generation. */
@@ -1962,6 +1990,40 @@ export interface NativePathComponent {
   encoding: string
   /** Exact component bytes in the declared representation. */
   bytes: Buffer
+}
+
+/** One direct-root exit observation. */
+export interface NativeProcessExit {
+  /** `running` or `exited`. */
+  kind: string
+  /** Exit code when the root exited normally. */
+  code?: number
+}
+
+/** One bounded nonblocking output observation. */
+export interface NativeProcessOutput {
+  /** `idle`, `data`, `eof`, or `error`. */
+  kind: string
+  /** Bytes when `kind` is `data`. */
+  bytes?: Buffer
+  /** Error text when `kind` is `error`. */
+  reason?: string
+}
+
+/** Native process identity returned after atomic platform ownership. */
+export interface NativeProcessSpawn {
+  /** Opaque operation identity retained by the native owner. */
+  token: string
+  /** Direct root PID for observation only. */
+  pid: number
+}
+
+/** Typed native process-tree termination observation. */
+export interface NativeProcessTermination {
+  /** `terminated` only after the native boundary reports no live members. */
+  kind: string
+  /** Recovery context when the outcome is `unknown`. */
+  reason?: string
 }
 
 /** Bounded native promotion planning result. */

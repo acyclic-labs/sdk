@@ -3,6 +3,7 @@ import { spawn as spawnChild } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { retryOwnedProcessTermination, spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "../src/owned-process.js";
+import { createNativeProcessOwnerAdapter, type NativeProcessIo } from "../../filesystem/src/native-process.js";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -159,7 +160,7 @@ describe("JSON-lines process bridge", () => {
     const marker = join(directory, "descendant-alive");
     const pidFile = join(directory, "descendant.pid");
     await writeFile(marker, "", "utf8");
-    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; const pidFile = process.argv[2]; fs.writeFileSync(pidFile, String(process.pid)); setInterval(() => fs.appendFileSync(marker, 'x'), 20);";
+    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; const pidFile = process.argv[2]; fs.writeFileSync(pidFile, String(process.pid)); const tick = setInterval(() => fs.appendFileSync(marker, 'x'), 20); setTimeout(() => { clearInterval(tick); process.exit(0); }, 1500);";
     const systemRoot = process.env.SystemRoot ?? "";
     const detached = process.platform === "win32";
     const owner = `const fs = require('node:fs'); const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1], process.argv[2]], { detached: ${detached}, windowsHide: true, env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); const deadline = Date.now() + 5000; const wait = setInterval(() => { if (fs.existsSync(process.argv[2]) || Date.now() >= deadline) { clearInterval(wait); process.exit(0); } }, 10);`;
@@ -183,8 +184,9 @@ describe("JSON-lines process bridge", () => {
         await expect(bridge.waitForExit(250)).rejects.toMatchObject({ code: "transport" });
         descendantPid = Number(await readFile(pidFile, "utf8"));
         expect(Number.isSafeInteger(descendantPid)).toBe(true);
-        try { process.kill(descendantPid); } catch { /* the fixture may have exited between observation and cleanup */ }
-        await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+        // The fixture has a bounded natural exit. Never turn a fixture PID
+        // into an authorization to kill an unrelated process.
+        await expect(bridge.waitForExit(3_000)).resolves.toMatchObject({ kind: "closed" });
       } else {
         expect(termination.kind).toBe("terminated");
         await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
@@ -192,9 +194,6 @@ describe("JSON-lines process bridge", () => {
       await expect(waitForStableSize(marker)).resolves.toBeGreaterThan(0);
     } finally {
       bridge.close("descendant cleanup fallback");
-      if (process.platform === "win32" && descendantPid !== undefined) {
-        try { process.kill(descendantPid); } catch { /* the fixture may have exited between observation and cleanup */ }
-      }
       await bridge.waitForExit(2_000).catch(() => undefined);
       await rm(directory, { recursive: true, force: true });
     }
@@ -222,7 +221,9 @@ describe("JSON-lines process bridge", () => {
 
   test("reports a failed Windows tree command without claiming cleanup", async () => {
     if (process.platform !== "win32") return;
-    const command = longRunningCommand();
+    // Keep the fixture bounded after the command itself is denied. The test
+    // must never recover a PID and turn it into an unconditional kill.
+    const command = { executable: testRuntimeExecutable(), args: ["-e", "setTimeout(() => {}, 500)"] };
     const child = spawnOwnedProcess(command.executable, command.args, { env: env(), stdio: "ignore" });
     const previousSystemRoot = process.env.SystemRoot;
     process.env.SystemRoot = join(tmpdir(), "graphcoder-missing-system-root");
@@ -231,7 +232,6 @@ describe("JSON-lines process bridge", () => {
     } finally {
       if (previousSystemRoot === undefined) delete process.env.SystemRoot;
       else process.env.SystemRoot = previousSystemRoot;
-      try { if (child.exitCode === null && child.signalCode === null) child.kill(); } catch { /* fixture cleanup is best effort after the typed outcome */ }
       await waitForChildClose(child, 1_000);
     }
   });
@@ -252,11 +252,11 @@ describe("JSON-lines process bridge", () => {
     }
   });
 
-  test("native CLI awaits cleanup on a natural runtime exit", async () => {
+  test("native CLI exits cleanly after a natural runtime exit", async () => {
     const cli = fileURLToPath(new URL("../src/native-cli.ts", import.meta.url));
     const child = spawnChild(process.execPath, [cli, "-e", "process.exit(0)", "--model-fixture=test"], {
       cwd: process.cwd(),
-      env: { ...env(), GRAPHCODER_RUNTIME: process.execPath },
+      env: { ...env(), GRAPHCODER_RUNTIME: process.execPath, GRAPHCODER_PROCESS_OWNER: "node" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -264,8 +264,8 @@ describe("JSON-lines process bridge", () => {
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", chunk => { stderr += String(chunk); });
     await waitForChildClose(child, 5_000);
-    expect(child.exitCode).toBe(1);
-    expect(stderr).toContain("runtime process cleanup unknown");
+    expect(child.exitCode).toBe(0);
+    expect(stderr).toBe("");
   });
 
   test("delegates runtime ownership to one injected native boundary", async () => {
@@ -288,6 +288,126 @@ describe("JSON-lines process bridge", () => {
     await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
     expect(spawned).toBe(1);
     expect(terminated).toBe(1);
+  });
+
+  test("publishes one cleanup operation before a synchronous owner failure", async () => {
+    let child: ReturnType<typeof spawnOwnedProcess> | undefined;
+    let terminateCalls = 0;
+    const diagnostics: GraphCoderProcessDiagnostic[] = [];
+    const processOwner = {
+      spawn(executable: string, args: readonly string[], options: Parameters<typeof spawnOwnedProcess>[2]) {
+        child = spawnOwnedProcess(executable, args, options);
+        return child;
+      },
+      terminate() {
+        terminateCalls += 1;
+        throw new Error("owner cleanup failed synchronously");
+      },
+    };
+    const command = { executable: testRuntimeExecutable(), args: ["-e", "setInterval(() => {}, 100000)"] };
+    const bridge = ownBridge({ executable: command.executable, args: command.args, env: env(), processOwner, onDiagnostic: event => diagnostics.push(event) });
+    bridge.close("synchronous owner failure");
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
+    child?.kill();
+    await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(terminateCalls).toBe(1);
+    expect(diagnostics.filter(event => event.kind === "termination")).toHaveLength(1);
+    expect(diagnostics.find(event => event.kind === "termination")).toMatchObject({ outcome: { kind: "unknown" } });
+  });
+
+  test("stops native polling before a proven token is retired", async () => {
+    let active = true;
+    const io: NativeProcessIo = {
+      launch: () => ({ token: "native-test-token", pid: 41 }),
+      write: () => undefined,
+      closeStdin: () => undefined,
+      pollOutput: () => {
+        if (!active) throw new Error("retired native token was polled");
+        return { kind: "eof" };
+      },
+      pollExit: () => active ? { kind: "running" } : { kind: "exited", code: 1 },
+      terminate: () => {
+        active = false;
+        return { kind: "terminated" };
+      },
+    };
+    const owner = createNativeProcessOwnerAdapter(io);
+    const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
+    let errors = 0;
+    child.on("error", () => { errors += 1; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 41 });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(errors).toBe(0);
+  });
+
+  test("applies a bounded stream cap when a native reader is never consumed", async () => {
+    let polls = 0;
+    const io: NativeProcessIo = {
+      launch: () => ({ token: "native-blocked-token", pid: 42 }),
+      write: () => undefined,
+      closeStdin: () => undefined,
+      pollOutput: (_token, stream) => {
+        if (stream === "stdout") {
+          polls += 1;
+          return { kind: "data", bytes: new Uint8Array(16 * 1024) };
+        }
+        return { kind: "idle" };
+      },
+      pollExit: () => ({ kind: "running" }),
+      terminate: () => ({ kind: "terminated" }),
+    };
+    const owner = createNativeProcessOwnerAdapter(io);
+    const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
+    child.on("error", () => undefined);
+    await new Promise(resolve => setTimeout(resolve, 250));
+    expect(polls).toBeLessThan(12);
+    await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 42 });
+  });
+
+  test("halts native polling after a reader reports an uncertain error", async () => {
+    let polls = 0;
+    let errors = 0;
+    const io: NativeProcessIo = {
+      launch: () => ({ token: "native-error-token", pid: 43 }),
+      write: () => undefined,
+      closeStdin: () => undefined,
+      pollOutput: () => {
+        polls += 1;
+        return { kind: "error", reason: "native reader ownership is uncertain" };
+      },
+      pollExit: () => ({ kind: "running" }),
+      terminate: () => ({ kind: "terminated" }),
+    };
+    const owner = createNativeProcessOwnerAdapter(io);
+    const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
+    child.on("error", () => { errors += 1; });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(polls).toBe(1);
+    expect(errors).toBe(1);
+    await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 43 });
+  });
+
+  test("retires native token before re-entrant close listeners run", async () => {
+    let terminateCalls = 0;
+    let reentrantTermination: Promise<unknown> | undefined;
+    const io: NativeProcessIo = {
+      launch: () => ({ token: "native-reentrant-token", pid: 44 }),
+      write: () => undefined,
+      closeStdin: () => undefined,
+      pollOutput: () => ({ kind: "eof" }),
+      pollExit: () => ({ kind: "running" }),
+      terminate: () => {
+        terminateCalls += 1;
+        return { kind: "terminated" };
+      },
+    };
+    const owner = createNativeProcessOwnerAdapter(io);
+    const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
+    child.on("close", () => { reentrantTermination = owner.terminate(child); });
+    await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 44 });
+    await expect(reentrantTermination).resolves.toMatchObject({ kind: "terminated", pid: 44 });
+    expect(terminateCalls).toBe(1);
   });
 
   test("composes the process bridge with the public transport adapter", async () => {

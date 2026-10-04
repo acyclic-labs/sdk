@@ -297,7 +297,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   #requestTermination(): void {
     if (this.#termination !== undefined) return;
     this.#terminationDone = false;
-    this.#termination = this.#processOwner.terminate(this.#child).catch(error => {
+    this.#termination = Promise.resolve().then(() => this.#processOwner.terminate(this.#child)).catch(error => {
       return {
         kind: "unknown",
         pid: this.#child.pid ?? -1,

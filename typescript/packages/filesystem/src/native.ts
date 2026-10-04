@@ -1,4 +1,6 @@
 import { arch, platform } from "node:process";
+import type { SpawnOptions } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
   EngineCapabilities,
   FsChangeSet,
@@ -86,7 +88,8 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
-import { createNativeProcessOwner, type NativeProcessOwner } from "./native-process.js";
+import { createNativeProcessOwner, createNativeProcessOwnerAdapter, type NativeProcessIo, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
+export { createNativeProcessOwnerAdapter } from "./native-process.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
   validateJoinOptions, validateWorkspaceRebaseOptions } from "./workspace-results.js";
@@ -213,7 +216,76 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
  */
 export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
   const binding = await bindings();
-  return createNativeProcessOwner((binding as NativeBindings & { readonly nativeProcessOwner?: unknown }).nativeProcessOwner);
+  const candidate = binding as NativeBindings & {
+    readonly NativeProcessOwner?: new () => {
+      spawn(executable: string, args: readonly string[], cwd: string | null, environment: readonly string[]): NativeProcessLaunch;
+      writeStdin(token: string, bytes: Uint8Array): Promise<unknown>;
+      closeStdin(token: string): void;
+      pollOutput(token: string, stream: "stdout" | "stderr"): { kind: "idle" | "data" | "eof" | "error"; bytes?: Uint8Array; reason?: string };
+      pollExit(token: string): { kind: "running" | "exited"; code?: number | null };
+      terminate(token: string): { kind: string; reason?: string };
+    };
+  };
+  if (typeof candidate.NativeProcessOwner !== "function") {
+    throw new Error("native companion did not export a process owner");
+  }
+  const nativeOwner = new candidate.NativeProcessOwner();
+  const launch = (executable: string, args: readonly string[], options: SpawnOptions): NativeProcessLaunch => {
+    const environment = Object.entries(options.env ?? {}).flatMap(([key, value]) =>
+      value === undefined ? [] : [`${key}=${String(value)}`],
+    );
+    const cwd = options.cwd === undefined
+      ? null
+      : typeof options.cwd === "string"
+        ? options.cwd
+        : fileURLToPath(options.cwd);
+    return nativeOwner.spawn(executable, [...args], cwd, environment);
+  };
+  const io: NativeProcessIo = {
+    launch,
+    write: async (token, bytes) => { await nativeOwner.writeStdin(token, Buffer.from(bytes)); },
+    closeStdin: token => nativeOwner.closeStdin(token),
+    pollOutput: (token, stream) => {
+      const value = nativeOwner.pollOutput(token, stream);
+      const normalized: {
+        kind: "idle" | "data" | "eof" | "error";
+        bytes?: Uint8Array;
+        reason?: string;
+      } = { kind: value.kind };
+      if (value.bytes !== undefined) normalized.bytes = new Uint8Array(value.bytes);
+      if (value.reason !== undefined) normalized.reason = value.reason;
+      return normalized;
+    },
+    pollExit: token => nativeOwner.pollExit(token),
+    terminate: token => {
+      const result = nativeOwner.terminate(token);
+      if (result.kind === "terminated") return { kind: "terminated", pid: -1 };
+      return { kind: "unknown", pid: -1, reason: result.reason ?? "native termination is uncertain" };
+    },
+  };
+  const adapter = createNativeProcessOwnerAdapter(io);
+  return createNativeProcessOwner({
+    capability: "acyclic.native-process-owner.v1",
+    version: "0.2.0",
+    launch,
+    io,
+    spawn: adapter.spawn,
+    terminate: adapter.terminate,
+  });
+}
+
+/**
+ * Opens the token-scoped native process I/O boundary without exposing the
+ * legacy ChildProcess adoption surface. Node hosts should use this entrypoint
+ * when they need streaming ownership; launch and termination stay atomic in
+ * the companion and no PID hand-off is attempted.
+ */
+export async function openNativeProcessIo(): Promise<NativeProcessIo> {
+  const owner = await openNativeProcessOwner();
+  if (owner.io === undefined) {
+    throw new Error("the native filesystem companion does not provide streaming process ownership");
+  }
+  return owner.io;
 }
 
 /** Opens the durable Git-shaped compatibility state machine without invoking system Git. */
