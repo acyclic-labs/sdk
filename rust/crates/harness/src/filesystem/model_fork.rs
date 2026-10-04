@@ -77,6 +77,7 @@ where
             }
         }
         let mut references = crate::fork::ModelBoundaryReferences {
+            model: verified.boundary.request.model.clone(),
             publication: verified.publication.operation_id,
             publication_digest: crate::contract::canonical_json_digest(&verified.publication)?,
             boundary_digest: crate::contract::canonical_json_digest(&verified.boundary)?,

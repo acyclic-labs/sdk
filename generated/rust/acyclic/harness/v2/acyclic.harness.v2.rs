@@ -933,6 +933,32 @@ pub struct ReferenceGrant {
     pub attachment_manifest: ::core::option::Option<FileRef>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ModelBinding {
+    #[prost(string, tag = "1")]
+    pub provider: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub revision: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub options_json: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ModelBoundaryReferences {
+    #[prost(message, optional, tag = "1")]
+    pub publication: ::core::option::Option<OperationIdentity>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub publication_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub boundary_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub attestation: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "5")]
+    pub files: ::prost::alloc::vec::Vec<FileRef>,
+    #[prost(message, optional, tag = "6")]
+    pub model: ::core::option::Option<ModelBinding>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ForkSelection {
     #[prost(bool, tag = "1")]
     pub required: bool,
@@ -974,6 +1000,8 @@ pub struct ForkRequest {
     pub attached_agent_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "9")]
     pub preparation: ::core::option::Option<ForkPreparation>,
+    #[prost(message, optional, tag = "10")]
+    pub model_boundary: ::core::option::Option<ModelBoundaryReferences>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Capture {
@@ -1049,6 +1077,8 @@ pub struct ForkSeed {
     pub inherited_through_sequence: u64,
     #[prost(message, optional, tag = "16")]
     pub child_private_generation: ::core::option::Option<GenerationRef>,
+    #[prost(message, optional, tag = "17")]
+    pub model_boundary: ::core::option::Option<ModelBoundaryReferences>,
 }
 /// One parent-authorized Filesystem join. The notice is admitted atomically
 /// with the receipt; no private volume, model context, or child history merges.

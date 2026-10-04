@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Immutable provider-owned model selection; there is no global catalog.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
     /// Provider selected by application code.
@@ -107,15 +107,21 @@ impl Model {
             revision: revision.into(),
             options,
         };
-        if value.provider.trim().is_empty()
-            || value.name.trim().is_empty()
-            || value.revision.trim().is_empty()
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Validates the immutable provider/model/revision identity.
+    pub fn validate(&self) -> Result<()> {
+        if self.provider.trim().is_empty()
+            || self.name.trim().is_empty()
+            || self.revision.trim().is_empty()
         {
             return Err(Error::Invalid(
                 "model provider, name, and revision must be non-empty".into(),
             ));
         }
-        Ok(value)
+        Ok(())
     }
 }
 

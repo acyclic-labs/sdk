@@ -12,7 +12,7 @@ use crate::core::Authority;
 use crate::resources::{
     ArtifactRef, CheckpointRef, ContextRef, GenerationRef, ProviderRef, ResourceRef, StreamRef,
 };
-use crate::{AgentId, Capabilities, Error, OperationId, Result};
+use crate::{AgentId, Capabilities, Error, OperationId, Result, model::Model};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1061,6 +1061,9 @@ pub struct ReferenceGrant {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelBoundaryReferences {
+    /// Exact provider/model/options binding admitted for the completed
+    /// publication. Published-fork constructors must use this value exactly.
+    pub model: Model,
     /// Stable completed publication operation whose bytes were verified.
     pub publication: OperationId,
     /// Canonical digest of the verified model publication envelope.
@@ -1086,6 +1089,7 @@ impl ModelBoundaryReferences {
 
     /// Validates the manifest fields before the parent issuer signs them.
     pub(crate) fn validate_envelope(&self) -> Result<()> {
+        self.model.validate()?;
         if self.publication_digest == [0; 32] || self.boundary_digest == [0; 32] {
             return Err(Error::Invalid(
                 "model boundary publication digest is empty".into(),
@@ -2198,6 +2202,7 @@ mod tests {
         // resolved by the exact provider before admitting the fork.
         let mut model_only = seed.clone();
         model_only.model_boundary = Some(ModelBoundaryReferences {
+            model: Model::new("mock", "fixture", "1", serde_json::Value::Null)?,
             publication: OperationId::from_bytes([91; 16]),
             publication_digest: [92; 32],
             boundary_digest: [93; 32],

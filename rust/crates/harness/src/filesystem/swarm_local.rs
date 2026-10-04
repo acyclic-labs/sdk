@@ -2966,6 +2966,11 @@ impl PersistentLocalSwarm {
         self.refresh_registry_state().await?;
         request.validate()?;
         seed.validate()?;
+        super::local::validate_published_model_binding(
+            &self.config.model,
+            self.provider.as_ref(),
+            seed,
+        )?;
         if request.fork_operation != Some(seed.operation_id)
             || request.child_authority.as_ref() != Some(&seed.child)
             || request.child_agent != Some(seed.child_agent)

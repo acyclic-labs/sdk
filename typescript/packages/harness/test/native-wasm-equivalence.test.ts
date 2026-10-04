@@ -213,6 +213,7 @@ test("recursive model requests retain exact parent prefixes through raw WASM and
 });
 
 interface ModelBoundaryWire {
+  readonly model: { readonly provider: string; readonly name: string; readonly revision: string; readonly options: Record<string, unknown> };
   readonly publication: string;
   readonly publication_digest: readonly number[];
   readonly boundary_digest: readonly number[];
@@ -244,6 +245,7 @@ function modelBoundaryRequest(files: readonly FileRef[]): ForkRequestWithModelBo
     ],
     boundary: null,
     model_boundary: {
+      model: { provider: "fixture", name: "recursive", revision: "1", options: {} },
       publication: "33333333-3333-4333-8333-333333333333",
       publication_digest: Array(32).fill(1), boundary_digest: Array(32).fill(2), attestation: Array(32).fill(3),
       files: files.map(wireFile),
@@ -260,8 +262,8 @@ test("nonnull model-boundary envelopes survive raw WASM and typed contract admis
   const request = modelBoundaryRequest(files);
   const raw = validateContract("fork_request", request, null) as ForkRequestWithModelBoundary;
   const facade = contracts.validate("fork_request", request as unknown as ForkRequest) as unknown as ForkRequestWithModelBoundary;
-  expect(raw.model_boundary).toEqual(request.model_boundary);
-  expect(facade.model_boundary).toEqual(request.model_boundary);
+  expect(bytes(raw.model_boundary)).toEqual(bytes(request.model_boundary));
+  expect(bytes(facade.model_boundary)).toEqual(bytes(request.model_boundary));
   expect(equalBytes(bytes(raw), bytes(facade))).toBe(true);
 
   const mutations: readonly [string, (boundary: ModelBoundaryWire) => ModelBoundaryWire][] = [

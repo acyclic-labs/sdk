@@ -1797,6 +1797,7 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
         ],
         boundary: None,
         model_boundary: Some(ModelBoundaryReferences {
+            model: Model::new("mock", "fixture", "1", Value::Null)?,
             publication: OperationId::from_bytes([5; 16]),
             publication_digest: [1; 32],
             boundary_digest: [2; 32],

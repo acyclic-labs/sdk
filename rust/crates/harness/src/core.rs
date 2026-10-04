@@ -3152,6 +3152,7 @@ fn model_boundary_proof(
         child,
         child_agent,
         attached_agents,
+        &model_boundary.model,
         model_boundary.publication,
         model_boundary.publication_digest,
         model_boundary.boundary_digest,

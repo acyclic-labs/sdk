@@ -2880,12 +2880,8 @@ impl AgentHarness {
         model: Model,
         provider: Arc<dyn ModelProvider>,
     ) -> Result<Arc<Self>> {
-        Model::new(
-            model.provider.clone(),
-            model.name.clone(),
-            model.revision.clone(),
-            model.options.clone(),
-        )?;
+        model.validate()?;
+        crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let mut bound = self.as_ref().clone();
         bound.model = Some(ModelBinding { model, provider });
         Ok(Arc::new(bound))

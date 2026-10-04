@@ -1,0 +1,94 @@
+{
+  "worktree": "C:/Users/varun/.codex/worktrees/bindings-root-adapt/sdk",
+  "branch": "codex/graphcoder-bindings-adapt",
+  "base_commit": "ba0a0059ae404cb1e52e2bfaebfc7f1aaee125a2",
+  "scope": "published model/provider/revision/options binding and generated protobuf contracts",
+  "generation": {
+    "command": "bun scripts/generate.mjs",
+    "result": "passed",
+    "log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-generate-final-20261004.txt",
+    "proto_copies_equal": true
+  },
+  "generated_check": {
+    "command": "bun scripts/check-generated.mjs",
+    "result": "blocked_by_preexisting_fixture_drift",
+    "log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-generated-check-20261004-final.txt",
+    "drift": {
+      "canonical": "fixtures/harness/v2/task-admission-v3.json",
+      "packaged": "rust/crates/harness/fixtures/v2/task-admission-v3.json",
+      "canonical_sha256": "4F52AA442359CF84CEDFE20BF499A12372AC2A0535299D09FE5EC9B32B9C7A98",
+      "packaged_sha256": "6BDC86D37B74F384BFAD9A687B29068F76BE3A4B1BB9DD15FBA5DF96FCCCFC5F"
+    }
+  },
+  "native": {
+    "check_command": "cargo check -p acyclic-harness --features filesystem-local -j2 --target-dir C:/Users/varun/.codex/build-cache/bindings-root-adapt-native",
+    "check_result": "passed",
+    "check_log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-native-check-c-20261004.txt",
+    "model_fork_command": "cargo test -p acyclic-harness --features filesystem-local -j2 --target-dir C:/Users/varun/.codex/build-cache/bindings-root-adapt-native --test model_fork_boundary -- --nocapture",
+    "model_fork_result": "preexisting_failures",
+    "model_fork_log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-native-model-fork-c-20261004.txt",
+    "failures": [
+      "invalid_model_attestation_is_rejected_before_fork_allocation: expected NotFound but existing preparation path returns Unauthorized",
+      "native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix: forged preparation is rejected during preparer verification before publication"
+    ],
+    "debug_confirmation": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-native-debug-model3-20261004.txt"
+  },
+  "typescript": {
+    "typecheck_command": "bun x tsc -p tsconfig.json",
+    "typecheck_result": "passed_with_generated_harness_and_objects_wasm_artifacts",
+    "typecheck_log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-tsc-fresh2-20261004.txt",
+    "model_validation_command": "bun test test/model-validation.test.ts",
+    "model_validation_result": "passed_13_tests",
+    "model_validation_log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-ts-model-validation-freshwasm-20261004.txt",
+    "typecheck_note": "The initial package-only run was blocked by missing generated WASM; the qualification run supplied generated harness and objects WASM artifacts and passed."
+  },
+  "wasm": {
+    "build_command": "CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=Q:/graphcoder-builds/bindings-root-adapt-wasm bun scripts/build-harness-wasm.mjs C:/Users/varun/.codex/artifacts/bindings-root-adapt-wasm-20261004",
+    "build_result": "passed",
+    "build_log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-wasm-build-20261004.txt",
+    "runtime_command": "bun inline import of fresh acyclic_harness_wasm.js: prepareModelRequest(request, limits, null) and canonical-byte equality",
+    "runtime_result": "passed",
+    "runtime_log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-wasm-runtime-20261004-final.txt",
+    "artifact_directory": "C:/Users/varun/.codex/artifacts/bindings-root-adapt-wasm-20261004",
+    "artifacts": {
+      "acyclic_harness_wasm_bg.wasm": { "bytes": 6965259, "sha256": "B381142A364476D53CEB94FC3B53C45C9AB84A6CEE41121B806809AF2BCFB41F" },
+      "acyclic_harness_wasm.js": { "bytes": 75850, "sha256": "D0BF237206A59CE51A104D545CE5B5EE61D7C13398332BC127BA1F63FEED37D8" },
+      "acyclic_harness_wasm.d.ts": { "bytes": 42680, "sha256": "377C42AC5FC312829F904203D98A7A7CA3BB57F6BFF7633B7A842C1008521BD7" },
+      "acyclic_harness_wasm_bg.wasm.d.ts": { "bytes": 9456, "sha256": "D23595D181315240DA6AA924E1E793B442B8AA63BD01408F2CFC9BCBEC700F0D" }
+    }
+  },
+  "native_wasm_equivalence": {
+    "command": "bun test test/native-wasm-equivalence.test.ts with fresh harness and objects WASM artifacts",
+    "result": "2_pass_1_preexisting_fixture_failure",
+    "log": "C:/Users/varun/.codex/durablelogs/bindings-root-adapt-ts-native-wasm-equivalence-final2-20261004.txt",
+    "passing_cases": [
+      "recursive model requests retain exact parent prefixes through raw WASM and typed contract facade",
+      "nonnull model-boundary envelopes survive raw WASM and typed contract admission"
+    ],
+    "preexisting_failure": "WASM event bytes fixture differs in the first stream identity digest; fixture conformance vector is outside this model binding slice."
+  },
+  "source_sha256": {
+    "proto/harness/v2/harness.proto": "B977359840C5676BBA0C5D57600151AB98489213FC756B005ABDEA9F21702840",
+    "rust/crates/harness/proto/harness/v2/harness.proto": "B977359840C5676BBA0C5D57600151AB98489213FC756B005ABDEA9F21702840",
+    "rust/crates/harness/src/model.rs": "CD21DA7F6D312330F27DBC312FB293B7C6912B0BC0A265E56E8916E5E31F2B1D",
+    "rust/crates/harness/src/fork.rs": "316D1977390A2972C775C8A8E6CB4E0A139AF98F28194BB348530DF19D582150",
+    "rust/crates/harness/src/core.rs": "D43F737C1A007390FB41D4B6A2696D683F639954CD8244160A40439D0E28B133",
+    "rust/crates/harness/src/filesystem/local.rs": "EB007B07F64DC991815DD527E334CC29920CE402BADCDED0564DE1F5685882CA",
+    "rust/crates/harness/src/filesystem/model_fork.rs": "B190609D41731BDB059B0EA49DAFCAE371940DBB4C426A2B66D3172793B66690",
+    "rust/crates/harness/src/filesystem/swarm_local.rs": "9B8D18B114602611A0F5DB060388CBD51301C2B7C578289D8E45FBC29A766508",
+    "rust/crates/harness/src/runtime.rs": "468F92FD086AFF306D494AC6BBBDF4DADF67140C0A8CB08555C96D6A72FC09CB",
+    "rust/crates/harness/tests/model_fork_boundary.rs": "5746A188DC986F3FE4525B23ABD7106FD6552902D8A1CE74E7BD9CC0C482D862",
+    "generated/rust/acyclic/harness/v2/acyclic.harness.v2.rs": "B48E57B1ED64D2F3D282A6834F68369F7416210AED103511D7C8677ECC6C128B",
+    "generated/typescript/harness/v2/harness_pb.d.ts": "006509EC2BC62BC019DF735E178DE14153B82E90D9E31CBF515DEEB564A57DD7",
+    "generated/typescript/harness/v2/harness_pb.js": "5FB87EF2157FA66194E796FEE95FBBCF10BD0E666BFFC2AE331890E845A30248",
+    "typescript/packages/harness/generated/proto/harness/v2/harness_pb.d.ts": "006509EC2BC62BC019DF735E178DE14153B82E90D9E31CBF515DEEB564A57DD7",
+    "typescript/packages/harness/generated/proto/harness/v2/harness_pb.js": "5FB87EF2157FA66194E796FEE95FBBCF10BD0E666BFFC2AE331890E845A30248",
+    "typescript/packages/harness/test/native-wasm-equivalence.test.ts": "D8EBA17CDF0D8C148E3A683AED8ACEE5B85AF636DFFCC645A969A2BB7A0CD04B"
+  },
+  "boundaries": [
+    "mocked providers only",
+    "no sandbox",
+    "fresh WASM artifact pending a free build lane",
+    "parent Root model-input policy reconstruction remains a coordinated follow-up"
+  ]
+}
