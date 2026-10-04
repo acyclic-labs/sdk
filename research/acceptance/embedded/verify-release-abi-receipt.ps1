@@ -127,7 +127,20 @@ function Assert-ReceiptPackage([object]$Receipt, [string]$Root) {
         if ($actual -ne ([string]$property.Value).ToLowerInvariant()) { throw "Artifact hash mismatch: $relative" }
         $hashes[$relative] = $actual
     }
-    return [ordered]@{ package_root = (Resolve-FullPath $Root); pe = $pe; artifact_count = $hashes.Count }
+    return [ordered]@{ package_root = (Resolve-FullPath $Root); pe = $pe; artifact_count = $hashes.Count; artifact_hashes = $hashes }
+}
+
+function Get-UnifiedArtifactDigest([object]$Artifacts) {
+    $canonical = New-Object Text.StringBuilder
+    foreach ($property in ($Artifacts.psobject.Properties | Sort-Object Name)) {
+        [void]$canonical.Append([string]$property.Name)
+        [void]$canonical.Append([char]0)
+        [void]$canonical.Append('sha256:')
+        [void]$canonical.Append(([string]$property.Value).ToLowerInvariant())
+        [void]$canonical.Append([char]0)
+    }
+    $digest = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical.ToString()))
+    return 'sha256:' + [Convert]::ToHexString($digest).ToLowerInvariant()
 }
 
 $sourceFull = Resolve-FullPath $SourceRoot
@@ -144,6 +157,11 @@ $schemaPath = Join-Path $PSScriptRoot 'release-abi-receipt.schema.json'
 $schema = Get-Content -Raw -LiteralPath $schemaPath | ConvertFrom-Json
 if ($schema.'$id' -ne 'https://sdk.acyclic.dev/schemas/embedded-release-abi-receipt.v1.json') { throw 'Receipt schema identity changed unexpectedly' }
 $validated = Assert-ReceiptPackage $receipt $packageFull
+$unifiedEvidencePath = Join-Path $PSScriptRoot 'release-abi-generation-evidence.json'
+$unifiedEvidence = Get-Content -Raw -LiteralPath $unifiedEvidencePath | ConvertFrom-Json
+if ($unifiedEvidence.schema -ne 'acyclic.sdk.qualification.evidence.v1' -or $unifiedEvidence.language -ne 'cpp' -or $unifiedEvidence.source_revision -ne $receipt.source.revision -or $unifiedEvidence.contract_digest -ne ('sha256:' + $receipt.source.source_digest) -or $unifiedEvidence.artifact_digest -ne (Get-UnifiedArtifactDigest $receipt.artifacts) -or $unifiedEvidence.embedded.status -ne 'qualified' -or $unifiedEvidence.install.status -ne 'qualified' -or @($unifiedEvidence.embedded.tests).Count -lt 5) {
+    throw 'Unified Rust qualification evidence is not bound to the embedded ABI receipt'
+}
 $tamperRejected = $null
 if (-not $SkipTamperCheck) {
     $tempRoot = Join-Path ([IO.Path]::GetTempPath()) "acyclic-release-abi-tamper-$PID"
@@ -167,6 +185,8 @@ if (-not $SkipTamperCheck) {
     status = 'passed'
     source_output_isolated = $true
     rust_validator_schema = (Resolve-FullPath $schemaPath)
+    unified_rust_evidence = (Resolve-FullPath $unifiedEvidencePath)
+    unified_evidence_bound = $true
     package = $validated
     tamper_rejected = if ($SkipTamperCheck) { $null } else { $tamperRejected }
 } | ConvertTo-Json -Depth 10

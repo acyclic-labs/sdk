@@ -1,0 +1,31 @@
+{
+  "schema": "acyclic.sdk.embedded.platform-qualification.v1",
+  "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+  "source_crate": "rust/crates/sdk-embedded-prototype",
+  "source_digest": "sha256:e60273cd4f2bbf6132c67872a411a86328291628a2fbd91e3033725809f2c8a3",
+  "platforms": {
+    "windows-x86_64-msvc": {
+      "status": "qualified",
+      "target": "x86_64-pc-windows-msvc",
+      "artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+      "checks": ["PE MZ/PE signature", "acyclic_embedded_abi_version export", "C consumer", "Python ctypes consumer", "C++ CTest 3/3", "clean CMake prefix"]
+    },
+    "linux-x86_64-musl": {
+      "status": "pending-toolchain",
+      "target": "x86_64-unknown-linux-musl",
+      "command": "cargo build --locked --offline --release --target x86_64-unknown-linux-musl",
+      "observed": "Rust target is installed, but ring cannot find x86_64-linux-musl-gcc; no artifact was promoted"
+    },
+    "macos-x86_64": {
+      "status": "pending-runner",
+      "target": "x86_64-apple-darwin",
+      "observed": "No macOS runner or Apple target toolchain is available on the Windows qualification host"
+    },
+    "macos-aarch64": {
+      "status": "pending-runner",
+      "target": "aarch64-apple-darwin",
+      "observed": "No macOS runner or Apple target toolchain is available on the Windows qualification host"
+    }
+  },
+  "publication": { "registry_published": false, "production_deployed": false }
+}

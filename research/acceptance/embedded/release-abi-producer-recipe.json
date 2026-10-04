@@ -35,6 +35,8 @@
     "manifest": "research/acceptance/embedded/release-abi-20261004.json",
     "receipt_schema": "research/acceptance/embedded/release-abi-receipt.schema.json",
     "validator": "research/acceptance/embedded/verify-release-abi-receipt.ps1",
+    "unified_generation_evidence": "research/acceptance/embedded/release-abi-generation-evidence.json",
+    "platform_matrix": "research/acceptance/embedded/platform-qualification-20261004.json",
     "artifacts": [
       "include/acyclic_embedded_prototype.h",
       "include/acyclic/embedded.hpp",
@@ -66,5 +68,23 @@
   "publication": {
     "registry_publish": false,
     "production_deploy": false
+  },
+  "platforms": {
+    "windows-x86_64-msvc": {
+      "status": "qualified",
+      "artifact_layout": "portable-cmake-prefix",
+      "receipt": "research/acceptance/embedded/release-abi-20261004.json"
+    },
+    "linux-x86_64-musl": {
+      "status": "pending-toolchain",
+      "required_target": "x86_64-unknown-linux-musl",
+      "required_tools": ["x86_64-linux-musl-gcc", "musl linker"],
+      "receipt": "research/acceptance/embedded/platform-qualification-20261004.json"
+    },
+    "macos": {
+      "status": "pending-runner",
+      "required_targets": ["x86_64-apple-darwin", "aarch64-apple-darwin"],
+      "receipt": "research/acceptance/embedded/platform-qualification-20261004.json"
+    }
   }
 }
