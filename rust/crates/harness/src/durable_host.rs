@@ -577,10 +577,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         self.clock.clone()
     }
 
-    fn now_unix_millis(&self) -> u64 {
-        self.clock.now_unix_millis()
-    }
-
     fn supports_admission_dependencies(&self) -> bool {
         true
     }

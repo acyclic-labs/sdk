@@ -1,7 +1,5 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
-use acyclic_stream::UnixMillisClock;
-
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
     Outcome, Result, TaskId,
@@ -669,7 +667,7 @@ pub trait DurableTaskHost: Send + Sync {
     /// validation. Hosts with an injected clock override this boundary;
     /// lightweight adapters retain the system-clock default.
     fn now_unix_millis(&self) -> u64 {
-        acyclic_stream::SystemUnixMillisClock.now_unix_millis()
+        self.owner_clock().now_unix_millis()
     }
 
     /// Whether admission retains prerequisites and fences dispatch until success.
