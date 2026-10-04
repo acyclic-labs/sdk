@@ -126,7 +126,7 @@ enum Operation {
 struct Args {
     operation: Operation,
     source_root: PathBuf,
-    output: PathBuf,
+    output: Option<PathBuf>,
     receipt: Option<PathBuf>,
     evidence: Option<PathBuf>,
     package_root: Option<PathBuf>,
@@ -315,7 +315,15 @@ impl From<serde_json::Error> for CliError {
 fn run() -> Result<(), CliError> {
     let args = parse_args()?;
     let source_root = canonical_existing_directory(&args.source_root, "source root")?;
-    let output = absolute_path(&args.output)?;
+    let default_output;
+    let output_arg = match args.output.as_deref() {
+        Some(path) => path,
+        None => {
+            default_output = default_output_path(&source_root);
+            &default_output
+        }
+    };
+    let output = absolute_path(output_arg)?;
     validate_output_path(&output)?;
     fs::create_dir_all(&output)?;
     match args.operation {
@@ -357,7 +365,7 @@ fn parse_args() -> Result<Args, CliError> {
         }
         None => {
             return Err(CliError::new(
-                "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH --output PATH [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
             ));
         }
     };
@@ -412,7 +420,7 @@ fn parse_args() -> Result<Args, CliError> {
             }
             "--help" | "-h" => {
                 return Err(CliError::new(
-                    "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH --output PATH [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                    "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
                 ));
             }
             other => return Err(CliError::new(format!("unknown argument {other}"))),
@@ -421,7 +429,7 @@ fn parse_args() -> Result<Args, CliError> {
     Ok(Args {
         operation,
         source_root: source_root.ok_or_else(|| CliError::new("--source-root is required"))?,
-        output: output.ok_or_else(|| CliError::new("--output is required"))?,
+        output,
         receipt,
         evidence,
         package_root,
@@ -6034,6 +6042,24 @@ fn absolute_path(path: &Path) -> Result<PathBuf, CliError> {
     }
 }
 
+/// Keep implicit generation output outside the source checkout. Callers may
+/// choose a stable external cache location, while the default remains safe
+/// for a clean checkout and for multiple worktrees on the same host.
+fn default_output_path(source_root: &Path) -> PathBuf {
+    if let Ok(value) = env::var("ACYCLIC_SDK_GENERATION_OUTPUT") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    default_output_path_for_source(source_root)
+}
+
+fn default_output_path_for_source(source_root: &Path) -> PathBuf {
+    let source_key = source_root.to_string_lossy().replace('\\', "/");
+    let digest = format!("{:x}", Sha256::digest(source_key.as_bytes()));
+    env::temp_dir().join(format!("acyclic-sdk-generation-{}", &digest[..16]))
+}
+
 fn validate_output_path(path: &Path) -> Result<(), CliError> {
     let mut current = PathBuf::new();
     for component in path.components() {
@@ -6489,6 +6515,20 @@ mod tests {
 
         cleanup(&root);
         cleanup(&external);
+    }
+
+    #[test]
+    fn implicit_generation_output_is_external_and_checkout_specific() {
+        let first = test_directory("implicit-output-first");
+        let second = test_directory("implicit-output-second");
+        let first_output = default_output_path_for_source(&first);
+        let second_output = default_output_path_for_source(&second);
+        assert!(!first_output.starts_with(&first));
+        assert!(!second_output.starts_with(&second));
+        assert_ne!(first_output, second_output);
+        assert!(first_output.to_string_lossy().contains("acyclic-sdk-generation-"));
+        cleanup(&first);
+        cleanup(&second);
     }
 
     #[test]
