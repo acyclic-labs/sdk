@@ -1185,7 +1185,43 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                         "message body reference is not retained by the recipient inbox".into(),
                     )
                 })?;
-            self.reader.read(&item.payload).await
+            let bytes = self.reader.read(&item.payload).await?;
+            item.payload.descriptor().verify(&bytes)?;
+            Ok(bytes)
+        })
+    }
+
+    fn read_message_bodies<'a>(
+        &'a self,
+        task_id: TaskId,
+        items: &'a [InboxItem],
+    ) -> BoxFuture<'a, Result<Vec<Vec<u8>>>> {
+        Box::pin(async move {
+            // Resolve the recipient's admitted render bound before reading
+            // any body.  The protocol bound is only a fallback for hosts
+            // without admission state; coordinator-backed mail must use the
+            // effective task limit retained by the owner.
+            let admission = self.admission(OperationId::from_bytes(task_id.into_bytes())).await?;
+            let total = items.iter().try_fold(0_u64, |total, item| {
+                total
+                    .checked_add(item.payload.descriptor().byte_length())
+                    .ok_or_else(|| Error::Invalid("message body aggregate is too large".into()))
+            })?;
+            if total > admission.limits.render_bytes {
+                return Err(Error::Invalid(
+                    "message body aggregate exceeds the admitted render bound".into(),
+                ));
+            }
+            let mut bodies = Vec::with_capacity(items.len());
+            for item in items {
+                let message_id = OperationId::parse(&item.message_id)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                bodies.push(
+                    self.read_message_body(task_id, item.sequence, message_id, &item.payload)
+                        .await?,
+                );
+            }
+            Ok(bodies)
         })
     }
 
