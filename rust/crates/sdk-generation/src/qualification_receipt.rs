@@ -43,6 +43,7 @@ struct AuthorityMethod {
     response_fields: BTreeSet<String>,
     allow_empty_response: bool,
     response_rules: BTreeSet<String>,
+    semantic_expectations: Option<Value>,
 }
 
 pub fn write(options: &Options) -> Result<PathBuf, String> {
@@ -141,12 +142,32 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             "scenario result",
         )?;
         let result = read_output_json(&output, &output_path, "scenario result")?;
+        let intentional_cancellation = result.get("exit_code").and_then(Value::as_i64) == Some(1)
+            && result
+                .get("rpc_outcome")
+                .and_then(Value::as_object)
+                .and_then(|outcome| outcome.get("status"))
+                .and_then(Value::as_str)
+                == Some("canceled")
+            && result
+                .get("rpc_outcome")
+                .and_then(Value::as_object)
+                .and_then(|outcome| outcome.get("code"))
+                .and_then(Value::as_i64)
+                == Some(1)
+            && result
+                .get("cancellation_trace")
+                .and_then(Value::as_object)
+                .is_some_and(|trace| {
+                    trace.get("requested").and_then(Value::as_bool) == Some(true)
+                        && trace.get("observed").and_then(Value::as_bool) == Some(true)
+                });
         if result.get("schema").and_then(Value::as_str) != Some(SCENARIO_RESULT_SCHEMA)
             || result.get("source_revision").and_then(Value::as_str)
                 != Some(source_revision.as_str())
             || result.get("status").and_then(Value::as_str) != Some("passed")
             || result.get("invoked").and_then(Value::as_bool) != Some(true)
-            || result.get("exit_code").and_then(Value::as_i64) != Some(0)
+            || (result.get("exit_code").and_then(Value::as_i64) != Some(0) && !intentional_cancellation)
         {
             return Err(format!("scenario result {} is not an invoked exit-0 pass", output_path));
         }
@@ -154,15 +175,18 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .get("rpc_outcome")
             .and_then(Value::as_object)
             .ok_or_else(|| format!("scenario result {} has no nominal RPC outcome", output_path))?;
-        if rpc_outcome.get("status").and_then(Value::as_str) != Some("ok")
-            || rpc_outcome.get("code").and_then(Value::as_i64) != Some(0)
+        let nominal_outcome = rpc_outcome.get("status").and_then(Value::as_str) == Some("ok")
+            && rpc_outcome.get("code").and_then(Value::as_i64) == Some(0);
+        let canceled_outcome = rpc_outcome.get("status").and_then(Value::as_str) == Some("canceled")
+            && rpc_outcome.get("code").and_then(Value::as_i64) == Some(1);
+        if (!nominal_outcome && !(intentional_cancellation && canceled_outcome))
             || rpc_outcome
                 .get("response_count")
                 .and_then(Value::as_u64)
                 .is_none_or(|count| count == 0)
         {
             return Err(format!(
-                "scenario result {} does not record a successful nominal RPC response",
+                "scenario result {} does not record a successful nominal or explicitly canceled RPC response",
                 output_path
             ));
         }
@@ -290,6 +314,23 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
         {
             return Err(format!("scenario {family}/{rpc} has no Rust cursor observation"));
         }
+        if let Some(revision_trace) = observations.get("revision_trace") {
+            let revision_trace = revision_trace
+                .as_array()
+                .ok_or_else(|| format!("scenario {family}/{rpc} has an invalid revision trace"))?;
+            let mut previous_revision = None;
+            for revision in revision_trace {
+                let revision = revision.as_u64().ok_or_else(|| {
+                    format!("scenario {family}/{rpc} has a non-integer revision observation")
+                })?;
+                if previous_revision.is_some_and(|previous| revision < previous) {
+                    return Err(format!(
+                        "scenario {family}/{rpc} revision trace is not monotonic"
+                    ));
+                }
+                previous_revision = Some(revision);
+            }
+        }
         let status_trace = observations
             .get("status_trace")
             .and_then(Value::as_array)
@@ -309,6 +350,23 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .get("transitions")
             .and_then(Value::as_array)
             .ok_or_else(|| format!("scenario {family}/{rpc} has no lifecycle transitions"))?;
+        if let Some(expected) = &authority_shape.semantic_expectations {
+            for key in [
+                "identity_pairs",
+                "cursor_trace",
+                "revision_trace",
+                "status_trace",
+                "transitions",
+            ] {
+                if let Some(expected_value) = expected.get(key)
+                    && observations.get(key) != Some(expected_value)
+                {
+                    return Err(format!(
+                        "scenario {family}/{rpc} semantic observation {key} differs from Rust expectation"
+                    ));
+                }
+            }
+        }
         let transport = nonempty_string(&result, "transport")?;
         if !matches!(transport.as_str(), "grpc" | "http" | "http-json" | "grpc-web") {
             return Err(format!("scenario {family}/{rpc} has an unknown transport"));
@@ -638,6 +696,7 @@ fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, 
                 .and_then(Value::as_bool)
                 .ok_or_else(|| format!("authority RPC {rpc} has no empty-response rule"))?;
             let response_rules = string_set(method, "response_rules")?;
+            let semantic_expectations = method.get("semantic_expectations").cloned();
             if methods
                 .insert(
                     rpc.clone(),
@@ -647,6 +706,7 @@ fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, 
                         response_fields,
                         allow_empty_response,
                         response_rules,
+                        semantic_expectations,
                     },
                 )
                 .is_some()
@@ -870,6 +930,41 @@ mod tests {
     }
 
     #[test]
+    fn receipt_writer_rejects_monotonic_but_wrong_cursor_trace() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["observations"]["cursor_trace"] = json!([3, 4]);
+        });
+        let error = write(&options).expect_err("wrong source-owned cursor values must fail closed");
+        assert!(error.contains("cursor_trace differs from Rust expectation"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    #[test]
+    fn receipt_writer_rejects_monotonic_but_wrong_revision_trace() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["observations"]["revision_trace"] = json!([3, 4]);
+        });
+        let error = write(&options).expect_err("wrong source-owned revision values must fail closed");
+        assert!(error.contains("revision_trace differs from Rust expectation"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    #[test]
+    fn receipt_writer_rejects_nonempty_but_wrong_status() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["observations"]["status_trace"] = json!(["wrong"]);
+        });
+        let error = write(&options).expect_err("wrong source-owned status must fail closed");
+        assert!(error.contains("status_trace differs from Rust expectation"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+    #[test]
     fn receipt_writer_rejects_empty_status_observation() {
         let (root, output, options) = fixture(false, false, false);
         mutate_scenario(&output, |scenario| {
@@ -915,7 +1010,7 @@ mod tests {
 
         let consumer_bytes = b"consumer";
         let execution_mode = if in_process { "in-process" } else { "remote" };
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.CreateActorResponse","present_fields":["actor"],"checked_rules":[],"rule_results":{},"identity_matches":false,"observations":{"identity_pairs":[{"field":"actor_id","request":"fixture-actor","response":"fixture-actor"}],"cursor_trace":[1,2],"status_trace":["ok"],"transitions":[]}},"checks":["invocation","transport","receiver-response","serialization"]}"#;
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.CreateActorResponse","present_fields":["actor"],"checked_rules":[],"rule_results":{},"identity_matches":false,"observations":{"identity_pairs":[{"field":"actor_id","request":"fixture-actor","response":"fixture-actor"}],"cursor_trace":[1,2],"revision_trace":[1,2],"status_trace":["ok"],"transitions":[]}},"checks":["invocation","transport","receiver-response","serialization"]}"#;
         let revision = git_head(&root).expect("fixture revision");
         let outcome = if rpc_error {
             r#"{"status":"ok","code":12,"response_count":0}"#
@@ -946,7 +1041,7 @@ mod tests {
         let actor_methods = if missing_rpc {
             json!([])
         } else {
-            json!([{"rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","response":"acyclic.actors.v1.CreateActorResponse","response_fields":["actor"],"allow_empty_response":false,"response_rules":[]}])
+            json!([{"rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","response":"acyclic.actors.v1.CreateActorResponse","response_fields":["actor"],"allow_empty_response":false,"response_rules":[],"semantic_expectations":{"identity_pairs":[{"field":"actor_id","request":"fixture-actor","response":"fixture-actor"}],"cursor_trace":[1,2],"revision_trace":[1,2],"status_trace":["ok"],"transitions":[]}}])
         };
         let authority = json!({"schema":"acyclic.sdk.rust-authority.v1","families":[
             {"source":"actors/v1/actors.proto","rpc_methods":actor_methods},

@@ -62,6 +62,7 @@
           "properties": {
             "identity_pairs": { "type": "array", "items": { "$ref": "#/$defs/identityPair" } },
             "cursor_trace": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+            "revision_trace": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
             "status_trace": { "type": "array", "items": { "type": "string", "minLength": 1 } },
             "transitions": { "type": "array", "items": { "$ref": "#/$defs/transition" } }
           }
