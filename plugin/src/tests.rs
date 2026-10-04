@@ -3335,10 +3335,19 @@ async fn root_git_conflicted_merge_abort_case() {
         merge_error.contains("conflict") || merge_error.contains("pending"),
         "merge error must expose the retained conflict: {merge_error}"
     );
-    let abort = control
-        .root_git_tool(root_id, vec!["merge".to_owned(), "--abort".to_owned()])
-        .await
-        .expect("public merge abort");
+    let abort = dispatch_plane_request(
+        &mut control,
+        ControlRequest {
+            version: 1,
+            command: ControlCommand::Git,
+            cwd: root.clone(),
+            argv: vec!["merge".to_owned(), "--abort".to_owned()],
+            name: String::new(),
+            arguments: Value::Null,
+        },
+    )
+    .await
+    .expect("public merge abort");
     assert!(
         !abort.is_null(),
         "abort must return a typed filesystem result"

@@ -1670,11 +1670,23 @@ pub(crate) async fn dispatch_plane_request(
                 return Err("acyclic git requires a Git-style subcommand".to_owned());
             }
             let (caller, route, root_id) = control.route_root_from_cwd(&request.cwd)?;
-            if request.argv.as_slice() == ["merge", "--continue"] {
-                return control.agent_merge_transition(&caller, false).await;
-            }
-            if request.argv.as_slice() == ["merge", "--abort"] {
-                return control.agent_merge_transition(&caller, true).await;
+            let merge_abort = match request.argv.as_slice() {
+                [command, option] if command == "merge" && option == "--continue" => Some(false),
+                [command, option] if command == "merge" && option == "--abort" => Some(true),
+                _ => None,
+            };
+            if let Some(abort) = merge_abort {
+                // A mounted child can have either a local Git-compatible
+                // merge conflict or a publication conflict owned by its
+                // parent.  Only the latter uses the agent transition path;
+                // local Git state must stay on the normal facade operation.
+                let agent_conflict = control
+                    .pending_conflict_for_parent(control.context_for_agent(&caller)?)
+                    .await?
+                    .is_some();
+                if agent_conflict {
+                    return control.agent_merge_transition(&caller, abort).await;
+                }
             }
             if request.argv.first().is_some_and(|command| command == "add")
                 && let Some(operation_id) = control
