@@ -2610,28 +2610,40 @@ impl PersistentLocalSwarm {
         host.create_volume(&project).await?;
         let mut config = LocalSwarmConfig::new(model.clone(), limits)?;
         config.project = Some(project.clone());
-        let base = Self::open_shared_with_bindings(
+        let mut swarm = Self::open_with_bindings(
             root.clone(),
             config,
             provider.clone(),
             LocalSwarmBindings::default(),
         )
         .await?;
-        let root_task = base.root_task().await?;
-        let host_secret = base.open_session(root_task).await?.signing_key();
-        drop(base);
+        let root_task = swarm.root_task().await?;
+        let root_harness = swarm.sessions.get_mut().remove(&root_task)
+            .ok_or_else(|| Error::Storage("new local composition has no root harness".into()))?;
+        let root_harness = Arc::try_unwrap(root_harness).map_err(|_| {
+            Error::Conflict("new local composition root was exposed before binding".into())
+        })?;
+        let host_secret = root_harness.signing_key();
         let resolver = Arc::new(
             LocalFilesystemForkResolver::new(host, stream, stream_provider, project)?
                 .with_host_secret(host_secret)?,
         );
-        Self::open_shared_with_model_and_bindings(
-            root,
-            model,
-            provider,
-            limits,
-            LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
-        )
-        .await
+        let plans = Arc::new(LocalModelForkPlans::new().with_resolver(resolver.clone()));
+        plans.bind_journal(swarm.registry.clone()).await?;
+        let publisher = Arc::new(LocalModelForkPublisher::new(plans.clone()));
+        swarm.bindings = LocalSwarmBindings::default()
+            .with_filesystem_fork_resolver(resolver)
+            .with_model_fork_plans(plans.clone())
+            .with_model_batch_publisher(publisher.clone());
+        let root_harness = root_harness.with_local_tools(
+            model, provider, limits, swarm.bindings.tools_for(root_task)?,
+        )?;
+        swarm.sessions.get_mut().insert(root_task, Arc::new(root_harness));
+        swarm.model_fork_publisher = Some(publisher.clone());
+        let swarm = Arc::new(swarm);
+        plans.bind_swarm(Arc::downgrade(&swarm))?;
+        publisher.bind(Arc::downgrade(&swarm))?;
+        Ok(swarm)
     }
 
     /// Returns the stable root task without opening any child session.
