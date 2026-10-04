@@ -2554,7 +2554,7 @@ mod tests {
             "page-message",
             Action::AppendConversationMessage {
                 message: Box::new(ConversationMessage {
-                    id: crate::MessageId::new(),
+                    id: Uuid::new_v4(),
                     sequence: 1,
                     kind: MessageKind::User,
                     content,
