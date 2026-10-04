@@ -2,12 +2,12 @@
   "schema": "acyclic.graphcoder.native-approval-receipt.v1",
   "source": {
     "worktree": "C:/Users/varun/.codex/worktrees/graphcoder-blocking-f9",
-    "commit": "9cec4d515163fe785a35e7c4ece4f8e206a9b37f",
-    "tree": "c7c2dd972750a2260eba01a5ac69054d050a0a1a"
+    "commit": "5081f1177e95643ad47fed363d7529393ca75f2e",
+    "tree": "c810f5afccd6d073b01038e835178b2b64544fe5"
   },
   "artifact": {
     "path": "Q:/graphcoder-builds/terminal/debug/graphcoder-runtime.exe",
-    "sha256": "2cb6fbffbfb88e29632bbeed7d07dbed283cfc8171ad0770bef01ec3833caadc"
+    "sha256": "193de3c5cf337700a0c22a6452e5e40e4c853e9817d81d5cd55208294ec13670"
   },
   "qualification": {
     "platform": "windows-native",
@@ -36,6 +36,15 @@
       "denied-operator",
       "approved-host-effect",
       "durable-replay"
+    ],
+    "native_cancellation_driver": "node scripts/graphcoder-native-cancellation-e2e.mjs",
+    "native_cancellation_driver_result": "passed",
+    "native_cancellation_fixture": "native-approval-blocking",
+    "native_cancellation_markers": [
+      "in-flight-cancel",
+      "durable-cancelled-receipt",
+      "cold-restart-replay",
+      "process-cleanup"
     ],
     "host_execution_action": {
       "executable": "absolute COMSPEC path",
