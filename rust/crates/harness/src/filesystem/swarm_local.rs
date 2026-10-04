@@ -16,6 +16,7 @@ use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
+    communication_tools::LocalTaskCancellationSource,
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     distributed::DistributedCoordinator,
@@ -171,13 +172,16 @@ struct LocalCommunicationComposition {
     task: ComponentIdentity,
     machine: MachineIdentity,
     schema: Value,
-    grants: Capabilities,
+    root_grants: Capabilities,
+    child_grants: Capabilities,
     limits: Limits,
+    cancellation: Arc<LocalTaskCancellationSource>,
 }
 
 impl LocalCommunicationAdmitter for LocalCommunicationComposition {
     fn admit<'a>(&'a self, task: TaskId, parent: Option<TaskId>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            self.cancellation.register(task)?;
             let operation_id = OperationId::from_bytes(task.into_bytes());
             let admission = TaskAdmissionRecord {
                 operation_id,
@@ -188,7 +192,11 @@ impl LocalCommunicationAdmitter for LocalCommunicationComposition {
                 output_schema: self.schema.clone(),
                 parent,
                 dependencies: BTreeSet::new(),
-                grants: self.grants.clone(),
+                grants: if parent.is_none() {
+                    self.root_grants.clone()
+                } else {
+                    self.child_grants.clone()
+                },
                 limits: self.limits,
                 run_limits: TaskRunLimits::default(),
                 policy: None,
@@ -229,7 +237,7 @@ async fn local_communication_bindings(
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine.clone())?;
-    let mut capabilities = storage
+    let mut root_capabilities = storage
         .owner_scope()
         .capabilities()
         .iter()
@@ -244,23 +252,38 @@ async fn local_communication_bindings(
             format!("task:spawn:{}@{}", task.name, task.version),
         ])
         .collect::<Vec<_>>();
-    capabilities.push(
+    root_capabilities.push(
         storage
             .volume()
             .capability(crate::conversation::VolumeOperation::Read)?,
     );
-    capabilities.push(
+    root_capabilities.push(
         storage
             .volume()
             .capability(crate::conversation::VolumeOperation::Write)?,
     );
-    let capabilities = Capabilities::new(capabilities);
+    let root_capabilities = Capabilities::new(root_capabilities);
+    let mut child_capabilities = vec![
+        "operation:declare".to_owned(),
+        "operation:observe".to_owned(),
+        "operation:cancel".to_owned(),
+        "mail:send".to_owned(),
+        "mail:read".to_owned(),
+        "timer:wait".to_owned(),
+        format!("task:spawn:{}@{}", task.name, task.version),
+    ];
+    child_capabilities.push(
+        storage
+            .volume()
+            .capability(crate::conversation::VolumeOperation::Read)?,
+    );
+    let child_capabilities = Capabilities::new(child_capabilities);
     let owner_agent = storage
         .owner_scope()
         .agent()
         .ok_or_else(|| Error::Unauthorized("local communication owner agent is missing".into()))?;
     let owner_scope =
-        issuer.root_for_agent(owner_agent, "communication-owner", capabilities.clone());
+        issuer.root_for_agent(owner_agent, "communication-owner", root_capabilities.clone());
     let verifier = issuer.verifier();
     let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
         swarm.filesystem_host.clone(),
@@ -286,7 +309,7 @@ async fn local_communication_bindings(
         owner,
         owner_scope,
         verifier,
-        RuntimeScope::new(capabilities.clone(), limits)?,
+        RuntimeScope::new(root_capabilities.clone(), limits)?,
         tasks,
         machines,
         Arc::new(SystemUnixMillisClock),
@@ -296,13 +319,19 @@ async fn local_communication_bindings(
         task,
         machine: machine.identity().clone(),
         schema: machine.schema.clone(),
-        grants: capabilities,
+        root_grants: root_capabilities,
+        child_grants: child_capabilities,
         limits,
+        cancellation: Arc::new(LocalTaskCancellationSource::default()),
     });
     let waits = Arc::new(crate::communication::StreamWaitStore::new_with_clock(
         swarm.conversation_stream.clone(), host.owner_clock(),
     ));
-    Ok(LocalSwarmBindings::communication(host, Some(waits), None)
+    Ok(LocalSwarmBindings::communication(
+        host,
+        Some(waits),
+        Some(admitter.cancellation.clone()),
+    )
         .with_communication_admitter(admitter))
 }
 
@@ -2930,11 +2959,35 @@ impl PersistentLocalSwarm {
     }
 
     /// Hydrates one already delivered mailbox payload through the composition
-    /// owner. The caller must first obtain the exact FileRef from read_inbox.
-    pub async fn read_message_body(&self, task: TaskId, payload: &FileRef) -> Result<Vec<u8>> {
+    /// owner. The identity and exact FileRef must both match a retained inbox
+    /// event for the requested recipient.
+    pub async fn read_message_body(
+        &self,
+        task: TaskId,
+        message_id: OperationId,
+        payload: &FileRef,
+    ) -> Result<Vec<u8>> {
         self.session(task).await?;
-        let root = self.root_task().await?;
-        self.open_session(root).await?.storage().read(payload).await
+        let mut after = 0;
+        loop {
+            let page = self.read_inbox(task, after, 1_024).await?;
+            if let Some(item) = page.iter().find(|item| {
+                item.message_id == message_id.to_string() && item.payload == *payload
+            }) {
+                let root = self.root_task().await?;
+                return self.open_session(root).await?.storage().read(&item.payload).await;
+            }
+            let Some(last) = page.last() else {
+                break;
+            };
+            after = last.sequence;
+            if page.len() < 1_024 {
+                break;
+            }
+        }
+        Err(Error::Unauthorized(
+            "message body reference is not retained by the recipient inbox".into(),
+        ))
     }
 
     /// Reads a bounded durable inbox page for a task.
@@ -4896,6 +4949,8 @@ mod tests {
             )
             .await?;
         let child = TaskId::from_bytes([0x92; 16]);
+        let sibling = TaskId::from_bytes([0x95; 16]);
+        let grandchild = TaskId::from_bytes([0x96; 16]);
         let child_session = LocalSwarmSession {
             task: child,
             parent: Some(root_task),
@@ -4904,19 +4959,55 @@ mod tests {
             operation: Some(OperationId::from_bytes(child.into_bytes())),
             phase: LocalSessionPhase::Ready,
         };
+        let sibling_session = LocalSwarmSession {
+            task: sibling,
+            parent: Some(root_task),
+            depth: 1,
+            task_description: "communication sibling".into(),
+            operation: Some(OperationId::from_bytes(sibling.into_bytes())),
+            phase: LocalSessionPhase::Ready,
+        };
+        let grandchild_session = LocalSwarmSession {
+            task: grandchild,
+            parent: Some(child),
+            depth: 2,
+            task_description: "communication grandchild".into(),
+            operation: Some(OperationId::from_bytes(grandchild.into_bytes())),
+            phase: LocalSessionPhase::Ready,
+        };
         let registry = swarm
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         append_record(&registry, StoredEvent::Session(child_session.into())).await?;
+        append_record(&registry, StoredEvent::Session(sibling_session.into())).await?;
+        append_record(&registry, StoredEvent::Session(grandchild_session.into())).await?;
         swarm.refresh_registry_state().await?;
-        swarm
+        let admitter = swarm
             .bindings
             .communication_admitter
             .as_ref()
-            .ok_or_else(|| Error::Unsupported("communication admission bridge missing".into()))?
-            .admit(child, Some(root_task))
-            .await?;
+            .ok_or_else(|| Error::Unsupported("communication admission bridge missing".into()))?;
+        admitter.admit(child, Some(root_task)).await?;
+        admitter.admit(sibling, Some(root_task)).await?;
+        admitter.admit(grandchild, Some(child)).await?;
+        assert!(matches!(
+            swarm
+                .send_message(sibling, child, OperationId::from_bytes([0x97; 16]), b"sibling")
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            swarm
+                .send_message(
+                    grandchild,
+                    root_task,
+                    OperationId::from_bytes([0x98; 16]),
+                    b"grandchild"
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         let message_id = OperationId::from_bytes([0x93; 16]);
         let receipt = swarm
             .send_message(root_task, child, message_id, b"pinned-mail")
@@ -4928,9 +5019,30 @@ mod tests {
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].sender, root_task);
         assert_eq!(
-            swarm.read_message_body(child, &receipt.payload).await?,
+            swarm
+                .read_message_body(child, receipt.message_id, &receipt.payload)
+                .await?,
             b"pinned-mail"
         );
+        let forged_payload = FileRef::new(
+            receipt.payload.volume().clone(),
+            receipt.payload.path(),
+            "forged-version",
+            receipt.payload.descriptor().clone(),
+            receipt.payload.display_name(),
+        )?;
+        assert!(matches!(
+            swarm
+                .read_message_body(child, receipt.message_id, &forged_payload)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            swarm
+                .read_message_body(root_task, receipt.message_id, &receipt.payload)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         swarm
             .open_session(root_task)
             .await?
@@ -4944,7 +5056,9 @@ mod tests {
             )
             .await?;
         assert_eq!(
-            swarm.read_message_body(child, &receipt.payload).await?,
+            swarm
+                .read_message_body(child, receipt.message_id, &receipt.payload)
+                .await?,
             b"pinned-mail"
         );
         drop(swarm);
@@ -4961,7 +5075,14 @@ mod tests {
         let inbox = reopened.read_inbox(child, 0, 8).await?;
         assert_eq!(inbox.len(), 1);
         assert_eq!(
-            reopened.read_message_body(child, &inbox[0].payload).await?,
+            reopened
+                .read_message_body(
+                    child,
+                    OperationId::parse(&inbox[0].message_id)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    &inbox[0].payload,
+                )
+                .await?,
             b"pinned-mail"
         );
         Ok(())

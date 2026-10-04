@@ -493,9 +493,12 @@ impl Runtime {
                 "delivered_at": message.delivered_at_epoch_ms,
             });
             if include_body {
+                let message_id = OperationId::parse(&message.message_id).map_err(|error| {
+                    DispatchError::invalid(format!("message identity is invalid: {error}"))
+                })?;
                 let body = self
                     .swarm
-                    .read_message_body(task, &message.payload)
+                    .read_message_body(task, message_id, &message.payload)
                     .await
                     .map_err(DispatchError::from_harness)
                     .and_then(|bytes| {
@@ -525,9 +528,9 @@ impl Runtime {
                 "message body must be between 1 and 64 KiB",
             ));
         }
-        if sender != session && recipient != session {
+        if sender != session {
             return Err(DispatchError::invalid(
-                "message participants must include the requested session",
+                "sender_id must match the authenticated session",
             ));
         }
         let message_id = operation_for(request_id);
@@ -1280,6 +1283,44 @@ mod tests {
             model_fixture: fixture.to_owned(),
             operator_token: None,
         }
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_a_forged_sender_identity() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
+        );
+        let listed = exchange(
+            runtime.clone(),
+            json!({"request_id":"list-forge","method":"list_sessions","params":{}}),
+        )
+        .await;
+        let session = listed["result"]["items"][0]["id"]
+            .as_str()
+            .expect("root session id")
+            .to_owned();
+        let forged = exchange(
+            runtime,
+            json!({
+                "request_id":"send-forge",
+                "method":"send_message",
+                "params":{
+                    "session_id":session,
+                    "sender_id":OperationId::from_bytes([0xa1; 16]).to_string(),
+                    "recipient_id":session,
+                    "body":"forged"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(forged["ok"], false);
+        assert_eq!(forged["error"]["code"], "invalid_input");
+        assert!(forged["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("sender_id")));
     }
 
     #[tokio::test]
