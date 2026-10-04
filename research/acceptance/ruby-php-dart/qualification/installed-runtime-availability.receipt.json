@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.sdk.ruby-php-dart.installed-runtime-availability.v1",
-  "generated_at_utc": "2026-10-03T23:20:39Z",
+  "generated_at_utc": "2026-10-04T00:09:48Z",
   "status": "qualified-with-retained-native-shutdown-failure",
   "source_binding": {
     "rust_emitter": {
@@ -153,5 +153,6 @@
   },
   "failure_policy": "The PHP native shutdown access violation remains failed despite all constructors completing; constructor output is not promoted to a whole-process pass."
 }
+
 
 
