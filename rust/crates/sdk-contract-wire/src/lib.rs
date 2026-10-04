@@ -18,6 +18,7 @@ pub mod inference;
 pub mod machines;
 pub mod objects;
 pub mod protocol;
+pub mod semantic_oracle;
 pub mod stream;
 pub mod transport;
 pub mod workers;

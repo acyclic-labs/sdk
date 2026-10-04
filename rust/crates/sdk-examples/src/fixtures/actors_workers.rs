@@ -264,6 +264,9 @@ mod tests {
             }],
             idempotency_key: "create-1".into(),
         })).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(created.actor_id, "fixture-actor");
+        assert_eq!(created.configuration_revision, 1);
+        assert_eq!(created.state, actors_wire::ActorState::Active as i32);
         assert_eq!(created.home_region, "eu-west");
         assert_eq!(created.subscriptions.len(), 1);
 
@@ -275,7 +278,9 @@ mod tests {
             expected_configuration_revision: created.configuration_revision,
             idempotency_key: "update-1".into(),
         })).await.unwrap().into_inner().actor.unwrap();
-        assert_eq!(updated.configuration_revision, created.configuration_revision + 1);
+        assert_eq!(updated.actor_id, "fixture-actor");
+        assert_eq!(updated.configuration_revision, 2);
+        assert_eq!(updated.state, actors_wire::ActorState::Active as i32);
         assert_eq!(fixture.inspect_actor(Request::new(actors_wire::InspectActorRequest { actor_id: created.actor_id.clone() })).await.unwrap().into_inner().actor.unwrap().code_sha256, vec![9]);
 
         let added = fixture.add_subscription(Request::new(actors_wire::AddSubscriptionRequest {

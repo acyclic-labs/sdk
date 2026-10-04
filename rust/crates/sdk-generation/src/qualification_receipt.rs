@@ -271,11 +271,9 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 ));
             }
         }
-        if !authority_shape.response_rules.is_empty()
-            && authority_shape.semantic_expectations.is_none()
-        {
+        if authority_shape.semantic_expectations.is_none() {
             return Err(format!(
-                "scenario {family}/{rpc} has response rules but no Rust semantic expectation map"
+                "scenario {family}/{rpc} has no Rust-owned scenario expectation map"
             ));
         }
         if authority_shape
@@ -931,7 +929,7 @@ mod tests {
         assert_eq!(receipt["source_revision_kind"], SOURCE_REVISION_KIND);
         assert_eq!(
             receipt["families"][0]["methods"][0],
-            "acyclic.actors.v1.ActorsService/CreateActor"
+            "acyclic.actors.v1.ActorsService/UpdateActor"
         );
         assert_eq!(
             receipt["consumer"]["scenarios"].as_array().unwrap().len(),
@@ -1013,7 +1011,25 @@ mod tests {
             scenario["semantic_evidence"]["identity_matches"] = json!(true);
         });
         let error = write(&options).expect_err("missing Rust expectation map must fail closed");
-        assert!(error.contains("no Rust semantic expectation map"));
+        assert!(error.contains("no Rust-owned scenario expectation map"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    #[test]
+    fn receipt_writer_rejects_rule_free_authority_without_expectations() {
+        let (root, output, options) = fixture(false, false, false);
+        let authority_path = output.join("wire/rust-authority.json");
+        let mut authority = read_json(&authority_path).expect("read authority");
+        authority["families"][0]["rpc_methods"][0]
+            .as_object_mut()
+            .expect("authority method")
+            .remove("semantic_expectations");
+        write_json(&authority_path, &authority);
+        let error = write(&options).expect_err(
+            "a method without a Rust scenario oracle must fail even without response rules",
+        );
+        assert!(error.contains("no Rust-owned scenario expectation map"));
         cleanup(&root);
         cleanup(&output);
     }
@@ -1135,7 +1151,7 @@ mod tests {
 
         let consumer_bytes = b"consumer";
         let execution_mode = if in_process { "in-process" } else { "remote" };
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.CreateActorResponse","present_fields":["actor"],"checked_rules":[],"rule_results":{},"identity_matches":false,"observations":{"identity_pairs":[{"field":"actor_id","request":"fixture-actor","response":"fixture-actor"}],"cursor_trace":[1,2],"revision_trace":[1,2],"status_trace":["ok"],"transitions":[]}},"checks":["invocation","transport","receiver-response","serialization"]}"#;
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/UpdateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.UpdateActorResponse","present_fields":["actor"],"checked_rules":[],"rule_results":{},"identity_matches":true,"observations":{"identity_pairs":[{"field":"actor_id","request":"fixture-actor","response":"fixture-actor"}],"cursor_trace":[],"revision_trace":[1,2],"status_trace":["ACTIVE"],"transitions":[]}},"checks":["invocation","transport","receiver-response","serialization"]}"#;
         let revision = git_head(&root).expect("fixture revision");
         let outcome = if rpc_error {
             r#"{"status":"ok","code":12,"response_count":0}"#
@@ -1169,7 +1185,7 @@ mod tests {
         let actor_methods = if missing_rpc {
             json!([])
         } else {
-            json!([{"rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","response":"acyclic.actors.v1.CreateActorResponse","response_fields":["actor"],"allow_empty_response":false,"response_rules":[],"semantic_expectations":{"identity_pairs":[{"field":"actor_id","request":"fixture-actor","response":"fixture-actor"}],"cursor_trace":[1,2],"revision_trace":[1,2],"status_trace":["ok"],"transitions":[]}}])
+            json!([{"rpc":"acyclic.actors.v1.ActorsService/UpdateActor","shape":"unary","response":"acyclic.actors.v1.UpdateActorResponse","response_fields":["actor"],"allow_empty_response":false,"response_rules":[],"semantic_expectations":{"identity_pairs":[{"field":"actor_id","request":"fixture-actor","response":"fixture-actor"}],"cursor_trace":[],"revision_trace":[1,2],"status_trace":["ACTIVE"],"transitions":[]}}])
         };
         let authority = json!({"schema":"acyclic.sdk.rust-authority.v1","families":[
             {"source":"actors/v1/actors.proto","rpc_methods":actor_methods},
