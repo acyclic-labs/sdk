@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+[checkpoint-terminal-lifecycle-failure-2026-10-04.json](checkpoint-terminal-lifecycle-failure-2026-10-04.json) records the integrated process-backed terminal fixtures passing 9/14, plus seven strict type failures. Missing bridge lifecycle support and fixture shape errors remain under repair; scripted hosts do not replace native PTY qualification.
+
 [checkpoint-isolated-native-2026-10-04.json](checkpoint-isolated-native-2026-10-04.json) records a fresh dedicated native build: two frozen-input cases and two read-projection cases pass, while the real local swarm fault suite passes one and fails four. Rust tree and executable hashes avoid shared-output provenance ambiguity; runtime fork recovery remains blocked by observed failures.
 
 [checkpoint-frozen-input-types-2026-10-04.json](checkpoint-frozen-input-types-2026-10-04.json) records strict TypeScript verification and 30 repeated WASM assertions after repairing the frozen-vector test's types. Byte expectations remain unchanged; native equivalence remains pending.
