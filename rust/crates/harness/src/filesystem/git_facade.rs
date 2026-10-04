@@ -15,7 +15,7 @@ use super::{
     ProjectMergeTerminal, ProjectMergeTerminalConflict, WorkspaceObservation,
 };
 use crate::{
-    Error, IdempotencyKey, OperationId, Result,
+    Error, IdempotencyKey, InteractionId, OperationId, Result,
     contract::canonical_json_digest,
     conversation::{
         Attachment, ContentGrant, ConversationMessage, ReferencedAttachments, VolumeClass,
@@ -24,6 +24,7 @@ use crate::{
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     resources::GenerationRef,
 };
+use serde::{Deserialize, Serialize};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, GitCommand, GitCommandOutput,
     GitCompatRepository, GitCompatRunError, GitCompatStore, GitFilesystemExecutor,
@@ -224,6 +225,123 @@ impl RootWritebackRequest {
     /// Creates a request for one exact approved publication.
     pub fn new(approval: RootWritebackApproval, scope: Scope) -> Self {
         Self { approval, scope }
+    }
+}
+
+/// Durable, model-independent handle for an inspected root writeback.
+/// The provider merge plan remains opaque and is rebuilt by Harness after reopen.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootWritebackInspection {
+    /// Contract revision.
+    pub version: u32,
+    /// Stable inspection/recovery operation identity.
+    pub inspection_id: OperationId,
+    /// Durable approval ticket required for publication.
+    pub approval_id: InteractionId,
+    /// Root project receiving the publication.
+    pub root_project: VolumeRef,
+    /// Direct child project inspected.
+    pub child_project: VolumeRef,
+    /// Direct child authority inspected.
+    pub child_authority: Authority,
+    /// Provider operation identity.
+    pub operation_id: OperationId,
+    /// Child generation inspected.
+    pub source_generation: GenerationRef,
+    /// Root generation expected at publication.
+    pub expected_target_generation: GenerationRef,
+    /// Exact operator action digest.
+    pub action_digest: [u8; 32],
+    /// Immutable recovery identity.
+    pub recovery_identity: [u8; 32],
+}
+
+impl RootWritebackInspection {
+    /// Constructs an exact inspection handle.
+    pub fn new(
+        inspection_id: OperationId,
+        approval_id: InteractionId,
+        root_project: VolumeRef,
+        child_project: VolumeRef,
+        child_authority: Authority,
+        operation_id: OperationId,
+        source_generation: GenerationRef,
+        expected_target_generation: GenerationRef,
+    ) -> Result<Self> {
+        let action_digest = root_writeback_child_action_digest(
+            &root_project,
+            &child_project,
+            &child_authority,
+            operation_id,
+            &source_generation,
+            &expected_target_generation,
+        )?;
+        let recovery_identity = canonical_json_digest(&(
+            "acyclic.root-writeback-inspection.v1",
+            inspection_id,
+            approval_id,
+            &root_project,
+            &child_project,
+            &child_authority,
+            operation_id,
+            &source_generation,
+            &expected_target_generation,
+            action_digest,
+        ))?;
+        let handle = Self {
+            version: 1,
+            inspection_id,
+            approval_id,
+            root_project,
+            child_project,
+            child_authority,
+            operation_id,
+            source_generation,
+            expected_target_generation,
+            action_digest,
+            recovery_identity,
+        };
+        handle.validate()?;
+        Ok(handle)
+    }
+
+    /// Revalidates every binding after loading from durable storage.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != 1
+            || self.inspection_id.into_bytes() == [0; 16]
+            || self.operation_id.into_bytes() == [0; 16]
+            || self.approval_id.into_bytes() == [0; 16]
+        {
+            return Err(Error::Invalid("root writeback inspection identity is invalid".into()));
+        }
+        let action = root_writeback_child_action_digest(
+            &self.root_project,
+            &self.child_project,
+            &self.child_authority,
+            self.operation_id,
+            &self.source_generation,
+            &self.expected_target_generation,
+        )?;
+        if action != self.action_digest {
+            return Err(Error::Conflict("root writeback inspection action changed".into()));
+        }
+        let recovery = canonical_json_digest(&(
+            "acyclic.root-writeback-inspection.v1",
+            self.inspection_id,
+            self.approval_id,
+            &self.root_project,
+            &self.child_project,
+            &self.child_authority,
+            self.operation_id,
+            &self.source_generation,
+            &self.expected_target_generation,
+            self.action_digest,
+        ))?;
+        if recovery != self.recovery_identity {
+            return Err(Error::Conflict("root writeback inspection identity changed".into()));
+        }
+        Ok(())
     }
 }
 
