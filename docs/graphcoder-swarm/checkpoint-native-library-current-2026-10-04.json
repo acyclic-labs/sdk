@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source_commit": "441d0eff122cf0282db17ddee2fbc9ac516ff686",
+  "source_tree": "6d72bfc09a694f93730c8e36ce7907c116a0aa65",
+  "rust_tree": "a1079316486ee442448dcb8050ba8f328b10d9be",
+  "suite": "acyclic-harness native library tests",
+  "suite_source_tree": "3c5243fb3ca98fd4bdd7b545c6348395ea699d47",
+  "platform": "Windows native execution",
+  "features": [
+    "filesystem-local"
+  ],
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib -- --test-threads=1",
+  "passed": 344,
+  "failed": 0,
+  "ignored": 0,
+  "filtered_out": 0,
+  "exit_code": 0,
+  "artifact": {
+    "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\441d0eff1\\acyclic_harness-8839286032972dd7.exe",
+    "sha256": "e6a5037f5303f190a60149358f565b4fd240959f355dcc6f17718f89f90c4b47"
+  },
+  "log": {
+    "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\441d0eff1\\native-unit-441d-receipt-scope.txt",
+    "sha256": "3aee6284ce86989c5ac20c7d28a3f2a22f9716704cbf3d311be4f99f478780c1"
+  },
+  "scope": "Complete currently compiled native Harness library suite; repairs four generic receipt regressions while keeping native identity substitution denial. Does not qualify separate integration binaries, production recursive swarm/fault matrix, installed terminal, full native-process-tree cleanup, root writeback, or generated WASM drift."
+}
