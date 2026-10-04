@@ -707,6 +707,12 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         request_digest: [u8; 32],
     ) -> Result<crate::model::ModelDispatchPermit> {
         let projected = SwarmBudget::replay(self.events.clone())?;
+        // Authenticate the live owner before consulting durable claim
+        // identities. A stale handle must not learn a prior claim's
+        // indeterminate status or use it as a substitute for authorization.
+        if projected.owner()? != *owner {
+            return Err(Error::Conflict("stale swarm owner generation".into()));
+        }
         // Check the authenticated source binding before consulting replay
         // identities. Otherwise an old claim could be returned as
         // `Indeterminate` and bypass the current prebinding gate.
@@ -1965,6 +1971,13 @@ mod tests {
             .await
             .expect_err("the pre-takeover owner must be fenced");
         assert!(matches!(error, Error::Conflict(_)));
+        let permit_error = stale
+            .root_dispatch_permit(&original, OperationId::new(), 0, [1; 32])
+            .expect_err("the pre-takeover owner must be fenced before claim replay");
+        assert!(matches!(
+            permit_error,
+            Error::Conflict(message) if message.contains("stale swarm owner")
+        ));
         assert_eq!(stale.refresh().await?, ());
         assert_eq!(stale.descriptor()?.1, replacement);
         Ok(())
