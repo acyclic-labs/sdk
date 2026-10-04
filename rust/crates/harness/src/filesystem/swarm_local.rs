@@ -157,6 +157,39 @@ pub struct LocalSwarmConfig {
     pub project: Option<VolumeRef>,
 }
 
+/// Host-side observations for lazy local swarm qualification.
+///
+/// These events are diagnostic only. They are never persisted, exposed to a
+/// model, or included in model request construction.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum LocalSwarmObservation {
+    /// A complete metadata session listing was returned.
+    SessionList { returned: usize },
+    /// A bounded metadata session page was returned.
+    SessionPage { returned: usize },
+    /// A metadata-only task snapshot was returned.
+    SessionSnapshot { task: TaskId },
+    /// A bounded event history page was returned.
+    HistoryPage { task: TaskId, returned: usize },
+    /// A bounded canonical message page was returned.
+    MessagePage { task: TaskId, returned: usize },
+    /// A bounded workspace directory page was returned.
+    WorkspacePage { task: TaskId, returned: usize },
+    /// One workspace file body was read explicitly.
+    WorkspaceFile { task: TaskId, bytes: usize },
+    /// A cold task harness was opened.
+    HarnessOpened { task: TaskId },
+    /// A model worker was about to be dispatched for a task.
+    ModelWorkerStarted { task: TaskId },
+}
+
+/// Receives host-only local swarm observations for qualification and metrics.
+pub trait LocalSwarmObserver: Send + Sync {
+    /// Records one observation outside the model-visible request path.
+    fn observe(&self, observation: LocalSwarmObservation);
+}
+
 /// Owner authenticated services shared by every local session.
 ///
 /// Child sessions receive the same tool executors and durable wait store, but
@@ -177,6 +210,8 @@ pub struct LocalSwarmBindings {
     /// Concrete local provider allocator. When supplied without an explicit
     /// plan index, the swarm builds one durable index around this resolver.
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
+    /// Optional host-only observation sink for lazy qualification metrics.
+    pub observer: Option<Arc<dyn LocalSwarmObserver>>,
 }
 
 impl LocalSwarmBindings {
@@ -194,6 +229,7 @@ impl LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
+            observer: None,
         }
     }
 
@@ -222,6 +258,14 @@ impl LocalSwarmBindings {
         resolver: Arc<LocalFilesystemForkResolver>,
     ) -> Self {
         self.filesystem_fork_resolver = Some(resolver);
+        self
+    }
+
+    /// Installs a host-only observation sink. Observations never enter model
+    /// requests or durable swarm state.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Arc<dyn LocalSwarmObserver>) -> Self {
+        self.observer = Some(observer);
         self
     }
 
@@ -2093,6 +2137,12 @@ pub struct PersistentLocalSwarm {
 }
 
 impl PersistentLocalSwarm {
+    fn observe(&self, observation: LocalSwarmObservation) {
+        if let Some(observer) = &self.bindings.observer {
+            observer.observe(observation);
+        }
+    }
+
     /// Opens or recovers a local swarm. Child sessions remain lazy until a
     /// caller explicitly activates or resumes one.
     pub async fn open(
@@ -2282,7 +2332,7 @@ impl PersistentLocalSwarm {
         let root_conversation = root_harness.storage().conversation().clone();
         let mut opened = BTreeMap::new();
         opened.insert(root_task, root_harness);
-        Ok(Self {
+        let swarm = Self {
             root,
             config,
             provider,
@@ -2306,7 +2356,9 @@ impl PersistentLocalSwarm {
             sessions: Mutex::new(opened),
             task_gates: Mutex::new(BTreeMap::new()),
             operator_choices: Mutex::new(BTreeMap::new()),
-        })
+        };
+        swarm.observe(LocalSwarmObservation::HarnessOpened { task: root_task });
+        Ok(swarm)
     }
 
     /// Opens a swarm from the common model/limit arguments.
@@ -2571,7 +2623,11 @@ impl PersistentLocalSwarm {
     /// reading child filesystem content.
     pub async fn sessions(&self) -> Result<Vec<LocalSwarmSession>> {
         self.refresh_registry_state().await?;
-        Ok(self.records.lock().await.values().cloned().collect())
+        let sessions = self.records.lock().await.values().cloned().collect::<Vec<_>>();
+        self.observe(LocalSwarmObservation::SessionList {
+            returned: sessions.len(),
+        });
+        Ok(sessions)
     }
 
     /// Reads one bounded, refreshed page of canonical session descriptors.
@@ -2583,14 +2639,20 @@ impl PersistentLocalSwarm {
         maximum_entries: usize,
     ) -> Result<LocalSwarmPage<LocalSwarmSession>> {
         self.refresh_registry_state().await?;
-        let records = self.records.lock().await;
-        page_from_sorted(
-            records.values().cloned(),
-            after,
-            maximum_entries,
-            |session| session.task.to_string(),
-            "session",
-        )
+        let page = {
+            let records = self.records.lock().await;
+            page_from_sorted(
+                records.values().cloned(),
+                after,
+                maximum_entries,
+                |session| session.task.to_string(),
+                "session",
+            )?
+        };
+        self.observe(LocalSwarmObservation::SessionPage {
+            returned: page.items.len(),
+        });
+        Ok(page)
     }
 
     /// Reads the refreshed recursive registry subtree rooted at one task.
@@ -2628,12 +2690,14 @@ impl PersistentLocalSwarm {
             Some(authority) => self.conversation_tail(&authority).await?,
             None => 0,
         };
-        Ok(LocalSwarmSnapshot {
+        let snapshot = LocalSwarmSnapshot {
             session,
             children,
             conversation_revision,
             workspace_generation: None,
-        })
+        };
+        self.observe(LocalSwarmObservation::SessionSnapshot { task });
+        Ok(snapshot)
     }
 
     /// Finds an already-authenticated descriptor for metadata projection. A
@@ -2695,9 +2759,14 @@ impl PersistentLocalSwarm {
             ));
         }
         let harness = self.open_session(task).await?;
-        harness
+        let events = harness
             .conversation_events(after_revision, limit, self.config.limits)
-            .await
+            .await?;
+        self.observe(LocalSwarmObservation::HistoryPage {
+            task,
+            returned: events.len(),
+        });
+        Ok(events)
     }
 
     /// Reads a bounded page of canonical conversation messages by sequence.
@@ -2717,21 +2786,15 @@ impl PersistentLocalSwarm {
             ));
         }
         let harness = self.open_session(task).await?;
-        harness
+        let messages = harness
             .storage()
             .conversation_messages(after_sequence, limit, self.config.limits)
-            .await
-    }
-
-    async fn read_conversation_events(
-        &self,
-        harness: &PersistentLocalHarness,
-        after_revision: u64,
-        limit: usize,
-    ) -> Result<Vec<crate::core::Event>> {
-        harness
-            .conversation_events(after_revision, limit, self.config.limits)
-            .await
+            .await?;
+        self.observe(LocalSwarmObservation::MessagePage {
+            task,
+            returned: messages.len(),
+        });
+        Ok(messages)
     }
 
     /// Reads one page of owner-authenticated private files. The generation
@@ -2745,9 +2808,14 @@ impl PersistentLocalSwarm {
         maximum_entries: u32,
     ) -> Result<crate::conversation::PrivateDirectoryPage> {
         let harness = self.open_session(task).await?;
-        harness
+        let page = harness
             .list_private_directory(path, expected_generation, after, maximum_entries)
-            .await
+            .await?;
+        self.observe(LocalSwarmObservation::WorkspacePage {
+            task,
+            returned: page.entries.len(),
+        });
+        Ok(page)
     }
 
     /// Reads one owner-authenticated private file at an optional pinned
@@ -2759,7 +2827,12 @@ impl PersistentLocalSwarm {
         expected_generation: Option<&GenerationRef>,
     ) -> Result<(FileRef, Vec<u8>)> {
         let harness = self.open_session(task).await?;
-        harness.read_private_path(path, expected_generation).await
+        let file = harness.read_private_path(path, expected_generation).await?;
+        self.observe(LocalSwarmObservation::WorkspaceFile {
+            task,
+            bytes: file.1.len(),
+        });
+        Ok(file)
     }
 
     /// Reconstructs the durable approval journal and projects one bounded page.
@@ -3117,6 +3190,7 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
+        self.observe(LocalSwarmObservation::ModelWorkerStarted { task });
         let output = harness
             .run_with_max_steps(operation, prompt, max_steps)
             .await?;
@@ -3854,7 +3928,7 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        let output = match self.run_child_turn(&harness, &bundle, &request).await {
+        let output = match self.run_child_turn(child, &harness, &bundle, &request).await {
             Ok(output) => output,
             Err(error) => {
                 self.mark_failed(child, error.to_string()).await?;
@@ -4011,6 +4085,7 @@ impl PersistentLocalSwarm {
 
     async fn run_child_turn(
         &self,
+        child: TaskId,
         harness: &PersistentLocalHarness,
         bundle: &crate::Harness,
         request: &LocalForkRequest,
@@ -4032,6 +4107,7 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
+        self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
         harness
             .storage()
             .run_conversation(bundle, request.child_operation, content, vec![], max_steps)
@@ -4172,6 +4248,7 @@ impl PersistentLocalSwarm {
             .await?,
         );
         self.sessions.lock().await.insert(task, harness.clone());
+        self.observe(LocalSwarmObservation::HarnessOpened { task });
         Ok(harness)
     }
 
@@ -4840,6 +4917,16 @@ mod tests {
         requests: Mutex<Vec<ModelRequest>>,
     }
 
+    struct RecordingObserver {
+        events: Mutex<Vec<LocalSwarmObservation>>,
+    }
+
+    impl LocalSwarmObserver for RecordingObserver {
+        fn observe(&self, observation: LocalSwarmObservation) {
+            self.events.lock().expect("observer lock").push(observation);
+        }
+    }
+
     struct RecordingCommunicationHost {
         observed: Mutex<Vec<TaskId>>,
     }
@@ -5211,18 +5298,24 @@ mod tests {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
         });
-        let first = PersistentLocalSwarm::open_with_model(
+        let first_observer = Arc::new(RecordingObserver {
+            events: Mutex::new(Vec::new()),
+        });
+        let second_observer = Arc::new(RecordingObserver {
+            events: Mutex::new(Vec::new()),
+        });
+        let first = PersistentLocalSwarm::open_with_bindings(
             root.path(),
-            model.clone(),
+            LocalSwarmConfig::new(model.clone(), Limits::default())?,
             provider.clone(),
-            Limits::default(),
+            LocalSwarmBindings::default().with_observer(first_observer.clone()),
         )
         .await?;
-        let second = PersistentLocalSwarm::open_with_model(
+        let second = PersistentLocalSwarm::open_with_bindings(
             root.path(),
-            model.clone(),
+            LocalSwarmConfig::new(model.clone(), Limits::default())?,
             provider,
-            Limits::default(),
+            LocalSwarmBindings::default().with_observer(second_observer.clone()),
         )
         .await?;
         let parent = first.root_task().await?;
@@ -5247,10 +5340,28 @@ mod tests {
         let listed = second.sessions().await?;
         assert!(listed.iter().any(|session| session.task == child));
         assert!(!second.sessions.lock().await.contains_key(&child));
+        let page = second.sessions_page(None, 1).await?;
+        assert_eq!(page.items.len(), 1);
         let snapshot = second.session_snapshot(child).await?;
         assert_eq!(snapshot.workspace_generation, None);
         assert_eq!(snapshot.conversation_revision, 0);
         assert!(!second.sessions.lock().await.contains_key(&child));
+        let _activity = second.read_activity(parent, 0, 1).await?;
+        let observations = second_observer.events.lock().expect("observer lock").clone();
+        assert!(observations.contains(&LocalSwarmObservation::SessionList { returned: 2 }));
+        assert!(observations.contains(&LocalSwarmObservation::SessionPage { returned: 1 }));
+        assert!(observations.contains(&LocalSwarmObservation::SessionSnapshot { task: child }));
+        assert!(observations.iter().any(|event| matches!(
+            event,
+            LocalSwarmObservation::HistoryPage { task, .. } if *task == parent
+        )));
+        assert!(!observations.contains(&LocalSwarmObservation::HarnessOpened { task: child }));
+        assert!(!observations.iter().any(|event| matches!(
+            event,
+            LocalSwarmObservation::WorkspacePage { .. }
+                | LocalSwarmObservation::WorkspaceFile { .. }
+                | LocalSwarmObservation::ModelWorkerStarted { .. }
+        )));
 
         let root_harness = first.open_session(parent).await?;
         let volume = root_harness.storage().volume().clone();
