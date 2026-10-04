@@ -233,10 +233,30 @@
       "maturity": "unknown",
       "generator": {
         "name": "protoc + grpc-java",
-        "version": "pending qualification",
+        "version": "protobuf 4.31.1; grpc-java 1.75.0; protobuf-maven-plugin 0.6.1",
         "source": "https://grpc.io/docs/languages/java/",
         "license": "Apache-2.0",
-        "pin": "Pin grpc-java Maven artifacts and protoc."
+        "pin": "Pin Maven artifacts and protoc; source-bound adapter jvm/producer-adapter.ps1."
+      },
+      "producer": {
+        "program": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/jvm/producer-adapter.ps1",
+          "-SourceRoot",
+          "{source_root}",
+          "-Authority",
+          "{wire_root}",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "package"
       },
       "package": {
         "ecosystem": "Maven Central",
@@ -279,10 +299,30 @@
       "maturity": "unknown",
       "generator": {
         "name": "Grpc.Tools + Grpc.Net.Client",
-        "version": "pending qualification",
+        "version": "Google.Protobuf 3.31.1; Grpc.Tools 2.71.0; Grpc.Net.Client 2.71.0",
         "source": "https://grpc.io/docs/languages/csharp/",
         "license": "Apache-2.0",
-        "pin": "Pin NuGet packages and protoc plugin."
+        "pin": "Pin NuGet packages and protoc plugin; source-bound adapter dotnet/producer-adapter.ps1."
+      },
+      "producer": {
+        "program": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/dotnet/producer-adapter.ps1",
+          "-SourceRoot",
+          "{source_root}",
+          "-Authority",
+          "{wire_root}",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "package"
       },
       "package": {
         "ecosystem": "NuGet",
