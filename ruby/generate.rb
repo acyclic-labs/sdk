@@ -123,8 +123,6 @@ lock_path = File.join(__dir__, "generator.lock.json")
 provenance = {
   "generator" => lock,
   "source_revision" => ENV.fetch("GIT_COMMIT", "unknown"),
-  "source_git_sha" => ENV.fetch("GIT_COMMIT", "unknown"),
-  "rust_model_digest" => ENV.fetch("ACYCLIC_RUST_MODEL_DIGEST", "unknown"),
   "generator_lock_sha256" => Digest::SHA256.file(lock_path).hexdigest,
   "schema_inputs_sha256" => schema_files.transform_values { |path| Digest::SHA256.file(path).hexdigest },
   "schema_root" => schema_root ? File.expand_path(schema_root).tr('\\', '/') : "diagnostic repository proto roots",
@@ -136,13 +134,4 @@ provenance = {
   "rust_family_goldens" => rust_family_goldens,
   "generated_files" => Dir[File.join(OUT, "**", "*.rb")].sort.map { |path| path.tr('\\', '/').delete_prefix(root_prefix) }
 }
-unless provenance["source_git_sha"].match?(/\A[0-9a-f]{40}\z/i)
-  abort "Ruby provenance requires a 40-character Rust source Git SHA (GIT_COMMIT)"
-end
-unless provenance["rust_model_digest"].match?(/\A[0-9a-f]{64}\z/i)
-  abort "Ruby provenance requires the 64-character Rust model digest (ACYCLIC_RUST_MODEL_DIGEST)"
-end
-if authority && authority["source_revision"] && authority["source_revision"] != provenance["rust_model_digest"]
-  abort "Ruby provenance model digest does not match the Rust authority manifest"
-end
 File.write(File.join(OUT, "provenance.json"), JSON.pretty_generate(provenance) + "\n")

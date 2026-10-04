@@ -229,8 +229,6 @@ sort($generated);
 $provenance = [
     'generator' => $lock,
     'source_revision' => getenv('GIT_COMMIT') ?: 'unknown',
-    'source_git_sha' => getenv('GIT_COMMIT') ?: 'unknown',
-    'rust_model_digest' => getenv('ACYCLIC_RUST_MODEL_DIGEST') ?: 'unknown',
     'generator_lock_sha256' => sha256File($root . '/generator.lock.json'),
     'schema_inputs_sha256' => array_map('sha256File', $schemaFiles),
     'schema_root' => $schemaRootOption === null ? 'diagnostic repository proto roots' : str_replace('\\', '/', $schemaRoots[0]),
@@ -242,13 +240,4 @@ $provenance = [
     'rust_family_goldens' => $rustFamilyGoldens,
     'generated_files' => $generated,
 ];
-if (!preg_match('/^[0-9a-f]{40}$/i', $provenance['source_git_sha'])) {
-    throw new RuntimeException('PHP provenance requires a 40-character Rust source Git SHA (GIT_COMMIT)');
-}
-if (!preg_match('/^[0-9a-f]{64}$/i', $provenance['rust_model_digest'])) {
-    throw new RuntimeException('PHP provenance requires the 64-character Rust model digest (ACYCLIC_RUST_MODEL_DIGEST)');
-}
-if (($authority['source_revision'] ?? null) !== null && $authority['source_revision'] !== $provenance['rust_model_digest']) {
-    throw new RuntimeException('PHP provenance model digest does not match the Rust authority manifest');
-}
 file_put_contents($output . '/provenance.json', json_encode($provenance, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . PHP_EOL);

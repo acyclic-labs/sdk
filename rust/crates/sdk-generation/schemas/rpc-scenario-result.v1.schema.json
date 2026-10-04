@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schema", "source_revision", "status", "invoked", "exit_code",
-    "family", "rpc", "shape", "transport", "execution_mode", "checks"
+    "family", "rpc", "shape", "transport", "execution_mode", "rpc_outcome", "checks"
   ],
   "properties": {
     "schema": { "const": "acyclic.sdk.rpc-scenario-result.v1" },
@@ -19,6 +19,16 @@
     "shape": { "enum": ["unary", "client", "server", "bidi"] },
     "transport": { "enum": ["grpc", "http", "http-json", "grpc-web"] },
     "execution_mode": { "enum": ["remote", "in-process"] },
+    "rpc_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code", "response_count"],
+      "properties": {
+        "status": { "const": "ok" },
+        "code": { "const": 0 },
+        "response_count": { "type": "integer", "minimum": 1 }
+      }
+    },
     "checks": {
       "type": "array",
       "minItems": 3,

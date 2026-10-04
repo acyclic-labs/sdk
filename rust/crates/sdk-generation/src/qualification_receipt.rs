@@ -140,6 +140,22 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
         {
             return Err(format!("scenario result {} is not an invoked exit-0 pass", output_path));
         }
+        let rpc_outcome = result
+            .get("rpc_outcome")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("scenario result {} has no nominal RPC outcome", output_path))?;
+        if rpc_outcome.get("status").and_then(Value::as_str) != Some("ok")
+            || rpc_outcome.get("code").and_then(Value::as_i64) != Some(0)
+            || rpc_outcome
+                .get("response_count")
+                .and_then(Value::as_u64)
+                .is_none_or(|count| count == 0)
+        {
+            return Err(format!(
+                "scenario result {} does not record a successful nominal RPC response",
+                output_path
+            ));
+        }
         let family = nonempty_string(&result, "family")?;
         let rpc = nonempty_string(&result, "rpc")?;
         let shape = nonempty_string(&result, "shape")?;
@@ -202,6 +218,7 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             "rpc": result.get("rpc"),
             "shape": result.get("shape"),
             "execution_mode": result.get("execution_mode"),
+            "rpc_outcome": result.get("rpc_outcome"),
             "status": "passed",
             "output_path": output_path,
             "output_sha256": output_digest,
@@ -523,7 +540,7 @@ mod tests {
 
     #[test]
     fn receipt_writer_derives_complete_rpc_inventory_from_results() {
-        let (root, output, options) = fixture(false, false);
+        let (root, output, options) = fixture(false, false, false);
         let receipt_path = write(&options).expect("valid scenario log writes receipt");
         let receipt = read_json(&receipt_path).expect("read receipt");
         assert_eq!(receipt["schema"], RECEIPT_SCHEMA);
@@ -536,7 +553,7 @@ mod tests {
 
     #[test]
     fn receipt_writer_rejects_missing_authority_rpc() {
-        let (root, output, options) = fixture(true, false);
+        let (root, output, options) = fixture(true, false, false);
         let error = write(&options).expect_err("missing RPC must fail closed");
         assert!(error.contains("absent from Rust authority"));
         cleanup(&root);
@@ -545,14 +562,23 @@ mod tests {
 
     #[test]
     fn receipt_writer_rejects_in_process_evidence_for_remote_qualification() {
-        let (root, output, options) = fixture(false, true);
+        let (root, output, options) = fixture(false, true, false);
         let error = write(&options).expect_err("in-process evidence must not qualify remote");
         assert!(error.contains("execution_mode=remote"));
         cleanup(&root);
         cleanup(&output);
     }
 
-    fn fixture(missing_rpc: bool, in_process: bool) -> (PathBuf, PathBuf, Options) {
+    #[test]
+    fn receipt_writer_rejects_rpc_errors_marked_as_passes() {
+        let (root, output, options) = fixture(false, false, true);
+        let error = write(&options).expect_err("RPC errors must not qualify as nominal passes");
+        assert!(error.contains("successful nominal RPC response"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    fn fixture(missing_rpc: bool, in_process: bool, rpc_error: bool) -> (PathBuf, PathBuf, Options) {
         let root = env::temp_dir().join(format!(
             "acyclic-sdk-receipt-helper-{}-{}-{}",
             std::process::id(),
@@ -574,12 +600,18 @@ mod tests {
 
         let consumer_bytes = b"consumer";
         let execution_mode = if in_process { "in-process" } else { "remote" };
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","checks":["invocation","transport","serialization"]}"#;
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"checks":["invocation","transport","serialization"]}"#;
         let revision = git_head(&root).expect("fixture revision");
+        let outcome = if rpc_error {
+            r#"{"status":"ok","code":12,"response_count":0}"#
+        } else {
+            r#"{"status":"ok","code":0,"response_count":1}"#
+        };
         let scenario_bytes = String::from_utf8(scenario_bytes.to_vec())
             .expect("fixture JSON")
             .replace("REVISION", &revision)
             .replace("EXECUTION_MODE", execution_mode)
+            .replace("{\"status\":\"ok\",\"code\":0,\"response_count\":1}", outcome)
             .into_bytes();
         let consumer_path = "qualification/consumers/consumer.bin";
         let scenario_path = "qualification/consumers/actors-create.json";

@@ -38,6 +38,7 @@ import java.util.regex.Pattern;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
@@ -137,10 +138,10 @@ final class RpcScenarioEvidenceTest {
     try {
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
-        invoke(channel, method, true);
+        int responseCount = invoke(channel, method);
         String rpc = method.getFullMethodName();
         scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
-            shape(method.getType()), "in-process"));
+            shape(method.getType()), "in-process", responseCount));
       }
       return scenarios;
     } finally {
@@ -157,10 +158,10 @@ final class RpcScenarioEvidenceTest {
     try {
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
-        invoke(channel, method);
+        int responseCount = invoke(channel, method, true);
         String rpc = method.getFullMethodName();
         scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
-            shape(method.getType()), "remote"));
+            shape(method.getType()), "remote", responseCount));
       }
       return scenarios;
     } finally {
@@ -199,25 +200,30 @@ final class RpcScenarioEvidenceTest {
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static void invoke(Channel channel, MethodDescriptor method) throws Exception {
-    invoke(channel, method, false);
+  private static int invoke(Channel channel, MethodDescriptor method) throws Exception {
+    return invoke(channel, method, false);
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static void invoke(Channel channel, MethodDescriptor method, boolean remote) throws Exception {
+  private static int invoke(Channel channel, MethodDescriptor method, boolean remote) throws Exception {
     Object request = remote ? requestFor(method) : empty(method.getRequestMarshaller());
     CallOptions options = CallOptions.DEFAULT.withDeadlineAfter(10, TimeUnit.SECONDS);
-    switch (method.getType()) {
-      case UNARY -> ClientCalls.blockingUnaryCall(channel, method, options, request);
+    return switch (method.getType()) {
+      case UNARY -> {
+        Object response = ClientCalls.blockingUnaryCall(channel, method, options, request);
+        yield response == null ? 0 : 1;
+      }
       case SERVER_STREAMING -> {
         java.util.Iterator<?> responses = ClientCalls.blockingServerStreamingCall(
             channel, method, options, request);
-        while (responses.hasNext()) responses.next();
+        int count = 0;
+        while (responses.hasNext()) { responses.next(); count++; }
+        yield count;
       }
       case CLIENT_STREAMING -> streamCall(channel, method, request, false, options);
       case BIDI_STREAMING -> streamCall(channel, method, request, true, options);
       default -> throw new IllegalArgumentException("unsupported gRPC method type: " + method.getType());
-    }
+    };
   }
 
   private static Object requestFor(MethodDescriptor<?, ?> method) {
@@ -239,19 +245,20 @@ final class RpcScenarioEvidenceTest {
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static void streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi)
+  private static int streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi)
       throws Exception {
-    streamCall(channel, method, request, bidi,
+    return streamCall(channel, method, request, bidi,
         CallOptions.DEFAULT.withDeadlineAfter(10, TimeUnit.SECONDS));
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static void streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi,
+  private static int streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi,
       CallOptions options) throws Exception {
     CountDownLatch done = new CountDownLatch(1);
     AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicInteger responses = new AtomicInteger();
     StreamObserver response = new StreamObserver() {
-      @Override public void onNext(Object value) { }
+      @Override public void onNext(Object value) { responses.incrementAndGet(); }
       @Override public void onError(Throwable error) { failure.set(error); done.countDown(); }
       @Override public void onCompleted() { done.countDown(); }
     };
@@ -263,6 +270,7 @@ final class RpcScenarioEvidenceTest {
     requests.onCompleted();
     assertTrue(done.await(5, TimeUnit.SECONDS), method.getFullMethodName() + " did not complete");
     if (failure.get() != null) throw new AssertionError(method.getFullMethodName(), failure.get());
+    return responses.get();
   }
 
   private static Object empty(MethodDescriptor.Marshaller<?> marshaller) {
@@ -291,7 +299,7 @@ final class RpcScenarioEvidenceTest {
 
   private static Map<String, String> authorityMethods() throws IOException {
     InputStream resource = RpcScenarioEvidenceTest.class.getClassLoader()
-        .getResourceAsStream("rust-authority.json");
+        .getResourceAsStream("golden/rust-authority.json");
     if (resource == null) throw new IOException("missing Rust authority manifest resource");
     String manifest;
     try (resource) {
@@ -311,13 +319,15 @@ final class RpcScenarioEvidenceTest {
   }
 
   private record Scenario(String revision, String family, String rpc, String shape,
-      String executionMode) {
+      String executionMode, int responseCount) {
     String json() {
       return "{\"schema\":\"acyclic.sdk.rpc-scenario-result.v1\",\"source_revision\":\""
           + RpcScenarioEvidenceTest.json(revision) + "\",\"status\":\"passed\",\"invoked\":true,\"exit_code\":0,"
           + "\"family\":\"" + RpcScenarioEvidenceTest.json(family) + "\",\"rpc\":\"" + RpcScenarioEvidenceTest.json(rpc)
           + "\",\"shape\":\"" + shape + "\",\"transport\":\"grpc\",\"execution_mode\":\""
           + RpcScenarioEvidenceTest.json(executionMode) + "\","
+          + "\"rpc_outcome\":{\"status\":\"ok\",\"code\":0,\"response_count\":"
+          + responseCount + "},"
           + "\"checks\":[\"invocation\",\"transport\",\"serialization\"]}\n";
     }
   }
