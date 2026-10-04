@@ -4,6 +4,7 @@
 //! binary writes source files and a manifest, and language validation is an
 //! explicit command result. A snippet is marked `qualified` only after its
 //! language runtime actually executes it.
+#![recursion_limit = "256"]
 
 use acyclic_sdk_examples::{
     GUIDE_SCENARIOS, Language, RenderedSnippet, TransportFixture, execute_actors_roundtrip,
@@ -960,6 +961,32 @@ fn run_rust(
         ));
     }
     normalize_gzip_header(&package_path)?;
+    let repeat_package_path = packages.join(format!("{}-repeat.tgz", snippet.metadata.id));
+    let repeat_archive = Command::new("tar")
+        .args(["-czf"])
+        .arg(&repeat_package_path)
+        .args(["--format", "ustar", "--mtime", "1970-01-01"])
+        .args(["-C"])
+        .arg(&packages)
+        .arg(&package_dir_name)
+        .output()
+        .map_err(|error| format!("start repeated SDK package archive: {error}"))?;
+    if !repeat_archive.status.success() {
+        return Err(format!(
+            "repeated SDK package archive failed: {}",
+            String::from_utf8_lossy(&repeat_archive.stderr).trim()
+        ));
+    }
+    normalize_gzip_header(&repeat_package_path)?;
+    let deterministic_archive_bytes = fs::read(&package_path)
+        .map_err(|error| format!("read deterministic SDK package archive: {error}"))?;
+    let repeat_package_bytes = fs::read(&repeat_package_path)
+        .map_err(|error| format!("read repeated SDK package archive: {error}"))?;
+    if deterministic_archive_bytes != repeat_package_bytes {
+        return Err("SDK package archive is not deterministic across repeated writes".to_owned());
+    }
+    fs::remove_file(&repeat_package_path)
+        .map_err(|error| format!("remove repeated SDK package archive: {error}"))?;
     fs::remove_dir_all(&package_root)
         .map_err(|error| format!("remove package staging tree: {error}"))?;
     let extract = Command::new("tar")
@@ -978,6 +1005,7 @@ fn run_rust(
     let package_manifest = package_root.join("Cargo.toml");
     let consumer_manifest = consumers.join(format!("{}-Cargo.toml", snippet.metadata.id));
     let consumer_lock = consumers.join(format!("{}-Cargo.lock", snippet.metadata.id));
+    let consumer_metadata = consumers.join(format!("{}-cargo-metadata.json", snippet.metadata.id));
     let consumer_manifest_bytes = format!(
         "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ package = \"acyclic-sdk-bundle\", path = \"../../qualification/packages/{package_dir_name}\" }}\nacyclic-stream = {{ package = \"acyclic-sdk-bundle\", path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
@@ -998,6 +1026,62 @@ fn run_rust(
         let _ = fs::remove_dir_all(&staging);
         return Ok(receipt);
     }
+    let metadata = Command::new(&cargo)
+        .args([
+            "metadata",
+            "--manifest-path",
+            "Cargo.toml",
+            "--locked",
+            "--offline",
+            "--format-version",
+            "1",
+        ])
+        .env("CARGO_NET_OFFLINE", "true")
+        .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
+        .current_dir(&staging)
+        .output()
+        .map_err(|error| format!("start Rust consumer metadata resolution: {error}"))?;
+    if !metadata.status.success() {
+        let mut receipt = command_receipt(
+            "cargo metadata --manifest-path Cargo.toml --locked --offline --format-version 1",
+            metadata,
+            source_sha256,
+        );
+        add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
+        let _ = fs::remove_dir_all(&staging);
+        return Ok(receipt);
+    }
+    let metadata_json: Value = serde_json::from_slice(&metadata.stdout)
+        .map_err(|error| format!("decode Rust consumer metadata: {error}"))?;
+    let resolved_package = metadata_json
+        .get("packages")
+        .and_then(Value::as_array)
+        .and_then(|packages| {
+            packages.iter().find(|package| {
+                package.get("name").and_then(Value::as_str) == Some(package_name)
+                    && package.get("version").and_then(Value::as_str) == Some("0.0.0")
+            })
+        })
+        .ok_or("Rust consumer metadata did not resolve the extracted SDK package")?;
+    let resolved_manifest = resolved_package
+        .get("manifest_path")
+        .and_then(Value::as_str)
+        .ok_or("Rust consumer metadata package has no manifest path")?;
+    let expected_manifest = package_manifest
+        .canonicalize()
+        .map_err(|error| format!("canonicalize extracted SDK manifest: {error}"))?;
+    let resolved_manifest_path = PathBuf::from(resolved_manifest)
+        .canonicalize()
+        .map_err(|error| format!("canonicalize resolved SDK manifest: {error}"))?;
+    if resolved_manifest_path != expected_manifest {
+        return Err(format!(
+            "Rust consumer resolved a different SDK manifest: expected {}, observed {}",
+            expected_manifest.display(),
+            resolved_manifest_path.display()
+        ));
+    }
+    fs::write(&consumer_metadata, &metadata.stdout)
+        .map_err(|error| format!("write Rust consumer metadata: {error}"))?;
     let test = Command::new(&cargo)
         .args([
             "test",
@@ -1112,7 +1196,10 @@ fn run_rust(
         .map_err(|error| format!("copy Rust consumer lock: {error}"))?;
     let compile_digest = hash(&fs::read(&compile_path).map_err(|error| error.to_string())?);
     let runtime_digest = hash(&fs::read(&runtime_path).map_err(|error| error.to_string())?);
-    let package_digest = hash(&fs::read(&package_path).map_err(|error| error.to_string())?);
+    let package_bytes = fs::read(&package_path).map_err(|error| error.to_string())?;
+    let package_digest = hash(&package_bytes);
+    let package_size = package_bytes.len();
+    let metadata_digest = hash(&metadata.stdout);
     let snippet_digest = hash(snippet.code.as_bytes());
     let source_revision = git_revision(source_root);
     let source_closure_sha256 = scenario_source_sha256(source_root)?;
@@ -1138,6 +1225,9 @@ fn run_rust(
         "runtime_artifact_sha256": runtime_digest,
         "package_artifact_path": portable_output_path(&package_path, &qualification),
         "package_artifact_sha256": package_digest,
+        "package_artifact_size": package_size,
+        "package_archive_format": "gzip+ustar",
+        "package_archive_deterministic": true,
         "source_closure_sha256": source_closure_sha256,
         "package_resolution": {
             "resolved": true,
@@ -1153,6 +1243,9 @@ fn run_rust(
             "compile_artifact_sha256": compile_digest,
             "package_artifact_path": portable_output_path(&package_path, &qualification),
             "package_artifact_sha256": package_digest,
+            "package_artifact_size": package_size,
+            "package_archive_format": "gzip+ustar",
+            "package_archive_deterministic": true,
             "package_name": package_name,
             "package_version": "0.0.0",
             "package_root_path": portable_output_path(&package_root, &qualification),
@@ -1163,6 +1256,12 @@ fn run_rust(
             "consumer_manifest_sha256": hash(&fs::read(&consumer_manifest).map_err(|error| error.to_string())?),
             "consumer_lock_path": portable_output_path(&consumer_lock, &qualification),
             "consumer_lock_sha256": hash(&fs::read(&consumer_lock).map_err(|error| error.to_string())?),
+            "consumer_metadata_path": portable_output_path(&consumer_metadata, &qualification),
+            "consumer_metadata_sha256": metadata_digest,
+            "consumer_metadata_command": "cargo metadata --manifest-path Cargo.toml --locked --offline --format-version 1",
+            "resolved_package_name": package_name,
+            "resolved_package_version": "0.0.0",
+            "resolved_package_manifest_path": portable_output_path(&package_manifest, &qualification),
             "consumer_exit_code": output.status.code(),
             "consumer_stdout_path": portable_output_path(&stdout_path, &qualification),
             "consumer_stdout_sha256": hash(&output.stdout),
@@ -2254,7 +2353,7 @@ fn git_revision(root: &Path) -> String {
     };
     let repository = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
-        .current_dir(root)
+        .current_dir(&root)
         .output()
         .ok()
         .filter(|output| output.status.success())
@@ -2264,7 +2363,7 @@ fn git_revision(root: &Path) -> String {
     }
     Command::new("git")
         .args(["rev-parse", "HEAD"])
-        .current_dir(root)
+        .current_dir(&root)
         .output()
         .ok()
         .filter(|output| output.status.success())
