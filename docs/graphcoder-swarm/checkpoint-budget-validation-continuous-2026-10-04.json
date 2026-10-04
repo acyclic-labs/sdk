@@ -1,0 +1,50 @@
+{
+  "protocol": "acyclic.graphcoder.budget-validation-checkpoint.v1",
+  "source_scope": "Pre-repair baseline for persistent local swarm budget validation; this receipt records required failures and is not a qualification claim.",
+  "recorded_at": "2026-10-04T07:11:40Z",
+  "source": {
+    "worktree": "C:\\Users\\varun\\.codex\\worktrees\\budget-production-tests-root\\sdk",
+    "branch": "detached at 7172a00d0a081e98b0c01b6161b1b2af00320d2d",
+    "commit": "7172a00d0a081e98b0c01b6161b1b2af00320d2d",
+    "commit_tree": "e18785c4208e62b9f873b77b0cca28a3a54d6dca",
+    "working_tree_has_uncommitted_changes": true,
+    "files": {
+      "rust/crates/harness/src/swarm_budget.rs": "bed18df7bba204425673be0a40fc84dcca57eadb76d36e5d393c28e034f7c8b8",
+      "rust/crates/harness/src/swarm_budget_journal.rs": "c4fd394cd3dae47557e16dcecc124a88fb96f5f982422ccb339be64582c6ac92",
+      "rust/crates/harness/src/filesystem/swarm_local.rs": "f4ceeccda03b2e23ba6f96f04295c0f7284e9a246ee7ea9d4dba541df275c3d6",
+      "rust/crates/harness/tests/persistent_local_swarm_budget_e2e_v3.rs": "2b97c498872cac1cb36a897c8f4600c5ea3676329c4556ab2ab7aebd3d0002fc"
+    }
+  },
+  "suite": {
+    "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree --test persistent_local_swarm_budget_e2e_v3 --no-fail-fast --target-dir Q:\\graphcoder-builds\\budget-validation-continuous -j2",
+    "descriptor": "rust/crates/harness/tests/persistent_local_swarm_budget_e2e_v3.rs",
+    "descriptor_sha256": "2b97c498872cac1cb36a897c8f4600c5ea3676329c4556ab2ab7aebd3d0002fc",
+    "artifact": "Q:\\graphcoder-builds\\budget-validation-continuous\\debug\\deps\\persistent_local_swarm_budget_e2e_v3-590c25903cd8be3b.exe",
+    "artifact_sha256": "faa0ed85fe1b90a9928f94c596c7bb67e63b99059500eea5c08d0dbedad6a08e",
+    "log": "Q:\\graphcoder-builds\\budget-validation-continuous.log",
+    "log_sha256": "00354b6af7f0f0e67e9f8f8473db0cfd42bd60011f49fc8e28866456bc0fec9d",
+    "exit_code": 101,
+    "result": {"passed": 3, "failed": 9, "ignored": 0, "total": 12}
+  },
+  "failures": [
+    {"test": "metered_reconcile_admitted_enforces_output_bound_before_returning_events", "evidence": "reconcile_admitted returned 512 bytes under an 8-byte limit"},
+    {"test": "metered_root_permit_path_invokes_inner_prepare_hook_before_factory", "evidence": "inner prepare dispatch hook count was 0"},
+    {"test": "persistent_local_budget_recursive_reopen_does_not_charge_grandchild_again", "evidence": "root model claim rejected operation identity"},
+    {"test": "persistent_local_budget_public_child_run_cannot_dispatch_after_terminal_completion", "evidence": "root model claim rejected operation identity"},
+    {"test": "persistent_local_budget_retains_capacity_when_measurement_is_uncertain", "evidence": "active_agents was 1 instead of 2"},
+    {"test": "persistent_local_budget_cancels_before_release_for_non_storage_provider_error", "evidence": "failed child session was not present"},
+    {"test": "persistent_local_budget_binds_owner_source_and_reopens_without_redispatch", "evidence": "root model claim rejected operation identity"},
+    {"test": "persistent_local_budget_usage_failure_is_bound_to_exact_dispatch_identity", "evidence": "no usage read was recorded for child A"},
+    {"test": "persistent_local_budget_holds_one_sibling_active_and_releases_after_completion", "evidence": "sibling admission barrier did not settle"}
+  ],
+  "passing": [
+    "local_stream_budget_cas_serializes_all_root_resource_claims",
+    "local_stream_budget_fences_stale_owner_claim_and_cancel",
+    "local_stream_budget_cas_orders_concurrent_child_reservations"
+  ],
+  "qualification": {
+    "status": "failed",
+    "required_failures_block_completion": true,
+    "scope_limit": "This run exercises real LocalStream, LocalFs-backed bindings, PersistentLocalSwarm, production budget journal, provider metering, and restart paths; it does not qualify the final matrix."
+  }
+}
