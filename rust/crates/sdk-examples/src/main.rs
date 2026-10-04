@@ -1018,11 +1018,22 @@ fn run_rust(
     let consumer_manifest = consumers.join(format!("{}-Cargo.toml", snippet.metadata.id));
     let consumer_lock = consumers.join(format!("{}-Cargo.lock", snippet.metadata.id));
     let consumer_metadata = consumers.join(format!("{}-cargo-metadata.json", snippet.metadata.id));
-    let consumer_manifest_bytes = format!(
+    let portable_consumer_manifest_bytes = format!(
         "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
     );
-    fs::write(staging.join("Cargo.toml"), &consumer_manifest_bytes)
+    let consumed_package_root = staging.join("consumed-sdk-package");
+    if consumed_package_root.exists() {
+        fs::remove_dir_all(&consumed_package_root)
+            .map_err(|error| format!("remove stale consumed SDK package: {error}"))?;
+    }
+    copy_dir_recursive(&package_root, &consumed_package_root)?;
+    let consumed_package_root_string = consumed_package_root.to_string_lossy().replace('\\', "/");
+    let compile_consumer_manifest_bytes = format!(
+        "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"{consumed_package_root_string}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
+        snippet.metadata.id
+    );
+    fs::write(staging.join("Cargo.toml"), &compile_consumer_manifest_bytes)
         .map_err(|error| format!("write archive consumer manifest: {error}"))?;
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let deterministic_rustflags = deterministic_rustflags();
@@ -1080,7 +1091,8 @@ fn run_rust(
         .get("manifest_path")
         .and_then(Value::as_str)
         .ok_or("Rust consumer metadata package has no manifest path")?;
-    let expected_manifest = package_manifest
+    let expected_manifest = consumed_package_root
+        .join("Cargo.toml")
         .canonicalize()
         .map_err(|error| format!("canonicalize extracted SDK manifest: {error}"))?;
     let resolved_manifest_path = PathBuf::from(resolved_manifest)
@@ -1216,8 +1228,8 @@ fn run_rust(
         .map_err(|error| format!("write Rust compile artifact: {error}"))?;
     fs::write(&runtime_path, &normalized_bytes)
         .map_err(|error| format!("write Rust runtime artifact: {error}"))?;
-    fs::copy(staging.join("Cargo.toml"), &consumer_manifest)
-        .map_err(|error| format!("copy Rust consumer manifest: {error}"))?;
+    fs::write(&consumer_manifest, &portable_consumer_manifest_bytes)
+        .map_err(|error| format!("write Rust consumer manifest: {error}"))?;
     fs::copy(staging.join("Cargo.lock"), &consumer_lock)
         .map_err(|error| format!("copy Rust consumer lock: {error}"))?;
     let compile_digest = hash(&normalized_bytes);
