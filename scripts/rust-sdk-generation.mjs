@@ -23,7 +23,7 @@ if (!operation) {
   if (!args.includes("--output")) cliArgs.push("--output", join(sourceRoot, "target", "sdk-generation"));
   cliArgs.push(...args);
   const result = spawnSync(process.env.ACYCLIC_CARGO_BIN || "cargo", [
-    "run", "--quiet", "--locked",
+    "run", "--quiet", "--locked", "--bin", "sdk-generation",
     "--manifest-path", join(sourceRoot, "rust", "crates", "sdk-generation", "Cargo.toml"),
     "--", ...cliArgs,
   ], {
