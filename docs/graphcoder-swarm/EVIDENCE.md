@@ -309,3 +309,6 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 [Focused storage regressions](checkpoint-file-grants-and-workspace-errors-2026-10-04.json) records 10 passing Harness file-access/local-composition cases and one passing Filesystem workspace regression, including distinct missing and corrupt outcomes. Artifact and log digests are retained in an exclusive D-drive target. These scoped passes do not qualify the full swarm, fault matrix, or final installed artifacts.
 
+
+- [Context history private-journal boundary](checkpoint-context-history-private-journal-2026-10-04.json): source 6d22aba49 archived native artifact; default stack overflow retained; same artifact with 32 MiB test stack passes 2/3, recursive child follow-up fails private-volume journal authority. No recursive qualification claim.
+- [Receipt identity rejection](checkpoint-reconcile-receipt-identities-2026-10-04.json): source 5e78977b4 focused public reconciliation regression passes 1/1; broader effect recovery remains open.

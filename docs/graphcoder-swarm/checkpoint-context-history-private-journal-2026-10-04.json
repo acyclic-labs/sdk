@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "source_commit": "6d22aba49471ee7d9a09a74f4dfdb2100daf5974",
+  "source_tree": "b4f0296c46e12524271746df0496457aeeefcd10",
+  "suite": "rust/crates/harness/tests/model_fork_boundary.rs",
+  "suite_blob": "ee229ee72f09414ed36eb5813a32999d9d99d252",
+  "artifact": {
+    "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\6d22aba49\\model_fork_boundary-8cacd7eb8492e452.exe",
+    "sha256": "2356f5bfd5c4693513803985ef39c51270eebf1cabc960b00396c400bec04477"
+  },
+  "runs": [
+    {
+      "configuration": "default Windows test stack",
+      "log": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\6d22aba49\\context-history-root-boundary-model-grant.txt",
+      "log_sha256": "d50207a7ada63a503896007819f166acd6df9704c1590754bd71e9d83bcd689d",
+      "outcome": "abnormal exit STATUS_STACK_OVERFLOW; first negative case passed; third case not executed"
+    },
+    {
+      "configuration": "same executable; RUST_MIN_STACK=33554432; --test-threads=1",
+      "log": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\6d22aba49\\boundary-32m-stack.txt",
+      "log_sha256": "693f41d5dc05ce245e6e4c085a85c68300b51c3f9a66c1337f011374bc702f0a",
+      "exit_code": 101,
+      "passed": 2,
+      "failed": 1,
+      "failure": "initial root conversation failed: child rejection follow-up failed: unauthorized: journal event refers to another private volume"
+    }
+  ],
+  "scope": "Custom native model fork boundary only. Production recursive swarm and complete effect recovery remain unqualified.",
+  "required_followup": [
+    "Keep inherited rejection evidence generation-pinned without parent mutable journal access",
+    "Test several rejected calls in one batch through follow-up and restart",
+    "Resolve native fixture stack allocation without changing assertions",
+    "Rerun production swarm and fault matrix against final artifacts"
+  ]
+}
