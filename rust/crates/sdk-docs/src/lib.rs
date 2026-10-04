@@ -997,6 +997,8 @@ pub fn to_website_json(
                 .public_items
                 .iter()
                 .filter_map(|item| item.source_path.as_deref())
+                .chain(crate_bundle.guides.iter().map(|guide| guide.path.as_str()))
+                .chain(crate_bundle.examples.iter().map(|example| example.path.as_str()))
                 .collect::<HashSet<_>>();
             let source_files = crate_bundle
                 .sources
