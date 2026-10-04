@@ -1087,6 +1087,14 @@ const ERRORDETAIL: MessageSpec = MessageSpec {
     reserved_names: &[],
 };
 
+/// Maximum encoded JSON/NDJSON record size accepted by the Objects HTTP
+/// framing layer, including its line terminator.
+///
+/// This transport ceiling is separate from the decoded body-frame limit in
+/// `ObjectsLimit`: a protobuf-JSON record contains field names and base64
+/// expansion in addition to the decoded body bytes.
+pub const OBJECTS_HTTP_JSON_FRAME_BYTES: usize = 128 * 1024;
+
 pub const OBJECTSLIMIT: EnumSpec = EnumSpec {
     name: "ObjectsLimit",
     values: &[

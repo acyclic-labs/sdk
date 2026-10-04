@@ -77,6 +77,14 @@ JSON/body frame sizes, pre-stream `ErrorDetail` responses, mutation identity
 fields, and cancellation behavior. The default OpenAPI error response now
 references the Rust `ErrorDetail` schema instead of an untyped default.
 
+The metadata is source-bound: record names and frame oneofs are checked against
+the supplied `ContractSpec`, the decoded body-frame ceiling is read from the
+Rust `ObjectsLimit` enum, and the 128 KiB encoded-record ceiling is exposed as
+`OBJECTS_HTTP_JSON_FRAME_BYTES` in the Rust contract metadata. A mutation vector
+changes the modeled frame field and limit and verifies that the envelope
+metadata disappears or changes accordingly; this prevents the projection from
+silently preserving stale hand-authored transport facts.
+
 The focused regression
 `objects_export_preserves_all_routes_external_timestamp_and_stream_direction`
 asserts all three streaming directions and a unary bucket route. A disposable

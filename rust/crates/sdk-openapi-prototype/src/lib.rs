@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use acyclic_sdk_contract_wire::objects::OBJECTS_HTTP_JSON_FRAME_BYTES;
 use acyclic_sdk_contract_wire::workers::{
     WORKERS_ENUM_DOCS, WORKERS_FIELD_DOCS, WORKERS_MESSAGE_DOCS, WORKERS_SERVICE_DOC,
 };
@@ -590,37 +591,70 @@ fn path_parameters(path: &str) -> Vec<Value> {
     parameters
 }
 
-fn objects_streaming_metadata(route: &RouteSpec) -> Option<Value> {
+fn object_limit(contract: &ContractSpec, name: &str) -> Option<u64> {
+    contract
+        .enum_("ObjectsLimit")?
+        .values
+        .iter()
+        .find(|value| value.name == name)
+        .and_then(|value| u64::try_from(value.number).ok())
+}
+
+fn frame_fields(contract: &ContractSpec, message: &str, fields: &[&str]) -> bool {
+    contract.message(message).is_some_and(|message| {
+        fields.iter().all(|name| {
+            message
+                .fields
+                .iter()
+                .any(|field| field.json_name == *name && field.oneof == Some("frame"))
+        })
+    })
+}
+
+fn objects_streaming_metadata(contract: &ContractSpec, route: &RouteSpec) -> Option<Value> {
+    if contract.package != "acyclic.objects.v2" {
+        return None;
+    }
+    let body_frame_bytes = object_limit(contract, "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES")?;
+    let json_record_bytes = OBJECTS_HTTP_JSON_FRAME_BYTES;
     if route.rpc.starts_with("acyclic.objects.v2.ObjectsService/") {
         return match (route.request, route.response) {
-            ("PutObjectRequest", "ObjectInfo") => Some(json!({
-                "request_record_type": "PutObjectRequest",
-                "response_record_type": "ObjectInfo",
+            ("PutObjectRequest", "ObjectInfo")
+                if frame_fields(contract, route.request, &["header", "body", "complete"]) =>
+            {
+                Some(json!({
+                "request_record_type": route.request,
+                "response_record_type": route.response,
                 "record_encoding": "canonical protobuf JSON record followed by LF",
                 "accepts_crlf": true,
-                "frame_limits": {"json_record_bytes": 131072, "body_bytes": 65536},
+                "frame_limits": {"json_record_bytes": json_record_bytes, "body_bytes": body_frame_bytes},
                 "request_sequence": ["header", "body*", "complete"],
                 "completion": {"field": "complete", "value": true, "must_be_last": true},
                 "error": {"pre_stream": {"media_type": "application/json", "record_type": "ErrorDetail"}},
                 "trailer": {"supported": false},
                 "idempotency": {"field": "header.mutation.idempotencyKey", "body_digest": "complete decoded body bytes and logical header fields; retry key excluded"},
                 "cancellation": {"incomplete_stream": "no publication", "complete_frame_required": true}
-            })),
-            ("GetObjectRequest", "GetObjectResponse") => Some(json!({
-                "request_record_type": "GetObjectRequest",
-                "response_record_type": "GetObjectResponse",
+                }))
+            }
+            ("GetObjectRequest", "GetObjectResponse")
+                if frame_fields(contract, route.response, &["header", "body", "error"]) =>
+            {
+                Some(json!({
+                "request_record_type": route.request,
+                "response_record_type": route.response,
                 "record_encoding": "canonical protobuf JSON record followed by LF",
                 "accepts_crlf": true,
-                "frame_limits": {"json_record_bytes": 131072, "body_bytes": 65536},
+                "frame_limits": {"json_record_bytes": json_record_bytes, "body_bytes": body_frame_bytes},
                 "response_sequence": ["header", "body*", "error?"],
                 "error": {
                     "pre_stream": {"media_type": "application/json", "record_type": "ErrorDetail"},
-                    "in_stream": {"field": "GetObjectResponse.error", "terminal": true, "no_subsequent_records": true}
+                    "in_stream": {"field": format!("{}.error", route.response), "terminal": true, "no_subsequent_records": true}
                 },
-                "trailer": {"record_type": "GetObjectResponse", "field": "error", "terminal": true},
+                "trailer": {"record_type": route.response, "field": "error", "terminal": true},
                 "idempotency": {"supported": false},
                 "cancellation": {"caller_abort": "read stream terminates without accepting another record"}
-            })),
+                }))
+            }
             _ => None,
         };
     }
@@ -629,13 +663,14 @@ fn objects_streaming_metadata(route: &RouteSpec) -> Option<Value> {
         .starts_with("acyclic.objects.v2.MultipartService/")
         && route.request == "UploadPartRequest"
         && route.response == "UploadedPart"
+        && frame_fields(contract, route.request, &["header", "body", "complete"])
     {
         return Some(json!({
-            "request_record_type": "UploadPartRequest",
-            "response_record_type": "UploadedPart",
+            "request_record_type": route.request,
+            "response_record_type": route.response,
             "record_encoding": "canonical protobuf JSON record followed by LF",
             "accepts_crlf": true,
-            "frame_limits": {"json_record_bytes": 131072, "body_bytes": 65536},
+            "frame_limits": {"json_record_bytes": json_record_bytes, "body_bytes": body_frame_bytes},
             "request_sequence": ["header", "body*", "complete"],
             "completion": {"field": "complete", "value": true, "must_be_last": true},
             "error": {"pre_stream": {"media_type": "application/json", "record_type": "ErrorDetail"}},
@@ -806,7 +841,7 @@ pub fn document_from_contract_with_projection(
                 "ndjson": objects_ndjson
             });
         }
-        if let Some(metadata) = objects_streaming_metadata(route) {
+        if let Some(metadata) = objects_streaming_metadata(contract, route) {
             operation["x-acyclic-objects-streaming"] = metadata;
         }
         paths.insert(
@@ -1918,6 +1953,77 @@ mod tests {
                 message.name
             );
         }
+    }
+
+    #[test]
+    fn objects_streaming_metadata_is_bound_to_rust_frame_fields_and_limits() {
+        let message = OBJECTS_V2
+            .message("PutObjectRequest")
+            .expect("PutObjectRequest");
+        let mut fields = message.fields.to_vec();
+        fields[0] = FieldSpec {
+            json_name: "headerChanged",
+            ..fields[0]
+        };
+        let changed_fields: &'static [FieldSpec] = Box::leak(fields.into_boxed_slice());
+        let changed_message = acyclic_sdk_contract_wire::MessageSpec {
+            fields: changed_fields,
+            ..*message
+        };
+        let mut messages = OBJECTS_V2.messages.to_vec();
+        let message_index = messages
+            .iter()
+            .position(|item| item.name == "PutObjectRequest")
+            .expect("PutObjectRequest index");
+        messages[message_index] = changed_message;
+        let changed_messages: &'static [_] = Box::leak(messages.into_boxed_slice());
+
+        let limits = OBJECTS_V2.enum_("ObjectsLimit").expect("ObjectsLimit");
+        let mut values = limits.values.to_vec();
+        let body_limit_index = values
+            .iter()
+            .position(|value| value.name == "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES")
+            .expect("body frame limit");
+        values[body_limit_index] = acyclic_sdk_contract_wire::EnumValueSpec {
+            number: 32768,
+            ..values[body_limit_index]
+        };
+        let changed_values: &'static [_] = Box::leak(values.into_boxed_slice());
+        let changed_limit = acyclic_sdk_contract_wire::EnumSpec {
+            values: changed_values,
+            ..*limits
+        };
+        let mut enums = OBJECTS_V2.enums.to_vec();
+        let enum_index = enums
+            .iter()
+            .position(|item| item.name == "ObjectsLimit")
+            .expect("ObjectsLimit index");
+        enums[enum_index] = changed_limit;
+        let changed_enums: &'static [_] = Box::leak(enums.into_boxed_slice());
+
+        let altered_fields = ContractSpec {
+            messages: changed_messages,
+            ..OBJECTS_V2
+        };
+        let doc = document_from_contract(&altered_fields).expect("mutated Objects fields");
+        let put = &doc["paths"]["/v2/objects/objects/put"]["post"];
+        assert!(put["x-acyclic-objects-streaming"].is_null());
+        let original = document_from_contract(&OBJECTS_V2).expect("original Objects model");
+        assert_eq!(
+            original["paths"]["/v2/objects/objects/put"]["post"]["x-acyclic-objects-streaming"]["frame_limits"]
+                ["body_bytes"],
+            65536
+        );
+        let altered_limits = ContractSpec {
+            enums: changed_enums,
+            ..OBJECTS_V2
+        };
+        let limit_doc = document_from_contract(&altered_limits).expect("mutated Objects limit");
+        assert_eq!(
+            limit_doc["paths"]["/v2/objects/objects/put"]["post"]["x-acyclic-objects-streaming"]["frame_limits"]
+                ["body_bytes"],
+            32768
+        );
     }
 
     #[test]
