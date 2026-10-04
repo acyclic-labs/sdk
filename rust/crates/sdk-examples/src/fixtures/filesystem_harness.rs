@@ -534,7 +534,16 @@ fn seeded_memory_fs() -> Result<MemoryFs, Status> {
             .await
             .map_err(|error| Status::internal(format!("fixture seed: {}", error.error)))?;
         checkout
-            .commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation)
+            // The fixture is part of the reproducible manifest, so its
+            // operation identity must be stable across clean rebuilds. The
+            // production engine still computes the workspace and generation
+            // identities from this real commit; this is only the deterministic
+            // seed input.
+            .commit(
+                OperationId::from_bytes([0x42; 16]),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(|error| Status::internal(format!("fixture commit: {}", error.error)))?;
         Ok(fs)
