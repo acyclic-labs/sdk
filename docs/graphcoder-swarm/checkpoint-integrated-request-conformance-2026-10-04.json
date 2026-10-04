@@ -1,0 +1,51 @@
+{
+  "scope": "Windows native exact serialized request/provider-prefix conformance and real local stored-content rejection",
+  "source_commit_at_dispatch": "a0b90d1a2d82fa30e3e71efa72413fe83fa22126",
+  "rust_tree_before_and_after": "1e4c159922fed8e88c35c4bdf42dc6af33856c2f",
+  "verification": {
+    "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --test model_input_conformance_v3 --test model_input_rejection_conformance_v3 --target-dir Q:/graphcoder-builds/root-conformance-20261004 -j2",
+    "environment": {"CARGO_BUILD_JOBS": "2", "CARGO_INCREMENTAL": "0"},
+    "process_session": 83944,
+    "exit_code": 0,
+    "passed": 6,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0,
+    "build_duration_seconds": 383,
+    "suites": [
+      {"name": "model_input_conformance_v3", "passed": 3, "duration_seconds": 0.04},
+      {"name": "model_input_rejection_conformance_v3", "passed": 3, "duration_seconds": 0.50}
+    ]
+  },
+  "sources": [
+    {"path": "rust/crates/harness/tests/model_input_conformance_v3.rs", "sha256": "af5eced283e594fff54f0c55c722f16e19dc716c3d0f1599b7fb7dc497a149ef"},
+    {"path": "rust/crates/harness/tests/model_input_rejection_conformance_v3.rs", "sha256": "3432902d90cfb48dd5871157ce7610182ddbd9154092bf3647a184230bbd1dcd"},
+    {"path": "rust/crates/harness/conformance/model-input-v3.json", "sha256": "3b7133eaba5c237ba98646129df8201f88c51e8ceaeF22b8fcc7c1d620148c0a"}
+  ],
+  "artifacts": [
+    {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/model_input_conformance_v3-b4c3cb68970f9b4d.exe", "sha256": "0367fbc886c1d3874626bab38089d8cf11ee5125ae26aa144c8a5f83159801b4"},
+    {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/model_input_rejection_conformance_v3-28aa3898af72e371.exe", "sha256": "f259c4771573cf98696e2c3dd13527880ee2c9ab8a517f97fecddccaf60e8f58"}
+  ],
+  "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/conformance-integrated.log", "sha256": "fd31d5a43b086a9db951ac12e563c7a27f9b0b71ce61be298ab5eea6c6f6f709"},
+  "exit_record": "Q:/graphcoder-builds/root-conformance-20261004/conformance-integrated.exit",
+  "physical_probe_regression": {
+    "command": "cargo test -p acyclic-objects --features test-support physical::tests::test_support_rejects_ambiguous_body_locations --target-dir Q:/graphcoder-builds/root-conformance-20261004 -j2",
+    "process_session": 9259,
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "filtered_unit_tests": 36,
+    "filtered_integration_tests": 2,
+    "source": {"path": "rust/crates/objects/src/physical.rs", "sha256": "395628e22022a790e9d796df4e8e895309c0d0ad8fda4775edc7c46d279a02fa"},
+    "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/acyclic_objects-e04ff6416c5ed5c8.exe", "sha256": "780fdcf2cadaff2171fc044fe00e5b16a43bb912515519fbb952b82710d8bb2e"},
+    "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/physical-probe-ambiguity.log", "sha256": "88cb4a4c05783cae75ea55a1135a3a91824a7439032d56f69647d9e6f3c54707"}
+  },
+  "boundaries": [
+    "Actual Windows test executables; deterministic mocked model providers; no production model quality claim",
+    "Provider-prefix fixture captures bytes supplied to generate for two siblings and a grandchild; it does not exercise PersistentLocalSwarm activation or qualify the failing recursive recovery suite",
+    "Physical corruption/deletion test mutates real Objects segments and reopens local storage; descriptor-only rejection remains separately tested",
+    "No native/WASM parity, packaged final matrix, root writeback, process confinement, or full goal completion claimed",
+    "The earlier C-drive disk-full attempt remains recorded as a failed build"
+  ]
+}

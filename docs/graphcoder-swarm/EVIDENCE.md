@@ -271,3 +271,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 [Integrated conformance failure](checkpoint-integrated-conformance-disk-failure-2026-10-04.json) records terminal exit 101 and disk-full archive failure at Rust tree `1e4c159922fed8e88c35c4bdf42dc6af33856c2f`. No passing tests are attributed to that attempt. Its separate Q-drive retry is recorded as started, not passed.
 
+[Fresh Q-drive conformance](checkpoint-integrated-request-conformance-2026-10-04.json) subsequently passed 6/6 on that same Rust tree. It records suite, fixture, executable, and durable log digests. The provider-prefix fixture and real physical storage rejection cases are qualified; production recursive swarm activation/recovery and final packaged qualification remain separate unmet gates.
+

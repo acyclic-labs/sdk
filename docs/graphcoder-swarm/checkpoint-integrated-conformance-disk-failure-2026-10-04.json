@@ -1,6 +1,6 @@
 {
   "scope": "Integrated model-input conformance build; no test execution qualified",
-  "source_commit": "a0b90d1a2d82fa30e3e71efa72413fe83fa22126",
+  "source_commit": "b7e0bd74ec93e7a428fa83b4f28fa0914c88c973",
   "rust_tree": "1e4c159922fed8e88c35c4bdf42dc6af33856c2f",
   "verification": {
     "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --test model_input_conformance_v3 --test model_input_rejection_conformance_v3 --target-dir target/qualification-root-v2 -j2",
