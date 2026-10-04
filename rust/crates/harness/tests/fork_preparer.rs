@@ -17,7 +17,7 @@ use acyclic_harness::{
         Capture, CapturedResource, CompositeForkVerifier, ForkCaptureProvider, ForkPreparation,
         ForkRequest, ForkSeedVerifier, ForkSelection, ResourceRevision, StreamHistoryForkVerifier,
     },
-    resources::{ArtifactRef, ProviderRef, StreamRef},
+    resources::{ArtifactRef, CheckpointRef, ProviderRef, StreamRef},
     store::StreamAggregate,
 };
 use acyclic_stream::{MemoryStream, StreamClient};
@@ -26,6 +26,8 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use std::process::Command as ProcessCommand;
+use std::process::Child;
 use uuid::Uuid;
 
 struct LostCaptureReply {
@@ -33,6 +35,48 @@ struct LostCaptureReply {
     capture_calls: AtomicUsize,
     reconcile_calls: AtomicUsize,
     observation_ready: AtomicBool,
+}
+
+/// A real host process remains outside the fork resource graph while its
+/// effect is unresolved. The capture adapter deliberately reports the durable
+/// in-flight identity; preparation must refuse to publish a child until a
+/// later reconciliation observes an immutable checkpoint.
+struct RunningProcessCapture {
+    provider: ProviderRef,
+    operation: OperationId,
+}
+
+struct ReapedChild(Child);
+
+impl Drop for ReapedChild {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
+impl ForkCaptureProvider for RunningProcessCapture {
+    fn provider(&self) -> &ProviderRef {
+        &self.provider
+    }
+
+    fn capture<'a>(
+        &'a self,
+        _request: &'a ForkRequest,
+        _selection: &'a ForkSelection,
+    ) -> BoxFuture<'a, Result<Capture>> {
+        Box::pin(async move { Ok(Capture::InFlight(self.operation)) })
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        _request: &'a ForkRequest,
+        _selection: &'a ForkSelection,
+    ) -> BoxFuture<'a, Result<Option<Capture>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 impl ForkCaptureProvider for LostCaptureReply {
@@ -352,6 +396,55 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         resolver.clone(),
     )?
     .with_capture_provider(lost_reply.clone())?;
+
+    // Exercise the native boundary with an actual approved-host surrogate:
+    // the process is real and remains running while fork admission observes
+    // its unfinished effect. A live PID is never a child resource; only a
+    // provider-observed immutable checkpoint could be published.
+    let mut running = if cfg!(windows) {
+        let mut command = ProcessCommand::new(
+            std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into()),
+        );
+        command.args(["/C", "ping", "127.0.0.1", "-n", "6"]).env_clear();
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
+        ReapedChild(
+            command
+                .spawn()
+                .map_err(|error| Error::Storage(format!("spawn running process: {error}")))?,
+        )
+    } else {
+        let mut command = ProcessCommand::new("sh");
+        command.args(["-c", "sleep 5"]).env_clear();
+        ReapedChild(
+            command
+                .spawn()
+                .map_err(|error| Error::Storage(format!("spawn running process: {error}")))?,
+        )
+    };
+    let process_provider = ProviderRef::new("acyclic", "machines", "2")?;
+    let process_operation = OperationId::from_bytes([15; 16]);
+    let process_capture = Arc::new(RunningProcessCapture {
+        provider: process_provider.clone(),
+        operation: process_operation,
+    });
+    let process_lost_reply = Arc::new(LostCaptureReply {
+        provider: objects_provider.clone(),
+        capture_calls: AtomicUsize::new(0),
+        reconcile_calls: AtomicUsize::new(0),
+        observation_ready: AtomicBool::new(false),
+    });
+    let process_composed = FilesystemForkPreparer::new(
+        host.clone(),
+        aggregate.reducer().clone(),
+        issuer.verifier(),
+        scope.clone(),
+        project.clone(),
+        stream_provider.clone(),
+        resolver.clone(),
+    )?
+    .with_capture_provider(process_lost_reply)?
+    .with_capture_provider(process_capture)?;
     let another_agent = AgentId::from_bytes([12; 16]);
     let mut uncertain = request.clone();
     uncertain.operation_id = OperationId::from_bytes([13; 16]);
@@ -374,15 +467,45 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     uncertain.selections.push(ForkSelection {
         required: false,
         revision: ResourceRevision::Artifact(ArtifactRef::new(
-            objects_provider,
+            objects_provider.clone(),
             b"artifact".to_vec(),
             Some("immutable-v1".into()),
         )?),
     });
+    let mut process_uncertain = uncertain.clone();
+    process_uncertain.operation_id = OperationId::from_bytes([16; 16]);
+    process_uncertain.child.id = "running-process-child".into();
+    process_uncertain.preparation.child_project_volume = VolumeRef::new(
+        provider.clone(),
+        "running-process-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+    )?;
+    process_uncertain.preparation.child_private_volume = VolumeRef::new(
+        provider.clone(),
+        "running-process-private",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(another_agent),
+    )?;
+    process_uncertain.selections.push(ForkSelection {
+        required: true,
+        revision: ResourceRevision::Process(CheckpointRef::new(
+            process_provider,
+            b"running-process".to_vec(),
+            Some("live".into()),
+        )?),
+    });
     assert!(matches!(
-        aggregate.prepare_fork(&composed, uncertain.clone()).await,
+        aggregate
+            .prepare_fork(&process_composed, process_uncertain)
+            .await,
         Err(Error::Indeterminate(_))
     ));
+    assert!(running
+        .0
+        .try_wait()
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .is_none());
     assert_eq!(
         aggregate
             .reconcile_fork(&composed, uncertain.clone())
@@ -415,7 +538,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         .verify_manifest(&manifest, 1, &Limits::default())
         .await?;
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(lost_reply.reconcile_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(lost_reply.reconcile_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         aggregate
             .reconcile_fork(&composed, uncertain.clone())
