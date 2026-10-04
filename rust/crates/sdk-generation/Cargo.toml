@@ -24,9 +24,13 @@ tar = "=0.4.46"
 name = "sdk-generation"
 path = "src/main.rs"
 
-[lints.rust]
-unsafe_code = "deny"
+[[bin]]
+name = "sdk-platform-receipt"
+path = "src/bin/sdk-platform-receipt.rs"
 
 [[bin]]
 name = "sdk-stream-native-receipt"
 path = "src/bin/sdk-stream-native-receipt.rs"
+
+[lints.rust]
+unsafe_code = "deny"
