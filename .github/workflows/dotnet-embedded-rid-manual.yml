@@ -126,7 +126,7 @@ jobs:
             --env RUST_TARGET="$RUST_TARGET" \
             "$ALPINE_IMAGE" sh -euxc '
               apk add --no-cache bash binutils build-base ca-certificates
-              channel="$(awk -F '"' '/^channel = / { print $2; exit }' rust-toolchain.toml)"
+              channel="$(grep -m1 ^channel rust-toolchain.toml | tr -cd A-Za-z0-9.)"
               test "$channel" = "1.98.1"
               rustc -Vv | grep -F "release: $channel"
               bash scripts/build-dotnet-embedded-native.sh --root /src --target "$RUST_TARGET" --output /tmp/dotnet-embedded
