@@ -1465,6 +1465,50 @@ where
             .await
     }
 
+    /// Stages host-only execution content under the authenticated internal
+    /// journal class. Model content readers reject this namespace.
+    pub(crate) async fn stage_internal_execution(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        display_name: &str,
+    ) -> Result<FileRef> {
+        self.host
+            .put_internal_content(
+                &self.volume,
+                &self.write,
+                path,
+                bytes,
+                "application/json",
+                display_name,
+                self.maximum_file_bytes,
+                &IdempotencyKey::new(format!("native-execution:{operation_id}:{path}"))?,
+                crate::filesystem::InternalContentClass::Execution,
+            )
+            .await
+    }
+
+    /// Reads one host-only execution file by logical path and returns its
+    /// pinned reference. This never enters model content admission.
+    pub(crate) async fn read_internal_execution_path(
+        &self,
+        path: &str,
+    ) -> Result<(FileRef, Vec<u8>)> {
+        let grant = self.content_verifier.owner_read_grant(&self.volume)?;
+        let (reference, bytes) = self
+            .host
+            .read_internal_path(
+                &self.volume,
+                &grant,
+                path,
+                crate::filesystem::InternalContentClass::Execution,
+                self.maximum_file_bytes,
+            )
+            .await?;
+        Ok((reference, bytes.to_vec()))
+    }
+
     /// Reads a pinned owner-private version after verifying its descriptor.
     pub async fn read(&self, file: &FileRef) -> Result<Vec<u8>> {
         if let Ok(bytes) = self

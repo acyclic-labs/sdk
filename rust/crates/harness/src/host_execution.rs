@@ -30,7 +30,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn execution_request_locator_digest(volume: &VolumeRef, path: &str) -> Result<[u8; 32]> {
+/// Returns the stable digest binding an approved process request to its
+/// host-owned content location.  The locator is deliberately separate from
+/// the request digest so callers can stage the immutable request before
+/// dispatch without making the approval self-referential.
+pub fn execution_request_locator_digest(volume: &VolumeRef, path: &str) -> Result<[u8; 32]> {
     let bytes = crate::contract::canonical_json_bytes(&(volume, path))?;
     Ok(*blake3::hash(&bytes).as_bytes())
 }

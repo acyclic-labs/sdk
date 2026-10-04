@@ -13,7 +13,7 @@ name = "graphcoder-runtime"
 path = "src/main.rs"
 
 [dependencies]
-acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["filesystem-local"] }
+acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["filesystem-local", "native-process-tree"] }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["local"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 blake3.workspace = true

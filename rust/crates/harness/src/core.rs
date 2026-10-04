@@ -3193,7 +3193,11 @@ pub(crate) fn canonical_intent(command: &Command) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(command)
 }
 
-pub(crate) fn effect_request_digest(
+/// Computes the canonical digest for a provider request.
+///
+/// This is public because host compositions must bind operator approval to
+/// the exact immutable request that the durable provider will dispatch.
+pub fn effect_request_digest(
     provider: &str,
     guarantee: EffectGuarantee,
     effect_kind: &str,

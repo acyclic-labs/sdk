@@ -17,6 +17,7 @@ use acyclic_harness::{
     filesystem::{
         LocalSessionPhase, LocalSwarmBindings, PersistentLocalSwarm,
     },
+    host_execution::{ExecutionEnvironment, ExecutionSpec},
     model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
         ModelProvider},
     registry::ComponentIdentity,
@@ -30,6 +31,7 @@ use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     sync::{
@@ -473,7 +475,7 @@ struct Runtime {
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
-            "echo" | "complete" | "stage" | "recursive" | "blocking" | "approval" => args.model_fixture.clone(),
+            "echo" | "complete" | "stage" | "recursive" | "blocking" | "approval" | "native-approval" => args.model_fixture.clone(),
             value => {
                 return Err(HarnessError::Invalid(format!(
                     "unknown model fixture {value}"
@@ -500,7 +502,7 @@ impl Runtime {
                 "type": "object",
                 "required": if fixture == "approval" { json!([]) } else { json!(["fixture"]) },
                 "properties": {
-                    "fixture": {"enum": ["echo", "complete", "stage", "recursive", "blocking", "approval"]}
+                    "fixture": {"enum": ["echo", "complete", "stage", "recursive", "blocking", "approval", "native-approval"]}
                 },
                 "additionalProperties": false,
             }),
@@ -584,6 +586,49 @@ impl Runtime {
                     .await?;
             }
         }
+        if fixture == "native-approval" {
+            let task = swarm.root_task().await?;
+            let operation = operation_for("native-process-fixture");
+            let already_prepared = swarm
+                .list_approvals(task)
+                .await?
+                .into_iter()
+                .any(|approval| {
+                    approval
+                        .ticket
+                        .approval
+                        .as_ref()
+                        .is_some_and(|binding| binding.operation_id == operation)
+                });
+            if !already_prepared {
+                let executable = std::env::var_os("COMSPEC")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
+                let working_directory = args
+                    .checkout
+                    .clone()
+                    .unwrap_or_else(|| args.root.clone());
+                let request = ExecutionSpec {
+                    executable: executable.to_string_lossy().into_owned(),
+                    arguments: vec![
+                        "/C".into(),
+                        "echo graphcoder-native-approval>graphcoder-native-effect.txt".into(),
+                    ],
+                    working_directory: working_directory.to_string_lossy().into_owned(),
+                    environment: ExecutionEnvironment::Explicit {
+                        variables: BTreeMap::from([(
+                            "GRAPHCODER_FIXTURE".into(),
+                            "native-approval".into(),
+                        )]),
+                    },
+                    timeout_ms: Some(10_000),
+                    max_output_bytes: 64 * 1024,
+                };
+                swarm
+                    .prepare_native_execution(task, operation, request)
+                    .await?;
+            }
+        }
         let lazy_observation = LazyObservation::from_environment()?;
         Ok(Self {
             swarm,
@@ -615,6 +660,8 @@ impl Runtime {
             }
             "list_approvals" => self.list_approvals(&request.params).await,
             "operator_approve" => self.operator_approve(&request.params).await,
+            "operator_inspect_approval" => self.operator_inspect_approval(&request.params).await,
+            "native_process" => self.native_process(&request.params).await,
             "resolve_approval" => self.resolve_approval(&request.params).await,
             "cancel_session" => self.cancel_session(&request.params).await,
             "read_file" => self.read_file(&request.params).await,
@@ -864,16 +911,7 @@ impl Runtime {
     /// not carry the process-local operator credential.
     async fn operator_approve(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
-        let token = required_text(params, "operator_token")?;
-        let expected = self.operator_token.as_deref().ok_or_else(|| {
-            DispatchError::unsupported("operator control is not configured")
-        })?;
-        if token != expected {
-            return Err(DispatchError {
-                code: "denied",
-                message: "operator control credential is invalid".into(),
-            });
-        }
+        self.authenticate_operator(params)?;
         let task = task_from_value(params, "session_id")?;
         let id = InteractionId::parse(required_text(params, "approval_id")?)
             .map_err(DispatchError::from_harness)?;
@@ -890,6 +928,73 @@ impl Runtime {
             "approval_id": id.to_string(),
             "approved": approved,
         }))
+    }
+
+    /// Returns the exact native process action to the authenticated operator.
+    /// This is a host control projection; it is intentionally separate from
+    /// model requests and does not include conversation content or credentials.
+    async fn operator_inspect_approval(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        self.authenticate_operator(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let id = InteractionId::parse(required_text(params, "approval_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let request = self
+            .swarm
+            .native_execution_spec(task, id)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        serde_json::to_value(request)
+            .map_err(|error| DispatchError::invalid(format!("native action is not serializable: {error}")))
+    }
+
+    /// Dispatches one already-approved native action through Harness's
+    /// durable host execution provider. The public projection reports only
+    /// its terminal class; action details remain on the operator inspection
+    /// route and are never added to model-visible conversation content.
+    async fn native_process(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let id = InteractionId::parse(required_text(params, "approval_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let observation = self
+            .swarm
+            .dispatch_native_execution(task, id)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let status = match observation.status {
+            acyclic_harness::core::EffectStatus::Planned => "planned",
+            acyclic_harness::core::EffectStatus::Succeeded { .. } => "succeeded",
+            acyclic_harness::core::EffectStatus::Failed { .. }
+            | acyclic_harness::core::EffectStatus::FailedWithReceipt { .. } => "failed",
+            acyclic_harness::core::EffectStatus::Indeterminate => "indeterminate",
+            acyclic_harness::core::EffectStatus::Dispatched => "dispatched",
+        };
+        Ok(json!({
+            "session_id": task.to_string(),
+            "approval_id": id.to_string(),
+            "status": status,
+            "provider": observation.provider,
+            "effect_id": observation.effect_id.to_string(),
+            "attempt_id": observation.attempt_id.to_string(),
+        }))
+    }
+
+    fn authenticate_operator(
+        &self,
+        params: &serde_json::Map<String, Value>,
+    ) -> Result<(), DispatchError> {
+        let token = required_text(params, "operator_token")?;
+        let expected = self.operator_token.as_deref().ok_or_else(|| {
+            DispatchError::unsupported("operator control is not configured")
+        })?;
+        if token != expected {
+            return Err(DispatchError {
+                code: "denied",
+                message: "operator control credential is invalid".into(),
+            });
+        }
+        Ok(())
     }
 
     async fn resolve_approval(&self, params: &Value) -> Result<Value, DispatchError> {

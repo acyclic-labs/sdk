@@ -35,6 +35,62 @@ pub type DurableHarnessStorage =
 const EXECUTION_RECEIPT_STREAM: &str = "harness/system/execution-receipts";
 const EXECUTION_RECEIPT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Host-only resolver used by the native process adapter. Model content
+/// readers intentionally reject `.system/execution/*`; this narrow adapter
+/// permits the already-authenticated provider to read its own request refs.
+struct ExecutionContentVerifier {
+    host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    volume: VolumeRef,
+    read: ContentGrant,
+    maximum_bytes: u64,
+}
+
+impl crate::conversation::ContentResidencyVerifier for ExecutionContentVerifier {
+    fn verify<'a>(
+        &'a self,
+        reference: &'a FileRef,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if !reference.path().starts_with(".system/execution/") {
+                return Err(Error::Unauthorized(
+                    "execution resolver only accepts host-owned execution content".into(),
+                ));
+            }
+            self.host
+                .read_internal_content(
+                    reference,
+                    &self.volume,
+                    &self.read,
+                    super::InternalContentClass::Execution,
+                    self.maximum_bytes,
+                )
+                .await?;
+            Ok(())
+        })
+    }
+
+    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            if !reference.path().starts_with(".system/execution/") {
+                return Err(Error::Unauthorized(
+                    "execution resolver only accepts host-owned execution content".into(),
+                ));
+            }
+            Ok(self
+                .host
+                .read_internal_content(
+                    reference,
+                    &self.volume,
+                    &self.read,
+                    super::InternalContentClass::Execution,
+                    self.maximum_bytes,
+                )
+                .await?
+                .to_vec())
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ExecutionReceiptEvent {
@@ -1704,8 +1760,15 @@ impl PersistentLocalHarness {
     /// The provider uses the native runner and never falls back to a
     /// model-writable receipt path.
     pub fn native_execution_provider(&self) -> Result<NativeExecutionProvider> {
+        let (host, _stream, read, _write, maximum_bytes) = self.storage.execution_binding();
+        let resolver = Arc::new(ExecutionContentVerifier {
+            host,
+            volume: self.storage.volume().clone(),
+            read,
+            maximum_bytes,
+        });
         NativeExecutionProvider::native_with_receipt_store(
-            self.storage.content_verifier(),
+            resolver,
             self.execution_receipt_store()?,
             self.storage.execution_approval_verifier(),
         )

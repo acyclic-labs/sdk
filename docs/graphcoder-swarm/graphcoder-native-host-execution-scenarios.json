@@ -1,0 +1,41 @@
+{
+  "protocol": "acyclic.graphcoder.native-host-execution-scenarios.v1",
+  "purpose": "Public native qualification for exact approved host process admission through Harness",
+  "fixture": "native-approval",
+  "driver": "scripts/graphcoder-native-host-execution-e2e.mjs",
+  "fixture_policy": "Harness stages the exact ExecutionApproval in its host-only execution journal, opens a durable interaction whose action digest is the immutable request digest, and dispatches through NativeExecutionProvider after the authenticated operator decision.",
+  "action": {
+    "executable": "absolute COMSPEC path",
+    "arguments": [
+      "/C",
+      "echo graphcoder-native-approval>graphcoder-native-effect.txt"
+    ],
+    "working_directory": "temporary attached checkout",
+    "environment": {
+      "kind": "explicit",
+      "variables": {
+        "GRAPHCODER_FIXTURE": "native-approval"
+      }
+    }
+  },
+  "public_routes": [
+    "list_sessions",
+    "list_approvals",
+    "operator_inspect_approval",
+    "operator_approve",
+    "native_process"
+  ],
+  "assertions": [
+    "operator inspection exposes exact executable, argv, cwd, and explicit environment without the operator credential or model content",
+    "wrong credentials and forged approval identities are denied",
+    "dispatch before approval is denied and produces no checkout side effect",
+    "approved dispatch runs the real host process and creates the exact checkout marker",
+    "re-dispatch after the durable receipt returns the succeeded outcome without spawning an unsafe duplicate",
+    "the process is hidden, stdin is closed, owned output is drained, and cleanup has a bounded forced termination fallback"
+  ],
+  "boundaries": [
+    "This scenario proves Harness host admission, operator authorization, exact action binding, real Windows process execution, and receipt replay.",
+    "It does not claim a secure remote private channel: the JSON-lines operator credential is process-local control input and must be protected by the embedding host.",
+    "The model fixture is deterministic and no sandbox is provided; workspace routing is not process confinement."
+  ]
+}

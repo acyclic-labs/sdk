@@ -12,17 +12,19 @@ use super::{
     LocalHarnessTools, PersistentLocalHarness, workspace_ref,
 };
 use crate::{
-    AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
+    AgentId, Capabilities, EffectAttemptId, EffectId, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
+    effects::{EffectDispatch, EffectObservation, EffectProvider},
     executor::TurnOutput,
     fork::{
         Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
         ResourceRevision,
     },
     interaction::{Interaction, InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
+    host_execution::{execution_request_locator_digest, ExecutionApproval, ExecutionSpec},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
@@ -67,6 +69,23 @@ const REGISTRY_VERSION: u32 = 2;
 const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
+const NATIVE_EXECUTION_PROVIDER: &str = "harness.native-execution.v1";
+const NATIVE_EXECUTION_KIND: &str = "host.process";
+
+fn native_execution_request_path(operation_id: OperationId) -> String {
+    format!(".system/execution/{operation_id}/request.json")
+}
+
+fn native_execution_record_path(operation_id: OperationId) -> String {
+    format!(".system/execution/{operation_id}/record.json")
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct NativeExecutionRecord {
+    approval: ExecutionApproval,
+    request: FileRef,
+    request_digest: [u8; 32],
+}
 
 type LocalFilesystemHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 
@@ -2568,6 +2587,178 @@ impl PersistentLocalSwarm {
             )
             .await?;
         Ok(id)
+    }
+
+    /// Stages one exact host process request and opens the owner approval
+    /// bound to the immutable dispatch digest. The request remains in the
+    /// task's private host volume; model-visible workspace content never
+    /// carries executable, environment, or operator credentials.
+    pub async fn prepare_native_execution(
+        &self,
+        task: TaskId,
+        operation_id: OperationId,
+        request: ExecutionSpec,
+    ) -> Result<InteractionId> {
+        request.validate()?;
+        let harness = self.open_session(task).await?;
+        let interaction_id = InteractionId::new();
+        let path = native_execution_request_path(operation_id);
+        let locator = execution_request_locator_digest(harness.storage().volume(), &path)?;
+        let mut approval = ExecutionApproval::approve_for(
+            harness.storage().session_id(),
+            interaction_id,
+            operation_id,
+            request,
+        )?;
+        approval.request_locator_digest = Some(locator);
+        let bytes = serde_json::to_vec(&approval)
+            .map_err(|error| Error::Invalid(format!("native execution approval is invalid: {error}")))?;
+        let request_ref = harness
+            .storage()
+            .stage_internal_execution(
+                operation_id,
+                &path,
+                &bytes,
+                "native-execution-approval.json",
+            )
+            .await?;
+        let request_digest = crate::core::effect_request_digest(
+            NATIVE_EXECUTION_PROVIDER,
+            EffectGuarantee::AtMostOnce,
+            NATIVE_EXECUTION_KIND,
+            &request_ref,
+        )?;
+        harness
+            .storage()
+            .open_interaction(
+                interaction_id,
+                Interaction::approval(
+                    "Approve this exact host process invocation".to_owned(),
+                    operation_id,
+                    request_digest,
+                )?,
+            )
+            .await?;
+        harness
+            .storage()
+            .stage_internal_execution(
+                operation_id,
+                &native_execution_record_path(operation_id),
+                &serde_json::to_vec(&NativeExecutionRecord {
+                    approval,
+                    request: request_ref,
+                    request_digest,
+                })
+                .map_err(|error| Error::Invalid(format!("native execution record is invalid: {error}")))?,
+                "native-execution-record.json",
+            )
+            .await?;
+        Ok(interaction_id)
+    }
+
+    /// Reads the exact host action behind one pending native approval for an
+    /// authenticated operator inspection surface. This projection excludes
+    /// model content and credentials while retaining executable, argv, cwd,
+    /// environment policy, and bounded limits.
+    pub async fn native_execution_spec(
+        &self,
+        task: TaskId,
+        interaction_id: InteractionId,
+    ) -> Result<ExecutionSpec> {
+        let approval = self
+            .list_approvals(task)
+            .await?
+            .into_iter()
+            .find(|approval| approval.ticket.id.as_bytes() == &interaction_id.into_bytes())
+            .ok_or_else(|| Error::NotFound(format!("local swarm approval {interaction_id}")))?;
+        let operation = approval
+            .ticket
+            .approval
+            .ok_or_else(|| Error::Invalid("approval ticket has no operation binding".into()))?
+            .operation_id;
+        let harness = self.open_session(task).await?;
+        let (_, bytes) = harness
+            .storage()
+            .read_internal_execution_path(&native_execution_record_path(operation))
+            .await?;
+        let record: NativeExecutionRecord = serde_json::from_slice(&bytes)
+            .map_err(|error| Error::Invalid(format!("native execution approval is invalid: {error}")))?;
+        let request = record.approval;
+        request.validate()?;
+        if request.interaction_id != interaction_id || request.operation_id != operation {
+            return Err(Error::Conflict(
+                "native execution approval identity does not match its ticket".into(),
+            ));
+        }
+        Ok(request.request)
+    }
+
+    /// Dispatches a previously prepared and durably approved host process
+    /// through Harness's native execution provider. The provider's receipt
+    /// store supplies at-most-once claim and restart recovery.
+    pub async fn dispatch_native_execution(
+        &self,
+        task: TaskId,
+        interaction_id: InteractionId,
+    ) -> Result<EffectObservation> {
+        let approval = self
+            .list_approvals(task)
+            .await?
+            .into_iter()
+            .find(|approval| approval.ticket.id.as_bytes() == &interaction_id.into_bytes())
+            .ok_or_else(|| Error::NotFound(format!("local swarm approval {interaction_id}")))?;
+        if !approval
+            .resolution
+            .as_ref()
+            .is_some_and(|resolution| resolution.outcome == InteractionOutcome::Approved)
+        {
+            return Err(Error::Unauthorized(
+                "native execution requires an approved owner interaction".into(),
+            ));
+        }
+        let binding = approval
+            .ticket
+            .approval
+            .ok_or_else(|| Error::Invalid("approval ticket has no operation binding".into()))?;
+        let operation = binding.operation_id;
+        let harness = self.open_session(task).await?;
+        let (_, bytes) = harness
+            .storage()
+            .read_internal_execution_path(&native_execution_record_path(operation))
+            .await?;
+        let record: NativeExecutionRecord = serde_json::from_slice(&bytes)
+            .map_err(|error| Error::Invalid(format!("native execution approval is invalid: {error}")))?;
+        let request = record.approval;
+        request.validate()?;
+        let effect_id = EffectId::from_bytes(operation.into_bytes());
+        let attempt_id = EffectAttemptId::from_bytes(operation.into_bytes());
+        let request_digest = crate::core::effect_request_digest(
+            NATIVE_EXECUTION_PROVIDER,
+            EffectGuarantee::AtMostOnce,
+            NATIVE_EXECUTION_KIND,
+            &record.request,
+        )?;
+        if binding.action_digest != request_digest
+            || record.request_digest != request_digest
+            || request.interaction_id != interaction_id
+            || request.operation_id != operation
+        {
+            return Err(Error::Conflict(
+                "native execution approval is stale or bound to a different request".into(),
+            ));
+        }
+        let provider = harness.native_execution_provider()?;
+        provider
+            .dispatch(EffectDispatch {
+                provider: NATIVE_EXECUTION_PROVIDER.into(),
+                effect_id,
+                attempt_id,
+                effect_kind: NATIVE_EXECUTION_KIND.into(),
+                request: record.request,
+                guarantee: EffectGuarantee::AtMostOnce,
+                request_digest,
+            })
+            .await
     }
 
     /// Records one authenticated operator decision against the current ticket.

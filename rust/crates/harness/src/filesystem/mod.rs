@@ -2160,6 +2160,70 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(bytes)
     }
 
+    /// Resolves one host journal path without granting or delegating a model
+    /// directory capability. Internal execution content is addressable only
+    /// through this host-owned path boundary.
+    pub(crate) async fn read_internal_path(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        class: InternalContentClass,
+        maximum_bytes: u64,
+    ) -> Result<(FileRef, Bytes)> {
+        volume.validate()?;
+        grant.require(volume, VolumeOperation::Read)?;
+        if volume.provider() != &self.provider || volume.class() != VolumeClass::AgentPrivate {
+            return Err(Error::Unauthorized(
+                "host journal volume is outside the local provider".into(),
+            ));
+        }
+        if !path.starts_with(class.prefix()) {
+            return Err(Error::Unauthorized(
+                "host journal path is outside its internal class".into(),
+            ));
+        }
+        let workspace = workspace_ref(self.provider.clone(), &volume.storage_name()?)?;
+        let observation = self.resolve(&workspace).await?;
+        self.retain_generation(&workspace, &observation.generation)
+            .await?;
+        let bytes = self
+            .read(
+                &workspace,
+                Some(&observation.generation),
+                &format!("/{path}"),
+                maximum_bytes,
+            )
+            .await?;
+        let metadata = self
+            .read(
+                &workspace,
+                Some(&observation.generation),
+                &format!("/{}", content_metadata_path(path)),
+                64 * 1024,
+            )
+            .await?;
+        let staged: FileRef = serde_json::from_slice(&metadata)
+            .map_err(|_| Error::Storage("internal file metadata is corrupt".into()))?;
+        if staged.volume() != volume
+            || staged.path() != path
+            || staged.version() != "pending"
+        {
+            return Err(Error::Storage(
+                "internal file metadata does not match the file".into(),
+            ));
+        }
+        staged.descriptor().verify(&bytes)?;
+        let reference = FileRef::new(
+            volume.clone(),
+            path,
+            hex::encode(observation.generation.as_resource().key()),
+            staged.descriptor().clone(),
+            staged.display_name(),
+        )?;
+        Ok((reference, bytes))
+    }
+
     /// Discovers a granted private directory at the owner's current head, or
     /// continues at the immutable generation returned by a prior page.
     /// The physical workspace is opened only when this method is called;
