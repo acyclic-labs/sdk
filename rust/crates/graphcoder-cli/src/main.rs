@@ -1464,7 +1464,7 @@ mod tests {
         assert_eq!(resumed["ok"], true);
         assert_eq!(resumed["result"]["summary"]["state"], "completed");
         let activity = exchange(
-            reopened,
+            reopened.clone(),
             json!({
                 "request_id":"activity-1",
                 "method":"read_activity",
@@ -1478,6 +1478,38 @@ mod tests {
                 .as_array()
                 .is_some_and(|items| !items.is_empty())
         );
+        let messages = exchange(
+            reopened,
+            json!({
+                "request_id":"messages-1",
+                "method":"read_messages",
+                "params":{"session_id": session_id}
+            }),
+        )
+        .await;
+        assert_eq!(messages["ok"], true, "{messages}");
+        let first = &messages["result"]["items"][0];
+        assert_eq!(first["kind"], "user");
+        assert_eq!(first["body"], "write fixture");
+        assert!(first.get("content_ref").is_some());
+        assert!(first.get("sender_id").is_none());
+        assert!(first.get("recipient_id").is_none());
+        assert!(first.get("delivered_at").is_none());
+        let over_budget = exchange(
+            Arc::new(
+                Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
+                    .await
+                    .expect("runtime reopens for bounds"),
+            ),
+            json!({
+                "request_id":"messages-small",
+                "method":"read_messages",
+                "params":{"session_id": session_id, "query":{"max_bytes":1}}
+            }),
+        )
+        .await;
+        assert_eq!(over_budget["ok"], false);
+        assert_eq!(over_budget["error"]["code"], "invalid_input");
     }
 
     #[tokio::test]
