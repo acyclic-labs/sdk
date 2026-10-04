@@ -345,7 +345,7 @@ pub const HARNESS_SCENARIOS: &[FixtureScenario] = &[
     harness_scenario(
         33,
         "replay",
-        "cursor=fixture",
+        "cursor=authority:task:fixture;generation=fixture-generation;revision=0",
         "live delivery at cursor revision",
         "cursor:fixture",
         &["submit"],
@@ -354,7 +354,7 @@ pub const HARNESS_SCENARIOS: &[FixtureScenario] = &[
     harness_scenario(
         34,
         "observe",
-        "operation=fixture-op",
+        "operation=fixture-op;owner=task:fixture",
         "succeeded operation status",
         "operation:fixture-op",
         &["submit"],
@@ -363,7 +363,7 @@ pub const HARNESS_SCENARIOS: &[FixtureScenario] = &[
     harness_scenario(
         35,
         "cancel",
-        "operation=fixture-op",
+        "operation=fixture-op;owner=task:fixture",
         "cancelled status with incremented revision",
         "operation:fixture-op",
         &["observe"],
