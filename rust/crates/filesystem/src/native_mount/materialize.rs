@@ -741,6 +741,13 @@ fn prepare_restore(
     let destination = destination_root.join(relative);
     let destination_parent = held_parent_from_root(host_root, relative)?;
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
+    if let Ok(metadata) = destination_parent.symlink_metadata(Path::new(destination_name)) {
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            return Err(MaterializeError::Engine(
+                "directory restore requires an authenticated descendant baseline".into(),
+            ));
+        }
+    }
     let restore_guard = host_root
         .open_restore_guard(relative)
         .map_err(MaterializeError::Io)?;
@@ -795,7 +802,7 @@ fn publish_restore(
             #[cfg(unix)]
             HostPathReplacement::Atomic => {
                 let _ = restore_guard;
-                stage_parent.rename_to_no_replace(
+                stage_parent.rename_to(
                     Path::new(staged_name),
                     &destination_parent,
                     Path::new(destination_name),
@@ -1191,11 +1198,10 @@ fn recover_live_mount_replacement(
         match destination_parent.symlink_metadata(destination_name) {
             Ok(_) => destination_parent.remove(&backup_name)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                destination_parent.rename_to_no_replace(
-                    &backup_name,
-                    destination_parent,
-                    destination_name,
-                )?;
+                // Publication was durably acknowledged before recovery.  A
+                // missing live entry is therefore an external deletion; do
+                // not resurrect the displaced baseline over that user choice.
+                destination_parent.remove(&backup_name)?;
             }
             Err(error) => return Err(error.into()),
         }

@@ -632,8 +632,9 @@ pub struct HostDirectory {
 
 /// A capability-rooted destination handle retained across authenticated host
 /// staging and publication. On Windows it intentionally omits
-/// `FILE_SHARE_WRITE`, so a later writer cannot open the destination while the
-/// restore owns its baseline; an already-open writer makes acquisition fail.
+/// `FILE_SHARE_WRITE` or `FILE_SHARE_DELETE`, so a later writer or rename
+/// cannot retarget the destination while the restore owns its baseline; an
+/// already-open incompatible handle makes acquisition fail.
 pub(crate) struct HostRestoreGuard {
     #[allow(dead_code)]
     file: cap_std::fs::File,
@@ -1325,8 +1326,7 @@ impl HostRoot {
                 path,
                 FILE_GENERIC_READ | DELETE,
                 NTCREATEFILE_CREATE_OPTIONS(0),
-                windows::Win32::Storage::FileSystem::FILE_SHARE_READ
-                    | windows::Win32::Storage::FileSystem::FILE_SHARE_DELETE,
+                windows::Win32::Storage::FileSystem::FILE_SHARE_READ,
             ) {
                 Ok(opened) => opened,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1476,14 +1476,15 @@ impl HostRoot {
     }
 
     /// Opens one capability-rooted Windows leaf with an explicit sharing
-    /// contract. Restore guards use this to deny new writers while retaining
-    /// delete sharing for the held-directory publication rename.
+    /// contract. Restore guards use this to deny both new writers and target
+    /// renames while retaining the handle needed for its own publication move.
     #[cfg(windows)]
     #[allow(unsafe_code)]
     fn open_by_name_with_share(
         &self,
         path: &Path,
         access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
+        options: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
         share: windows::Win32::Storage::FileSystem::FILE_SHARE_MODE,
     ) -> io::Result<Option<cap_std::fs::File>> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
