@@ -426,8 +426,7 @@ export class GraphCoderUi {
       }
       case "read_file": {
         const session = this.#requireSelected();
-        const generation = command.generation ?? this.#state.changesGeneration;
-        if (generation === undefined) throw new GraphCoderError("invalid_input", "load changes before reading a file");
+        const generation = command.generation ?? this.#state.changesGeneration ?? session.workspaceGeneration;
         const fileBody = await this.transport.readFile(session.summary.id, checkedPath(command.path), generation);
         if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, fileBody };

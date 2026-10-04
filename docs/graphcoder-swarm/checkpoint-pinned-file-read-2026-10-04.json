@@ -1,0 +1,20 @@
+{
+  "scope": "Generic GraphCoder UI explicit file read without changes-list prerequisite",
+  "change": "Use selected session snapshot workspaceGeneration after explicit generation and loaded changes generation; never resolve through mutable current paths",
+  "verification": [
+    {"command": "bun test test/graphcoder.test.ts test/dispatcher.test.ts", "passed": 38, "failed": 0, "assertions": 125, "exit_code": 0},
+    {"command": "bun run check", "exit_code": 0}
+  ],
+  "source": {"path": "typescript/packages/graphcoder/src/api.ts", "sha256": "f17bba2074b1c71176be9bc2a91b84c5e13ea3c8aa5bfdfffb660e9a4913b95a"},
+  "suites": [
+    {"path": "typescript/packages/graphcoder/test/graphcoder.test.ts", "sha256": "1609ea0815c9f5533c2c6f3e81c552be351566896fdea1fde779563f03a85ddf"},
+    {"path": "typescript/packages/graphcoder/test/dispatcher.test.ts", "sha256": "a741ee0a6cd75ca94de96aafd40764e0448e28c5dff85a25d16abb92efba5989"}
+  ],
+  "boundaries": [
+    "Source-level mock transport and JSON-lines dispatcher tests; not real provider laziness or installed-package qualification",
+    "Existing lazy UI test now reads a file before requesting changes and asserts snapshot generation",
+    "Diff still requires its changes baseline",
+    "Native Rust and identified native application artifact are unchanged",
+    "Installed package must be rebuilt after this source change for the real file-read gate"
+  ]
+}

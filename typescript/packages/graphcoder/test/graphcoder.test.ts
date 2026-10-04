@@ -152,16 +152,20 @@ describe("GraphCoder UI transport boundary", () => {
     const id = ui.state().selectedSession!.summary.id;
 
     expect(transport.calls.map(call => call.method)).toEqual(["startSession"]);
+    await ui.dispatch({ kind: "read_file", path: "README.md" });
+    expect(ui.state().fileBody?.mediaType).toBe("text/markdown");
+    expect(ui.state().fileBody?.generation).toBe(ui.state().selectedSession!.workspaceGeneration);
+    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "readFile"]);
     await ui.dispatch({ kind: "load_activity" });
     await ui.dispatch({ kind: "load_messages" });
     await ui.dispatch({ kind: "load_approvals" });
     await ui.dispatch({ kind: "list_changes" });
-    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "readActivity", "readMessages", "listApprovals", "listChanges"]);
+    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "readFile", "readActivity", "readMessages", "listApprovals", "listChanges"]);
     expect(ui.state().changeBody).toBeUndefined();
 
     await ui.dispatch({ kind: "read_change", path: "README.md" });
     expect(ui.state().changeBody?.path).toBe("README.md");
-    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "readActivity", "readMessages", "listApprovals", "listChanges", "readChange"]);
+    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "readFile", "readActivity", "readMessages", "listApprovals", "listChanges", "readChange"]);
     expect(id as string).toBe("session-1");
 
     await ui.dispatch({ kind: "read_file", path: "README.md" });
