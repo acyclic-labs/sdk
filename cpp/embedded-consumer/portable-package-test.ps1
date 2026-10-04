@@ -228,8 +228,8 @@ $cSource = Join-Path $rootPath "rust\crates\sdk-embedded-prototype\tests\c_consu
 $installedRuntime = Join-Path $prefix "bin\acyclic_sdk_embedded_prototype.dll"
 $importLibraryInstalled = Join-Path $prefix "lib\acyclic_sdk_embedded_prototype.dll.lib"
 Invoke-Checked $clangC (@("--target=$RustTarget", "-std=c11", "-I$(Join-Path $prefix 'include')", $cSource, $importLibraryInstalled, "-o", $cConsumer))
+Assert-PeMachine $cConsumer $RustTarget
 if (-not $SkipExecution) {
-    Assert-PeMachine $cConsumer $RustTarget
     if ($RustTarget -eq "aarch64-pc-windows-msvc") { Assert-PythonArm64 }
     $oldPath = $env:PATH
     try {
