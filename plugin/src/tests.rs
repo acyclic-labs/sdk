@@ -2770,7 +2770,10 @@ fn root_git_uses_the_same_repository_and_materializer() {
 #[test]
 #[ignore = "requires live native mounts"]
 fn child_local_git_merge_control_stays_on_git_facade() {
-    run_large_stack("child-local-git-routing", child_local_git_merge_control_case);
+    run_large_stack(
+        "child-local-git-routing",
+        child_local_git_merge_control_case,
+    );
 }
 
 /// Writes `name` into `directory` under `root` from a separate process, as an
