@@ -390,6 +390,7 @@ describe("JSON-lines process bridge", () => {
 
   test("retires native token before re-entrant close listeners run", async () => {
     let terminateCalls = 0;
+    let reentrantTermination: Promise<unknown> | undefined;
     const io: NativeProcessIo = {
       launch: () => ({ token: "native-reentrant-token", pid: 44 }),
       write: () => undefined,
@@ -403,8 +404,9 @@ describe("JSON-lines process bridge", () => {
     };
     const owner = createNativeProcessOwnerAdapter(io);
     const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
-    child.on("close", () => { void owner.terminate(child); });
+    child.on("close", () => { reentrantTermination = owner.terminate(child); });
     await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 44 });
+    await expect(reentrantTermination).resolves.toMatchObject({ kind: "terminated", pid: 44 });
     expect(terminateCalls).toBe(1);
   });
 

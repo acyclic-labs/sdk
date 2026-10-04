@@ -171,12 +171,15 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
       return child;
     },
     terminate(child, graceMs = 250) {
-      const token = tokens.get(child);
-      if (token === undefined) return Promise.resolve({ kind: "unknown", pid: child.pid ?? -1, reason: "native owner token is unavailable" });
       const state = states.get(child);
+      const token = tokens.get(child);
+      if (token === undefined) {
+        if (state?.termination !== undefined) return state.termination;
+        return Promise.resolve({ kind: "unknown", pid: child.pid ?? -1, reason: "native owner token is unavailable" });
+      }
       if (state?.termination !== undefined) return state.termination;
       let operation: Promise<NativeProcessTermination>;
-      operation = (async () => {
+      operation = Promise.resolve().then(async () => {
         if (state !== undefined) {
           state.stopping = true;
           if (state.timer !== undefined) {
@@ -207,7 +210,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         tokens.delete(child);
         state?.finish();
         return { kind: "terminated", pid: child.pid ?? -1 };
-      })();
+      });
       if (state !== undefined) {
         state.termination = operation;
         void operation.then(result => {
