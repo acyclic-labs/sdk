@@ -29,7 +29,7 @@ path = "src/bin/inference-rsa-fixture.rs"
 [dependencies]
 acyclic-actors = { path = "../actors" }
 acyclic-fs = { package = "acyclic-fs", path = "../filesystem" }
-acyclic-harness = { path = "../harness" }
+acyclic-harness = { path = "../harness", features = ["grpc"] }
 acyclic-inference = { path = "../inference" }
 acyclic-machines = { path = "../machines" }
 acyclic-objects = { path = "../objects" }
