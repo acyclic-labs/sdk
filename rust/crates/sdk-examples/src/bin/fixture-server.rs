@@ -1926,22 +1926,17 @@ mod tests {
     #[test]
     fn http_control_handshake_uses_the_registered_family_route() {
         let response =
-            control_handshake_http(
-                "/v1/sdk/workers/handshake",
-                Some("Bearer fixture-token"),
-            )
-            .expect("Workers control route");
+            control_handshake_http("/v1/sdk/workers/handshake", Some("Bearer fixture-token"))
+                .expect("Workers control route");
         assert_eq!(response["family"], "workers");
         assert_eq!(response["rpc"], transport_control::HANDSHAKE_RPC_PATH);
         assert_eq!(
             response["protocol"]["version"],
             BindingFamily::Workers.package()
         );
-        let response = control_handshake_http(
-            "/v1/sdk/objects/handshake",
-            Some("Bearer fixture-token"),
-        )
-        .expect("Objects control route");
+        let response =
+            control_handshake_http("/v1/sdk/objects/handshake", Some("Bearer fixture-token"))
+                .expect("Objects control route");
         assert_eq!(response["family"], "objects");
         assert_eq!(
             response["protocol"]["version"],
