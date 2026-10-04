@@ -29,7 +29,8 @@
           "operation",
           "seed",
           "depends_on",
-          "known_output"
+          "known_output",
+          "semantic"
         ],
         "properties": {
           "order": {
@@ -60,6 +61,18 @@
           "known_output": {
             "type": "string",
             "minLength": 1
+          },
+          "semantic": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["operation_id", "authority", "cursor", "status", "output"],
+            "properties": {
+              "operation_id": { "type": "string", "minLength": 1 },
+              "authority": { "type": "string", "minLength": 1 },
+              "cursor": { "type": "string", "minLength": 1 },
+              "status": { "type": "string", "minLength": 1 },
+              "output": { "type": "string", "minLength": 1 }
+            }
           }
         }
       }

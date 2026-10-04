@@ -12,7 +12,7 @@ use acyclic_sdk_examples::{
     TransportFixture, execute_actors_roundtrip, execute_stream_append_read, render_all,
     transport_fixtures,
 };
-use acyclic_sdk_examples::fixtures::qualification_scenarios;
+use acyclic_sdk_examples::fixtures::{qualification_scenarios, scenario_expectation};
 use prost::Message;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -479,6 +479,7 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
 fn rust_rpc_scenarios() -> Vec<Value> {
     qualification_scenarios()
         .map(|scenario| {
+            let semantic = scenario_expectation(scenario);
             json!({
                 "family": scenario.family,
                 "operation": scenario.operation,
@@ -488,6 +489,13 @@ fn rust_rpc_scenarios() -> Vec<Value> {
                 "seed": scenario.seed,
                 "depends_on": scenario.depends_on,
                 "known_output": scenario.known_output,
+                "semantic": {
+                    "operation_id": semantic.operation_id,
+                    "authority": semantic.authority,
+                    "cursor": semantic.cursor,
+                    "status": semantic.status,
+                    "output": semantic.output,
+                },
                 "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
             })
         })
@@ -556,6 +564,7 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
             "seed": scenario["seed"],
             "depends_on": scenario["depends_on"],
             "known_output": scenario["known_output"],
+            "semantic": scenario["semantic"],
         })).collect::<Vec<_>>(),
     });
     ensure_source_unchanged(source_root, &source_sha256)?;
