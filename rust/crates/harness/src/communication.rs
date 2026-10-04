@@ -843,7 +843,8 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
             }
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
-            if let Some(retained) = Self::retained(&events, &request, unix_millis()?)? {
+            if let Some(retained) = Self::retained(&events, &request, self.clock.now_unix_millis())?
+            {
                 if let Some(completion) = retained.completion {
                     return Ok(completion);
                 }
@@ -901,7 +902,8 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
             }
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
-            let Some(retained) = Self::retained(&events, &request, unix_millis()?)? else {
+            let Some(retained) = Self::retained(&events, &request, self.clock.now_unix_millis())?
+            else {
                 return Err(Error::Conflict(
                     "wait cancellation has no retained admission".into(),
                 ));
@@ -1150,6 +1152,7 @@ impl DurableCommunication {
     }
 }
 
+#[cfg(test)]
 fn unix_millis() -> Result<u64> {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

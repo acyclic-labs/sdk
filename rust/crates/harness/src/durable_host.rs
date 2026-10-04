@@ -40,6 +40,8 @@ use tokio::sync::Mutex;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MailEvent {
+    #[serde(rename = "schema_version")]
+    schema_version: u8,
     sender: TaskId,
     recipient: TaskId,
     message_id: OperationId,
@@ -48,6 +50,11 @@ struct MailEvent {
 
 impl MailEvent {
     fn validate_for(&self, recipient: TaskId) -> Result<()> {
+        if self.schema_version != 1 {
+            return Err(Error::Invalid(
+                "unsupported mail event schema version".into(),
+            ));
+        }
         if self.sender.into_bytes() == [0; 16]
             || self.recipient.into_bytes() == [0; 16]
             || self.message_id.into_bytes() == [0; 16]
@@ -1046,6 +1053,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             }
             self.reader.verify(&payload).await?;
             let event = MailEvent {
+                schema_version: 1,
                 sender,
                 recipient,
                 message_id,
@@ -1309,6 +1317,7 @@ mod tests {
             "message.txt",
         )?;
         let event = MailEvent {
+            schema_version: 1,
             sender: TaskId::from_bytes([1; 16]),
             recipient: TaskId::from_bytes([2; 16]),
             message_id: OperationId::from_bytes([3; 16]),
@@ -1318,6 +1327,12 @@ mod tests {
         assert!(matches!(
             event.validate_for(TaskId::from_bytes([4; 16])),
             Err(Error::Conflict(message)) if message.contains("mailbox")
+        ));
+        let mut unsupported = event;
+        unsupported.schema_version = 2;
+        assert!(matches!(
+            unsupported.validate_for(TaskId::from_bytes([2; 16])),
+            Err(Error::Invalid(message)) if message.contains("schema version")
         ));
         Ok(())
     }

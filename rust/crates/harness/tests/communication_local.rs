@@ -23,7 +23,7 @@ use acyclic_harness::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{IdempotencyKey as StreamKey, LocalStream, LocalStreamLimits, StreamClient};
 use serde_json::Value;
 use std::{path::Path, sync::Arc};
 
@@ -46,6 +46,15 @@ struct Fixture {
 }
 
 struct SuspendedMachine(MachineIdentity);
+
+#[derive(Clone)]
+struct FixedClock(u64);
+
+impl acyclic_stream::UnixMillisClock for FixedClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.0
+    }
+}
 impl ResumableMachine for SuspendedMachine {
     fn identity(&self) -> &MachineIdentity {
         &self.0
@@ -139,6 +148,14 @@ impl Fixture {
     }
 
     async fn host(&self) -> Result<Arc<Host>> {
+        self.host_with_clock(Arc::new(acyclic_stream::SystemUnixMillisClock))
+            .await
+    }
+
+    async fn host_with_clock(
+        &self,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Result<Arc<Host>> {
         let verifier = Arc::new(FilesystemContentVerifier::new(
             self.fs.clone(),
             self.issuer.verifier(),
@@ -166,7 +183,7 @@ impl Fixture {
             self.runtime_scope.clone(),
             self.tasks.clone(),
             self.machines.clone(),
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            clock,
         )?))
     }
 
@@ -384,6 +401,108 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
             .inbox(sibling, 0, 8)
             .await?
             .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_mailbox_rejects_a_forged_cross_mailbox_record() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
+    let fixture = Fixture::open(directory.path()).await?;
+    let host = fixture.host().await?;
+    let parent = TaskId::from_bytes([11; 16]);
+    let child = TaskId::from_bytes([12; 16]);
+    let sibling = TaskId::from_bytes([13; 16]);
+    for (task, parent_link) in [
+        (parent, None),
+        (child, Some(parent)),
+        (sibling, Some(parent)),
+    ] {
+        assert!(matches!(
+            host.admit(fixture.admission(
+                OperationId::from_bytes(task.into_bytes()),
+                parent_link,
+            )?)
+            .await?,
+            Admission::Accepted(id) if id == task
+        ));
+    }
+    let body = payload(&fixture, OperationId::from_bytes([14; 16])).await?;
+    let forged = serde_json::json!({
+        "schema_version": 1,
+        "sender": parent,
+        "recipient": sibling,
+        "message_id": OperationId::from_bytes([15; 16]),
+        "payload": body,
+    });
+    let bytes = serde_json::to_vec(&forged).map_err(|error| Error::Invalid(error.to_string()))?;
+    let mailbox = fixture
+        .stream
+        .stream(format!("harness/v2/mail/{child}"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    mailbox
+        .append_batch(
+            vec![bytes.into()],
+            None,
+            Some(
+                StreamKey::new("forged-mailbox-record")
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            ),
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    assert!(
+        matches!(host.inbox(child, 0, 8).await, Err(Error::Conflict(message)) if message.contains("mailbox"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_wait_store_and_host_share_injected_clock_across_reopen() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
+    let fixture = Fixture::open(directory.path()).await?;
+    let clock: Arc<dyn acyclic_stream::UnixMillisClock> = Arc::new(FixedClock(10_000));
+    let host = fixture.host_with_clock(clock.clone()).await?;
+    let waiter = TaskId::from_bytes([21; 16]);
+    assert!(matches!(
+        host.admit(fixture.admission(
+            OperationId::from_bytes(waiter.into_bytes()),
+            None,
+        )?)
+        .await?,
+        Admission::Accepted(id) if id == waiter
+    ));
+    let waits = Arc::new(StreamWaitStore::new_with_clock(
+        fixture.stream.clone(),
+        clock.clone(),
+    ));
+    let request = WaitRequest {
+        operation_id: OperationId::from_bytes([22; 16]),
+        waiter,
+        target: WaitTarget::Messages {
+            task_id: waiter,
+            after: 0,
+            limit: 8,
+        },
+        timeout_epoch_ms: Some(9_999),
+        cancellation_id: None,
+    };
+    let communication = DurableCommunication::new(host).with_wait_store(waits.clone());
+    assert_eq!(
+        communication.wait(request.clone(), None).await?,
+        WaitCompletion::TimedOut
+    );
+    drop(waits);
+    drop(communication);
+    drop(fixture);
+    let reopened_fixture = Fixture::open(directory.path()).await?;
+    let reopened_waits = Arc::new(StreamWaitStore::new_with_clock(
+        reopened_fixture.stream.clone(),
+        clock,
+    ));
+    assert_eq!(
+        reopened_waits.open(request).await?,
+        Some(WaitCompletion::TimedOut)
     );
     Ok(())
 }
