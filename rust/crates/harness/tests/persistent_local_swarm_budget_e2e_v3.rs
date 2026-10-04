@@ -98,6 +98,13 @@ impl BudgetProvider {
 }
 
 impl ModelProvider for BudgetProvider {
+    fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+        // The fixture uses one byte as the conservative exact token ceiling.
+        // This satisfies the production request admission contract without
+        // making the mock provider invent a tokenizer.
+        u32::try_from(max_output_bytes).ok()
+    }
+
     fn generate<'a>(
         &'a self,
         prepared: acyclic_harness::model_input::PreparedModelInput,
@@ -712,7 +719,7 @@ async fn local_stream_budget_cas_orders_concurrent_child_reservations() -> Resul
     let left_request = SwarmForkRequest {
         operation_id: operation(0xD2),
         idempotency_key: IdempotencyKey::new("budget-cas-left")?,
-        parent_operation_id: Some(session),
+        parent_operation_id: None,
         depth: 1,
         resources,
         admission_digest: None,
@@ -720,7 +727,7 @@ async fn local_stream_budget_cas_orders_concurrent_child_reservations() -> Resul
     let right_request = SwarmForkRequest {
         operation_id: operation(0xD3),
         idempotency_key: IdempotencyKey::new("budget-cas-right")?,
-        parent_operation_id: Some(session),
+        parent_operation_id: None,
         depth: 1,
         resources,
         admission_digest: None,
@@ -762,7 +769,7 @@ async fn local_stream_budget_fences_stale_owner_claim_and_cancel() -> Result<()>
     let request = SwarmForkRequest {
         operation_id: operation(0xE2),
         idempotency_key: IdempotencyKey::new("stale-child")?,
-        parent_operation_id: Some(session),
+        parent_operation_id: None,
         depth: 1,
         resources: SwarmResourceRequest {
             model_steps: 4,
