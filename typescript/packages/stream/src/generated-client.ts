@@ -132,7 +132,7 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
 export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
 
 export function validateRustOwnedCredentialPolicy(token: string): void {
-  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === "bearer-no-crlf" && validateBearerToken(token) !== "") throw new TypeError("invalid bearer credential");
 }
 
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
