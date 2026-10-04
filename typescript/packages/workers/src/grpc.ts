@@ -2,7 +2,7 @@ import { rootCertificates } from "node:tls";
 import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { WorkersService } from "../generated/proto/workers/v1/workers_pb.js";
-import { validateWorkersCredential, validateWorkersGrpcEndpoint, validateWorkersMessageLimit } from "./wasm-runtime.js";
+import { validateWorkersCaCertificate, validateWorkersCredential, validateWorkersGrpcEndpoint, validateWorkersMessageLimit } from "./wasm-runtime.js";
 
 export interface WorkersGrpcOptions {
   readonly endpoint: string;
@@ -18,7 +18,7 @@ export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
   validateWorkersCredential(options.token);
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   validateWorkersMessageLimit(maximum);
-  if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
+  if (options.caCertificate !== undefined) validateWorkersCaCertificate(options.caCertificate);
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
     return next(request);

@@ -60,6 +60,17 @@ pub fn validate_remote_web_credential(token: &str) -> Result<(), JsValue> {
         .ok_or_else(|| invalid("invalid bearer credential"))
 }
 
+/// Validates the optional native TLS CA certificate before it reaches the
+/// platform gRPC adapter.
+#[wasm_bindgen]
+pub fn validate_remote_web_ca_certificate(certificate: &str) -> Result<(), JsValue> {
+    let length = certificate.as_bytes().len();
+    if length == 0 || length > 64 * 1024 {
+        return Err(invalid("invalid private CA certificate"));
+    }
+    Ok(())
+}
+
 /// Advances a cumulative response byte count under the caller's configured bound.
 #[wasm_bindgen]
 pub fn validate_remote_web_response_chunk(

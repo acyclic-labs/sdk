@@ -2,7 +2,7 @@ import { rootCertificates } from "node:tls";
 import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
-import { validateActorsCredential, validateActorsGrpcEndpoint, validateActorsMessageLimit } from "./wasm-runtime.js";
+import { validateActorsCaCertificate, validateActorsCredential, validateActorsGrpcEndpoint, validateActorsMessageLimit } from "./wasm-runtime.js";
 
 export interface ActorsGrpcOptions {
   readonly endpoint: string;
@@ -18,7 +18,7 @@ export function createActorsGrpcClient(options: ActorsGrpcOptions) {
   validateActorsCredential(options.token);
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   validateActorsMessageLimit(maximum);
-  if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
+  if (options.caCertificate !== undefined) validateActorsCaCertificate(options.caCertificate);
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
     return next(request);

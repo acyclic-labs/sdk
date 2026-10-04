@@ -1,6 +1,7 @@
 import initRemoteWasm, {
   initSync as initRemoteWasmSync,
   validate_actors_invoke,
+  validate_remote_web_ca_certificate,
   validate_remote_web_credential,
   validate_remote_web_content_length,
   validate_remote_web_endpoint,
@@ -52,6 +53,12 @@ export function validateActorsCredential(token: string): void {
   assertInitialized();
   try { validate_remote_web_credential(token); }
   catch (error) { throw new TypeError(errorMessage(error)); }
+}
+
+export function validateActorsCaCertificate(certificate: string): void {
+  assertInitialized();
+  try { validate_remote_web_ca_certificate(certificate); }
+  catch (error) { throw new RangeError(errorMessage(error)); }
 }
 
 export function validateActorsResponseChunk(observed: number, chunk: number, maximum: number): number {
