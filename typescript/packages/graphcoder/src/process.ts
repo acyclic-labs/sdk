@@ -297,13 +297,17 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   #requestTermination(): void {
     if (this.#termination !== undefined) return;
     this.#terminationDone = false;
-    this.#termination = this.#processOwner.terminate(this.#child).catch(error => {
+    // Publish the in-flight marker before invoking the host owner. This keeps
+    // synchronous owner failures and re-entrant exit/close events on one
+    // idempotent cleanup operation.
+    const termination = Promise.resolve().then(() => this.#processOwner.terminate(this.#child)).catch(error => {
       return {
         kind: "unknown",
         pid: this.#child.pid ?? -1,
         reason: error instanceof Error ? error.message : String(error),
       } satisfies OwnedProcessTermination;
     });
+    this.#termination = termination;
     void this.#termination.then(outcome => {
       this.#terminationDone = true;
       // The helper reports an explicit typed outcome through the diagnostic

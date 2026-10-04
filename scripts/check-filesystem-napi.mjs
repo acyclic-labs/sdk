@@ -150,7 +150,7 @@ async function qualifyProcessOwner(binding) {
 async function qualifyProcessIo(owner, executable, environment) {
   const echo = "process.stdin.once('data', c => { process.stdout.write(c); process.stderr.write('diagnostic'); process.exit(0); });";
   const spawned = owner.spawn(executable, ["-e", echo], null, environment);
-  owner.writeStdin(spawned.token, Buffer.from("native-io\\n"));
+  await owner.writeStdin(spawned.token, Buffer.from("native-io\\n"));
   owner.closeStdin(spawned.token);
   const deadline = Date.now() + 5_000;
   let stdout = "";
@@ -174,6 +174,41 @@ async function qualifyProcessIo(owner, executable, environment) {
   if (owner.pollExit(spawned.token).kind !== "exited") throw new Error("native process did not report root exit");
   const result = owner.terminate(spawned.token);
   if (result.kind !== "terminated") throw new Error(`native process stdio cleanup was uncertain: ${JSON.stringify(result)}`);
+
+  const blocked = owner.spawn(
+    executable,
+    ["-e", "setInterval(() => process.stdout.write('x'.repeat(16384)), 0);"],
+    null,
+    environment,
+  );
+  await delay(400);
+  let blockedObservation = null;
+  const blockedDeadline = Date.now() + 5_000;
+  while (Date.now() < blockedDeadline) {
+    blockedObservation = owner.pollOutput(blocked.token, "stdout");
+    if (blockedObservation.kind === "error") break;
+    await delay(20);
+  }
+  if (blockedObservation?.kind !== "error") {
+    throw new Error(`native blocked reader did not retain overflow: ${JSON.stringify(blockedObservation)}`);
+  }
+  const blockedResult = owner.terminate(blocked.token);
+  if (blockedResult.kind !== "terminated") throw new Error(`native blocked reader cleanup was uncertain: ${JSON.stringify(blockedResult)}`);
+
+  const writerBlocked = owner.spawn(
+    executable,
+    ["-e", "setInterval(() => {}, 100000);"],
+    null,
+    environment,
+  );
+  const pendingWrite = owner.writeStdin(writerBlocked.token, Buffer.alloc(4 * 1024 * 1024));
+  let writeSettled = false;
+  void pendingWrite.then(() => { writeSettled = true; }, () => { writeSettled = true; });
+  await delay(100);
+  const writerResult = owner.terminate(writerBlocked.token);
+  if (writerResult.kind !== "terminated") throw new Error(`native blocked writer cleanup was uncertain: ${JSON.stringify(writerResult)}`);
+  await delay(100);
+  if (!writeSettled) throw new Error("native blocked writer remained pending after owner termination");
 }
 
 function exists(path) {

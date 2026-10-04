@@ -882,7 +882,7 @@ export declare class NativeProcessOwner {
   /** Terminates the owned process tree and retires its token on proof. */
   terminate(token: string): NativeProcessTermination
   /** Writes bytes to the native process stdin owned by `token`. */
-  writeStdin(token: string, bytes: Buffer): void
+  writeStdin(token: string, bytes: Buffer): Promise<unknown>
   /** Closes the native process stdin owned by `token`. */
   closeStdin(token: string): void
   /** Polls one bounded output chunk without blocking the JavaScript thread. */

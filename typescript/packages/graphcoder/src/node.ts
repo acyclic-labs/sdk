@@ -28,20 +28,14 @@ export function createNodeGraphCoderConnection(options: GraphCoderProcessBridgeO
 export async function openDefaultNodeProcessOwner(): Promise<OwnedProcessOwner> {
   const moduleName = "@acyclic-labs/fs/native";
   const nativeModule = await import(moduleName) as {
-    readonly openNativeProcessOwner?: () => Promise<{
-      readonly io?: unknown;
-    }>;
+    readonly openNativeProcessIo?: () => Promise<unknown>;
     readonly createNativeProcessOwnerAdapter?: (io: unknown) => OwnedProcessOwner;
   };
-  if (typeof nativeModule.openNativeProcessOwner !== "function"
+  if (typeof nativeModule.openNativeProcessIo !== "function"
     || typeof nativeModule.createNativeProcessOwnerAdapter !== "function") {
     throw new Error("@acyclic-labs/fs/native does not export the native process owner adapter");
   }
-  const nativeOwner = await nativeModule.openNativeProcessOwner();
-  if (nativeOwner.io === undefined) {
-    throw new Error("the native filesystem companion does not provide streaming process ownership");
-  }
-  return nativeModule.createNativeProcessOwnerAdapter(nativeOwner.io);
+  return nativeModule.createNativeProcessOwnerAdapter(await nativeModule.openNativeProcessIo());
 }
 
 /**

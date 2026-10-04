@@ -290,6 +290,31 @@ describe("JSON-lines process bridge", () => {
     expect(terminated).toBe(1);
   });
 
+  test("publishes one cleanup operation before a synchronous owner failure", async () => {
+    let child: ReturnType<typeof spawnOwnedProcess> | undefined;
+    let terminateCalls = 0;
+    const diagnostics: GraphCoderProcessDiagnostic[] = [];
+    const processOwner = {
+      spawn(executable: string, args: readonly string[], options: Parameters<typeof spawnOwnedProcess>[2]) {
+        child = spawnOwnedProcess(executable, args, options);
+        return child;
+      },
+      terminate() {
+        terminateCalls += 1;
+        throw new Error("owner cleanup failed synchronously");
+      },
+    };
+    const command = { executable: testRuntimeExecutable(), args: ["-e", "setInterval(() => {}, 100000)"] };
+    const bridge = ownBridge({ executable: command.executable, args: command.args, env: env(), processOwner, onDiagnostic: event => diagnostics.push(event) });
+    bridge.close("synchronous owner failure");
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
+    child?.kill();
+    await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(terminateCalls).toBe(1);
+    expect(diagnostics.filter(event => event.kind === "termination")).toHaveLength(1);
+    expect(diagnostics.find(event => event.kind === "termination")).toMatchObject({ outcome: { kind: "unknown" } });
+  });
+
   test("stops native polling before a proven token is retired", async () => {
     let active = true;
     const io: NativeProcessIo = {

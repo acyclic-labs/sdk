@@ -53,7 +53,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 
@@ -169,14 +169,43 @@ pub struct NativeProcessOwner {
 struct NativeProcessEntry {
     tree: ProcessTree,
     stdin: Option<Arc<Mutex<ChildStdin>>>,
-    stdout: Option<Receiver<NativeProcessChunk>>,
-    stderr: Option<Receiver<NativeProcessChunk>>,
+    stdout: Option<NativeProcessReader>,
+    stderr: Option<NativeProcessReader>,
+}
+
+struct NativeProcessReader {
+    receiver: Receiver<NativeProcessChunk>,
+    overflowed: Arc<AtomicBool>,
 }
 
 enum NativeProcessChunk {
     Data(Vec<u8>),
     Eof,
     Error(String),
+}
+
+/// Background stdin write task for one bounded native process token.
+pub struct NativeProcessWriteTask {
+    stdin: Arc<Mutex<ChildStdin>>,
+    bytes: Vec<u8>,
+}
+
+impl Task for NativeProcessWriteTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| napi_error("native process stdin state poisoned"))?;
+        stdin.write_all(&self.bytes).map_err(napi_error)?;
+        stdin.flush().map_err(napi_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
 }
 
 impl NativeProcessEntry {
@@ -202,8 +231,10 @@ impl NativeProcessEntry {
     }
 }
 
-fn native_process_reader<R: Read + Send + 'static>(mut reader: R) -> Receiver<NativeProcessChunk> {
+fn native_process_reader<R: Read + Send + 'static>(mut reader: R) -> NativeProcessReader {
     let (sender, receiver) = mpsc::sync_channel(64);
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let reader_overflowed = Arc::clone(&overflowed);
     std::thread::spawn(move || {
         let mut buffer = [0_u8; 16 * 1024];
         loop {
@@ -216,10 +247,7 @@ fn native_process_reader<R: Read + Send + 'static>(mut reader: R) -> Receiver<Na
                     match sender.try_send(NativeProcessChunk::Data(buffer[..size].to_vec())) {
                         Ok(()) => {}
                         Err(mpsc::TrySendError::Full(_)) => {
-                            let _ = sender.try_send(NativeProcessChunk::Error(
-                                "native process output exceeded the bounded reader queue"
-                                    .to_owned(),
-                            ));
+                            reader_overflowed.store(true, Ordering::Release);
                             return;
                         }
                         Err(mpsc::TrySendError::Disconnected(_)) => return,
@@ -232,7 +260,10 @@ fn native_process_reader<R: Read + Send + 'static>(mut reader: R) -> Receiver<Na
             }
         }
     });
-    receiver
+    NativeProcessReader {
+        receiver,
+        overflowed,
+    }
 }
 
 #[napi]
@@ -345,7 +376,11 @@ impl NativeProcessOwner {
 
     /// Writes bytes to the native process stdin owned by `token`.
     #[napi]
-    pub fn write_stdin(&self, token: String, bytes: Buffer) -> Result<()> {
+    pub fn write_stdin(
+        &self,
+        token: String,
+        bytes: Buffer,
+    ) -> Result<AsyncTask<NativeProcessWriteTask>> {
         let token = parse_process_token(&token)?;
         let stdin = {
             let trees = self
@@ -361,11 +396,10 @@ impl NativeProcessOwner {
                 .cloned()
                 .ok_or_else(|| napi_error("native process stdin is unavailable"))?
         };
-        let mut stdin = stdin
-            .lock()
-            .map_err(|_| napi_error("native process stdin state poisoned"))?;
-        stdin.write_all(bytes.as_ref()).map_err(napi_error)?;
-        stdin.flush().map_err(napi_error)
+        Ok(AsyncTask::new(NativeProcessWriteTask {
+            stdin,
+            bytes: bytes.to_vec(),
+        }))
     }
 
     /// Closes the native process stdin owned by `token`.
@@ -394,15 +428,20 @@ impl NativeProcessOwner {
         let entry = trees
             .get(&token)
             .ok_or_else(|| napi_error("owner token is not active"))?;
-        let receiver = match stream.as_str() {
+        let reader = match stream.as_str() {
             "stdout" => entry.stdout.as_ref(),
             "stderr" => entry.stderr.as_ref(),
             _ => return Err(napi_error("native process stream must be stdout or stderr")),
         };
-        let Some(receiver) = receiver else {
+        let Some(reader) = reader else {
             return Ok(NativeProcessOutput::eof());
         };
-        match receiver.try_recv() {
+        if reader.overflowed.load(Ordering::Acquire) {
+            return Ok(NativeProcessOutput::error(
+                "native process output exceeded the bounded reader queue".to_owned(),
+            ));
+        }
+        match reader.receiver.try_recv() {
             Ok(NativeProcessChunk::Data(bytes)) => Ok(NativeProcessOutput::data(bytes)),
             Ok(NativeProcessChunk::Eof) | Err(TryRecvError::Disconnected) => {
                 Ok(NativeProcessOutput::eof())

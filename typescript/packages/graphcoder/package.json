@@ -44,6 +44,9 @@
     "check": "bun x tsc -p tsconfig.json --noEmit",
     "test": "bun test test"
   },
+  "dependencies": {
+    "@acyclic-labs/fs": "^0.2.0"
+  },
   "devDependencies": {
     "@types/node": "26.4.1",
     "bun-types": "1.4.0",

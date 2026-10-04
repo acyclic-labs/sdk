@@ -220,7 +220,7 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
     readonly NativeProcessOwner?: new () => {
       adopt(pid: number): string;
       spawn(executable: string, args: readonly string[], cwd: string | null, environment: readonly string[]): NativeProcessLaunch;
-      writeStdin(token: string, bytes: Uint8Array): void;
+      writeStdin(token: string, bytes: Uint8Array): Promise<unknown>;
       closeStdin(token: string): void;
       pollOutput(token: string, stream: "stdout" | "stderr"): { kind: "idle" | "data" | "eof" | "error"; bytes?: Uint8Array; reason?: string };
       pollExit(token: string): { kind: "running" | "exited"; code?: number | null };
@@ -245,7 +245,7 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
   };
   const io: NativeProcessIo = {
     launch,
-    write: (token, bytes) => nativeOwner.writeStdin(token, Buffer.from(bytes)),
+    write: async (token, bytes) => { await nativeOwner.writeStdin(token, Buffer.from(bytes)); },
     closeStdin: token => nativeOwner.closeStdin(token),
     pollOutput: (token, stream) => {
       const value = nativeOwner.pollOutput(token, stream);
@@ -286,9 +286,15 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
       try {
         tokens.set(child, nativeOwner.adopt(child.pid));
       } catch (error) {
-        // The hand-off was not proven. Preserve the failure so the host can
-        // reconcile it through its own admission/recovery policy; this owner
-        // never substitutes an unscoped PID kill.
+        // The hand-off was not proven. Close the direct Node handle and await
+        // its close event in the background; no PID or descendant cleanup is
+        // authorized because native ownership was never established.
+        try { child.kill(); } catch { /* preserve the adoption failure */ }
+        const close = new Promise<void>(resolve => {
+          child.once("close", () => resolve());
+          setTimeout(resolve, 1_000);
+        });
+        void close;
         throw error;
       }
       return child;
@@ -319,6 +325,20 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
       };
     },
   });
+}
+
+/**
+ * Opens the token-scoped native process I/O boundary without exposing the
+ * legacy ChildProcess adoption surface. Node hosts should use this entrypoint
+ * when they need streaming ownership; launch and termination stay atomic in
+ * the companion and no PID hand-off is attempted.
+ */
+export async function openNativeProcessIo(): Promise<NativeProcessIo> {
+  const owner = await openNativeProcessOwner();
+  if (owner.io === undefined) {
+    throw new Error("the native filesystem companion does not provide streaming process ownership");
+  }
+  return owner.io;
 }
 
 /** Opens the durable Git-shaped compatibility state machine without invoking system Git. */

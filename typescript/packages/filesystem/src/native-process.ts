@@ -21,7 +21,7 @@ export interface NativeProcessLaunch {
 /** Native token-scoped stdio operations for a suspended native launch. */
 export interface NativeProcessIo {
   readonly launch: (executable: string, args: readonly string[], options: SpawnOptions) => NativeProcessLaunch;
-  readonly write: (token: string, bytes: Uint8Array) => void;
+  readonly write: (token: string, bytes: Uint8Array) => void | Promise<void>;
   readonly closeStdin: (token: string) => void;
   readonly pollOutput: (token: string, stream: "stdout" | "stderr") => {
     readonly kind: "idle" | "data" | "eof" | "error";
@@ -68,8 +68,10 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
       const stdin = new Writable({
         write(chunk, _encoding, callback) {
           try {
-            io.write(launch.token, new Uint8Array(chunk));
-            callback();
+            Promise.resolve(io.write(launch.token, new Uint8Array(chunk))).then(
+              () => callback(),
+              error => callback(error instanceof Error ? error : new Error(String(error))),
+            );
           } catch (error) {
             callback(error instanceof Error ? error : new Error(String(error)));
           }
