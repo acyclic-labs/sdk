@@ -111,21 +111,27 @@ static LOCAL_FILESYSTEM_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Weak<LocalFilesy
     OnceLock::new();
 // Live cancellation is shared by handles of the same durable composition.
 // This cache carries no authority: only a committed cancellation signals it.
-static LOCAL_CANCELLATION_CACHE: OnceLock<
-    StdMutex<BTreeMap<PathBuf, Weak<LocalTaskCancellationSource>>>,
+#[derive(Default)]
+struct LocalSwarmLiveState {
+    cancellation: LocalTaskCancellationSource,
+    task_gates: StdMutex<BTreeMap<TaskId, Weak<Mutex<()>>>>,
+}
+
+static LOCAL_LIVE_CACHE: OnceLock<
+    StdMutex<BTreeMap<PathBuf, Weak<LocalSwarmLiveState>>>,
 > = OnceLock::new();
 
-fn shared_local_cancellation(root: &Path) -> Result<Arc<LocalTaskCancellationSource>> {
-    let mut cache = LOCAL_CANCELLATION_CACHE
+fn shared_local_live_state(root: &Path) -> Result<Arc<LocalSwarmLiveState>> {
+    let mut cache = LOCAL_LIVE_CACHE
         .get_or_init(|| StdMutex::new(BTreeMap::new()))
         .lock()
-        .map_err(|_| Error::Storage("local cancellation cache lock poisoned".into()))?;
+        .map_err(|_| Error::Storage("local swarm live-state cache lock poisoned".into()))?;
     let key = normalized_path(root);
     if let Some(source) = cache.get(&key).and_then(Weak::upgrade) {
         return Ok(source);
     }
     cache.retain(|_, source| source.strong_count() != 0);
-    let source = Arc::new(LocalTaskCancellationSource::default());
+    let source = Arc::new(LocalSwarmLiveState::default());
     cache.insert(key, Arc::downgrade(&source));
     Ok(source)
 }
@@ -2229,7 +2235,7 @@ impl From<LocalSwarmSession> for StoredSession {
 /// Durable local recursive application composition.
 pub struct PersistentLocalSwarm {
     root: PathBuf,
-    live_cancellation: Arc<LocalTaskCancellationSource>,
+    live: Arc<LocalSwarmLiveState>,
     config: LocalSwarmConfig,
     provider: Arc<dyn ModelProvider>,
     bindings: LocalSwarmBindings,
@@ -2257,10 +2263,6 @@ pub struct PersistentLocalSwarm {
     /// swarm handle. The durable stream CAS remains the cross-handle fence.
     registry_refresh: Mutex<()>,
     sessions: Mutex<BTreeMap<TaskId, Arc<PersistentLocalHarness>>>,
-    /// Per-task live terminal fences. The registry remains the cross-process
-    /// authority; these narrow gates prevent duplicate retries without
-    /// deadlocking a child turn that recursively activates a grandchild.
-    task_gates: Mutex<BTreeMap<TaskId, Arc<Mutex<()>>>>,
     /// Host-only operator choices awaiting resolution. The choice is retained
     /// with the exact ticket binding so a public resolve request cannot swap
     /// an operation or action digest between the private decision and commit.
@@ -2467,7 +2469,7 @@ impl PersistentLocalSwarm {
         let mut opened = BTreeMap::new();
         opened.insert(root_task, root_harness);
         let swarm = Self {
-            live_cancellation: shared_local_cancellation(&root)?,
+            live: shared_local_live_state(&root)?,
             root,
             config,
             provider,
@@ -2489,7 +2491,6 @@ impl PersistentLocalSwarm {
             registry_tail: Mutex::new(registry_tail),
             registry_refresh: Mutex::new(()),
             sessions: Mutex::new(opened),
-            task_gates: Mutex::new(BTreeMap::new()),
             operator_choices: Mutex::new(BTreeMap::new()),
         };
         swarm.observe(LocalSwarmObservation::HarnessOpened { task: root_task });
@@ -3201,8 +3202,8 @@ impl PersistentLocalSwarm {
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         let session = self.session(task).await?;
         if session.phase == LocalSessionPhase::Cancelled {
-            self.live_cancellation.register(task)?;
-            self.live_cancellation.cancel(task)?;
+            self.live.cancellation.register(task)?;
+            self.live.cancellation.cancel(task)?;
             return Ok(session);
         }
         if session.phase == LocalSessionPhase::Completed {
@@ -3224,8 +3225,8 @@ impl PersistentLocalSwarm {
             self.refresh_registry_state().await?;
             let latest = self.session(task).await?;
             if latest.phase == LocalSessionPhase::Cancelled {
-                self.live_cancellation.register(task)?;
-                self.live_cancellation.cancel(task)?;
+                self.live.cancellation.register(task)?;
+                self.live.cancellation.cancel(task)?;
                 return Ok(latest);
             }
             return Err(error);
@@ -3239,8 +3240,8 @@ impl PersistentLocalSwarm {
                 current.phase = LocalSessionPhase::Cancelled;
             }
         }
-        self.live_cancellation.register(task)?;
-        self.live_cancellation.cancel(task)?;
+        self.live.cancellation.register(task)?;
+        self.live.cancellation.cancel(task)?;
         if let Some(source) = &self.bindings.cancellation {
             let _ = source.cancel(task);
         }
@@ -3357,7 +3358,7 @@ impl PersistentLocalSwarm {
         operation: OperationId,
         prompt: &str,
     ) -> Result<TurnOutput> {
-        let gate = self.task_gate(task).await;
+        let gate = self.task_gate(task)?;
         let _completion_guard = gate.lock().await;
         self.refresh_registry_state().await?;
         let session = self.session(task).await?;
@@ -3691,6 +3692,11 @@ impl PersistentLocalSwarm {
                 .await?;
             }
         }
+        // The durable claim permits cold recovery, but a live writer still
+        // owns the child journal. All handles share this per-child fence.
+        let activation_gate = self.task_gate(child)?;
+        let _activation_guard = activation_gate.try_lock()
+            .map_err(|_| Error::Indeterminate(request.child_operation))?;
         let harness =
             match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
                 self.config.model.clone(),
@@ -3802,7 +3808,7 @@ impl PersistentLocalSwarm {
         // Admission and completion share one per-child terminal fence.
         // Narrowing the lock to this child permits a model turn to select a
         // grandchild without recursively taking a global swarm lock.
-        let gate = self.task_gate(child).await;
+        let gate = self.task_gate(child)?;
         let _completion_guard = gate.lock().await;
         self.refresh_registry_state().await?;
         let parent = self.session(request.parent).await?;
@@ -4098,8 +4104,8 @@ impl PersistentLocalSwarm {
     ) -> Result<LocalForkOutcome> {
         // Subscribe before the durable check so cancellation cannot fall
         // between that check and live task registration.
-        self.live_cancellation.register(child)?;
-        let mut cancelled = self.live_cancellation.receiver(child).ok_or_else(|| {
+        self.live.cancellation.register(child)?;
+        let mut cancelled = self.live.cancellation.receiver(child).ok_or_else(|| {
             Error::Storage("registered child cancellation scope disappeared".into())
         })?;
         self.refresh_registry_state().await?;
@@ -4680,12 +4686,16 @@ impl PersistentLocalSwarm {
         }
     }
 
-    async fn task_gate(&self, task: TaskId) -> Arc<Mutex<()>> {
-        let mut gates = self.task_gates.lock().await;
-        gates
-            .entry(task)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+    fn task_gate(&self, task: TaskId) -> Result<Arc<Mutex<()>>> {
+        let mut gates = self.live.task_gates.lock()
+            .map_err(|_| Error::Storage("local task gates lock poisoned".into()))?;
+        if let Some(gate) = gates.get(&task).and_then(Weak::upgrade) {
+            return Ok(gate);
+        }
+        gates.retain(|_, gate| gate.strong_count() != 0);
+        let gate = Arc::new(Mutex::new(()));
+        gates.insert(task, Arc::downgrade(&gate));
+        Ok(gate)
     }
 
     /// Reconciles the in-memory index with the append-only registry before a
