@@ -10,6 +10,7 @@ use prost::Message;
 
 pub mod bindings;
 pub mod credential;
+pub mod embedded_facades;
 pub mod facades;
 pub mod family_registry;
 pub mod filesystem;
@@ -29,6 +30,7 @@ pub use bindings::{
     generate_rust_bindings, native_binding_boundary,
 };
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
+pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 
 pub use facades::{
     CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,

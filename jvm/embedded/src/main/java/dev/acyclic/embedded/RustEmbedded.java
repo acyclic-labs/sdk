@@ -1,5 +1,6 @@
 package dev.acyclic.embedded;
 
+import acyclic.stream.v2.Stream;
 import com.google.protobuf.Message;
 import com.google.protobuf.Parser;
 import com.sun.jna.Library;
@@ -105,6 +106,7 @@ public final class RustEmbedded implements AutoCloseable {
 
   private final NativeApi api;
   private final long engine;
+  private final GeneratedStreamOperations operations;
   private boolean closed;
 
   public RustEmbedded() {
@@ -118,10 +120,16 @@ public final class RustEmbedded implements AutoCloseable {
     }
     this.engine = api.acyclic_embedded_engine_open();
     if (engine == 0) throw new IllegalStateException("Rust embedded engine open failed");
+    this.operations = new GeneratedStreamOperations(this);
   }
 
   public int abiVersion() {
     return api.acyclic_embedded_abi_version();
+  }
+
+  /** Typed operations emitted from the Rust contract generator. */
+  public GeneratedStreamOperations operations() {
+    return operations;
   }
 
   /** Executes one unary generated acyclic.stream.v2 operation through Rust. */
@@ -150,6 +158,16 @@ public final class RustEmbedded implements AutoCloseable {
     } catch (java.io.IOException error) {
       throw new IllegalStateException("Rust wire response could not be decoded", error);
     }
+  }
+
+  /** Thin helper used by the generated Children facade. */
+  public Stream.ChildrenPageResponse childrenPage(Stream.ChildrenPageRequest request) {
+    return callWire("children_page", request, Stream.ChildrenPageResponse.parser());
+  }
+
+  public ChildrenReader children(Stream.ChildrenRequest request) {
+    ensureOpen();
+    return new ChildrenReader(request);
   }
 
   // Named methods are the generated operation surface. Their bytes are the matching
@@ -220,6 +238,21 @@ public final class RustEmbedded implements AutoCloseable {
       }
     }
 
+    public Stream.ReadResponse nextRead() {
+      Item item = next();
+      if (item.status() == END) return null;
+      if (item.status() != OK) {
+        throw new IllegalStateException("Rust read failed: " + item.status() + " "
+            + new String(item.message(), StandardCharsets.UTF_8));
+      }
+      return Stream.ReadResponse.newBuilder()
+          .setRecord(Stream.Record.newBuilder()
+              .setSequence(item.sequence())
+              .setValue(com.google.protobuf.ByteString.copyFrom(item.value()))
+              .build())
+          .build();
+    }
+
     public void cancel() {
       if (handle != 0) api.acyclic_embedded_reader_cancel(handle);
     }
@@ -231,6 +264,61 @@ public final class RustEmbedded implements AutoCloseable {
         handle = 0;
       }
     }
+  }
+
+  public final class ChildrenReader implements AutoCloseable {
+    private final String parent;
+    private final boolean hasParent;
+    private final int limit;
+    private String after;
+    private com.google.protobuf.ByteString hierarchyVersion = com.google.protobuf.ByteString.EMPTY;
+    private Stream.ChildrenPageResponse page;
+    private int index;
+    private boolean done;
+
+    private ChildrenReader(Stream.ChildrenRequest request) {
+      this.hasParent = request.hasParent();
+      this.parent = request.getParent();
+      this.limit = request.getLimit();
+    }
+
+    public Stream.ChildrenResponse next() {
+      if (done) return null;
+      while (page == null || index >= page.getChildrenCount()) {
+        if (page != null && index >= page.getChildrenCount()) {
+          if (!page.hasNextAfter()) {
+            done = true;
+            return null;
+          }
+          after = page.getNextAfter();
+          hierarchyVersion = page.getHierarchyVersion();
+        }
+        Stream.ChildrenPageRequest.Builder request = Stream.ChildrenPageRequest.newBuilder()
+            .setLimit(limit);
+        if (hasParent) request.setParent(parent);
+        if (after != null) request.setAfter(after);
+        if (!hierarchyVersion.isEmpty()) request.setHierarchyVersion(hierarchyVersion);
+        page = childrenPage(request.build());
+        index = 0;
+        if (page.getChildrenCount() == 0 && !page.hasNextAfter()) {
+          done = true;
+          return null;
+        }
+        if (page.getChildrenCount() == 0 && page.hasNextAfter()) {
+          after = page.getNextAfter();
+          hierarchyVersion = page.getHierarchyVersion();
+          continue;
+        }
+      }
+      Stream.Child child = page.getChildren(index++);
+      if (!page.hasNextAfter() && index >= page.getChildrenCount()) done = true;
+      return Stream.ChildrenResponse.newBuilder().setChild(child).build();
+    }
+
+    public void cancel() { done = true; }
+
+    @Override
+    public void close() { done = true; }
   }
 
   @Override

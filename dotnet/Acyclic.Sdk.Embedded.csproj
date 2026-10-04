@@ -23,7 +23,13 @@
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.31.1" />
+    <PackageReference Include="Grpc.Tools" Version="2.71.0" PrivateAssets="All" />
     <Compile Include="EmbeddedStream.cs" />
+    <Compile Include="EmbeddedStream.Generated.cs" />
+    <Protobuf Include="$(MSBuildThisFileDirectory)..\rust\crates\stream\proto\stream\v2\stream.proto"
+              Link="Protos\stream\v2\stream.proto"
+              ProtoRoot="$(MSBuildThisFileDirectory)..\rust\crates\stream\proto"
+              GrpcServices="None" />
     <None Include="Embedded.README.md" Pack="true" PackagePath="README.md" />
     <None Include="$(MSBuildThisFileDirectory)..\LICENSE" Pack="true" PackagePath="LICENSE" />
     <None Include="$(MSBuildThisFileDirectory)..\NOTICE" Pack="true" PackagePath="NOTICE" />

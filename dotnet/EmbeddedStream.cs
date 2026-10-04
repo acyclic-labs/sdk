@@ -36,12 +36,16 @@ public sealed class EmbeddedStreamEngine : IDisposable
     private readonly ulong _handle;
     private int _disposed;
 
+    /// Typed operations generated from the canonical stream.proto contract.
+    public EmbeddedStreamOperations Operations { get; }
+
     public EmbeddedStreamEngine()
     {
         if (Rust.acyclic_embedded_abi_version() != 1)
             throw new PlatformNotSupportedException("Unsupported Rust embedded ABI version");
         _handle = Rust.acyclic_embedded_engine_open();
         if (_handle == 0) throw new InvalidOperationException("Rust embedded engine could not be opened");
+        Operations = new EmbeddedStreamOperations(this);
     }
 
     public AppendReceipt Append(string path, ReadOnlySpan<byte> value)
