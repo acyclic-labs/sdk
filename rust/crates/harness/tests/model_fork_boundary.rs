@@ -7,11 +7,12 @@ use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     conversation::{
-        Attachment, ContentGrant, ContentResidencyVerifier, ConversationMessage, Limits,
+        Attachment, ContentGrant, ContentResidencyVerifier, ConversationMessage, FileRef, Limits,
         MessageKind, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
-        Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, SchemaRegistry,
+        Action, AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, Command,
+        EffectGuarantee, SchemaRegistry,
     },
     executor::ExecutionEvent,
     filesystem::{
@@ -20,7 +21,7 @@ use acyclic_harness::{
         WorkspaceMutation, workspace_ref,
     },
     fork::{
-        CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection,
+        CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSeed, ForkSelection,
         ModelBoundaryReferences, ResourceRevision, StreamHistoryForkVerifier,
     },
     model::{
@@ -48,6 +49,16 @@ use std::path::PathBuf;
 use tokio::sync::{Barrier, Notify};
 
 type Host = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
+
+struct ColdReopenFixture {
+    seed: ForkSeed,
+    child_issuer: AuthorityIssuer,
+    parent_verifier: AuthorityVerifier,
+    parent_authority: Authority,
+    boundary: CompletedModelBoundary,
+    expected_files: Vec<(FileRef, Vec<u8>)>,
+    provider: ProviderRef,
+}
 
 fn validate_observed_manifest(request: &ModelRequest, bytes: &[u8], limits: Limits) -> Result<()> {
     let json = std::str::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -302,6 +313,7 @@ struct ForkAtBatch {
     grandchild: Arc<CapturedModel>,
     limits: Limits,
     publications: AtomicUsize,
+    cold_reopen: Mutex<Option<ColdReopenFixture>>,
     paused: bool,
 }
 impl ForkAtBatch {
@@ -342,6 +354,14 @@ impl ForkAtBatch {
             }
         }
         Ok(manifests)
+    }
+
+    fn take_cold_reopen(&self) -> Result<ColdReopenFixture> {
+        self.cold_reopen
+            .lock()
+            .map_err(|_| Error::Storage("cold reopen fixture lock is poisoned".into()))?
+            .take()
+            .ok_or_else(|| Error::Storage("cold reopen fixture was not published".into()))
     }
 
     async fn assert_model_read(
@@ -1128,8 +1148,6 @@ impl ForkAtBatch {
             .fork(&child_zero.4)
             .cloned()
             .ok_or_else(|| Error::Storage("published child seed missing after activation".into()))?;
-        let cold_child_issuer = child_zero.5.clone();
-        let cold_parent_authority = parent.reducer().authority().clone();
         let cold_files = child_zero_seed
             .model_boundary
             .as_ref()
@@ -1139,128 +1157,23 @@ impl ForkAtBatch {
             .chain(child_zero_seed.attachment_manifests.iter())
             .cloned()
             .collect::<Vec<_>>();
-        let mut cold_expected = Vec::with_capacity(cold_files.len());
+        let mut expected_files = Vec::with_capacity(cold_files.len());
         for file in &cold_files {
-            cold_expected.push((file.clone(), self.storage.read(file).await?));
+            expected_files.push((file.clone(), self.storage.read(file).await?));
         }
-        drop(completed_children);
-        drop(child_zero_storage);
-        drop(child_zero_publisher);
-        let cold_host = Arc::new(FilesystemHost::new(
-            Fs::local(LocalOptions::new(self.root_directory.join("fs")))
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?,
-            self.project.provider().clone(),
-        )?);
-        let cold_stream = StreamClient::new(Arc::new(
-            LocalStream::open(
-                self.root_directory.join("streams"),
-                LocalStreamLimits::default(),
-            )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?,
-        ));
-        let cold_parent = StreamAggregate::open(
-            &cold_stream,
-            cold_parent_authority,
-            self.issuer.verifier(),
-            SchemaRegistry::new(),
-        )
-        .await?;
-        let cold_storage = HarnessStorage::from_published_fork(
-            self.limits.file_bytes,
-            cold_host,
-            cold_stream,
-            cold_child_issuer,
-            &cold_parent,
-            &child_zero_seed,
-        )
-        .await?;
-        for (file, expected) in &cold_expected {
-            assert_eq!(cold_storage.read(file).await?, *expected);
-        }
-        let cold_model = Arc::new(CapturedModel {
-            overlap_barrier: None,
-            root: false,
-            read_first: true,
-            reject_first: false,
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-            serialized_requests: Mutex::new(Vec::new()),
-            manifest_bytes: Mutex::new(Vec::new()),
-            binding_digests: Mutex::new(Vec::new()),
-        });
-        let cold_suffix = vec![ModelMessage {
-            role: ModelRole::System,
-            content: ModelContent::Text("cold child restart; preserve inherited boundary".into()),
-        }];
-        let cold_bundle = cold_storage
-            .inherited_builder(
-                boundary.clone(),
-                cold_suffix,
-                cold_model.clone(),
-                self.limits,
-            )?
-            .tools(cold_storage.default_tools(self.limits)?)
-            .grant("tool:call:acyclic.read_file")
-            .grant("tool:call:acyclic.stage_file")
-            .grant("tool:call:acyclic.list_files")
-            .limits(self.limits)
-            .build()?;
-        let cold_operation = OperationId::from_bytes([62; 16]);
-        let cold_input = cold_storage
-            .stage(
-                cold_operation,
-                "input/cold-restart.txt",
-                b"cold child restart",
-                "text/plain",
-                "cold-restart.txt",
-            )
-            .await?;
-        cold_storage
-            .run_conversation(&cold_bundle, cold_operation, cold_input, Vec::new(), 3)
-            .await
-            .map_err(|error| Error::Storage(format!("cold child restart failed: {error}")))?;
-        let cold_requests = cold_model
-            .requests
+        *self
+            .cold_reopen
             .lock()
-            .map_err(|error| Error::Storage(error.to_string()))?
-            .clone();
-        assert_eq!(cold_requests.len(), 2);
-        for request in &cold_requests {
-            let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
-            let prefix = FrozenModelPrefix::capture(&prepared, boundary.request.messages.len())?;
-            assert_eq!(prefix.message_bytes(), boundary.prefix.message_bytes());
-        }
-        assert!(cold_requests[0].messages.iter().any(|message| {
-            matches!(
-                &message.content,
-                ModelContent::Part(ModelContentPart::ToolResult { value, .. })
-                    if value.get("kind") == Some(&Value::String("tool_rejection".into()))
-            )
-        }));
-        let (_, cold_serialized, cold_manifests, cold_bindings) = cold_model.evidence()?;
-        assert_eq!(cold_requests.len(), cold_serialized.len());
-        assert_eq!(cold_requests.len(), cold_manifests.len());
-        assert_eq!(cold_requests.len(), cold_bindings.len());
-        for (((request, bytes), manifest), binding) in cold_requests
-            .iter()
-            .zip(&cold_serialized)
-            .zip(&cold_manifests)
-            .zip(&cold_bindings)
-        {
-            let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
-            assert_eq!(bytes, prepared.bytes());
-            validate_observed_manifest(request, manifest, self.limits)?;
-            assert_eq!(*binding, boundary_binding);
-        }
-        assert_eq!(
-            cold_manifests,
-            self.durable_model_manifests(&cold_storage, cold_operation)
-                .await?
-        );
-        drop(cold_bundle);
-        drop(cold_storage);
+            .map_err(|_| Error::Storage("cold reopen fixture lock is poisoned".into()))? =
+            Some(ColdReopenFixture {
+                seed: child_zero_seed,
+                child_issuer: child_zero.5.clone(),
+                parent_verifier: self.issuer.verifier(),
+                parent_authority: parent.reducer().authority().clone(),
+                boundary,
+                expected_files,
+                provider: self.project.provider().clone(),
+            });
         self.publications.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -1632,6 +1545,134 @@ impl ForkAtBatch {
         Ok(())
     }
 }
+
+async fn run_cold_reopen(
+    root_directory: PathBuf,
+    limits: Limits,
+    fixture: ColdReopenFixture,
+) -> Result<()> {
+    let cold_host = Arc::new(FilesystemHost::new(
+        Fs::local(LocalOptions::new(root_directory.join("fs")))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        fixture.provider.clone(),
+    )?);
+    let cold_stream = StreamClient::new(Arc::new(
+        LocalStream::open(
+            root_directory.join("streams"),
+            LocalStreamLimits::default(),
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?,
+    ));
+    let cold_parent = StreamAggregate::open(
+        &cold_stream,
+        fixture.parent_authority,
+        fixture.parent_verifier,
+        SchemaRegistry::new(),
+    )
+    .await?;
+    let cold_storage = HarnessStorage::from_published_fork(
+        limits.file_bytes,
+        cold_host,
+        cold_stream,
+        fixture.child_issuer,
+        &cold_parent,
+        &fixture.seed,
+    )
+    .await?;
+    for (file, expected) in &fixture.expected_files {
+        assert_eq!(cold_storage.read(file).await?, *expected);
+    }
+    let cold_model = Arc::new(CapturedModel {
+        overlap_barrier: None,
+        root: false,
+        read_first: true,
+        reject_first: false,
+        calls: AtomicUsize::new(0),
+        requests: Mutex::new(Vec::new()),
+        serialized_requests: Mutex::new(Vec::new()),
+        manifest_bytes: Mutex::new(Vec::new()),
+        binding_digests: Mutex::new(Vec::new()),
+    });
+    let cold_bundle = cold_storage
+        .inherited_builder(
+            fixture.boundary.clone(),
+            vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(
+                    "cold child restart; preserve inherited boundary".into(),
+                ),
+            }],
+            cold_model.clone(),
+            limits,
+        )?
+        .tools(cold_storage.default_tools(limits)?)
+        .grant("tool:call:acyclic.read_file")
+        .grant("tool:call:acyclic.stage_file")
+        .grant("tool:call:acyclic.list_files")
+        .limits(limits)
+        .build()?;
+    let cold_operation = OperationId::from_bytes([62; 16]);
+    let cold_input = cold_storage
+        .stage(
+            cold_operation,
+            "input/cold-restart.txt",
+            b"cold child restart",
+            "text/plain",
+            "cold-restart.txt",
+        )
+        .await?;
+    cold_storage
+        .run_conversation(&cold_bundle, cold_operation, cold_input, Vec::new(), 3)
+        .await
+        .map_err(|error| Error::Storage(format!("cold child restart failed: {error}")))?;
+    let cold_requests = cold_model
+        .requests
+        .lock()
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .clone();
+    assert_eq!(cold_requests.len(), 2);
+    for request in &cold_requests {
+        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
+        let prefix = FrozenModelPrefix::capture(
+            &prepared,
+            fixture.boundary.request.messages.len(),
+        )?;
+        assert_eq!(prefix.message_bytes(), fixture.boundary.prefix.message_bytes());
+    }
+    assert!(cold_requests[0].messages.iter().any(|message| {
+        matches!(
+            &message.content,
+            ModelContent::Part(ModelContentPart::ToolResult { value, .. })
+                if value.get("kind") == Some(&Value::String("tool_rejection".into()))
+        )
+    }));
+    let (_, cold_serialized, cold_manifests, cold_bindings) = cold_model.evidence()?;
+    for (request, manifest_bytes) in cold_requests.iter().zip(&cold_manifests) {
+        validate_observed_manifest(request, manifest_bytes, limits)?;
+    }
+    let cold_prepared = PreparedModelInput::prepare(cold_requests[0].clone(), limits)?;
+    assert_eq!(cold_serialized[0], cold_prepared.bytes());
+    assert_eq!(
+        cold_bindings[0],
+        PreparedModelInput::prepare(fixture.boundary.request.clone(), limits)?
+            .manifest()
+            .binding_digest
+    );
+    let records = cold_storage.journal().replay(cold_operation).await?;
+    let mut durable_manifests = Vec::new();
+    for record in records {
+        if let ExecutionEvent::ModelInputPrepared { manifest, .. } = record.event {
+            durable_manifests.push(cold_storage.journal().load(&manifest).await?);
+        }
+    }
+    assert_eq!(cold_manifests, durable_manifests);
+    drop(cold_bundle);
+    drop(cold_storage);
+    Ok(())
+}
+
 impl ModelBatchPublisher for ForkAtBatch {
     fn identity(&self) -> ComponentIdentity {
         ComponentIdentity {
@@ -1781,6 +1822,7 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         grandchild,
         limits,
         publications: AtomicUsize::new(0),
+        cold_reopen: Mutex::new(None),
         paused: false,
     });
     let bundle = storage
@@ -2027,6 +2069,13 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         record.event,
         ExecutionEvent::BatchPublicationCompleted { .. }
     )));
+    let cold_fixture = publisher.take_cold_reopen()?;
+    drop(restarted_bundle);
+    drop(restarted);
+    drop(bundle);
+    drop(storage);
+    drop(publisher);
+    run_cold_reopen(directory.path().to_path_buf(), limits, cold_fixture).await?;
     Ok(())
 }
 
@@ -2350,6 +2399,7 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
         grandchild,
         limits,
         publications: AtomicUsize::new(0),
+        cold_reopen: Mutex::new(None),
         paused: true,
     });
     let bundle = storage
