@@ -201,7 +201,15 @@ async function qualifyProcessIo(owner, executable, environment) {
     null,
     environment,
   );
-  const pendingWrite = owner.writeStdin(writerBlocked.token, Buffer.alloc(64 * 1024));
+  let pendingWrite;
+  for (let attempt = 0; attempt < 32 && pendingWrite === undefined; attempt += 1) {
+    const candidate = owner.writeStdin(writerBlocked.token, Buffer.alloc(64 * 1024));
+    let settled = false;
+    void candidate.then(() => { settled = true; }, () => { settled = true; });
+    await delay(25);
+    if (!settled) pendingWrite = candidate;
+  }
+  if (pendingWrite === undefined) throw new Error("native blocked writer never reached a pending bounded write");
   let concurrentWriteRejected = false;
   try {
     await owner.writeStdin(writerBlocked.token, Buffer.from("second-write"));

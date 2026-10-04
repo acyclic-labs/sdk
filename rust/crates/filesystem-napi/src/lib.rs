@@ -382,6 +382,11 @@ impl NativeProcessOwner {
         match tree.tree.terminate_descendants() {
             Ok(()) => match tree.tree.termination_complete() {
                 Ok(true) => {
+                    if tree.write_in_flight.load(Ordering::Acquire) {
+                        return NativeProcessTermination::unknown(
+                            "native process stdin write is still settling",
+                        );
+                    }
                     trees.remove(&token);
                     NativeProcessTermination::terminated()
                 }

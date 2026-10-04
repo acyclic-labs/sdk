@@ -52,6 +52,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
     closed: boolean;
     stopping: boolean;
     failed: boolean;
+    termination: Promise<NativeProcessTermination> | undefined;
     stdoutBlocked: boolean;
     stderrBlocked: boolean;
     resume: () => void;
@@ -90,6 +91,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         closed: false,
         stopping: false,
         failed: false,
+        termination: undefined,
         stdoutBlocked: false,
         stderrBlocked: false,
         resume: (): void => undefined,
@@ -168,38 +170,51 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
       states.set(child, state);
       return child;
     },
-    async terminate(child, graceMs = 250) {
+    terminate(child, graceMs = 250) {
       const token = tokens.get(child);
-      if (token === undefined) return { kind: "unknown", pid: child.pid ?? -1, reason: "native owner token is unavailable" };
+      if (token === undefined) return Promise.resolve({ kind: "unknown", pid: child.pid ?? -1, reason: "native owner token is unavailable" });
       const state = states.get(child);
-      if (state !== undefined) {
-        state.stopping = true;
-        if (state.timer !== undefined) {
-          clearInterval(state.timer);
-          state.timer = undefined;
+      if (state?.termination !== undefined) return state.termination;
+      let operation: Promise<NativeProcessTermination>;
+      operation = (async () => {
+        if (state !== undefined) {
+          state.stopping = true;
+          if (state.timer !== undefined) {
+            clearInterval(state.timer);
+            state.timer = undefined;
+          }
         }
-      }
-      const deadline = Date.now() + Math.max(0, graceMs);
-      let result: NativeProcessTermination;
-      try {
-        result = io.terminate(token);
-        while (result.kind !== "terminated" && Date.now() < deadline) {
-          await new Promise<void>(resolve => setTimeout(resolve, 10));
+        const deadline = Date.now() + Math.max(0, graceMs);
+        let result: NativeProcessTermination;
+        try {
           result = io.terminate(token);
+          while (result.kind !== "terminated" && Date.now() < deadline) {
+            await new Promise<void>(resolve => setTimeout(resolve, 10));
+            result = io.terminate(token);
+          }
+        } catch (error) {
+          if (state !== undefined && !state.failed) { state.stopping = false; state.resume(); }
+          return { kind: "unknown", pid: child.pid ?? -1, reason: error instanceof Error ? error.message : String(error) };
         }
-      } catch (error) {
-        if (state !== undefined && !state.failed) { state.stopping = false; state.resume(); }
-        return { kind: "unknown", pid: child.pid ?? -1, reason: error instanceof Error ? error.message : String(error) };
+        if (result.kind !== "terminated") {
+          if (state !== undefined && !state.failed) { state.stopping = false; state.resume(); }
+          return result.kind === "timeout"
+            ? { kind: "timeout", pid: child.pid ?? -1, phase: "command" }
+            : { kind: "unknown", pid: child.pid ?? -1, reason: result.reason ?? "native cleanup is uncertain" };
+        }
+        // Retire the token before emitting close/exit so a re-entrant close
+        // listener cannot dispatch a second native termination request.
+        tokens.delete(child);
+        state?.finish();
+        return { kind: "terminated", pid: child.pid ?? -1 };
+      })();
+      if (state !== undefined) {
+        state.termination = operation;
+        void operation.then(result => {
+          if (result.kind !== "terminated" && state.termination === operation) state.termination = undefined;
+        });
       }
-      if (result.kind !== "terminated") {
-        if (state !== undefined && !state.failed) { state.stopping = false; state.resume(); }
-        return result.kind === "timeout"
-          ? { kind: "timeout", pid: child.pid ?? -1, phase: "command" }
-          : { kind: "unknown", pid: child.pid ?? -1, reason: result.reason ?? "native cleanup is uncertain" };
-      }
-      state?.finish();
-      tokens.delete(child);
-      return { kind: "terminated", pid: child.pid ?? -1 };
+      return operation;
     },
   };
   return owner;
