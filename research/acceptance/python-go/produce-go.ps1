@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)] [string] $SourceRoot,
-    [Parameter(Mandatory = $true)] [string] $AuthorityManifest,
+    [Parameter(Mandatory = $true)] [string] $AuthorityRoot,
     [Parameter(Mandatory = $true)] [string] $OutputRoot,
     [Parameter(Mandatory = $true)] [string] $TargetOutput,
     [Parameter(Mandatory = $true)] [string] $Request,
@@ -30,7 +30,14 @@ function Resolve-RequiredFile([string] $Path, [string] $Label) {
 }
 
 $source = [System.IO.Path]::GetFullPath($SourceRoot)
-$authority = Resolve-RequiredFile $AuthorityManifest 'Rust authority manifest'
+$authority = [System.IO.Path]::GetFullPath($AuthorityRoot)
+if (-not (Test-Path -LiteralPath $authority -PathType Leaf) -and -not (Test-Path -LiteralPath $authority -PathType Container)) {
+    throw "Rust authority directory or manifest does not exist: $authority"
+}
+$authorityManifest = if (Test-Path -LiteralPath $authority -PathType Container) { Join-Path $authority 'rust-authority.json' } else { $authority }
+if (-not (Test-Path -LiteralPath $authorityManifest -PathType Leaf)) {
+    throw "Rust authority manifest is missing: $authorityManifest"
+}
 $request = Resolve-RequiredFile $Request 'generation request'
 $go = Resolve-RequiredFile $GoBin 'Go toolchain'
 $protoc = Resolve-RequiredFile $Protoc 'protoc'

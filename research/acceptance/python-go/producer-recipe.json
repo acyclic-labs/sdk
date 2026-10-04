@@ -3,10 +3,10 @@
   "target": "go",
   "authority": "rust",
   "entrypoint": "research/acceptance/python-go/produce-go.ps1",
-  "command": "pwsh -NoProfile -File {source_root}/research/acceptance/python-go/produce-go.ps1 -SourceRoot {source_root} -AuthorityManifest {authority_manifest} -OutputRoot {output_root} -TargetOutput {target_output} -Request {request}",
+  "command": "pwsh -NoProfile -File {source_root}/research/acceptance/python-go/produce-go.ps1 -SourceRoot {source_root} -AuthorityRoot {wire_root} -OutputRoot {output_root} -TargetOutput {target_output} -Request {request}",
   "required_bindings": [
     "Rust source root",
-    "Rust authority manifest",
+    "Rust authority directory and manifest",
     "generation request",
     "staged output",
     "Go toolchain",
