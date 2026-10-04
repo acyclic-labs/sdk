@@ -23,7 +23,17 @@ pub struct GuideProjection {
     pub language: Language,
     pub mode: GuideProjectionMode,
     pub capability: CapabilityStatus,
+    pub package: GuidePackageSpec,
     pub code: String,
+}
+
+/// Installable artifact identity used to compile a projection against the
+/// package produced by the current generation revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuidePackageSpec {
+    pub package_manager: &'static str,
+    pub package_name: &'static str,
+    pub artifact_path: &'static str,
 }
 
 /// Typed request identity consumed by package and documentation validators.
@@ -203,6 +213,65 @@ fn package_type(module: &str) -> Option<&'static str> {
     })
 }
 
+fn package_spec(family: &str, language: Language) -> Option<GuidePackageSpec> {
+    let package = match language {
+        Language::Rust => GuidePackageSpec {
+            package_manager: "cargo",
+            package_name: "acyclic-sdk-bundle",
+            artifact_path: "qualification/packages/*-sdk-package.tgz",
+        },
+        Language::Python => GuidePackageSpec {
+            package_manager: "pip",
+            package_name: "acyclic-sdk-transport",
+            artifact_path: "python/dist/*.whl",
+        },
+        Language::TypeScript => GuidePackageSpec {
+            package_manager: "npm",
+            package_name: match family {
+                "filesystem" => "@acyclic-labs/fs",
+                "harness" => "@acyclic-labs/harness",
+                "inference" => "@acyclic-labs/inference",
+                "machines" => "@acyclic-labs/machines",
+                "objects" => "@acyclic-labs/objects",
+                "workers" => "@acyclic-labs/workers",
+                _ => return None,
+            },
+            artifact_path: "typescript/packages/*/package.json",
+        },
+        Language::Go => GuidePackageSpec {
+            package_manager: "go",
+            package_name: "github.com/acyclic-labs/sdk/go",
+            artifact_path: "go/go.mod",
+        },
+        Language::Java => GuidePackageSpec {
+            package_manager: "maven",
+            package_name: "dev.acyclic:acyclic-sdk-jvm-transport",
+            artifact_path: "jvm/target/acyclic-sdk-jvm-transport-*.jar",
+        },
+        Language::CSharp => GuidePackageSpec {
+            package_manager: "nuget",
+            package_name: "Acyclic.Sdk.Transport",
+            artifact_path: "dotnet/bin/**/Acyclic.Sdk.Transport.dll",
+        },
+        Language::Ruby => GuidePackageSpec {
+            package_manager: "bundler",
+            package_name: "acyclic-sdk",
+            artifact_path: "ruby/acyclic-sdk.gemspec",
+        },
+        Language::Dart => GuidePackageSpec {
+            package_manager: "pub",
+            package_name: "acyclic_sdk",
+            artifact_path: "dart/pubspec.yaml",
+        },
+        Language::Php => GuidePackageSpec {
+            package_manager: "composer",
+            package_name: "acyclic/sdk-transport",
+            artifact_path: "php/composer.json",
+        },
+    };
+    Some(package)
+}
+
 fn version_type(version: &str) -> Option<&'static str> {
     Some(match version {
         "v1" => "V1",
@@ -248,6 +317,7 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
     let (service, method, request, operation) = remote_operation(family)?;
     let package_type = package_type(module)?;
     let version_type = version_type(version)?;
+    let package = package_spec(family, language)?;
     let method_camel = lower_camel(method);
     let method_snake = snake_case(method);
     let ts_call = if family == "objects" {
@@ -414,6 +484,7 @@ echo $response->serializeToJsonString(), PHP_EOL;"#,
             GuideProjectionMode::Remote
         },
         capability: CapabilityStatus::Supported,
+        package,
         code,
     })
 }
@@ -472,6 +543,8 @@ mod tests {
             for language in Language::ALL {
                 let projection = project(scenario_id, language).expect("guide projection");
                 assert_eq!(projection.source, source);
+                assert!(!projection.package.package_name.is_empty());
+                assert!(!projection.package.artifact_path.is_empty());
                 if language == Language::Rust {
                     assert_eq!(projection.mode, GuideProjectionMode::Embedded);
                     assert!(!projection.code.is_empty());
