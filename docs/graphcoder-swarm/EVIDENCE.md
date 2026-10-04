@@ -345,3 +345,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Focused rejection provenance: [12/12 native memory composition cases](checkpoint-rejection-provenance-strengthening-2026-10-04.json). Exact cross-operation and missing selected inherited-ID negatives; not cold recursive reopen or installed qualification.
 
 - Native local Stream: [2/2 immutable-record conformance and cold reopen cases](checkpoint-stream-immutable-native-2026-10-04.json). Harness refresh and installed swarm qualification remain separate.
+
+- Configured Harness cache and communication: [34/34 native focused cases](checkpoint-harness-refresh-communication-native-2026-10-04.json). Includes suffix refresh, bounded anchors, rollback/missing-history rejection, invalid cold/warm limits, external writes, and authenticated communication admission. Prior compilation failures and the malformed-payload fixture failure remain recorded. Production coordinator and installed qualification remain open.
