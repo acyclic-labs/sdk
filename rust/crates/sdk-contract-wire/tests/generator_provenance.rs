@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use sha2::{Digest, Sha256};
 
 fn temporary_output(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("acyclic-sdk-wire-{name}-{}", std::process::id()));
@@ -80,6 +81,7 @@ fn expected_artifacts() -> Vec<(&'static str, Vec<u8>)> {
         ("machines/v1/machines.proto", machines_proto().into_bytes()),
         ("machines/v1/machines.fds.bin", machines_descriptor()),
         ("rust-authority.json", Vec::new()),
+        ("rust-family-goldens.json", Vec::new()),
     ]
 }
 
@@ -99,6 +101,21 @@ fn assert_clean_output(root: &Path) {
             let manifest = fs::read_to_string(root.join(relative)).expect("authority manifest");
             assert!(manifest.contains("\"authority\": \"rust\""));
             assert!(manifest.contains("\"source_revision\""));
+        } else if relative == "rust-family-goldens.json" {
+            let manifest = fs::read_to_string(root.join("rust-authority.json"))
+                .expect("authority manifest for family goldens");
+            let manifest_hash = format!("{:x}", Sha256::digest(manifest.as_bytes()));
+            let goldens = fs::read_to_string(root.join(relative)).expect("family goldens");
+            assert!(goldens.starts_with("[\n") && goldens.ends_with("]\n"));
+            assert!(goldens.contains(&format!(
+                "\"authority_manifest_sha256\":\"{manifest_hash}\""
+            )));
+            for family in [
+                "actors", "stream", "objects", "workers", "filesystem", "harness",
+                "inference", "machines", "protocol",
+            ] {
+                assert!(goldens.contains(&format!("\"family\":\"{family}\"")));
+            }
         } else {
             assert_eq!(
                 fs::read(root.join(relative)).expect("generated artifact"),
