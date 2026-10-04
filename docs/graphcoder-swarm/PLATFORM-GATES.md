@@ -6,6 +6,17 @@ Rust Harness, generated-binding, TypeScript, provider, Filesystem/plugin,
 package, and dependency-boundary gate. The inventory complements the locked
 requirements matrix; it does not replace or duplicate that matrix.
 
+The descriptor also contains `qualification_lanes` for artifact-dependent
+coverage that cannot be represented by a static platform argv. The validator
+requires every declared driver and scenario to exist before a gate can run.
+The installed native-stage lane names the real `graphcoder-runtime` artifact;
+the headless and PTY lanes require an installed package, process-ownership
+evidence, and lazy-observation markers. The Windows PTY lane additionally
+requires approval, cancellation, and writeback markers and records the native
+WinPTY driver. These lanes reject mock fixtures. The Filesystem/plugin lane
+explicitly runs ignored fork/join tests and records its support-test skip, so
+an ignored test invocation cannot silently become a complete package check.
+
 The runner never invokes a shell and runs with a filtered environment. It
 records the canonical worktree root, source commit/tree, a digest of the
 actual tracked Rust source bytes, and a qualification-source digest covering

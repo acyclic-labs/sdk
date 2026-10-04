@@ -61,6 +61,7 @@ function validateManifest(manifest) {
   if (!manifest || manifest.protocol !== PROTOCOL) fail("manifest protocol is invalid");
   if (manifest.base_commit !== "31b9ff52d63c91f2b9bf87e16b78ad682d26546f") fail("manifest base commit is invalid");
   if (!Array.isArray(manifest.gates) || manifest.gates.length === 0) fail("manifest has no gates");
+  validateQualificationLanes(manifest);
   const ids = new Set();
   for (const [index, gate] of manifest.gates.entries()) {
     if (!gate || typeof gate !== "object") fail(`gate ${index} is not an object`);
@@ -89,6 +90,34 @@ function validateManifest(manifest) {
     if (!Number.isInteger(gate.timeout_ms) || gate.timeout_ms <= 0) fail(`${gate.id} timeout_ms is invalid`);
   }
   return manifest;
+}
+
+function validateQualificationLanes(manifest) {
+  if (!Array.isArray(manifest.qualification_lanes) || manifest.qualification_lanes.length === 0) fail("manifest has no qualification lanes");
+  const ids = new Set();
+  const gateIds = new Set(manifest.gates.map(gate => gate.id));
+  for (const [index, lane] of manifest.qualification_lanes.entries()) {
+    if (!lane || typeof lane !== "object") fail(`qualification lane ${index} is not an object`);
+    if (typeof lane.id !== "string" || !/^[a-z][a-z0-9-]+$/u.test(lane.id)) fail(`qualification lane ${index} id is invalid`);
+    if (ids.has(lane.id)) fail(`duplicate qualification lane id ${lane.id}`);
+    ids.add(lane.id);
+    if (!Array.isArray(lane.execution_kinds) || lane.execution_kinds.length === 0 || lane.execution_kinds.some(kind => !KINDS.has(kind) && kind !== "pty")) fail(`${lane.id} execution_kinds are invalid`);
+    if (!Array.isArray(lane.platforms) || lane.platforms.length === 0 || lane.platforms.some(platform => !PLATFORMS.has(platform))) fail(`${lane.id} platforms are invalid`);
+    for (const field of ["driver", "scenario", "configurator", "capture", "native_pty_driver", "negative_driver"]) {
+      if (lane[field] !== undefined && (typeof lane[field] !== "string" || lane[field].trim() === "")) fail(`${lane.id} ${field} is invalid`);
+      if (lane[field] !== undefined && !existsSync(resolve(ROOT, lane[field]))) fail(`${lane.id} ${field} does not exist: ${lane[field]}`);
+    }
+    if (lane.runtime_artifact_by_platform !== undefined) {
+      if (!lane.runtime_artifact_by_platform || typeof lane.runtime_artifact_by_platform !== "object") fail(`${lane.id} runtime_artifact_by_platform is invalid`);
+      for (const platform of lane.platforms) {
+        const artifact = lane.runtime_artifact_by_platform[platform];
+        if (typeof artifact !== "string" || artifact.trim() === "" || artifact.includes("..") || /^[A-Za-z]:[\\/]/u.test(artifact) || artifact.startsWith("/")) fail(`${lane.id} runtime artifact for ${platform} is invalid`);
+      }
+    }
+    if (lane.gate_ids !== undefined && (!Array.isArray(lane.gate_ids) || lane.gate_ids.length === 0 || lane.gate_ids.some(id => !gateIds.has(id)))) fail(`${lane.id} gate_ids reference an unknown gate`);
+    if (lane.requires_installed_package === true && lane.allows_mock_fixture === true) fail(`${lane.id} cannot allow a mock fixture with an installed package requirement`);
+    if (lane.requires_lazy_observation === true && lane.id !== "installed-pty" && !Array.isArray(lane.required_markers)) fail(`${lane.id} must declare required markers with lazy observation`);
+  }
 }
 
 function loadManifest(path = MANIFEST_PATH) {
