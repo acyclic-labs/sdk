@@ -40,13 +40,13 @@ case "$target" in
   x86_64-unknown-linux-musl)
     rid=linux-musl-x64
     file=libacyclic_sdk_embedded_prototype.so
-    compiler=${MUSL_CC:-$(command -v x86_64-linux-musl-gcc || command -v musl-gcc || true)}
+    compiler=${MUSL_CC:-$(command -v x86_64-linux-musl-gcc || command -v musl-gcc || { test -x /usr/lib/musl/bin/musl-gcc && printf '%s' /usr/lib/musl/bin/musl-gcc; } || true)}
     expected_machine='Advanced Micro Devices X86-64'
     ;;
   aarch64-unknown-linux-musl)
     rid=linux-musl-arm64
     file=libacyclic_sdk_embedded_prototype.so
-    compiler=${MUSL_CC:-$(command -v aarch64-linux-musl-gcc || command -v musl-gcc || true)}
+    compiler=${MUSL_CC:-$(command -v aarch64-linux-musl-gcc || command -v musl-gcc || { test -x /usr/lib/musl/bin/musl-gcc && printf '%s' /usr/lib/musl/bin/musl-gcc; } || true)}
     expected_machine='AArch64'
     ;;
   *)
