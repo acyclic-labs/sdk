@@ -3726,7 +3726,9 @@ impl PersistentLocalSwarm {
             {
                 Ok(harness) => Arc::new(harness),
                 Err(error) => {
-                    self.mark_failed(child, error.to_string()).await?;
+                    self.mark_activation_failed_if_safe(
+                        child, request.child_operation, None, &error,
+                    ).await?;
                     return Err(error);
                 }
             };
@@ -4059,9 +4061,11 @@ impl PersistentLocalSwarm {
         } {
             Ok(seed) => seed,
             Err(error) => {
-                self.mark_failed(
+                self.mark_activation_failed_if_safe(
                     TaskId::from_bytes(request.child_operation.into_bytes()),
-                    error.to_string(),
+                    request.child_operation,
+                    None,
+                    &error,
                 )
                 .await?;
                 return Err(error);
@@ -4103,6 +4107,28 @@ impl PersistentLocalSwarm {
             .await?
             .iter()
             .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. })))
+    }
+
+    /// A failure releases the activation claim only when the available journal
+    /// proves that no model execution started. Opening failed storage again can
+    /// create a new empty journal, so absence of a harness is not such proof.
+    async fn mark_activation_failed_if_safe(
+        &self,
+        child: TaskId,
+        operation: OperationId,
+        harness: Option<&PersistentLocalHarness>,
+        error: &Error,
+    ) -> Result<()> {
+        if matches!(error, Error::Indeterminate(_)) {
+            return Ok(());
+        }
+        let Some(harness) = harness else {
+            return Ok(());
+        };
+        if !self.child_model_started(harness, operation).await? {
+            self.mark_failed(child, error.to_string()).await?;
+        }
+        Ok(())
     }
 
     async fn activate_child_with_harness(
@@ -4201,7 +4227,9 @@ impl PersistentLocalSwarm {
             }) {
             Ok(bundle) => bundle,
             Err(error) => {
-                self.mark_failed(child, error.to_string()).await?;
+                self.mark_activation_failed_if_safe(
+                    child, request.child_operation, Some(&harness), &error,
+                ).await?;
                 return Err(error);
             }
         };
@@ -4243,15 +4271,9 @@ impl PersistentLocalSwarm {
         let output = match child_result {
             Ok(output) => output,
             Err(error) => {
-                // Retain the activation claim if model admission occurred or
-                // dispatch has an uncertain outcome. The executor reconciles it.
-                if !matches!(error, Error::Indeterminate(_))
-                    && !self
-                        .child_model_started(&harness, request.child_operation)
-                        .await?
-                {
-                    self.mark_failed(child, error.to_string()).await?;
-                }
+                self.mark_activation_failed_if_safe(
+                    child, request.child_operation, Some(&harness), &error,
+                ).await?;
                 return Err(error);
             }
         };
@@ -5579,6 +5601,83 @@ mod tests {
             1,
             "concurrent handles must persist one activation claim"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn activation_failure_requires_journal_proof_before_releasing_claim() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "activation-failure", "1", json!({}))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(), model.clone(), provider.clone(), Limits::default(),
+        ).await?;
+        let task = swarm.root_task().await?;
+        let harness = swarm.open_session(task).await?;
+        let registry = swarm.registry.stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let operation = OperationId::from_bytes([0xD2; 16]);
+        assert!(swarm.claim_child_activation(&registry, task, operation).await?);
+        let failure = Error::Storage("child storage unavailable".into());
+
+        // Unknown storage and an explicitly uncertain effect must not append
+        // ForkFailed, even when the available journal is still empty.
+        swarm.mark_activation_failed_if_safe(task, operation, None, &failure).await?;
+        swarm.mark_activation_failed_if_safe(
+            task, operation, Some(&harness), &Error::Indeterminate(operation),
+        ).await?;
+        assert!(!swarm.claim_child_activation(&registry, task, operation).await?);
+
+        // Execute through the real local journal, then inject a setup failure.
+        // Its durable ModelStarted must retain the original activation claim.
+        harness.run(operation, "retain the admitted activation").await?;
+        assert!(swarm.child_model_started(&harness, operation).await?);
+        swarm.mark_activation_failed_if_safe(
+            task, operation, Some(&harness), &failure,
+        ).await?;
+        let records = load_records(&registry).await?;
+        assert!(!records.iter().any(|record| matches!(
+            record.event, StoredEvent::ForkFailed { child, .. } if child == task
+        )));
+        let dispatches = provider.calls.load(Ordering::SeqCst);
+        drop(registry);
+        drop(harness);
+        drop(swarm);
+
+        let reopened = PersistentLocalSwarm::open_with_model(
+            root.path(), model, provider.clone(), Limits::default(),
+        ).await?;
+        let registry = reopened.registry.stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(!reopened.claim_child_activation(&registry, task, operation).await?);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), dispatches);
+
+        // A distinct operation with an available empty journal can release its
+        // claim. This exercises the proven-not-started branch as well.
+        let unstarted = OperationId::from_bytes([0xD3; 16]);
+        let harness = reopened.open_session(task).await?;
+        assert!(!reopened.child_model_started(&harness, unstarted).await?);
+        // The previous claim binds this task to its original operation, so use
+        // a fresh composition for the independent pre-dispatch failure.
+        drop(harness);
+        let fresh_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let fresh = PersistentLocalSwarm::open_with_model(
+            fresh_root.path(), Model::new("mock", "activation-failure", "1", json!({}))?,
+            provider, Limits::default(),
+        ).await?;
+        let fresh_task = fresh.root_task().await?;
+        let harness = fresh.open_session(fresh_task).await?;
+        let registry = fresh.registry.stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(fresh.claim_child_activation(&registry, fresh_task, unstarted).await?);
+        fresh.mark_activation_failed_if_safe(
+            fresh_task, unstarted, Some(&harness), &failure,
+        ).await?;
+        assert_eq!(fresh.session(fresh_task).await?.phase, LocalSessionPhase::Failed);
+        assert!(fresh.claim_child_activation(&registry, fresh_task, unstarted).await?);
         Ok(())
     }
 
