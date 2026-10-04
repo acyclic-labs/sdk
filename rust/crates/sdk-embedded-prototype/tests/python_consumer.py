@@ -36,6 +36,14 @@ class NextResult(ctypes.Structure):
     ]
 
 
+class WireResult(ctypes.Structure):
+    _fields_ = [
+        ("status", ctypes.c_uint32),
+        ("response", Buffer),
+        ("message", Buffer),
+    ]
+
+
 OK, END, PENDING, CANCELLED, INVALID, PROVIDER, CAPACITY, PANIC = range(8)
 
 REQUIRED_EXPORTS = (
@@ -52,6 +60,8 @@ REQUIRED_EXPORTS = (
     "acyclic_open_result_release",
     "acyclic_open_result_take_reader",
     "acyclic_next_result_release",
+    "acyclic_embedded_engine_wire_call",
+    "acyclic_wire_result_release",
 )
 
 
@@ -76,6 +86,15 @@ def main() -> None:
         ctypes.c_size_t,
     ]
     dll.acyclic_embedded_engine_append.restype = AppendResult
+    dll.acyclic_embedded_engine_wire_call.argtypes = [
+        ctypes.c_uint64,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_size_t,
+    ]
+    dll.acyclic_embedded_engine_wire_call.restype = WireResult
+    dll.acyclic_wire_result_release.argtypes = [WireResult]
     dll.acyclic_embedded_reader_open.argtypes = [
         ctypes.c_uint64,
         ctypes.POINTER(ctypes.c_uint8),
@@ -99,6 +118,13 @@ def main() -> None:
 
     engine = dll.acyclic_embedded_engine_open()
     assert engine
+    unknown, unknown_ptr, unknown_len = bytes_arg(b"unknown_operation")
+    empty, empty_ptr, empty_len = bytes_arg(b"")
+    wire = dll.acyclic_embedded_engine_wire_call(
+        engine, unknown_ptr, unknown_len, empty_ptr, empty_len
+    )
+    assert wire.status == INVALID
+    dll.acyclic_wire_result_release(wire)
     path, path_ptr, path_len = bytes_arg(b"python/consumer")
     initial, initial_ptr, initial_len = bytes_arg(b"initial")
     append = dll.acyclic_embedded_engine_append(engine, path_ptr, path_len, initial_ptr, initial_len)
