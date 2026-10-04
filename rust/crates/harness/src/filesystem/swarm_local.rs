@@ -5437,11 +5437,11 @@ mod tests {
         let volume = root_harness.storage().volume().clone();
         let workspace = workspace_ref(volume.provider().clone(), &volume.storage_name()?)?;
         let head = first.filesystem_host.resolve(&workspace).await?;
-        let left_mutations = [WorkspaceMutation::PutFile {
+        let left_mutations = [crate::filesystem::WorkspaceMutation::PutFile {
             path: "/left.txt".into(),
             bytes: b"left".to_vec(),
         }];
-        let right_mutations = [WorkspaceMutation::PutFile {
+        let right_mutations = [crate::filesystem::WorkspaceMutation::PutFile {
             path: "/right.txt".into(),
             bytes: b"right".to_vec(),
         }];
