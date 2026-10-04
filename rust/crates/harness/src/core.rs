@@ -2110,7 +2110,7 @@ impl Reducer {
         if let Some(file) = materialized {
             let prefix = InheritedConversationPrefix::select(
                 self.authority.clone(),
-                self.revision,
+                seed.captured_history_revision()?,
                 parent_agent,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,

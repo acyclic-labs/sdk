@@ -874,6 +874,18 @@ pub trait ForkCaptureProvider: Send + Sync {
 impl ForkRequest {
     /// Checks identities, resource selections and optional attestation metadata.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_history_policy(false)
+    }
+
+    /// Validates a prepared request whose immutable history capture predates
+    /// the publication revision. The request still names one exact parent
+    /// stream and a bounded captured prefix; only the publication CAS
+    /// predecessor may have advanced while the provider report was pending.
+    pub(crate) fn validate_rebound(&self) -> Result<()> {
+        self.validate_with_history_policy(true)
+    }
+
+    fn validate_with_history_policy(&self, allow_older_history: bool) -> Result<()> {
         if self.attached_agents.len() > MAX_FORK_AGENTS
             || self.selections.len() > MAX_FORK_RESOURCES
         {
@@ -933,13 +945,16 @@ impl ForkRequest {
             match &selection.revision {
                 ResourceRevision::History(reference) => {
                     histories += 1;
+                    let version = reference
+                        .as_resource()
+                        .version()
+                        .and_then(|version| version.parse::<u64>().ok());
                     if !selection.required
                         || reference.as_resource().key() != self.parent.stream_path()?.as_bytes()
-                        || reference
-                            .as_resource()
-                            .version()
-                            .and_then(|version| version.parse::<u64>().ok())
-                            != Some(self.parent_revision)
+                        || version.is_none()
+                        || version == Some(0)
+                        || (!allow_older_history && version != Some(self.parent_revision))
+                        || (allow_older_history && version > Some(self.parent_revision))
                     {
                         return Err(Error::Invalid(
                             "fork history is not the required exact parent prefix".into(),
@@ -1173,6 +1188,14 @@ impl CapturedResource {
         self.source.validate()?;
         self.revision.validate()?;
         match (&self.source, &self.revision) {
+            (ResourceRevision::History(source), ResourceRevision::History(revision))
+                if source == revision =>
+            {
+                Ok(())
+            }
+            (ResourceRevision::History(_), _) | (_, ResourceRevision::History(_)) => Err(
+                Error::Invalid("history capture changed its immutable revision".into()),
+            ),
             (
                 ResourceRevision::Project { volume: source, .. },
                 ResourceRevision::Project { volume: child, .. },
@@ -1562,10 +1585,13 @@ pub struct ForkSeed {
 }
 
 impl ForkSeed {
-    /// Returns the immutable history revision captured for the seed. This is
-    /// distinct from the publication revision, which may advance when a
-    /// prepared report is rebound for a later parent append.
+    /// Returns the immutable conversation revision captured for this seed.
+    /// The publication predecessor may advance while a prepared report waits
+    /// for its parent publication slot; inherited bytes remain bound to this
+    /// earlier history boundary.
     pub(crate) fn captured_history_revision(&self) -> Result<u64> {
+        let parent_key = self.parent.stream_path()?.into_bytes();
+>>>>>>> da1ac8cf0 (Preserve authenticated fork capture history across publication)
         let mut captured = None;
         for resource in &self.resources {
             if let ResourceRevision::History(reference) = &resource.source {
@@ -1579,12 +1605,22 @@ impl ForkSeed {
                         "fork history capture source and child revision differ".into(),
                     ));
                 }
+                if reference.as_resource().key() != parent_key.as_slice() {
+                    return Err(Error::Invalid(
+                        "fork history capture belongs to a different parent".into(),
+                    ));
+                }
                 let version = reference
                     .as_resource()
                     .version()
                     .and_then(|version| version.parse::<u64>().ok())
                     .filter(|version| *version > 0)
                     .ok_or_else(|| Error::Invalid("fork history capture revision is invalid".into()))?;
+                if version > self.parent_revision {
+                    return Err(Error::Invalid(
+                        "fork history capture is newer than its publication boundary".into(),
+                    ));
+                }
                 if captured.replace(version).is_some() {
                     return Err(Error::Invalid("fork history capture appears twice".into()));
                 }
@@ -1653,12 +1689,14 @@ impl ForkSeed {
             match &resource.revision {
                 ResourceRevision::History(reference) => {
                     history += 1;
+                    let version = reference
+                        .as_resource()
+                        .version()
+                        .and_then(|version| version.parse::<u64>().ok());
                     if reference.as_resource().key() != self.parent.stream_path()?.as_bytes()
-                        || reference
-                            .as_resource()
-                            .version()
-                            .and_then(|version| version.parse::<u64>().ok())
-                            != Some(self.parent_revision)
+                        || version.is_none()
+                        || version == Some(0)
+                        || version > Some(self.parent_revision)
                     {
                         return Err(Error::Invalid(
                             "fork history is not the exact parent prefix".into(),
@@ -1761,6 +1799,7 @@ impl ForkSeed {
                 "fork needs one history and project revision".into(),
             ));
         }
+        self.captured_history_revision()?;
         self.validate_inherited_context()?;
         if let Some(boundary) = &self.boundary {
             boundary.validate()?;

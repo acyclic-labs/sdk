@@ -263,7 +263,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         request: &ForkRequest,
     ) -> Result<ForkRebindProof> {
         self.authorize_request(request)?;
-        self.host.authenticate_rebind_records(request).await
+        self.authenticate_rebind_records(request).await
     }
 
     /// Reconstructs the rebound capability from the durable preparation
@@ -1036,6 +1036,304 @@ fn seed_binding(seed: &ForkSeed) -> Result<SeedBinding> {
     })
 }
 
+<<<<<<< HEAD
+=======
+fn seed_allocation_volumes(seed: &ForkSeed) -> Result<[VolumeRef; 2]> {
+    let child_project = seed
+        .resources
+        .iter()
+        .find_map(|resource| {
+            if let ResourceRevision::Project { volume, .. } = &resource.revision {
+                Some(volume.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
+    Ok([seed.child_private_volume.clone(), child_project])
+}
+
+fn seed_rebind_path(digest: [u8; 32]) -> String {
+    format!(
+        "/seed-rebind-intent-{}.json",
+        blake3::Hash::from_bytes(digest).to_hex()
+    )
+}
+
+fn captured_resource_rebind_shape_equal(old: &CapturedResource, new: &CapturedResource) -> bool {
+    resource_revision_rebind_equal(&old.source, &new.source)
+        && resource_revision_rebind_equal(&old.revision, &new.revision)
+}
+
+fn resource_revision_rebind_equal(old: &ResourceRevision, new: &ResourceRevision) -> bool {
+    match (old, new) {
+        (ResourceRevision::History(old), ResourceRevision::History(new)) => old == new,
+        _ => old == new,
+    }
+}
+
+#[cfg(test)]
+mod rebind_shape_tests {
+    use super::*;
+    use acyclic_fs::Fs;
+    use crate::{core::AggregateKind, resources::{GenerationRef, StreamRef}};
+
+    #[test]
+    fn history_capture_revision_cannot_change_during_rebind() -> Result<()> {
+        let stream_provider = ProviderRef::new("test", "stream", "1")?;
+        let old_history = ResourceRevision::History(StreamRef::new(
+            stream_provider.clone(),
+            b"parent".to_vec(),
+            Some("7".into()),
+        )?);
+        let new_history = ResourceRevision::History(StreamRef::new(
+            stream_provider,
+            b"parent".to_vec(),
+            Some("8".into()),
+        )?);
+        assert!(!resource_revision_rebind_equal(&old_history, &new_history));
+
+        let fs_provider = ProviderRef::new("test", "filesystem", "1")?;
+        let volume = VolumeRef::new(
+            fs_provider.clone(),
+            "child-project",
+            VolumeClass::Project,
+            VolumeOwner::Project("test".into()),
+        )?;
+        let old_project = ResourceRevision::Project {
+            volume: volume.clone(),
+            generation: GenerationRef::new(fs_provider.clone(), [1; 32], Some("7".into()))?,
+        };
+        let changed_generation = ResourceRevision::Project {
+            volume,
+            generation: GenerationRef::new(fs_provider, [2; 32], Some("8".into()))?,
+        };
+        assert!(!resource_revision_rebind_equal(
+            &old_project,
+            &changed_generation
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn captured_resource_rebind_rejects_non_history_changes() -> Result<()> {
+        let fs_provider = ProviderRef::new("test", "filesystem", "1")?;
+        let volume = VolumeRef::new(
+            fs_provider.clone(),
+            "child-project",
+            VolumeClass::Project,
+            VolumeOwner::Project("test".into()),
+        )?;
+        let old = CapturedResource {
+            source: ResourceRevision::Project {
+                volume: volume.clone(),
+                generation: GenerationRef::new(fs_provider.clone(), [1; 32], None)?,
+            },
+            revision: ResourceRevision::Project {
+                volume: volume.clone(),
+                generation: GenerationRef::new(fs_provider.clone(), [3; 32], None)?,
+            },
+        };
+        let mut changed_source = old.clone();
+        if let ResourceRevision::Project { generation, .. } = &mut changed_source.source {
+            *generation = GenerationRef::new(fs_provider.clone(), [9; 32], None)?;
+        }
+        assert!(!captured_resource_rebind_shape_equal(&old, &changed_source));
+
+        let mut changed_revision = old.clone();
+        if let ResourceRevision::Project { generation, .. } = &mut changed_revision.revision {
+            *generation = GenerationRef::new(fs_provider, [8; 32], None)?;
+        }
+        assert!(!captured_resource_rebind_shape_equal(&old, &changed_revision));
+        Ok(())
+    }
+
+    #[test]
+    fn history_capture_requires_exact_source_and_revision() -> Result<()> {
+        let stream_provider = ProviderRef::new("test", "stream", "1")?;
+        let source = ResourceRevision::History(StreamRef::new(
+            stream_provider.clone(),
+            b"parent".to_vec(),
+            Some("7".into()),
+        )?);
+        let changed = ResourceRevision::History(StreamRef::new(
+            stream_provider,
+            b"parent".to_vec(),
+            Some("8".into()),
+        )?);
+        let capture = CapturedResource {
+            source,
+            revision: changed,
+        };
+        assert!(capture.validate().is_err());
+        Ok(())
+    }
+
+    fn seed(parent_revision: u64, history_revision: u64) -> Result<ForkSeed> {
+        let filesystem = ProviderRef::new("test", "filesystem", "1")?;
+        let stream = ProviderRef::new("test", "stream", "1")?;
+        let parent = Authority {
+            kind: AggregateKind::Conversation,
+            id: "rebind-parent".into(),
+        };
+        let child = Authority {
+            kind: AggregateKind::Conversation,
+            id: "rebind-child".into(),
+        };
+        let child_agent = crate::AgentId::from_bytes([2; 16]);
+        let parent_project = VolumeRef::new(
+            filesystem.clone(),
+            "rebind-parent-project",
+            VolumeClass::Project,
+            VolumeOwner::Project("rebind".into()),
+        )?;
+        let child_project = VolumeRef::new(
+            filesystem.clone(),
+            "rebind-child-project",
+            VolumeClass::Project,
+            VolumeOwner::Project("rebind".into()),
+        )?;
+        let private = VolumeRef::new(
+            filesystem.clone(),
+            "rebind-child-private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(child_agent),
+        )?;
+        let history = ResourceRevision::History(StreamRef::new(
+            stream,
+            parent.stream_path()?.into_bytes(),
+            Some(history_revision.to_string()),
+        )?);
+        let source_generation = GenerationRef::new(filesystem.clone(), [3; 32], None)?;
+        let child_generation = GenerationRef::new(filesystem.clone(), [4; 32], None)?;
+        let project = ResourceRevision::Project {
+            volume: child_project.clone(),
+            generation: child_generation,
+        };
+        let source_project = ResourceRevision::Project {
+            volume: parent_project,
+            generation: source_generation,
+        };
+        Ok(ForkSeed {
+            operation_id: OperationId::from_bytes([9; 16]),
+            parent,
+            parent_revision,
+            child,
+            child_agent,
+            attached_agents: Vec::new(),
+            resources: vec![
+                CapturedResource {
+                    source: history.clone(),
+                    revision: history,
+                },
+                CapturedResource {
+                    source: source_project,
+                    revision: project,
+                },
+            ],
+            omissions: Vec::new(),
+            child_private_volume: private,
+            child_private_generation: GenerationRef::new(filesystem, [5; 32], None)?,
+            inherited_context: Vec::new(),
+            inherited_through_sequence: 0,
+            shared_grants: Vec::new(),
+            reference_grants: Vec::new(),
+            model_boundary: None,
+            attachment_manifests: Vec::new(),
+            boundary: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn durable_rebind_supports_sequential_history_transitions() -> Result<()> {
+        let provider = ProviderRef::new("test", "filesystem", "1")?;
+        let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
+        let first = seed(1, 1)?;
+        let second = seed(2, 1)?;
+        let third = seed(3, 1)?;
+        let old_binding = seed_binding(&first)?;
+        for volume in seed_allocation_volumes(&first)? {
+            let journal = allocation_ref(provider.clone(), &volume)?;
+            host.filesystem
+                .create_workspace(std::str::from_utf8(journal.as_resource().key()).map_err(
+                    |error| Error::Invalid(error.to_string()),
+                )?)
+                .await
+                .map_err(map_error)?;
+            let claim = AllocationClaim {
+                operation_id: first.operation_id,
+                preparation_digest: [6; 32],
+                parent: first.parent.clone(),
+                child: first.child.clone(),
+                volume,
+            };
+            host.apply(
+                &journal,
+                None,
+                &[WorkspaceMutation::PutFile {
+                    path: "/claim.json".into(),
+                    bytes: encode_record(&claim, 4_096)?,
+                }, WorkspaceMutation::PutFile {
+                    path: "/seed.json".into(),
+                    bytes: encode_record(&old_binding, 4_096)?,
+                }],
+                &IdempotencyKey::new(format!("rebind-test-claim-{}", claim.volume.storage_name()?))?,
+            )
+            .await?;
+        }
+
+        host.rebind_fork_seed(&first, &second).await?;
+        let second_binding = seed_binding(&second)?;
+        for volume in seed_allocation_volumes(&second)? {
+            let journal = allocation_ref(provider.clone(), &volume)?;
+            let intent = read_record::<_, _, SeedRebindIntent>(
+                &host,
+                &journal,
+                &seed_rebind_path(second_binding.digest),
+                4_096,
+            )
+            .await?
+            .ok_or_else(|| Error::Storage("first rebind intent was not retained".into()))?;
+            assert_eq!(intent.from, old_binding.digest);
+            assert_eq!(intent.to, second_binding.digest);
+            assert_eq!(
+                read_record::<_, _, SeedBinding>(&host, &journal, "/seed.json", 4_096)
+                    .await?
+                    .ok_or_else(|| Error::Storage("first seed binding missing".into()))?,
+                second_binding
+            );
+        }
+
+        host.rebind_fork_seed(&second, &third).await?;
+        let third_binding = seed_binding(&third)?;
+        for volume in seed_allocation_volumes(&third)? {
+            let journal = allocation_ref(provider.clone(), &volume)?;
+            let intent = read_record::<_, _, SeedRebindIntent>(
+                &host,
+                &journal,
+                &seed_rebind_path(third_binding.digest),
+                4_096,
+            )
+            .await?
+            .ok_or_else(|| Error::Storage("second rebind intent was not retained".into()))?;
+            assert_eq!(intent.from, second_binding.digest);
+            assert_eq!(intent.to, third_binding.digest);
+            assert_eq!(
+                read_record::<_, _, SeedBinding>(&host, &journal, "/seed.json", 4_096)
+                    .await?
+                    .ok_or_else(|| Error::Storage("second seed binding missing".into()))?,
+                third_binding
+            );
+        }
+        assert!(matches!(
+            host.rebind_fork_seed(&first, &third).await,
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+}
+
+>>>>>>> da1ac8cf0 (Preserve authenticated fork capture history across publication)
 fn validate_capture(selection: &ForkSelection, capture: &Capture) -> Result<()> {
     match capture {
         Capture::Captured(resource) if resource.source == selection.revision => resource.validate(),

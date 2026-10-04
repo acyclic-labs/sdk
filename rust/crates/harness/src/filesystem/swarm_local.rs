@@ -346,25 +346,6 @@ fn rebind_report_history(report: &mut ForkReport, parent_revision: u64) -> Resul
         report.original_request_digest = Some(crate::contract::canonical_json_digest(&report.request)?);
     }
     report.request.parent_revision = parent_revision;
-    for (selection, capture) in report
-        .request
-        .selections
-        .iter_mut()
-        .zip(report.captures.iter_mut())
-    {
-        if let ResourceRevision::History(reference) = &selection.revision {
-            let rebound = StreamRef::new(
-                reference.as_resource().provider().clone(),
-                reference.as_resource().key().to_vec(),
-                Some(parent_revision.to_string()),
-            )?;
-            selection.revision = ResourceRevision::History(rebound.clone());
-            if let crate::fork::Capture::Captured(resource) = capture {
-                resource.source = ResourceRevision::History(rebound.clone());
-                resource.revision = ResourceRevision::History(rebound);
-            }
-        }
-    }
     report.validate()
 }
 
@@ -4428,6 +4409,13 @@ fn apply_record(
                             "persisted fork report is not bound to its typed seed".into(),
                         ));
                     }
+=======
+            if let (Some(seed), Some(report)) = (&seed, &report) {
+                report.validate()?;
+                if report.clone().into_seed()? != *seed {
+                    return Err(Error::Conflict(
+                        "persisted fork report is not bound to its typed seed".into(),
+                    ));
                 }
                 seed.validate()?;
                 if report.request.operation_id != seed.operation_id
