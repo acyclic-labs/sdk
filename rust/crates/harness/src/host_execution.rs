@@ -1339,9 +1339,126 @@ pub struct NativeExecutionProvider {
     /// one attempt can be dispatched by this provider at a time.  Keeping the
     /// attempt identity with the cancellation signal prevents a late cleanup
     /// from deleting a newer reservation.
-    active:
+    active: Arc<
         Mutex<BTreeMap<OperationId, (ExecutionReceiptKey, EffectAttemptId, ExecutionCancellation)>>,
+    >,
     provider_id: String,
+}
+
+/// Shared ownership state for one admitted native attempt.
+///
+/// The async dispatcher and its blocking runner each retain a reference. If
+/// the dispatcher is dropped while the process is running, the dispatcher
+/// requests cancellation and the runner releases the active reservation only
+/// after its process tree has stopped. This prevents a dropped future from
+/// detaching an approved command or admitting a duplicate while it still runs.
+struct AttemptCleanup {
+    active: Arc<
+        Mutex<BTreeMap<OperationId, (ExecutionReceiptKey, EffectAttemptId, ExecutionCancellation)>>,
+    >,
+    key: ExecutionReceiptKey,
+    cancellation: ExecutionCancellation,
+    receipt_store: Option<Arc<dyn ExecutionReceiptStore>>,
+    owner_alive: std::sync::atomic::AtomicBool,
+    runner_started_flag: std::sync::atomic::AtomicBool,
+    runner_alive: std::sync::atomic::AtomicBool,
+}
+
+impl AttemptCleanup {
+    fn release_active(&self) {
+        if let Ok(mut active) = self.active.lock() {
+            if active
+                .get(&self.key.operation_id)
+                .is_some_and(|(_, attempt, _)| *attempt == self.key.attempt_id)
+            {
+                active.remove(&self.key.operation_id);
+            }
+        }
+    }
+
+    fn abandon(&self) {
+        if !self.owner_alive.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        self.cancellation.cancel();
+        if let Some(store) = self.receipt_store.as_ref().map(Arc::clone) {
+            let key = self.key.clone();
+            let cancellation = self.cancellation.clone();
+            thread::spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                if runtime.block_on(store.request_cancel(&key)).is_ok() {
+                    cancellation.mark_durable();
+                }
+            });
+        }
+        if !self.runner_started_flag.load(Ordering::Acquire)
+            || !self.runner_alive.load(Ordering::Acquire)
+        {
+            self.release_active();
+        }
+    }
+
+    fn finish(&self) {
+        self.owner_alive.store(false, Ordering::Release);
+        self.release_active();
+    }
+
+    fn runner_finished(&self) {
+        self.runner_alive.store(false, Ordering::Release);
+        if !self.owner_alive.load(Ordering::Acquire) {
+            self.release_active();
+        }
+    }
+
+    fn mark_runner_started(&self) {
+        self.runner_started_flag.store(true, Ordering::Release);
+    }
+}
+
+struct DispatchOwnership {
+    cleanup: Arc<AttemptCleanup>,
+    finished: bool,
+}
+
+impl DispatchOwnership {
+    fn new(cleanup: Arc<AttemptCleanup>) -> Self {
+        Self {
+            cleanup,
+            finished: false,
+        }
+    }
+
+    fn cleanup(&self) -> Arc<AttemptCleanup> {
+        Arc::clone(&self.cleanup)
+    }
+
+    fn finish(&mut self) {
+        if !self.finished {
+            self.finished = true;
+            self.cleanup.finish();
+        }
+    }
+}
+
+impl Drop for DispatchOwnership {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.cleanup.abandon();
+        }
+    }
+}
+
+struct RunnerCompletion(Arc<AttemptCleanup>);
+
+impl Drop for RunnerCompletion {
+    fn drop(&mut self) {
+        self.0.runner_finished();
+    }
 }
 
 impl NativeExecutionProvider {
@@ -1368,7 +1485,7 @@ impl NativeExecutionProvider {
             receipt_store: None,
             runner,
             approval_verifier,
-            active: Mutex::new(BTreeMap::new()),
+            active: Arc::new(Mutex::new(BTreeMap::new())),
             provider_id: "harness.native-execution.v1".into(),
         })
     }
@@ -1388,7 +1505,7 @@ impl NativeExecutionProvider {
             receipt_store: Some(receipt_store),
             runner,
             approval_verifier,
-            active: Mutex::new(BTreeMap::new()),
+            active: Arc::new(Mutex::new(BTreeMap::new())),
             provider_id: "harness.native-execution.v1".into(),
         })
     }
@@ -1767,11 +1884,28 @@ impl NativeExecutionProvider {
             }
             ExecutionClaimHandle::issue(Self::receipt_key(&request, approval.operation_id), 0)
         };
+        let mut ownership = approval.approved.then(|| {
+            DispatchOwnership::new(Arc::new(AttemptCleanup {
+                active: Arc::clone(&self.active),
+                key: key.clone(),
+                cancellation: cancellation.clone(),
+                receipt_store: self.receipt_store.as_ref().map(Arc::clone),
+                owner_alive: std::sync::atomic::AtomicBool::new(true),
+                runner_started_flag: std::sync::atomic::AtomicBool::new(false),
+                runner_alive: std::sync::atomic::AtomicBool::new(true),
+            }))
+        });
         let receipt = if approval.approved {
             let runner = Arc::clone(&self.runner);
             let execution_request = approval.request.clone();
             let runner_cancellation = cancellation.clone();
+            let cleanup = ownership
+                .as_ref()
+                .expect("approved execution has an ownership guard")
+                .cleanup();
             let outcome = tokio::task::spawn_blocking(move || {
+                cleanup.mark_runner_started();
+                let _completion = RunnerCompletion(cleanup);
                 runner.run_with_cancellation(&execution_request, &runner_cancellation)
             })
             .await;
@@ -1824,6 +1958,9 @@ impl NativeExecutionProvider {
             }
         };
         if let Err(error) = receipt.validate() {
+            if let Some(ownership) = ownership.as_mut() {
+                ownership.finish();
+            }
             self.release_attempt(approval.operation_id, request.attempt_id)?;
             return Err(error);
         }
@@ -1832,6 +1969,9 @@ impl NativeExecutionProvider {
         // an Unknown receipt from the dispatcher would incorrectly clear the
         // retry fence.
         if self.receipt_store.is_some() && matches!(&receipt, ExecutionReceipt::Unknown { .. }) {
+            if let Some(ownership) = ownership.as_mut() {
+                ownership.finish();
+            }
             self.release_attempt(approval.operation_id, request.attempt_id)?;
             return Ok(EffectObservation {
                 provider: request.provider,
@@ -1845,6 +1985,9 @@ impl NativeExecutionProvider {
         let receipt_bytes = match serde_json::to_vec(&receipt) {
             Ok(bytes) => bytes,
             Err(error) => {
+                if let Some(ownership) = ownership.as_mut() {
+                    ownership.finish();
+                }
                 self.release_attempt(approval.operation_id, request.attempt_id)?;
                 return Err(Error::Invalid(error.to_string()));
             }
@@ -1853,6 +1996,9 @@ impl NativeExecutionProvider {
             match store.publish(&key, &claim_handle, &receipt).await {
                 Ok(result) => result,
                 Err(error) => {
+                    if let Some(ownership) = ownership.as_mut() {
+                        ownership.finish();
+                    }
                     self.release_attempt(approval.operation_id, request.attempt_id)?;
                     return Err(error);
                 }
@@ -1877,6 +2023,9 @@ impl NativeExecutionProvider {
             {
                 Ok(result) => result,
                 Err(error) => {
+                    if let Some(ownership) = ownership.as_mut() {
+                        ownership.finish();
+                    }
                     self.release_attempt(approval.operation_id, request.attempt_id)?;
                     return Err(error);
                 }
@@ -1885,6 +2034,9 @@ impl NativeExecutionProvider {
         // Keep the reservation until the receipt publication has returned.
         // A second dispatch must never race the first attempt between process
         // completion and durable result publication.
+        if let Some(ownership) = ownership.as_mut() {
+            ownership.finish();
+        }
         self.release_attempt(approval.operation_id, request.attempt_id)?;
         let status = Self::status_for_receipt(receipt, result);
         Ok(EffectObservation {
@@ -3335,6 +3487,81 @@ mod tests {
             Err(Error::Indeterminate(_))
         ));
         assert_eq!(replay_calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_dispatch_cancels_runner_and_releases_active_attempt() -> Result<()> {
+        let operation = OperationId::from_bytes([66; 16]);
+        let approval = ExecutionApproval::approve(operation, spec())?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let store = Arc::new(MemoryReceiptStore {
+            volume: Some(content.volume.clone()),
+            state: Mutex::new(MemoryReceiptState::default()),
+        });
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = Arc::new(NativeExecutionProvider::new_with_receipt_store(
+            content,
+            store.clone(),
+            Arc::new(CancellationUnknownRunner {
+                calls: Arc::clone(&calls),
+            }),
+            approval_verifier(),
+        )?);
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([67; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file,
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.dispatch(dispatch).await }
+        });
+        wait_for_calls(&calls, "dropped dispatch runner").await?;
+        task.abort();
+        assert!(task.await.expect_err("aborted dispatch unexpectedly completed").is_cancelled());
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let active_empty = provider
+                    .active
+                    .lock()
+                    .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
+                    .is_empty();
+                let cancellation_recorded = store
+                    .state
+                    .lock()
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .cancellation_requested
+                    .iter()
+                    .any(|key| key.operation_id == operation);
+                if active_empty && cancellation_recorded {
+                    break Ok::<(), Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Storage("dropped dispatch left an active attempt".into()))??;
+        let state = store
+            .state
+            .lock()
+            .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?;
+        assert!(state
+            .cancellation_requested
+            .iter()
+            .any(|key| key.operation_id == operation));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
