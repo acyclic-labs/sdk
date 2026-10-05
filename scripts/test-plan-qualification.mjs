@@ -172,3 +172,22 @@ test("reusable package qualification does not duplicate central release runs", (
     assert.match(workflow, /^  workflow_dispatch:/m, name);
   }
 });
+
+
+test("native embedded consumers share one aggregate package build", () => {
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
+  assert.doesNotMatch(workflow, /^  (rust_embedded|dotnet_embedded):/m);
+  assert.equal((workflow.match(/uses: \.\/\.github\/workflows\/embedded-native-packaging\.yml/g) ?? []).length, 1);
+  const aggregate = readFileSync(".github/workflows/embedded-native-packaging.yml", "utf8");
+  assert.match(aggregate, /qualify-embedded-abi-installed/);
+  assert.match(aggregate, /abi-installed-consumer/);
+});
+
+test("routine checks avoid full coverage and workspace qualification", () => {
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  assert.match(script, /gate\)\n    if \[\[ "\$\{FORCE:-false\}" != true/);
+  assert.match(script, /cargo test -p acyclic-sdk-contract-wire --locked --lib --bins/);
+  assert.match(script, /coverage_instrumented.*false/);
+  assert.match(script, /cargo clippy -p acyclic-sdk-contract-wire --all-targets --locked/);
+  assert.match(script, /cargo llvm-cov --workspace --all-features/);
+});
