@@ -2789,7 +2789,14 @@ impl PersistentLocalSwarm {
                     ));
                 }
                 match facade
-                    .apply_project_merge(host.as_ref(), &binding.parent, &plan, operation_id)
+                    .apply_authenticated_project_merge_for_child(
+                        host.as_ref(),
+                        &binding.parent,
+                        &binding.child,
+                        &binding.project,
+                        &plan,
+                        operation_id,
+                    )
                     .await?
                 {
                     acyclic_fs::JoinOutcome::Applied(_application)

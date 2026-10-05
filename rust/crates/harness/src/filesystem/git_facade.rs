@@ -362,6 +362,30 @@ impl<S> FilesystemGitFacade<S> {
         controller.apply_project_merge(plan, operation_id).await
     }
 
+    /// Applies a model-facing direct-child join after rechecking the
+    /// authenticated lineage against the exact inspected plan.  The Git
+    /// facade has no conversation notice to publish here; the surrounding
+    /// Harness tool call supplies the durable operation boundary.  Keeping
+    /// this check beside the typed merge call prevents a stale plan or a
+    /// caller-swapped child from reaching the Filesystem provider.
+    pub(crate) async fn apply_authenticated_project_merge_for_child<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
+        self.apply_project_merge(host, parent, plan, operation_id)
+            .await
+    }
+
     /// Legacy notice-less direct-child publication entrypoint.
     ///
     /// This method is retained as a source-compatible guard for older callers,
