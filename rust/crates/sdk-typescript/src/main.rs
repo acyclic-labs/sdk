@@ -2364,6 +2364,17 @@ fn write_or_check_packages(
             // manifest is part of the generated artifact, so write/check it
             // before invoking the compiler and leave the same verification in
             // place for every package.
+            if mode == "write" {
+                let source_manifest = source_root
+                    .join("typescript/packages")
+                    .join(&family)
+                    .join("package.json");
+                let output_manifest = output_root
+                    .join("typescript/packages")
+                    .join(&family)
+                    .join("package.json");
+                fs::copy(&source_manifest, &output_manifest)?;
+            }
             compile_package_dist(mode, source_root, output_root, &family)?;
             write_or_check_generated_package_metadata(
                 mode,
