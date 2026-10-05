@@ -7,7 +7,7 @@
 //! requests, tool-result pairing, durable communication, and real per-child
 //! project volumes after the recursive run.
 
-use acyclic_fs::{Fs, LocalOptions};
+use acyclic_fs::{Fs, GitBranch, GitCompatState, LocalCoreStateStore, LocalOptions, WorkspaceId};
 use acyclic_harness::conversation::{VolumeClass, VolumeOwner, VolumeRef};
 use acyclic_harness::filesystem::PersistentLocalSwarm;
 use acyclic_harness::fork::ResourceRevision;
@@ -76,6 +76,19 @@ fn has_tool_result(request: &ModelRequest, name: &str) -> bool {
     })
 }
 
+fn has_tool_result_call(request: &ModelRequest, name: &str, call_id: &str) -> bool {
+    request.messages.iter().any(|message| {
+        matches!(
+            &message.content,
+            ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: result_call,
+                name: result_name,
+                ..
+            }) if result_name == name && result_call == call_id
+        )
+    })
+}
+
 struct UnifiedProvider {
     requests: Mutex<Vec<ModelRequest>>,
     root_started: AtomicBool,
@@ -83,11 +96,15 @@ struct UnifiedProvider {
     child_a_forked: AtomicBool,
     child_a_edit_sent: AtomicBool,
     child_a_status_sent: AtomicBool,
+    merge_child: AtomicBool,
+    merge_child_sent: AtomicBool,
     grandchild_status_sent: AtomicBool,
     child_b_status_sent: AtomicBool,
     child_b_edit_sent: AtomicBool,
     grandchild_edit_sent: AtomicBool,
     root_exchange_sent: AtomicBool,
+    merge_root: AtomicBool,
+    merge_root_sent: AtomicBool,
     child_a: OperationId,
     child_b: OperationId,
     grandchild: OperationId,
@@ -102,11 +119,15 @@ impl UnifiedProvider {
             child_a_forked: AtomicBool::new(false),
             child_a_edit_sent: AtomicBool::new(false),
             child_a_status_sent: AtomicBool::new(false),
+            merge_child: AtomicBool::new(false),
+            merge_child_sent: AtomicBool::new(false),
             grandchild_status_sent: AtomicBool::new(false),
             child_b_status_sent: AtomicBool::new(false),
             child_b_edit_sent: AtomicBool::new(false),
             grandchild_edit_sent: AtomicBool::new(false),
             root_exchange_sent: AtomicBool::new(false),
+            merge_root: AtomicBool::new(false),
+            merge_root_sent: AtomicBool::new(false),
             child_a,
             child_b,
             grandchild,
@@ -154,6 +175,16 @@ impl ModelProvider for UnifiedProvider {
                     }),
                 }),
                 Ok(ModelEvent::ToolCall {
+                    call_id: "root-git-add".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["add", "--all"]}),
+                }),
+                Ok(ModelEvent::ToolCall {
+                    call_id: "root-git-commit".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["commit", "-m", "root authored note"]}),
+                }),
+                Ok(ModelEvent::ToolCall {
                     call_id: "root-stage-message".into(),
                     name: "acyclic.stage_file".into(),
                     arguments: json!({
@@ -186,6 +217,20 @@ impl ModelProvider for UnifiedProvider {
                 }),
             ]
         } else if task.as_deref() == Some("runtime-child-a")
+            && self.merge_child.load(Ordering::SeqCst)
+            && !self.merge_child_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "child-a-merge-grandchild".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "grandchild"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]
+        } else if task.as_deref() == Some("runtime-child-a")
             && !self.child_a_forked.load(Ordering::SeqCst)
         {
             if !has_tool_result(&request, "acyclic.read") {
@@ -212,6 +257,16 @@ impl ModelProvider for UnifiedProvider {
                         "content": "child A authored this exact note",
                         "expected_generation": generation,
                     }),
+                }),
+                Ok(ModelEvent::ToolCall {
+                    call_id: "child-a-git-add".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["add", "--all"]}),
+                }),
+                Ok(ModelEvent::ToolCall {
+                    call_id: "child-a-git-commit".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["commit", "-m", "child A authored note"]}),
                 }),
                 Ok(ModelEvent::ToolCall {
                     call_id: "child-a-fork-grandchild".into(),
@@ -268,6 +323,16 @@ impl ModelProvider for UnifiedProvider {
                     }),
                 }),
                 Ok(ModelEvent::ToolCall {
+                    call_id: "child-b-git-add".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["add", "--all"]}),
+                }),
+                Ok(ModelEvent::ToolCall {
+                    call_id: "child-b-git-commit".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["commit", "-m", "child B authored note"]}),
+                }),
+                Ok(ModelEvent::ToolCall {
                     call_id: "child-b-status".into(),
                     name: "acyclic.git".into(),
                     arguments: json!({"argv": ["status"]}),
@@ -305,6 +370,16 @@ impl ModelProvider for UnifiedProvider {
                     }),
                 }),
                 Ok(ModelEvent::ToolCall {
+                    call_id: "grandchild-git-add".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["add", "--all"]}),
+                }),
+                Ok(ModelEvent::ToolCall {
+                    call_id: "grandchild-git-commit".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["commit", "-m", "grandchild authored note"]}),
+                }),
+                Ok(ModelEvent::ToolCall {
                     call_id: "grandchild-status".into(),
                     name: "acyclic.git".into(),
                     arguments: json!({"argv": ["status"]}),
@@ -340,6 +415,25 @@ impl ModelProvider for UnifiedProvider {
                     metadata: Value::Null,
                 }),
             ]
+        } else if root
+            && self.merge_root.load(Ordering::SeqCst)
+            && !self.merge_root_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "root-merge-child-a".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "child-a"]}),
+                }),
+                Ok(ModelEvent::ToolCall {
+                    call_id: "root-merge-child-b".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "child-b"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]
         } else {
             vec![
                 Ok(ModelEvent::Content {
@@ -369,6 +463,42 @@ fn project_from_seed(seed: &acyclic_harness::fork::ForkSeed) -> Result<VolumeRef
             _ => None,
         })
         .ok_or_else(|| Error::Invalid("recursive model fork has no project volume".into()))
+}
+
+async fn install_git_branch(
+    root: &std::path::Path,
+    parent: WorkspaceId,
+    name: &str,
+    source: WorkspaceId,
+) -> Result<()> {
+    let store = LocalCoreStateStore::new(root.join("git"));
+    let current = store
+        .load(parent)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let (expected, mut state) = current
+        .map(|state| (state.revision, state))
+        .unwrap_or_else(|| (0, GitCompatState::new("main", parent)));
+    state.branches.insert(
+        name.to_owned(),
+        GitBranch {
+            name: name.to_owned(),
+            workspace_id: source,
+            head: None,
+            tracked_paths: Default::default(),
+        },
+    );
+    if expected != 0 {
+        state.revision = expected + 1;
+    }
+    let replaced = store
+        .compare_and_swap(parent, expected, state)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    if !replaced {
+        return Err(Error::Conflict("unified Git branch state raced".into()));
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -454,9 +584,9 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
         )
     }));
 
-    // Every project edit above came from an admitted model tool call. Verify
-    // the resulting child generations directly through the typed host; no
-    // host-side mutation is performed after the model run.
+    // Every project edit and commit above came from an admitted model tool
+    // call. Verify the resulting child generations directly through the typed
+    // host; no host-side content mutation is performed after the model run.
     let child_a_project = project_from_seed(
         &swarm
             .published_seed(acyclic_harness::TaskId::from_bytes(child_a.into_bytes()))
@@ -472,44 +602,142 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
             .published_seed(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
             .await?,
     )?;
-    for (project, path, expected) in [
+
+    // The branch records are test fixture metadata only: content and all
+    // commits below are produced by model-facing Git calls.  The subsequent
+    // merge calls are issued by the child and root model turns, so the typed
+    // facade remains the sole publication path.
+    let child_a_workspace_id = host
+        .workspace_id(child_a_project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let child_b_workspace_id = host
+        .workspace_id(child_b_project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let grandchild_workspace_id = host
+        .workspace_id(grandchild_project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let root_workspace_id = host
+        .workspace_id(root_project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    install_git_branch(
+        directory.path(),
+        child_a_workspace_id,
+        "grandchild",
+        grandchild_workspace_id,
+    )
+    .await?;
+    install_git_branch(
+        directory.path(),
+        root_workspace_id,
+        "child-a",
+        child_a_workspace_id,
+    )
+    .await?;
+    install_git_branch(
+        directory.path(),
+        root_workspace_id,
+        "child-b",
+        child_b_workspace_id,
+    )
+    .await?;
+    provider.merge_child.store(true, Ordering::SeqCst);
+    swarm
+        .run(
+            acyclic_harness::TaskId::from_bytes(child_a.into_bytes()),
+            id(0xA2),
+            "merge the completed grandchild through the model Git facade",
+        )
+        .await?;
+    provider.merge_root.store(true, Ordering::SeqCst);
+    swarm
+        .run_root(
+            id(0xA3),
+            "publish both direct child projects through the model Git facade",
+        )
+        .await?;
+    let requests = provider.requests();
+    for (task, call_id) in [
+        (None, "root-git-commit"),
+        (Some("runtime-child-a"), "child-a-git-commit"),
+        (Some("runtime-child-b"), "child-b-git-commit"),
+        (Some("runtime-grandchild"), "grandchild-git-commit"),
+        (Some("runtime-child-a"), "child-a-merge-grandchild"),
+        (None, "root-merge-child-a"),
+        (None, "root-merge-child-b"),
+    ] {
+        assert!(
+            requests.iter().any(|request| {
+                task_name(request).as_deref() == task
+                    && has_tool_result_call(request, "acyclic.git", call_id)
+            }),
+            "model Git call {call_id} must have a durable paired result"
+        );
+    }
+    let child_a_workspace = acyclic_harness::filesystem::workspace_ref(
+        filesystem_provider.clone(),
+        &child_a_project.storage_name()?,
+    )?;
+    let child_b_workspace = acyclic_harness::filesystem::workspace_ref(
+        filesystem_provider.clone(),
+        &child_b_project.storage_name()?,
+    )?;
+    let grandchild_workspace = acyclic_harness::filesystem::workspace_ref(
+        filesystem_provider.clone(),
+        &grandchild_project.storage_name()?,
+    )?;
+    for (workspace, path, expected) in [
         (
-            &child_a_project,
+            &child_a_workspace,
             "/child-a-note.txt",
             "child A authored this exact note",
         ),
         (
-            &child_b_project,
+            &child_b_workspace,
             "/child-b-note.txt",
             "child B authored this exact note",
         ),
         (
-            &grandchild_project,
+            &grandchild_workspace,
             "/grandchild-note.txt",
             "grandchild authored this exact note",
         ),
     ] {
-        let workspace = acyclic_harness::filesystem::workspace_ref(
-            filesystem_provider.clone(),
-            &project.storage_name()?,
-        )?;
         assert_eq!(
-            host.read(&workspace, None, path, 1_024).await?,
+            host.read(workspace, None, path, 1_024).await?,
             expected.as_bytes()
         );
     }
+    assert_eq!(
+        host.read(&child_a_workspace, None, "/grandchild-note.txt", 1_024)
+            .await?,
+        b"grandchild authored this exact note"
+    );
     assert!(host
-        .read(&root_workspace, None, "/child-a-note.txt", 1_024)
+        .read(&child_b_workspace, None, "/child-a-note.txt", 1_024)
         .await
         .is_err());
     assert!(host
-        .read(&root_workspace, None, "/child-b-note.txt", 1_024)
+        .read(&child_b_workspace, None, "/grandchild-note.txt", 1_024)
         .await
         .is_err());
     assert!(host
-        .read(&root_workspace, None, "/grandchild-note.txt", 1_024)
+        .read(&grandchild_workspace, None, "/child-b-note.txt", 1_024)
         .await
         .is_err());
+    for (path, expected) in [
+        ("/root-note.txt", "root authored this exact note"),
+        ("/child-a-note.txt", "child A authored this exact note"),
+        ("/child-b-note.txt", "child B authored this exact note"),
+        (
+            "/grandchild-note.txt",
+            "grandchild authored this exact note",
+        ),
+    ] {
+        assert_eq!(
+            host.read(&root_workspace, None, path, 1_024).await?,
+            expected.as_bytes()
+        );
+    }
     swarm.shutdown_workers().await;
     Ok(())
 }
