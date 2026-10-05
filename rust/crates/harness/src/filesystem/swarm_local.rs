@@ -119,6 +119,25 @@ struct LocalSwarmLiveState {
     task_gates: StdMutex<BTreeMap<TaskId, Weak<Mutex<()>>>>,
 }
 
+impl WaitCancellationSource for LocalSwarmLiveState {
+    fn receiver(&self, task: TaskId) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.cancellation.receiver(task)
+    }
+
+    fn cancel(&self, task: TaskId) -> Result<()> {
+        self.cancellation.cancel(task)
+    }
+}
+
+async fn cancellation_requested(receiver: &mut tokio::sync::watch::Receiver<bool>) -> Result<()> {
+    while !*receiver.borrow_and_update() {
+        receiver.changed().await.map_err(|_| {
+            Error::Storage("task cancellation source closed".into())
+        })?;
+    }
+    Ok(())
+}
+
 static LOCAL_LIVE_CACHE: OnceLock<
     StdMutex<BTreeMap<PathBuf, Weak<LocalSwarmLiveState>>>,
 > = OnceLock::new();
@@ -2470,8 +2489,15 @@ impl PersistentLocalSwarm {
         let root_conversation = root_harness.storage().conversation().clone();
         let mut opened = BTreeMap::new();
         opened.insert(root_task, root_harness);
+        let live = shared_local_live_state(&root)?;
+        for session in sessions.values() {
+            live.cancellation.register(session.task)?;
+            if session.phase == LocalSessionPhase::Cancelled {
+                live.cancellation.cancel(session.task)?;
+            }
+        }
         let swarm = Self {
-            live: shared_local_live_state(&root)?,
+            live,
             root,
             config,
             provider,
@@ -2635,7 +2661,9 @@ impl PersistentLocalSwarm {
         let publisher = Arc::new(LocalModelForkPublisher::new(plans.clone()));
         let communication = Arc::new(communication_host::SwarmCommunicationHost::new(stream.clone()));
         let waits = Arc::new(crate::communication::StreamWaitStore::new(stream.clone()));
-        swarm.bindings = LocalSwarmBindings::communication(communication.clone(), Some(waits), None)
+        swarm.bindings = LocalSwarmBindings::communication(
+            communication.clone(), Some(waits), Some(swarm.live.clone()),
+        )
             .with_filesystem_fork_resolver(resolver)
             .with_model_fork_plans(plans.clone())
             .with_model_batch_publisher(publisher.clone());
@@ -3222,8 +3250,10 @@ impl PersistentLocalSwarm {
             .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
         let store = self.bindings.wait_store.clone()
             .ok_or_else(|| Error::Unsupported("durable wait store is not bound".into()))?;
-        let cancellation = self.bindings.cancellation.as_ref()
-            .and_then(|source| source.receiver(request.waiter));
+        let cancellation = request.cancellation_id.and_then(|_| {
+            self.bindings.cancellation.as_ref()
+                .and_then(|source| source.receiver(request.waiter))
+        });
         DurableCommunication::new(host).with_wait_store(store).wait(request, cancellation).await
     }
 
@@ -3390,6 +3420,10 @@ impl PersistentLocalSwarm {
         operation: OperationId,
         prompt: &str,
     ) -> Result<TurnOutput> {
+        self.live.cancellation.register(task)?;
+        let mut cancelled = self.live.cancellation.receiver(task).ok_or_else(|| {
+            Error::Storage("registered task cancellation scope disappeared".into())
+        })?;
         let gate = self.task_gate(task)?;
         let _completion_guard = gate.lock().await;
         self.refresh_registry_state().await?;
@@ -3411,11 +3445,21 @@ impl PersistentLocalSwarm {
         .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task });
         let declaration = self.declarations.lock().await.get(&task).cloned();
-        let output = if let Some(declaration) = declaration {
-            let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
-            harness.run_with_bundle(&bundle, operation, prompt, max_steps).await?
-        } else {
-            harness.run_with_max_steps(operation, prompt, max_steps).await?
+        let run = async {
+            if let Some(declaration) = declaration {
+                let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
+                harness.run_with_bundle(&bundle, operation, prompt, max_steps).await
+            } else {
+                harness.run_with_max_steps(operation, prompt, max_steps).await
+            }
+        };
+        let output = tokio::select! {
+            biased;
+            result = cancellation_requested(&mut cancelled) => {
+                result?;
+                return Err(Error::Conflict("local swarm task was cancelled while running".into()));
+            }
+            output = run => output?,
         };
         // The per-task mutex only fences handles in this process.  A second
         // process can cancel the task while the model is running, so the
@@ -4264,14 +4308,7 @@ impl PersistentLocalSwarm {
             result = &mut child_task => result
                 .map_err(|error| Error::Storage(format!("child turn task failed: {error}")))
                 .and_then(|result| result),
-            result = async {
-                while !*cancelled.borrow_and_update() {
-                    cancelled.changed().await.map_err(|_| {
-                        Error::Storage("child cancellation source closed".into())
-                    })?;
-                }
-                Ok::<(), Error>(())
-            } => {
+            result = cancellation_requested(&mut cancelled) => {
                 // Await termination before reading the child's journal. An
                 // abort request alone could leave its writer racing recovery.
                 child_task.as_ref().get_ref().handle.abort();
@@ -6483,6 +6520,152 @@ mod tests {
         assert_eq!(reopened.config.project, first_project);
         assert_eq!(reopened.open_session(task).await?.signing_key(), first_key);
         assert!(reopened.bindings.filesystem_fork_resolver.is_some());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_cancellation_stops_root_provider_and_reopens_without_dispatch() -> Result<()> {
+        struct StreamGuard(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for StreamGuard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        struct PendingProvider {
+            calls: AtomicUsize,
+            started: tokio::sync::Notify,
+            dropped: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl ModelProvider for PendingProvider {
+            fn generate<'a>(&'a self, _input: crate::model_input::PreparedModelInput)
+                -> BoxStream<'a, Result<ModelEvent>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let guard = StreamGuard(self.dropped.clone());
+                self.started.notify_one();
+                Box::pin(futures::stream::once(async move {
+                    let _guard = guard;
+                    std::future::pending::<Result<ModelEvent>>().await
+                }))
+            }
+            fn reconcile<'a>(&'a self, _attempt: ModelAttempt)
+                -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                panic!("a cancelled root must not reconcile or redispatch its provider");
+            }
+        }
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(PendingProvider {
+            calls: AtomicUsize::new(0), started: tokio::sync::Notify::new(),
+            dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        let model = Model::new("mock", "default-cancellation", "1", json!({}))?;
+        let first = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(), model.clone(), provider.clone(), Limits::default(),
+        ).await?;
+        let task = first.root_task().await?;
+        let operation = OperationId::from_bytes([0xC4; 16]);
+        let mut running = AbortOnDrop::new(tokio::spawn({
+            let first = first.clone();
+            async move { first.run_root(operation, "remain pending until cancelled").await }
+        }));
+        if tokio::time::timeout(std::time::Duration::from_secs(120), provider.started.notified())
+            .await.is_err() {
+            running.handle.abort();
+            let _ = (&mut running).await;
+            panic!("root provider did not start; owned run was stopped");
+        }
+        let second = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(), model.clone(), provider.clone(), Limits::default(),
+        ).await?;
+        second.cancel(task).await?;
+        let stopped = match tokio::time::timeout(std::time::Duration::from_secs(5), &mut running).await {
+            Ok(result) => result.expect("owned root run panicked"),
+            Err(error) => {
+                running.handle.abort();
+                let _ = (&mut running).await;
+                panic!("cancelled root did not stop: {error}");
+            }
+        };
+        assert!(matches!(stopped, Err(Error::Conflict(_))));
+        assert!(provider.dropped.load(Ordering::SeqCst));
+        assert_eq!(first.session(task).await?.phase, LocalSessionPhase::Cancelled);
+        drop(running);
+        drop(first);
+        drop(second);
+        let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(), model, provider.clone(), Limits::default(),
+        ).await?;
+        assert!(matches!(reopened.run_root(operation, "remain pending until cancelled").await,
+            Err(Error::Conflict(_))));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    async fn await_timer_admissions(swarm: &PersistentLocalSwarm, expected: u64) -> Result<()> {
+        let task = swarm.root_task().await?;
+        let timer = swarm.conversation_stream.stream(format!("harness/v2/swarm-timers/{task}"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            loop {
+                match timer.tail().await {
+                    Ok(tail) if tail >= expected => return Ok(()),
+                    Ok(_) | Err(StreamError::NotFound) => tokio::task::yield_now().await,
+                    Err(error) => return Err(Error::Storage(error.to_string())),
+                }
+            }
+        }).await.map_err(|error| Error::Storage(format!("wait observation did not start: {error}")))?
+    }
+
+    #[tokio::test]
+    async fn default_cancellation_retains_live_and_interrupted_waits_after_cold_reopen() -> Result<()> {
+        use crate::communication::{WaitCompletion, WaitRequest, WaitTarget};
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel { calls: AtomicUsize::new(0), requests: Mutex::new(Vec::new()) });
+        let model = Model::new("mock", "default-cancelled-wait", "1", json!({}))?;
+        let first = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(), model.clone(), provider.clone(), Limits::default(),
+        ).await?;
+        let task = first.root_task().await?;
+        let now = first.bindings.communication_host.as_ref().expect("default communication").now_unix_millis();
+        let request = WaitRequest {
+            operation_id: OperationId::from_bytes([0xC5; 16]), waiter: task,
+            target: WaitTarget::Deadline { deadline_epoch_ms: now + 3_600_000 },
+            timeout_epoch_ms: None, cancellation_id: Some(OperationId::from_bytes([0xC6; 16])),
+        };
+        let mut live_wait = AbortOnDrop::new(tokio::spawn({
+            let first = first.clone(); let request = request.clone();
+            async move { first.wait(request).await }
+        }));
+        await_timer_admissions(&first, 1).await?;
+        let interrupted = WaitRequest {
+            operation_id: OperationId::from_bytes([0xC7; 16]),
+            cancellation_id: Some(OperationId::from_bytes([0xC8; 16])), ..request.clone()
+        };
+        let mut interrupted_wait = AbortOnDrop::new(tokio::spawn({
+            let first = first.clone(); let request = interrupted.clone();
+            async move { first.wait(request).await }
+        }));
+        await_timer_admissions(&first, 2).await?;
+        interrupted_wait.handle.abort();
+        assert!((&mut interrupted_wait).await.is_err());
+        drop(interrupted_wait);
+        first.cancel(task).await?;
+        let result = match tokio::time::timeout(std::time::Duration::from_secs(5), &mut live_wait).await {
+            Ok(result) => result.expect("live wait task panicked")?,
+            Err(error) => {
+                live_wait.handle.abort(); let _ = (&mut live_wait).await;
+                panic!("live wait did not stop after cancellation: {error}");
+            }
+        };
+        assert_eq!(result, WaitCompletion::Cancelled);
+        drop(live_wait);
+        drop(first);
+        let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(), model, provider.clone(), Limits::default(),
+        ).await?;
+        assert_eq!(reopened.wait(request).await?, WaitCompletion::Cancelled);
+        assert_eq!(reopened.wait(interrupted.clone()).await?, WaitCompletion::Cancelled);
+        assert_eq!(reopened.wait(interrupted).await?, WaitCompletion::Cancelled);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         Ok(())
     }
