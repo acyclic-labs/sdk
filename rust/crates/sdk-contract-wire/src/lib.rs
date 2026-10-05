@@ -45,6 +45,7 @@ pub mod objects;
 pub mod protocol;
 pub mod semantic_oracle;
 pub mod stream;
+pub mod swift_cpp_typed_facades;
 pub mod type_policy;
 pub mod transport;
 pub mod transport_control;
@@ -66,6 +67,7 @@ pub use facades::{
     generate_remote_facade, generate_remote_facades, generate_type_policy_qualification_tests,
 };
 pub use csharp_typed_facades::{generate_csharp_type_policy_tests, generate_csharp_typed_facade, CSHARP_TYPED_PATH};
+pub use swift_cpp_typed_facades::{generate_swift_cpp_typed_facades, CPP_TYPED_PATH, SWIFT_TYPED_PATH};
 pub use family_registry::{
     FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,
     explicit_http_family_views, family_view, native_method_boundaries_for_family,
@@ -83,11 +85,14 @@ pub use machines::{MACHINES, machines_descriptor, machines_proto};
 pub use objects::{OBJECTS_V2, objects_descriptor, objects_proto};
 pub use stream::{STREAM, STREAM_ROUTES, STREAM_SERVICE, stream_descriptor, stream_proto};
 pub use type_policy::{
-    FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES,
+    FIELD_SEMANTIC_TYPES, MACHINE_EVENT_PAGE_LIMIT_MAX, MACHINE_PAGE_LIMIT_MAX,
+    OBJECTS_MAX_MULTIPART_ITEMS, STREAM_MAX_COMMAND_BYTES, STREAM_MAX_RECORD_BYTES,
+    PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES,
     FieldSemanticType, PublicFieldBinding, PublicFieldDirection,
+    OperationRule, ResolvedRequestField, ResolvedRpcMethod, ResolvedValidationConstraint,
     SemanticRule, SemanticType, TypePolicyLanguage, TypeProjectionProfile,
     WIRE_UNION_VARIANTS, WireUnionVariant, WireValueKind, field_semantic_type, semantic_type,
-    type_projection_profile,
+    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, type_projection_profile,
 };
 pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
