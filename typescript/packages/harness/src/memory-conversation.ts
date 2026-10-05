@@ -107,7 +107,7 @@ export class MemoryConversation {
       const content = new MemoryContentStore(volume, limits.file_bytes, limits.path_bytes,
         maxResidentBytes, maxResidentFiles);
       const host = new MemoryConversation(core, scope, volume, limits, maxResidentBytes,
-        maxResidentFiles, content);
+        maxResidentFiles, policy, content);
       host.#apply(core.identity("operation", crypto.randomUUID()), "bind", { kind: "bind_conversation", agent: options.agent });
       return host;
     } catch (error) {

@@ -40,7 +40,7 @@ struct ProjectedToolInvocation {
 }
 
 /// Provider-owned, grant-checked resolver for a complete attachment manifest.
-pub trait AttachmentListResolver: Send + Sync {
+pub trait AttachmentListResolver: crate::PlatformServiceBounds {
     /// Verifies the pinned manifest bytes and returns its complete ordered list.
     fn resolve<'a>(
         &'a self,

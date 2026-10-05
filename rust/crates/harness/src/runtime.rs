@@ -618,7 +618,7 @@ impl TaskAdmissionRecord {
 /// Provider boundary for stable durable admission and outcome observation.
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
-pub trait DurableTaskHost: Send + Sync {
+pub trait DurableTaskHost: crate::PlatformServiceBounds {
     /// Policy identity enforced by this host at durable tool dispatch.
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
@@ -1222,7 +1222,7 @@ pub trait ExecutionProvider: Send + Sync {
 
 /// Replaceable owner-bound observer for an already planned provider effect.
 /// Reconciliation never creates a new dispatch attempt.
-pub trait DurableEffectObserver: Send + Sync {
+pub trait DurableEffectObserver: crate::PlatformServiceBounds {
     /// Returns the latest attested status after querying the pinned attempt.
     fn reconcile<'a>(
         &'a self,

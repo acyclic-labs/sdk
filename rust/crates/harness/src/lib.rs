@@ -77,6 +77,21 @@ pub(crate) type BoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
 pub(crate) type BoxFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
 pub(crate) type SendBoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
 
+/// Platform-specific marker bounds for pluggable Harness services.
+///
+/// Native providers cross worker threads; browser providers remain on the
+/// browser executor and therefore intentionally do not require `Send` or
+/// `Sync`. Keeping this boundary in Rust lets every generated facade inherit
+/// the same platform behavior without consumer feature flags.
+#[doc(hidden)]
+pub trait PlatformServiceBounds {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: ?Sized + Send + Sync> PlatformServiceBounds for T {}
+
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> PlatformServiceBounds for T {}
+
 /// Generated Protobuf packages, nested as their package names are, so the
 /// harness messages resolve the shared protocol handshake they import.
 #[allow(

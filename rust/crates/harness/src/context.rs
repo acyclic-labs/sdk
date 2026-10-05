@@ -328,7 +328,7 @@ impl ContextSource for DurableContextProvider {
 }
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
-pub trait ContextSource: Send + Sync {
+pub trait ContextSource: crate::PlatformServiceBounds {
     /// Resolves model-visible messages for the current step.
     fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
 }
@@ -477,14 +477,12 @@ pub struct ContextInput {
 }
 
 /// Replaceable ordered context transformation.
-pub trait ContextStage: Send + Sync {
-    /// Stable stage name used for diagnostics and composition.
+pub trait ContextStage: crate::PlatformServiceBounds {
+    /// Stable stage name used in the canonical pipeline contract.
     fn name(&self) -> &str;
-
-    /// Immutable serializable identity included in durable execution binding.
+    /// Canonical stage configuration.
     fn contract(&self) -> Value;
-
-    /// Transforms context; stage order is the order supplied by application code.
+    /// Applies the stage to the current context.
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
