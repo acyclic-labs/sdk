@@ -608,6 +608,20 @@ impl WaitRequest {
 /// not own a second journal or a process-local mailbox.  The host remains the
 /// authority for admission, grants, idempotent publication, and recovery.
 pub trait DurableWaitStore: Send + Sync {
+    /// Reads a previously retained terminal completion without admitting a
+    /// new wait. Lifecycle-fenced callers use this probe to preserve exact
+    /// replay while rejecting fresh durable effects.
+    fn replay<'a>(
+        &'a self,
+        _request: WaitRequest,
+    ) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable wait replay probe is not bound".into(),
+            ))
+        })
+    }
+
     /// Persists one immutable wait admission before observation begins.
     /// Returns a previously retained terminal completion during recovery.
     fn open<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>>;
@@ -847,6 +861,18 @@ impl<P: StreamProvider> StreamWaitStore<P> {
 }
 
 impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
+    fn replay<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
+        Box::pin(async move {
+            request.validate(None)?;
+            let stream = self.wait_stream(request.waiter)?;
+            let events = self.read_events(&stream, request.waiter).await?;
+            Ok(
+                Self::retained(&events, &request, self.clock.now_unix_millis())?
+                    .and_then(|retained| retained.completion),
+            )
+        })
+    }
+
     fn open<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
         Box::pin(async move {
             request.validate(None)?;
@@ -1015,14 +1041,31 @@ impl DurableCommunication {
         request.validate()?;
         let sender = self.host.communication_scope(request.sender).await?;
         let recipient = self.host.communication_scope(request.recipient).await?;
-        sender.require_new_mutation()?;
-        recipient.require_new_mutation()?;
         request.target.authorize(
             request.sender,
             request.recipient,
             sender.parent,
             recipient.parent,
         )?;
+        // Active endpoints can use the host's normal idempotent publication
+        // path.  Probe the retained mailbox only when a lifecycle fence
+        // would otherwise reject a retry; this keeps replay recovery free of
+        // a second ledger and avoids scanning every active inbox.
+        if (!sender.accepts_new_mutations || !recipient.accepts_new_mutations)
+            && self
+                .host
+                .replay_message(
+                    request.sender,
+                    request.recipient,
+                    request.message_id,
+                    request.payload.clone(),
+                )
+                .await?
+        {
+            return Ok(());
+        }
+        sender.require_new_mutation()?;
+        recipient.require_new_mutation()?;
         self.host
             .send(
                 request.sender,
@@ -1062,11 +1105,22 @@ impl DurableCommunication {
             ));
         }
         self.authorize_wait(&request).await?;
-        if matches!(&request.target, WaitTarget::Deadline { .. }) {
-            self.host
-                .communication_scope(request.waiter)
-                .await?
-                .require_new_mutation()?;
+        let waiter_scope = self.host.communication_scope(request.waiter).await?;
+        if !waiter_scope.accepts_new_mutations {
+            if let Some(waits) = &self.waits {
+                match waits.replay(request.clone()).await {
+                    Ok(Some(completion)) => {
+                        request.validate_completion_at(
+                            &completion,
+                            Some(self.host.now_unix_millis()),
+                        )?;
+                        return Ok(completion);
+                    }
+                    Ok(None) | Err(Error::Unsupported(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            waiter_scope.require_new_mutation()?;
         }
         if let Some(waits) = &self.waits {
             if let Some(completion) = waits.open(request.clone()).await? {
@@ -1482,6 +1536,17 @@ mod tests {
         )
     }
 
+    fn changed_payload() -> Result<FileRef> {
+        let original = payload()?;
+        FileRef::new(
+            original.volume().clone(),
+            "changed.json",
+            original.version(),
+            original.descriptor().clone(),
+            "changed.json",
+        )
+    }
+
     fn admission(task_id: u8, parent: Option<TaskId>) -> Result<TaskAdmissionRecord> {
         let schema = json!({"type": "object"});
         TaskAdmissionRecord::from_parts(
@@ -1506,6 +1571,7 @@ mod tests {
     struct RecordingHost {
         admissions: BTreeMap<TaskId, TaskAdmissionRecord>,
         fenced: std::collections::BTreeSet<TaskId>,
+        replay: Mutex<Option<(TaskId, TaskId, OperationId, FileRef)>>,
         sent: Mutex<Vec<MessageRequest>>,
         timers: Mutex<Vec<OperationId>>,
         inbox: Vec<InboxItem>,
@@ -1597,6 +1663,37 @@ mod tests {
             })
         }
 
+        fn replay_message<'a>(
+            &'a self,
+            sender: TaskId,
+            recipient: TaskId,
+            message_id: OperationId,
+            payload: FileRef,
+        ) -> futures::future::BoxFuture<'a, Result<bool>> {
+            Box::pin(async move {
+                let replay = self
+                    .replay
+                    .lock()
+                    .map_err(|_| Error::Storage("recording host lock poisoned".into()))?;
+                let Some((expected_sender, expected_recipient, expected_id, expected_payload)) =
+                    replay.as_ref()
+                else {
+                    return Ok(false);
+                };
+                if (*expected_sender, *expected_recipient, *expected_id)
+                    != (sender, recipient, message_id)
+                {
+                    return Ok(false);
+                }
+                if *expected_payload != payload {
+                    return Err(Error::Conflict(
+                        "message identity was reused with another payload".into(),
+                    ));
+                }
+                Ok(true)
+            })
+        }
+
         fn inbox<'a>(
             &'a self,
             _task_id: TaskId,
@@ -1632,6 +1729,7 @@ mod tests {
         Ok(Arc::new(RecordingHost {
             admissions,
             fenced: Default::default(),
+            replay: Mutex::new(None),
             sent: Mutex::new(Vec::new()),
             timers: Mutex::new(Vec::new()),
             inbox: Vec::new(),
@@ -1917,6 +2015,51 @@ mod tests {
                 })
                 .await,
             Err(Error::Conflict(message)) if message.contains("fenced")
+        ));
+        assert!(host.sent.lock().expect("test lock").is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_send_replays_exact_commit_before_fence() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        let committed = payload()?;
+        let owner = Arc::get_mut(&mut host).expect("test host has one owner");
+        owner.fenced.insert(task(1));
+        owner.replay = Mutex::new(Some((task(1), task(2), operation(35), committed.clone())));
+        let communication = DurableCommunication::new(host.clone());
+        communication
+            .send(MessageRequest {
+                sender: task(1),
+                recipient: task(2),
+                message_id: operation(35),
+                target: MessageTarget::Child,
+                payload: committed,
+            })
+            .await?;
+        assert!(host.sent.lock().expect("test lock").is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_send_rejects_changed_fenced_replay_input() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        let committed = payload()?;
+        let owner = Arc::get_mut(&mut host).expect("test host has one owner");
+        owner.fenced.insert(task(1));
+        owner.replay = Mutex::new(Some((task(1), task(2), operation(36), committed)));
+        let communication = DurableCommunication::new(host.clone());
+        assert!(matches!(
+            communication
+                .send(MessageRequest {
+                    sender: task(1),
+                    recipient: task(2),
+                    message_id: operation(36),
+                    target: MessageTarget::Child,
+                    payload: changed_payload()?,
+                })
+                .await,
+            Err(Error::Conflict(message)) if message.contains("reused")
         ));
         assert!(host.sent.lock().expect("test lock").is_empty());
         Ok(())
