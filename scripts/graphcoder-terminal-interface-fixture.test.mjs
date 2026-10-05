@@ -56,6 +56,16 @@ test("session listing remains metadata-only and lazy", () => {
   assert.doesNotMatch(list, /list_files\(/u);
 });
 
+test("a completed root can accept a fresh user turn through Harness lifecycle", () => {
+  const start = cli.indexOf("async fn input_session");
+  const end = cli.indexOf("async fn open_session", start);
+  assert.ok(start >= 0 && end > start);
+  const input = cli.slice(start, end);
+  assert.match(input, /resume\(task\)/u);
+  assert.match(input, /run_root\(operation_for\(operation_id\), prompt\)/u);
+  assert.doesNotMatch(input, /LocalSwarmBindings|copy_dir|clone_workspace/u);
+});
+
 test("terminal fixture closes its owned bridge on success and failure", () => {
   assert.match(driver, /bridge\.close\("terminal interface fixture finished"\)/u);
   assert.match(driver, /await bridge\.waitForExit\(5_000\)/u);
