@@ -580,34 +580,40 @@ where
                     if GitTreeRef::exact(target_id, current.id()) != *target_tree {
                         return Err(Error::Conflict("Git join target generation changed".into()));
                     }
-                    if self
+                    let project_child_bound = self
                         .project_children
                         .as_ref()
                         .and_then(|children| children.read().ok())
-                        .is_some_and(|children| children.contains_key(source_workspace))
-                    {
-                        let route = self
-                            .direct_project_join
-                            .read()
-                            .map_err(|_| {
-                                Error::Storage("local Git join route was poisoned".into())
-                            })?
-                            .clone()
-                            .ok_or_else(|| {
-                                Error::Storage(
-                                    "direct project Git join route is not installed".into(),
-                                )
-                            })?;
-                        return route(operation_id, action.clone()).await;
-                    }
-                    if !self
+                        .is_some_and(|children| children.contains_key(source_workspace));
+                    let direct_project_join = self
+                        .direct_project_join
+                        .read()
+                        .map_err(|_| Error::Storage("local Git join route was poisoned".into()))?
+                        .clone();
+                    let local_workspace_bound = self
                         .workspaces
                         .read()
                         .map_err(|_| {
                             Error::Storage("local Git workspace registry was poisoned".into())
                         })?
-                        .contains_key(source_workspace)
+                        .contains_key(source_workspace);
+                    // A reopened swarm deliberately starts with an empty
+                    // in-memory child registry. Let the authenticated swarm
+                    // route resolve that registry at the join boundary so a
+                    // valid direct child is not rejected before lazy
+                    // hydration. The route also rejects unknown, sibling,
+                    // and descendant sources under the caller's authority.
+                    if project_child_bound
+                        || (direct_project_join.is_some()
+                            && self.project_children.is_some()
+                            && !local_workspace_bound)
                     {
+                        let route = direct_project_join.ok_or_else(|| {
+                            Error::Storage("direct project Git join route is not installed".into())
+                        })?;
+                        return route(operation_id, action.clone()).await;
+                    }
+                    if !local_workspace_bound {
                         return Err(Error::Unauthorized(
                             "Git join source workspace is not bound to this project".into(),
                         ));
