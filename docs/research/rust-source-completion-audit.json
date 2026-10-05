@@ -193,7 +193,7 @@
       "passed": 1,
       "failed": 0
     },
-    "wasm32_default_checked_api_build": "previous passed; current control-generation change check running session44678",
+    "wasm32_default_checked_api_build": "passed: cargo check -p acyclic-machines --target wasm32-unknown-unknown --locked, no consumer feature flags",
     "browser_remote_transport": "outstanding",
     "filesystem_harness_receipt": "research/acceptance/filesystem-harness-rust-30-step-20261005.json",
     "hosted_run": "37243443818",
