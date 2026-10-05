@@ -405,6 +405,14 @@ pub fn validate(route: &str, value: &Value) -> Result {
     }
 }
 
+/// Returns the validated tail from a hosted tail response. Keeping the
+/// decimal uint64 conversion here lets follow cursors compare positions in
+/// Rust without reopening the JSON scalar contract in a language adapter.
+pub fn tail_value(value: &Value) -> Result<u64> {
+    validate("tail", value)?;
+    u64_string(value)
+}
+
 /// Validates a hosted read page against the cursor captured by its caller.
 /// The response schema alone cannot prove contiguity because the starting
 /// sequence is request state, so this is kept as an explicit Rust boundary.

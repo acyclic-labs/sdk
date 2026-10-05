@@ -4,6 +4,24 @@ export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_excee
 
 
 /**
+ * Rust-owned state machine for the polling form of hosted HTTP follow.
+ * The JavaScript boundary supplies only fetch and timer primitives.
+ */
+export class HttpFollowCursor {
+    free(): void;
+    [Symbol.dispose](): void;
+    acceptRead(response_json: string): void;
+    acceptTail(response_json: string): void;
+    close(): void;
+    isClosed(): boolean;
+    constructor(input: Uint8Array);
+    pollDelayMillis(): number;
+    readRequest(): Uint8Array;
+    shouldPoll(): boolean;
+    tailRequest(): Uint8Array;
+}
+
+/**
  * One Rust-backed live follow cursor.
  *
  * `next` releases the state lock before awaiting the stream, so `close` can
@@ -135,6 +153,13 @@ export function publicHttpErrorCode(raw: string, route: string): string | undefi
 export function validateAppendRequest(input: Uint8Array): string;
 
 /**
+ * Validates the bearer credential shared by the native and browser Stream
+ * clients. The empty string means success; failures use a stable Rust-owned
+ * invalid-argument boundary consumed by generated facades.
+ */
+export function validateBearerToken(token: string): string;
+
+/**
  * Validates request-relative child-page semantics through the canonical Rust
  * provider rules before a public page reaches a TypeScript caller.
  */
@@ -203,16 +228,33 @@ export function validateRequest(kind: string, input: Uint8Array): string;
  */
 export function validateSequence(value: string): string;
 
+/**
+ * Validate the opaque commit identity used by Stream responses and requests.
+ * The empty string means success; malformed identities use the canonical
+ * invalid-argument boundary consumed by generated facades.
+ */
+export function validate_commit_id(input: Uint8Array): string;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __streamErrorCodeContract: (a: any) => any;
+    readonly __wbg_httpfollowcursor_free: (a: number, b: number) => void;
     readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
     readonly __wbg_wasmmemorystream_free: (a: number, b: number) => void;
     readonly consumeHttpResponseBytes: (a: bigint, b: bigint, c: bigint) => [bigint, number, number];
     readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly httpfollowcursor_acceptRead: (a: number, b: number, c: number) => [number, number];
+    readonly httpfollowcursor_acceptTail: (a: number, b: number, c: number) => [number, number];
+    readonly httpfollowcursor_close: (a: number) => void;
+    readonly httpfollowcursor_isClosed: (a: number) => number;
+    readonly httpfollowcursor_new: (a: number, b: number) => [number, number, number];
+    readonly httpfollowcursor_pollDelayMillis: (a: number) => number;
+    readonly httpfollowcursor_readRequest: (a: number) => [number, number, number, number];
+    readonly httpfollowcursor_shouldPoll: (a: number) => number;
+    readonly httpfollowcursor_tailRequest: (a: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
     readonly nextHttpFollowCursor: (a: number, b: number, c: bigint) => [bigint, number, number];
     readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
@@ -220,6 +262,7 @@ export interface InitOutput {
     readonly projectMemoryResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateAppendRequest: (a: number, b: number) => [number, number];
+    readonly validateBearerToken: (a: number, b: number) => [number, number];
     readonly validateChildrenPageResponse: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateGrpcResponseIdentity: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly validateHttpEndpoint: (a: number, b: number) => [number, number];
@@ -229,6 +272,7 @@ export interface InitOutput {
     readonly validatePath: (a: number, b: number) => [number, number];
     readonly validateRequest: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateSequence: (a: number, b: number) => [number, number];
+    readonly validate_commit_id: (a: number, b: number) => [number, number];
     readonly wasmfollow_close: (a: number) => void;
     readonly wasmfollow_next: (a: number) => any;
     readonly wasmmemorystream_children: (a: number, b: number, c: number) => any;
@@ -236,8 +280,8 @@ export interface InitOutput {
     readonly wasmmemorystream_new: () => number;
     readonly wasmmemorystream_open_follow: (a: number, b: number, c: number) => any;
     readonly wasmmemorystream_read: (a: number, b: number, c: number) => any;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_3e72ab6b5fd5cb1b___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_3e72ab6b5fd5cb1b___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

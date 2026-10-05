@@ -16,6 +16,9 @@ use crate::{
     MAX_COMMAND_BYTES, MemoryStream, StreamError, StreamProvider, memory, wire, wire_codec,
 };
 
+const HTTP_FOLLOW_READ_LIMIT: u32 = 256;
+const HTTP_FOLLOW_POLL_DELAY_MILLIS: u32 = 250;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
 #[tsify(from_wasm_abi, into_wasm_abi)]
@@ -145,6 +148,10 @@ pub fn is_stream_error_code(value: &str) -> bool {
 /// Unknown values and a commit-only alias on another route return no value.
 #[wasm_bindgen(js_name = publicHttpErrorCode)]
 pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
+    let route = match route {
+        "read_commit" => "commits/read",
+        other => other,
+    };
     let code = match raw {
         "stream_not_found" => "stream_not_found",
         "destination_exists" => "destination_exists",
@@ -162,7 +169,13 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
                 }
             }
             StreamErrorCode::AlreadyExists => "destination_exists",
-            StreamErrorCode::PrefixNotRetained => "prefix_not_retained",
+            StreamErrorCode::PrefixNotRetained => {
+                if route == "commit" {
+                    "invalid_argument"
+                } else {
+                    "prefix_not_retained"
+                }
+            }
             StreamErrorCode::OutOfRange => "out_of_range",
             StreamErrorCode::IdempotencyMismatch => "idempotency_mismatch",
             StreamErrorCode::Capacity => "capacity_exhausted",
@@ -464,6 +477,30 @@ pub fn validate_idempotency_key(input: &[u8]) -> String {
         .map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
 }
 
+/// Validate the opaque commit identity used by Stream responses and requests.
+/// The empty string means success; malformed identities use the canonical
+/// invalid-argument boundary consumed by generated facades.
+#[wasm_bindgen]
+pub fn validate_commit_id(input: &[u8]) -> String {
+    if input.len() == 32 {
+        String::new()
+    } else {
+        error_code_str(&StreamError::InvalidArgument).to_owned()
+    }
+}
+
+/// Validates the bearer credential shared by the native and browser Stream
+/// clients. The empty string means success; failures use a stable Rust-owned
+/// invalid-argument boundary consumed by generated facades.
+#[wasm_bindgen(js_name = validateBearerToken)]
+pub fn validate_bearer_token(token: &str) -> String {
+    if token.trim().is_empty() || token.contains(['\r', '\n', '\0']) {
+        error_code_str(&StreamError::InvalidArgument).to_owned()
+    } else {
+        String::new()
+    }
+}
+
 /// Validate one canonical Stream path using the same parser used by every
 /// provider and wire decoder.
 ///
@@ -616,6 +653,82 @@ pub fn consume_http_response_bytes(total: u64, chunk: u64, maximum: u64) -> Resu
     crate::http_validation::consume_response_bytes(total, chunk, maximum).map_err(JsValue::from_str)
 }
 
+/// Rust-owned state machine for the polling form of hosted HTTP follow.
+/// The JavaScript boundary supplies only fetch and timer primitives.
+#[wasm_bindgen(js_name = HttpFollowCursor)]
+pub struct HttpFollowCursor {
+    path: String,
+    next: u64,
+    empty: bool,
+    closed: bool,
+}
+
+#[wasm_bindgen(js_class = HttpFollowCursor)]
+impl HttpFollowCursor {
+    #[wasm_bindgen(constructor)]
+    pub fn new(input: &[u8]) -> Result<Self, JsValue> {
+        check_command_size(input)?;
+        let request = wire::FollowRequest::decode(input)
+            .map_err(|_| js_error(StreamError::InvalidArgument))?;
+        let (path, from) = wire_codec::follow_from_wire(request).map_err(js_error)?;
+        Ok(Self { path: path.to_string(), next: from, empty: false, closed: false })
+    }
+
+    #[wasm_bindgen(js_name = tailRequest)]
+    pub fn tail_request(&self) -> Result<Vec<u8>, JsValue> {
+        self.ensure_open()?;
+        Ok(wire::TailRequest { path: self.path.clone() }.encode_to_vec())
+    }
+
+    #[wasm_bindgen(js_name = readRequest)]
+    pub fn read_request(&self) -> Result<Vec<u8>, JsValue> {
+        self.ensure_open()?;
+        Ok(wire::ReadRequest {
+            path: self.path.clone(),
+            from: self.next,
+            limit: HTTP_FOLLOW_READ_LIMIT,
+        }.encode_to_vec())
+    }
+
+    #[wasm_bindgen(js_name = acceptTail)]
+    pub fn accept_tail(&mut self, response_json: &str) -> Result<(), JsValue> {
+        self.ensure_open()?;
+        let value: Value = serde_json::from_str(response_json)
+            .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
+        let tail = crate::http_validation::tail_value(&value).map_err(JsValue::from_str)?;
+        if self.next > tail { return Err(js_error(StreamError::OutOfRange)); }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = acceptRead)]
+    pub fn accept_read(&mut self, response_json: &str) -> Result<(), JsValue> {
+        self.ensure_open()?;
+        let value: Value = serde_json::from_str(response_json)
+            .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
+        let next = crate::http_validation::next_follow_cursor(&value, self.next)
+            .map_err(JsValue::from_str)?;
+        self.empty = value.as_array().is_some_and(Vec::is_empty);
+        self.next = next;
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = shouldPoll)]
+    pub fn should_poll(&self) -> bool { !self.closed && self.empty }
+
+    #[wasm_bindgen(js_name = pollDelayMillis)]
+    pub fn poll_delay_millis(&self) -> u32 { HTTP_FOLLOW_POLL_DELAY_MILLIS }
+
+    #[wasm_bindgen(js_name = isClosed)]
+    pub fn is_closed(&self) -> bool { self.closed }
+
+    #[wasm_bindgen]
+    pub fn close(&mut self) { self.closed = true; }
+
+    fn ensure_open(&self) -> Result<(), JsValue> {
+        (!self.closed).then_some(()).ok_or_else(|| js_error(StreamError::Unavailable))
+    }
+}
+
 /// Validates and projects one gRPC read response. Rust owns protobuf decoding,
 /// record bounds, commit identity width, and request-relative contiguity.
 #[wasm_bindgen(js_name = projectGrpcReadResponse, unchecked_return_type = "unknown")]
@@ -628,12 +741,12 @@ pub fn project_grpc_read_response(input: &[u8], expected: u64) -> Result<JsValue
             .ok_or(StreamError::Unavailable)
             .map_err(js_error)?,
     )
-        .and_then(|record| {
-            (record.sequence == expected)
-                .then_some(record)
-                .ok_or(StreamError::Unavailable)
-        })
-        .map_err(js_error)?;
+    .and_then(|record| {
+        (record.sequence == expected)
+            .then_some(record)
+            .ok_or(StreamError::Unavailable)
+    })
+    .map_err(js_error)?;
     let result = Object::new();
     Reflect::set(
         result.as_ref(),
@@ -1258,6 +1371,18 @@ mod tests {
         assert_eq!(
             public_http_error_code("stream_not_found", "read").as_deref(),
             Some("stream_not_found")
+        );
+        assert_eq!(
+            public_http_error_code("not_found", "read_commit").as_deref(),
+            Some("commit_not_found")
+        );
+        assert_eq!(
+            public_http_error_code("prefix_not_retained", "commit").as_deref(),
+            Some("invalid_argument")
+        );
+        assert_eq!(
+            public_http_error_code("prefix_not_retained", "append").as_deref(),
+            Some("prefix_not_retained")
         );
         assert_eq!(public_http_error_code("commit_not_found", "read"), None);
         assert_eq!(public_http_error_code("unknown", "read"), None);

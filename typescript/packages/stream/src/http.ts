@@ -1,11 +1,11 @@
 import { validateAppend } from "./client.js";
-import { consumeHttpResponseBytes, nextHttpFollowCursor, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
+import { consumeHttpResponseBytes, HttpFollowCursor, nextHttpFollowCursor, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateHttpEndpointValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { STREAM_HANDSHAKE, negotiateRustOwnedEndpoint, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 
 export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -15,6 +15,7 @@ export class HttpStreamProvider implements StreamProvider {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
+  #handshake: Promise<void> | undefined;
   constructor(options: HttpStreamProviderOptions) {
     validateHttpEndpointValue(options.endpoint);
     const endpoint = new URL(options.endpoint);
@@ -35,16 +36,24 @@ export class HttpStreamProvider implements StreamProvider {
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const { from, signal } = options;
-    await validateWireRequest({ kind: "follow", path, from });
+    await ensureStreamWasm();
+    const cursor = new HttpFollowCursor(wireRequest({ kind: "follow", path, from }));
     if (signal?.aborted) return;
-    const tail = await this.#tail(path, signal);
-    if (from > tail) throw new StreamError("out_of_range", "follow cursor is beyond the stream tail");
-    let next = from;
-    while (!signal?.aborted) {
-      const page = await this.#read(path, { from: next, limit: 256 }, signal, false);
-      for (const item of page.records) yield item;
-      next = page.next;
-      if (!page.records.length) await delay(250, signal);
+    try {
+      const tailText = await this.#requestText("tail", await encodeHttpRequest("tail", cursor.tailRequest()), signal);
+      cursor.acceptTail(tailText);
+      while (!signal?.aborted && !cursor.isClosed()) {
+        const text = await this.#requestText("read", await encodeHttpRequest("read", cursor.readRequest()), signal);
+        cursor.acceptRead(text);
+        const records = decodeHttpResponseFor("read", text);
+        for (const item of records) yield item;
+        if (cursor.shouldPoll()) await delay(cursor.pollDelayMillis(), signal);
+      }
+    } catch (error) {
+      if (error instanceof StreamError) throw error;
+      throw new StreamError("invalid_response", `invalid follow response: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      cursor.close();
     }
   }
   async *children(parent: string | undefined, limit: number, signal?: AbortSignal): AsyncIterable<{ readonly path: string }> { await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); const input = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); for (const item of await this.#request("children", await encodeHttpRequest("children", input), signal)) yield item; }
@@ -84,16 +93,29 @@ export class HttpStreamProvider implements StreamProvider {
     return this.#request("tail", await encodeHttpRequest("tail", input), signal);
   }
   async #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, readFrom?: bigint, onCursor?: (next: bigint) => void): Promise<HttpResponseFor<Route>> {
-    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
+    const text = await this.#requestText(route, body, signal);
+    try {
+      await ensureStreamWasm();
+      if (route === "read" && readFrom !== undefined) onCursor?.(nextHttpFollowCursor(text, readFrom));
+      return decodeHttpResponseFor(route, text);
+    } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  async #requestText<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<string> {
+    const headers = { authorization: `Bearer ${this.#token}`, "content-type": "application/json" };
+    await this.#ensureHandshake(headers, signal);
+    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", headers, body: typeof body === "string" ? body : JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
     let text: string;
     try { text = await boundedText(response, this.#maximum); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     if (!response.ok) throw await hostedError(route, text, response.status);
-    try {
-      await ensureStreamWasm();
-       if (route === "read" && readFrom !== undefined) onCursor?.(nextHttpFollowCursor(text, readFrom));
-      return decodeHttpResponseFor(route, text);
-    } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    return text;
+  }
+  async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
+    if (this.#handshake !== undefined) return this.#handshake;
+    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, STREAM_HANDSHAKE, this.#maximum, signal)
+      .catch(error => { this.#handshake = undefined; throw error; });
+    this.#handshake = pending;
+    return pending;
   }
 }
 
