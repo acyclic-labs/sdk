@@ -1079,7 +1079,13 @@ impl StockExecutor {
                     return Err(Error::Indeterminate(publication.operation_id));
                 }
                 crate::stack_diagnostics::marker("fork-publication-enter-retry");
-                publisher.publish(publication.clone()).await?;
+                let publish = publisher.publish(publication.clone());
+                crate::stack_diagnostics::future_size("fork-publication-handle-retry", &publish);
+                crate::stack_diagnostics::future_size(
+                    "fork-publication-inner-retry",
+                    &*publish,
+                );
+                publish.await?;
                 crate::stack_diagnostics::marker("fork-publication-complete-retry");
             }
         } else {
@@ -1100,7 +1106,10 @@ impl StockExecutor {
                 return Err(Error::Indeterminate(publication.operation_id));
             }
             crate::stack_diagnostics::marker("fork-publication-enter");
-            publisher.publish(publication.clone()).await?;
+            let publish = publisher.publish(publication.clone());
+            crate::stack_diagnostics::future_size("fork-publication-handle", &publish);
+            crate::stack_diagnostics::future_size("fork-publication-inner", &*publish);
+            publish.await?;
             crate::stack_diagnostics::marker("fork-publication-complete");
         }
         if publisher.identity() != publication.publisher
