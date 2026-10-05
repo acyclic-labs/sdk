@@ -911,12 +911,20 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
     });
     let _abort_run = AbortRun(running.abort_handle());
     wait_for_child_dispatch(&provider, &mut running).await;
-    second.cancel(task(child_a)).await?;
+    let cancelled = second.cancel(task(child_a)).await?;
+    assert_eq!(
+        cancelled.phase,
+        LocalSessionPhase::Cancelled,
+        "the second handle must observe durable cancellation before the owner is joined"
+    );
     let result = finish_owned_run(&mut running, Duration::from_secs(2)).await;
     assert!(result.is_ok(), "root admission should complete before child cancellation: {result:?}");
     first.shutdown_workers().await;
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst),
         "cancellation returned while the child model stream was still live");
+    // Close the owning composition before dropping the shared local providers;
+    // otherwise the process-close/reopen check observes its live stream lock.
+    drop(first);
     drop(second);
 
     drop(host);
@@ -928,11 +936,15 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
         reopened.session(task(child_a)).await?.phase,
         LocalSessionPhase::Cancelled
     );
-    assert!(
-        reopened
-            .run_root(root_operation, "cancel child after publication")
-            .await
-            .is_err()
+    let dispatches_before_resume = provider.dispatches.load(Ordering::SeqCst);
+    assert!(reopened
+        .run_root(root_operation, "cancel child after publication")
+        .await
+        .is_err());
+    assert_eq!(
+        provider.dispatches.load(Ordering::SeqCst),
+        dispatches_before_resume,
+        "cold resume of a cancelled child must not redispatch any model turn"
     );
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
     assert_eq!(provider.requests_matching("child task: child-b").len(), 1);
@@ -1032,7 +1044,7 @@ async fn concurrent_handle_reconciles_live_admission_without_duplicate_dispatch(
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
     assert_eq!(provider.requests_matching("child task: child-b").len(), 1);
-    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 3);
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 4);
     provider.assert_request_digests();
     Ok(())
 }
