@@ -30,7 +30,7 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($env:GRAPHCODER_REAL_TR
 }
 Push-Location $repoRoot
 try {
-    & cargo test -p acyclic-harness --features test-support,native-process-tree `
+    & cargo test -p acyclic-harness --locked --lib --features test-support `
         exports_real_harness_trace_for_canonical_checker -- --ignored
     if ($LASTEXITCODE -ne 0) {
         throw "real Harness trace exporter failed (exit $LASTEXITCODE)."
