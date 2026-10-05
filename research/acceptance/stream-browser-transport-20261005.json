@@ -10,7 +10,7 @@
     "wasm": "work/stream-browser-qualification-package/stream_browser_qualification_bg.wasm",
     "wasm_sha256": "sha256:76a4cb91e9f3523f5e95bd7e04834838d853f6e058c680e3804358982fa81540",
     "loader": "work/stream-browser-qualification-package/stream_browser_qualification.js",
-    "loader_sha256": "sha256:4d2c19a2e910c6c234a9daeee6e1ea024a66ef8edd0a3f81da4131f9701b337",
+    "loader_sha256": "sha256:4d2c19a2e910c6c234a9daeee6e1ea024a66ef8eddd0a3f81da4131f9701b337",
     "build": "cargo build --offline --manifest-path work/stream-browser-qualification/Cargo.toml --target wasm32-unknown-unknown --release --target-dir work/stream-browser-qualification-target-2"
   },
   "runtime": {
@@ -22,7 +22,7 @@
       "work/stream-browser-qualification/Cargo.toml": "sha256:c4768a6161367f9ce5371ef06432c54020ca2aa802d3b3f715a4e8649a73f35e",
       "work/stream-browser-qualification/src/lib.rs": "sha256:b9f8bf8c9e8cc81dc91e37e5f6e41ca02cfe55ad3d2f44ed2fda211a367e0983",
       "work/stream-browser-qualification/index.html": "sha256:fdf0a61169e6cd592c1094cee520cbeb917d36b7f1f1379481b3a7aba14ab31b",
-      "work/stream-browser-qualification/worker.mjs": "sha256:cfe53b563d86fa2838863d8981a945f32128ad49c473739b6f560bae5dffd9813"
+      "work/stream-browser-qualification/worker.mjs": "sha256:cfe53b563d86fa2838863d8981a945f32128ad49c473739b6f560bae5dffd981"
     },
     "log": "work/stream-browser-final-pass.log",
     "log_sha256": "sha256:f4907fc14ed6e081993e7d25efa0978c83891a0dffa50ca5e45e128c9788f1d0"
