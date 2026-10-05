@@ -646,6 +646,11 @@ where
             .serve_with_incoming(incoming)
             .await
     });
+    // Let the spawned tonic server register its accept loop before the
+    // generated client performs its first connection attempt. Without this
+    // handoff, a fast local runtime can race the listener and turn a valid
+    // import into a transport error.
+    tokio::task::yield_now().await;
     let mut client = acyclic_fs::wire::filesystem::v2::filesystem_service_client::FilesystemServiceClient::connect(
         format!("http://{address}"),
     )
