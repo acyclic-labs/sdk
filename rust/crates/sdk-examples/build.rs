@@ -21,8 +21,16 @@ fn main() {
     println!("cargo:rustc-env=SDK_EXAMPLES_SOURCE_SHA256={digest}");
     // Capture the revision while compiling the producer so a cached binary
     // cannot report a later checkout's HEAD when it is executed.
+    println!("cargo:rerun-if-env-changed=SDK_EXAMPLES_SOURCE_GIT_REVISION");
     let source_git_revision = env::var("SDK_EXAMPLES_SOURCE_GIT_REVISION")
         .ok()
+        .map(|revision| {
+            assert!(
+                revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "SDK_EXAMPLES_SOURCE_GIT_REVISION must be a full 40-character hexadecimal revision"
+            );
+            revision
+        })
         .or_else(|| {
             Command::new("git")
                 .args(["rev-parse", "HEAD"])
