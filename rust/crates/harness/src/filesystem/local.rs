@@ -2795,6 +2795,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reopened_receipt_rejects_stale_owner_after_resolution() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "harness-receipt-stale-owner-{}",
+            OperationId::new()
+        ));
+        let model = Model::new("mock", "durable", "1", serde_json::json!({}))?;
+        let key = ExecutionReceiptKey {
+            operation_id: OperationId::from_bytes([65; 16]),
+            effect_id: EffectId::from_bytes([66; 16]),
+            attempt_id: EffectAttemptId::from_bytes([67; 16]),
+            provider: "harness.native-execution.v1".into(),
+            effect_kind: "host.process".into(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest: [68; 32],
+        };
+
+        // Retain the original dispatch owner across a simulated restart. The
+        // reopened store may resolve its uncertainty, but that old owner must
+        // not be able to publish a contradictory outcome afterwards.
+        let (stale_store, stale_handle) = {
+            let session = PersistentLocalHarness::open(
+                &root,
+                model.clone(),
+                Arc::new(Mock(AtomicUsize::new(0))),
+                Limits::default(),
+            )
+            .await?;
+            let store = session.execution_receipt_store()?;
+            let ExecutionClaim::Acquired { handle } = store.claim(&key).await? else {
+                return Err(Error::Storage("stale-owner claim was not acquired".into()));
+            };
+            (store, handle)
+        };
+
+        {
+            let session = PersistentLocalHarness::open(
+                &root,
+                model,
+                Arc::new(Mock(AtomicUsize::new(0))),
+                Limits::default(),
+            )
+            .await?;
+            let store = session.execution_receipt_store()?;
+            assert_eq!(store.claim(&key).await?, ExecutionClaim::Pending);
+            let (_, _, _, resolver, _) = session.storage().execution_binding();
+            let resolution = session.execution_resolution_capability()?;
+            let pending = store.pending_claims(&resolution, &resolver).await?;
+            let (_, operator) = pending
+                .into_iter()
+                .find(|(candidate, _)| candidate == &key)
+                .ok_or_else(|| Error::Storage("stale-owner pending claim is missing".into()))?;
+            store
+                .resolve_unknown_owner(
+                    &key,
+                    &resolution,
+                    &resolver,
+                    &operator,
+                    "dispatch owner was lost during restart",
+                )
+                .await?;
+        }
+
+        let late = stale_store
+            .publish(
+                &key,
+                &stale_handle,
+                &ExecutionReceipt::Succeeded {
+                    status_code: 0,
+                    stdout: b"late success".to_vec(),
+                    stderr: Vec::new(),
+                },
+            )
+            .await;
+        assert!(
+            matches!(late, Err(Error::Conflict(message)) if message.contains("already finalized"))
+        );
+        let ExecutionClaim::Completed(record) = stale_store.claim(&key).await? else {
+            return Err(Error::Storage(
+                "stale-owner resolution did not remain terminal".into(),
+            ));
+        };
+        assert!(matches!(record.receipt, ExecutionReceipt::Unknown { .. }));
+        drop(stale_store);
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn receipt_store_fences_new_attempt_after_pending_or_unknown() -> Result<()> {
         let root = std::env::temp_dir().join(format!(
             "harness-receipt-attempt-fence-{}",
