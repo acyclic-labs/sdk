@@ -76,3 +76,43 @@ reference authorization, storage corruption, recursive depth, crashes, or
 scheduler progress. The real provider-input and recursive-fork tests remain
 necessary. In particular, the current publisher awaits child completion and
 this safety model does not establish live parent-child communication.
+
+## Verification direction
+
+Keep the verified surface in Harness: a small set of authoritative transitions
+for admission, fork publication, budget reservation, message delivery, workspace
+publication and outcome recording. GraphCoder should only invoke these contracts.
+Do not create a second orchestration implementation for the models or wrapper.
+
+Extend finite models with explicit counterexample controls for these properties:
+
+- Only the direct parent can integrate or discard a child; transcript inheritance
+  does not grant authority. Root writeback requires an approval bound to the
+  actual operation and workspace generation.
+- Concurrent descendant reservations cannot exceed the session's remaining
+  budget. Release and settlement must be idempotent under restart.
+- A stable message identity cannot be delivered twice. Delivery order and
+  admitted waits survive restart without importing another agent's history.
+- Publication requires a current ownership fence and workspace generation.
+  Completion records an outcome without implicitly integrating it.
+- Dispatch follows durable admission, success follows durable outcome recording,
+  and an uncertain effect cannot become a fresh attempt without a declared safe
+  provider guarantee.
+
+For each model action, document the corresponding production transition and
+exercise it through real journals with concurrent callers and injected crashes.
+Add trace-conformance checks against the transition relation; these are planned,
+not current evidence. Exact inherited prefix bytes and provider request bytes
+remain assertions at the actual serialization boundary: abstract revision
+identity alone cannot establish byte equality or absence of hidden input.
+
+Check progress separately from safety. Eventual completion needs explicit
+fairness and availability assumptions; permanent uncertainty is an allowed
+outcome. A parent servicing a live child, bounded cancellation/shutdown, and a
+wait reaching delivery, cancellation or timeout need runtime scenarios as well
+as any temporal model. The currently synchronous child publisher remains an
+open implementation gap; the models must not assume it has already been fixed.
+
+Bounded model checking does not establish an unbounded recursive theorem, a Rust
+refinement proof, filesystem/process correctness, or model coding quality. Keep
+those distinctions in qualification evidence and retain the full E2E matrix.

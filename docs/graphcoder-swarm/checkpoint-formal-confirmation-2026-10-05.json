@@ -1,0 +1,106 @@
+{
+  "protocol": "acyclic.graphcoder.formal-checkpoint.v1",
+  "source_commit": "8c0aebd53516817f4ced1d26e2e1626c9aafa917",
+  "platform": "Windows native Java/TLC",
+  "checker_artifact_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "checks": [
+    {
+      "safe_exit": 0,
+      "model": "ActivationRecovery",
+      "runner_exit": 0,
+      "safe_distinct_states": 23,
+      "negative_controls": [
+        {
+          "expected_exit": 12,
+          "invariant": "AdmittedClaimRetained",
+          "observed": true
+        }
+      ]
+    },
+    {
+      "safe_exit": 0,
+      "model": "ForkBoundary",
+      "runner_exit": 0,
+      "safe_distinct_states": 51,
+      "negative_controls": [
+        {
+          "expected_exit": 12,
+          "invariant": "DispatchRequiresCompleteBatch",
+          "observed": true
+        },
+        {
+          "expected_exit": 12,
+          "invariant": "InheritedCaptureRemainsPinned",
+          "observed": true
+        }
+      ]
+    }
+  ],
+  "descriptors": [
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\ActivationRecovery.cfg",
+      "sha256": "769237fd65d2479579602974cad3eb9facd29337b1a3781a011e18af053851e3"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\ActivationRecovery.tla",
+      "sha256": "4a8cb718953e649a6a942f44af60b18e7b17719e3be62cc628efbf2a886b3a15"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\ActivationRecoveryUnsafe.cfg",
+      "sha256": "c0260bd7976c9c4552263f0c1df998d37e456d61bfb162b8f11ce68a0a046105"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\check-activation.ps1",
+      "sha256": "62e69f3d59202f111367ed48645b2b2ef2397bb56ced2cf43c6761478079152d"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\check-models.ps1",
+      "sha256": "69865947df740eff78412935b0d648e6875ee85a25ea114b136828d1f37a817b"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\ForkBoundary.cfg",
+      "sha256": "4c2e7dafbcf318af102f0d2eab186443964ee918a1fab26bbe54fd10ddd143bd"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\ForkBoundary.tla",
+      "sha256": "b297a088b7e4790f2d02bd367d7dc9131c9cc5e5095d460dec82c9e4400958b4"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\ForkBoundaryEarlyDispatch.cfg",
+      "sha256": "9e6fefcd4dfa530cdf1a367bf78fa028a3b413689a070a8e637c41d98eb3f876"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\verification\\ForkBoundaryMutableCapture.cfg",
+      "sha256": "af39bbda42f28ba9af9a9d4f745651b525cfd36eec68945489e0f8dca4319576"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\formal-confirmation-20261005\\activation\\40e8d1bd56bc4db4ac0b6e076e816380-safe.log",
+      "sha256": "3eff733a60c0ad5a116ca78e6008d85f07a24e770ab1936b0daafeb116a307a1"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\formal-confirmation-20261005\\activation\\40e8d1bd56bc4db4ac0b6e076e816380-unsafe.log",
+      "sha256": "995cde0a7be2bec1543418a7fcc6a123b60c1d79b569c8b4e3b289bcc1c47590"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\formal-confirmation-20261005\\forks\\ea3752f797524338a3a400b34025a5f6-early-dispatch.log",
+      "sha256": "ad2b3539354b24df89c1b86f64f586d1b25e4284b3146a356c2cf03ca90d9337"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\formal-confirmation-20261005\\forks\\ea3752f797524338a3a400b34025a5f6-mutable-capture.log",
+      "sha256": "043a99a7bd16d9cf6807bc23b9be87c3af939959d083fd2734a98163e9bf4d98"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\formal-confirmation-20261005\\forks\\ea3752f797524338a3a400b34025a5f6-safe.log",
+      "sha256": "a0dce669d0e643b501fd8a1e8039e15cffab302a35c7831b47f4f5dc7aad3354"
+    }
+  ],
+  "limits": [
+    "Finite abstract safety models only; not a Rust refinement proof or unbounded recursive theorem.",
+    "No liveness proof, OS process proof, byte-serialization proof or whole-swarm qualification.",
+    "Authority, budgets, generation fencing and runtime trace conformance remain future model extensions.",
+    "Documentation changed after the checked source; model/config/runner descriptors identify the exact checked files."
+  ]
+}
