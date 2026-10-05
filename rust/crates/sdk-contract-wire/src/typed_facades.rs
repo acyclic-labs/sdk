@@ -432,7 +432,7 @@ fn render_java_responses() -> String {
         out.push_str(wire);
         out.push_str(" value; private ");
         out.push_str(&name);
-        out.push_str("(");
+        out.push('(');
         out.push_str(wire);
         out.push_str(" value) { java.util.Objects.requireNonNull(value); ");
         if module == "inference" && message == "InspectEvaluationRequest" {
@@ -1284,14 +1284,14 @@ fn render_java_descriptor_projection(
         out.push_str("() { return ");
         out.push_str(&descriptor_java_value(&field, &chain));
         out.push_str("; }");
-        if chain.is_empty() {
-            if let Some(has) = descriptor_field_has_expression(&field, "value") {
-                out.push_str(" public boolean has");
-                out.push_str(&suffix);
-                out.push_str("() { return ");
-                out.push_str(&has);
-                out.push_str("; }");
-            }
+        if chain.is_empty()
+            && let Some(has) = descriptor_field_has_expression(&field, "value")
+        {
+            out.push_str(" public boolean has");
+            out.push_str(&suffix);
+            out.push_str("() { return ");
+            out.push_str(&has);
+            out.push_str("; }");
         }
     }
 }
@@ -1311,14 +1311,14 @@ fn render_kotlin_descriptor_projection(
         out.push_str(" = ");
         out.push_str(&descriptor_kotlin_value(&field, &chain));
         out.push(';');
-        if chain.is_empty() {
-            if let Some(has) = descriptor_field_has_expression(&field, "value") {
-                out.push_str(" fun has");
-                out.push_str(&suffix);
-                out.push_str("(): Boolean = ");
-                out.push_str(&has);
-                out.push(';');
-            }
+        if chain.is_empty()
+            && let Some(has) = descriptor_field_has_expression(&field, "value")
+        {
+            out.push_str(" fun has");
+            out.push_str(&suffix);
+            out.push_str("(): Boolean = ");
+            out.push_str(&has);
+            out.push(';');
         }
     }
 }
@@ -1338,14 +1338,14 @@ fn render_scala_descriptor_projection(
         out.push_str(" = ");
         out.push_str(&descriptor_scala_value(&field, &chain));
         out.push(';');
-        if chain.is_empty() {
-            if let Some(has) = descriptor_field_has_expression(&field, "value") {
-                out.push_str(" def has");
-                out.push_str(&suffix);
-                out.push_str(": Boolean = ");
-                out.push_str(&has);
-                out.push(';');
-            }
+        if chain.is_empty()
+            && let Some(has) = descriptor_field_has_expression(&field, "value")
+        {
+            out.push_str(" def has");
+            out.push_str(&suffix);
+            out.push_str(": Boolean = ");
+            out.push_str(&has);
+            out.push(';');
         }
     }
 }
@@ -1368,9 +1368,9 @@ fn render_java_descriptor_validation(
             out.push_str(&has);
             out.push_str(") ");
         }
-        out.push_str(" ");
+        out.push(' ');
         out.push_str(&value);
-        out.push_str(";");
+        out.push(';');
     }
 }
 
