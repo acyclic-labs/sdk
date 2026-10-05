@@ -59,6 +59,218 @@ public final class RustTypedResponses {
 
   public record WorkersSelectDeploymentResponse(acyclic.workers.v1.Workers.SelectDeploymentResponse value) { public static WorkersSelectDeploymentResponse fromWire(acyclic.workers.v1.Workers.SelectDeploymentResponse value) { return new WorkersSelectDeploymentResponse(value); } public acyclic.workers.v1.Workers.SelectDeploymentResponse toWire() { return value; } }
 
+  public record ActorsActorsAddSubscriptionResponse(acyclic.actors.v1.Actors.AddSubscriptionResponse value) { public static ActorsActorsAddSubscriptionResponse fromWire(acyclic.actors.v1.Actors.AddSubscriptionResponse value) { return new ActorsActorsAddSubscriptionResponse(java.util.Objects.requireNonNull(value)); } public acyclic.actors.v1.Actors.AddSubscriptionResponse toWire() { return value; } }
+
+  public record ActorsActorsCheckpointActorResponse(acyclic.actors.v1.Actors.CheckpointActorResponse value) { public static ActorsActorsCheckpointActorResponse fromWire(acyclic.actors.v1.Actors.CheckpointActorResponse value) { return new ActorsActorsCheckpointActorResponse(java.util.Objects.requireNonNull(value)); } public acyclic.actors.v1.Actors.CheckpointActorResponse toWire() { return value; } }
+
+  public record ActorsActorsCreateActorResponse(acyclic.actors.v1.Actors.CreateActorResponse value) { public static ActorsActorsCreateActorResponse fromWire(acyclic.actors.v1.Actors.CreateActorResponse value) { return new ActorsActorsCreateActorResponse(java.util.Objects.requireNonNull(value)); } public acyclic.actors.v1.Actors.CreateActorResponse toWire() { return value; } }
+
+  public record ActorsActorsInspectActorResponse(acyclic.actors.v1.Actors.InspectActorResponse value) { public static ActorsActorsInspectActorResponse fromWire(acyclic.actors.v1.Actors.InspectActorResponse value) { return new ActorsActorsInspectActorResponse(java.util.Objects.requireNonNull(value)); } public acyclic.actors.v1.Actors.InspectActorResponse toWire() { return value; } }
+
+  public record ActorsActorsInvokeActorResponse(acyclic.actors.v1.Actors.InvokeActorResponse value) { public static ActorsActorsInvokeActorResponse fromWire(acyclic.actors.v1.Actors.InvokeActorResponse value) { return new ActorsActorsInvokeActorResponse(java.util.Objects.requireNonNull(value)); } public acyclic.actors.v1.Actors.InvokeActorResponse toWire() { return value; } }
+
+  public record ActorsActorsRemoveSubscriptionResponse(acyclic.actors.v1.Actors.RemoveSubscriptionResponse value) { public static ActorsActorsRemoveSubscriptionResponse fromWire(acyclic.actors.v1.Actors.RemoveSubscriptionResponse value) { return new ActorsActorsRemoveSubscriptionResponse(java.util.Objects.requireNonNull(value)); } public acyclic.actors.v1.Actors.RemoveSubscriptionResponse toWire() { return value; } }
+
+  public record ActorsActorsResumeSubscriptionResponse(acyclic.actors.v1.Actors.ResumeSubscriptionResponse value) { public static ActorsActorsResumeSubscriptionResponse fromWire(acyclic.actors.v1.Actors.ResumeSubscriptionResponse value) { return new ActorsActorsResumeSubscriptionResponse(java.util.Objects.requireNonNull(value)); } public acyclic.actors.v1.Actors.ResumeSubscriptionResponse toWire() { return value; } }
+
+  public record ActorsActorsUpdateActorResponse(acyclic.actors.v1.Actors.UpdateActorResponse value) { public static ActorsActorsUpdateActorResponse fromWire(acyclic.actors.v1.Actors.UpdateActorResponse value) { return new ActorsActorsUpdateActorResponse(java.util.Objects.requireNonNull(value)); } public acyclic.actors.v1.Actors.UpdateActorResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemApplyJoinResponse(acyclic.filesystem.v2.Filesystem.JoinResponse value) { public static FilesystemFilesystemApplyJoinResponse fromWire(acyclic.filesystem.v2.Filesystem.JoinResponse value) { return new FilesystemFilesystemApplyJoinResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.JoinResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemApplyTransactionResponse(acyclic.filesystem.v2.Filesystem.MutationResponse value) { public static FilesystemFilesystemApplyTransactionResponse fromWire(acyclic.filesystem.v2.Filesystem.MutationResponse value) { return new FilesystemFilesystemApplyTransactionResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.MutationResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemCancelResponse(acyclic.filesystem.v2.Filesystem.CancelResponse value) { public static FilesystemFilesystemCancelResponse fromWire(acyclic.filesystem.v2.Filesystem.CancelResponse value) { return new FilesystemFilesystemCancelResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.CancelResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemCheckpointResponse(acyclic.filesystem.v2.Filesystem.RetainGenerationResponse value) { public static FilesystemFilesystemCheckpointResponse fromWire(acyclic.filesystem.v2.Filesystem.RetainGenerationResponse value) { return new FilesystemFilesystemCheckpointResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.RetainGenerationResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemCreateWorkspaceResponse(acyclic.filesystem.v2.Filesystem.WorkspaceResponse value) { public static FilesystemFilesystemCreateWorkspaceResponse fromWire(acyclic.filesystem.v2.Filesystem.WorkspaceResponse value) { return new FilesystemFilesystemCreateWorkspaceResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.WorkspaceResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemDeleteWorkspaceResponse(acyclic.filesystem.v2.Filesystem.MutationResponse value) { public static FilesystemFilesystemDeleteWorkspaceResponse fromWire(acyclic.filesystem.v2.Filesystem.MutationResponse value) { return new FilesystemFilesystemDeleteWorkspaceResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.MutationResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemDiffResponse(acyclic.filesystem.v2.Filesystem.DiffResponse value) { public static FilesystemFilesystemDiffResponse fromWire(acyclic.filesystem.v2.Filesystem.DiffResponse value) { return new FilesystemFilesystemDiffResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.DiffResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemExportResponse(acyclic.filesystem.v2.Filesystem.ExportChunk value) { public static FilesystemFilesystemExportResponse fromWire(acyclic.filesystem.v2.Filesystem.ExportChunk value) { return new FilesystemFilesystemExportResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.ExportChunk toWire() { return value; } }
+
+  public record FilesystemFilesystemForkWorkspaceResponse(acyclic.filesystem.v2.Filesystem.WorkspaceResponse value) { public static FilesystemFilesystemForkWorkspaceResponse fromWire(acyclic.filesystem.v2.Filesystem.WorkspaceResponse value) { return new FilesystemFilesystemForkWorkspaceResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.WorkspaceResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemGetGenerationResponse(acyclic.filesystem.v2.Filesystem.GenerationResponse value) { public static FilesystemFilesystemGetGenerationResponse fromWire(acyclic.filesystem.v2.Filesystem.GenerationResponse value) { return new FilesystemFilesystemGetGenerationResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.GenerationResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemGetHeadResponse(acyclic.filesystem.v2.Filesystem.GenerationResponse value) { public static FilesystemFilesystemGetHeadResponse fromWire(acyclic.filesystem.v2.Filesystem.GenerationResponse value) { return new FilesystemFilesystemGetHeadResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.GenerationResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemGetSourceStateResponse(acyclic.filesystem.v2.Filesystem.SourceResponse value) { public static FilesystemFilesystemGetSourceStateResponse fromWire(acyclic.filesystem.v2.Filesystem.SourceResponse value) { return new FilesystemFilesystemGetSourceStateResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.SourceResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemHandshakeResponse(acyclic.filesystem.v2.Filesystem.HandshakeResponse value) { public static FilesystemFilesystemHandshakeResponse fromWire(acyclic.filesystem.v2.Filesystem.HandshakeResponse value) { return new FilesystemFilesystemHandshakeResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.HandshakeResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemImportResponse(acyclic.filesystem.v2.Filesystem.ImportResponse value) { public static FilesystemFilesystemImportResponse fromWire(acyclic.filesystem.v2.Filesystem.ImportResponse value) { return new FilesystemFilesystemImportResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.ImportResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemIssueMountCredentialResponse(acyclic.filesystem.v2.Filesystem.CredentialResponse value) { public static FilesystemFilesystemIssueMountCredentialResponse fromWire(acyclic.filesystem.v2.Filesystem.CredentialResponse value) { return new FilesystemFilesystemIssueMountCredentialResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.CredentialResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemIssueS3CredentialResponse(acyclic.filesystem.v2.Filesystem.CredentialResponse value) { public static FilesystemFilesystemIssueS3CredentialResponse fromWire(acyclic.filesystem.v2.Filesystem.CredentialResponse value) { return new FilesystemFilesystemIssueS3CredentialResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.CredentialResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemListDirectoryResponse(acyclic.filesystem.v2.Filesystem.ListDirectoryResponse value) { public static FilesystemFilesystemListDirectoryResponse fromWire(acyclic.filesystem.v2.Filesystem.ListDirectoryResponse value) { return new FilesystemFilesystemListDirectoryResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.ListDirectoryResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemObserveResponse(acyclic.filesystem.v2.Filesystem.ObserveResponse value) { public static FilesystemFilesystemObserveResponse fromWire(acyclic.filesystem.v2.Filesystem.ObserveResponse value) { return new FilesystemFilesystemObserveResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.ObserveResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemOpenWorkspaceResponse(acyclic.filesystem.v2.Filesystem.WorkspaceResponse value) { public static FilesystemFilesystemOpenWorkspaceResponse fromWire(acyclic.filesystem.v2.Filesystem.WorkspaceResponse value) { return new FilesystemFilesystemOpenWorkspaceResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.WorkspaceResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemPinResponse(acyclic.filesystem.v2.Filesystem.RetainGenerationResponse value) { public static FilesystemFilesystemPinResponse fromWire(acyclic.filesystem.v2.Filesystem.RetainGenerationResponse value) { return new FilesystemFilesystemPinResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.RetainGenerationResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemPlanExtentsResponse(acyclic.filesystem.v2.Filesystem.PlanExtentsResponse value) { public static FilesystemFilesystemPlanExtentsResponse fromWire(acyclic.filesystem.v2.Filesystem.PlanExtentsResponse value) { return new FilesystemFilesystemPlanExtentsResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.PlanExtentsResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemPlanJoinResponse(acyclic.filesystem.v2.Filesystem.JoinPlan value) { public static FilesystemFilesystemPlanJoinResponse fromWire(acyclic.filesystem.v2.Filesystem.JoinPlan value) { return new FilesystemFilesystemPlanJoinResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.JoinPlan toWire() { return value; } }
+
+  public record FilesystemFilesystemReadResponse(acyclic.filesystem.v2.Filesystem.ReadResponse value) { public static FilesystemFilesystemReadResponse fromWire(acyclic.filesystem.v2.Filesystem.ReadResponse value) { return new FilesystemFilesystemReadResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.ReadResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemReadLinkResponse(acyclic.filesystem.v2.Filesystem.ReadResponse value) { public static FilesystemFilesystemReadLinkResponse fromWire(acyclic.filesystem.v2.Filesystem.ReadResponse value) { return new FilesystemFilesystemReadLinkResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.ReadResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemRebaseResponse(acyclic.filesystem.v2.Filesystem.RebaseResponse value) { public static FilesystemFilesystemRebaseResponse fromWire(acyclic.filesystem.v2.Filesystem.RebaseResponse value) { return new FilesystemFilesystemRebaseResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.RebaseResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemRebaseTransactionResponse(acyclic.filesystem.v2.Filesystem.RebaseTransactionResponse value) { public static FilesystemFilesystemRebaseTransactionResponse fromWire(acyclic.filesystem.v2.Filesystem.RebaseTransactionResponse value) { return new FilesystemFilesystemRebaseTransactionResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.RebaseTransactionResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemReconcileSourceResponse(acyclic.filesystem.v2.Filesystem.SourceResponse value) { public static FilesystemFilesystemReconcileSourceResponse fromWire(acyclic.filesystem.v2.Filesystem.SourceResponse value) { return new FilesystemFilesystemReconcileSourceResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.SourceResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemRescanSourceResponse(acyclic.filesystem.v2.Filesystem.SourceResponse value) { public static FilesystemFilesystemRescanSourceResponse fromWire(acyclic.filesystem.v2.Filesystem.SourceResponse value) { return new FilesystemFilesystemRescanSourceResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.SourceResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemSealSourceResponse(acyclic.filesystem.v2.Filesystem.SourceResponse value) { public static FilesystemFilesystemSealSourceResponse fromWire(acyclic.filesystem.v2.Filesystem.SourceResponse value) { return new FilesystemFilesystemSealSourceResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.SourceResponse toWire() { return value; } }
+
+  public record FilesystemFilesystemStatResponse(acyclic.filesystem.v2.Filesystem.StatResponse value) { public static FilesystemFilesystemStatResponse fromWire(acyclic.filesystem.v2.Filesystem.StatResponse value) { return new FilesystemFilesystemStatResponse(java.util.Objects.requireNonNull(value)); } public acyclic.filesystem.v2.Filesystem.StatResponse toWire() { return value; } }
+
+  public record HarnessHarnessCancelResponse(acyclic.harness.v2.Harness.CancelResponse value) { public static HarnessHarnessCancelResponse fromWire(acyclic.harness.v2.Harness.CancelResponse value) { return new HarnessHarnessCancelResponse(java.util.Objects.requireNonNull(value)); } public acyclic.harness.v2.Harness.CancelResponse toWire() { return value; } }
+
+  public record HarnessHarnessHandshakeResponse(acyclic.protocol.v1.Protocol.HandshakeResponse value) { public static HarnessHarnessHandshakeResponse fromWire(acyclic.protocol.v1.Protocol.HandshakeResponse value) { return new HarnessHarnessHandshakeResponse(java.util.Objects.requireNonNull(value)); } public acyclic.protocol.v1.Protocol.HandshakeResponse toWire() { return value; } }
+
+  public record HarnessHarnessObserveResponse(acyclic.harness.v2.Harness.OperationStatus value) { public static HarnessHarnessObserveResponse fromWire(acyclic.harness.v2.Harness.OperationStatus value) { return new HarnessHarnessObserveResponse(java.util.Objects.requireNonNull(value)); } public acyclic.harness.v2.Harness.OperationStatus toWire() { return value; } }
+
+  public record HarnessHarnessReplayResponse(acyclic.harness.v2.Harness.Delivery value) { public static HarnessHarnessReplayResponse fromWire(acyclic.harness.v2.Harness.Delivery value) { return new HarnessHarnessReplayResponse(java.util.Objects.requireNonNull(value)); } public acyclic.harness.v2.Harness.Delivery toWire() { return value; } }
+
+  public record HarnessHarnessSubmitResponse(acyclic.harness.v2.Harness.Admission value) { public static HarnessHarnessSubmitResponse fromWire(acyclic.harness.v2.Harness.Admission value) { return new HarnessHarnessSubmitResponse(java.util.Objects.requireNonNull(value)); } public acyclic.harness.v2.Harness.Admission toWire() { return value; } }
+
+  public record MachinesMachinesCancelResponse(acyclic.machines.v1.Machines.OperationState value) { public static MachinesMachinesCancelResponse fromWire(acyclic.machines.v1.Machines.OperationState value) { return new MachinesMachinesCancelResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.OperationState toWire() { return value; } }
+
+  public record MachinesMachinesCheckpointResponse(acyclic.machines.v1.Machines.CheckpointAdmission value) { public static MachinesMachinesCheckpointResponse fromWire(acyclic.machines.v1.Machines.CheckpointAdmission value) { return new MachinesMachinesCheckpointResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.CheckpointAdmission toWire() { return value; } }
+
+  public record MachinesMachinesCreateResponse(acyclic.machines.v1.Machines.MachineAdmission value) { public static MachinesMachinesCreateResponse fromWire(acyclic.machines.v1.Machines.MachineAdmission value) { return new MachinesMachinesCreateResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.MachineAdmission toWire() { return value; } }
+
+  public record MachinesMachinesDestroyCheckpointResponse(acyclic.machines.v1.Machines.MutationAdmission value) { public static MachinesMachinesDestroyCheckpointResponse fromWire(acyclic.machines.v1.Machines.MutationAdmission value) { return new MachinesMachinesDestroyCheckpointResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.MutationAdmission toWire() { return value; } }
+
+  public record MachinesMachinesDestroyMachineResponse(acyclic.machines.v1.Machines.MutationAdmission value) { public static MachinesMachinesDestroyMachineResponse fromWire(acyclic.machines.v1.Machines.MutationAdmission value) { return new MachinesMachinesDestroyMachineResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.MutationAdmission toWire() { return value; } }
+
+  public record MachinesMachinesEventsResponse(acyclic.machines.v1.Machines.EventPage value) { public static MachinesMachinesEventsResponse fromWire(acyclic.machines.v1.Machines.EventPage value) { return new MachinesMachinesEventsResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.EventPage toWire() { return value; } }
+
+  public record MachinesMachinesForkResponse(acyclic.machines.v1.Machines.ForkAdmission value) { public static MachinesMachinesForkResponse fromWire(acyclic.machines.v1.Machines.ForkAdmission value) { return new MachinesMachinesForkResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.ForkAdmission toWire() { return value; } }
+
+  public record MachinesMachinesForkMachineResponse(acyclic.machines.v1.Machines.ForkMachineAdmission value) { public static MachinesMachinesForkMachineResponse fromWire(acyclic.machines.v1.Machines.ForkMachineAdmission value) { return new MachinesMachinesForkMachineResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.ForkMachineAdmission toWire() { return value; } }
+
+  public record MachinesMachinesInspectCheckpointResponse(acyclic.machines.v1.Machines.CheckpointState value) { public static MachinesMachinesInspectCheckpointResponse fromWire(acyclic.machines.v1.Machines.CheckpointState value) { return new MachinesMachinesInspectCheckpointResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.CheckpointState toWire() { return value; } }
+
+  public record MachinesMachinesInspectMachineResponse(acyclic.machines.v1.Machines.MachineState value) { public static MachinesMachinesInspectMachineResponse fromWire(acyclic.machines.v1.Machines.MachineState value) { return new MachinesMachinesInspectMachineResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.MachineState toWire() { return value; } }
+
+  public record MachinesMachinesInspectOperationResponse(acyclic.machines.v1.Machines.OperationState value) { public static MachinesMachinesInspectOperationResponse fromWire(acyclic.machines.v1.Machines.OperationState value) { return new MachinesMachinesInspectOperationResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.OperationState toWire() { return value; } }
+
+  public record MachinesMachinesListMachinesResponse(acyclic.machines.v1.Machines.MachinePage value) { public static MachinesMachinesListMachinesResponse fromWire(acyclic.machines.v1.Machines.MachinePage value) { return new MachinesMachinesListMachinesResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.MachinePage toWire() { return value; } }
+
+  public record MachinesMachinesQualifyImageResponse(acyclic.machines.v1.Machines.ImageQualification value) { public static MachinesMachinesQualifyImageResponse fromWire(acyclic.machines.v1.Machines.ImageQualification value) { return new MachinesMachinesQualifyImageResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.ImageQualification toWire() { return value; } }
+
+  public record MachinesMachinesRecoverResponse(acyclic.machines.v1.Machines.RecoveredAdmission value) { public static MachinesMachinesRecoverResponse fromWire(acyclic.machines.v1.Machines.RecoveredAdmission value) { return new MachinesMachinesRecoverResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.RecoveredAdmission toWire() { return value; } }
+
+  public record MachinesMachinesSetSuspensionPolicyResponse(acyclic.machines.v1.Machines.PolicyAdmission value) { public static MachinesMachinesSetSuspensionPolicyResponse fromWire(acyclic.machines.v1.Machines.PolicyAdmission value) { return new MachinesMachinesSetSuspensionPolicyResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.PolicyAdmission toWire() { return value; } }
+
+  public record MachinesMachinesSuspendResponse(acyclic.machines.v1.Machines.MutationAdmission value) { public static MachinesMachinesSuspendResponse fromWire(acyclic.machines.v1.Machines.MutationAdmission value) { return new MachinesMachinesSuspendResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.MutationAdmission toWire() { return value; } }
+
+  public record MachinesMachinesUsageResponse(acyclic.machines.v1.Machines.UsageReceipt value) { public static MachinesMachinesUsageResponse fromWire(acyclic.machines.v1.Machines.UsageReceipt value) { return new MachinesMachinesUsageResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.UsageReceipt toWire() { return value; } }
+
+  public record MachinesMachinesWakeResponse(acyclic.machines.v1.Machines.MutationAdmission value) { public static MachinesMachinesWakeResponse fromWire(acyclic.machines.v1.Machines.MutationAdmission value) { return new MachinesMachinesWakeResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.MutationAdmission toWire() { return value; } }
+
+  public record MachinesMachinesWatchOperationResponse(acyclic.machines.v1.Machines.OperationState value) { public static MachinesMachinesWatchOperationResponse fromWire(acyclic.machines.v1.Machines.OperationState value) { return new MachinesMachinesWatchOperationResponse(java.util.Objects.requireNonNull(value)); } public acyclic.machines.v1.Machines.OperationState toWire() { return value; } }
+
+  public record ObjectsBucketsCreateBucketResponse(acyclic.objects.v2.Objects.Bucket value) { public static ObjectsBucketsCreateBucketResponse fromWire(acyclic.objects.v2.Objects.Bucket value) { return new ObjectsBucketsCreateBucketResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.Bucket toWire() { return value; } }
+
+  public record ObjectsBucketsDeleteBucketResponse(acyclic.objects.v2.Objects.DeleteBucketResponse value) { public static ObjectsBucketsDeleteBucketResponse fromWire(acyclic.objects.v2.Objects.DeleteBucketResponse value) { return new ObjectsBucketsDeleteBucketResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.DeleteBucketResponse toWire() { return value; } }
+
+  public record ObjectsBucketsHeadBucketResponse(acyclic.objects.v2.Objects.Bucket value) { public static ObjectsBucketsHeadBucketResponse fromWire(acyclic.objects.v2.Objects.Bucket value) { return new ObjectsBucketsHeadBucketResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.Bucket toWire() { return value; } }
+
+  public record ObjectsMultipartAbortMultipartResponse(acyclic.objects.v2.Objects.AbortMultipartResponse value) { public static ObjectsMultipartAbortMultipartResponse fromWire(acyclic.objects.v2.Objects.AbortMultipartResponse value) { return new ObjectsMultipartAbortMultipartResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.AbortMultipartResponse toWire() { return value; } }
+
+  public record ObjectsMultipartCompleteMultipartResponse(acyclic.objects.v2.Objects.ObjectInfo value) { public static ObjectsMultipartCompleteMultipartResponse fromWire(acyclic.objects.v2.Objects.ObjectInfo value) { return new ObjectsMultipartCompleteMultipartResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.ObjectInfo toWire() { return value; } }
+
+  public record ObjectsMultipartCreateMultipartResponse(acyclic.objects.v2.Objects.MultipartUpload value) { public static ObjectsMultipartCreateMultipartResponse fromWire(acyclic.objects.v2.Objects.MultipartUpload value) { return new ObjectsMultipartCreateMultipartResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.MultipartUpload toWire() { return value; } }
+
+  public record ObjectsMultipartListPartsResponse(acyclic.objects.v2.Objects.ListPartsResponse value) { public static ObjectsMultipartListPartsResponse fromWire(acyclic.objects.v2.Objects.ListPartsResponse value) { return new ObjectsMultipartListPartsResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.ListPartsResponse toWire() { return value; } }
+
+  public record ObjectsMultipartUploadPartResponse(acyclic.objects.v2.Objects.UploadedPart value) { public static ObjectsMultipartUploadPartResponse fromWire(acyclic.objects.v2.Objects.UploadedPart value) { return new ObjectsMultipartUploadPartResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.UploadedPart toWire() { return value; } }
+
+  public record ObjectsObjectsDeleteObjectResponse(acyclic.objects.v2.Objects.DeleteObjectResponse value) { public static ObjectsObjectsDeleteObjectResponse fromWire(acyclic.objects.v2.Objects.DeleteObjectResponse value) { return new ObjectsObjectsDeleteObjectResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.DeleteObjectResponse toWire() { return value; } }
+
+  public record ObjectsObjectsGetObjectResponse(acyclic.objects.v2.Objects.GetObjectResponse value) { public static ObjectsObjectsGetObjectResponse fromWire(acyclic.objects.v2.Objects.GetObjectResponse value) { return new ObjectsObjectsGetObjectResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.GetObjectResponse toWire() { return value; } }
+
+  public record ObjectsObjectsHeadObjectResponse(acyclic.objects.v2.Objects.HeadObjectResponse value) { public static ObjectsObjectsHeadObjectResponse fromWire(acyclic.objects.v2.Objects.HeadObjectResponse value) { return new ObjectsObjectsHeadObjectResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.HeadObjectResponse toWire() { return value; } }
+
+  public record ObjectsObjectsListObjectsResponse(acyclic.objects.v2.Objects.ListObjectsResponse value) { public static ObjectsObjectsListObjectsResponse fromWire(acyclic.objects.v2.Objects.ListObjectsResponse value) { return new ObjectsObjectsListObjectsResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.ListObjectsResponse toWire() { return value; } }
+
+  public record ObjectsObjectsPutObjectResponse(acyclic.objects.v2.Objects.ObjectInfo value) { public static ObjectsObjectsPutObjectResponse fromWire(acyclic.objects.v2.Objects.ObjectInfo value) { return new ObjectsObjectsPutObjectResponse(java.util.Objects.requireNonNull(value)); } public acyclic.objects.v2.Objects.ObjectInfo toWire() { return value; } }
+
+  public record StreamStreamAppendResponse(acyclic.stream.v2.Stream.AppendResponse value) { public static StreamStreamAppendResponse fromWire(acyclic.stream.v2.Stream.AppendResponse value) { return new StreamStreamAppendResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.AppendResponse toWire() { return value; } }
+
+  public record StreamStreamChildrenResponse(acyclic.stream.v2.Stream.ChildrenResponse value) { public static StreamStreamChildrenResponse fromWire(acyclic.stream.v2.Stream.ChildrenResponse value) { return new StreamStreamChildrenResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.ChildrenResponse toWire() { return value; } }
+
+  public record StreamStreamChildrenPageResponse(acyclic.stream.v2.Stream.ChildrenPageResponse value) { public static StreamStreamChildrenPageResponse fromWire(acyclic.stream.v2.Stream.ChildrenPageResponse value) { return new StreamStreamChildrenPageResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.ChildrenPageResponse toWire() { return value; } }
+
+  public record StreamStreamCommitResponse(acyclic.stream.v2.Stream.CommitResponse value) { public static StreamStreamCommitResponse fromWire(acyclic.stream.v2.Stream.CommitResponse value) { return new StreamStreamCommitResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.CommitResponse toWire() { return value; } }
+
+  public record StreamStreamFollowResponse(acyclic.stream.v2.Stream.ReadResponse value) { public static StreamStreamFollowResponse fromWire(acyclic.stream.v2.Stream.ReadResponse value) { return new StreamStreamFollowResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.ReadResponse toWire() { return value; } }
+
+  public record StreamStreamForkResponse(acyclic.stream.v2.Stream.ForkReceipt value) { public static StreamStreamForkResponse fromWire(acyclic.stream.v2.Stream.ForkReceipt value) { return new StreamStreamForkResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.ForkReceipt toWire() { return value; } }
+
+  public record StreamStreamInspectIdempotencyResponse(acyclic.stream.v2.Stream.InspectIdempotencyResponse value) { public static StreamStreamInspectIdempotencyResponse fromWire(acyclic.stream.v2.Stream.InspectIdempotencyResponse value) { return new StreamStreamInspectIdempotencyResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.InspectIdempotencyResponse toWire() { return value; } }
+
+  public record StreamStreamReadResponse(acyclic.stream.v2.Stream.ReadResponse value) { public static StreamStreamReadResponse fromWire(acyclic.stream.v2.Stream.ReadResponse value) { return new StreamStreamReadResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.ReadResponse toWire() { return value; } }
+
+  public record StreamStreamReadCommitResponse(acyclic.stream.v2.Stream.CommittedEnvelope value) { public static StreamStreamReadCommitResponse fromWire(acyclic.stream.v2.Stream.CommittedEnvelope value) { return new StreamStreamReadCommitResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.CommittedEnvelope toWire() { return value; } }
+
+  public record StreamStreamTailResponse(acyclic.stream.v2.Stream.TailResponse value) { public static StreamStreamTailResponse fromWire(acyclic.stream.v2.Stream.TailResponse value) { return new StreamStreamTailResponse(java.util.Objects.requireNonNull(value)); } public acyclic.stream.v2.Stream.TailResponse toWire() { return value; } }
+
+  public record WorkersWorkersCancelJobResponse(acyclic.workers.v1.Workers.CancelJobResponse value) { public static WorkersWorkersCancelJobResponse fromWire(acyclic.workers.v1.Workers.CancelJobResponse value) { return new WorkersWorkersCancelJobResponse(java.util.Objects.requireNonNull(value)); } public acyclic.workers.v1.Workers.CancelJobResponse toWire() { return value; } }
+
+  public record WorkersWorkersInspectJobResponse(acyclic.workers.v1.Workers.InspectJobResponse value) { public static WorkersWorkersInspectJobResponse fromWire(acyclic.workers.v1.Workers.InspectJobResponse value) { return new WorkersWorkersInspectJobResponse(java.util.Objects.requireNonNull(value)); } public acyclic.workers.v1.Workers.InspectJobResponse toWire() { return value; } }
+
+  public record WorkersWorkersInvokeDeploymentResponse(acyclic.workers.v1.Workers.InvokeResponse value) { public static WorkersWorkersInvokeDeploymentResponse fromWire(acyclic.workers.v1.Workers.InvokeResponse value) { return new WorkersWorkersInvokeDeploymentResponse(java.util.Objects.requireNonNull(value)); } public acyclic.workers.v1.Workers.InvokeResponse toWire() { return value; } }
+
+  public record WorkersWorkersInvokeVersionResponse(acyclic.workers.v1.Workers.InvokeResponse value) { public static WorkersWorkersInvokeVersionResponse fromWire(acyclic.workers.v1.Workers.InvokeResponse value) { return new WorkersWorkersInvokeVersionResponse(java.util.Objects.requireNonNull(value)); } public acyclic.workers.v1.Workers.InvokeResponse toWire() { return value; } }
+
+  public record WorkersWorkersPublishVersionResponse(acyclic.workers.v1.Workers.PublishVersionResponse value) { public static WorkersWorkersPublishVersionResponse fromWire(acyclic.workers.v1.Workers.PublishVersionResponse value) { return new WorkersWorkersPublishVersionResponse(java.util.Objects.requireNonNull(value)); } public acyclic.workers.v1.Workers.PublishVersionResponse toWire() { return value; } }
+
+  public record WorkersWorkersSelectDeploymentResponse(acyclic.workers.v1.Workers.SelectDeploymentResponse value) { public static WorkersWorkersSelectDeploymentResponse fromWire(acyclic.workers.v1.Workers.SelectDeploymentResponse value) { return new WorkersWorkersSelectDeploymentResponse(java.util.Objects.requireNonNull(value)); } public acyclic.workers.v1.Workers.SelectDeploymentResponse toWire() { return value; } }
+
+  public record WorkersWorkersSubmitJobResponse(acyclic.workers.v1.Workers.SubmitJobResponse value) { public static WorkersWorkersSubmitJobResponse fromWire(acyclic.workers.v1.Workers.SubmitJobResponse value) { return new WorkersWorkersSubmitJobResponse(java.util.Objects.requireNonNull(value)); } public acyclic.workers.v1.Workers.SubmitJobResponse toWire() { return value; } }
+
+  public record InferenceContextsCreateResponse(inference.customer.v1.Inference.MutationReceipt value) { public static InferenceContextsCreateResponse fromWire(inference.customer.v1.Inference.MutationReceipt value) { return new InferenceContextsCreateResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.MutationReceipt toWire() { return value; } }
+
+  public record InferenceContextsInspectResponse(inference.customer.v1.Inference.ContextView value) { public static InferenceContextsInspectResponse fromWire(inference.customer.v1.Inference.ContextView value) { return new InferenceContextsInspectResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.ContextView toWire() { return value; } }
+
+  public record InferenceContextsMutateResponse(inference.customer.v1.Inference.MutationReceipt value) { public static InferenceContextsMutateResponse fromWire(inference.customer.v1.Inference.MutationReceipt value) { return new InferenceContextsMutateResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.MutationReceipt toWire() { return value; } }
+
+  public record InferenceEvaluationsCreateResponse(inference.customer.v1.Inference.EvaluationView value) { public static InferenceEvaluationsCreateResponse fromWire(inference.customer.v1.Inference.EvaluationView value) { return new InferenceEvaluationsCreateResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.EvaluationView toWire() { return value; } }
+
+  public record InferenceEvaluationsInspectResponse(inference.customer.v1.Inference.EvaluationView value) { public static InferenceEvaluationsInspectResponse fromWire(inference.customer.v1.Inference.EvaluationView value) { return new InferenceEvaluationsInspectResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.EvaluationView toWire() { return value; } }
+
+  public record InferenceModelsListResponse(inference.customer.v1.Inference.ListModelsResponse value) { public static InferenceModelsListResponse fromWire(inference.customer.v1.Inference.ListModelsResponse value) { return new InferenceModelsListResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.ListModelsResponse toWire() { return value; } }
+
+  public record InferenceRunsCancelResponse(inference.customer.v1.Inference.RunView value) { public static InferenceRunsCancelResponse fromWire(inference.customer.v1.Inference.RunView value) { return new InferenceRunsCancelResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.RunView toWire() { return value; } }
+
+  public record InferenceRunsGenerateResponse(inference.customer.v1.Inference.GenerateRunResponse value) { public static InferenceRunsGenerateResponse fromWire(inference.customer.v1.Inference.GenerateRunResponse value) { return new InferenceRunsGenerateResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.GenerateRunResponse toWire() { return value; } }
+
+  public record InferenceRunsInspectResponse(inference.customer.v1.Inference.RunView value) { public static InferenceRunsInspectResponse fromWire(inference.customer.v1.Inference.RunView value) { return new InferenceRunsInspectResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.RunView toWire() { return value; } }
+
+  public record InferenceRunsWatchResponse(inference.customer.v1.Inference.RunEvent value) { public static InferenceRunsWatchResponse fromWire(inference.customer.v1.Inference.RunEvent value) { return new InferenceRunsWatchResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.RunEvent toWire() { return value; } }
+
+  public record InferenceWarmContextsInspectResponse(inference.customer.v1.Inference.WarmView value) { public static InferenceWarmContextsInspectResponse fromWire(inference.customer.v1.Inference.WarmView value) { return new InferenceWarmContextsInspectResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.WarmView toWire() { return value; } }
+
+  public record InferenceWarmContextsReleaseResponse(inference.customer.v1.Inference.WarmView value) { public static InferenceWarmContextsReleaseResponse fromWire(inference.customer.v1.Inference.WarmView value) { return new InferenceWarmContextsReleaseResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.WarmView toWire() { return value; } }
+
+  public record InferenceWarmContextsRenewResponse(inference.customer.v1.Inference.WarmView value) { public static InferenceWarmContextsRenewResponse fromWire(inference.customer.v1.Inference.WarmView value) { return new InferenceWarmContextsRenewResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.WarmView toWire() { return value; } }
+
+  public record InferenceWarmContextsRetainResponse(inference.customer.v1.Inference.WarmView value) { public static InferenceWarmContextsRetainResponse fromWire(inference.customer.v1.Inference.WarmView value) { return new InferenceWarmContextsRetainResponse(java.util.Objects.requireNonNull(value)); } public inference.customer.v1.Inference.WarmView toWire() { return value; } }
+
   public static RustSemanticTypes.IdempotencyKeyText mutationIdentityIdempotencyKey(acyclic.objects.v2.Objects.MutationIdentity value) { return RustSemanticTypes.IdempotencyKeyText.of(value.getIdempotencyKey()); }
   public static RustSemanticTypes.Sha256Digest evaluationSpecDigest(inference.customer.v1.Inference.EvaluationSpec value) { return RustSemanticTypes.Sha256Digest.of(value.getSpecDigest()); }
   public static RustSemanticTypes.ResourcePath fileRefPath(acyclic.harness.v2.Harness.FileRef value) { return RustSemanticTypes.ResourcePath.of(value.getNormalizedPath()); }

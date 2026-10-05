@@ -5,46 +5,256 @@ package dev.acyclic.transport
 /** Typed blocking client calls generated from Rust-owned request bindings. */
 object RustTypedClientsScala {
 
-  def actorsInvokeActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, actor_id: RustSemanticTypesScala.ActorId, method: RustSemanticTypesScala.MethodName): RustTypedResponsesScala.ActorsInvokeActorResponse = RustTypedResponsesScala.ActorsInvokeActorResponse.fromWire(stub.invokeActor(RustTypedRequestsScala.actorsInvokeActor(actor_id, method))) }
+  def actorsInvokeActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, actor_id: RustSemanticTypesScala.ActorId, method: RustSemanticTypesScala.MethodName): RustTypedResponsesScala.ActorsInvokeActorResponse = RustTypedResponsesScala.ActorsInvokeActorResponse.fromWire(stub.invokeActor(RustTypedRequestsScala.actorsInvokeActor(actor_id, method)))
 
-  def filesystemRead(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, path: RustSemanticTypesScala.ResourcePath): RustTypedResponsesScala.FilesystemReadResponse = RustTypedResponsesScala.FilesystemReadResponse.fromWire(stub.read(RustTypedRequestsScala.filesystemRead(path))) }
+  def filesystemRead(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, path: RustSemanticTypesScala.ResourcePath): RustTypedResponsesScala.FilesystemReadResponse = RustTypedResponsesScala.FilesystemReadResponse.fromWire(stub.read(RustTypedRequestsScala.filesystemRead(path)))
 
-  def inferenceInspectContext(stub: inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub, revision: RustSemanticTypesScala.RevisionDigest): RustTypedResponsesScala.InferenceInspectContextResponse = RustTypedResponsesScala.InferenceInspectContextResponse.fromWire(stub.inspect(RustTypedRequestsScala.inferenceInspectContext(revision))) }
+  def inferenceInspectContext(stub: inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub, revision: RustSemanticTypesScala.RevisionDigest): RustTypedResponsesScala.InferenceInspectContextResponse = RustTypedResponsesScala.InferenceInspectContextResponse.fromWire(stub.inspect(RustTypedRequestsScala.inferenceInspectContext(revision)))
 
-  def inferenceInspectEvaluation(stub: inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub, evaluation_id: RustSemanticTypesScala.EvaluationId): RustTypedResponsesScala.InferenceInspectEvaluationResponse = RustTypedResponsesScala.InferenceInspectEvaluationResponse.fromWire(stub.inspect(RustTypedRequestsScala.inferenceInspectEvaluation(evaluation_id))) }
+  def inferenceInspectEvaluation(stub: inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub, evaluation_id: RustSemanticTypesScala.EvaluationId): RustTypedResponsesScala.InferenceInspectEvaluationResponse = RustTypedResponsesScala.InferenceInspectEvaluationResponse.fromWire(stub.inspect(RustTypedRequestsScala.inferenceInspectEvaluation(evaluation_id)))
 
-  def inferenceInspectRun(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, run_id: RustSemanticTypesScala.RunId): RustTypedResponsesScala.InferenceInspectRunResponse = RustTypedResponsesScala.InferenceInspectRunResponse.fromWire(stub.inspect(RustTypedRequestsScala.inferenceInspectRun(run_id))) }
+  def inferenceInspectRun(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, run_id: RustSemanticTypesScala.RunId): RustTypedResponsesScala.InferenceInspectRunResponse = RustTypedResponsesScala.InferenceInspectRunResponse.fromWire(stub.inspect(RustTypedRequestsScala.inferenceInspectRun(run_id)))
 
-  def inferenceInspectWarm(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, commitment: RustSemanticTypesScala.Sha256Digest): RustTypedResponsesScala.InferenceInspectWarmResponse = RustTypedResponsesScala.InferenceInspectWarmResponse.fromWire(stub.inspect(RustTypedRequestsScala.inferenceInspectWarm(commitment))) }
+  def inferenceInspectWarm(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, commitment: RustSemanticTypesScala.Sha256Digest): RustTypedResponsesScala.InferenceInspectWarmResponse = RustTypedResponsesScala.InferenceInspectWarmResponse.fromWire(stub.inspect(RustTypedRequestsScala.inferenceInspectWarm(commitment)))
 
-  def machinesCreateMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, image: RustSemanticTypesScala.Image, idempotency_key: RustSemanticTypesScala.IdempotencyKey): RustTypedResponsesScala.MachinesCreateMachineResponse = RustTypedResponsesScala.MachinesCreateMachineResponse.fromWire(stub.create(RustTypedRequestsScala.machinesCreateMachine(image, idempotency_key))) }
+  def machinesCreateMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, image: RustSemanticTypesScala.Image, idempotency_key: RustSemanticTypesScala.IdempotencyKey): RustTypedResponsesScala.MachinesCreateMachineResponse = RustTypedResponsesScala.MachinesCreateMachineResponse.fromWire(stub.create(RustTypedRequestsScala.machinesCreateMachine(image, idempotency_key)))
 
-  def machinesInspectCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, checkpoint_id: RustSemanticTypesScala.CheckpointId): RustTypedResponsesScala.MachinesInspectCheckpointResponse = RustTypedResponsesScala.MachinesInspectCheckpointResponse.fromWire(stub.inspectCheckpoint(RustTypedRequestsScala.machinesInspectCheckpoint(checkpoint_id))) }
+  def machinesEvents(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, event_page_limit: RustSemanticTypesScala.MachineEventPageLimit): RustTypedResponsesScala.MachinesEventsResponse = RustTypedResponsesScala.MachinesEventsResponse.fromWire(stub.events(RustTypedRequestsScala.machinesEvents(event_page_limit)))
 
-  def machinesInspectMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, machine_id: RustSemanticTypesScala.MachineId): RustTypedResponsesScala.MachinesInspectMachineResponse = RustTypedResponsesScala.MachinesInspectMachineResponse.fromWire(stub.inspectMachine(RustTypedRequestsScala.machinesInspectMachine(machine_id))) }
+  def machinesInspectCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, checkpoint_id: RustSemanticTypesScala.CheckpointId): RustTypedResponsesScala.MachinesInspectCheckpointResponse = RustTypedResponsesScala.MachinesInspectCheckpointResponse.fromWire(stub.inspectCheckpoint(RustTypedRequestsScala.machinesInspectCheckpoint(checkpoint_id)))
 
-  def machinesListMachines(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, page_limit: RustSemanticTypesScala.MachinePageLimit): RustTypedResponsesScala.MachinesListMachinesResponse = RustTypedResponsesScala.MachinesListMachinesResponse.fromWire(stub.listMachines(RustTypedRequestsScala.machinesListMachines(page_limit))) }
+  def machinesInspectMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, machine_id: RustSemanticTypesScala.MachineId): RustTypedResponsesScala.MachinesInspectMachineResponse = RustTypedResponsesScala.MachinesInspectMachineResponse.fromWire(stub.inspectMachine(RustTypedRequestsScala.machinesInspectMachine(machine_id)))
 
-  def machinesOperation(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, operation_id: RustSemanticTypesScala.OperationId): RustTypedResponsesScala.MachinesOperationResponse = RustTypedResponsesScala.MachinesOperationResponse.fromWire(stub.inspectOperation(RustTypedRequestsScala.machinesOperation(operation_id))) }
+  def machinesListMachines(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, page_limit: RustSemanticTypesScala.MachinePageLimit): RustTypedResponsesScala.MachinesListMachinesResponse = RustTypedResponsesScala.MachinesListMachinesResponse.fromWire(stub.listMachines(RustTypedRequestsScala.machinesListMachines(page_limit)))
 
-  def objectsGetObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, key: RustSemanticTypesScala.ObjectKey): java.util.Iterator[RustTypedResponsesScala.ObjectsGetObjectResponse] = RustTypedResponsesScala.mapIterator(stub.getObject(RustTypedRequestsScala.objectsGetObject(key)))(RustTypedResponsesScala.ObjectsGetObjectResponse.fromWire)
+  def machinesOperation(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, operation_id: RustSemanticTypesScala.OperationId): RustTypedResponsesScala.MachinesOperationResponse = RustTypedResponsesScala.MachinesOperationResponse.fromWire(stub.inspectOperation(RustTypedRequestsScala.machinesOperation(operation_id)))
 
-  def objectsListObjects(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, page_size: RustSemanticTypesScala.PageLimit): RustTypedResponsesScala.ObjectsListObjectsResponse = RustTypedResponsesScala.ObjectsListObjectsResponse.fromWire(stub.listObjects(RustTypedRequestsScala.objectsListObjects(page_size))) }
+  def machinesQualifyImage(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, image: RustSemanticTypesScala.Image): RustTypedResponsesScala.MachinesQualifyImageResponse = RustTypedResponsesScala.MachinesQualifyImageResponse.fromWire(stub.qualifyImage(RustTypedRequestsScala.machinesQualifyImage(image)))
 
-  def objectsListParts(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, upload_id: RustSemanticTypesScala.UploadId): RustTypedResponsesScala.ObjectsListPartsResponse = RustTypedResponsesScala.ObjectsListPartsResponse.fromWire(stub.listParts(RustTypedRequestsScala.objectsListParts(upload_id))) }
+  def objectsGetObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, key: RustSemanticTypesScala.ObjectKey): java.util.Iterator[RustTypedResponsesScala.ObjectsGetObjectResponse] = RustTypedResponsesScala.mapIterator(stub.getObject(RustTypedRequestsScala.objectsGetObject(key)), RustTypedResponsesScala.ObjectsGetObjectResponse.fromWire _)
 
-  def streamAppend(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, idempotency_key: RustSemanticTypesScala.IdempotencyKeyBytes, path: RustSemanticTypesScala.ResourcePath): RustTypedResponsesScala.StreamAppendResponse = RustTypedResponsesScala.StreamAppendResponse.fromWire(stub.append(RustTypedRequestsScala.streamAppend(idempotency_key, path))) }
+  def objectsListObjects(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, page_size: RustSemanticTypesScala.PageLimit): RustTypedResponsesScala.ObjectsListObjectsResponse = RustTypedResponsesScala.ObjectsListObjectsResponse.fromWire(stub.listObjects(RustTypedRequestsScala.objectsListObjects(page_size)))
 
-  def streamFork(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, source: RustSemanticTypesScala.SourceName, destination: RustSemanticTypesScala.DestinationName): RustTypedResponsesScala.StreamForkResponse = RustTypedResponsesScala.StreamForkResponse.fromWire(stub.fork(RustTypedRequestsScala.streamFork(source, destination))) }
+  def objectsListParts(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, upload_id: RustSemanticTypesScala.UploadId): RustTypedResponsesScala.ObjectsListPartsResponse = RustTypedResponsesScala.ObjectsListPartsResponse.fromWire(stub.listParts(RustTypedRequestsScala.objectsListParts(upload_id)))
 
-  def streamReadCommit(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, commit_id: RustSemanticTypesScala.CommitId): RustTypedResponsesScala.StreamReadCommitResponse = RustTypedResponsesScala.StreamReadCommitResponse.fromWire(stub.readCommit(RustTypedRequestsScala.streamReadCommit(commit_id))) }
+  def streamAppend(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, idempotency_key: RustSemanticTypesScala.IdempotencyKeyBytes, path: RustSemanticTypesScala.ResourcePath): RustTypedResponsesScala.StreamAppendResponse = RustTypedResponsesScala.StreamAppendResponse.fromWire(stub.append(RustTypedRequestsScala.streamAppend(idempotency_key, path)))
 
-  def streamRead(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, limit: RustSemanticTypesScala.StreamPageLimit): java.util.Iterator[RustTypedResponsesScala.StreamReadResponse] = RustTypedResponsesScala.mapIterator(stub.read(RustTypedRequestsScala.streamRead(limit)))(RustTypedResponsesScala.StreamReadResponse.fromWire)
+  def streamFork(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, source: RustSemanticTypesScala.SourceName, destination: RustSemanticTypesScala.DestinationName): RustTypedResponsesScala.StreamForkResponse = RustTypedResponsesScala.StreamForkResponse.fromWire(stub.fork(RustTypedRequestsScala.streamFork(source, destination)))
 
-  def workersInspectJob(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, job_id: RustSemanticTypesScala.JobId): RustTypedResponsesScala.WorkersInspectJobResponse = RustTypedResponsesScala.WorkersInspectJobResponse.fromWire(stub.inspectJob(RustTypedRequestsScala.workersInspectJob(job_id))) }
+  def streamReadCommit(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, commit_id: RustSemanticTypesScala.CommitId): RustTypedResponsesScala.StreamReadCommitResponse = RustTypedResponsesScala.StreamReadCommitResponse.fromWire(stub.readCommit(RustTypedRequestsScala.streamReadCommit(commit_id)))
 
-  def workersInvokeVersion(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, method: RustSemanticTypesScala.MethodName): RustTypedResponsesScala.WorkersInvokeVersionResponse = RustTypedResponsesScala.WorkersInvokeVersionResponse.fromWire(stub.invokeVersion(RustTypedRequestsScala.workersInvokeVersion(method))) }
+  def streamRead(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, limit: RustSemanticTypesScala.StreamPageLimit): java.util.Iterator[RustTypedResponsesScala.StreamReadResponse] = RustTypedResponsesScala.mapIterator(stub.read(RustTypedRequestsScala.streamRead(limit)), RustTypedResponsesScala.StreamReadResponse.fromWire _)
 
-  def workersSelectDeployment(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, alias: RustSemanticTypesScala.VersionAlias, version_sha256: RustSemanticTypesScala.Sha256Digest, idempotency_key: RustSemanticTypesScala.IdempotencyKeyText): RustTypedResponsesScala.WorkersSelectDeploymentResponse = RustTypedResponsesScala.WorkersSelectDeploymentResponse.fromWire(stub.selectDeployment(RustTypedRequestsScala.workersSelectDeployment(alias, version_sha256, idempotency_key))) }
+  def workersInspectJob(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, job_id: RustSemanticTypesScala.JobId): RustTypedResponsesScala.WorkersInspectJobResponse = RustTypedResponsesScala.WorkersInspectJobResponse.fromWire(stub.inspectJob(RustTypedRequestsScala.workersInspectJob(job_id)))
+
+  def workersInvokeVersion(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, method: RustSemanticTypesScala.MethodName): RustTypedResponsesScala.WorkersInvokeVersionResponse = RustTypedResponsesScala.WorkersInvokeVersionResponse.fromWire(stub.invokeVersion(RustTypedRequestsScala.workersInvokeVersion(method)))
+
+  def workersSelectDeployment(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, alias: RustSemanticTypesScala.VersionAlias, version_sha256: RustSemanticTypesScala.Sha256Digest, idempotency_key: RustSemanticTypesScala.IdempotencyKeyText): RustTypedResponsesScala.WorkersSelectDeploymentResponse = RustTypedResponsesScala.WorkersSelectDeploymentResponse.fromWire(stub.selectDeployment(RustTypedRequestsScala.workersSelectDeployment(alias, version_sha256, idempotency_key)))
+
+  def actorsActorsAddSubscription(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsScala.ActorsActorsAddSubscriptionRequest): RustTypedResponsesScala.ActorsActorsAddSubscriptionResponse = { val wire = stub.addSubscription(request.toWire); RustTypedResponsesScala.ActorsActorsAddSubscriptionResponse.fromWire(wire) }
+
+  def actorsActorsCheckpointActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsScala.ActorsActorsCheckpointActorRequest): RustTypedResponsesScala.ActorsActorsCheckpointActorResponse = { val wire = stub.checkpointActor(request.toWire); RustTypedResponsesScala.ActorsActorsCheckpointActorResponse.fromWire(wire) }
+
+  def actorsActorsCreateActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsScala.ActorsActorsCreateActorRequest): RustTypedResponsesScala.ActorsActorsCreateActorResponse = { val wire = stub.createActor(request.toWire); RustTypedResponsesScala.ActorsActorsCreateActorResponse.fromWire(wire) }
+
+  def actorsActorsInspectActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsScala.ActorsActorsInspectActorRequest): RustTypedResponsesScala.ActorsActorsInspectActorResponse = { val wire = stub.inspectActor(request.toWire); RustTypedResponsesScala.ActorsActorsInspectActorResponse.fromWire(wire) }
+
+  def actorsActorsInvokeActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsScala.ActorsActorsInvokeActorRequest): RustTypedResponsesScala.ActorsActorsInvokeActorResponse = { val wire = stub.invokeActor(request.toWire); RustTypedResponsesScala.ActorsActorsInvokeActorResponse.fromWire(wire) }
+
+  def actorsActorsRemoveSubscription(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsScala.ActorsActorsRemoveSubscriptionRequest): RustTypedResponsesScala.ActorsActorsRemoveSubscriptionResponse = { val wire = stub.removeSubscription(request.toWire); RustTypedResponsesScala.ActorsActorsRemoveSubscriptionResponse.fromWire(wire) }
+
+  def actorsActorsResumeSubscription(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsScala.ActorsActorsResumeSubscriptionRequest): RustTypedResponsesScala.ActorsActorsResumeSubscriptionResponse = { val wire = stub.resumeSubscription(request.toWire); RustTypedResponsesScala.ActorsActorsResumeSubscriptionResponse.fromWire(wire) }
+
+  def actorsActorsUpdateActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsScala.ActorsActorsUpdateActorRequest): RustTypedResponsesScala.ActorsActorsUpdateActorResponse = { val wire = stub.updateActor(request.toWire); RustTypedResponsesScala.ActorsActorsUpdateActorResponse.fromWire(wire) }
+
+  def filesystemFilesystemApplyJoin(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemApplyJoinRequest): RustTypedResponsesScala.FilesystemFilesystemApplyJoinResponse = { val wire = stub.applyJoin(request.toWire); RustTypedResponsesScala.FilesystemFilesystemApplyJoinResponse.fromWire(wire) }
+
+  def filesystemFilesystemApplyTransaction(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemApplyTransactionRequest): RustTypedResponsesScala.FilesystemFilesystemApplyTransactionResponse = { val wire = stub.applyTransaction(request.toWire); RustTypedResponsesScala.FilesystemFilesystemApplyTransactionResponse.fromWire(wire) }
+
+  def filesystemFilesystemCancel(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemCancelRequest): RustTypedResponsesScala.FilesystemFilesystemCancelResponse = { val wire = stub.cancel(request.toWire); RustTypedResponsesScala.FilesystemFilesystemCancelResponse.fromWire(wire) }
+
+  def filesystemFilesystemCheckpoint(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemCheckpointRequest): RustTypedResponsesScala.FilesystemFilesystemCheckpointResponse = { val wire = stub.checkpoint(request.toWire); RustTypedResponsesScala.FilesystemFilesystemCheckpointResponse.fromWire(wire) }
+
+  def filesystemFilesystemCreateWorkspace(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemCreateWorkspaceRequest): RustTypedResponsesScala.FilesystemFilesystemCreateWorkspaceResponse = { val wire = stub.createWorkspace(request.toWire); RustTypedResponsesScala.FilesystemFilesystemCreateWorkspaceResponse.fromWire(wire) }
+
+  def filesystemFilesystemDeleteWorkspace(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemDeleteWorkspaceRequest): RustTypedResponsesScala.FilesystemFilesystemDeleteWorkspaceResponse = { val wire = stub.deleteWorkspace(request.toWire); RustTypedResponsesScala.FilesystemFilesystemDeleteWorkspaceResponse.fromWire(wire) }
+
+  def filesystemFilesystemDiff(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemDiffRequest): RustTypedResponsesScala.FilesystemFilesystemDiffResponse = { val wire = stub.diff(request.toWire); RustTypedResponsesScala.FilesystemFilesystemDiffResponse.fromWire(wire) }
+
+  def filesystemFilesystemExport(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemExportRequest): java.util.Iterator[RustTypedResponsesScala.FilesystemFilesystemExportResponse] = { val wire = stub.export(request.toWire); RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.FilesystemFilesystemExportResponse.fromWire) }
+
+  def filesystemFilesystemForkWorkspace(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemForkWorkspaceRequest): RustTypedResponsesScala.FilesystemFilesystemForkWorkspaceResponse = { val wire = stub.forkWorkspace(request.toWire); RustTypedResponsesScala.FilesystemFilesystemForkWorkspaceResponse.fromWire(wire) }
+
+  def filesystemFilesystemGetGeneration(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemGetGenerationRequest): RustTypedResponsesScala.FilesystemFilesystemGetGenerationResponse = { val wire = stub.getGeneration(request.toWire); RustTypedResponsesScala.FilesystemFilesystemGetGenerationResponse.fromWire(wire) }
+
+  def filesystemFilesystemGetHead(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemGetHeadRequest): RustTypedResponsesScala.FilesystemFilesystemGetHeadResponse = { val wire = stub.getHead(request.toWire); RustTypedResponsesScala.FilesystemFilesystemGetHeadResponse.fromWire(wire) }
+
+  def filesystemFilesystemGetSourceState(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemGetSourceStateRequest): RustTypedResponsesScala.FilesystemFilesystemGetSourceStateResponse = { val wire = stub.getSourceState(request.toWire); RustTypedResponsesScala.FilesystemFilesystemGetSourceStateResponse.fromWire(wire) }
+
+  def filesystemFilesystemHandshake(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemHandshakeRequest): RustTypedResponsesScala.FilesystemFilesystemHandshakeResponse = { val wire = stub.handshake(request.toWire); RustTypedResponsesScala.FilesystemFilesystemHandshakeResponse.fromWire(wire) }
+
+  def filesystemFilesystemIssueMountCredential(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemIssueMountCredentialRequest): RustTypedResponsesScala.FilesystemFilesystemIssueMountCredentialResponse = { val wire = stub.issueMountCredential(request.toWire); RustTypedResponsesScala.FilesystemFilesystemIssueMountCredentialResponse.fromWire(wire) }
+
+  def filesystemFilesystemIssueS3Credential(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemIssueS3CredentialRequest): RustTypedResponsesScala.FilesystemFilesystemIssueS3CredentialResponse = { val wire = stub.issueS3Credential(request.toWire); RustTypedResponsesScala.FilesystemFilesystemIssueS3CredentialResponse.fromWire(wire) }
+
+  def filesystemFilesystemListDirectory(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemListDirectoryRequest): RustTypedResponsesScala.FilesystemFilesystemListDirectoryResponse = { val wire = stub.listDirectory(request.toWire); RustTypedResponsesScala.FilesystemFilesystemListDirectoryResponse.fromWire(wire) }
+
+  def filesystemFilesystemObserve(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemObserveRequest): RustTypedResponsesScala.FilesystemFilesystemObserveResponse = { val wire = stub.observe(request.toWire); RustTypedResponsesScala.FilesystemFilesystemObserveResponse.fromWire(wire) }
+
+  def filesystemFilesystemOpenWorkspace(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemOpenWorkspaceRequest): RustTypedResponsesScala.FilesystemFilesystemOpenWorkspaceResponse = { val wire = stub.openWorkspace(request.toWire); RustTypedResponsesScala.FilesystemFilesystemOpenWorkspaceResponse.fromWire(wire) }
+
+  def filesystemFilesystemPin(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemPinRequest): RustTypedResponsesScala.FilesystemFilesystemPinResponse = { val wire = stub.pin(request.toWire); RustTypedResponsesScala.FilesystemFilesystemPinResponse.fromWire(wire) }
+
+  def filesystemFilesystemPlanExtents(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemPlanExtentsRequest): RustTypedResponsesScala.FilesystemFilesystemPlanExtentsResponse = { val wire = stub.planExtents(request.toWire); RustTypedResponsesScala.FilesystemFilesystemPlanExtentsResponse.fromWire(wire) }
+
+  def filesystemFilesystemPlanJoin(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemPlanJoinRequest): RustTypedResponsesScala.FilesystemFilesystemPlanJoinResponse = { val wire = stub.planJoin(request.toWire); RustTypedResponsesScala.FilesystemFilesystemPlanJoinResponse.fromWire(wire) }
+
+  def filesystemFilesystemRead(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemReadRequest): RustTypedResponsesScala.FilesystemFilesystemReadResponse = { val wire = stub.read(request.toWire); RustTypedResponsesScala.FilesystemFilesystemReadResponse.fromWire(wire) }
+
+  def filesystemFilesystemReadLink(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemReadLinkRequest): RustTypedResponsesScala.FilesystemFilesystemReadLinkResponse = { val wire = stub.readLink(request.toWire); RustTypedResponsesScala.FilesystemFilesystemReadLinkResponse.fromWire(wire) }
+
+  def filesystemFilesystemRebase(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemRebaseRequest): RustTypedResponsesScala.FilesystemFilesystemRebaseResponse = { val wire = stub.rebase(request.toWire); RustTypedResponsesScala.FilesystemFilesystemRebaseResponse.fromWire(wire) }
+
+  def filesystemFilesystemRebaseTransaction(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemRebaseTransactionRequest): RustTypedResponsesScala.FilesystemFilesystemRebaseTransactionResponse = { val wire = stub.rebaseTransaction(request.toWire); RustTypedResponsesScala.FilesystemFilesystemRebaseTransactionResponse.fromWire(wire) }
+
+  def filesystemFilesystemReconcileSource(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemReconcileSourceRequest): RustTypedResponsesScala.FilesystemFilesystemReconcileSourceResponse = { val wire = stub.reconcileSource(request.toWire); RustTypedResponsesScala.FilesystemFilesystemReconcileSourceResponse.fromWire(wire) }
+
+  def filesystemFilesystemRescanSource(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemRescanSourceRequest): RustTypedResponsesScala.FilesystemFilesystemRescanSourceResponse = { val wire = stub.rescanSource(request.toWire); RustTypedResponsesScala.FilesystemFilesystemRescanSourceResponse.fromWire(wire) }
+
+  def filesystemFilesystemSealSource(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemSealSourceRequest): RustTypedResponsesScala.FilesystemFilesystemSealSourceResponse = { val wire = stub.sealSource(request.toWire); RustTypedResponsesScala.FilesystemFilesystemSealSourceResponse.fromWire(wire) }
+
+  def filesystemFilesystemStat(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsScala.FilesystemFilesystemStatRequest): RustTypedResponsesScala.FilesystemFilesystemStatResponse = { val wire = stub.stat(request.toWire); RustTypedResponsesScala.FilesystemFilesystemStatResponse.fromWire(wire) }
+
+  def harnessHarnessCancel(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsScala.HarnessHarnessCancelRequest): RustTypedResponsesScala.HarnessHarnessCancelResponse = { val wire = stub.cancel(request.toWire); RustTypedResponsesScala.HarnessHarnessCancelResponse.fromWire(wire) }
+
+  def harnessHarnessHandshake(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsScala.HarnessHarnessHandshakeRequest): RustTypedResponsesScala.HarnessHarnessHandshakeResponse = { val wire = stub.handshake(request.toWire); RustTypedResponsesScala.HarnessHarnessHandshakeResponse.fromWire(wire) }
+
+  def harnessHarnessObserve(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsScala.HarnessHarnessObserveRequest): RustTypedResponsesScala.HarnessHarnessObserveResponse = { val wire = stub.observe(request.toWire); RustTypedResponsesScala.HarnessHarnessObserveResponse.fromWire(wire) }
+
+  def harnessHarnessReplay(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsScala.HarnessHarnessReplayRequest): java.util.Iterator[RustTypedResponsesScala.HarnessHarnessReplayResponse] = { val wire = stub.replay(request.toWire); RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.HarnessHarnessReplayResponse.fromWire) }
+
+  def harnessHarnessSubmit(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsScala.HarnessHarnessSubmitRequest): RustTypedResponsesScala.HarnessHarnessSubmitResponse = { val wire = stub.submit(request.toWire); RustTypedResponsesScala.HarnessHarnessSubmitResponse.fromWire(wire) }
+
+  def machinesMachinesCancel(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesCancelRequest): RustTypedResponsesScala.MachinesMachinesCancelResponse = { val wire = stub.cancel(request.toWire); RustTypedResponsesScala.MachinesMachinesCancelResponse.fromWire(wire) }
+
+  def machinesMachinesCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesCheckpointRequest): RustTypedResponsesScala.MachinesMachinesCheckpointResponse = { val wire = stub.checkpoint(request.toWire); RustTypedResponsesScala.MachinesMachinesCheckpointResponse.fromWire(wire) }
+
+  def machinesMachinesCreate(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesCreateRequest): RustTypedResponsesScala.MachinesMachinesCreateResponse = { val wire = stub.create(request.toWire); RustTypedResponsesScala.MachinesMachinesCreateResponse.fromWire(wire) }
+
+  def machinesMachinesDestroyCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesDestroyCheckpointRequest): RustTypedResponsesScala.MachinesMachinesDestroyCheckpointResponse = { val wire = stub.destroyCheckpoint(request.toWire); RustTypedResponsesScala.MachinesMachinesDestroyCheckpointResponse.fromWire(wire) }
+
+  def machinesMachinesDestroyMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesDestroyMachineRequest): RustTypedResponsesScala.MachinesMachinesDestroyMachineResponse = { val wire = stub.destroyMachine(request.toWire); RustTypedResponsesScala.MachinesMachinesDestroyMachineResponse.fromWire(wire) }
+
+  def machinesMachinesEvents(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesEventsRequest): RustTypedResponsesScala.MachinesMachinesEventsResponse = { val wire = stub.events(request.toWire); RustTypedResponsesScala.MachinesMachinesEventsResponse.fromWire(wire) }
+
+  def machinesMachinesFork(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesForkRequest): RustTypedResponsesScala.MachinesMachinesForkResponse = { val wire = stub.fork(request.toWire); RustTypedResponsesScala.MachinesMachinesForkResponse.fromWire(wire) }
+
+  def machinesMachinesForkMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesForkMachineRequest): RustTypedResponsesScala.MachinesMachinesForkMachineResponse = { val wire = stub.forkMachine(request.toWire); RustTypedResponsesScala.MachinesMachinesForkMachineResponse.fromWire(wire) }
+
+  def machinesMachinesInspectCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesInspectCheckpointRequest): RustTypedResponsesScala.MachinesMachinesInspectCheckpointResponse = { val wire = stub.inspectCheckpoint(request.toWire); RustTypedResponsesScala.MachinesMachinesInspectCheckpointResponse.fromWire(wire) }
+
+  def machinesMachinesInspectMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesInspectMachineRequest): RustTypedResponsesScala.MachinesMachinesInspectMachineResponse = { val wire = stub.inspectMachine(request.toWire); RustTypedResponsesScala.MachinesMachinesInspectMachineResponse.fromWire(wire) }
+
+  def machinesMachinesInspectOperation(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesInspectOperationRequest): RustTypedResponsesScala.MachinesMachinesInspectOperationResponse = { val wire = stub.inspectOperation(request.toWire); RustTypedResponsesScala.MachinesMachinesInspectOperationResponse.fromWire(wire) }
+
+  def machinesMachinesListMachines(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesListMachinesRequest): RustTypedResponsesScala.MachinesMachinesListMachinesResponse = { val wire = stub.listMachines(request.toWire); RustTypedResponsesScala.MachinesMachinesListMachinesResponse.fromWire(wire) }
+
+  def machinesMachinesQualifyImage(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesQualifyImageRequest): RustTypedResponsesScala.MachinesMachinesQualifyImageResponse = { val wire = stub.qualifyImage(request.toWire); RustTypedResponsesScala.MachinesMachinesQualifyImageResponse.fromWire(wire) }
+
+  def machinesMachinesRecover(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesRecoverRequest): RustTypedResponsesScala.MachinesMachinesRecoverResponse = { val wire = stub.recover(request.toWire); RustTypedResponsesScala.MachinesMachinesRecoverResponse.fromWire(wire) }
+
+  def machinesMachinesSetSuspensionPolicy(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesSetSuspensionPolicyRequest): RustTypedResponsesScala.MachinesMachinesSetSuspensionPolicyResponse = { val wire = stub.setSuspensionPolicy(request.toWire); RustTypedResponsesScala.MachinesMachinesSetSuspensionPolicyResponse.fromWire(wire) }
+
+  def machinesMachinesSuspend(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesSuspendRequest): RustTypedResponsesScala.MachinesMachinesSuspendResponse = { val wire = stub.suspend(request.toWire); RustTypedResponsesScala.MachinesMachinesSuspendResponse.fromWire(wire) }
+
+  def machinesMachinesUsage(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesUsageRequest): RustTypedResponsesScala.MachinesMachinesUsageResponse = { val wire = stub.usage(request.toWire); RustTypedResponsesScala.MachinesMachinesUsageResponse.fromWire(wire) }
+
+  def machinesMachinesWake(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesWakeRequest): RustTypedResponsesScala.MachinesMachinesWakeResponse = { val wire = stub.wake(request.toWire); RustTypedResponsesScala.MachinesMachinesWakeResponse.fromWire(wire) }
+
+  def machinesMachinesWatchOperation(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsScala.MachinesMachinesWatchOperationRequest): java.util.Iterator[RustTypedResponsesScala.MachinesMachinesWatchOperationResponse] = { val wire = stub.watchOperation(request.toWire); RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.MachinesMachinesWatchOperationResponse.fromWire) }
+
+  def objectsBucketsCreateBucket(stub: acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub, request: RustTypedRequestsScala.ObjectsBucketsCreateBucketRequest): RustTypedResponsesScala.ObjectsBucketsCreateBucketResponse = { val wire = stub.createBucket(request.toWire); RustTypedResponsesScala.ObjectsBucketsCreateBucketResponse.fromWire(wire) }
+
+  def objectsBucketsDeleteBucket(stub: acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub, request: RustTypedRequestsScala.ObjectsBucketsDeleteBucketRequest): RustTypedResponsesScala.ObjectsBucketsDeleteBucketResponse = { val wire = stub.deleteBucket(request.toWire); RustTypedResponsesScala.ObjectsBucketsDeleteBucketResponse.fromWire(wire) }
+
+  def objectsBucketsHeadBucket(stub: acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub, request: RustTypedRequestsScala.ObjectsBucketsHeadBucketRequest): RustTypedResponsesScala.ObjectsBucketsHeadBucketResponse = { val wire = stub.headBucket(request.toWire); RustTypedResponsesScala.ObjectsBucketsHeadBucketResponse.fromWire(wire) }
+
+  def objectsMultipartAbortMultipart(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, request: RustTypedRequestsScala.ObjectsMultipartAbortMultipartRequest): RustTypedResponsesScala.ObjectsMultipartAbortMultipartResponse = { val wire = stub.abortMultipart(request.toWire); RustTypedResponsesScala.ObjectsMultipartAbortMultipartResponse.fromWire(wire) }
+
+  def objectsMultipartCompleteMultipart(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, request: RustTypedRequestsScala.ObjectsMultipartCompleteMultipartRequest): RustTypedResponsesScala.ObjectsMultipartCompleteMultipartResponse = { val wire = stub.completeMultipart(request.toWire); RustTypedResponsesScala.ObjectsMultipartCompleteMultipartResponse.fromWire(wire) }
+
+  def objectsMultipartCreateMultipart(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, request: RustTypedRequestsScala.ObjectsMultipartCreateMultipartRequest): RustTypedResponsesScala.ObjectsMultipartCreateMultipartResponse = { val wire = stub.createMultipart(request.toWire); RustTypedResponsesScala.ObjectsMultipartCreateMultipartResponse.fromWire(wire) }
+
+  def objectsMultipartListParts(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, request: RustTypedRequestsScala.ObjectsMultipartListPartsRequest): RustTypedResponsesScala.ObjectsMultipartListPartsResponse = { val wire = stub.listParts(request.toWire); RustTypedResponsesScala.ObjectsMultipartListPartsResponse.fromWire(wire) }
+
+  def objectsObjectsDeleteObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, request: RustTypedRequestsScala.ObjectsObjectsDeleteObjectRequest): RustTypedResponsesScala.ObjectsObjectsDeleteObjectResponse = { val wire = stub.deleteObject(request.toWire); RustTypedResponsesScala.ObjectsObjectsDeleteObjectResponse.fromWire(wire) }
+
+  def objectsObjectsGetObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, request: RustTypedRequestsScala.ObjectsObjectsGetObjectRequest): java.util.Iterator[RustTypedResponsesScala.ObjectsObjectsGetObjectResponse] = { val wire = stub.getObject(request.toWire); RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.ObjectsObjectsGetObjectResponse.fromWire) }
+
+  def objectsObjectsHeadObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, request: RustTypedRequestsScala.ObjectsObjectsHeadObjectRequest): RustTypedResponsesScala.ObjectsObjectsHeadObjectResponse = { val wire = stub.headObject(request.toWire); RustTypedResponsesScala.ObjectsObjectsHeadObjectResponse.fromWire(wire) }
+
+  def objectsObjectsListObjects(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, request: RustTypedRequestsScala.ObjectsObjectsListObjectsRequest): RustTypedResponsesScala.ObjectsObjectsListObjectsResponse = { val wire = stub.listObjects(request.toWire); RustTypedResponsesScala.ObjectsObjectsListObjectsResponse.fromWire(wire) }
+
+  def streamStreamAppend(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamAppendRequest): RustTypedResponsesScala.StreamStreamAppendResponse = { val wire = stub.append(request.toWire); RustTypedResponsesScala.StreamStreamAppendResponse.fromWire(wire) }
+
+  def streamStreamChildren(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamChildrenRequest): java.util.Iterator[RustTypedResponsesScala.StreamStreamChildrenResponse] = { val wire = stub.children(request.toWire); RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.StreamStreamChildrenResponse.fromWire) }
+
+  def streamStreamChildrenPage(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamChildrenPageRequest): RustTypedResponsesScala.StreamStreamChildrenPageResponse = { val wire = stub.childrenPage(request.toWire); RustTypedResponsesScala.StreamStreamChildrenPageResponse.fromWire(wire) }
+
+  def streamStreamCommit(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamCommitRequest): RustTypedResponsesScala.StreamStreamCommitResponse = { val wire = stub.commit(request.toWire); RustTypedResponsesScala.StreamStreamCommitResponse.fromWire(wire) }
+
+  def streamStreamFollow(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamFollowRequest): java.util.Iterator[RustTypedResponsesScala.StreamStreamFollowResponse] = { val wire = stub.follow(request.toWire); RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.StreamStreamFollowResponse.fromWire) }
+
+  def streamStreamFork(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamForkRequest): RustTypedResponsesScala.StreamStreamForkResponse = { val wire = stub.fork(request.toWire); RustTypedResponsesScala.StreamStreamForkResponse.fromWire(wire) }
+
+  def streamStreamInspectIdempotency(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamInspectIdempotencyRequest): RustTypedResponsesScala.StreamStreamInspectIdempotencyResponse = { val wire = stub.inspectIdempotency(request.toWire); RustTypedResponsesScala.StreamStreamInspectIdempotencyResponse.fromWire(wire) }
+
+  def streamStreamRead(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamReadRequest): java.util.Iterator[RustTypedResponsesScala.StreamStreamReadResponse] = { val wire = stub.read(request.toWire); RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.StreamStreamReadResponse.fromWire) }
+
+  def streamStreamReadCommit(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamReadCommitRequest): RustTypedResponsesScala.StreamStreamReadCommitResponse = { val wire = stub.readCommit(request.toWire); RustTypedResponsesScala.StreamStreamReadCommitResponse.fromWire(wire) }
+
+  def streamStreamTail(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsScala.StreamStreamTailRequest): RustTypedResponsesScala.StreamStreamTailResponse = { val wire = stub.tail(request.toWire); RustTypedResponsesScala.StreamStreamTailResponse.fromWire(wire) }
+
+  def workersWorkersCancelJob(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsScala.WorkersWorkersCancelJobRequest): RustTypedResponsesScala.WorkersWorkersCancelJobResponse = { val wire = stub.cancelJob(request.toWire); RustTypedResponsesScala.WorkersWorkersCancelJobResponse.fromWire(wire) }
+
+  def workersWorkersInspectJob(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsScala.WorkersWorkersInspectJobRequest): RustTypedResponsesScala.WorkersWorkersInspectJobResponse = { val wire = stub.inspectJob(request.toWire); RustTypedResponsesScala.WorkersWorkersInspectJobResponse.fromWire(wire) }
+
+  def workersWorkersInvokeDeployment(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsScala.WorkersWorkersInvokeDeploymentRequest): RustTypedResponsesScala.WorkersWorkersInvokeDeploymentResponse = { val wire = stub.invokeDeployment(request.toWire); RustTypedResponsesScala.WorkersWorkersInvokeDeploymentResponse.fromWire(wire) }
+
+  def workersWorkersInvokeVersion(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsScala.WorkersWorkersInvokeVersionRequest): RustTypedResponsesScala.WorkersWorkersInvokeVersionResponse = { val wire = stub.invokeVersion(request.toWire); RustTypedResponsesScala.WorkersWorkersInvokeVersionResponse.fromWire(wire) }
+
+  def workersWorkersPublishVersion(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsScala.WorkersWorkersPublishVersionRequest): RustTypedResponsesScala.WorkersWorkersPublishVersionResponse = { val wire = stub.publishVersion(request.toWire); RustTypedResponsesScala.WorkersWorkersPublishVersionResponse.fromWire(wire) }
+
+  def workersWorkersSelectDeployment(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsScala.WorkersWorkersSelectDeploymentRequest): RustTypedResponsesScala.WorkersWorkersSelectDeploymentResponse = { val wire = stub.selectDeployment(request.toWire); RustTypedResponsesScala.WorkersWorkersSelectDeploymentResponse.fromWire(wire) }
+
+  def workersWorkersSubmitJob(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsScala.WorkersWorkersSubmitJobRequest): RustTypedResponsesScala.WorkersWorkersSubmitJobResponse = { val wire = stub.submitJob(request.toWire); RustTypedResponsesScala.WorkersWorkersSubmitJobResponse.fromWire(wire) }
+
+  def inferenceContextsCreate(stub: inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub, request: RustTypedRequestsScala.InferenceContextsCreateRequest): RustTypedResponsesScala.InferenceContextsCreateResponse = { val wire = stub.create(request.toWire); RustTypedResponsesScala.InferenceContextsCreateResponse.fromWire(wire) }
+
+  def inferenceContextsInspect(stub: inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub, request: RustTypedRequestsScala.InferenceContextsInspectRequest): RustTypedResponsesScala.InferenceContextsInspectResponse = { val wire = stub.inspect(request.toWire); RustTypedResponsesScala.InferenceContextsInspectResponse.fromWire(wire) }
+
+  def inferenceContextsMutate(stub: inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub, request: RustTypedRequestsScala.InferenceContextsMutateRequest): RustTypedResponsesScala.InferenceContextsMutateResponse = { val wire = stub.mutate(request.toWire); RustTypedResponsesScala.InferenceContextsMutateResponse.fromWire(wire) }
+
+  def inferenceEvaluationsCreate(stub: inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub, request: RustTypedRequestsScala.InferenceEvaluationsCreateRequest): RustTypedResponsesScala.InferenceEvaluationsCreateResponse = { val wire = stub.create(request.toWire); RustTypedResponsesScala.InferenceEvaluationsCreateResponse.fromWire(wire) }
+
+  def inferenceEvaluationsInspect(stub: inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub, request: RustTypedRequestsScala.InferenceEvaluationsInspectRequest): RustTypedResponsesScala.InferenceEvaluationsInspectResponse = { val wire = stub.inspect(request.toWire); RustTypedResponsesScala.InferenceEvaluationsInspectResponse.fromWire(wire) }
+
+  def inferenceModelsList(stub: inference.customer.v1.ModelsServiceGrpc.ModelsServiceBlockingStub, request: RustTypedRequestsScala.InferenceModelsListRequest): RustTypedResponsesScala.InferenceModelsListResponse = { val wire = stub.list(request.toWire); RustTypedResponsesScala.InferenceModelsListResponse.fromWire(wire) }
+
+  def inferenceRunsCancel(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, request: RustTypedRequestsScala.InferenceRunsCancelRequest): RustTypedResponsesScala.InferenceRunsCancelResponse = { val wire = stub.cancel(request.toWire); RustTypedResponsesScala.InferenceRunsCancelResponse.fromWire(wire) }
+
+  def inferenceRunsGenerate(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, request: RustTypedRequestsScala.InferenceRunsGenerateRequest): RustTypedResponsesScala.InferenceRunsGenerateResponse = { val wire = stub.generate(request.toWire); RustTypedResponsesScala.InferenceRunsGenerateResponse.fromWire(wire) }
+
+  def inferenceRunsInspect(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, request: RustTypedRequestsScala.InferenceRunsInspectRequest): RustTypedResponsesScala.InferenceRunsInspectResponse = { val wire = stub.inspect(request.toWire); RustTypedResponsesScala.InferenceRunsInspectResponse.fromWire(wire) }
+
+  def inferenceRunsWatch(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, request: RustTypedRequestsScala.InferenceRunsWatchRequest): java.util.Iterator[RustTypedResponsesScala.InferenceRunsWatchResponse] = { val wire = stub.watch(request.toWire); RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.InferenceRunsWatchResponse.fromWire) }
+
+  def inferenceWarmContextsInspect(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, request: RustTypedRequestsScala.InferenceWarmContextsInspectRequest): RustTypedResponsesScala.InferenceWarmContextsInspectResponse = { val wire = stub.inspect(request.toWire); RustTypedResponsesScala.InferenceWarmContextsInspectResponse.fromWire(wire) }
+
+  def inferenceWarmContextsRelease(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, request: RustTypedRequestsScala.InferenceWarmContextsReleaseRequest): RustTypedResponsesScala.InferenceWarmContextsReleaseResponse = { val wire = stub.release(request.toWire); RustTypedResponsesScala.InferenceWarmContextsReleaseResponse.fromWire(wire) }
+
+  def inferenceWarmContextsRenew(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, request: RustTypedRequestsScala.InferenceWarmContextsRenewRequest): RustTypedResponsesScala.InferenceWarmContextsRenewResponse = { val wire = stub.renew(request.toWire); RustTypedResponsesScala.InferenceWarmContextsRenewResponse.fromWire(wire) }
+
+  def inferenceWarmContextsRetain(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, request: RustTypedRequestsScala.InferenceWarmContextsRetainRequest): RustTypedResponsesScala.InferenceWarmContextsRetainResponse = { val wire = stub.retain(request.toWire); RustTypedResponsesScala.InferenceWarmContextsRetainResponse.fromWire(wire) }
 
 }

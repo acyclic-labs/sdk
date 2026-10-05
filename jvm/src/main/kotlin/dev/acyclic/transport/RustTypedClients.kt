@@ -19,6 +19,8 @@ object RustTypedClientsKotlin {
 
   fun machinesCreateMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, image: RustSemanticTypesKotlin.Image, idempotency_key: RustSemanticTypesKotlin.IdempotencyKey): RustTypedResponsesKotlin.MachinesCreateMachineResponse = RustTypedResponsesKotlin.MachinesCreateMachineResponse.fromWire(stub.create(RustTypedRequestsKotlin.machinesCreateMachine(image, idempotency_key)))
 
+  fun machinesEvents(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, event_page_limit: RustSemanticTypesKotlin.MachineEventPageLimit): RustTypedResponsesKotlin.MachinesEventsResponse = RustTypedResponsesKotlin.MachinesEventsResponse.fromWire(stub.events(RustTypedRequestsKotlin.machinesEvents(event_page_limit)))
+
   fun machinesInspectCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, checkpoint_id: RustSemanticTypesKotlin.CheckpointId): RustTypedResponsesKotlin.MachinesInspectCheckpointResponse = RustTypedResponsesKotlin.MachinesInspectCheckpointResponse.fromWire(stub.inspectCheckpoint(RustTypedRequestsKotlin.machinesInspectCheckpoint(checkpoint_id)))
 
   fun machinesInspectMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, machine_id: RustSemanticTypesKotlin.MachineId): RustTypedResponsesKotlin.MachinesInspectMachineResponse = RustTypedResponsesKotlin.MachinesInspectMachineResponse.fromWire(stub.inspectMachine(RustTypedRequestsKotlin.machinesInspectMachine(machine_id)))
@@ -26,6 +28,8 @@ object RustTypedClientsKotlin {
   fun machinesListMachines(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, page_limit: RustSemanticTypesKotlin.MachinePageLimit): RustTypedResponsesKotlin.MachinesListMachinesResponse = RustTypedResponsesKotlin.MachinesListMachinesResponse.fromWire(stub.listMachines(RustTypedRequestsKotlin.machinesListMachines(page_limit)))
 
   fun machinesOperation(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, operation_id: RustSemanticTypesKotlin.OperationId): RustTypedResponsesKotlin.MachinesOperationResponse = RustTypedResponsesKotlin.MachinesOperationResponse.fromWire(stub.inspectOperation(RustTypedRequestsKotlin.machinesOperation(operation_id)))
+
+  fun machinesQualifyImage(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, image: RustSemanticTypesKotlin.Image): RustTypedResponsesKotlin.MachinesQualifyImageResponse = RustTypedResponsesKotlin.MachinesQualifyImageResponse.fromWire(stub.qualifyImage(RustTypedRequestsKotlin.machinesQualifyImage(image)))
 
   fun objectsGetObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, key: RustSemanticTypesKotlin.ObjectKey): kotlin.collections.Iterator<RustTypedResponsesKotlin.ObjectsGetObjectResponse> = RustTypedResponsesKotlin.mapIterator(stub.getObject(RustTypedRequestsKotlin.objectsGetObject(key))) { RustTypedResponsesKotlin.ObjectsGetObjectResponse.fromWire(it) }
 
@@ -46,5 +50,211 @@ object RustTypedClientsKotlin {
   fun workersInvokeVersion(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, method: RustSemanticTypesKotlin.MethodName): RustTypedResponsesKotlin.WorkersInvokeVersionResponse = RustTypedResponsesKotlin.WorkersInvokeVersionResponse.fromWire(stub.invokeVersion(RustTypedRequestsKotlin.workersInvokeVersion(method)))
 
   fun workersSelectDeployment(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, alias: RustSemanticTypesKotlin.VersionAlias, version_sha256: RustSemanticTypesKotlin.Sha256Digest, idempotency_key: RustSemanticTypesKotlin.IdempotencyKeyText): RustTypedResponsesKotlin.WorkersSelectDeploymentResponse = RustTypedResponsesKotlin.WorkersSelectDeploymentResponse.fromWire(stub.selectDeployment(RustTypedRequestsKotlin.workersSelectDeployment(alias, version_sha256, idempotency_key)))
+
+  fun actorsActorsAddSubscription(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsKotlin.ActorsActorsAddSubscriptionRequest): RustTypedResponsesKotlin.ActorsActorsAddSubscriptionResponse { val wire = stub.addSubscription(request.toWire()); return RustTypedResponsesKotlin.ActorsActorsAddSubscriptionResponse.fromWire(wire) }
+
+  fun actorsActorsCheckpointActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsKotlin.ActorsActorsCheckpointActorRequest): RustTypedResponsesKotlin.ActorsActorsCheckpointActorResponse { val wire = stub.checkpointActor(request.toWire()); return RustTypedResponsesKotlin.ActorsActorsCheckpointActorResponse.fromWire(wire) }
+
+  fun actorsActorsCreateActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsKotlin.ActorsActorsCreateActorRequest): RustTypedResponsesKotlin.ActorsActorsCreateActorResponse { val wire = stub.createActor(request.toWire()); return RustTypedResponsesKotlin.ActorsActorsCreateActorResponse.fromWire(wire) }
+
+  fun actorsActorsInspectActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsKotlin.ActorsActorsInspectActorRequest): RustTypedResponsesKotlin.ActorsActorsInspectActorResponse { val wire = stub.inspectActor(request.toWire()); return RustTypedResponsesKotlin.ActorsActorsInspectActorResponse.fromWire(wire) }
+
+  fun actorsActorsInvokeActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsKotlin.ActorsActorsInvokeActorRequest): RustTypedResponsesKotlin.ActorsActorsInvokeActorResponse { val wire = stub.invokeActor(request.toWire()); return RustTypedResponsesKotlin.ActorsActorsInvokeActorResponse.fromWire(wire) }
+
+  fun actorsActorsRemoveSubscription(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsKotlin.ActorsActorsRemoveSubscriptionRequest): RustTypedResponsesKotlin.ActorsActorsRemoveSubscriptionResponse { val wire = stub.removeSubscription(request.toWire()); return RustTypedResponsesKotlin.ActorsActorsRemoveSubscriptionResponse.fromWire(wire) }
+
+  fun actorsActorsResumeSubscription(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsKotlin.ActorsActorsResumeSubscriptionRequest): RustTypedResponsesKotlin.ActorsActorsResumeSubscriptionResponse { val wire = stub.resumeSubscription(request.toWire()); return RustTypedResponsesKotlin.ActorsActorsResumeSubscriptionResponse.fromWire(wire) }
+
+  fun actorsActorsUpdateActor(stub: acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub, request: RustTypedRequestsKotlin.ActorsActorsUpdateActorRequest): RustTypedResponsesKotlin.ActorsActorsUpdateActorResponse { val wire = stub.updateActor(request.toWire()); return RustTypedResponsesKotlin.ActorsActorsUpdateActorResponse.fromWire(wire) }
+
+  fun filesystemFilesystemApplyJoin(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemApplyJoinRequest): RustTypedResponsesKotlin.FilesystemFilesystemApplyJoinResponse { val wire = stub.applyJoin(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemApplyJoinResponse.fromWire(wire) }
+
+  fun filesystemFilesystemApplyTransaction(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemApplyTransactionRequest): RustTypedResponsesKotlin.FilesystemFilesystemApplyTransactionResponse { val wire = stub.applyTransaction(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemApplyTransactionResponse.fromWire(wire) }
+
+  fun filesystemFilesystemCancel(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemCancelRequest): RustTypedResponsesKotlin.FilesystemFilesystemCancelResponse { val wire = stub.cancel(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemCancelResponse.fromWire(wire) }
+
+  fun filesystemFilesystemCheckpoint(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemCheckpointRequest): RustTypedResponsesKotlin.FilesystemFilesystemCheckpointResponse { val wire = stub.checkpoint(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemCheckpointResponse.fromWire(wire) }
+
+  fun filesystemFilesystemCreateWorkspace(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemCreateWorkspaceRequest): RustTypedResponsesKotlin.FilesystemFilesystemCreateWorkspaceResponse { val wire = stub.createWorkspace(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemCreateWorkspaceResponse.fromWire(wire) }
+
+  fun filesystemFilesystemDeleteWorkspace(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemDeleteWorkspaceRequest): RustTypedResponsesKotlin.FilesystemFilesystemDeleteWorkspaceResponse { val wire = stub.deleteWorkspace(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemDeleteWorkspaceResponse.fromWire(wire) }
+
+  fun filesystemFilesystemDiff(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemDiffRequest): RustTypedResponsesKotlin.FilesystemFilesystemDiffResponse { val wire = stub.diff(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemDiffResponse.fromWire(wire) }
+
+  fun filesystemFilesystemExport(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemExportRequest): kotlin.collections.Iterator<RustTypedResponsesKotlin.FilesystemFilesystemExportResponse> { val wire = stub.export(request.toWire()); return RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.FilesystemFilesystemExportResponse.fromWire(it) } }
+
+  fun filesystemFilesystemForkWorkspace(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemForkWorkspaceRequest): RustTypedResponsesKotlin.FilesystemFilesystemForkWorkspaceResponse { val wire = stub.forkWorkspace(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemForkWorkspaceResponse.fromWire(wire) }
+
+  fun filesystemFilesystemGetGeneration(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemGetGenerationRequest): RustTypedResponsesKotlin.FilesystemFilesystemGetGenerationResponse { val wire = stub.getGeneration(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemGetGenerationResponse.fromWire(wire) }
+
+  fun filesystemFilesystemGetHead(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemGetHeadRequest): RustTypedResponsesKotlin.FilesystemFilesystemGetHeadResponse { val wire = stub.getHead(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemGetHeadResponse.fromWire(wire) }
+
+  fun filesystemFilesystemGetSourceState(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemGetSourceStateRequest): RustTypedResponsesKotlin.FilesystemFilesystemGetSourceStateResponse { val wire = stub.getSourceState(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemGetSourceStateResponse.fromWire(wire) }
+
+  fun filesystemFilesystemHandshake(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemHandshakeRequest): RustTypedResponsesKotlin.FilesystemFilesystemHandshakeResponse { val wire = stub.handshake(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemHandshakeResponse.fromWire(wire) }
+
+  fun filesystemFilesystemIssueMountCredential(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemIssueMountCredentialRequest): RustTypedResponsesKotlin.FilesystemFilesystemIssueMountCredentialResponse { val wire = stub.issueMountCredential(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemIssueMountCredentialResponse.fromWire(wire) }
+
+  fun filesystemFilesystemIssueS3Credential(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemIssueS3CredentialRequest): RustTypedResponsesKotlin.FilesystemFilesystemIssueS3CredentialResponse { val wire = stub.issueS3Credential(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemIssueS3CredentialResponse.fromWire(wire) }
+
+  fun filesystemFilesystemListDirectory(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemListDirectoryRequest): RustTypedResponsesKotlin.FilesystemFilesystemListDirectoryResponse { val wire = stub.listDirectory(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemListDirectoryResponse.fromWire(wire) }
+
+  fun filesystemFilesystemObserve(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemObserveRequest): RustTypedResponsesKotlin.FilesystemFilesystemObserveResponse { val wire = stub.observe(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemObserveResponse.fromWire(wire) }
+
+  fun filesystemFilesystemOpenWorkspace(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemOpenWorkspaceRequest): RustTypedResponsesKotlin.FilesystemFilesystemOpenWorkspaceResponse { val wire = stub.openWorkspace(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemOpenWorkspaceResponse.fromWire(wire) }
+
+  fun filesystemFilesystemPin(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemPinRequest): RustTypedResponsesKotlin.FilesystemFilesystemPinResponse { val wire = stub.pin(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemPinResponse.fromWire(wire) }
+
+  fun filesystemFilesystemPlanExtents(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemPlanExtentsRequest): RustTypedResponsesKotlin.FilesystemFilesystemPlanExtentsResponse { val wire = stub.planExtents(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemPlanExtentsResponse.fromWire(wire) }
+
+  fun filesystemFilesystemPlanJoin(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemPlanJoinRequest): RustTypedResponsesKotlin.FilesystemFilesystemPlanJoinResponse { val wire = stub.planJoin(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemPlanJoinResponse.fromWire(wire) }
+
+  fun filesystemFilesystemRead(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemReadRequest): RustTypedResponsesKotlin.FilesystemFilesystemReadResponse { val wire = stub.read(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemReadResponse.fromWire(wire) }
+
+  fun filesystemFilesystemReadLink(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemReadLinkRequest): RustTypedResponsesKotlin.FilesystemFilesystemReadLinkResponse { val wire = stub.readLink(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemReadLinkResponse.fromWire(wire) }
+
+  fun filesystemFilesystemRebase(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemRebaseRequest): RustTypedResponsesKotlin.FilesystemFilesystemRebaseResponse { val wire = stub.rebase(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemRebaseResponse.fromWire(wire) }
+
+  fun filesystemFilesystemRebaseTransaction(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemRebaseTransactionRequest): RustTypedResponsesKotlin.FilesystemFilesystemRebaseTransactionResponse { val wire = stub.rebaseTransaction(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemRebaseTransactionResponse.fromWire(wire) }
+
+  fun filesystemFilesystemReconcileSource(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemReconcileSourceRequest): RustTypedResponsesKotlin.FilesystemFilesystemReconcileSourceResponse { val wire = stub.reconcileSource(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemReconcileSourceResponse.fromWire(wire) }
+
+  fun filesystemFilesystemRescanSource(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemRescanSourceRequest): RustTypedResponsesKotlin.FilesystemFilesystemRescanSourceResponse { val wire = stub.rescanSource(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemRescanSourceResponse.fromWire(wire) }
+
+  fun filesystemFilesystemSealSource(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemSealSourceRequest): RustTypedResponsesKotlin.FilesystemFilesystemSealSourceResponse { val wire = stub.sealSource(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemSealSourceResponse.fromWire(wire) }
+
+  fun filesystemFilesystemStat(stub: acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub, request: RustTypedRequestsKotlin.FilesystemFilesystemStatRequest): RustTypedResponsesKotlin.FilesystemFilesystemStatResponse { val wire = stub.stat(request.toWire()); return RustTypedResponsesKotlin.FilesystemFilesystemStatResponse.fromWire(wire) }
+
+  fun harnessHarnessCancel(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsKotlin.HarnessHarnessCancelRequest): RustTypedResponsesKotlin.HarnessHarnessCancelResponse { val wire = stub.cancel(request.toWire()); return RustTypedResponsesKotlin.HarnessHarnessCancelResponse.fromWire(wire) }
+
+  fun harnessHarnessHandshake(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsKotlin.HarnessHarnessHandshakeRequest): RustTypedResponsesKotlin.HarnessHarnessHandshakeResponse { val wire = stub.handshake(request.toWire()); return RustTypedResponsesKotlin.HarnessHarnessHandshakeResponse.fromWire(wire) }
+
+  fun harnessHarnessObserve(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsKotlin.HarnessHarnessObserveRequest): RustTypedResponsesKotlin.HarnessHarnessObserveResponse { val wire = stub.observe(request.toWire()); return RustTypedResponsesKotlin.HarnessHarnessObserveResponse.fromWire(wire) }
+
+  fun harnessHarnessReplay(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsKotlin.HarnessHarnessReplayRequest): kotlin.collections.Iterator<RustTypedResponsesKotlin.HarnessHarnessReplayResponse> { val wire = stub.replay(request.toWire()); return RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.HarnessHarnessReplayResponse.fromWire(it) } }
+
+  fun harnessHarnessSubmit(stub: acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub, request: RustTypedRequestsKotlin.HarnessHarnessSubmitRequest): RustTypedResponsesKotlin.HarnessHarnessSubmitResponse { val wire = stub.submit(request.toWire()); return RustTypedResponsesKotlin.HarnessHarnessSubmitResponse.fromWire(wire) }
+
+  fun machinesMachinesCancel(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesCancelRequest): RustTypedResponsesKotlin.MachinesMachinesCancelResponse { val wire = stub.cancel(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesCancelResponse.fromWire(wire) }
+
+  fun machinesMachinesCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesCheckpointRequest): RustTypedResponsesKotlin.MachinesMachinesCheckpointResponse { val wire = stub.checkpoint(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesCheckpointResponse.fromWire(wire) }
+
+  fun machinesMachinesCreate(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesCreateRequest): RustTypedResponsesKotlin.MachinesMachinesCreateResponse { val wire = stub.create(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesCreateResponse.fromWire(wire) }
+
+  fun machinesMachinesDestroyCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesDestroyCheckpointRequest): RustTypedResponsesKotlin.MachinesMachinesDestroyCheckpointResponse { val wire = stub.destroyCheckpoint(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesDestroyCheckpointResponse.fromWire(wire) }
+
+  fun machinesMachinesDestroyMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesDestroyMachineRequest): RustTypedResponsesKotlin.MachinesMachinesDestroyMachineResponse { val wire = stub.destroyMachine(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesDestroyMachineResponse.fromWire(wire) }
+
+  fun machinesMachinesEvents(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesEventsRequest): RustTypedResponsesKotlin.MachinesMachinesEventsResponse { val wire = stub.events(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesEventsResponse.fromWire(wire) }
+
+  fun machinesMachinesFork(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesForkRequest): RustTypedResponsesKotlin.MachinesMachinesForkResponse { val wire = stub.fork(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesForkResponse.fromWire(wire) }
+
+  fun machinesMachinesForkMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesForkMachineRequest): RustTypedResponsesKotlin.MachinesMachinesForkMachineResponse { val wire = stub.forkMachine(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesForkMachineResponse.fromWire(wire) }
+
+  fun machinesMachinesInspectCheckpoint(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesInspectCheckpointRequest): RustTypedResponsesKotlin.MachinesMachinesInspectCheckpointResponse { val wire = stub.inspectCheckpoint(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesInspectCheckpointResponse.fromWire(wire) }
+
+  fun machinesMachinesInspectMachine(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesInspectMachineRequest): RustTypedResponsesKotlin.MachinesMachinesInspectMachineResponse { val wire = stub.inspectMachine(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesInspectMachineResponse.fromWire(wire) }
+
+  fun machinesMachinesInspectOperation(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesInspectOperationRequest): RustTypedResponsesKotlin.MachinesMachinesInspectOperationResponse { val wire = stub.inspectOperation(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesInspectOperationResponse.fromWire(wire) }
+
+  fun machinesMachinesListMachines(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesListMachinesRequest): RustTypedResponsesKotlin.MachinesMachinesListMachinesResponse { val wire = stub.listMachines(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesListMachinesResponse.fromWire(wire) }
+
+  fun machinesMachinesQualifyImage(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesQualifyImageRequest): RustTypedResponsesKotlin.MachinesMachinesQualifyImageResponse { val wire = stub.qualifyImage(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesQualifyImageResponse.fromWire(wire) }
+
+  fun machinesMachinesRecover(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesRecoverRequest): RustTypedResponsesKotlin.MachinesMachinesRecoverResponse { val wire = stub.recover(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesRecoverResponse.fromWire(wire) }
+
+  fun machinesMachinesSetSuspensionPolicy(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesSetSuspensionPolicyRequest): RustTypedResponsesKotlin.MachinesMachinesSetSuspensionPolicyResponse { val wire = stub.setSuspensionPolicy(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesSetSuspensionPolicyResponse.fromWire(wire) }
+
+  fun machinesMachinesSuspend(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesSuspendRequest): RustTypedResponsesKotlin.MachinesMachinesSuspendResponse { val wire = stub.suspend(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesSuspendResponse.fromWire(wire) }
+
+  fun machinesMachinesUsage(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesUsageRequest): RustTypedResponsesKotlin.MachinesMachinesUsageResponse { val wire = stub.usage(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesUsageResponse.fromWire(wire) }
+
+  fun machinesMachinesWake(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesWakeRequest): RustTypedResponsesKotlin.MachinesMachinesWakeResponse { val wire = stub.wake(request.toWire()); return RustTypedResponsesKotlin.MachinesMachinesWakeResponse.fromWire(wire) }
+
+  fun machinesMachinesWatchOperation(stub: acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub, request: RustTypedRequestsKotlin.MachinesMachinesWatchOperationRequest): kotlin.collections.Iterator<RustTypedResponsesKotlin.MachinesMachinesWatchOperationResponse> { val wire = stub.watchOperation(request.toWire()); return RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.MachinesMachinesWatchOperationResponse.fromWire(it) } }
+
+  fun objectsBucketsCreateBucket(stub: acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsBucketsCreateBucketRequest): RustTypedResponsesKotlin.ObjectsBucketsCreateBucketResponse { val wire = stub.createBucket(request.toWire()); return RustTypedResponsesKotlin.ObjectsBucketsCreateBucketResponse.fromWire(wire) }
+
+  fun objectsBucketsDeleteBucket(stub: acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsBucketsDeleteBucketRequest): RustTypedResponsesKotlin.ObjectsBucketsDeleteBucketResponse { val wire = stub.deleteBucket(request.toWire()); return RustTypedResponsesKotlin.ObjectsBucketsDeleteBucketResponse.fromWire(wire) }
+
+  fun objectsBucketsHeadBucket(stub: acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsBucketsHeadBucketRequest): RustTypedResponsesKotlin.ObjectsBucketsHeadBucketResponse { val wire = stub.headBucket(request.toWire()); return RustTypedResponsesKotlin.ObjectsBucketsHeadBucketResponse.fromWire(wire) }
+
+  fun objectsMultipartAbortMultipart(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsMultipartAbortMultipartRequest): RustTypedResponsesKotlin.ObjectsMultipartAbortMultipartResponse { val wire = stub.abortMultipart(request.toWire()); return RustTypedResponsesKotlin.ObjectsMultipartAbortMultipartResponse.fromWire(wire) }
+
+  fun objectsMultipartCompleteMultipart(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsMultipartCompleteMultipartRequest): RustTypedResponsesKotlin.ObjectsMultipartCompleteMultipartResponse { val wire = stub.completeMultipart(request.toWire()); return RustTypedResponsesKotlin.ObjectsMultipartCompleteMultipartResponse.fromWire(wire) }
+
+  fun objectsMultipartCreateMultipart(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsMultipartCreateMultipartRequest): RustTypedResponsesKotlin.ObjectsMultipartCreateMultipartResponse { val wire = stub.createMultipart(request.toWire()); return RustTypedResponsesKotlin.ObjectsMultipartCreateMultipartResponse.fromWire(wire) }
+
+  fun objectsMultipartListParts(stub: acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsMultipartListPartsRequest): RustTypedResponsesKotlin.ObjectsMultipartListPartsResponse { val wire = stub.listParts(request.toWire()); return RustTypedResponsesKotlin.ObjectsMultipartListPartsResponse.fromWire(wire) }
+
+  fun objectsObjectsDeleteObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsObjectsDeleteObjectRequest): RustTypedResponsesKotlin.ObjectsObjectsDeleteObjectResponse { val wire = stub.deleteObject(request.toWire()); return RustTypedResponsesKotlin.ObjectsObjectsDeleteObjectResponse.fromWire(wire) }
+
+  fun objectsObjectsGetObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsObjectsGetObjectRequest): kotlin.collections.Iterator<RustTypedResponsesKotlin.ObjectsObjectsGetObjectResponse> { val wire = stub.getObject(request.toWire()); return RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.ObjectsObjectsGetObjectResponse.fromWire(it) } }
+
+  fun objectsObjectsHeadObject(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsObjectsHeadObjectRequest): RustTypedResponsesKotlin.ObjectsObjectsHeadObjectResponse { val wire = stub.headObject(request.toWire()); return RustTypedResponsesKotlin.ObjectsObjectsHeadObjectResponse.fromWire(wire) }
+
+  fun objectsObjectsListObjects(stub: acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub, request: RustTypedRequestsKotlin.ObjectsObjectsListObjectsRequest): RustTypedResponsesKotlin.ObjectsObjectsListObjectsResponse { val wire = stub.listObjects(request.toWire()); return RustTypedResponsesKotlin.ObjectsObjectsListObjectsResponse.fromWire(wire) }
+
+  fun streamStreamAppend(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamAppendRequest): RustTypedResponsesKotlin.StreamStreamAppendResponse { val wire = stub.append(request.toWire()); return RustTypedResponsesKotlin.StreamStreamAppendResponse.fromWire(wire) }
+
+  fun streamStreamChildren(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamChildrenRequest): kotlin.collections.Iterator<RustTypedResponsesKotlin.StreamStreamChildrenResponse> { val wire = stub.children(request.toWire()); return RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.StreamStreamChildrenResponse.fromWire(it) } }
+
+  fun streamStreamChildrenPage(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamChildrenPageRequest): RustTypedResponsesKotlin.StreamStreamChildrenPageResponse { val wire = stub.childrenPage(request.toWire()); return RustTypedResponsesKotlin.StreamStreamChildrenPageResponse.fromWire(wire) }
+
+  fun streamStreamCommit(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamCommitRequest): RustTypedResponsesKotlin.StreamStreamCommitResponse { val wire = stub.commit(request.toWire()); return RustTypedResponsesKotlin.StreamStreamCommitResponse.fromWire(wire) }
+
+  fun streamStreamFollow(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamFollowRequest): kotlin.collections.Iterator<RustTypedResponsesKotlin.StreamStreamFollowResponse> { val wire = stub.follow(request.toWire()); return RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.StreamStreamFollowResponse.fromWire(it) } }
+
+  fun streamStreamFork(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamForkRequest): RustTypedResponsesKotlin.StreamStreamForkResponse { val wire = stub.fork(request.toWire()); return RustTypedResponsesKotlin.StreamStreamForkResponse.fromWire(wire) }
+
+  fun streamStreamInspectIdempotency(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamInspectIdempotencyRequest): RustTypedResponsesKotlin.StreamStreamInspectIdempotencyResponse { val wire = stub.inspectIdempotency(request.toWire()); return RustTypedResponsesKotlin.StreamStreamInspectIdempotencyResponse.fromWire(wire) }
+
+  fun streamStreamRead(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamReadRequest): kotlin.collections.Iterator<RustTypedResponsesKotlin.StreamStreamReadResponse> { val wire = stub.read(request.toWire()); return RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.StreamStreamReadResponse.fromWire(it) } }
+
+  fun streamStreamReadCommit(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamReadCommitRequest): RustTypedResponsesKotlin.StreamStreamReadCommitResponse { val wire = stub.readCommit(request.toWire()); return RustTypedResponsesKotlin.StreamStreamReadCommitResponse.fromWire(wire) }
+
+  fun streamStreamTail(stub: acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub, request: RustTypedRequestsKotlin.StreamStreamTailRequest): RustTypedResponsesKotlin.StreamStreamTailResponse { val wire = stub.tail(request.toWire()); return RustTypedResponsesKotlin.StreamStreamTailResponse.fromWire(wire) }
+
+  fun workersWorkersCancelJob(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsKotlin.WorkersWorkersCancelJobRequest): RustTypedResponsesKotlin.WorkersWorkersCancelJobResponse { val wire = stub.cancelJob(request.toWire()); return RustTypedResponsesKotlin.WorkersWorkersCancelJobResponse.fromWire(wire) }
+
+  fun workersWorkersInspectJob(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsKotlin.WorkersWorkersInspectJobRequest): RustTypedResponsesKotlin.WorkersWorkersInspectJobResponse { val wire = stub.inspectJob(request.toWire()); return RustTypedResponsesKotlin.WorkersWorkersInspectJobResponse.fromWire(wire) }
+
+  fun workersWorkersInvokeDeployment(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsKotlin.WorkersWorkersInvokeDeploymentRequest): RustTypedResponsesKotlin.WorkersWorkersInvokeDeploymentResponse { val wire = stub.invokeDeployment(request.toWire()); return RustTypedResponsesKotlin.WorkersWorkersInvokeDeploymentResponse.fromWire(wire) }
+
+  fun workersWorkersInvokeVersion(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsKotlin.WorkersWorkersInvokeVersionRequest): RustTypedResponsesKotlin.WorkersWorkersInvokeVersionResponse { val wire = stub.invokeVersion(request.toWire()); return RustTypedResponsesKotlin.WorkersWorkersInvokeVersionResponse.fromWire(wire) }
+
+  fun workersWorkersPublishVersion(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsKotlin.WorkersWorkersPublishVersionRequest): RustTypedResponsesKotlin.WorkersWorkersPublishVersionResponse { val wire = stub.publishVersion(request.toWire()); return RustTypedResponsesKotlin.WorkersWorkersPublishVersionResponse.fromWire(wire) }
+
+  fun workersWorkersSelectDeployment(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsKotlin.WorkersWorkersSelectDeploymentRequest): RustTypedResponsesKotlin.WorkersWorkersSelectDeploymentResponse { val wire = stub.selectDeployment(request.toWire()); return RustTypedResponsesKotlin.WorkersWorkersSelectDeploymentResponse.fromWire(wire) }
+
+  fun workersWorkersSubmitJob(stub: acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub, request: RustTypedRequestsKotlin.WorkersWorkersSubmitJobRequest): RustTypedResponsesKotlin.WorkersWorkersSubmitJobResponse { val wire = stub.submitJob(request.toWire()); return RustTypedResponsesKotlin.WorkersWorkersSubmitJobResponse.fromWire(wire) }
+
+  fun inferenceContextsCreate(stub: inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceContextsCreateRequest): RustTypedResponsesKotlin.InferenceContextsCreateResponse { val wire = stub.create(request.toWire()); return RustTypedResponsesKotlin.InferenceContextsCreateResponse.fromWire(wire) }
+
+  fun inferenceContextsInspect(stub: inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceContextsInspectRequest): RustTypedResponsesKotlin.InferenceContextsInspectResponse { val wire = stub.inspect(request.toWire()); return RustTypedResponsesKotlin.InferenceContextsInspectResponse.fromWire(wire) }
+
+  fun inferenceContextsMutate(stub: inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceContextsMutateRequest): RustTypedResponsesKotlin.InferenceContextsMutateResponse { val wire = stub.mutate(request.toWire()); return RustTypedResponsesKotlin.InferenceContextsMutateResponse.fromWire(wire) }
+
+  fun inferenceEvaluationsCreate(stub: inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceEvaluationsCreateRequest): RustTypedResponsesKotlin.InferenceEvaluationsCreateResponse { val wire = stub.create(request.toWire()); return RustTypedResponsesKotlin.InferenceEvaluationsCreateResponse.fromWire(wire) }
+
+  fun inferenceEvaluationsInspect(stub: inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceEvaluationsInspectRequest): RustTypedResponsesKotlin.InferenceEvaluationsInspectResponse { val wire = stub.inspect(request.toWire()); return RustTypedResponsesKotlin.InferenceEvaluationsInspectResponse.fromWire(wire) }
+
+  fun inferenceModelsList(stub: inference.customer.v1.ModelsServiceGrpc.ModelsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceModelsListRequest): RustTypedResponsesKotlin.InferenceModelsListResponse { val wire = stub.list(request.toWire()); return RustTypedResponsesKotlin.InferenceModelsListResponse.fromWire(wire) }
+
+  fun inferenceRunsCancel(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceRunsCancelRequest): RustTypedResponsesKotlin.InferenceRunsCancelResponse { val wire = stub.cancel(request.toWire()); return RustTypedResponsesKotlin.InferenceRunsCancelResponse.fromWire(wire) }
+
+  fun inferenceRunsGenerate(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceRunsGenerateRequest): RustTypedResponsesKotlin.InferenceRunsGenerateResponse { val wire = stub.generate(request.toWire()); return RustTypedResponsesKotlin.InferenceRunsGenerateResponse.fromWire(wire) }
+
+  fun inferenceRunsInspect(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceRunsInspectRequest): RustTypedResponsesKotlin.InferenceRunsInspectResponse { val wire = stub.inspect(request.toWire()); return RustTypedResponsesKotlin.InferenceRunsInspectResponse.fromWire(wire) }
+
+  fun inferenceRunsWatch(stub: inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceRunsWatchRequest): kotlin.collections.Iterator<RustTypedResponsesKotlin.InferenceRunsWatchResponse> { val wire = stub.watch(request.toWire()); return RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.InferenceRunsWatchResponse.fromWire(it) } }
+
+  fun inferenceWarmContextsInspect(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceWarmContextsInspectRequest): RustTypedResponsesKotlin.InferenceWarmContextsInspectResponse { val wire = stub.inspect(request.toWire()); return RustTypedResponsesKotlin.InferenceWarmContextsInspectResponse.fromWire(wire) }
+
+  fun inferenceWarmContextsRelease(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceWarmContextsReleaseRequest): RustTypedResponsesKotlin.InferenceWarmContextsReleaseResponse { val wire = stub.release(request.toWire()); return RustTypedResponsesKotlin.InferenceWarmContextsReleaseResponse.fromWire(wire) }
+
+  fun inferenceWarmContextsRenew(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceWarmContextsRenewRequest): RustTypedResponsesKotlin.InferenceWarmContextsRenewResponse { val wire = stub.renew(request.toWire()); return RustTypedResponsesKotlin.InferenceWarmContextsRenewResponse.fromWire(wire) }
+
+  fun inferenceWarmContextsRetain(stub: inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub, request: RustTypedRequestsKotlin.InferenceWarmContextsRetainRequest): RustTypedResponsesKotlin.InferenceWarmContextsRetainResponse { val wire = stub.retain(request.toWire()); return RustTypedResponsesKotlin.InferenceWarmContextsRetainResponse.fromWire(wire) }
 
 }

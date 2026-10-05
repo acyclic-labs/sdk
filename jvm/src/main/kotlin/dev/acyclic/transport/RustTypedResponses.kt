@@ -52,6 +52,218 @@ object RustTypedResponsesKotlin {
 
   data class WorkersSelectDeploymentResponse(val value: acyclic.workers.v1.Workers.SelectDeploymentResponse) { companion object { fun fromWire(value: acyclic.workers.v1.Workers.SelectDeploymentResponse): WorkersSelectDeploymentResponse = WorkersSelectDeploymentResponse(value) } fun toWire(): acyclic.workers.v1.Workers.SelectDeploymentResponse = value; }
 
+  data class ActorsActorsAddSubscriptionResponse(val value: acyclic.actors.v1.Actors.AddSubscriptionResponse) { fun toWire(): acyclic.actors.v1.Actors.AddSubscriptionResponse = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.AddSubscriptionResponse): ActorsActorsAddSubscriptionResponse = ActorsActorsAddSubscriptionResponse(value) } }
+
+  data class ActorsActorsCheckpointActorResponse(val value: acyclic.actors.v1.Actors.CheckpointActorResponse) { fun toWire(): acyclic.actors.v1.Actors.CheckpointActorResponse = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.CheckpointActorResponse): ActorsActorsCheckpointActorResponse = ActorsActorsCheckpointActorResponse(value) } }
+
+  data class ActorsActorsCreateActorResponse(val value: acyclic.actors.v1.Actors.CreateActorResponse) { fun toWire(): acyclic.actors.v1.Actors.CreateActorResponse = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.CreateActorResponse): ActorsActorsCreateActorResponse = ActorsActorsCreateActorResponse(value) } }
+
+  data class ActorsActorsInspectActorResponse(val value: acyclic.actors.v1.Actors.InspectActorResponse) { fun toWire(): acyclic.actors.v1.Actors.InspectActorResponse = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.InspectActorResponse): ActorsActorsInspectActorResponse = ActorsActorsInspectActorResponse(value) } }
+
+  data class ActorsActorsInvokeActorResponse(val value: acyclic.actors.v1.Actors.InvokeActorResponse) { fun toWire(): acyclic.actors.v1.Actors.InvokeActorResponse = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.InvokeActorResponse): ActorsActorsInvokeActorResponse = ActorsActorsInvokeActorResponse(value) } }
+
+  data class ActorsActorsRemoveSubscriptionResponse(val value: acyclic.actors.v1.Actors.RemoveSubscriptionResponse) { fun toWire(): acyclic.actors.v1.Actors.RemoveSubscriptionResponse = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.RemoveSubscriptionResponse): ActorsActorsRemoveSubscriptionResponse = ActorsActorsRemoveSubscriptionResponse(value) } }
+
+  data class ActorsActorsResumeSubscriptionResponse(val value: acyclic.actors.v1.Actors.ResumeSubscriptionResponse) { fun toWire(): acyclic.actors.v1.Actors.ResumeSubscriptionResponse = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.ResumeSubscriptionResponse): ActorsActorsResumeSubscriptionResponse = ActorsActorsResumeSubscriptionResponse(value) } }
+
+  data class ActorsActorsUpdateActorResponse(val value: acyclic.actors.v1.Actors.UpdateActorResponse) { fun toWire(): acyclic.actors.v1.Actors.UpdateActorResponse = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.UpdateActorResponse): ActorsActorsUpdateActorResponse = ActorsActorsUpdateActorResponse(value) } }
+
+  data class FilesystemFilesystemApplyJoinResponse(val value: acyclic.filesystem.v2.Filesystem.JoinResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.JoinResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.JoinResponse): FilesystemFilesystemApplyJoinResponse = FilesystemFilesystemApplyJoinResponse(value) } }
+
+  data class FilesystemFilesystemApplyTransactionResponse(val value: acyclic.filesystem.v2.Filesystem.MutationResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.MutationResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.MutationResponse): FilesystemFilesystemApplyTransactionResponse = FilesystemFilesystemApplyTransactionResponse(value) } }
+
+  data class FilesystemFilesystemCancelResponse(val value: acyclic.filesystem.v2.Filesystem.CancelResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.CancelResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.CancelResponse): FilesystemFilesystemCancelResponse = FilesystemFilesystemCancelResponse(value) } }
+
+  data class FilesystemFilesystemCheckpointResponse(val value: acyclic.filesystem.v2.Filesystem.RetainGenerationResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.RetainGenerationResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.RetainGenerationResponse): FilesystemFilesystemCheckpointResponse = FilesystemFilesystemCheckpointResponse(value) } }
+
+  data class FilesystemFilesystemCreateWorkspaceResponse(val value: acyclic.filesystem.v2.Filesystem.WorkspaceResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.WorkspaceResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.WorkspaceResponse): FilesystemFilesystemCreateWorkspaceResponse = FilesystemFilesystemCreateWorkspaceResponse(value) } }
+
+  data class FilesystemFilesystemDeleteWorkspaceResponse(val value: acyclic.filesystem.v2.Filesystem.MutationResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.MutationResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.MutationResponse): FilesystemFilesystemDeleteWorkspaceResponse = FilesystemFilesystemDeleteWorkspaceResponse(value) } }
+
+  data class FilesystemFilesystemDiffResponse(val value: acyclic.filesystem.v2.Filesystem.DiffResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.DiffResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.DiffResponse): FilesystemFilesystemDiffResponse = FilesystemFilesystemDiffResponse(value) } }
+
+  data class FilesystemFilesystemExportResponse(val value: acyclic.filesystem.v2.Filesystem.ExportChunk) { fun toWire(): acyclic.filesystem.v2.Filesystem.ExportChunk = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ExportChunk): FilesystemFilesystemExportResponse = FilesystemFilesystemExportResponse(value) } }
+
+  data class FilesystemFilesystemForkWorkspaceResponse(val value: acyclic.filesystem.v2.Filesystem.WorkspaceResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.WorkspaceResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.WorkspaceResponse): FilesystemFilesystemForkWorkspaceResponse = FilesystemFilesystemForkWorkspaceResponse(value) } }
+
+  data class FilesystemFilesystemGetGenerationResponse(val value: acyclic.filesystem.v2.Filesystem.GenerationResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.GenerationResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.GenerationResponse): FilesystemFilesystemGetGenerationResponse = FilesystemFilesystemGetGenerationResponse(value) } }
+
+  data class FilesystemFilesystemGetHeadResponse(val value: acyclic.filesystem.v2.Filesystem.GenerationResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.GenerationResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.GenerationResponse): FilesystemFilesystemGetHeadResponse = FilesystemFilesystemGetHeadResponse(value) } }
+
+  data class FilesystemFilesystemGetSourceStateResponse(val value: acyclic.filesystem.v2.Filesystem.SourceResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.SourceResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.SourceResponse): FilesystemFilesystemGetSourceStateResponse = FilesystemFilesystemGetSourceStateResponse(value) } }
+
+  data class FilesystemFilesystemHandshakeResponse(val value: acyclic.filesystem.v2.Filesystem.HandshakeResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.HandshakeResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.HandshakeResponse): FilesystemFilesystemHandshakeResponse = FilesystemFilesystemHandshakeResponse(value) } }
+
+  data class FilesystemFilesystemImportResponse(val value: acyclic.filesystem.v2.Filesystem.ImportResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.ImportResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ImportResponse): FilesystemFilesystemImportResponse = FilesystemFilesystemImportResponse(value) } }
+
+  data class FilesystemFilesystemIssueMountCredentialResponse(val value: acyclic.filesystem.v2.Filesystem.CredentialResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.CredentialResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.CredentialResponse): FilesystemFilesystemIssueMountCredentialResponse = FilesystemFilesystemIssueMountCredentialResponse(value) } }
+
+  data class FilesystemFilesystemIssueS3CredentialResponse(val value: acyclic.filesystem.v2.Filesystem.CredentialResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.CredentialResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.CredentialResponse): FilesystemFilesystemIssueS3CredentialResponse = FilesystemFilesystemIssueS3CredentialResponse(value) } }
+
+  data class FilesystemFilesystemListDirectoryResponse(val value: acyclic.filesystem.v2.Filesystem.ListDirectoryResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.ListDirectoryResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ListDirectoryResponse): FilesystemFilesystemListDirectoryResponse = FilesystemFilesystemListDirectoryResponse(value) } }
+
+  data class FilesystemFilesystemObserveResponse(val value: acyclic.filesystem.v2.Filesystem.ObserveResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.ObserveResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ObserveResponse): FilesystemFilesystemObserveResponse = FilesystemFilesystemObserveResponse(value) } }
+
+  data class FilesystemFilesystemOpenWorkspaceResponse(val value: acyclic.filesystem.v2.Filesystem.WorkspaceResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.WorkspaceResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.WorkspaceResponse): FilesystemFilesystemOpenWorkspaceResponse = FilesystemFilesystemOpenWorkspaceResponse(value) } }
+
+  data class FilesystemFilesystemPinResponse(val value: acyclic.filesystem.v2.Filesystem.RetainGenerationResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.RetainGenerationResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.RetainGenerationResponse): FilesystemFilesystemPinResponse = FilesystemFilesystemPinResponse(value) } }
+
+  data class FilesystemFilesystemPlanExtentsResponse(val value: acyclic.filesystem.v2.Filesystem.PlanExtentsResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.PlanExtentsResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.PlanExtentsResponse): FilesystemFilesystemPlanExtentsResponse = FilesystemFilesystemPlanExtentsResponse(value) } }
+
+  data class FilesystemFilesystemPlanJoinResponse(val value: acyclic.filesystem.v2.Filesystem.JoinPlan) { fun toWire(): acyclic.filesystem.v2.Filesystem.JoinPlan = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.JoinPlan): FilesystemFilesystemPlanJoinResponse = FilesystemFilesystemPlanJoinResponse(value) } }
+
+  data class FilesystemFilesystemReadResponse(val value: acyclic.filesystem.v2.Filesystem.ReadResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.ReadResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ReadResponse): FilesystemFilesystemReadResponse = FilesystemFilesystemReadResponse(value) } }
+
+  data class FilesystemFilesystemReadLinkResponse(val value: acyclic.filesystem.v2.Filesystem.ReadResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.ReadResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ReadResponse): FilesystemFilesystemReadLinkResponse = FilesystemFilesystemReadLinkResponse(value) } }
+
+  data class FilesystemFilesystemRebaseResponse(val value: acyclic.filesystem.v2.Filesystem.RebaseResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.RebaseResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.RebaseResponse): FilesystemFilesystemRebaseResponse = FilesystemFilesystemRebaseResponse(value) } }
+
+  data class FilesystemFilesystemRebaseTransactionResponse(val value: acyclic.filesystem.v2.Filesystem.RebaseTransactionResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.RebaseTransactionResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.RebaseTransactionResponse): FilesystemFilesystemRebaseTransactionResponse = FilesystemFilesystemRebaseTransactionResponse(value) } }
+
+  data class FilesystemFilesystemReconcileSourceResponse(val value: acyclic.filesystem.v2.Filesystem.SourceResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.SourceResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.SourceResponse): FilesystemFilesystemReconcileSourceResponse = FilesystemFilesystemReconcileSourceResponse(value) } }
+
+  data class FilesystemFilesystemRescanSourceResponse(val value: acyclic.filesystem.v2.Filesystem.SourceResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.SourceResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.SourceResponse): FilesystemFilesystemRescanSourceResponse = FilesystemFilesystemRescanSourceResponse(value) } }
+
+  data class FilesystemFilesystemSealSourceResponse(val value: acyclic.filesystem.v2.Filesystem.SourceResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.SourceResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.SourceResponse): FilesystemFilesystemSealSourceResponse = FilesystemFilesystemSealSourceResponse(value) } }
+
+  data class FilesystemFilesystemStatResponse(val value: acyclic.filesystem.v2.Filesystem.StatResponse) { fun toWire(): acyclic.filesystem.v2.Filesystem.StatResponse = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.StatResponse): FilesystemFilesystemStatResponse = FilesystemFilesystemStatResponse(value) } }
+
+  data class HarnessHarnessCancelResponse(val value: acyclic.harness.v2.Harness.CancelResponse) { fun toWire(): acyclic.harness.v2.Harness.CancelResponse = value; companion object { fun fromWire(value: acyclic.harness.v2.Harness.CancelResponse): HarnessHarnessCancelResponse = HarnessHarnessCancelResponse(value) } }
+
+  data class HarnessHarnessHandshakeResponse(val value: acyclic.protocol.v1.Protocol.HandshakeResponse) { fun toWire(): acyclic.protocol.v1.Protocol.HandshakeResponse = value; companion object { fun fromWire(value: acyclic.protocol.v1.Protocol.HandshakeResponse): HarnessHarnessHandshakeResponse = HarnessHarnessHandshakeResponse(value) } }
+
+  data class HarnessHarnessObserveResponse(val value: acyclic.harness.v2.Harness.OperationStatus) { fun toWire(): acyclic.harness.v2.Harness.OperationStatus = value; companion object { fun fromWire(value: acyclic.harness.v2.Harness.OperationStatus): HarnessHarnessObserveResponse = HarnessHarnessObserveResponse(value) } }
+
+  data class HarnessHarnessReplayResponse(val value: acyclic.harness.v2.Harness.Delivery) { fun toWire(): acyclic.harness.v2.Harness.Delivery = value; companion object { fun fromWire(value: acyclic.harness.v2.Harness.Delivery): HarnessHarnessReplayResponse = HarnessHarnessReplayResponse(value) } }
+
+  data class HarnessHarnessSubmitResponse(val value: acyclic.harness.v2.Harness.Admission) { fun toWire(): acyclic.harness.v2.Harness.Admission = value; companion object { fun fromWire(value: acyclic.harness.v2.Harness.Admission): HarnessHarnessSubmitResponse = HarnessHarnessSubmitResponse(value) } }
+
+  data class MachinesMachinesCancelResponse(val value: acyclic.machines.v1.Machines.OperationState) { fun toWire(): acyclic.machines.v1.Machines.OperationState = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.OperationState): MachinesMachinesCancelResponse = MachinesMachinesCancelResponse(value) } }
+
+  data class MachinesMachinesCheckpointResponse(val value: acyclic.machines.v1.Machines.CheckpointAdmission) { fun toWire(): acyclic.machines.v1.Machines.CheckpointAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.CheckpointAdmission): MachinesMachinesCheckpointResponse = MachinesMachinesCheckpointResponse(value) } }
+
+  data class MachinesMachinesCreateResponse(val value: acyclic.machines.v1.Machines.MachineAdmission) { fun toWire(): acyclic.machines.v1.Machines.MachineAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MachineAdmission): MachinesMachinesCreateResponse = MachinesMachinesCreateResponse(value) } }
+
+  data class MachinesMachinesDestroyCheckpointResponse(val value: acyclic.machines.v1.Machines.MutationAdmission) { fun toWire(): acyclic.machines.v1.Machines.MutationAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MutationAdmission): MachinesMachinesDestroyCheckpointResponse = MachinesMachinesDestroyCheckpointResponse(value) } }
+
+  data class MachinesMachinesDestroyMachineResponse(val value: acyclic.machines.v1.Machines.MutationAdmission) { fun toWire(): acyclic.machines.v1.Machines.MutationAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MutationAdmission): MachinesMachinesDestroyMachineResponse = MachinesMachinesDestroyMachineResponse(value) } }
+
+  data class MachinesMachinesEventsResponse(val value: acyclic.machines.v1.Machines.EventPage) { fun toWire(): acyclic.machines.v1.Machines.EventPage = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.EventPage): MachinesMachinesEventsResponse = MachinesMachinesEventsResponse(value) } }
+
+  data class MachinesMachinesForkResponse(val value: acyclic.machines.v1.Machines.ForkAdmission) { fun toWire(): acyclic.machines.v1.Machines.ForkAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.ForkAdmission): MachinesMachinesForkResponse = MachinesMachinesForkResponse(value) } }
+
+  data class MachinesMachinesForkMachineResponse(val value: acyclic.machines.v1.Machines.ForkMachineAdmission) { fun toWire(): acyclic.machines.v1.Machines.ForkMachineAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.ForkMachineAdmission): MachinesMachinesForkMachineResponse = MachinesMachinesForkMachineResponse(value) } }
+
+  data class MachinesMachinesInspectCheckpointResponse(val value: acyclic.machines.v1.Machines.CheckpointState) { fun toWire(): acyclic.machines.v1.Machines.CheckpointState = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.CheckpointState): MachinesMachinesInspectCheckpointResponse = MachinesMachinesInspectCheckpointResponse(value) } }
+
+  data class MachinesMachinesInspectMachineResponse(val value: acyclic.machines.v1.Machines.MachineState) { fun toWire(): acyclic.machines.v1.Machines.MachineState = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MachineState): MachinesMachinesInspectMachineResponse = MachinesMachinesInspectMachineResponse(value) } }
+
+  data class MachinesMachinesInspectOperationResponse(val value: acyclic.machines.v1.Machines.OperationState) { fun toWire(): acyclic.machines.v1.Machines.OperationState = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.OperationState): MachinesMachinesInspectOperationResponse = MachinesMachinesInspectOperationResponse(value) } }
+
+  data class MachinesMachinesListMachinesResponse(val value: acyclic.machines.v1.Machines.MachinePage) { fun toWire(): acyclic.machines.v1.Machines.MachinePage = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MachinePage): MachinesMachinesListMachinesResponse = MachinesMachinesListMachinesResponse(value) } }
+
+  data class MachinesMachinesQualifyImageResponse(val value: acyclic.machines.v1.Machines.ImageQualification) { fun toWire(): acyclic.machines.v1.Machines.ImageQualification = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.ImageQualification): MachinesMachinesQualifyImageResponse = MachinesMachinesQualifyImageResponse(value) } }
+
+  data class MachinesMachinesRecoverResponse(val value: acyclic.machines.v1.Machines.RecoveredAdmission) { fun toWire(): acyclic.machines.v1.Machines.RecoveredAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.RecoveredAdmission): MachinesMachinesRecoverResponse = MachinesMachinesRecoverResponse(value) } }
+
+  data class MachinesMachinesSetSuspensionPolicyResponse(val value: acyclic.machines.v1.Machines.PolicyAdmission) { fun toWire(): acyclic.machines.v1.Machines.PolicyAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.PolicyAdmission): MachinesMachinesSetSuspensionPolicyResponse = MachinesMachinesSetSuspensionPolicyResponse(value) } }
+
+  data class MachinesMachinesSuspendResponse(val value: acyclic.machines.v1.Machines.MutationAdmission) { fun toWire(): acyclic.machines.v1.Machines.MutationAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MutationAdmission): MachinesMachinesSuspendResponse = MachinesMachinesSuspendResponse(value) } }
+
+  data class MachinesMachinesUsageResponse(val value: acyclic.machines.v1.Machines.UsageReceipt) { fun toWire(): acyclic.machines.v1.Machines.UsageReceipt = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.UsageReceipt): MachinesMachinesUsageResponse = MachinesMachinesUsageResponse(value) } }
+
+  data class MachinesMachinesWakeResponse(val value: acyclic.machines.v1.Machines.MutationAdmission) { fun toWire(): acyclic.machines.v1.Machines.MutationAdmission = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MutationAdmission): MachinesMachinesWakeResponse = MachinesMachinesWakeResponse(value) } }
+
+  data class MachinesMachinesWatchOperationResponse(val value: acyclic.machines.v1.Machines.OperationState) { fun toWire(): acyclic.machines.v1.Machines.OperationState = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.OperationState): MachinesMachinesWatchOperationResponse = MachinesMachinesWatchOperationResponse(value) } }
+
+  data class ObjectsBucketsCreateBucketResponse(val value: acyclic.objects.v2.Objects.Bucket) { fun toWire(): acyclic.objects.v2.Objects.Bucket = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.Bucket): ObjectsBucketsCreateBucketResponse = ObjectsBucketsCreateBucketResponse(value) } }
+
+  data class ObjectsBucketsDeleteBucketResponse(val value: acyclic.objects.v2.Objects.DeleteBucketResponse) { fun toWire(): acyclic.objects.v2.Objects.DeleteBucketResponse = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.DeleteBucketResponse): ObjectsBucketsDeleteBucketResponse = ObjectsBucketsDeleteBucketResponse(value) } }
+
+  data class ObjectsBucketsHeadBucketResponse(val value: acyclic.objects.v2.Objects.Bucket) { fun toWire(): acyclic.objects.v2.Objects.Bucket = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.Bucket): ObjectsBucketsHeadBucketResponse = ObjectsBucketsHeadBucketResponse(value) } }
+
+  data class ObjectsMultipartAbortMultipartResponse(val value: acyclic.objects.v2.Objects.AbortMultipartResponse) { fun toWire(): acyclic.objects.v2.Objects.AbortMultipartResponse = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.AbortMultipartResponse): ObjectsMultipartAbortMultipartResponse = ObjectsMultipartAbortMultipartResponse(value) } }
+
+  data class ObjectsMultipartCompleteMultipartResponse(val value: acyclic.objects.v2.Objects.ObjectInfo) { fun toWire(): acyclic.objects.v2.Objects.ObjectInfo = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.ObjectInfo): ObjectsMultipartCompleteMultipartResponse = ObjectsMultipartCompleteMultipartResponse(value) } }
+
+  data class ObjectsMultipartCreateMultipartResponse(val value: acyclic.objects.v2.Objects.MultipartUpload) { fun toWire(): acyclic.objects.v2.Objects.MultipartUpload = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.MultipartUpload): ObjectsMultipartCreateMultipartResponse = ObjectsMultipartCreateMultipartResponse(value) } }
+
+  data class ObjectsMultipartListPartsResponse(val value: acyclic.objects.v2.Objects.ListPartsResponse) { fun toWire(): acyclic.objects.v2.Objects.ListPartsResponse = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.ListPartsResponse): ObjectsMultipartListPartsResponse = ObjectsMultipartListPartsResponse(value) } }
+
+  data class ObjectsMultipartUploadPartResponse(val value: acyclic.objects.v2.Objects.UploadedPart) { fun toWire(): acyclic.objects.v2.Objects.UploadedPart = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.UploadedPart): ObjectsMultipartUploadPartResponse = ObjectsMultipartUploadPartResponse(value) } }
+
+  data class ObjectsObjectsDeleteObjectResponse(val value: acyclic.objects.v2.Objects.DeleteObjectResponse) { fun toWire(): acyclic.objects.v2.Objects.DeleteObjectResponse = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.DeleteObjectResponse): ObjectsObjectsDeleteObjectResponse = ObjectsObjectsDeleteObjectResponse(value) } }
+
+  data class ObjectsObjectsGetObjectResponse(val value: acyclic.objects.v2.Objects.GetObjectResponse) { fun toWire(): acyclic.objects.v2.Objects.GetObjectResponse = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.GetObjectResponse): ObjectsObjectsGetObjectResponse = ObjectsObjectsGetObjectResponse(value) } }
+
+  data class ObjectsObjectsHeadObjectResponse(val value: acyclic.objects.v2.Objects.HeadObjectResponse) { fun toWire(): acyclic.objects.v2.Objects.HeadObjectResponse = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.HeadObjectResponse): ObjectsObjectsHeadObjectResponse = ObjectsObjectsHeadObjectResponse(value) } }
+
+  data class ObjectsObjectsListObjectsResponse(val value: acyclic.objects.v2.Objects.ListObjectsResponse) { fun toWire(): acyclic.objects.v2.Objects.ListObjectsResponse = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.ListObjectsResponse): ObjectsObjectsListObjectsResponse = ObjectsObjectsListObjectsResponse(value) } }
+
+  data class ObjectsObjectsPutObjectResponse(val value: acyclic.objects.v2.Objects.ObjectInfo) { fun toWire(): acyclic.objects.v2.Objects.ObjectInfo = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.ObjectInfo): ObjectsObjectsPutObjectResponse = ObjectsObjectsPutObjectResponse(value) } }
+
+  data class StreamStreamAppendResponse(val value: acyclic.stream.v2.Stream.AppendResponse) { fun toWire(): acyclic.stream.v2.Stream.AppendResponse = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.AppendResponse): StreamStreamAppendResponse = StreamStreamAppendResponse(value) } }
+
+  data class StreamStreamChildrenResponse(val value: acyclic.stream.v2.Stream.ChildrenResponse) { fun toWire(): acyclic.stream.v2.Stream.ChildrenResponse = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ChildrenResponse): StreamStreamChildrenResponse = StreamStreamChildrenResponse(value) } }
+
+  data class StreamStreamChildrenPageResponse(val value: acyclic.stream.v2.Stream.ChildrenPageResponse) { fun toWire(): acyclic.stream.v2.Stream.ChildrenPageResponse = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ChildrenPageResponse): StreamStreamChildrenPageResponse = StreamStreamChildrenPageResponse(value) } }
+
+  data class StreamStreamCommitResponse(val value: acyclic.stream.v2.Stream.CommitResponse) { fun toWire(): acyclic.stream.v2.Stream.CommitResponse = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.CommitResponse): StreamStreamCommitResponse = StreamStreamCommitResponse(value) } }
+
+  data class StreamStreamFollowResponse(val value: acyclic.stream.v2.Stream.ReadResponse) { fun toWire(): acyclic.stream.v2.Stream.ReadResponse = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ReadResponse): StreamStreamFollowResponse = StreamStreamFollowResponse(value) } }
+
+  data class StreamStreamForkResponse(val value: acyclic.stream.v2.Stream.ForkReceipt) { fun toWire(): acyclic.stream.v2.Stream.ForkReceipt = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ForkReceipt): StreamStreamForkResponse = StreamStreamForkResponse(value) } }
+
+  data class StreamStreamInspectIdempotencyResponse(val value: acyclic.stream.v2.Stream.InspectIdempotencyResponse) { fun toWire(): acyclic.stream.v2.Stream.InspectIdempotencyResponse = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.InspectIdempotencyResponse): StreamStreamInspectIdempotencyResponse = StreamStreamInspectIdempotencyResponse(value) } }
+
+  data class StreamStreamReadResponse(val value: acyclic.stream.v2.Stream.ReadResponse) { fun toWire(): acyclic.stream.v2.Stream.ReadResponse = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ReadResponse): StreamStreamReadResponse = StreamStreamReadResponse(value) } }
+
+  data class StreamStreamReadCommitResponse(val value: acyclic.stream.v2.Stream.CommittedEnvelope) { fun toWire(): acyclic.stream.v2.Stream.CommittedEnvelope = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.CommittedEnvelope): StreamStreamReadCommitResponse = StreamStreamReadCommitResponse(value) } }
+
+  data class StreamStreamTailResponse(val value: acyclic.stream.v2.Stream.TailResponse) { fun toWire(): acyclic.stream.v2.Stream.TailResponse = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.TailResponse): StreamStreamTailResponse = StreamStreamTailResponse(value) } }
+
+  data class WorkersWorkersCancelJobResponse(val value: acyclic.workers.v1.Workers.CancelJobResponse) { fun toWire(): acyclic.workers.v1.Workers.CancelJobResponse = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.CancelJobResponse): WorkersWorkersCancelJobResponse = WorkersWorkersCancelJobResponse(value) } }
+
+  data class WorkersWorkersInspectJobResponse(val value: acyclic.workers.v1.Workers.InspectJobResponse) { fun toWire(): acyclic.workers.v1.Workers.InspectJobResponse = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.InspectJobResponse): WorkersWorkersInspectJobResponse = WorkersWorkersInspectJobResponse(value) } }
+
+  data class WorkersWorkersInvokeDeploymentResponse(val value: acyclic.workers.v1.Workers.InvokeResponse) { fun toWire(): acyclic.workers.v1.Workers.InvokeResponse = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.InvokeResponse): WorkersWorkersInvokeDeploymentResponse = WorkersWorkersInvokeDeploymentResponse(value) } }
+
+  data class WorkersWorkersInvokeVersionResponse(val value: acyclic.workers.v1.Workers.InvokeResponse) { fun toWire(): acyclic.workers.v1.Workers.InvokeResponse = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.InvokeResponse): WorkersWorkersInvokeVersionResponse = WorkersWorkersInvokeVersionResponse(value) } }
+
+  data class WorkersWorkersPublishVersionResponse(val value: acyclic.workers.v1.Workers.PublishVersionResponse) { fun toWire(): acyclic.workers.v1.Workers.PublishVersionResponse = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.PublishVersionResponse): WorkersWorkersPublishVersionResponse = WorkersWorkersPublishVersionResponse(value) } }
+
+  data class WorkersWorkersSelectDeploymentResponse(val value: acyclic.workers.v1.Workers.SelectDeploymentResponse) { fun toWire(): acyclic.workers.v1.Workers.SelectDeploymentResponse = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.SelectDeploymentResponse): WorkersWorkersSelectDeploymentResponse = WorkersWorkersSelectDeploymentResponse(value) } }
+
+  data class WorkersWorkersSubmitJobResponse(val value: acyclic.workers.v1.Workers.SubmitJobResponse) { fun toWire(): acyclic.workers.v1.Workers.SubmitJobResponse = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.SubmitJobResponse): WorkersWorkersSubmitJobResponse = WorkersWorkersSubmitJobResponse(value) } }
+
+  data class InferenceContextsCreateResponse(val value: inference.customer.v1.Inference.MutationReceipt) { fun toWire(): inference.customer.v1.Inference.MutationReceipt = value; companion object { fun fromWire(value: inference.customer.v1.Inference.MutationReceipt): InferenceContextsCreateResponse = InferenceContextsCreateResponse(value) } }
+
+  data class InferenceContextsInspectResponse(val value: inference.customer.v1.Inference.ContextView) { fun toWire(): inference.customer.v1.Inference.ContextView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.ContextView): InferenceContextsInspectResponse = InferenceContextsInspectResponse(value) } }
+
+  data class InferenceContextsMutateResponse(val value: inference.customer.v1.Inference.MutationReceipt) { fun toWire(): inference.customer.v1.Inference.MutationReceipt = value; companion object { fun fromWire(value: inference.customer.v1.Inference.MutationReceipt): InferenceContextsMutateResponse = InferenceContextsMutateResponse(value) } }
+
+  data class InferenceEvaluationsCreateResponse(val value: inference.customer.v1.Inference.EvaluationView) { fun toWire(): inference.customer.v1.Inference.EvaluationView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.EvaluationView): InferenceEvaluationsCreateResponse = InferenceEvaluationsCreateResponse(value) } }
+
+  data class InferenceEvaluationsInspectResponse(val value: inference.customer.v1.Inference.EvaluationView) { fun toWire(): inference.customer.v1.Inference.EvaluationView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.EvaluationView): InferenceEvaluationsInspectResponse = InferenceEvaluationsInspectResponse(value) } }
+
+  data class InferenceModelsListResponse(val value: inference.customer.v1.Inference.ListModelsResponse) { fun toWire(): inference.customer.v1.Inference.ListModelsResponse = value; companion object { fun fromWire(value: inference.customer.v1.Inference.ListModelsResponse): InferenceModelsListResponse = InferenceModelsListResponse(value) } }
+
+  data class InferenceRunsCancelResponse(val value: inference.customer.v1.Inference.RunView) { fun toWire(): inference.customer.v1.Inference.RunView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.RunView): InferenceRunsCancelResponse = InferenceRunsCancelResponse(value) } }
+
+  data class InferenceRunsGenerateResponse(val value: inference.customer.v1.Inference.GenerateRunResponse) { fun toWire(): inference.customer.v1.Inference.GenerateRunResponse = value; companion object { fun fromWire(value: inference.customer.v1.Inference.GenerateRunResponse): InferenceRunsGenerateResponse = InferenceRunsGenerateResponse(value) } }
+
+  data class InferenceRunsInspectResponse(val value: inference.customer.v1.Inference.RunView) { fun toWire(): inference.customer.v1.Inference.RunView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.RunView): InferenceRunsInspectResponse = InferenceRunsInspectResponse(value) } }
+
+  data class InferenceRunsWatchResponse(val value: inference.customer.v1.Inference.RunEvent) { fun toWire(): inference.customer.v1.Inference.RunEvent = value; companion object { fun fromWire(value: inference.customer.v1.Inference.RunEvent): InferenceRunsWatchResponse = InferenceRunsWatchResponse(value) } }
+
+  data class InferenceWarmContextsInspectResponse(val value: inference.customer.v1.Inference.WarmView) { fun toWire(): inference.customer.v1.Inference.WarmView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.WarmView): InferenceWarmContextsInspectResponse = InferenceWarmContextsInspectResponse(value) } }
+
+  data class InferenceWarmContextsReleaseResponse(val value: inference.customer.v1.Inference.WarmView) { fun toWire(): inference.customer.v1.Inference.WarmView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.WarmView): InferenceWarmContextsReleaseResponse = InferenceWarmContextsReleaseResponse(value) } }
+
+  data class InferenceWarmContextsRenewResponse(val value: inference.customer.v1.Inference.WarmView) { fun toWire(): inference.customer.v1.Inference.WarmView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.WarmView): InferenceWarmContextsRenewResponse = InferenceWarmContextsRenewResponse(value) } }
+
+  data class InferenceWarmContextsRetainResponse(val value: inference.customer.v1.Inference.WarmView) { fun toWire(): inference.customer.v1.Inference.WarmView = value; companion object { fun fromWire(value: inference.customer.v1.Inference.WarmView): InferenceWarmContextsRetainResponse = InferenceWarmContextsRetainResponse(value) } }
+
   fun mutationIdentityIdempotencyKey(value: acyclic.objects.v2.Objects.MutationIdentity): RustSemanticTypesKotlin.IdempotencyKeyText = RustSemanticTypesKotlin.IdempotencyKeyText.of(value.idempotencyKey)
   fun evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesKotlin.Sha256Digest = RustSemanticTypesKotlin.Sha256Digest.of(value.specDigest)
   fun fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesKotlin.ResourcePath = RustSemanticTypesKotlin.ResourcePath.of(value.normalizedPath)

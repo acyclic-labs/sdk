@@ -35,20 +35,28 @@ object RustTypedRequestsKotlin {
     setIdempotencyKey((idempotency_key.toWire() as acyclic.machines.v1.Machines.IdempotencyKey))
   }.build()
 
+  fun machinesEvents(event_page_limit: RustSemanticTypesKotlin.MachineEventPageLimit): acyclic.machines.v1.Machines.EventsRequest = acyclic.machines.v1.Machines.EventsRequest.newBuilder().apply {
+    setLimit(event_page_limit.toWire().toInt())
+  }.build()
+
   fun machinesInspectCheckpoint(checkpoint_id: RustSemanticTypesKotlin.CheckpointId): acyclic.machines.v1.Machines.InspectCheckpointRequest = acyclic.machines.v1.Machines.InspectCheckpointRequest.newBuilder().apply {
-    setCheckpoint(acyclic.machines.v1.Machines.CheckpointId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(checkpoint_id.toWire(), kotlin.text.Charsets.UTF_8)).build())
+    setCheckpoint(acyclic.machines.v1.Machines.CheckpointId.newBuilder().setValue(checkpoint_id.toWire()).build())
   }.build()
 
   fun machinesInspectMachine(machine_id: RustSemanticTypesKotlin.MachineId): acyclic.machines.v1.Machines.InspectMachineRequest = acyclic.machines.v1.Machines.InspectMachineRequest.newBuilder().apply {
-    setMachine(acyclic.machines.v1.Machines.MachineId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(machine_id.toWire(), kotlin.text.Charsets.UTF_8)).build())
+    setMachine(acyclic.machines.v1.Machines.MachineId.newBuilder().setValue(machine_id.toWire()).build())
   }.build()
 
-  fun machinesListMachines(page_limit: RustSemanticTypesKotlin.PageLimit): acyclic.machines.v1.Machines.ListMachinesRequest = acyclic.machines.v1.Machines.ListMachinesRequest.newBuilder().apply {
+  fun machinesListMachines(page_limit: RustSemanticTypesKotlin.MachinePageLimit): acyclic.machines.v1.Machines.ListMachinesRequest = acyclic.machines.v1.Machines.ListMachinesRequest.newBuilder().apply {
     setLimit(page_limit.toWire().toInt())
   }.build()
 
   fun machinesOperation(operation_id: RustSemanticTypesKotlin.OperationId): acyclic.machines.v1.Machines.OperationRequest = acyclic.machines.v1.Machines.OperationRequest.newBuilder().apply {
-    setOperation(acyclic.machines.v1.Machines.OperationId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(operation_id.toWire(), kotlin.text.Charsets.UTF_8)).build())
+    setOperation(acyclic.machines.v1.Machines.OperationId.newBuilder().setValue(operation_id.toWire()).build())
+  }.build()
+
+  fun machinesQualifyImage(image: RustSemanticTypesKotlin.Image): acyclic.machines.v1.Machines.QualifyImageRequest = acyclic.machines.v1.Machines.QualifyImageRequest.newBuilder().apply {
+    setImage((image.toWire() as acyclic.machines.v1.Machines.Image))
   }.build()
 
   fun objectsGetObject(key: RustSemanticTypesKotlin.ObjectKey): acyclic.objects.v2.Objects.GetObjectRequest = acyclic.objects.v2.Objects.GetObjectRequest.newBuilder().apply {
@@ -77,7 +85,7 @@ object RustTypedRequestsKotlin {
     setCommitId(commit_id.toWire())
   }.build()
 
-  fun streamRead(limit: RustSemanticTypesKotlin.PageLimit): acyclic.stream.v2.Stream.ReadRequest = acyclic.stream.v2.Stream.ReadRequest.newBuilder().apply {
+  fun streamRead(limit: RustSemanticTypesKotlin.StreamPageLimit): acyclic.stream.v2.Stream.ReadRequest = acyclic.stream.v2.Stream.ReadRequest.newBuilder().apply {
     setLimit(limit.toWire().toInt())
   }.build()
 
@@ -94,5 +102,217 @@ object RustTypedRequestsKotlin {
     setVersionSha256(version_sha256.toWire())
     setIdempotencyKey(idempotency_key.toWire())
   }.build()
+
+  data class ActorsActorsAddSubscriptionRequest(val value: acyclic.actors.v1.Actors.AddSubscriptionRequest) { fun toWire(): acyclic.actors.v1.Actors.AddSubscriptionRequest = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.AddSubscriptionRequest): ActorsActorsAddSubscriptionRequest = ActorsActorsAddSubscriptionRequest(value) } }
+
+  data class ActorsActorsCheckpointActorRequest(val value: acyclic.actors.v1.Actors.CheckpointActorRequest) { fun toWire(): acyclic.actors.v1.Actors.CheckpointActorRequest = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.CheckpointActorRequest): ActorsActorsCheckpointActorRequest = ActorsActorsCheckpointActorRequest(value) } }
+
+  data class ActorsActorsCreateActorRequest(val value: acyclic.actors.v1.Actors.CreateActorRequest) { fun toWire(): acyclic.actors.v1.Actors.CreateActorRequest = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.CreateActorRequest): ActorsActorsCreateActorRequest = ActorsActorsCreateActorRequest(value) } }
+
+  data class ActorsActorsInspectActorRequest(val value: acyclic.actors.v1.Actors.InspectActorRequest) { fun toWire(): acyclic.actors.v1.Actors.InspectActorRequest = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.InspectActorRequest): ActorsActorsInspectActorRequest = ActorsActorsInspectActorRequest(value) } }
+
+  data class ActorsActorsInvokeActorRequest(val value: acyclic.actors.v1.Actors.InvokeActorRequest) { fun toWire(): acyclic.actors.v1.Actors.InvokeActorRequest = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.InvokeActorRequest): ActorsActorsInvokeActorRequest = ActorsActorsInvokeActorRequest(value) } }
+
+  data class ActorsActorsRemoveSubscriptionRequest(val value: acyclic.actors.v1.Actors.RemoveSubscriptionRequest) { fun toWire(): acyclic.actors.v1.Actors.RemoveSubscriptionRequest = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.RemoveSubscriptionRequest): ActorsActorsRemoveSubscriptionRequest = ActorsActorsRemoveSubscriptionRequest(value) } }
+
+  data class ActorsActorsResumeSubscriptionRequest(val value: acyclic.actors.v1.Actors.ResumeSubscriptionRequest) { fun toWire(): acyclic.actors.v1.Actors.ResumeSubscriptionRequest = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.ResumeSubscriptionRequest): ActorsActorsResumeSubscriptionRequest = ActorsActorsResumeSubscriptionRequest(value) } }
+
+  data class ActorsActorsUpdateActorRequest(val value: acyclic.actors.v1.Actors.UpdateActorRequest) { fun toWire(): acyclic.actors.v1.Actors.UpdateActorRequest = value; companion object { fun fromWire(value: acyclic.actors.v1.Actors.UpdateActorRequest): ActorsActorsUpdateActorRequest = ActorsActorsUpdateActorRequest(value) } }
+
+  data class FilesystemFilesystemApplyJoinRequest(val value: acyclic.filesystem.v2.Filesystem.ApplyJoinRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.ApplyJoinRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ApplyJoinRequest): FilesystemFilesystemApplyJoinRequest = FilesystemFilesystemApplyJoinRequest(value) } }
+
+  data class FilesystemFilesystemApplyTransactionRequest(val value: acyclic.filesystem.v2.Filesystem.ApplyTransactionRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.ApplyTransactionRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ApplyTransactionRequest): FilesystemFilesystemApplyTransactionRequest = FilesystemFilesystemApplyTransactionRequest(value) } }
+
+  data class FilesystemFilesystemCancelRequest(val value: acyclic.filesystem.v2.Filesystem.CancelRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.CancelRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.CancelRequest): FilesystemFilesystemCancelRequest = FilesystemFilesystemCancelRequest(value) } }
+
+  data class FilesystemFilesystemCheckpointRequest(val value: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.RetainGenerationRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest): FilesystemFilesystemCheckpointRequest = FilesystemFilesystemCheckpointRequest(value) } }
+
+  data class FilesystemFilesystemCreateWorkspaceRequest(val value: acyclic.filesystem.v2.Filesystem.CreateWorkspaceRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.CreateWorkspaceRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.CreateWorkspaceRequest): FilesystemFilesystemCreateWorkspaceRequest = FilesystemFilesystemCreateWorkspaceRequest(value) } }
+
+  data class FilesystemFilesystemDeleteWorkspaceRequest(val value: acyclic.filesystem.v2.Filesystem.DeleteWorkspaceRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.DeleteWorkspaceRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.DeleteWorkspaceRequest): FilesystemFilesystemDeleteWorkspaceRequest = FilesystemFilesystemDeleteWorkspaceRequest(value) } }
+
+  data class FilesystemFilesystemDiffRequest(val value: acyclic.filesystem.v2.Filesystem.DiffRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.DiffRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.DiffRequest): FilesystemFilesystemDiffRequest = FilesystemFilesystemDiffRequest(value) } }
+
+  data class FilesystemFilesystemExportRequest(val value: acyclic.filesystem.v2.Filesystem.ExportRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.ExportRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ExportRequest): FilesystemFilesystemExportRequest = FilesystemFilesystemExportRequest(value) } }
+
+  data class FilesystemFilesystemForkWorkspaceRequest(val value: acyclic.filesystem.v2.Filesystem.ForkWorkspaceRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.ForkWorkspaceRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ForkWorkspaceRequest): FilesystemFilesystemForkWorkspaceRequest = FilesystemFilesystemForkWorkspaceRequest(value) } }
+
+  data class FilesystemFilesystemGetGenerationRequest(val value: acyclic.filesystem.v2.Filesystem.GetGenerationRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.GetGenerationRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.GetGenerationRequest): FilesystemFilesystemGetGenerationRequest = FilesystemFilesystemGetGenerationRequest(value) } }
+
+  data class FilesystemFilesystemGetHeadRequest(val value: acyclic.filesystem.v2.Filesystem.GetHeadRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.GetHeadRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.GetHeadRequest): FilesystemFilesystemGetHeadRequest = FilesystemFilesystemGetHeadRequest(value) } }
+
+  data class FilesystemFilesystemGetSourceStateRequest(val value: acyclic.filesystem.v2.Filesystem.SourceStateRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.SourceStateRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.SourceStateRequest): FilesystemFilesystemGetSourceStateRequest = FilesystemFilesystemGetSourceStateRequest(value) } }
+
+  data class FilesystemFilesystemHandshakeRequest(val value: acyclic.filesystem.v2.Filesystem.HandshakeRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.HandshakeRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.HandshakeRequest): FilesystemFilesystemHandshakeRequest = FilesystemFilesystemHandshakeRequest(value) } }
+
+  data class FilesystemFilesystemImportRequest(val value: acyclic.filesystem.v2.Filesystem.ImportChunk) { fun toWire(): acyclic.filesystem.v2.Filesystem.ImportChunk = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ImportChunk): FilesystemFilesystemImportRequest = FilesystemFilesystemImportRequest(value) } }
+
+  data class FilesystemFilesystemIssueMountCredentialRequest(val value: acyclic.filesystem.v2.Filesystem.CredentialRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.CredentialRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.CredentialRequest): FilesystemFilesystemIssueMountCredentialRequest = FilesystemFilesystemIssueMountCredentialRequest(value) } }
+
+  data class FilesystemFilesystemIssueS3CredentialRequest(val value: acyclic.filesystem.v2.Filesystem.CredentialRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.CredentialRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.CredentialRequest): FilesystemFilesystemIssueS3CredentialRequest = FilesystemFilesystemIssueS3CredentialRequest(value) } }
+
+  data class FilesystemFilesystemListDirectoryRequest(val value: acyclic.filesystem.v2.Filesystem.ListDirectoryRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.ListDirectoryRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ListDirectoryRequest): FilesystemFilesystemListDirectoryRequest = FilesystemFilesystemListDirectoryRequest(value) } }
+
+  data class FilesystemFilesystemObserveRequest(val value: acyclic.filesystem.v2.Filesystem.ObserveRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.ObserveRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ObserveRequest): FilesystemFilesystemObserveRequest = FilesystemFilesystemObserveRequest(value) } }
+
+  data class FilesystemFilesystemOpenWorkspaceRequest(val value: acyclic.filesystem.v2.Filesystem.OpenWorkspaceRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.OpenWorkspaceRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.OpenWorkspaceRequest): FilesystemFilesystemOpenWorkspaceRequest = FilesystemFilesystemOpenWorkspaceRequest(value) } }
+
+  data class FilesystemFilesystemPinRequest(val value: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.RetainGenerationRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest): FilesystemFilesystemPinRequest = FilesystemFilesystemPinRequest(value) } }
+
+  data class FilesystemFilesystemPlanExtentsRequest(val value: acyclic.filesystem.v2.Filesystem.PlanExtentsRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.PlanExtentsRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.PlanExtentsRequest): FilesystemFilesystemPlanExtentsRequest = FilesystemFilesystemPlanExtentsRequest(value) } }
+
+  data class FilesystemFilesystemPlanJoinRequest(val value: acyclic.filesystem.v2.Filesystem.PlanJoinRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.PlanJoinRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.PlanJoinRequest): FilesystemFilesystemPlanJoinRequest = FilesystemFilesystemPlanJoinRequest(value) } }
+
+  data class FilesystemFilesystemReadRequest(val value: acyclic.filesystem.v2.Filesystem.ReadRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.ReadRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ReadRequest): FilesystemFilesystemReadRequest = FilesystemFilesystemReadRequest(value) } }
+
+  data class FilesystemFilesystemReadLinkRequest(val value: acyclic.filesystem.v2.Filesystem.ReadLinkRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.ReadLinkRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.ReadLinkRequest): FilesystemFilesystemReadLinkRequest = FilesystemFilesystemReadLinkRequest(value) } }
+
+  data class FilesystemFilesystemRebaseRequest(val value: acyclic.filesystem.v2.Filesystem.RebaseRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.RebaseRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.RebaseRequest): FilesystemFilesystemRebaseRequest = FilesystemFilesystemRebaseRequest(value) } }
+
+  data class FilesystemFilesystemRebaseTransactionRequest(val value: acyclic.filesystem.v2.Filesystem.RebaseTransactionRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.RebaseTransactionRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.RebaseTransactionRequest): FilesystemFilesystemRebaseTransactionRequest = FilesystemFilesystemRebaseTransactionRequest(value) } }
+
+  data class FilesystemFilesystemReconcileSourceRequest(val value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.SourceOperationRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest): FilesystemFilesystemReconcileSourceRequest = FilesystemFilesystemReconcileSourceRequest(value) } }
+
+  data class FilesystemFilesystemRescanSourceRequest(val value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.SourceOperationRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest): FilesystemFilesystemRescanSourceRequest = FilesystemFilesystemRescanSourceRequest(value) } }
+
+  data class FilesystemFilesystemSealSourceRequest(val value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.SourceOperationRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest): FilesystemFilesystemSealSourceRequest = FilesystemFilesystemSealSourceRequest(value) } }
+
+  data class FilesystemFilesystemStatRequest(val value: acyclic.filesystem.v2.Filesystem.StatRequest) { fun toWire(): acyclic.filesystem.v2.Filesystem.StatRequest = value; companion object { fun fromWire(value: acyclic.filesystem.v2.Filesystem.StatRequest): FilesystemFilesystemStatRequest = FilesystemFilesystemStatRequest(value) } }
+
+  data class HarnessHarnessCancelRequest(val value: acyclic.harness.v2.Harness.CancelRequest) { fun toWire(): acyclic.harness.v2.Harness.CancelRequest = value; companion object { fun fromWire(value: acyclic.harness.v2.Harness.CancelRequest): HarnessHarnessCancelRequest = HarnessHarnessCancelRequest(value) } }
+
+  data class HarnessHarnessHandshakeRequest(val value: acyclic.protocol.v1.Protocol.HandshakeRequest) { fun toWire(): acyclic.protocol.v1.Protocol.HandshakeRequest = value; companion object { fun fromWire(value: acyclic.protocol.v1.Protocol.HandshakeRequest): HarnessHarnessHandshakeRequest = HarnessHarnessHandshakeRequest(value) } }
+
+  data class HarnessHarnessObserveRequest(val value: acyclic.harness.v2.Harness.ObserveRequest) { fun toWire(): acyclic.harness.v2.Harness.ObserveRequest = value; companion object { fun fromWire(value: acyclic.harness.v2.Harness.ObserveRequest): HarnessHarnessObserveRequest = HarnessHarnessObserveRequest(value) } }
+
+  data class HarnessHarnessReplayRequest(val value: acyclic.harness.v2.Harness.ResumeRequest) { fun toWire(): acyclic.harness.v2.Harness.ResumeRequest = value; companion object { fun fromWire(value: acyclic.harness.v2.Harness.ResumeRequest): HarnessHarnessReplayRequest = HarnessHarnessReplayRequest(value) } }
+
+  data class HarnessHarnessSubmitRequest(val value: acyclic.harness.v2.Harness.CommandEnvelope) { fun toWire(): acyclic.harness.v2.Harness.CommandEnvelope = value; companion object { fun fromWire(value: acyclic.harness.v2.Harness.CommandEnvelope): HarnessHarnessSubmitRequest = HarnessHarnessSubmitRequest(value) } }
+
+  data class MachinesMachinesCancelRequest(val value: acyclic.machines.v1.Machines.OperationRequest) { fun toWire(): acyclic.machines.v1.Machines.OperationRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.OperationRequest): MachinesMachinesCancelRequest = MachinesMachinesCancelRequest(value) } }
+
+  data class MachinesMachinesCheckpointRequest(val value: acyclic.machines.v1.Machines.CheckpointMachineRequest) { fun toWire(): acyclic.machines.v1.Machines.CheckpointMachineRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.CheckpointMachineRequest): MachinesMachinesCheckpointRequest = MachinesMachinesCheckpointRequest(value) } }
+
+  data class MachinesMachinesCreateRequest(val value: acyclic.machines.v1.Machines.CreateMachineRequest) { fun toWire(): acyclic.machines.v1.Machines.CreateMachineRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.CreateMachineRequest): MachinesMachinesCreateRequest = MachinesMachinesCreateRequest(value) } }
+
+  data class MachinesMachinesDestroyCheckpointRequest(val value: acyclic.machines.v1.Machines.CheckpointMutationRequest) { fun toWire(): acyclic.machines.v1.Machines.CheckpointMutationRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.CheckpointMutationRequest): MachinesMachinesDestroyCheckpointRequest = MachinesMachinesDestroyCheckpointRequest(value) } }
+
+  data class MachinesMachinesDestroyMachineRequest(val value: acyclic.machines.v1.Machines.MachineMutationRequest) { fun toWire(): acyclic.machines.v1.Machines.MachineMutationRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MachineMutationRequest): MachinesMachinesDestroyMachineRequest = MachinesMachinesDestroyMachineRequest(value) } }
+
+  data class MachinesMachinesEventsRequest(val value: acyclic.machines.v1.Machines.EventsRequest) { fun toWire(): acyclic.machines.v1.Machines.EventsRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.EventsRequest): MachinesMachinesEventsRequest = MachinesMachinesEventsRequest(value) } }
+
+  data class MachinesMachinesForkRequest(val value: acyclic.machines.v1.Machines.ForkCheckpointRequest) { fun toWire(): acyclic.machines.v1.Machines.ForkCheckpointRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.ForkCheckpointRequest): MachinesMachinesForkRequest = MachinesMachinesForkRequest(value) } }
+
+  data class MachinesMachinesForkMachineRequest(val value: acyclic.machines.v1.Machines.ForkMachineRequest) { fun toWire(): acyclic.machines.v1.Machines.ForkMachineRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.ForkMachineRequest): MachinesMachinesForkMachineRequest = MachinesMachinesForkMachineRequest(value) } }
+
+  data class MachinesMachinesInspectCheckpointRequest(val value: acyclic.machines.v1.Machines.InspectCheckpointRequest) { fun toWire(): acyclic.machines.v1.Machines.InspectCheckpointRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.InspectCheckpointRequest): MachinesMachinesInspectCheckpointRequest = MachinesMachinesInspectCheckpointRequest(value) } }
+
+  data class MachinesMachinesInspectMachineRequest(val value: acyclic.machines.v1.Machines.InspectMachineRequest) { fun toWire(): acyclic.machines.v1.Machines.InspectMachineRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.InspectMachineRequest): MachinesMachinesInspectMachineRequest = MachinesMachinesInspectMachineRequest(value) } }
+
+  data class MachinesMachinesInspectOperationRequest(val value: acyclic.machines.v1.Machines.OperationRequest) { fun toWire(): acyclic.machines.v1.Machines.OperationRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.OperationRequest): MachinesMachinesInspectOperationRequest = MachinesMachinesInspectOperationRequest(value) } }
+
+  data class MachinesMachinesListMachinesRequest(val value: acyclic.machines.v1.Machines.ListMachinesRequest) { fun toWire(): acyclic.machines.v1.Machines.ListMachinesRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.ListMachinesRequest): MachinesMachinesListMachinesRequest = MachinesMachinesListMachinesRequest(value) } }
+
+  data class MachinesMachinesQualifyImageRequest(val value: acyclic.machines.v1.Machines.QualifyImageRequest) { fun toWire(): acyclic.machines.v1.Machines.QualifyImageRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.QualifyImageRequest): MachinesMachinesQualifyImageRequest = MachinesMachinesQualifyImageRequest(value) } }
+
+  data class MachinesMachinesRecoverRequest(val value: acyclic.machines.v1.Machines.RecoverRequest) { fun toWire(): acyclic.machines.v1.Machines.RecoverRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.RecoverRequest): MachinesMachinesRecoverRequest = MachinesMachinesRecoverRequest(value) } }
+
+  data class MachinesMachinesSetSuspensionPolicyRequest(val value: acyclic.machines.v1.Machines.SetSuspensionPolicyRequest) { fun toWire(): acyclic.machines.v1.Machines.SetSuspensionPolicyRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.SetSuspensionPolicyRequest): MachinesMachinesSetSuspensionPolicyRequest = MachinesMachinesSetSuspensionPolicyRequest(value) } }
+
+  data class MachinesMachinesSuspendRequest(val value: acyclic.machines.v1.Machines.MachineMutationRequest) { fun toWire(): acyclic.machines.v1.Machines.MachineMutationRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MachineMutationRequest): MachinesMachinesSuspendRequest = MachinesMachinesSuspendRequest(value) } }
+
+  data class MachinesMachinesUsageRequest(val value: acyclic.machines.v1.Machines.UsageRequest) { fun toWire(): acyclic.machines.v1.Machines.UsageRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.UsageRequest): MachinesMachinesUsageRequest = MachinesMachinesUsageRequest(value) } }
+
+  data class MachinesMachinesWakeRequest(val value: acyclic.machines.v1.Machines.MachineMutationRequest) { fun toWire(): acyclic.machines.v1.Machines.MachineMutationRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.MachineMutationRequest): MachinesMachinesWakeRequest = MachinesMachinesWakeRequest(value) } }
+
+  data class MachinesMachinesWatchOperationRequest(val value: acyclic.machines.v1.Machines.OperationRequest) { fun toWire(): acyclic.machines.v1.Machines.OperationRequest = value; companion object { fun fromWire(value: acyclic.machines.v1.Machines.OperationRequest): MachinesMachinesWatchOperationRequest = MachinesMachinesWatchOperationRequest(value) } }
+
+  data class ObjectsBucketsCreateBucketRequest(val value: acyclic.objects.v2.Objects.CreateBucketRequest) { fun toWire(): acyclic.objects.v2.Objects.CreateBucketRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.CreateBucketRequest): ObjectsBucketsCreateBucketRequest = ObjectsBucketsCreateBucketRequest(value) } }
+
+  data class ObjectsBucketsDeleteBucketRequest(val value: acyclic.objects.v2.Objects.DeleteBucketRequest) { fun toWire(): acyclic.objects.v2.Objects.DeleteBucketRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.DeleteBucketRequest): ObjectsBucketsDeleteBucketRequest = ObjectsBucketsDeleteBucketRequest(value) } }
+
+  data class ObjectsBucketsHeadBucketRequest(val value: acyclic.objects.v2.Objects.HeadBucketRequest) { fun toWire(): acyclic.objects.v2.Objects.HeadBucketRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.HeadBucketRequest): ObjectsBucketsHeadBucketRequest = ObjectsBucketsHeadBucketRequest(value) } }
+
+  data class ObjectsMultipartAbortMultipartRequest(val value: acyclic.objects.v2.Objects.AbortMultipartRequest) { fun toWire(): acyclic.objects.v2.Objects.AbortMultipartRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.AbortMultipartRequest): ObjectsMultipartAbortMultipartRequest = ObjectsMultipartAbortMultipartRequest(value) } }
+
+  data class ObjectsMultipartCompleteMultipartRequest(val value: acyclic.objects.v2.Objects.CompleteMultipartRequest) { fun toWire(): acyclic.objects.v2.Objects.CompleteMultipartRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.CompleteMultipartRequest): ObjectsMultipartCompleteMultipartRequest = ObjectsMultipartCompleteMultipartRequest(value) } }
+
+  data class ObjectsMultipartCreateMultipartRequest(val value: acyclic.objects.v2.Objects.CreateMultipartRequest) { fun toWire(): acyclic.objects.v2.Objects.CreateMultipartRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.CreateMultipartRequest): ObjectsMultipartCreateMultipartRequest = ObjectsMultipartCreateMultipartRequest(value) } }
+
+  data class ObjectsMultipartListPartsRequest(val value: acyclic.objects.v2.Objects.ListPartsRequest) { fun toWire(): acyclic.objects.v2.Objects.ListPartsRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.ListPartsRequest): ObjectsMultipartListPartsRequest = ObjectsMultipartListPartsRequest(value) } }
+
+  data class ObjectsMultipartUploadPartRequest(val value: acyclic.objects.v2.Objects.UploadPartRequest) { fun toWire(): acyclic.objects.v2.Objects.UploadPartRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.UploadPartRequest): ObjectsMultipartUploadPartRequest = ObjectsMultipartUploadPartRequest(value) } }
+
+  data class ObjectsObjectsDeleteObjectRequest(val value: acyclic.objects.v2.Objects.DeleteObjectRequest) { fun toWire(): acyclic.objects.v2.Objects.DeleteObjectRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.DeleteObjectRequest): ObjectsObjectsDeleteObjectRequest = ObjectsObjectsDeleteObjectRequest(value) } }
+
+  data class ObjectsObjectsGetObjectRequest(val value: acyclic.objects.v2.Objects.GetObjectRequest) { fun toWire(): acyclic.objects.v2.Objects.GetObjectRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.GetObjectRequest): ObjectsObjectsGetObjectRequest = ObjectsObjectsGetObjectRequest(value) } }
+
+  data class ObjectsObjectsHeadObjectRequest(val value: acyclic.objects.v2.Objects.HeadObjectRequest) { fun toWire(): acyclic.objects.v2.Objects.HeadObjectRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.HeadObjectRequest): ObjectsObjectsHeadObjectRequest = ObjectsObjectsHeadObjectRequest(value) } }
+
+  data class ObjectsObjectsListObjectsRequest(val value: acyclic.objects.v2.Objects.ListObjectsRequest) { fun toWire(): acyclic.objects.v2.Objects.ListObjectsRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.ListObjectsRequest): ObjectsObjectsListObjectsRequest = ObjectsObjectsListObjectsRequest(value) } }
+
+  data class ObjectsObjectsPutObjectRequest(val value: acyclic.objects.v2.Objects.PutObjectRequest) { fun toWire(): acyclic.objects.v2.Objects.PutObjectRequest = value; companion object { fun fromWire(value: acyclic.objects.v2.Objects.PutObjectRequest): ObjectsObjectsPutObjectRequest = ObjectsObjectsPutObjectRequest(value) } }
+
+  data class StreamStreamAppendRequest(val value: acyclic.stream.v2.Stream.AppendRequest) { fun toWire(): acyclic.stream.v2.Stream.AppendRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.AppendRequest): StreamStreamAppendRequest = StreamStreamAppendRequest(value) } }
+
+  data class StreamStreamChildrenRequest(val value: acyclic.stream.v2.Stream.ChildrenRequest) { fun toWire(): acyclic.stream.v2.Stream.ChildrenRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ChildrenRequest): StreamStreamChildrenRequest = StreamStreamChildrenRequest(value) } }
+
+  data class StreamStreamChildrenPageRequest(val value: acyclic.stream.v2.Stream.ChildrenPageRequest) { fun toWire(): acyclic.stream.v2.Stream.ChildrenPageRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ChildrenPageRequest): StreamStreamChildrenPageRequest = StreamStreamChildrenPageRequest(value) } }
+
+  data class StreamStreamCommitRequest(val value: acyclic.stream.v2.Stream.CommitRequest) { fun toWire(): acyclic.stream.v2.Stream.CommitRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.CommitRequest): StreamStreamCommitRequest = StreamStreamCommitRequest(value) } }
+
+  data class StreamStreamFollowRequest(val value: acyclic.stream.v2.Stream.FollowRequest) { fun toWire(): acyclic.stream.v2.Stream.FollowRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.FollowRequest): StreamStreamFollowRequest = StreamStreamFollowRequest(value) } }
+
+  data class StreamStreamForkRequest(val value: acyclic.stream.v2.Stream.ForkRequest) { fun toWire(): acyclic.stream.v2.Stream.ForkRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ForkRequest): StreamStreamForkRequest = StreamStreamForkRequest(value) } }
+
+  data class StreamStreamInspectIdempotencyRequest(val value: acyclic.stream.v2.Stream.InspectIdempotencyRequest) { fun toWire(): acyclic.stream.v2.Stream.InspectIdempotencyRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.InspectIdempotencyRequest): StreamStreamInspectIdempotencyRequest = StreamStreamInspectIdempotencyRequest(value) } }
+
+  data class StreamStreamReadRequest(val value: acyclic.stream.v2.Stream.ReadRequest) { fun toWire(): acyclic.stream.v2.Stream.ReadRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ReadRequest): StreamStreamReadRequest = StreamStreamReadRequest(value) } }
+
+  data class StreamStreamReadCommitRequest(val value: acyclic.stream.v2.Stream.ReadCommitRequest) { fun toWire(): acyclic.stream.v2.Stream.ReadCommitRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.ReadCommitRequest): StreamStreamReadCommitRequest = StreamStreamReadCommitRequest(value) } }
+
+  data class StreamStreamTailRequest(val value: acyclic.stream.v2.Stream.TailRequest) { fun toWire(): acyclic.stream.v2.Stream.TailRequest = value; companion object { fun fromWire(value: acyclic.stream.v2.Stream.TailRequest): StreamStreamTailRequest = StreamStreamTailRequest(value) } }
+
+  data class WorkersWorkersCancelJobRequest(val value: acyclic.workers.v1.Workers.CancelJobRequest) { fun toWire(): acyclic.workers.v1.Workers.CancelJobRequest = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.CancelJobRequest): WorkersWorkersCancelJobRequest = WorkersWorkersCancelJobRequest(value) } }
+
+  data class WorkersWorkersInspectJobRequest(val value: acyclic.workers.v1.Workers.InspectJobRequest) { fun toWire(): acyclic.workers.v1.Workers.InspectJobRequest = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.InspectJobRequest): WorkersWorkersInspectJobRequest = WorkersWorkersInspectJobRequest(value) } }
+
+  data class WorkersWorkersInvokeDeploymentRequest(val value: acyclic.workers.v1.Workers.InvokeDeploymentRequest) { fun toWire(): acyclic.workers.v1.Workers.InvokeDeploymentRequest = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.InvokeDeploymentRequest): WorkersWorkersInvokeDeploymentRequest = WorkersWorkersInvokeDeploymentRequest(value) } }
+
+  data class WorkersWorkersInvokeVersionRequest(val value: acyclic.workers.v1.Workers.InvokeVersionRequest) { fun toWire(): acyclic.workers.v1.Workers.InvokeVersionRequest = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.InvokeVersionRequest): WorkersWorkersInvokeVersionRequest = WorkersWorkersInvokeVersionRequest(value) } }
+
+  data class WorkersWorkersPublishVersionRequest(val value: acyclic.workers.v1.Workers.PublishVersionRequest) { fun toWire(): acyclic.workers.v1.Workers.PublishVersionRequest = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.PublishVersionRequest): WorkersWorkersPublishVersionRequest = WorkersWorkersPublishVersionRequest(value) } }
+
+  data class WorkersWorkersSelectDeploymentRequest(val value: acyclic.workers.v1.Workers.SelectDeploymentRequest) { fun toWire(): acyclic.workers.v1.Workers.SelectDeploymentRequest = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.SelectDeploymentRequest): WorkersWorkersSelectDeploymentRequest = WorkersWorkersSelectDeploymentRequest(value) } }
+
+  data class WorkersWorkersSubmitJobRequest(val value: acyclic.workers.v1.Workers.SubmitJobRequest) { fun toWire(): acyclic.workers.v1.Workers.SubmitJobRequest = value; companion object { fun fromWire(value: acyclic.workers.v1.Workers.SubmitJobRequest): WorkersWorkersSubmitJobRequest = WorkersWorkersSubmitJobRequest(value) } }
+
+  data class InferenceContextsCreateRequest(val value: inference.customer.v1.Inference.CreateContextRequest) { fun toWire(): inference.customer.v1.Inference.CreateContextRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.CreateContextRequest): InferenceContextsCreateRequest = InferenceContextsCreateRequest(value) } }
+
+  data class InferenceContextsInspectRequest(val value: inference.customer.v1.Inference.InspectContextRequest) { fun toWire(): inference.customer.v1.Inference.InspectContextRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.InspectContextRequest): InferenceContextsInspectRequest = InferenceContextsInspectRequest(value) } }
+
+  data class InferenceContextsMutateRequest(val value: inference.customer.v1.Inference.MutateContextRequest) { fun toWire(): inference.customer.v1.Inference.MutateContextRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.MutateContextRequest): InferenceContextsMutateRequest = InferenceContextsMutateRequest(value) } }
+
+  data class InferenceEvaluationsCreateRequest(val value: inference.customer.v1.Inference.CreateEvaluationRequest) { fun toWire(): inference.customer.v1.Inference.CreateEvaluationRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.CreateEvaluationRequest): InferenceEvaluationsCreateRequest = InferenceEvaluationsCreateRequest(value) } }
+
+  data class InferenceEvaluationsInspectRequest(val value: inference.customer.v1.Inference.InspectEvaluationRequest) { fun toWire(): inference.customer.v1.Inference.InspectEvaluationRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.InspectEvaluationRequest): InferenceEvaluationsInspectRequest = InferenceEvaluationsInspectRequest(value) } }
+
+  data class InferenceModelsListRequest(val value: inference.customer.v1.Inference.ListModelsRequest) { fun toWire(): inference.customer.v1.Inference.ListModelsRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.ListModelsRequest): InferenceModelsListRequest = InferenceModelsListRequest(value) } }
+
+  data class InferenceRunsCancelRequest(val value: inference.customer.v1.Inference.InspectRunRequest) { fun toWire(): inference.customer.v1.Inference.InspectRunRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.InspectRunRequest): InferenceRunsCancelRequest = InferenceRunsCancelRequest(value) } }
+
+  data class InferenceRunsGenerateRequest(val value: inference.customer.v1.Inference.GenerateRunRequest) { fun toWire(): inference.customer.v1.Inference.GenerateRunRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.GenerateRunRequest): InferenceRunsGenerateRequest = InferenceRunsGenerateRequest(value) } }
+
+  data class InferenceRunsInspectRequest(val value: inference.customer.v1.Inference.InspectRunRequest) { fun toWire(): inference.customer.v1.Inference.InspectRunRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.InspectRunRequest): InferenceRunsInspectRequest = InferenceRunsInspectRequest(value) } }
+
+  data class InferenceRunsWatchRequest(val value: inference.customer.v1.Inference.WatchRunRequest) { fun toWire(): inference.customer.v1.Inference.WatchRunRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.WatchRunRequest): InferenceRunsWatchRequest = InferenceRunsWatchRequest(value) } }
+
+  data class InferenceWarmContextsInspectRequest(val value: inference.customer.v1.Inference.InspectWarmRequest) { fun toWire(): inference.customer.v1.Inference.InspectWarmRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.InspectWarmRequest): InferenceWarmContextsInspectRequest = InferenceWarmContextsInspectRequest(value) } }
+
+  data class InferenceWarmContextsReleaseRequest(val value: inference.customer.v1.Inference.ReleaseWarmRequest) { fun toWire(): inference.customer.v1.Inference.ReleaseWarmRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.ReleaseWarmRequest): InferenceWarmContextsReleaseRequest = InferenceWarmContextsReleaseRequest(value) } }
+
+  data class InferenceWarmContextsRenewRequest(val value: inference.customer.v1.Inference.RenewWarmRequest) { fun toWire(): inference.customer.v1.Inference.RenewWarmRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.RenewWarmRequest): InferenceWarmContextsRenewRequest = InferenceWarmContextsRenewRequest(value) } }
+
+  data class InferenceWarmContextsRetainRequest(val value: inference.customer.v1.Inference.RetainWarmRequest) { fun toWire(): inference.customer.v1.Inference.RetainWarmRequest = value; companion object { fun fromWire(value: inference.customer.v1.Inference.RetainWarmRequest): InferenceWarmContextsRetainRequest = InferenceWarmContextsRetainRequest(value) } }
 
 }

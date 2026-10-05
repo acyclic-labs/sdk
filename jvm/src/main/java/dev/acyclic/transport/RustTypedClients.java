@@ -41,6 +41,11 @@ public final class RustTypedClients {
     return RustTypedResponses.MachinesCreateMachineResponse.fromWire(wire);
   }
 
+  public static RustTypedResponses.MachinesEventsResponse machinesEvents(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.MachineEventPageLimit event_page_limit) {
+    var wire = stub.events(RustTypedRequests.machinesEvents(event_page_limit));
+    return RustTypedResponses.MachinesEventsResponse.fromWire(wire);
+  }
+
   public static RustTypedResponses.MachinesInspectCheckpointResponse machinesInspectCheckpoint(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.CheckpointId checkpoint_id) {
     var wire = stub.inspectCheckpoint(RustTypedRequests.machinesInspectCheckpoint(checkpoint_id));
     return RustTypedResponses.MachinesInspectCheckpointResponse.fromWire(wire);
@@ -59,6 +64,11 @@ public final class RustTypedClients {
   public static RustTypedResponses.MachinesOperationResponse machinesOperation(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.OperationId operation_id) {
     var wire = stub.inspectOperation(RustTypedRequests.machinesOperation(operation_id));
     return RustTypedResponses.MachinesOperationResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesQualifyImageResponse machinesQualifyImage(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.Image image) {
+    var wire = stub.qualifyImage(RustTypedRequests.machinesQualifyImage(image));
+    return RustTypedResponses.MachinesQualifyImageResponse.fromWire(wire);
   }
 
   public static java.util.Iterator<RustTypedResponses.ObjectsGetObjectResponse> objectsGetObject(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustSemanticTypes.ObjectKey key) {
@@ -109,6 +119,436 @@ public final class RustTypedClients {
   public static RustTypedResponses.WorkersSelectDeploymentResponse workersSelectDeployment(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustSemanticTypes.VersionAlias alias, RustSemanticTypes.Sha256Digest version_sha256, RustSemanticTypes.IdempotencyKeyText idempotency_key) {
     var wire = stub.selectDeployment(RustTypedRequests.workersSelectDeployment(alias, version_sha256, idempotency_key));
     return RustTypedResponses.WorkersSelectDeploymentResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ActorsActorsAddSubscriptionResponse actorsActorsAddSubscription(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustTypedRequests.ActorsActorsAddSubscriptionRequest request) { var wire = stub.addSubscription(request.toWire());
+    return RustTypedResponses.ActorsActorsAddSubscriptionResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ActorsActorsCheckpointActorResponse actorsActorsCheckpointActor(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustTypedRequests.ActorsActorsCheckpointActorRequest request) { var wire = stub.checkpointActor(request.toWire());
+    return RustTypedResponses.ActorsActorsCheckpointActorResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ActorsActorsCreateActorResponse actorsActorsCreateActor(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustTypedRequests.ActorsActorsCreateActorRequest request) { var wire = stub.createActor(request.toWire());
+    return RustTypedResponses.ActorsActorsCreateActorResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ActorsActorsInspectActorResponse actorsActorsInspectActor(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustTypedRequests.ActorsActorsInspectActorRequest request) { var wire = stub.inspectActor(request.toWire());
+    return RustTypedResponses.ActorsActorsInspectActorResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ActorsActorsInvokeActorResponse actorsActorsInvokeActor(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustTypedRequests.ActorsActorsInvokeActorRequest request) { var wire = stub.invokeActor(request.toWire());
+    return RustTypedResponses.ActorsActorsInvokeActorResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ActorsActorsRemoveSubscriptionResponse actorsActorsRemoveSubscription(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustTypedRequests.ActorsActorsRemoveSubscriptionRequest request) { var wire = stub.removeSubscription(request.toWire());
+    return RustTypedResponses.ActorsActorsRemoveSubscriptionResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ActorsActorsResumeSubscriptionResponse actorsActorsResumeSubscription(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustTypedRequests.ActorsActorsResumeSubscriptionRequest request) { var wire = stub.resumeSubscription(request.toWire());
+    return RustTypedResponses.ActorsActorsResumeSubscriptionResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ActorsActorsUpdateActorResponse actorsActorsUpdateActor(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustTypedRequests.ActorsActorsUpdateActorRequest request) { var wire = stub.updateActor(request.toWire());
+    return RustTypedResponses.ActorsActorsUpdateActorResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemApplyJoinResponse filesystemFilesystemApplyJoin(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemApplyJoinRequest request) { var wire = stub.applyJoin(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemApplyJoinResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemApplyTransactionResponse filesystemFilesystemApplyTransaction(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemApplyTransactionRequest request) { var wire = stub.applyTransaction(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemApplyTransactionResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemCancelResponse filesystemFilesystemCancel(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemCancelRequest request) { var wire = stub.cancel(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemCancelResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemCheckpointResponse filesystemFilesystemCheckpoint(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemCheckpointRequest request) { var wire = stub.checkpoint(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemCheckpointResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemCreateWorkspaceResponse filesystemFilesystemCreateWorkspace(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemCreateWorkspaceRequest request) { var wire = stub.createWorkspace(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemCreateWorkspaceResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemDeleteWorkspaceResponse filesystemFilesystemDeleteWorkspace(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemDeleteWorkspaceRequest request) { var wire = stub.deleteWorkspace(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemDeleteWorkspaceResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemDiffResponse filesystemFilesystemDiff(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemDiffRequest request) { var wire = stub.diff(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemDiffResponse.fromWire(wire);
+  }
+
+  public static java.util.Iterator<RustTypedResponses.FilesystemFilesystemExportResponse> filesystemFilesystemExport(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemExportRequest request) { var wire = stub.export(request.toWire());
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.FilesystemFilesystemExportResponse::fromWire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemForkWorkspaceResponse filesystemFilesystemForkWorkspace(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemForkWorkspaceRequest request) { var wire = stub.forkWorkspace(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemForkWorkspaceResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemGetGenerationResponse filesystemFilesystemGetGeneration(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemGetGenerationRequest request) { var wire = stub.getGeneration(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemGetGenerationResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemGetHeadResponse filesystemFilesystemGetHead(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemGetHeadRequest request) { var wire = stub.getHead(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemGetHeadResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemGetSourceStateResponse filesystemFilesystemGetSourceState(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemGetSourceStateRequest request) { var wire = stub.getSourceState(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemGetSourceStateResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemHandshakeResponse filesystemFilesystemHandshake(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemHandshakeRequest request) { var wire = stub.handshake(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemHandshakeResponse.fromWire(wire);
+  }
+
+  public static io.grpc.stub.StreamObserver<RustTypedRequests.FilesystemFilesystemImportRequest> filesystemFilesystemImport(io.grpc.Channel channel, io.grpc.stub.StreamObserver<RustTypedResponses.FilesystemFilesystemImportResponse> observer) {
+    var wireObserver = new io.grpc.stub.StreamObserver<acyclic.filesystem.v2.Filesystem.ImportResponse>() { public void onNext(acyclic.filesystem.v2.Filesystem.ImportResponse value) { observer.onNext(RustTypedResponses.FilesystemFilesystemImportResponse.fromWire(value)); } public void onError(Throwable error) { observer.onError(error); } public void onCompleted() { observer.onCompleted(); } };
+    var wireRequest = io.grpc.stub.ClientCalls.asyncClientStreamingCall(channel.newCall(acyclic.filesystem.v2.FilesystemServiceGrpc.getImportMethod(), io.grpc.CallOptions.DEFAULT), wireObserver);
+    return new io.grpc.stub.StreamObserver<RustTypedRequests.FilesystemFilesystemImportRequest>() { public void onNext(RustTypedRequests.FilesystemFilesystemImportRequest value) { wireRequest.onNext(value.toWire()); } public void onError(Throwable error) { wireRequest.onError(error); } public void onCompleted() { wireRequest.onCompleted(); } };
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemIssueMountCredentialResponse filesystemFilesystemIssueMountCredential(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemIssueMountCredentialRequest request) { var wire = stub.issueMountCredential(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemIssueMountCredentialResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemIssueS3CredentialResponse filesystemFilesystemIssueS3Credential(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemIssueS3CredentialRequest request) { var wire = stub.issueS3Credential(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemIssueS3CredentialResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemListDirectoryResponse filesystemFilesystemListDirectory(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemListDirectoryRequest request) { var wire = stub.listDirectory(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemListDirectoryResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemObserveResponse filesystemFilesystemObserve(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemObserveRequest request) { var wire = stub.observe(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemObserveResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemOpenWorkspaceResponse filesystemFilesystemOpenWorkspace(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemOpenWorkspaceRequest request) { var wire = stub.openWorkspace(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemOpenWorkspaceResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemPinResponse filesystemFilesystemPin(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemPinRequest request) { var wire = stub.pin(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemPinResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemPlanExtentsResponse filesystemFilesystemPlanExtents(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemPlanExtentsRequest request) { var wire = stub.planExtents(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemPlanExtentsResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemPlanJoinResponse filesystemFilesystemPlanJoin(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemPlanJoinRequest request) { var wire = stub.planJoin(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemPlanJoinResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemReadResponse filesystemFilesystemRead(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemReadRequest request) { var wire = stub.read(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemReadResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemReadLinkResponse filesystemFilesystemReadLink(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemReadLinkRequest request) { var wire = stub.readLink(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemReadLinkResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemRebaseResponse filesystemFilesystemRebase(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemRebaseRequest request) { var wire = stub.rebase(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemRebaseResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemRebaseTransactionResponse filesystemFilesystemRebaseTransaction(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemRebaseTransactionRequest request) { var wire = stub.rebaseTransaction(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemRebaseTransactionResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemReconcileSourceResponse filesystemFilesystemReconcileSource(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemReconcileSourceRequest request) { var wire = stub.reconcileSource(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemReconcileSourceResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemRescanSourceResponse filesystemFilesystemRescanSource(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemRescanSourceRequest request) { var wire = stub.rescanSource(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemRescanSourceResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemSealSourceResponse filesystemFilesystemSealSource(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemSealSourceRequest request) { var wire = stub.sealSource(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemSealSourceResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.FilesystemFilesystemStatResponse filesystemFilesystemStat(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustTypedRequests.FilesystemFilesystemStatRequest request) { var wire = stub.stat(request.toWire());
+    return RustTypedResponses.FilesystemFilesystemStatResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.HarnessHarnessCancelResponse harnessHarnessCancel(acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub stub, RustTypedRequests.HarnessHarnessCancelRequest request) { var wire = stub.cancel(request.toWire());
+    return RustTypedResponses.HarnessHarnessCancelResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.HarnessHarnessHandshakeResponse harnessHarnessHandshake(acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub stub, RustTypedRequests.HarnessHarnessHandshakeRequest request) { var wire = stub.handshake(request.toWire());
+    return RustTypedResponses.HarnessHarnessHandshakeResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.HarnessHarnessObserveResponse harnessHarnessObserve(acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub stub, RustTypedRequests.HarnessHarnessObserveRequest request) { var wire = stub.observe(request.toWire());
+    return RustTypedResponses.HarnessHarnessObserveResponse.fromWire(wire);
+  }
+
+  public static java.util.Iterator<RustTypedResponses.HarnessHarnessReplayResponse> harnessHarnessReplay(acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub stub, RustTypedRequests.HarnessHarnessReplayRequest request) { var wire = stub.replay(request.toWire());
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.HarnessHarnessReplayResponse::fromWire);
+  }
+
+  public static RustTypedResponses.HarnessHarnessSubmitResponse harnessHarnessSubmit(acyclic.harness.v2.HarnessServiceGrpc.HarnessServiceBlockingStub stub, RustTypedRequests.HarnessHarnessSubmitRequest request) { var wire = stub.submit(request.toWire());
+    return RustTypedResponses.HarnessHarnessSubmitResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesCancelResponse machinesMachinesCancel(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesCancelRequest request) { var wire = stub.cancel(request.toWire());
+    return RustTypedResponses.MachinesMachinesCancelResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesCheckpointResponse machinesMachinesCheckpoint(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesCheckpointRequest request) { var wire = stub.checkpoint(request.toWire());
+    return RustTypedResponses.MachinesMachinesCheckpointResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesCreateResponse machinesMachinesCreate(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesCreateRequest request) { var wire = stub.create(request.toWire());
+    return RustTypedResponses.MachinesMachinesCreateResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesDestroyCheckpointResponse machinesMachinesDestroyCheckpoint(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesDestroyCheckpointRequest request) { var wire = stub.destroyCheckpoint(request.toWire());
+    return RustTypedResponses.MachinesMachinesDestroyCheckpointResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesDestroyMachineResponse machinesMachinesDestroyMachine(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesDestroyMachineRequest request) { var wire = stub.destroyMachine(request.toWire());
+    return RustTypedResponses.MachinesMachinesDestroyMachineResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesEventsResponse machinesMachinesEvents(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesEventsRequest request) { var wire = stub.events(request.toWire());
+    return RustTypedResponses.MachinesMachinesEventsResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesForkResponse machinesMachinesFork(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesForkRequest request) { var wire = stub.fork(request.toWire());
+    return RustTypedResponses.MachinesMachinesForkResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesForkMachineResponse machinesMachinesForkMachine(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesForkMachineRequest request) { var wire = stub.forkMachine(request.toWire());
+    return RustTypedResponses.MachinesMachinesForkMachineResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesInspectCheckpointResponse machinesMachinesInspectCheckpoint(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesInspectCheckpointRequest request) { var wire = stub.inspectCheckpoint(request.toWire());
+    return RustTypedResponses.MachinesMachinesInspectCheckpointResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesInspectMachineResponse machinesMachinesInspectMachine(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesInspectMachineRequest request) { var wire = stub.inspectMachine(request.toWire());
+    return RustTypedResponses.MachinesMachinesInspectMachineResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesInspectOperationResponse machinesMachinesInspectOperation(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesInspectOperationRequest request) { var wire = stub.inspectOperation(request.toWire());
+    return RustTypedResponses.MachinesMachinesInspectOperationResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesListMachinesResponse machinesMachinesListMachines(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesListMachinesRequest request) { var wire = stub.listMachines(request.toWire());
+    return RustTypedResponses.MachinesMachinesListMachinesResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesQualifyImageResponse machinesMachinesQualifyImage(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesQualifyImageRequest request) { var wire = stub.qualifyImage(request.toWire());
+    return RustTypedResponses.MachinesMachinesQualifyImageResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesRecoverResponse machinesMachinesRecover(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesRecoverRequest request) { var wire = stub.recover(request.toWire());
+    return RustTypedResponses.MachinesMachinesRecoverResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesSetSuspensionPolicyResponse machinesMachinesSetSuspensionPolicy(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesSetSuspensionPolicyRequest request) { var wire = stub.setSuspensionPolicy(request.toWire());
+    return RustTypedResponses.MachinesMachinesSetSuspensionPolicyResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesSuspendResponse machinesMachinesSuspend(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesSuspendRequest request) { var wire = stub.suspend(request.toWire());
+    return RustTypedResponses.MachinesMachinesSuspendResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesUsageResponse machinesMachinesUsage(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesUsageRequest request) { var wire = stub.usage(request.toWire());
+    return RustTypedResponses.MachinesMachinesUsageResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.MachinesMachinesWakeResponse machinesMachinesWake(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesWakeRequest request) { var wire = stub.wake(request.toWire());
+    return RustTypedResponses.MachinesMachinesWakeResponse.fromWire(wire);
+  }
+
+  public static java.util.Iterator<RustTypedResponses.MachinesMachinesWatchOperationResponse> machinesMachinesWatchOperation(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustTypedRequests.MachinesMachinesWatchOperationRequest request) { var wire = stub.watchOperation(request.toWire());
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.MachinesMachinesWatchOperationResponse::fromWire);
+  }
+
+  public static RustTypedResponses.ObjectsBucketsCreateBucketResponse objectsBucketsCreateBucket(acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub stub, RustTypedRequests.ObjectsBucketsCreateBucketRequest request) { var wire = stub.createBucket(request.toWire());
+    return RustTypedResponses.ObjectsBucketsCreateBucketResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ObjectsBucketsDeleteBucketResponse objectsBucketsDeleteBucket(acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub stub, RustTypedRequests.ObjectsBucketsDeleteBucketRequest request) { var wire = stub.deleteBucket(request.toWire());
+    return RustTypedResponses.ObjectsBucketsDeleteBucketResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ObjectsBucketsHeadBucketResponse objectsBucketsHeadBucket(acyclic.objects.v2.BucketsServiceGrpc.BucketsServiceBlockingStub stub, RustTypedRequests.ObjectsBucketsHeadBucketRequest request) { var wire = stub.headBucket(request.toWire());
+    return RustTypedResponses.ObjectsBucketsHeadBucketResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ObjectsMultipartAbortMultipartResponse objectsMultipartAbortMultipart(acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub stub, RustTypedRequests.ObjectsMultipartAbortMultipartRequest request) { var wire = stub.abortMultipart(request.toWire());
+    return RustTypedResponses.ObjectsMultipartAbortMultipartResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ObjectsMultipartCompleteMultipartResponse objectsMultipartCompleteMultipart(acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub stub, RustTypedRequests.ObjectsMultipartCompleteMultipartRequest request) { var wire = stub.completeMultipart(request.toWire());
+    return RustTypedResponses.ObjectsMultipartCompleteMultipartResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ObjectsMultipartCreateMultipartResponse objectsMultipartCreateMultipart(acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub stub, RustTypedRequests.ObjectsMultipartCreateMultipartRequest request) { var wire = stub.createMultipart(request.toWire());
+    return RustTypedResponses.ObjectsMultipartCreateMultipartResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ObjectsMultipartListPartsResponse objectsMultipartListParts(acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub stub, RustTypedRequests.ObjectsMultipartListPartsRequest request) { var wire = stub.listParts(request.toWire());
+    return RustTypedResponses.ObjectsMultipartListPartsResponse.fromWire(wire);
+  }
+
+  public static io.grpc.stub.StreamObserver<RustTypedRequests.ObjectsMultipartUploadPartRequest> objectsMultipartUploadPart(io.grpc.Channel channel, io.grpc.stub.StreamObserver<RustTypedResponses.ObjectsMultipartUploadPartResponse> observer) {
+    var wireObserver = new io.grpc.stub.StreamObserver<acyclic.objects.v2.Objects.UploadedPart>() { public void onNext(acyclic.objects.v2.Objects.UploadedPart value) { observer.onNext(RustTypedResponses.ObjectsMultipartUploadPartResponse.fromWire(value)); } public void onError(Throwable error) { observer.onError(error); } public void onCompleted() { observer.onCompleted(); } };
+    var wireRequest = io.grpc.stub.ClientCalls.asyncClientStreamingCall(channel.newCall(acyclic.objects.v2.MultipartServiceGrpc.getUploadPartMethod(), io.grpc.CallOptions.DEFAULT), wireObserver);
+    return new io.grpc.stub.StreamObserver<RustTypedRequests.ObjectsMultipartUploadPartRequest>() { public void onNext(RustTypedRequests.ObjectsMultipartUploadPartRequest value) { wireRequest.onNext(value.toWire()); } public void onError(Throwable error) { wireRequest.onError(error); } public void onCompleted() { wireRequest.onCompleted(); } };
+  }
+
+  public static RustTypedResponses.ObjectsObjectsDeleteObjectResponse objectsObjectsDeleteObject(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustTypedRequests.ObjectsObjectsDeleteObjectRequest request) { var wire = stub.deleteObject(request.toWire());
+    return RustTypedResponses.ObjectsObjectsDeleteObjectResponse.fromWire(wire);
+  }
+
+  public static java.util.Iterator<RustTypedResponses.ObjectsObjectsGetObjectResponse> objectsObjectsGetObject(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustTypedRequests.ObjectsObjectsGetObjectRequest request) { var wire = stub.getObject(request.toWire());
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.ObjectsObjectsGetObjectResponse::fromWire);
+  }
+
+  public static RustTypedResponses.ObjectsObjectsHeadObjectResponse objectsObjectsHeadObject(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustTypedRequests.ObjectsObjectsHeadObjectRequest request) { var wire = stub.headObject(request.toWire());
+    return RustTypedResponses.ObjectsObjectsHeadObjectResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.ObjectsObjectsListObjectsResponse objectsObjectsListObjects(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustTypedRequests.ObjectsObjectsListObjectsRequest request) { var wire = stub.listObjects(request.toWire());
+    return RustTypedResponses.ObjectsObjectsListObjectsResponse.fromWire(wire);
+  }
+
+  public static io.grpc.stub.StreamObserver<RustTypedRequests.ObjectsObjectsPutObjectRequest> objectsObjectsPutObject(io.grpc.Channel channel, io.grpc.stub.StreamObserver<RustTypedResponses.ObjectsObjectsPutObjectResponse> observer) {
+    var wireObserver = new io.grpc.stub.StreamObserver<acyclic.objects.v2.Objects.ObjectInfo>() { public void onNext(acyclic.objects.v2.Objects.ObjectInfo value) { observer.onNext(RustTypedResponses.ObjectsObjectsPutObjectResponse.fromWire(value)); } public void onError(Throwable error) { observer.onError(error); } public void onCompleted() { observer.onCompleted(); } };
+    var wireRequest = io.grpc.stub.ClientCalls.asyncClientStreamingCall(channel.newCall(acyclic.objects.v2.ObjectsServiceGrpc.getPutObjectMethod(), io.grpc.CallOptions.DEFAULT), wireObserver);
+    return new io.grpc.stub.StreamObserver<RustTypedRequests.ObjectsObjectsPutObjectRequest>() { public void onNext(RustTypedRequests.ObjectsObjectsPutObjectRequest value) { wireRequest.onNext(value.toWire()); } public void onError(Throwable error) { wireRequest.onError(error); } public void onCompleted() { wireRequest.onCompleted(); } };
+  }
+
+  public static RustTypedResponses.StreamStreamAppendResponse streamStreamAppend(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamAppendRequest request) { var wire = stub.append(request.toWire());
+    return RustTypedResponses.StreamStreamAppendResponse.fromWire(wire);
+  }
+
+  public static java.util.Iterator<RustTypedResponses.StreamStreamChildrenResponse> streamStreamChildren(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamChildrenRequest request) { var wire = stub.children(request.toWire());
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.StreamStreamChildrenResponse::fromWire);
+  }
+
+  public static RustTypedResponses.StreamStreamChildrenPageResponse streamStreamChildrenPage(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamChildrenPageRequest request) { var wire = stub.childrenPage(request.toWire());
+    return RustTypedResponses.StreamStreamChildrenPageResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.StreamStreamCommitResponse streamStreamCommit(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamCommitRequest request) { var wire = stub.commit(request.toWire());
+    return RustTypedResponses.StreamStreamCommitResponse.fromWire(wire);
+  }
+
+  public static java.util.Iterator<RustTypedResponses.StreamStreamFollowResponse> streamStreamFollow(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamFollowRequest request) { var wire = stub.follow(request.toWire());
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.StreamStreamFollowResponse::fromWire);
+  }
+
+  public static RustTypedResponses.StreamStreamForkResponse streamStreamFork(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamForkRequest request) { var wire = stub.fork(request.toWire());
+    return RustTypedResponses.StreamStreamForkResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.StreamStreamInspectIdempotencyResponse streamStreamInspectIdempotency(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamInspectIdempotencyRequest request) { var wire = stub.inspectIdempotency(request.toWire());
+    return RustTypedResponses.StreamStreamInspectIdempotencyResponse.fromWire(wire);
+  }
+
+  public static java.util.Iterator<RustTypedResponses.StreamStreamReadResponse> streamStreamRead(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamReadRequest request) { var wire = stub.read(request.toWire());
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.StreamStreamReadResponse::fromWire);
+  }
+
+  public static RustTypedResponses.StreamStreamReadCommitResponse streamStreamReadCommit(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamReadCommitRequest request) { var wire = stub.readCommit(request.toWire());
+    return RustTypedResponses.StreamStreamReadCommitResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.StreamStreamTailResponse streamStreamTail(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustTypedRequests.StreamStreamTailRequest request) { var wire = stub.tail(request.toWire());
+    return RustTypedResponses.StreamStreamTailResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.WorkersWorkersCancelJobResponse workersWorkersCancelJob(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustTypedRequests.WorkersWorkersCancelJobRequest request) { var wire = stub.cancelJob(request.toWire());
+    return RustTypedResponses.WorkersWorkersCancelJobResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.WorkersWorkersInspectJobResponse workersWorkersInspectJob(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustTypedRequests.WorkersWorkersInspectJobRequest request) { var wire = stub.inspectJob(request.toWire());
+    return RustTypedResponses.WorkersWorkersInspectJobResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.WorkersWorkersInvokeDeploymentResponse workersWorkersInvokeDeployment(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustTypedRequests.WorkersWorkersInvokeDeploymentRequest request) { var wire = stub.invokeDeployment(request.toWire());
+    return RustTypedResponses.WorkersWorkersInvokeDeploymentResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.WorkersWorkersInvokeVersionResponse workersWorkersInvokeVersion(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustTypedRequests.WorkersWorkersInvokeVersionRequest request) { var wire = stub.invokeVersion(request.toWire());
+    return RustTypedResponses.WorkersWorkersInvokeVersionResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.WorkersWorkersPublishVersionResponse workersWorkersPublishVersion(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustTypedRequests.WorkersWorkersPublishVersionRequest request) { var wire = stub.publishVersion(request.toWire());
+    return RustTypedResponses.WorkersWorkersPublishVersionResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.WorkersWorkersSelectDeploymentResponse workersWorkersSelectDeployment(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustTypedRequests.WorkersWorkersSelectDeploymentRequest request) { var wire = stub.selectDeployment(request.toWire());
+    return RustTypedResponses.WorkersWorkersSelectDeploymentResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.WorkersWorkersSubmitJobResponse workersWorkersSubmitJob(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustTypedRequests.WorkersWorkersSubmitJobRequest request) { var wire = stub.submitJob(request.toWire());
+    return RustTypedResponses.WorkersWorkersSubmitJobResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceContextsCreateResponse inferenceContextsCreate(inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub stub, RustTypedRequests.InferenceContextsCreateRequest request) { var wire = stub.create(request.toWire());
+    return RustTypedResponses.InferenceContextsCreateResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceContextsInspectResponse inferenceContextsInspect(inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub stub, RustTypedRequests.InferenceContextsInspectRequest request) { var wire = stub.inspect(request.toWire());
+    return RustTypedResponses.InferenceContextsInspectResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceContextsMutateResponse inferenceContextsMutate(inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub stub, RustTypedRequests.InferenceContextsMutateRequest request) { var wire = stub.mutate(request.toWire());
+    return RustTypedResponses.InferenceContextsMutateResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceEvaluationsCreateResponse inferenceEvaluationsCreate(inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub stub, RustTypedRequests.InferenceEvaluationsCreateRequest request) { var wire = stub.create(request.toWire());
+    return RustTypedResponses.InferenceEvaluationsCreateResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceEvaluationsInspectResponse inferenceEvaluationsInspect(inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub stub, RustTypedRequests.InferenceEvaluationsInspectRequest request) { var wire = stub.inspect(request.toWire());
+    return RustTypedResponses.InferenceEvaluationsInspectResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceModelsListResponse inferenceModelsList(inference.customer.v1.ModelsServiceGrpc.ModelsServiceBlockingStub stub, RustTypedRequests.InferenceModelsListRequest request) { var wire = stub.list(request.toWire());
+    return RustTypedResponses.InferenceModelsListResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceRunsCancelResponse inferenceRunsCancel(inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub stub, RustTypedRequests.InferenceRunsCancelRequest request) { var wire = stub.cancel(request.toWire());
+    return RustTypedResponses.InferenceRunsCancelResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceRunsGenerateResponse inferenceRunsGenerate(inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub stub, RustTypedRequests.InferenceRunsGenerateRequest request) { var wire = stub.generate(request.toWire());
+    return RustTypedResponses.InferenceRunsGenerateResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceRunsInspectResponse inferenceRunsInspect(inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub stub, RustTypedRequests.InferenceRunsInspectRequest request) { var wire = stub.inspect(request.toWire());
+    return RustTypedResponses.InferenceRunsInspectResponse.fromWire(wire);
+  }
+
+  public static java.util.Iterator<RustTypedResponses.InferenceRunsWatchResponse> inferenceRunsWatch(inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub stub, RustTypedRequests.InferenceRunsWatchRequest request) { var wire = stub.watch(request.toWire());
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.InferenceRunsWatchResponse::fromWire);
+  }
+
+  public static RustTypedResponses.InferenceWarmContextsInspectResponse inferenceWarmContextsInspect(inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub stub, RustTypedRequests.InferenceWarmContextsInspectRequest request) { var wire = stub.inspect(request.toWire());
+    return RustTypedResponses.InferenceWarmContextsInspectResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceWarmContextsReleaseResponse inferenceWarmContextsRelease(inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub stub, RustTypedRequests.InferenceWarmContextsReleaseRequest request) { var wire = stub.release(request.toWire());
+    return RustTypedResponses.InferenceWarmContextsReleaseResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceWarmContextsRenewResponse inferenceWarmContextsRenew(inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub stub, RustTypedRequests.InferenceWarmContextsRenewRequest request) { var wire = stub.renew(request.toWire());
+    return RustTypedResponses.InferenceWarmContextsRenewResponse.fromWire(wire);
+  }
+
+  public static RustTypedResponses.InferenceWarmContextsRetainResponse inferenceWarmContextsRetain(inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub stub, RustTypedRequests.InferenceWarmContextsRetainRequest request) { var wire = stub.retain(request.toWire());
+    return RustTypedResponses.InferenceWarmContextsRetainResponse.fromWire(wire);
   }
 
 }

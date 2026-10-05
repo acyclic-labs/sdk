@@ -8,8 +8,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
-    PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection, SEMANTIC_TYPES, SemanticRule,
-    SemanticType, WireValueKind, semantic_type,
+    resolved_rpc_methods, PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection,
+    SEMANTIC_TYPES, SemanticRule, SemanticType, WireValueKind, semantic_type,
 };
 
 pub const JAVA_PATH: &str = "jvm/src/main/java/dev/acyclic/transport/RustSemanticTypes.java";
@@ -105,6 +105,8 @@ fn java_proto_container(module: &str) -> &'static str {
         "machines" => "acyclic.machines.v1.Machines",
         "filesystem" => "acyclic.filesystem.v2.Filesystem",
         "harness" => "acyclic.harness.v2.Harness",
+        "protocol" => "acyclic.protocol.v1.Protocol",
+        "transport" => "acyclic.transport.v1.Transport",
         _ => panic!("missing JVM protobuf container for Rust module {module}"),
     }
 }
@@ -126,6 +128,80 @@ fn upper_camel(value: &str) -> String {
 fn request_method_name(module: &str, message: &str) -> String {
     let base = message.strip_suffix("Request").unwrap_or(message);
     format!("{}{}", module.replace('.', ""), base)
+}
+
+fn descriptor_message_type(family: &str, message: &str) -> String {
+    let outer = if message.starts_with("acyclic.protocol.v1.") {
+        java_proto_container("protocol")
+    } else if message.starts_with("acyclic.transport.v1.") {
+        java_proto_container("transport")
+    } else {
+        java_proto_container(family)
+    };
+    let leaf = message.rsplit('.').next().unwrap_or(message);
+    format!("{outer}.{leaf}")
+}
+
+fn descriptor_request_name(method: &crate::type_policy::ResolvedRpcMethod) -> String {
+    format!(
+        "{}{}{}Request",
+        upper_camel(&method.family),
+        upper_camel(method.service.trim_end_matches("Service")),
+        upper_camel(&method.method)
+    )
+}
+
+fn descriptor_response_name(method: &crate::type_policy::ResolvedRpcMethod) -> String {
+    format!(
+        "{}{}{}Response",
+        upper_camel(&method.family),
+        upper_camel(method.service.trim_end_matches("Service")),
+        upper_camel(&method.method)
+    )
+}
+
+fn descriptor_client_name(method: &crate::type_policy::ResolvedRpcMethod) -> String {
+    format!(
+        "{}{}{}",
+        method.family,
+        method.service.trim_end_matches("Service"),
+        method.method
+    )
+}
+
+fn java_grpc_service(family: &str, service: &str, async_stub: bool) -> String {
+    let class = match family {
+        "actors" => "acyclic.actors.v1.ActorsServiceGrpc",
+        "workers" => "acyclic.workers.v1.WorkersServiceGrpc",
+        "stream" => "acyclic.stream.v2.StreamServiceGrpc",
+        "objects" => match service {
+            "BucketsService" => "acyclic.objects.v2.BucketsServiceGrpc",
+            "MultipartService" => "acyclic.objects.v2.MultipartServiceGrpc",
+            _ => "acyclic.objects.v2.ObjectsServiceGrpc",
+        },
+        "inference" => match service {
+            "ContextsService" => "inference.customer.v1.ContextsServiceGrpc",
+            "EvaluationsService" => "inference.customer.v1.EvaluationsServiceGrpc",
+            "ModelsService" => "inference.customer.v1.ModelsServiceGrpc",
+            "RunsService" => "inference.customer.v1.RunsServiceGrpc",
+            _ => "inference.customer.v1.WarmContextsServiceGrpc",
+        },
+        "machines" => "acyclic.machines.v1.MachinesServiceGrpc",
+        "filesystem" => "acyclic.filesystem.v2.FilesystemServiceGrpc",
+        "harness" => "acyclic.harness.v2.HarnessServiceGrpc",
+        _ => panic!("missing JVM gRPC service for {family}.{service}"),
+    };
+    if async_stub {
+        format!("{class}.{service}Stub")
+    } else {
+        format!("{class}.{service}BlockingStub")
+    }
+}
+
+fn descriptor_method_descriptor(method: &crate::type_policy::ResolvedRpcMethod) -> String {
+    let grpc = java_grpc_service(&method.family, &method.service, true);
+    let class = grpc.rsplit_once('.').map(|(class, _)| class).unwrap_or(&grpc);
+    format!("{class}.get{}Method()", method.method)
 }
 
 fn rpc_method_name(rpc: &str) -> String {
@@ -237,6 +313,7 @@ fn render_java_responses() -> String {
         }
         out.push_str(" }\n\n");
     }
+    render_java_descriptor_responses(&mut out);
     out.push_str("  public static RustSemanticTypes.IdempotencyKeyText mutationIdentityIdempotencyKey(acyclic.objects.v2.Objects.MutationIdentity value) { return RustSemanticTypes.IdempotencyKeyText.of(value.getIdempotencyKey()); }\n");
     out.push_str("  public static RustSemanticTypes.Sha256Digest evaluationSpecDigest(inference.customer.v1.Inference.EvaluationSpec value) { return RustSemanticTypes.Sha256Digest.of(value.getSpecDigest()); }\n");
     out.push_str("  public static RustSemanticTypes.ResourcePath fileRefPath(acyclic.harness.v2.Harness.FileRef value) { return RustSemanticTypes.ResourcePath.of(value.getNormalizedPath()); }\n");
@@ -285,6 +362,7 @@ fn render_kotlin_responses() -> String {
         }
         out.push_str("}\n\n");
     }
+    render_kotlin_descriptor_responses(&mut out);
     out.push_str("  fun mutationIdentityIdempotencyKey(value: acyclic.objects.v2.Objects.MutationIdentity): RustSemanticTypesKotlin.IdempotencyKeyText = RustSemanticTypesKotlin.IdempotencyKeyText.of(value.idempotencyKey)\n");
     out.push_str("  fun evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesKotlin.Sha256Digest = RustSemanticTypesKotlin.Sha256Digest.of(value.specDigest)\n");
     out.push_str("  fun fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesKotlin.ResourcePath = RustSemanticTypesKotlin.ResourcePath.of(value.normalizedPath)\n");
@@ -336,6 +414,7 @@ fn render_scala_responses() -> String {
         out.push_str(" }");
         out.push_str("\n\n");
     }
+    render_scala_descriptor_responses(&mut out);
     out.push_str("  def mutationIdentityIdempotencyKey(value: acyclic.objects.v2.Objects.MutationIdentity): RustSemanticTypesScala.IdempotencyKeyText = RustSemanticTypesScala.IdempotencyKeyText.from(value.getIdempotencyKey).toOption.get\n");
     out.push_str("  def evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpecDigest.toByteArray).toOption.get\n");
     out.push_str("  def fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesScala.ResourcePath = RustSemanticTypesScala.ResourcePath.from(value.getNormalizedPath).toOption.get\n");
@@ -344,6 +423,76 @@ fn render_scala_responses() -> String {
     out.push_str("  def preserveOneof(tag: Int, knownTag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");    out.push_str("  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = RustTypedResponses.frameChoice(value) match { case known: RustSemanticTypes.Known => RustSemanticTypesScala.Known(known.tag(), known.payload().toByteArray); case unknown: RustSemanticTypes.Unknown => RustSemanticTypesScala.Unknown(unknown.tag(), unknown.payload().toByteArray) }\n\n");
     out.push_str("}\n");
     out
+}
+
+/// Emit a lossless request/response DTO for every descriptor-resolved RPC.
+/// Semantic refinements above remain the ergonomic overloads; these DTOs make
+/// the complete Rust operation inventory available without a handwritten RPC
+/// table or a raw protobuf return type.
+fn render_java_descriptor_responses(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        let name = descriptor_response_name(&method);
+        let wire = descriptor_message_type(&method.family, &method.output_message);
+        out.push_str("  public record ");
+        out.push_str(&name);
+        out.push('(');
+        out.push_str(&wire);
+        out.push_str(" value) { public static ");
+        out.push_str(&name);
+        out.push_str(" fromWire(");
+        out.push_str(&wire);
+        out.push_str(" value) { return new ");
+        out.push_str(&name);
+        out.push_str("(java.util.Objects.requireNonNull(value)); } public ");
+        out.push_str(&wire);
+        out.push_str(" toWire() { return value; } }\n\n");
+    }
+}
+
+fn render_kotlin_descriptor_responses(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        let name = descriptor_response_name(&method);
+        let wire = descriptor_message_type(&method.family, &method.output_message);
+        out.push_str("  data class ");
+        out.push_str(&name);
+        out.push_str("(val value: ");
+        out.push_str(&wire);
+        out.push_str(") { fun toWire(): ");
+        out.push_str(&wire);
+        out.push_str(" = value; companion object { fun fromWire(value: ");
+        out.push_str(&wire);
+        out.push_str("): ");
+        out.push_str(&name);
+        out.push_str(" = ");
+        out.push_str(&name);
+        out.push_str("(value) } }\n\n");
+    }
+}
+
+fn render_scala_descriptor_responses(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        let name = descriptor_response_name(&method);
+        let wire = descriptor_message_type(&method.family, &method.output_message);
+        out.push_str("  final case class ");
+        out.push_str(&name);
+        out.push_str("(value: ");
+        out.push_str(&wire);
+        out.push_str(") { def toWire: ");
+        out.push_str(&wire);
+        out.push_str(" = value }\n");
+        out.push_str("  object ");
+        out.push_str(&name);
+        out.push_str(" { def fromWire(value: ");
+        out.push_str(&wire);
+        out.push_str("): ");
+        out.push_str(&name);
+        out.push_str(" = ");
+        out.push_str(&name);
+        out.push_str("(value) }\n\n");
+    }
 }
 
 fn response_wrapper_name(module: &str, message: &str) -> String {
@@ -356,6 +505,157 @@ fn response_wrapper_name(module: &str, message: &str) -> String {
 
 fn response_wrapper_type(module: &str, message: &str) -> String {
     format!("RustTypedResponses.{}", response_wrapper_name(module, message))
+}
+
+fn render_java_descriptor_clients(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        let request_name = descriptor_request_name(&method);
+        let response_name = descriptor_response_name(&method);
+        let request_wire = descriptor_message_type(&method.family, &method.input_message);
+        let response_wire = descriptor_message_type(&method.family, &method.output_message);
+        let client_name = rpc_method_name(&descriptor_client_name(&method));
+        let rpc_method = rpc_method_name(&method.method);
+        if method.client_streaming {
+            let descriptor = descriptor_method_descriptor(&method);
+            let response_stream = format!("RustTypedResponses.{response_name}");
+            out.push_str("  public static io.grpc.stub.StreamObserver<RustTypedRequests.");
+            out.push_str(&request_name);
+            out.push_str("> ");
+            out.push_str(&client_name);
+            out.push_str("(io.grpc.Channel channel, io.grpc.stub.StreamObserver<");
+            out.push_str(&response_stream);
+            out.push_str("> observer) {\n");
+            out.push_str("    var wireObserver = new io.grpc.stub.StreamObserver<");
+            out.push_str(&response_wire);
+            out.push_str(">() { public void onNext(");
+            out.push_str(&response_wire);
+            out.push_str(" value) { observer.onNext(");
+            out.push_str(&response_stream);
+            out.push_str(".fromWire(value)); } public void onError(Throwable error) { observer.onError(error); } public void onCompleted() { observer.onCompleted(); } };\n");
+            let call = if method.client_streaming && method.server_streaming {
+                format!("io.grpc.stub.ClientCalls.asyncBidiStreamingCall(channel.newCall({descriptor}, io.grpc.CallOptions.DEFAULT), wireObserver)")
+            } else {
+                format!("io.grpc.stub.ClientCalls.asyncClientStreamingCall(channel.newCall({descriptor}, io.grpc.CallOptions.DEFAULT), wireObserver)")
+            };
+            out.push_str("    var wireRequest = ");
+            out.push_str(&call);
+            out.push_str(";\n    return new io.grpc.stub.StreamObserver<RustTypedRequests.");
+            out.push_str(&request_name);
+            out.push_str(">() { public void onNext(RustTypedRequests.");
+            out.push_str(&request_name);
+            out.push_str(" value) { wireRequest.onNext(value.toWire()); } public void onError(Throwable error) { wireRequest.onError(error); } public void onCompleted() { wireRequest.onCompleted(); } };\n  }\n\n");
+            continue;
+        }
+        let stub = java_grpc_service(&method.family, &method.service, false);
+        let response = format!("RustTypedResponses.{response_name}");
+        let result = if method.server_streaming {
+            format!("java.util.Iterator<{response}>")
+        } else {
+            response.clone()
+        };
+        out.push_str("  public static ");
+        out.push_str(&result);
+        out.push(' ');
+        out.push_str(&client_name);
+        out.push('(');
+        out.push_str(&stub);
+        out.push_str(" stub, RustTypedRequests.");
+        out.push_str(&request_name);
+        out.push_str(" request) { var wire = stub.");
+        out.push_str(&rpc_method);
+        out.push_str("(request.toWire());\n");
+        if method.server_streaming {
+            out.push_str("    return RustTypedResponses.mapIterator(wire, ");
+            out.push_str(&response);
+            out.push_str("::fromWire);\n  }\n\n");
+        } else {
+            out.push_str("    return ");
+            out.push_str(&response);
+            out.push_str(".fromWire(wire);\n  }\n\n");
+        }
+        let _ = request_wire;
+    }
+}
+
+fn render_kotlin_descriptor_clients(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        if method.client_streaming {
+            continue;
+        }
+        let request_name = descriptor_request_name(&method);
+        let response_name = descriptor_response_name(&method);
+        let stub = java_grpc_service(&method.family, &method.service, false);
+        let client_name = rpc_method_name(&descriptor_client_name(&method));
+        let rpc_method = rpc_method_name(&method.method);
+        let result = if method.server_streaming {
+            format!("kotlin.collections.Iterator<RustTypedResponsesKotlin.{response_name}>")
+        } else {
+            format!("RustTypedResponsesKotlin.{response_name}")
+        };
+        out.push_str("  fun ");
+        out.push_str(&client_name);
+        out.push_str("(stub: ");
+        out.push_str(&stub);
+        out.push_str(", request: RustTypedRequestsKotlin.");
+        out.push_str(&request_name);
+        out.push_str("): ");
+        out.push_str(&result);
+        out.push_str(" { val wire = stub.");
+        out.push_str(&rpc_method);
+        out.push_str("(request.toWire()); return ");
+        if method.server_streaming {
+            out.push_str("RustTypedResponsesKotlin.mapIterator(wire) { RustTypedResponsesKotlin.");
+            out.push_str(&response_name);
+            out.push_str(".fromWire(it) }");
+        } else {
+            out.push_str("RustTypedResponsesKotlin.");
+            out.push_str(&response_name);
+            out.push_str(".fromWire(wire)");
+        }
+        out.push_str(" }\n\n");
+    }
+}
+
+fn render_scala_descriptor_clients(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        if method.client_streaming {
+            continue;
+        }
+        let request_name = descriptor_request_name(&method);
+        let response_name = descriptor_response_name(&method);
+        let stub = java_grpc_service(&method.family, &method.service, false);
+        let client_name = rpc_method_name(&descriptor_client_name(&method));
+        let rpc_method = rpc_method_name(&method.method);
+        let result = if method.server_streaming {
+            format!("java.util.Iterator[RustTypedResponsesScala.{response_name}]")
+        } else {
+            format!("RustTypedResponsesScala.{response_name}")
+        };
+        out.push_str("  def ");
+        out.push_str(&client_name);
+        out.push_str("(stub: ");
+        out.push_str(&stub);
+        out.push_str(", request: RustTypedRequestsScala.");
+        out.push_str(&request_name);
+        out.push_str("): ");
+        out.push_str(&result);
+        out.push_str(" = { val wire = stub.");
+        out.push_str(&rpc_method);
+        out.push_str("(request.toWire); ");
+        if method.server_streaming {
+            out.push_str("RustTypedResponsesScala.mapIterator(wire, RustTypedResponsesScala.");
+            out.push_str(&response_name);
+            out.push_str(".fromWire)");
+        } else {
+            out.push_str("RustTypedResponsesScala.");
+            out.push_str(&response_name);
+            out.push_str(".fromWire(wire)");
+        }
+        out.push_str(" }\n\n");
+    }
 }
 
 fn render_java_clients() -> String {
@@ -410,6 +710,7 @@ fn render_java_clients() -> String {
             out.push_str(".fromWire(wire);\n  }\n\n");
         }
     }
+    render_java_descriptor_clients(&mut out);
     out.push_str("}\n");
     out
 }
@@ -470,6 +771,7 @@ fn render_kotlin_clients() -> String {
             out.push_str(")))\n\n");
         }
     }
+    render_kotlin_descriptor_clients(&mut out);
     out.push_str("}\n");
     out
 }
@@ -530,6 +832,7 @@ fn render_scala_clients() -> String {
             out.push_str(")))\n\n");
         }
     }
+    render_scala_descriptor_clients(&mut out);
     out.push_str("}\n");
     out
 }
@@ -803,6 +1106,72 @@ fn scala_validation(ty: &SemanticType, value: &str) -> String {
     lines.join("; ")
 }
 
+fn render_java_descriptor_requests(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        let name = descriptor_request_name(&method);
+        let wire = descriptor_message_type(&method.family, &method.input_message);
+        out.push_str("  public record ");
+        out.push_str(&name);
+        out.push('(');
+        out.push_str(&wire);
+        out.push_str(" value) { public static ");
+        out.push_str(&name);
+        out.push_str(" fromWire(");
+        out.push_str(&wire);
+        out.push_str(" value) { return new ");
+        out.push_str(&name);
+        out.push_str("(java.util.Objects.requireNonNull(value)); } public ");
+        out.push_str(&wire);
+        out.push_str(" toWire() { return value; } }\n\n");
+    }
+}
+
+fn render_kotlin_descriptor_requests(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        let name = descriptor_request_name(&method);
+        let wire = descriptor_message_type(&method.family, &method.input_message);
+        out.push_str("  data class ");
+        out.push_str(&name);
+        out.push_str("(val value: ");
+        out.push_str(&wire);
+        out.push_str(") { fun toWire(): ");
+        out.push_str(&wire);
+        out.push_str(" = value; companion object { fun fromWire(value: ");
+        out.push_str(&wire);
+        out.push_str("): ");
+        out.push_str(&name);
+        out.push_str(" = ");
+        out.push_str(&name);
+        out.push_str("(value) } }\n\n");
+    }
+}
+
+fn render_scala_descriptor_requests(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    for method in methods {
+        let name = descriptor_request_name(&method);
+        let wire = descriptor_message_type(&method.family, &method.input_message);
+        out.push_str("  final case class ");
+        out.push_str(&name);
+        out.push_str("(value: ");
+        out.push_str(&wire);
+        out.push_str(") { def toWire: ");
+        out.push_str(&wire);
+        out.push_str(" = value }\n");
+        out.push_str("  object ");
+        out.push_str(&name);
+        out.push_str(" { def fromWire(value: ");
+        out.push_str(&wire);
+        out.push_str("): ");
+        out.push_str(&name);
+        out.push_str(" = ");
+        out.push_str(&name);
+        out.push_str("(value) }\n\n");
+    }
+}
+
 fn render_java_requests() -> String {
     let mut out = String::from(
         "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Request signatures and wire conversions originate in Rust type_policy.rs.\npackage dev.acyclic.transport;\n\n/** Public typed request factories generated from Rust-owned field bindings. */\npublic final class RustTypedRequests {\n  private RustTypedRequests() {}\n\n",
@@ -841,6 +1210,7 @@ fn render_java_requests() -> String {
         }
         out.push_str("    return builder.build();\n  }\n\n");
     }
+    render_java_descriptor_requests(&mut out);
     out.push_str("}\n");
     out
 }
@@ -882,6 +1252,7 @@ fn render_kotlin_requests() -> String {
         }
         out.push_str("  }.build()\n\n");
     }
+    render_kotlin_descriptor_requests(&mut out);
     out.push_str("}\n");
     out
 }
@@ -923,6 +1294,7 @@ fn render_scala_requests() -> String {
         }
         out.push_str("; builder.build() }\n\n");
     }
+    render_scala_descriptor_requests(&mut out);
     out.push_str("}\n");
     out
 }

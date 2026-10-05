@@ -9,23 +9,27 @@ object RustTypedRequestsScala {
 
   def filesystemRead(path: RustSemanticTypesScala.ResourcePath): acyclic.filesystem.v2.Filesystem.ReadRequest = { val builder = acyclic.filesystem.v2.Filesystem.ReadRequest.newBuilder(); builder.setPath(path.toWire); builder.build() }
 
-  def inferenceInspectContext(revision: RustSemanticTypesScala.RevisionDigest): inference.customer.v1.Inference.InspectContextRequest = { val builder = inference.customer.v1.Inference.InspectContextRequest.newBuilder(); builder.setRevision(revision.toWire); builder.build() }
+  def inferenceInspectContext(revision: RustSemanticTypesScala.RevisionDigest): inference.customer.v1.Inference.InspectContextRequest = { val builder = inference.customer.v1.Inference.InspectContextRequest.newBuilder(); builder.setRevision(com.google.protobuf.ByteString.copyFrom(revision.toWire)); builder.build() }
 
-  def inferenceInspectEvaluation(evaluation_id: RustSemanticTypesScala.EvaluationId): inference.customer.v1.Inference.InspectEvaluationRequest = { val builder = inference.customer.v1.Inference.InspectEvaluationRequest.newBuilder(); builder.setEvaluationId(evaluation_id.toWire); builder.build() }
+  def inferenceInspectEvaluation(evaluation_id: RustSemanticTypesScala.EvaluationId): inference.customer.v1.Inference.InspectEvaluationRequest = { val builder = inference.customer.v1.Inference.InspectEvaluationRequest.newBuilder(); builder.setEvaluationId(com.google.protobuf.ByteString.copyFrom(evaluation_id.toWire)); builder.build() }
 
-  def inferenceInspectRun(run_id: RustSemanticTypesScala.RunId): inference.customer.v1.Inference.InspectRunRequest = { val builder = inference.customer.v1.Inference.InspectRunRequest.newBuilder(); builder.setRunId(run_id.toWire); builder.build() }
+  def inferenceInspectRun(run_id: RustSemanticTypesScala.RunId): inference.customer.v1.Inference.InspectRunRequest = { val builder = inference.customer.v1.Inference.InspectRunRequest.newBuilder(); builder.setRunId(com.google.protobuf.ByteString.copyFrom(run_id.toWire)); builder.build() }
 
-  def inferenceInspectWarm(commitment: RustSemanticTypesScala.Sha256Digest): inference.customer.v1.Inference.InspectWarmRequest = { val builder = inference.customer.v1.Inference.InspectWarmRequest.newBuilder(); builder.setCommitment(commitment.toWire); builder.build() }
+  def inferenceInspectWarm(commitment: RustSemanticTypesScala.Sha256Digest): inference.customer.v1.Inference.InspectWarmRequest = { val builder = inference.customer.v1.Inference.InspectWarmRequest.newBuilder(); builder.setCommitment(com.google.protobuf.ByteString.copyFrom(commitment.toWire)); builder.build() }
 
   def machinesCreateMachine(image: RustSemanticTypesScala.Image, idempotency_key: RustSemanticTypesScala.IdempotencyKey): acyclic.machines.v1.Machines.CreateMachineRequest = { val builder = acyclic.machines.v1.Machines.CreateMachineRequest.newBuilder(); builder.setImage(image.toWire.asInstanceOf[acyclic.machines.v1.Machines.Image]); builder.setIdempotencyKey(idempotency_key.toWire.asInstanceOf[acyclic.machines.v1.Machines.IdempotencyKey]); builder.build() }
 
-  def machinesInspectCheckpoint(checkpoint_id: RustSemanticTypesScala.CheckpointId): acyclic.machines.v1.Machines.InspectCheckpointRequest = { val builder = acyclic.machines.v1.Machines.InspectCheckpointRequest.newBuilder(); builder.setCheckpoint(acyclic.machines.v1.Machines.CheckpointId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(checkpoint_id.toWire.getBytes(java.nio.charset.StandardCharsets.UTF_8))).build()); builder.build() }
+  def machinesEvents(event_page_limit: RustSemanticTypesScala.MachineEventPageLimit): acyclic.machines.v1.Machines.EventsRequest = { val builder = acyclic.machines.v1.Machines.EventsRequest.newBuilder(); builder.setLimit(event_page_limit.toWire.toInt); builder.build() }
 
-  def machinesInspectMachine(machine_id: RustSemanticTypesScala.MachineId): acyclic.machines.v1.Machines.InspectMachineRequest = { val builder = acyclic.machines.v1.Machines.InspectMachineRequest.newBuilder(); builder.setMachine(acyclic.machines.v1.Machines.MachineId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(machine_id.toWire.getBytes(java.nio.charset.StandardCharsets.UTF_8))).build()); builder.build() }
+  def machinesInspectCheckpoint(checkpoint_id: RustSemanticTypesScala.CheckpointId): acyclic.machines.v1.Machines.InspectCheckpointRequest = { val builder = acyclic.machines.v1.Machines.InspectCheckpointRequest.newBuilder(); builder.setCheckpoint(acyclic.machines.v1.Machines.CheckpointId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(checkpoint_id.toWire)).build()); builder.build() }
 
-  def machinesListMachines(page_limit: RustSemanticTypesScala.PageLimit): acyclic.machines.v1.Machines.ListMachinesRequest = { val builder = acyclic.machines.v1.Machines.ListMachinesRequest.newBuilder(); builder.setLimit(page_limit.toWire.toInt); builder.build() }
+  def machinesInspectMachine(machine_id: RustSemanticTypesScala.MachineId): acyclic.machines.v1.Machines.InspectMachineRequest = { val builder = acyclic.machines.v1.Machines.InspectMachineRequest.newBuilder(); builder.setMachine(acyclic.machines.v1.Machines.MachineId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(machine_id.toWire)).build()); builder.build() }
 
-  def machinesOperation(operation_id: RustSemanticTypesScala.OperationId): acyclic.machines.v1.Machines.OperationRequest = { val builder = acyclic.machines.v1.Machines.OperationRequest.newBuilder(); builder.setOperation(acyclic.machines.v1.Machines.OperationId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(operation_id.toWire.getBytes(java.nio.charset.StandardCharsets.UTF_8))).build()); builder.build() }
+  def machinesListMachines(page_limit: RustSemanticTypesScala.MachinePageLimit): acyclic.machines.v1.Machines.ListMachinesRequest = { val builder = acyclic.machines.v1.Machines.ListMachinesRequest.newBuilder(); builder.setLimit(page_limit.toWire.toInt); builder.build() }
+
+  def machinesOperation(operation_id: RustSemanticTypesScala.OperationId): acyclic.machines.v1.Machines.OperationRequest = { val builder = acyclic.machines.v1.Machines.OperationRequest.newBuilder(); builder.setOperation(acyclic.machines.v1.Machines.OperationId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(operation_id.toWire)).build()); builder.build() }
+
+  def machinesQualifyImage(image: RustSemanticTypesScala.Image): acyclic.machines.v1.Machines.QualifyImageRequest = { val builder = acyclic.machines.v1.Machines.QualifyImageRequest.newBuilder(); builder.setImage(image.toWire.asInstanceOf[acyclic.machines.v1.Machines.Image]); builder.build() }
 
   def objectsGetObject(key: RustSemanticTypesScala.ObjectKey): acyclic.objects.v2.Objects.GetObjectRequest = { val builder = acyclic.objects.v2.Objects.GetObjectRequest.newBuilder(); builder.setObjectKey(key.toWire); builder.build() }
 
@@ -33,19 +37,336 @@ object RustTypedRequestsScala {
 
   def objectsListParts(upload_id: RustSemanticTypesScala.UploadId): acyclic.objects.v2.Objects.ListPartsRequest = { val builder = acyclic.objects.v2.Objects.ListPartsRequest.newBuilder(); builder.setUploadId(upload_id.toWire); builder.build() }
 
-  def streamAppend(idempotency_key: RustSemanticTypesScala.IdempotencyKeyBytes, path: RustSemanticTypesScala.ResourcePath): acyclic.stream.v2.Stream.AppendRequest = { val builder = acyclic.stream.v2.Stream.AppendRequest.newBuilder(); builder.setIdempotencyKey(idempotency_key.toWire); builder.setPath(path.toWire); builder.build() }
+  def streamAppend(idempotency_key: RustSemanticTypesScala.IdempotencyKeyBytes, path: RustSemanticTypesScala.ResourcePath): acyclic.stream.v2.Stream.AppendRequest = { val builder = acyclic.stream.v2.Stream.AppendRequest.newBuilder(); builder.setIdempotencyKey(com.google.protobuf.ByteString.copyFrom(idempotency_key.toWire)); builder.setPath(path.toWire); builder.build() }
 
   def streamFork(source: RustSemanticTypesScala.SourceName, destination: RustSemanticTypesScala.DestinationName): acyclic.stream.v2.Stream.ForkRequest = { val builder = acyclic.stream.v2.Stream.ForkRequest.newBuilder(); builder.setSource(source.toWire); builder.setDestination(destination.toWire); builder.build() }
 
-  def streamReadCommit(commit_id: RustSemanticTypesScala.CommitId): acyclic.stream.v2.Stream.ReadCommitRequest = { val builder = acyclic.stream.v2.Stream.ReadCommitRequest.newBuilder(); builder.setCommitId(commit_id.toWire); builder.build() }
+  def streamReadCommit(commit_id: RustSemanticTypesScala.CommitId): acyclic.stream.v2.Stream.ReadCommitRequest = { val builder = acyclic.stream.v2.Stream.ReadCommitRequest.newBuilder(); builder.setCommitId(com.google.protobuf.ByteString.copyFrom(commit_id.toWire)); builder.build() }
 
-  def streamRead(limit: RustSemanticTypesScala.PageLimit): acyclic.stream.v2.Stream.ReadRequest = { val builder = acyclic.stream.v2.Stream.ReadRequest.newBuilder(); builder.setLimit(limit.toWire.toInt); builder.build() }
+  def streamRead(limit: RustSemanticTypesScala.StreamPageLimit): acyclic.stream.v2.Stream.ReadRequest = { val builder = acyclic.stream.v2.Stream.ReadRequest.newBuilder(); builder.setLimit(limit.toWire.toInt); builder.build() }
 
   def workersInspectJob(job_id: RustSemanticTypesScala.JobId): acyclic.workers.v1.Workers.InspectJobRequest = { val builder = acyclic.workers.v1.Workers.InspectJobRequest.newBuilder(); builder.setJobId(job_id.toWire); builder.build() }
 
   def workersInvokeVersion(method: RustSemanticTypesScala.MethodName): acyclic.workers.v1.Workers.InvokeVersionRequest = { val builder = acyclic.workers.v1.Workers.InvokeVersionRequest.newBuilder(); builder.setMethod(method.toWire); builder.build() }
 
-  def workersSelectDeployment(alias: RustSemanticTypesScala.VersionAlias, version_sha256: RustSemanticTypesScala.Sha256Digest, idempotency_key: RustSemanticTypesScala.IdempotencyKeyText): acyclic.workers.v1.Workers.SelectDeploymentRequest = { val builder = acyclic.workers.v1.Workers.SelectDeploymentRequest.newBuilder(); builder.setAlias(alias.toWire); builder.setVersionSha256(version_sha256.toWire); builder.setIdempotencyKey(idempotency_key.toWire); builder.build() }
+  def workersSelectDeployment(alias: RustSemanticTypesScala.VersionAlias, version_sha256: RustSemanticTypesScala.Sha256Digest, idempotency_key: RustSemanticTypesScala.IdempotencyKeyText): acyclic.workers.v1.Workers.SelectDeploymentRequest = { val builder = acyclic.workers.v1.Workers.SelectDeploymentRequest.newBuilder(); builder.setAlias(alias.toWire); builder.setVersionSha256(com.google.protobuf.ByteString.copyFrom(version_sha256.toWire)); builder.setIdempotencyKey(idempotency_key.toWire); builder.build() }
+
+  final case class ActorsActorsAddSubscriptionRequest(value: acyclic.actors.v1.Actors.AddSubscriptionRequest) { def toWire: acyclic.actors.v1.Actors.AddSubscriptionRequest = value }
+  object ActorsActorsAddSubscriptionRequest { def fromWire(value: acyclic.actors.v1.Actors.AddSubscriptionRequest): ActorsActorsAddSubscriptionRequest = ActorsActorsAddSubscriptionRequest(value) }
+
+  final case class ActorsActorsCheckpointActorRequest(value: acyclic.actors.v1.Actors.CheckpointActorRequest) { def toWire: acyclic.actors.v1.Actors.CheckpointActorRequest = value }
+  object ActorsActorsCheckpointActorRequest { def fromWire(value: acyclic.actors.v1.Actors.CheckpointActorRequest): ActorsActorsCheckpointActorRequest = ActorsActorsCheckpointActorRequest(value) }
+
+  final case class ActorsActorsCreateActorRequest(value: acyclic.actors.v1.Actors.CreateActorRequest) { def toWire: acyclic.actors.v1.Actors.CreateActorRequest = value }
+  object ActorsActorsCreateActorRequest { def fromWire(value: acyclic.actors.v1.Actors.CreateActorRequest): ActorsActorsCreateActorRequest = ActorsActorsCreateActorRequest(value) }
+
+  final case class ActorsActorsInspectActorRequest(value: acyclic.actors.v1.Actors.InspectActorRequest) { def toWire: acyclic.actors.v1.Actors.InspectActorRequest = value }
+  object ActorsActorsInspectActorRequest { def fromWire(value: acyclic.actors.v1.Actors.InspectActorRequest): ActorsActorsInspectActorRequest = ActorsActorsInspectActorRequest(value) }
+
+  final case class ActorsActorsInvokeActorRequest(value: acyclic.actors.v1.Actors.InvokeActorRequest) { def toWire: acyclic.actors.v1.Actors.InvokeActorRequest = value }
+  object ActorsActorsInvokeActorRequest { def fromWire(value: acyclic.actors.v1.Actors.InvokeActorRequest): ActorsActorsInvokeActorRequest = ActorsActorsInvokeActorRequest(value) }
+
+  final case class ActorsActorsRemoveSubscriptionRequest(value: acyclic.actors.v1.Actors.RemoveSubscriptionRequest) { def toWire: acyclic.actors.v1.Actors.RemoveSubscriptionRequest = value }
+  object ActorsActorsRemoveSubscriptionRequest { def fromWire(value: acyclic.actors.v1.Actors.RemoveSubscriptionRequest): ActorsActorsRemoveSubscriptionRequest = ActorsActorsRemoveSubscriptionRequest(value) }
+
+  final case class ActorsActorsResumeSubscriptionRequest(value: acyclic.actors.v1.Actors.ResumeSubscriptionRequest) { def toWire: acyclic.actors.v1.Actors.ResumeSubscriptionRequest = value }
+  object ActorsActorsResumeSubscriptionRequest { def fromWire(value: acyclic.actors.v1.Actors.ResumeSubscriptionRequest): ActorsActorsResumeSubscriptionRequest = ActorsActorsResumeSubscriptionRequest(value) }
+
+  final case class ActorsActorsUpdateActorRequest(value: acyclic.actors.v1.Actors.UpdateActorRequest) { def toWire: acyclic.actors.v1.Actors.UpdateActorRequest = value }
+  object ActorsActorsUpdateActorRequest { def fromWire(value: acyclic.actors.v1.Actors.UpdateActorRequest): ActorsActorsUpdateActorRequest = ActorsActorsUpdateActorRequest(value) }
+
+  final case class FilesystemFilesystemApplyJoinRequest(value: acyclic.filesystem.v2.Filesystem.ApplyJoinRequest) { def toWire: acyclic.filesystem.v2.Filesystem.ApplyJoinRequest = value }
+  object FilesystemFilesystemApplyJoinRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ApplyJoinRequest): FilesystemFilesystemApplyJoinRequest = FilesystemFilesystemApplyJoinRequest(value) }
+
+  final case class FilesystemFilesystemApplyTransactionRequest(value: acyclic.filesystem.v2.Filesystem.ApplyTransactionRequest) { def toWire: acyclic.filesystem.v2.Filesystem.ApplyTransactionRequest = value }
+  object FilesystemFilesystemApplyTransactionRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ApplyTransactionRequest): FilesystemFilesystemApplyTransactionRequest = FilesystemFilesystemApplyTransactionRequest(value) }
+
+  final case class FilesystemFilesystemCancelRequest(value: acyclic.filesystem.v2.Filesystem.CancelRequest) { def toWire: acyclic.filesystem.v2.Filesystem.CancelRequest = value }
+  object FilesystemFilesystemCancelRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.CancelRequest): FilesystemFilesystemCancelRequest = FilesystemFilesystemCancelRequest(value) }
+
+  final case class FilesystemFilesystemCheckpointRequest(value: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest) { def toWire: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest = value }
+  object FilesystemFilesystemCheckpointRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest): FilesystemFilesystemCheckpointRequest = FilesystemFilesystemCheckpointRequest(value) }
+
+  final case class FilesystemFilesystemCreateWorkspaceRequest(value: acyclic.filesystem.v2.Filesystem.CreateWorkspaceRequest) { def toWire: acyclic.filesystem.v2.Filesystem.CreateWorkspaceRequest = value }
+  object FilesystemFilesystemCreateWorkspaceRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.CreateWorkspaceRequest): FilesystemFilesystemCreateWorkspaceRequest = FilesystemFilesystemCreateWorkspaceRequest(value) }
+
+  final case class FilesystemFilesystemDeleteWorkspaceRequest(value: acyclic.filesystem.v2.Filesystem.DeleteWorkspaceRequest) { def toWire: acyclic.filesystem.v2.Filesystem.DeleteWorkspaceRequest = value }
+  object FilesystemFilesystemDeleteWorkspaceRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.DeleteWorkspaceRequest): FilesystemFilesystemDeleteWorkspaceRequest = FilesystemFilesystemDeleteWorkspaceRequest(value) }
+
+  final case class FilesystemFilesystemDiffRequest(value: acyclic.filesystem.v2.Filesystem.DiffRequest) { def toWire: acyclic.filesystem.v2.Filesystem.DiffRequest = value }
+  object FilesystemFilesystemDiffRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.DiffRequest): FilesystemFilesystemDiffRequest = FilesystemFilesystemDiffRequest(value) }
+
+  final case class FilesystemFilesystemExportRequest(value: acyclic.filesystem.v2.Filesystem.ExportRequest) { def toWire: acyclic.filesystem.v2.Filesystem.ExportRequest = value }
+  object FilesystemFilesystemExportRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ExportRequest): FilesystemFilesystemExportRequest = FilesystemFilesystemExportRequest(value) }
+
+  final case class FilesystemFilesystemForkWorkspaceRequest(value: acyclic.filesystem.v2.Filesystem.ForkWorkspaceRequest) { def toWire: acyclic.filesystem.v2.Filesystem.ForkWorkspaceRequest = value }
+  object FilesystemFilesystemForkWorkspaceRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ForkWorkspaceRequest): FilesystemFilesystemForkWorkspaceRequest = FilesystemFilesystemForkWorkspaceRequest(value) }
+
+  final case class FilesystemFilesystemGetGenerationRequest(value: acyclic.filesystem.v2.Filesystem.GetGenerationRequest) { def toWire: acyclic.filesystem.v2.Filesystem.GetGenerationRequest = value }
+  object FilesystemFilesystemGetGenerationRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.GetGenerationRequest): FilesystemFilesystemGetGenerationRequest = FilesystemFilesystemGetGenerationRequest(value) }
+
+  final case class FilesystemFilesystemGetHeadRequest(value: acyclic.filesystem.v2.Filesystem.GetHeadRequest) { def toWire: acyclic.filesystem.v2.Filesystem.GetHeadRequest = value }
+  object FilesystemFilesystemGetHeadRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.GetHeadRequest): FilesystemFilesystemGetHeadRequest = FilesystemFilesystemGetHeadRequest(value) }
+
+  final case class FilesystemFilesystemGetSourceStateRequest(value: acyclic.filesystem.v2.Filesystem.SourceStateRequest) { def toWire: acyclic.filesystem.v2.Filesystem.SourceStateRequest = value }
+  object FilesystemFilesystemGetSourceStateRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.SourceStateRequest): FilesystemFilesystemGetSourceStateRequest = FilesystemFilesystemGetSourceStateRequest(value) }
+
+  final case class FilesystemFilesystemHandshakeRequest(value: acyclic.filesystem.v2.Filesystem.HandshakeRequest) { def toWire: acyclic.filesystem.v2.Filesystem.HandshakeRequest = value }
+  object FilesystemFilesystemHandshakeRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.HandshakeRequest): FilesystemFilesystemHandshakeRequest = FilesystemFilesystemHandshakeRequest(value) }
+
+  final case class FilesystemFilesystemImportRequest(value: acyclic.filesystem.v2.Filesystem.ImportChunk) { def toWire: acyclic.filesystem.v2.Filesystem.ImportChunk = value }
+  object FilesystemFilesystemImportRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ImportChunk): FilesystemFilesystemImportRequest = FilesystemFilesystemImportRequest(value) }
+
+  final case class FilesystemFilesystemIssueMountCredentialRequest(value: acyclic.filesystem.v2.Filesystem.CredentialRequest) { def toWire: acyclic.filesystem.v2.Filesystem.CredentialRequest = value }
+  object FilesystemFilesystemIssueMountCredentialRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.CredentialRequest): FilesystemFilesystemIssueMountCredentialRequest = FilesystemFilesystemIssueMountCredentialRequest(value) }
+
+  final case class FilesystemFilesystemIssueS3CredentialRequest(value: acyclic.filesystem.v2.Filesystem.CredentialRequest) { def toWire: acyclic.filesystem.v2.Filesystem.CredentialRequest = value }
+  object FilesystemFilesystemIssueS3CredentialRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.CredentialRequest): FilesystemFilesystemIssueS3CredentialRequest = FilesystemFilesystemIssueS3CredentialRequest(value) }
+
+  final case class FilesystemFilesystemListDirectoryRequest(value: acyclic.filesystem.v2.Filesystem.ListDirectoryRequest) { def toWire: acyclic.filesystem.v2.Filesystem.ListDirectoryRequest = value }
+  object FilesystemFilesystemListDirectoryRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ListDirectoryRequest): FilesystemFilesystemListDirectoryRequest = FilesystemFilesystemListDirectoryRequest(value) }
+
+  final case class FilesystemFilesystemObserveRequest(value: acyclic.filesystem.v2.Filesystem.ObserveRequest) { def toWire: acyclic.filesystem.v2.Filesystem.ObserveRequest = value }
+  object FilesystemFilesystemObserveRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ObserveRequest): FilesystemFilesystemObserveRequest = FilesystemFilesystemObserveRequest(value) }
+
+  final case class FilesystemFilesystemOpenWorkspaceRequest(value: acyclic.filesystem.v2.Filesystem.OpenWorkspaceRequest) { def toWire: acyclic.filesystem.v2.Filesystem.OpenWorkspaceRequest = value }
+  object FilesystemFilesystemOpenWorkspaceRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.OpenWorkspaceRequest): FilesystemFilesystemOpenWorkspaceRequest = FilesystemFilesystemOpenWorkspaceRequest(value) }
+
+  final case class FilesystemFilesystemPinRequest(value: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest) { def toWire: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest = value }
+  object FilesystemFilesystemPinRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.RetainGenerationRequest): FilesystemFilesystemPinRequest = FilesystemFilesystemPinRequest(value) }
+
+  final case class FilesystemFilesystemPlanExtentsRequest(value: acyclic.filesystem.v2.Filesystem.PlanExtentsRequest) { def toWire: acyclic.filesystem.v2.Filesystem.PlanExtentsRequest = value }
+  object FilesystemFilesystemPlanExtentsRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.PlanExtentsRequest): FilesystemFilesystemPlanExtentsRequest = FilesystemFilesystemPlanExtentsRequest(value) }
+
+  final case class FilesystemFilesystemPlanJoinRequest(value: acyclic.filesystem.v2.Filesystem.PlanJoinRequest) { def toWire: acyclic.filesystem.v2.Filesystem.PlanJoinRequest = value }
+  object FilesystemFilesystemPlanJoinRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.PlanJoinRequest): FilesystemFilesystemPlanJoinRequest = FilesystemFilesystemPlanJoinRequest(value) }
+
+  final case class FilesystemFilesystemReadRequest(value: acyclic.filesystem.v2.Filesystem.ReadRequest) { def toWire: acyclic.filesystem.v2.Filesystem.ReadRequest = value }
+  object FilesystemFilesystemReadRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ReadRequest): FilesystemFilesystemReadRequest = FilesystemFilesystemReadRequest(value) }
+
+  final case class FilesystemFilesystemReadLinkRequest(value: acyclic.filesystem.v2.Filesystem.ReadLinkRequest) { def toWire: acyclic.filesystem.v2.Filesystem.ReadLinkRequest = value }
+  object FilesystemFilesystemReadLinkRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.ReadLinkRequest): FilesystemFilesystemReadLinkRequest = FilesystemFilesystemReadLinkRequest(value) }
+
+  final case class FilesystemFilesystemRebaseRequest(value: acyclic.filesystem.v2.Filesystem.RebaseRequest) { def toWire: acyclic.filesystem.v2.Filesystem.RebaseRequest = value }
+  object FilesystemFilesystemRebaseRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.RebaseRequest): FilesystemFilesystemRebaseRequest = FilesystemFilesystemRebaseRequest(value) }
+
+  final case class FilesystemFilesystemRebaseTransactionRequest(value: acyclic.filesystem.v2.Filesystem.RebaseTransactionRequest) { def toWire: acyclic.filesystem.v2.Filesystem.RebaseTransactionRequest = value }
+  object FilesystemFilesystemRebaseTransactionRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.RebaseTransactionRequest): FilesystemFilesystemRebaseTransactionRequest = FilesystemFilesystemRebaseTransactionRequest(value) }
+
+  final case class FilesystemFilesystemReconcileSourceRequest(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest) { def toWire: acyclic.filesystem.v2.Filesystem.SourceOperationRequest = value }
+  object FilesystemFilesystemReconcileSourceRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest): FilesystemFilesystemReconcileSourceRequest = FilesystemFilesystemReconcileSourceRequest(value) }
+
+  final case class FilesystemFilesystemRescanSourceRequest(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest) { def toWire: acyclic.filesystem.v2.Filesystem.SourceOperationRequest = value }
+  object FilesystemFilesystemRescanSourceRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest): FilesystemFilesystemRescanSourceRequest = FilesystemFilesystemRescanSourceRequest(value) }
+
+  final case class FilesystemFilesystemSealSourceRequest(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest) { def toWire: acyclic.filesystem.v2.Filesystem.SourceOperationRequest = value }
+  object FilesystemFilesystemSealSourceRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.SourceOperationRequest): FilesystemFilesystemSealSourceRequest = FilesystemFilesystemSealSourceRequest(value) }
+
+  final case class FilesystemFilesystemStatRequest(value: acyclic.filesystem.v2.Filesystem.StatRequest) { def toWire: acyclic.filesystem.v2.Filesystem.StatRequest = value }
+  object FilesystemFilesystemStatRequest { def fromWire(value: acyclic.filesystem.v2.Filesystem.StatRequest): FilesystemFilesystemStatRequest = FilesystemFilesystemStatRequest(value) }
+
+  final case class HarnessHarnessCancelRequest(value: acyclic.harness.v2.Harness.CancelRequest) { def toWire: acyclic.harness.v2.Harness.CancelRequest = value }
+  object HarnessHarnessCancelRequest { def fromWire(value: acyclic.harness.v2.Harness.CancelRequest): HarnessHarnessCancelRequest = HarnessHarnessCancelRequest(value) }
+
+  final case class HarnessHarnessHandshakeRequest(value: acyclic.protocol.v1.Protocol.HandshakeRequest) { def toWire: acyclic.protocol.v1.Protocol.HandshakeRequest = value }
+  object HarnessHarnessHandshakeRequest { def fromWire(value: acyclic.protocol.v1.Protocol.HandshakeRequest): HarnessHarnessHandshakeRequest = HarnessHarnessHandshakeRequest(value) }
+
+  final case class HarnessHarnessObserveRequest(value: acyclic.harness.v2.Harness.ObserveRequest) { def toWire: acyclic.harness.v2.Harness.ObserveRequest = value }
+  object HarnessHarnessObserveRequest { def fromWire(value: acyclic.harness.v2.Harness.ObserveRequest): HarnessHarnessObserveRequest = HarnessHarnessObserveRequest(value) }
+
+  final case class HarnessHarnessReplayRequest(value: acyclic.harness.v2.Harness.ResumeRequest) { def toWire: acyclic.harness.v2.Harness.ResumeRequest = value }
+  object HarnessHarnessReplayRequest { def fromWire(value: acyclic.harness.v2.Harness.ResumeRequest): HarnessHarnessReplayRequest = HarnessHarnessReplayRequest(value) }
+
+  final case class HarnessHarnessSubmitRequest(value: acyclic.harness.v2.Harness.CommandEnvelope) { def toWire: acyclic.harness.v2.Harness.CommandEnvelope = value }
+  object HarnessHarnessSubmitRequest { def fromWire(value: acyclic.harness.v2.Harness.CommandEnvelope): HarnessHarnessSubmitRequest = HarnessHarnessSubmitRequest(value) }
+
+  final case class MachinesMachinesCancelRequest(value: acyclic.machines.v1.Machines.OperationRequest) { def toWire: acyclic.machines.v1.Machines.OperationRequest = value }
+  object MachinesMachinesCancelRequest { def fromWire(value: acyclic.machines.v1.Machines.OperationRequest): MachinesMachinesCancelRequest = MachinesMachinesCancelRequest(value) }
+
+  final case class MachinesMachinesCheckpointRequest(value: acyclic.machines.v1.Machines.CheckpointMachineRequest) { def toWire: acyclic.machines.v1.Machines.CheckpointMachineRequest = value }
+  object MachinesMachinesCheckpointRequest { def fromWire(value: acyclic.machines.v1.Machines.CheckpointMachineRequest): MachinesMachinesCheckpointRequest = MachinesMachinesCheckpointRequest(value) }
+
+  final case class MachinesMachinesCreateRequest(value: acyclic.machines.v1.Machines.CreateMachineRequest) { def toWire: acyclic.machines.v1.Machines.CreateMachineRequest = value }
+  object MachinesMachinesCreateRequest { def fromWire(value: acyclic.machines.v1.Machines.CreateMachineRequest): MachinesMachinesCreateRequest = MachinesMachinesCreateRequest(value) }
+
+  final case class MachinesMachinesDestroyCheckpointRequest(value: acyclic.machines.v1.Machines.CheckpointMutationRequest) { def toWire: acyclic.machines.v1.Machines.CheckpointMutationRequest = value }
+  object MachinesMachinesDestroyCheckpointRequest { def fromWire(value: acyclic.machines.v1.Machines.CheckpointMutationRequest): MachinesMachinesDestroyCheckpointRequest = MachinesMachinesDestroyCheckpointRequest(value) }
+
+  final case class MachinesMachinesDestroyMachineRequest(value: acyclic.machines.v1.Machines.MachineMutationRequest) { def toWire: acyclic.machines.v1.Machines.MachineMutationRequest = value }
+  object MachinesMachinesDestroyMachineRequest { def fromWire(value: acyclic.machines.v1.Machines.MachineMutationRequest): MachinesMachinesDestroyMachineRequest = MachinesMachinesDestroyMachineRequest(value) }
+
+  final case class MachinesMachinesEventsRequest(value: acyclic.machines.v1.Machines.EventsRequest) { def toWire: acyclic.machines.v1.Machines.EventsRequest = value }
+  object MachinesMachinesEventsRequest { def fromWire(value: acyclic.machines.v1.Machines.EventsRequest): MachinesMachinesEventsRequest = MachinesMachinesEventsRequest(value) }
+
+  final case class MachinesMachinesForkRequest(value: acyclic.machines.v1.Machines.ForkCheckpointRequest) { def toWire: acyclic.machines.v1.Machines.ForkCheckpointRequest = value }
+  object MachinesMachinesForkRequest { def fromWire(value: acyclic.machines.v1.Machines.ForkCheckpointRequest): MachinesMachinesForkRequest = MachinesMachinesForkRequest(value) }
+
+  final case class MachinesMachinesForkMachineRequest(value: acyclic.machines.v1.Machines.ForkMachineRequest) { def toWire: acyclic.machines.v1.Machines.ForkMachineRequest = value }
+  object MachinesMachinesForkMachineRequest { def fromWire(value: acyclic.machines.v1.Machines.ForkMachineRequest): MachinesMachinesForkMachineRequest = MachinesMachinesForkMachineRequest(value) }
+
+  final case class MachinesMachinesInspectCheckpointRequest(value: acyclic.machines.v1.Machines.InspectCheckpointRequest) { def toWire: acyclic.machines.v1.Machines.InspectCheckpointRequest = value }
+  object MachinesMachinesInspectCheckpointRequest { def fromWire(value: acyclic.machines.v1.Machines.InspectCheckpointRequest): MachinesMachinesInspectCheckpointRequest = MachinesMachinesInspectCheckpointRequest(value) }
+
+  final case class MachinesMachinesInspectMachineRequest(value: acyclic.machines.v1.Machines.InspectMachineRequest) { def toWire: acyclic.machines.v1.Machines.InspectMachineRequest = value }
+  object MachinesMachinesInspectMachineRequest { def fromWire(value: acyclic.machines.v1.Machines.InspectMachineRequest): MachinesMachinesInspectMachineRequest = MachinesMachinesInspectMachineRequest(value) }
+
+  final case class MachinesMachinesInspectOperationRequest(value: acyclic.machines.v1.Machines.OperationRequest) { def toWire: acyclic.machines.v1.Machines.OperationRequest = value }
+  object MachinesMachinesInspectOperationRequest { def fromWire(value: acyclic.machines.v1.Machines.OperationRequest): MachinesMachinesInspectOperationRequest = MachinesMachinesInspectOperationRequest(value) }
+
+  final case class MachinesMachinesListMachinesRequest(value: acyclic.machines.v1.Machines.ListMachinesRequest) { def toWire: acyclic.machines.v1.Machines.ListMachinesRequest = value }
+  object MachinesMachinesListMachinesRequest { def fromWire(value: acyclic.machines.v1.Machines.ListMachinesRequest): MachinesMachinesListMachinesRequest = MachinesMachinesListMachinesRequest(value) }
+
+  final case class MachinesMachinesQualifyImageRequest(value: acyclic.machines.v1.Machines.QualifyImageRequest) { def toWire: acyclic.machines.v1.Machines.QualifyImageRequest = value }
+  object MachinesMachinesQualifyImageRequest { def fromWire(value: acyclic.machines.v1.Machines.QualifyImageRequest): MachinesMachinesQualifyImageRequest = MachinesMachinesQualifyImageRequest(value) }
+
+  final case class MachinesMachinesRecoverRequest(value: acyclic.machines.v1.Machines.RecoverRequest) { def toWire: acyclic.machines.v1.Machines.RecoverRequest = value }
+  object MachinesMachinesRecoverRequest { def fromWire(value: acyclic.machines.v1.Machines.RecoverRequest): MachinesMachinesRecoverRequest = MachinesMachinesRecoverRequest(value) }
+
+  final case class MachinesMachinesSetSuspensionPolicyRequest(value: acyclic.machines.v1.Machines.SetSuspensionPolicyRequest) { def toWire: acyclic.machines.v1.Machines.SetSuspensionPolicyRequest = value }
+  object MachinesMachinesSetSuspensionPolicyRequest { def fromWire(value: acyclic.machines.v1.Machines.SetSuspensionPolicyRequest): MachinesMachinesSetSuspensionPolicyRequest = MachinesMachinesSetSuspensionPolicyRequest(value) }
+
+  final case class MachinesMachinesSuspendRequest(value: acyclic.machines.v1.Machines.MachineMutationRequest) { def toWire: acyclic.machines.v1.Machines.MachineMutationRequest = value }
+  object MachinesMachinesSuspendRequest { def fromWire(value: acyclic.machines.v1.Machines.MachineMutationRequest): MachinesMachinesSuspendRequest = MachinesMachinesSuspendRequest(value) }
+
+  final case class MachinesMachinesUsageRequest(value: acyclic.machines.v1.Machines.UsageRequest) { def toWire: acyclic.machines.v1.Machines.UsageRequest = value }
+  object MachinesMachinesUsageRequest { def fromWire(value: acyclic.machines.v1.Machines.UsageRequest): MachinesMachinesUsageRequest = MachinesMachinesUsageRequest(value) }
+
+  final case class MachinesMachinesWakeRequest(value: acyclic.machines.v1.Machines.MachineMutationRequest) { def toWire: acyclic.machines.v1.Machines.MachineMutationRequest = value }
+  object MachinesMachinesWakeRequest { def fromWire(value: acyclic.machines.v1.Machines.MachineMutationRequest): MachinesMachinesWakeRequest = MachinesMachinesWakeRequest(value) }
+
+  final case class MachinesMachinesWatchOperationRequest(value: acyclic.machines.v1.Machines.OperationRequest) { def toWire: acyclic.machines.v1.Machines.OperationRequest = value }
+  object MachinesMachinesWatchOperationRequest { def fromWire(value: acyclic.machines.v1.Machines.OperationRequest): MachinesMachinesWatchOperationRequest = MachinesMachinesWatchOperationRequest(value) }
+
+  final case class ObjectsBucketsCreateBucketRequest(value: acyclic.objects.v2.Objects.CreateBucketRequest) { def toWire: acyclic.objects.v2.Objects.CreateBucketRequest = value }
+  object ObjectsBucketsCreateBucketRequest { def fromWire(value: acyclic.objects.v2.Objects.CreateBucketRequest): ObjectsBucketsCreateBucketRequest = ObjectsBucketsCreateBucketRequest(value) }
+
+  final case class ObjectsBucketsDeleteBucketRequest(value: acyclic.objects.v2.Objects.DeleteBucketRequest) { def toWire: acyclic.objects.v2.Objects.DeleteBucketRequest = value }
+  object ObjectsBucketsDeleteBucketRequest { def fromWire(value: acyclic.objects.v2.Objects.DeleteBucketRequest): ObjectsBucketsDeleteBucketRequest = ObjectsBucketsDeleteBucketRequest(value) }
+
+  final case class ObjectsBucketsHeadBucketRequest(value: acyclic.objects.v2.Objects.HeadBucketRequest) { def toWire: acyclic.objects.v2.Objects.HeadBucketRequest = value }
+  object ObjectsBucketsHeadBucketRequest { def fromWire(value: acyclic.objects.v2.Objects.HeadBucketRequest): ObjectsBucketsHeadBucketRequest = ObjectsBucketsHeadBucketRequest(value) }
+
+  final case class ObjectsMultipartAbortMultipartRequest(value: acyclic.objects.v2.Objects.AbortMultipartRequest) { def toWire: acyclic.objects.v2.Objects.AbortMultipartRequest = value }
+  object ObjectsMultipartAbortMultipartRequest { def fromWire(value: acyclic.objects.v2.Objects.AbortMultipartRequest): ObjectsMultipartAbortMultipartRequest = ObjectsMultipartAbortMultipartRequest(value) }
+
+  final case class ObjectsMultipartCompleteMultipartRequest(value: acyclic.objects.v2.Objects.CompleteMultipartRequest) { def toWire: acyclic.objects.v2.Objects.CompleteMultipartRequest = value }
+  object ObjectsMultipartCompleteMultipartRequest { def fromWire(value: acyclic.objects.v2.Objects.CompleteMultipartRequest): ObjectsMultipartCompleteMultipartRequest = ObjectsMultipartCompleteMultipartRequest(value) }
+
+  final case class ObjectsMultipartCreateMultipartRequest(value: acyclic.objects.v2.Objects.CreateMultipartRequest) { def toWire: acyclic.objects.v2.Objects.CreateMultipartRequest = value }
+  object ObjectsMultipartCreateMultipartRequest { def fromWire(value: acyclic.objects.v2.Objects.CreateMultipartRequest): ObjectsMultipartCreateMultipartRequest = ObjectsMultipartCreateMultipartRequest(value) }
+
+  final case class ObjectsMultipartListPartsRequest(value: acyclic.objects.v2.Objects.ListPartsRequest) { def toWire: acyclic.objects.v2.Objects.ListPartsRequest = value }
+  object ObjectsMultipartListPartsRequest { def fromWire(value: acyclic.objects.v2.Objects.ListPartsRequest): ObjectsMultipartListPartsRequest = ObjectsMultipartListPartsRequest(value) }
+
+  final case class ObjectsMultipartUploadPartRequest(value: acyclic.objects.v2.Objects.UploadPartRequest) { def toWire: acyclic.objects.v2.Objects.UploadPartRequest = value }
+  object ObjectsMultipartUploadPartRequest { def fromWire(value: acyclic.objects.v2.Objects.UploadPartRequest): ObjectsMultipartUploadPartRequest = ObjectsMultipartUploadPartRequest(value) }
+
+  final case class ObjectsObjectsDeleteObjectRequest(value: acyclic.objects.v2.Objects.DeleteObjectRequest) { def toWire: acyclic.objects.v2.Objects.DeleteObjectRequest = value }
+  object ObjectsObjectsDeleteObjectRequest { def fromWire(value: acyclic.objects.v2.Objects.DeleteObjectRequest): ObjectsObjectsDeleteObjectRequest = ObjectsObjectsDeleteObjectRequest(value) }
+
+  final case class ObjectsObjectsGetObjectRequest(value: acyclic.objects.v2.Objects.GetObjectRequest) { def toWire: acyclic.objects.v2.Objects.GetObjectRequest = value }
+  object ObjectsObjectsGetObjectRequest { def fromWire(value: acyclic.objects.v2.Objects.GetObjectRequest): ObjectsObjectsGetObjectRequest = ObjectsObjectsGetObjectRequest(value) }
+
+  final case class ObjectsObjectsHeadObjectRequest(value: acyclic.objects.v2.Objects.HeadObjectRequest) { def toWire: acyclic.objects.v2.Objects.HeadObjectRequest = value }
+  object ObjectsObjectsHeadObjectRequest { def fromWire(value: acyclic.objects.v2.Objects.HeadObjectRequest): ObjectsObjectsHeadObjectRequest = ObjectsObjectsHeadObjectRequest(value) }
+
+  final case class ObjectsObjectsListObjectsRequest(value: acyclic.objects.v2.Objects.ListObjectsRequest) { def toWire: acyclic.objects.v2.Objects.ListObjectsRequest = value }
+  object ObjectsObjectsListObjectsRequest { def fromWire(value: acyclic.objects.v2.Objects.ListObjectsRequest): ObjectsObjectsListObjectsRequest = ObjectsObjectsListObjectsRequest(value) }
+
+  final case class ObjectsObjectsPutObjectRequest(value: acyclic.objects.v2.Objects.PutObjectRequest) { def toWire: acyclic.objects.v2.Objects.PutObjectRequest = value }
+  object ObjectsObjectsPutObjectRequest { def fromWire(value: acyclic.objects.v2.Objects.PutObjectRequest): ObjectsObjectsPutObjectRequest = ObjectsObjectsPutObjectRequest(value) }
+
+  final case class StreamStreamAppendRequest(value: acyclic.stream.v2.Stream.AppendRequest) { def toWire: acyclic.stream.v2.Stream.AppendRequest = value }
+  object StreamStreamAppendRequest { def fromWire(value: acyclic.stream.v2.Stream.AppendRequest): StreamStreamAppendRequest = StreamStreamAppendRequest(value) }
+
+  final case class StreamStreamChildrenRequest(value: acyclic.stream.v2.Stream.ChildrenRequest) { def toWire: acyclic.stream.v2.Stream.ChildrenRequest = value }
+  object StreamStreamChildrenRequest { def fromWire(value: acyclic.stream.v2.Stream.ChildrenRequest): StreamStreamChildrenRequest = StreamStreamChildrenRequest(value) }
+
+  final case class StreamStreamChildrenPageRequest(value: acyclic.stream.v2.Stream.ChildrenPageRequest) { def toWire: acyclic.stream.v2.Stream.ChildrenPageRequest = value }
+  object StreamStreamChildrenPageRequest { def fromWire(value: acyclic.stream.v2.Stream.ChildrenPageRequest): StreamStreamChildrenPageRequest = StreamStreamChildrenPageRequest(value) }
+
+  final case class StreamStreamCommitRequest(value: acyclic.stream.v2.Stream.CommitRequest) { def toWire: acyclic.stream.v2.Stream.CommitRequest = value }
+  object StreamStreamCommitRequest { def fromWire(value: acyclic.stream.v2.Stream.CommitRequest): StreamStreamCommitRequest = StreamStreamCommitRequest(value) }
+
+  final case class StreamStreamFollowRequest(value: acyclic.stream.v2.Stream.FollowRequest) { def toWire: acyclic.stream.v2.Stream.FollowRequest = value }
+  object StreamStreamFollowRequest { def fromWire(value: acyclic.stream.v2.Stream.FollowRequest): StreamStreamFollowRequest = StreamStreamFollowRequest(value) }
+
+  final case class StreamStreamForkRequest(value: acyclic.stream.v2.Stream.ForkRequest) { def toWire: acyclic.stream.v2.Stream.ForkRequest = value }
+  object StreamStreamForkRequest { def fromWire(value: acyclic.stream.v2.Stream.ForkRequest): StreamStreamForkRequest = StreamStreamForkRequest(value) }
+
+  final case class StreamStreamInspectIdempotencyRequest(value: acyclic.stream.v2.Stream.InspectIdempotencyRequest) { def toWire: acyclic.stream.v2.Stream.InspectIdempotencyRequest = value }
+  object StreamStreamInspectIdempotencyRequest { def fromWire(value: acyclic.stream.v2.Stream.InspectIdempotencyRequest): StreamStreamInspectIdempotencyRequest = StreamStreamInspectIdempotencyRequest(value) }
+
+  final case class StreamStreamReadRequest(value: acyclic.stream.v2.Stream.ReadRequest) { def toWire: acyclic.stream.v2.Stream.ReadRequest = value }
+  object StreamStreamReadRequest { def fromWire(value: acyclic.stream.v2.Stream.ReadRequest): StreamStreamReadRequest = StreamStreamReadRequest(value) }
+
+  final case class StreamStreamReadCommitRequest(value: acyclic.stream.v2.Stream.ReadCommitRequest) { def toWire: acyclic.stream.v2.Stream.ReadCommitRequest = value }
+  object StreamStreamReadCommitRequest { def fromWire(value: acyclic.stream.v2.Stream.ReadCommitRequest): StreamStreamReadCommitRequest = StreamStreamReadCommitRequest(value) }
+
+  final case class StreamStreamTailRequest(value: acyclic.stream.v2.Stream.TailRequest) { def toWire: acyclic.stream.v2.Stream.TailRequest = value }
+  object StreamStreamTailRequest { def fromWire(value: acyclic.stream.v2.Stream.TailRequest): StreamStreamTailRequest = StreamStreamTailRequest(value) }
+
+  final case class WorkersWorkersCancelJobRequest(value: acyclic.workers.v1.Workers.CancelJobRequest) { def toWire: acyclic.workers.v1.Workers.CancelJobRequest = value }
+  object WorkersWorkersCancelJobRequest { def fromWire(value: acyclic.workers.v1.Workers.CancelJobRequest): WorkersWorkersCancelJobRequest = WorkersWorkersCancelJobRequest(value) }
+
+  final case class WorkersWorkersInspectJobRequest(value: acyclic.workers.v1.Workers.InspectJobRequest) { def toWire: acyclic.workers.v1.Workers.InspectJobRequest = value }
+  object WorkersWorkersInspectJobRequest { def fromWire(value: acyclic.workers.v1.Workers.InspectJobRequest): WorkersWorkersInspectJobRequest = WorkersWorkersInspectJobRequest(value) }
+
+  final case class WorkersWorkersInvokeDeploymentRequest(value: acyclic.workers.v1.Workers.InvokeDeploymentRequest) { def toWire: acyclic.workers.v1.Workers.InvokeDeploymentRequest = value }
+  object WorkersWorkersInvokeDeploymentRequest { def fromWire(value: acyclic.workers.v1.Workers.InvokeDeploymentRequest): WorkersWorkersInvokeDeploymentRequest = WorkersWorkersInvokeDeploymentRequest(value) }
+
+  final case class WorkersWorkersInvokeVersionRequest(value: acyclic.workers.v1.Workers.InvokeVersionRequest) { def toWire: acyclic.workers.v1.Workers.InvokeVersionRequest = value }
+  object WorkersWorkersInvokeVersionRequest { def fromWire(value: acyclic.workers.v1.Workers.InvokeVersionRequest): WorkersWorkersInvokeVersionRequest = WorkersWorkersInvokeVersionRequest(value) }
+
+  final case class WorkersWorkersPublishVersionRequest(value: acyclic.workers.v1.Workers.PublishVersionRequest) { def toWire: acyclic.workers.v1.Workers.PublishVersionRequest = value }
+  object WorkersWorkersPublishVersionRequest { def fromWire(value: acyclic.workers.v1.Workers.PublishVersionRequest): WorkersWorkersPublishVersionRequest = WorkersWorkersPublishVersionRequest(value) }
+
+  final case class WorkersWorkersSelectDeploymentRequest(value: acyclic.workers.v1.Workers.SelectDeploymentRequest) { def toWire: acyclic.workers.v1.Workers.SelectDeploymentRequest = value }
+  object WorkersWorkersSelectDeploymentRequest { def fromWire(value: acyclic.workers.v1.Workers.SelectDeploymentRequest): WorkersWorkersSelectDeploymentRequest = WorkersWorkersSelectDeploymentRequest(value) }
+
+  final case class WorkersWorkersSubmitJobRequest(value: acyclic.workers.v1.Workers.SubmitJobRequest) { def toWire: acyclic.workers.v1.Workers.SubmitJobRequest = value }
+  object WorkersWorkersSubmitJobRequest { def fromWire(value: acyclic.workers.v1.Workers.SubmitJobRequest): WorkersWorkersSubmitJobRequest = WorkersWorkersSubmitJobRequest(value) }
+
+  final case class InferenceContextsCreateRequest(value: inference.customer.v1.Inference.CreateContextRequest) { def toWire: inference.customer.v1.Inference.CreateContextRequest = value }
+  object InferenceContextsCreateRequest { def fromWire(value: inference.customer.v1.Inference.CreateContextRequest): InferenceContextsCreateRequest = InferenceContextsCreateRequest(value) }
+
+  final case class InferenceContextsInspectRequest(value: inference.customer.v1.Inference.InspectContextRequest) { def toWire: inference.customer.v1.Inference.InspectContextRequest = value }
+  object InferenceContextsInspectRequest { def fromWire(value: inference.customer.v1.Inference.InspectContextRequest): InferenceContextsInspectRequest = InferenceContextsInspectRequest(value) }
+
+  final case class InferenceContextsMutateRequest(value: inference.customer.v1.Inference.MutateContextRequest) { def toWire: inference.customer.v1.Inference.MutateContextRequest = value }
+  object InferenceContextsMutateRequest { def fromWire(value: inference.customer.v1.Inference.MutateContextRequest): InferenceContextsMutateRequest = InferenceContextsMutateRequest(value) }
+
+  final case class InferenceEvaluationsCreateRequest(value: inference.customer.v1.Inference.CreateEvaluationRequest) { def toWire: inference.customer.v1.Inference.CreateEvaluationRequest = value }
+  object InferenceEvaluationsCreateRequest { def fromWire(value: inference.customer.v1.Inference.CreateEvaluationRequest): InferenceEvaluationsCreateRequest = InferenceEvaluationsCreateRequest(value) }
+
+  final case class InferenceEvaluationsInspectRequest(value: inference.customer.v1.Inference.InspectEvaluationRequest) { def toWire: inference.customer.v1.Inference.InspectEvaluationRequest = value }
+  object InferenceEvaluationsInspectRequest { def fromWire(value: inference.customer.v1.Inference.InspectEvaluationRequest): InferenceEvaluationsInspectRequest = InferenceEvaluationsInspectRequest(value) }
+
+  final case class InferenceModelsListRequest(value: inference.customer.v1.Inference.ListModelsRequest) { def toWire: inference.customer.v1.Inference.ListModelsRequest = value }
+  object InferenceModelsListRequest { def fromWire(value: inference.customer.v1.Inference.ListModelsRequest): InferenceModelsListRequest = InferenceModelsListRequest(value) }
+
+  final case class InferenceRunsCancelRequest(value: inference.customer.v1.Inference.InspectRunRequest) { def toWire: inference.customer.v1.Inference.InspectRunRequest = value }
+  object InferenceRunsCancelRequest { def fromWire(value: inference.customer.v1.Inference.InspectRunRequest): InferenceRunsCancelRequest = InferenceRunsCancelRequest(value) }
+
+  final case class InferenceRunsGenerateRequest(value: inference.customer.v1.Inference.GenerateRunRequest) { def toWire: inference.customer.v1.Inference.GenerateRunRequest = value }
+  object InferenceRunsGenerateRequest { def fromWire(value: inference.customer.v1.Inference.GenerateRunRequest): InferenceRunsGenerateRequest = InferenceRunsGenerateRequest(value) }
+
+  final case class InferenceRunsInspectRequest(value: inference.customer.v1.Inference.InspectRunRequest) { def toWire: inference.customer.v1.Inference.InspectRunRequest = value }
+  object InferenceRunsInspectRequest { def fromWire(value: inference.customer.v1.Inference.InspectRunRequest): InferenceRunsInspectRequest = InferenceRunsInspectRequest(value) }
+
+  final case class InferenceRunsWatchRequest(value: inference.customer.v1.Inference.WatchRunRequest) { def toWire: inference.customer.v1.Inference.WatchRunRequest = value }
+  object InferenceRunsWatchRequest { def fromWire(value: inference.customer.v1.Inference.WatchRunRequest): InferenceRunsWatchRequest = InferenceRunsWatchRequest(value) }
+
+  final case class InferenceWarmContextsInspectRequest(value: inference.customer.v1.Inference.InspectWarmRequest) { def toWire: inference.customer.v1.Inference.InspectWarmRequest = value }
+  object InferenceWarmContextsInspectRequest { def fromWire(value: inference.customer.v1.Inference.InspectWarmRequest): InferenceWarmContextsInspectRequest = InferenceWarmContextsInspectRequest(value) }
+
+  final case class InferenceWarmContextsReleaseRequest(value: inference.customer.v1.Inference.ReleaseWarmRequest) { def toWire: inference.customer.v1.Inference.ReleaseWarmRequest = value }
+  object InferenceWarmContextsReleaseRequest { def fromWire(value: inference.customer.v1.Inference.ReleaseWarmRequest): InferenceWarmContextsReleaseRequest = InferenceWarmContextsReleaseRequest(value) }
+
+  final case class InferenceWarmContextsRenewRequest(value: inference.customer.v1.Inference.RenewWarmRequest) { def toWire: inference.customer.v1.Inference.RenewWarmRequest = value }
+  object InferenceWarmContextsRenewRequest { def fromWire(value: inference.customer.v1.Inference.RenewWarmRequest): InferenceWarmContextsRenewRequest = InferenceWarmContextsRenewRequest(value) }
+
+  final case class InferenceWarmContextsRetainRequest(value: inference.customer.v1.Inference.RetainWarmRequest) { def toWire: inference.customer.v1.Inference.RetainWarmRequest = value }
+  object InferenceWarmContextsRetainRequest { def fromWire(value: inference.customer.v1.Inference.RetainWarmRequest): InferenceWarmContextsRetainRequest = InferenceWarmContextsRetainRequest(value) }
 
 }
-
