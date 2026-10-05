@@ -9,6 +9,43 @@ import { validate_objects_v2_bearer_token } from "../generated/wasm/acyclic_obje
 
 import type { AbortMultipartRequest, AbortMultipartResponse, Bucket, CompleteMultipartRequest, CreateBucketRequest, CreateMultipartRequest, DeleteBucketRequest, DeleteBucketResponse, DeleteObjectRequest, DeleteObjectResponse, GetObjectRequest, GetObjectResponse, HeadBucketRequest, HeadObjectRequest, HeadObjectResponse, ListObjectsRequest, ListObjectsResponse, ListPartsRequest, ListPartsResponse, MultipartUpload, ObjectInfo, PutObjectRequest, UploadPartRequest, UploadedPart } from "../generated/proto/objects/v2/objects_pb.js";
 
+// Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
+
+declare const rustOwnedSemanticBrand: unique symbol;
+export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+
+export type RustOwnedIdempotencyKeyText = RustOwnedSemanticString<"idempotency_key_text">;
+export function makeRustOwnedIdempotencyKeyText(value: string): RustOwnedIdempotencyKeyText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyText; }
+export type RustOwnedObjectKey = RustOwnedSemanticString<"object_key">;
+export function makeRustOwnedObjectKey(value: string): RustOwnedObjectKey { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedObjectKey; }
+export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
+export type RustOwnedPageLimit = RustOwnedSemanticNumber<"page_limit">;
+export function makeRustOwnedPageLimit(value: number): RustOwnedPageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 1000) throw new RangeError("value exceeds its item limit"); return value as RustOwnedPageLimit; }
+export type RustOwnedUploadId = RustOwnedSemanticString<"upload_id">;
+export function makeRustOwnedUploadId(value: string): RustOwnedUploadId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedUploadId; }
+
+export const OBJECTS_PUBLIC_FIELD_BINDINGS = [
+  { family: "objects", field: "key", semanticType: "object_key", module: "objects", message: "GetObjectRequest", wireField: "object_key", direction: "request", rules: ["NonEmpty", "Utf8"] },
+  { family: "objects", field: "etag", semanticType: "opaque_text", module: "objects", message: "ObjectInfo", wireField: "etag", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "objects", field: "idempotency_key", semanticType: "idempotency_key_text", module: "objects", message: "MutationIdentity", wireField: "idempotency_key", direction: "nested_message", rules: ["NonEmpty", "Utf8"] },
+  { family: "objects", field: "upload_id", semanticType: "upload_id", module: "objects", message: "ListPartsRequest", wireField: "upload_id", direction: "request", rules: ["NonEmpty", "Utf8"] },
+  { family: "objects", field: "page_size", semanticType: "page_limit", module: "objects", message: "ListObjectsRequest", wireField: "page_size", direction: "request", rules: ["StrictlyPositive", "MaxItems(1000)"] },
+] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
+
+export const OBJECTS_PUBLIC_NESTED_ROUTES = [
+  { operation: "create_bucket", requestMessage: "CreateBucketRequest", nestedMessage: "MutationIdentity", nestedField: "mutation", semanticField: "idempotency_key", clientAttribute: "buckets", rpc: "CreateBucket", response: "Bucket", fields: [{ field: "name", kind: "text" }] },
+] as const;
+
+export type RustOwnedWireChoice =
+  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "unknown"; readonly value: Uint8Array };
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {
@@ -78,7 +115,7 @@ export const OBJECTS_OPERATIONS = {
   "acyclic.objects.v2.MultipartService/AbortMultipart": { rpc: "acyclic.objects.v2.MultipartService/AbortMultipart", capabilities: ["objects.multipart.write", "objects.idempotent_mutation"], errors: ["ERROR_CODE_INVALID_ARGUMENT", "ERROR_CODE_NOT_FOUND", "ERROR_CODE_ALREADY_EXISTS", "ERROR_CODE_PRECONDITION_FAILED", "ERROR_CODE_IDEMPOTENCY_MISMATCH", "ERROR_CODE_QUOTA_EXCEEDED", "ERROR_CODE_UNSUPPORTED", "ERROR_CODE_UNAVAILABLE", "ERROR_CODE_ACCESS_DENIED", "ERROR_CODE_RANGE_NOT_SATISFIABLE", "ERROR_CODE_NOT_MODIFIED"], validations: ["upload_id.non_empty", "idempotency_key.non_empty"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const OBJECTS_SOURCE = { family: "objects", rustCrate: "acyclic-objects", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::objects::objects_descriptor", descriptorSha256: "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f", sourceContentSha256: "42a771a932878a58e9b51ffb02bc9ec7131d51eb18ae7d2c9daff4c9a67a6049", sourceModelSha256: "42a771a932878a58e9b51ffb02bc9ec7131d51eb18ae7d2c9daff4c9a67a6049", handshakeRoute: "/v1/sdk/objects/handshake", handshakeVersion: "acyclic.objects.v2", handshakeDescriptorDigest: "21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b", modeledOperations: 13, httpProjection: true } as const;
+export const OBJECTS_SOURCE = { family: "objects", rustCrate: "acyclic-objects", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::objects::objects_descriptor", descriptorSha256: "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f", sourceContentSha256: "102bd6bb67adc744ced91691d645b3bc655e3a72cee430fb7328030816f37837", sourceModelSha256: "102bd6bb67adc744ced91691d645b3bc655e3a72cee430fb7328030816f37837", handshakeRoute: "/v1/sdk/objects/handshake", handshakeVersion: "acyclic.objects.v2", handshakeDescriptorDigest: "21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b", modeledOperations: 13, httpProjection: true } as const;
 
 export const OBJECTS_HANDSHAKE = { route: "/v1/sdk/objects/handshake", version: "acyclic.objects.v2", descriptorDigest: "21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b" } as const;
 

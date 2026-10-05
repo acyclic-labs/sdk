@@ -7,6 +7,33 @@ import { validateActorsCredential } from "./wasm-runtime.js";
 
 import type { AddSubscriptionRequest, AddSubscriptionResponse, CheckpointActorRequest, CheckpointActorResponse, CreateActorRequest, CreateActorResponse, InspectActorRequest, InspectActorResponse, InvokeActorRequest, InvokeActorResponse, RemoveSubscriptionRequest, RemoveSubscriptionResponse, ResumeSubscriptionRequest, ResumeSubscriptionResponse, UpdateActorRequest, UpdateActorResponse } from "../generated/proto/actors/v1/actors_pb.js";
 
+// Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
+
+declare const rustOwnedSemanticBrand: unique symbol;
+export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+
+export type RustOwnedActorId = RustOwnedSemanticString<"actor_id">;
+export function makeRustOwnedActorId(value: string): RustOwnedActorId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedActorId; }
+export type RustOwnedMethod = RustOwnedSemanticString<"method">;
+export function makeRustOwnedMethod(value: string): RustOwnedMethod { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedMethod; }
+
+export const ACTORS_PUBLIC_FIELD_BINDINGS = [
+  { family: "actors", field: "actor_id", semanticType: "actor_id", module: "actors", message: "InvokeActorRequest", wireField: "actor_id", direction: "request", rules: ["NonEmpty", "Utf8"] },
+  { family: "actors", field: "method", semanticType: "method", module: "actors", message: "InvokeActorRequest", wireField: "method", direction: "request", rules: ["NonEmpty", "Utf8"] },
+] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
+
+export const ACTORS_PUBLIC_NESTED_ROUTES = [
+] as const;
+
+export type RustOwnedWireChoice =
+  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "unknown"; readonly value: Uint8Array };
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {
@@ -71,7 +98,7 @@ export const ACTORS_OPERATIONS = {
   "acyclic.actors.v1.ActorsService/InvokeActor": { rpc: "acyclic.actors.v1.ActorsService/InvokeActor", capabilities: ["actors.invoke"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_INVALID_ARGUMENT", "ERROR_CODE_CAPABILITY_DENIED", "ERROR_CODE_CAPABILITY_EXPIRED", "ERROR_CODE_ACTOR_NOT_FOUND", "ERROR_CODE_SUBSCRIPTION_NOT_FOUND", "ERROR_CODE_IDEMPOTENCY_MISMATCH", "ERROR_CODE_CONFLICT", "ERROR_CODE_ADMISSION_DENIED", "ERROR_CODE_CHECKPOINT_FAILED", "ERROR_CODE_DEPENDENCY_UNAVAILABLE"], validations: ["actor_id.non_empty_utf8", "method.non_empty_utf8"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const ACTORS_SOURCE = { family: "actors", rustCrate: "acyclic-actors", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::actors_descriptor", descriptorSha256: "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf", sourceContentSha256: "54630e00aaae7f828ef42a85a4dd2c1fccbeb30875469ddb141d434eb2ac063e", sourceModelSha256: "54630e00aaae7f828ef42a85a4dd2c1fccbeb30875469ddb141d434eb2ac063e", handshakeRoute: "/v1/sdk/actors/handshake", handshakeVersion: "acyclic.actors.v1", handshakeDescriptorDigest: "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c", modeledOperations: 8, httpProjection: true } as const;
+export const ACTORS_SOURCE = { family: "actors", rustCrate: "acyclic-actors", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::actors_descriptor", descriptorSha256: "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf", sourceContentSha256: "64fa1e3fe681992d5caceea1782621b7693a7d49b4ffe6f52f1fff1d536d28d2", sourceModelSha256: "64fa1e3fe681992d5caceea1782621b7693a7d49b4ffe6f52f1fff1d536d28d2", handshakeRoute: "/v1/sdk/actors/handshake", handshakeVersion: "acyclic.actors.v1", handshakeDescriptorDigest: "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c", modeledOperations: 8, httpProjection: true } as const;
 
 export const ACTORS_HANDSHAKE = { route: "/v1/sdk/actors/handshake", version: "acyclic.actors.v1", descriptorDigest: "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c" } as const;
 

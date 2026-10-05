@@ -7,6 +7,42 @@ import { validateWorkersCredential } from "./wasm-runtime.js";
 
 import type { CancelJobRequest, CancelJobResponse, InspectJobRequest, InspectJobResponse, InvokeDeploymentRequest, InvokeResponse, InvokeVersionRequest, PublishVersionRequest, PublishVersionResponse, SelectDeploymentRequest, SelectDeploymentResponse, SubmitJobRequest, SubmitJobResponse } from "../generated/proto/workers/v1/workers_pb.js";
 
+// Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
+
+declare const rustOwnedSemanticBrand: unique symbol;
+export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+
+export type RustOwnedAlias = RustOwnedSemanticString<"alias">;
+export function makeRustOwnedAlias(value: string): RustOwnedAlias { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedAlias; }
+export type RustOwnedIdempotencyKeyText = RustOwnedSemanticString<"idempotency_key_text">;
+export function makeRustOwnedIdempotencyKeyText(value: string): RustOwnedIdempotencyKeyText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyText; }
+export type RustOwnedJobId = RustOwnedSemanticString<"job_id">;
+export function makeRustOwnedJobId(value: string): RustOwnedJobId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedJobId; }
+export type RustOwnedMethod = RustOwnedSemanticString<"method">;
+export function makeRustOwnedMethod(value: string): RustOwnedMethod { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedMethod; }
+export type RustOwnedVersionSha256 = RustOwnedSemanticBytes<"version_sha256">;
+export function makeRustOwnedVersionSha256(value: Uint8Array): RustOwnedVersionSha256 { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedVersionSha256; }
+
+export const WORKERS_PUBLIC_FIELD_BINDINGS = [
+  { family: "workers", field: "alias", semanticType: "alias", module: "workers", message: "SelectDeploymentRequest", wireField: "alias", direction: "request", rules: ["NonEmpty", "Utf8"] },
+  { family: "workers", field: "version_sha256", semanticType: "version_sha256", module: "workers", message: "SelectDeploymentRequest", wireField: "version_sha256", direction: "request", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "workers", field: "idempotency_key", semanticType: "idempotency_key_text", module: "workers", message: "SelectDeploymentRequest", wireField: "idempotency_key", direction: "request", rules: ["NonEmpty", "Utf8"] },
+  { family: "workers", field: "job_id", semanticType: "job_id", module: "workers", message: "InspectJobRequest", wireField: "job_id", direction: "request", rules: ["NonEmpty", "Utf8"] },
+  { family: "workers", field: "method", semanticType: "method", module: "workers", message: "InvokeVersionRequest", wireField: "method", direction: "request", rules: ["NonEmpty", "Utf8"] },
+] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
+
+export const WORKERS_PUBLIC_NESTED_ROUTES = [
+] as const;
+
+export type RustOwnedWireChoice =
+  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "unknown"; readonly value: Uint8Array };
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {
@@ -70,7 +106,7 @@ export const WORKERS_OPERATIONS = {
   "acyclic.workers.v1.WorkersService/InvokeDeployment": { rpc: "acyclic.workers.v1.WorkersService/InvokeDeployment", capabilities: ["workers.invoke"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["alias.non_empty_utf8", "method.non_empty_utf8"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const WORKERS_SOURCE = { family: "workers", rustCrate: "acyclic-workers", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::workers::workers_descriptor", descriptorSha256: "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128", sourceContentSha256: "545fa7392e44fe260423a6374506f21ad58ad4545f0834062d335fb2200f56f4", sourceModelSha256: "545fa7392e44fe260423a6374506f21ad58ad4545f0834062d335fb2200f56f4", handshakeRoute: "/v1/sdk/workers/handshake", handshakeVersion: "acyclic.workers.v1", handshakeDescriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8", modeledOperations: 7, httpProjection: true } as const;
+export const WORKERS_SOURCE = { family: "workers", rustCrate: "acyclic-workers", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::workers::workers_descriptor", descriptorSha256: "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128", sourceContentSha256: "d14a03ede07e6456cfdb00fe2fae16a0899aabafbe87af44b0d4a80672986b7e", sourceModelSha256: "d14a03ede07e6456cfdb00fe2fae16a0899aabafbe87af44b0d4a80672986b7e", handshakeRoute: "/v1/sdk/workers/handshake", handshakeVersion: "acyclic.workers.v1", handshakeDescriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8", modeledOperations: 7, httpProjection: true } as const;
 
 export const WORKERS_HANDSHAKE = { route: "/v1/sdk/workers/handshake", version: "acyclic.workers.v1", descriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8" } as const;
 

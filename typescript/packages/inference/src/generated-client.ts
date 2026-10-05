@@ -2,11 +2,45 @@
 
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import { CapabilitySchema, CapabilitySetSchema, HandshakeRequestSchema, HandshakeResponseSchema, ProtocolIdentitySchema } from "../generated/proto/protocol/v1/protocol_pb.js";
-import type { HandshakeResponse } from "../generated/proto/protocol/v1/protocol_pb.js";
 
 import { validateInferenceCredential } from "./contract.js";
 
 import type { ContextView, CreateContextRequest, CreateEvaluationRequest, EvaluationView, GenerateRunRequest, GenerateRunResponse, InspectContextRequest, InspectEvaluationRequest, InspectRunRequest, InspectWarmRequest, ListModelsRequest, ListModelsResponse, MutateContextRequest, MutationReceipt, ReleaseWarmRequest, RenewWarmRequest, RetainWarmRequest, RunEvent, RunView, WarmView, WatchRunRequest } from "../generated/proto/inference/v1/inference_pb.js";
+
+// Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
+
+declare const rustOwnedSemanticBrand: unique symbol;
+export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+
+export type RustOwnedEvaluationId = RustOwnedSemanticBytes<"evaluation_id">;
+export function makeRustOwnedEvaluationId(value: Uint8Array): RustOwnedEvaluationId { if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedEvaluationId; }
+export type RustOwnedRevisionDigest = RustOwnedSemanticBytes<"revision_digest">;
+export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
+export type RustOwnedRunId = RustOwnedSemanticBytes<"run_id">;
+export function makeRustOwnedRunId(value: Uint8Array): RustOwnedRunId { if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedRunId; }
+export type RustOwnedSha256Digest = RustOwnedSemanticBytes<"sha256_digest">;
+export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
+
+export const INFERENCE_PUBLIC_FIELD_BINDINGS = [
+  { family: "inference", field: "run_id", semanticType: "run_id", module: "inference", message: "InspectRunRequest", wireField: "run_id", direction: "request", rules: ["FixedLength(16)"] },
+  { family: "inference", field: "revision", semanticType: "revision_digest", module: "inference", message: "InspectContextRequest", wireField: "revision", direction: "request", rules: ["FixedLength(32)"] },
+  { family: "inference", field: "commitment", semanticType: "sha256_digest", module: "inference", message: "InspectWarmRequest", wireField: "commitment", direction: "request", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "evaluation_id", semanticType: "evaluation_id", module: "inference", message: "InspectEvaluationRequest", wireField: "evaluation_id", direction: "request", rules: ["FixedLength(16)"] },
+  { family: "inference", field: "spec_digest", semanticType: "sha256_digest", module: "inference", message: "EvaluationSpec", wireField: "spec_digest", direction: "nested_message", rules: ["FixedLength(32)", "Sha256Digest"] },
+] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
+
+export const INFERENCE_PUBLIC_NESTED_ROUTES = [
+  { operation: "create_evaluation", requestMessage: "CreateEvaluationRequest", nestedMessage: "EvaluationSpec", nestedField: "spec", semanticField: "spec_digest", clientAttribute: "inference.evaluations", rpc: "Create", response: "EvaluationView", fields: [{ field: "identity", kind: "message" }, { field: "spec", kind: "message" }] },
+] as const;
+
+export type RustOwnedWireChoice =
+  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "unknown"; readonly value: Uint8Array };
 
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
@@ -78,7 +112,7 @@ export const INFERENCE_OPERATIONS = {
   "inference.customer.v1.EvaluationsService/Inspect": { rpc: "inference.customer.v1.EvaluationsService/Inspect", capabilities: ["inference.evaluations.read"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["evaluation_id.length_16"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const INFERENCE_SOURCE = { family: "inference", rustCrate: "acyclic-inference", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::inference::inference_descriptor", descriptorSha256: "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea", sourceContentSha256: "4cb425b567384b9c7425c9eff323dbbccd0609a0beb9c844c437a4294e5fff52", sourceModelSha256: "4cb425b567384b9c7425c9eff323dbbccd0609a0beb9c844c437a4294e5fff52", handshakeRoute: "/v1/sdk/inference/handshake", handshakeVersion: "inference.customer.v1", handshakeDescriptorDigest: "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15", modeledOperations: 14, httpProjection: true } as const;
+export const INFERENCE_SOURCE = { family: "inference", rustCrate: "acyclic-inference", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::inference::inference_descriptor", descriptorSha256: "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea", sourceContentSha256: "472f8390fa0657d98835a6cf3c7a7fa61e5f36d81b46e89fb122283f0eec528d", sourceModelSha256: "472f8390fa0657d98835a6cf3c7a7fa61e5f36d81b46e89fb122283f0eec528d", handshakeRoute: "/v1/sdk/inference/handshake", handshakeVersion: "inference.customer.v1", handshakeDescriptorDigest: "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15", modeledOperations: 14, httpProjection: true } as const;
 
 export const INFERENCE_HANDSHAKE = { route: "/v1/sdk/inference/handshake", version: "inference.customer.v1", descriptorDigest: "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15" } as const;
 
@@ -90,7 +124,7 @@ export function rustOwnedGrpcHandshakeRequest(handshake: RustOwnedHandshakeMetad
 }
 
 /** Validates the Rust-owned control-plane response before any application RPC. */
-export function validateRustOwnedGrpcHandshake(response: HandshakeResponse, handshake: RustOwnedHandshakeMetadata, family: string): void {
+export function validateRustOwnedGrpcHandshake(response: { readonly protocol?: { readonly version: string; readonly descriptorDigest: string } | undefined; readonly supported?: { readonly capabilities: readonly { readonly name: string; readonly version: string }[] } | undefined }, handshake: RustOwnedHandshakeMetadata, family: string): void {
   const identity = response.protocol;
   if (identity === undefined || identity.version !== handshake.version || identity.descriptorDigest !== handshake.descriptorDigest) throw new Error("Rust-owned gRPC handshake identity mismatch");
   const capabilities = response.supported?.capabilities ?? [];

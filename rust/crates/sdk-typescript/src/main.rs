@@ -835,6 +835,124 @@ fn package_typescript(service: &ServiceMetadata) -> Result<String, Error> {
     typescript_with_paths(service, &family_path, protocol_path)
 }
 
+fn typescript_semantic_name(id: &str) -> String {
+    let name = id.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<String>();
+    format!("RustOwned{name}")
+}
+
+fn typescript_semantic_section(family: &str) -> String {
+    use acyclic_sdk_contract_wire::{
+        semantic_type, PublicFieldDirection, SemanticRule, WireValueKind,
+        PUBLIC_FIELD_BINDINGS, WIRE_UNION_VARIANTS,
+    };
+    use acyclic_sdk_contract_wire::type_policy::PUBLIC_NESTED_ROUTES;
+    let bindings = PUBLIC_FIELD_BINDINGS
+        .iter()
+        .filter(|binding| binding.family == family)
+        .collect::<Vec<_>>();
+    let semantic_ids = bindings
+        .iter()
+        .map(|binding| binding.semantic_type)
+        .collect::<BTreeSet<_>>();
+    let mut output = String::from(
+        "// Rust-owned semantic projections. Generated from type_policy.rs; do not edit.\n\n",
+    );
+    output.push_str("declare const rustOwnedSemanticBrand: unique symbol;\n");
+    output.push_str("export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };\n");
+    output.push_str("export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };\n");
+    output.push_str("export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };\n");
+    output.push_str("export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };\n\n");
+    output.push_str("export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: \"request\" | \"response\" | \"nested_message\"; readonly rules: readonly string[]; }\n\n");
+    for id in semantic_ids {
+        let item = semantic_type(id).expect("every public binding resolves to a Rust semantic type");
+        let name = typescript_semantic_name(item.id);
+        let base = match item.wire_kind {
+            WireValueKind::String => format!("RustOwnedSemanticString<{id:?}>"),
+            WireValueKind::Bytes => format!("RustOwnedSemanticBytes<{id:?}>"),
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => format!("RustOwnedSemanticNumber<{id:?}>"),
+            WireValueKind::Boolean => "boolean".to_owned(),
+            WireValueKind::Message => format!("RustOwnedSemanticMessage<{id:?}>"),
+            WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => "unknown".to_owned(),
+        };
+        output.push_str(&format!("export type {name} = {base};\n"));
+        let mut checks = String::new();
+        for rule in item.rules {
+            let check = match rule {
+                SemanticRule::NonEmpty => "if (value.length === 0) throw new TypeError(\"value must not be empty\");".to_owned(),
+                SemanticRule::NonNegative => "if (value < 0) throw new RangeError(\"value must be non-negative\");".to_owned(),
+                SemanticRule::StrictlyPositive => "if (value <= 0) throw new RangeError(\"value must be positive\");".to_owned(),
+                SemanticRule::Utf8 | SemanticRule::Sha256Digest | SemanticRule::Immutable | SemanticRule::Monotonic | SemanticRule::CanonicalResourceName | SemanticRule::ExactOneof | SemanticRule::ExplicitPresence | SemanticRule::PreserveUnknownEnum | SemanticRule::PreserveUnknownOneof | SemanticRule::BoundedInteger { .. } => String::new(),
+                SemanticRule::FixedLength(length) => format!("if (value.byteLength !== {length}) throw new RangeError(\"value has the wrong length\");"),
+                SemanticRule::MaxBytes(maximum) => format!("if (value.byteLength > {maximum}) throw new RangeError(\"value exceeds its byte limit\");"),
+                SemanticRule::MaxItems(maximum) => format!("if (value > {maximum}) throw new RangeError(\"value exceeds its item limit\");"),
+            };
+            checks.push_str(&check);
+        }
+        let parameter = match item.wire_kind {
+            WireValueKind::Bytes => "value: Uint8Array",
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => "value: number",
+            WireValueKind::Boolean => "value: boolean",
+            WireValueKind::Message => "value: object",
+            _ => "value: string",
+        };
+        output.push_str(&format!("export function make{name}({parameter}): {name} {{ {checks} return value as {name}; }}\n"));
+    }
+    output.push('\n');
+    output.push_str(&format!("export const {}_PUBLIC_FIELD_BINDINGS = [\n", family.to_ascii_uppercase()));
+    for binding in &bindings {
+        let direction = match binding.direction {
+            PublicFieldDirection::Request => "request",
+            PublicFieldDirection::Response => "response",
+            PublicFieldDirection::NestedMessage => "nested_message",
+        };
+        let rules = semantic_type(binding.semantic_type)
+            .expect("semantic binding")
+            .rules
+            .iter()
+            .map(|rule| format!("{:?}", format!("{rule:?}")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        output.push_str(&format!("  {{ family: {:?}, field: {:?}, semanticType: {:?}, module: {:?}, message: {:?}, wireField: {:?}, direction: {:?}, rules: [{}] }},\n", binding.family, binding.field, binding.semantic_type, binding.module, binding.message, binding.wire_field, direction, rules));
+    }
+    output.push_str("] as const satisfies readonly RustOwnedSemanticFieldMetadata[];\n\n");
+    output.push_str(&format!("export const {}_PUBLIC_NESTED_ROUTES = [\n", family.to_ascii_uppercase()));
+    for route in PUBLIC_NESTED_ROUTES.iter().filter(|route| route.family == family) {
+        let fields = route.fields.iter().map(|(field, kind)| {
+            let kind = match kind {
+                acyclic_sdk_contract_wire::type_policy::PublicNestedFieldKind::Text => "text",
+                acyclic_sdk_contract_wire::type_policy::PublicNestedFieldKind::Message(_) => "message",
+            };
+            format!("{{ field: {:?}, kind: {:?} }}", field, kind)
+        }).collect::<Vec<_>>().join(", ");
+        output.push_str(&format!("  {{ operation: {:?}, requestMessage: {:?}, nestedMessage: {:?}, nestedField: {:?}, semanticField: {:?}, clientAttribute: {:?}, rpc: {:?}, response: {:?}, fields: [{}] }},\n", route.operation, route.request_message, route.nested_message, route.nested_field, route.semantic_field, route.client_attribute, route.rpc, route.response, fields));
+    }
+    output.push_str("] as const;\n\n");
+    let wire_type = |kind: WireValueKind| match kind {
+        WireValueKind::String => "string",
+        WireValueKind::Bytes => "Uint8Array",
+        WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => "number",
+        WireValueKind::Boolean => "boolean",
+        WireValueKind::Message => "object",
+        WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => "unknown",
+    };
+    let union_variants = WIRE_UNION_VARIANTS
+        .iter()
+        .map(|variant| format!("  {{ readonly kind: {:?}; readonly value: {} }}", variant.tag, wire_type(variant.payload_wire_kind)))
+        .collect::<Vec<_>>()
+        .join(" |\n");
+    output.push_str(&format!("export type RustOwnedWireChoice =\n{union_variants};\n\n"));
+    output
+}
+
 fn typescript_with_paths(
     service: &ServiceMetadata,
     family_path: &str,
@@ -928,6 +1046,7 @@ fn typescript_with_paths(
         }
         output.push('\n');
     }
+    output.push_str(&typescript_semantic_section(&service.family));
     output.push_str("export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }\n\n");
     output.push_str("export interface RustOwnedMethodMetadata {\n  readonly operationId: string;\n  readonly rpc: string;\n  readonly docs: string;\n  readonly path: string;\n  readonly pathParameters: readonly string[];\n  readonly httpMethod: \"POST\";\n  readonly requestType: string;\n  readonly responseType: string;\n  readonly clientStreaming: boolean;\n  readonly serverStreaming: boolean;\n  readonly requestEncoding: \"protobuf-json\";\n  readonly responseEncoding: \"protobuf-json\";\n  readonly auth: \"bearer\";\n  readonly credentialPolicy: \"bearer-no-crlf\";\n  readonly responseLimitPolicy: \"bounded-cumulative-utf8\";\n  readonly requestFields: readonly RustOwnedFieldMetadata[];\n  readonly responseFields: readonly RustOwnedFieldMetadata[];\n}\n\n");
     if let Some(policy) = &service.remote_policy {

@@ -2,11 +2,34 @@
 
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import { CapabilitySchema, CapabilitySetSchema, HandshakeRequestSchema, HandshakeResponseSchema, ProtocolIdentitySchema } from "../generated/proto/protocol/v1/protocol_pb.js";
-import type { HandshakeResponse } from "../generated/proto/protocol/v1/protocol_pb.js";
 
 import { validateFilesystemCredential } from "./remote-web.js";
 
 import type { ApplyJoinRequest, ApplyTransactionRequest, CancelRequest, CancelResponse, CreateWorkspaceRequest, CredentialRequest, CredentialResponse, DeleteWorkspaceRequest, DiffRequest, DiffResponse, ExportChunk, ExportRequest, ForkWorkspaceRequest, GenerationResponse, GetGenerationRequest, GetHeadRequest, HandshakeRequest, HandshakeResponse, ImportChunk, ImportResponse, JoinPlan, JoinResponse, ListDirectoryRequest, ListDirectoryResponse, MutationResponse, ObserveRequest, ObserveResponse, OpenWorkspaceRequest, PlanExtentsRequest, PlanExtentsResponse, PlanJoinRequest, ReadLinkRequest, ReadRequest, ReadResponse, RebaseRequest, RebaseResponse, RebaseTransactionRequest, RebaseTransactionResponse, RetainGenerationRequest, RetainGenerationResponse, SourceOperationRequest, SourceResponse, SourceStateRequest, StatRequest, StatResponse, WorkspaceResponse } from "../generated/proto/filesystem/v2/filesystem_pb.js";
+
+// Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
+
+declare const rustOwnedSemanticBrand: unique symbol;
+export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+
+export type RustOwnedPath = RustOwnedSemanticString<"path">;
+export function makeRustOwnedPath(value: string): RustOwnedPath { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
+
+export const FILESYSTEM_PUBLIC_FIELD_BINDINGS = [
+  { family: "filesystem", field: "path", semanticType: "path", module: "filesystem", message: "ReadRequest", wireField: "path", direction: "request", rules: ["NonEmpty", "Utf8"] },
+] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
+
+export const FILESYSTEM_PUBLIC_NESTED_ROUTES = [
+] as const;
+
+export type RustOwnedWireChoice =
+  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "unknown"; readonly value: Uint8Array };
 
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
@@ -94,7 +117,7 @@ export const FILESYSTEM_OPERATIONS = {
   "acyclic.filesystem.v2.FilesystemService/Cancel": { rpc: "acyclic.filesystem.v2.FilesystemService/Cancel", capabilities: ["filesystem.operation"], errors: ["INVALID_ARGUMENT", "NOT_FOUND", "FAILED_PRECONDITION", "CANCELLED", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "UNIMPLEMENTED", "DATA_LOSS"], validations: ["operation_id.16_bytes", "operation.idempotency_key.16_bytes", "response.identity.matches"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const FILESYSTEM_SOURCE = { family: "filesystem", rustCrate: "acyclic-filesystem", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor", descriptorSha256: "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1", sourceContentSha256: "1db312d09428eafe79bea51cdffd17fbfe88133cf605420df64fe0bbd273c898", sourceModelSha256: "1db312d09428eafe79bea51cdffd17fbfe88133cf605420df64fe0bbd273c898", handshakeRoute: "/v1/sdk/filesystem/handshake", handshakeVersion: "acyclic.filesystem.v2", handshakeDescriptorDigest: "105e153060d229569836982527c91bd56a69891691007215fbc599115eca2093", modeledOperations: 30, httpProjection: false } as const;
+export const FILESYSTEM_SOURCE = { family: "filesystem", rustCrate: "acyclic-filesystem", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor", descriptorSha256: "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1", sourceContentSha256: "254b2bf35efff2aa09379941c7d14487c9aea9dd55752cf55ad39103e83a9b49", sourceModelSha256: "254b2bf35efff2aa09379941c7d14487c9aea9dd55752cf55ad39103e83a9b49", handshakeRoute: "/v1/sdk/filesystem/handshake", handshakeVersion: "acyclic.filesystem.v2", handshakeDescriptorDigest: "105e153060d229569836982527c91bd56a69891691007215fbc599115eca2093", modeledOperations: 30, httpProjection: false } as const;
 
 export const FILESYSTEM_HANDSHAKE = { route: "/v1/sdk/filesystem/handshake", version: "acyclic.filesystem.v2", descriptorDigest: "105e153060d229569836982527c91bd56a69891691007215fbc599115eca2093" } as const;
 
@@ -106,7 +129,7 @@ export function rustOwnedGrpcHandshakeRequest(handshake: RustOwnedHandshakeMetad
 }
 
 /** Validates the Rust-owned control-plane response before any application RPC. */
-export function validateRustOwnedGrpcHandshake(response: HandshakeResponse, handshake: RustOwnedHandshakeMetadata, family: string): void {
+export function validateRustOwnedGrpcHandshake(response: { readonly protocol?: { readonly version: string; readonly descriptorDigest: string } | undefined; readonly supported?: { readonly capabilities: readonly { readonly name: string; readonly version: string }[] } | undefined }, handshake: RustOwnedHandshakeMetadata, family: string): void {
   const identity = response.protocol;
   if (identity === undefined || identity.version !== handshake.version || identity.descriptorDigest !== handshake.descriptorDigest) throw new Error("Rust-owned gRPC handshake identity mismatch");
   const capabilities = response.supported?.capabilities ?? [];
