@@ -259,17 +259,16 @@ impl DurableTaskHost for SwarmCommunicationHost {
             {
                 return Ok(());
             }
-            let admitted = swarm
-                .admit_message(sender, recipient, message, payload.clone())
-                .await?;
-            if !admitted {
-                sender_scope.require_new_mutation()?;
-                recipient_scope.require_new_mutation()?;
-            }
             let recipient_harness = swarm.open_session(recipient).await?;
             let storage = recipient_harness.storage();
             let sender_harness = swarm.open_session(sender).await?;
+            // Validate sender read authority and content residency before the
+            // lifecycle CAS. An admission must never survive a malformed or
+            // inaccessible source payload.
             let bytes = sender_harness.storage().read(&payload).await?;
+            swarm
+                .admit_message(sender, recipient, message, payload.clone())
+                .await?;
             // The endpoint operation remains the stable identity for the
             // recipient-owned staged bytes. It is deliberately not a second
             // journal: the mailbox record below is the sole durable
@@ -293,7 +292,7 @@ impl DurableTaskHost for SwarmCommunicationHost {
                     .await?
             };
             MailboxStore::new(self.stream.clone(), storage.content_verifier())
-                .send_admitted(self, sender, recipient, message, delivered, admitted)
+                .send_admitted(self, sender, recipient, message, delivered)
                 .await
         })
     }
@@ -320,12 +319,8 @@ impl DurableTaskHost for SwarmCommunicationHost {
         deadline: u64,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let scope = self.communication_scope(task).await?;
             let swarm = self.swarm()?;
-            let admitted = swarm.admit_timer(task, operation, deadline).await?;
-            if !admitted {
-                scope.require_new_mutation()?;
-            }
+            swarm.admit_timer(task, operation, deadline).await?;
             let timer = self
                 .stream
                 .stream(format!("harness/v2/swarm-timers/{task}"))

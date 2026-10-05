@@ -85,17 +85,9 @@ impl<P: StreamProvider> MailboxStore<P> {
         recipient_id: TaskId,
         message_id: OperationId,
         payload: FileRef,
-        admitted: bool,
     ) -> Result<()> {
-        self.send_inner(
-            host,
-            sender_id,
-            recipient_id,
-            message_id,
-            payload,
-            admitted,
-        )
-        .await
+        self.send_inner(host, sender_id, recipient_id, message_id, payload, true)
+            .await
     }
 
     async fn send_inner(

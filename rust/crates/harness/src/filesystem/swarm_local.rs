@@ -4574,7 +4574,7 @@ impl PersistentLocalSwarm {
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         if sender.into_bytes() == [0; 16]
             || recipient.into_bytes() == [0; 16]
             || message_id.into_bytes() == [0; 16]
@@ -4588,14 +4588,21 @@ impl PersistentLocalSwarm {
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let sender_session = self.session(sender).await?;
+        let recipient_session = self.session(recipient).await?;
+        if sender_session.parent != Some(recipient)
+            && recipient_session.parent != Some(sender)
+        {
+            return Err(Error::Unauthorized(
+                "message endpoints are not direct parent and child".into(),
+            ));
+        }
         if self
             .find_message_admission(sender, recipient, message_id, &payload)
             .await?
         {
-            return Ok(true);
+            return Ok(());
         }
-        let sender_session = self.session(sender).await?;
-        let recipient_session = self.session(recipient).await?;
         if !matches!(
             sender_session.phase,
             LocalSessionPhase::Ready
@@ -4619,12 +4626,13 @@ impl PersistentLocalSwarm {
         };
         match append_record_at(&registry, event, observed_tail).await {
             Ok(()) => {
-                *self.registry_tail.lock().await = observed_tail
+                let committed_tail = observed_tail
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                self.retain_registry_tail(committed_tail).await;
                 #[cfg(test)]
                 pause_after_message_admission_append().await;
-                Ok(true)
+                Ok(())
             }
             Err(error) => {
                 if self.refresh_registry_state().await.is_ok() {
@@ -4632,7 +4640,7 @@ impl PersistentLocalSwarm {
                         .find_message_admission(sender, recipient, message_id, &payload)
                         .await
                     {
-                        Ok(true) => return Ok(true),
+                        Ok(true) => return Ok(()),
                         Ok(false) => {}
                         Err(error) => return Err(error),
                     }
@@ -4688,7 +4696,7 @@ impl PersistentLocalSwarm {
         task: TaskId,
         operation: OperationId,
         deadline: u64,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         if task.into_bytes() == [0; 16]
             || operation.into_bytes() == [0; 16]
             || deadline == 0
@@ -4701,7 +4709,7 @@ impl PersistentLocalSwarm {
             .map_err(|error| Error::Storage(error.to_string()))?;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         if self.find_timer_admission(task, operation, deadline).await? {
-            return Ok(true);
+            return Ok(());
         }
         let session = self.session(task).await?;
         if !matches!(
@@ -4721,17 +4729,18 @@ impl PersistentLocalSwarm {
         };
         match append_record_at(&registry, event, observed_tail).await {
             Ok(()) => {
-                *self.registry_tail.lock().await = observed_tail
+                let committed_tail = observed_tail
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                self.retain_registry_tail(committed_tail).await;
                 #[cfg(test)]
                 pause_after_timer_admission_append().await;
-                Ok(true)
+                Ok(())
             }
             Err(error) => {
                 if self.refresh_registry_state().await.is_ok() {
                     match self.find_timer_admission(task, operation, deadline).await {
-                        Ok(true) => return Ok(true),
+                        Ok(true) => return Ok(()),
                         Ok(false) => {}
                         Err(error) => return Err(error),
                     }
@@ -6550,6 +6559,13 @@ impl PersistentLocalSwarm {
     /// committed by the first handle before it can dispatch or append again.
     async fn refresh_registry_state(&self) -> Result<()> {
         self.refresh_registry_state_with_tail().await.map(|_| ())
+    }
+
+    /// Keep the local cursor monotonic when another handle commits a durable
+    /// suffix concurrently with this one.
+    async fn retain_registry_tail(&self, committed_tail: u64) {
+        let mut known_tail = self.registry_tail.lock().await;
+        *known_tail = (*known_tail).max(committed_tail);
     }
 
     async fn refresh_registry_state_with_tail(&self) -> Result<u64> {
@@ -9517,6 +9533,19 @@ mod tests {
                 "message.txt",
             )
             .await?;
+        // The admission owner enforces the direct parent/child relationship
+        // itself; callers cannot bypass it through a host preflight.
+        assert!(matches!(
+            swarm
+                .admit_message(
+                    child,
+                    child,
+                    OperationId::from_bytes([0xD0; 16]),
+                    payload.clone(),
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
 
         // Two independently opened local handles race the same owner journal
         // tail. Both calls may recover success, but exactly one admission can
@@ -9533,11 +9562,11 @@ mod tests {
             swarm.admit_message(parent, child, message, payload.clone()),
             second.admit_message(parent, child, message, payload.clone()),
         );
-        assert!(first_admission?);
-        assert!(second_admission?);
+        first_admission?;
+        second_admission?;
 
         let timer = OperationId::from_bytes([0xE1; 16]);
-        assert!(swarm.admit_timer(child, timer, 10_000).await?);
+        swarm.admit_timer(child, timer, 10_000).await?;
         assert!(matches!(
             swarm.admit_timer(child, timer, 20_000).await,
             Err(Error::Conflict(_))
@@ -9649,11 +9678,11 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         swarm.cancel(child).await?;
-        assert!(swarm
+        swarm
             .admit_message(parent, child, message, payload.clone())
-            .await?);
-        assert!(swarm.admit_timer(child, timer, 10_000).await?);
-        assert!(swarm.admit_timer(child, uncertain_timer, 30_000).await?);
+            .await?;
+        swarm.admit_timer(child, timer, 10_000).await?;
+        swarm.admit_timer(child, uncertain_timer, 30_000).await?;
         let records = load_records(&registry).await?;
         assert_eq!(
             records
@@ -9682,16 +9711,16 @@ mod tests {
             Limits::default(),
         )
         .await?;
-        assert!(reopened
+        reopened
             .admit_message(parent, child, message, payload.clone())
-            .await?);
-        assert!(reopened
+            .await?;
+        reopened
             .admit_message(parent, child, uncertain_message, payload.clone())
-            .await?);
-        assert!(reopened.admit_timer(child, timer, 10_000).await?);
-        assert!(reopened
+            .await?;
+        reopened.admit_timer(child, timer, 10_000).await?;
+        reopened
             .admit_timer(child, uncertain_timer, 30_000)
-            .await?);
+            .await?;
         let reopened_registry = reopened
             .registry
             .stream(REGISTRY_STREAM)
