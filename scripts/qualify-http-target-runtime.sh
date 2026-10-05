@@ -7,6 +7,7 @@ target=${1:?target is required}
 package_root=${2:?generated package root is required}
 output_root=${3:?receipt directory is required}
 archive=${4:-}
+operation_plan_path="$(dirname "$package_root")/operation-plan.json"
 mkdir -p "$output_root"
 
 if [[ -n "$archive" ]]; then
@@ -534,13 +535,15 @@ EOF
   *) echo "unsupported HTTP target: $target" >&2; exit 2 ;;
 esac
 
-python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" "$archive_sha256" "${client_transport:-not-run}" "${client_operations:-}" <<'PY'
+python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" "$archive_sha256" "${client_transport:-not-run}" "${client_operations:-}" "$operation_plan_path" <<'PY'
 import json, pathlib, sys
-path, target, runtime, revision, archive, archive_sha256, client_transport, client_operations = sys.argv[1:]
+path, target, runtime, revision, archive, archive_sha256, client_transport, client_operations, operation_plan_path = sys.argv[1:]
 fixture_roundtrip = client_transport.endswith("fixture-roundtrip")
 operations = [item for item in client_operations.split(",") if item]
 if fixture_roundtrip and not operations:
     operations = ["actors.create_actor"]
+plan = json.loads(pathlib.Path(operation_plan_path).read_text(encoding="utf-8"))
+applicable_operations = plan["operations"]
 payload = {
     "schema": "acyclic.sdk.http-target-runtime-qualification.v1",
     "target": target,
@@ -554,6 +557,8 @@ payload = {
     "client_transport": client_transport,
     "semantic_qualification": "fixture-roundtrip" if fixture_roundtrip else "compile-only",
     "qualified_operations": operations if fixture_roundtrip else [],
+    "applicable_operations": applicable_operations,
+    "applicable_operation_count": len(applicable_operations),
     "coverage_note": "This receipt proves only the listed generated operation; it does not imply full service or family coverage.",
     "streaming": "not-applicable-to-http-projection",
     "native_grpc": "unqualified",

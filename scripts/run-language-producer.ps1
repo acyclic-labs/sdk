@@ -283,6 +283,43 @@ switch ($TargetId) {
     }
 }
 
+$operationEntries = [System.Collections.Generic.List[object]]::new()
+$openApiStage = Join-Path $OutputRoot 'openapi'
+foreach ($familySpec in Get-ChildItem -LiteralPath $openApiStage -Filter '*.json' -File -ErrorAction Stop | Sort-Object Name) {
+    $family = [IO.Path]::GetFileNameWithoutExtension($familySpec.Name)
+    $document = Get-Content -LiteralPath $familySpec.FullName -Raw | ConvertFrom-Json
+    foreach ($pathProperty in $document.paths.PSObject.Properties | Sort-Object Name) {
+        foreach ($methodProperty in $pathProperty.Value.PSObject.Properties | Sort-Object Name) {
+            if ($methodProperty.Name -notin @('get', 'post', 'put', 'patch', 'delete', 'head', 'options')) { continue }
+            $operation = $methodProperty.Value
+            $requestSchema = $operation.requestBody.content.PSObject.Properties | Select-Object -First 1
+            $requestRef = if ($null -ne $requestSchema) { [string]$requestSchema.Value.schema.'$ref' } else { '' }
+            $responseSchema = $operation.responses.'200'.content.PSObject.Properties | Select-Object -First 1
+            $responseRef = if ($null -ne $responseSchema) { [string]$responseSchema.Value.schema.'$ref' } else { '' }
+            $streaming = if ($null -ne $operation.'x-protobuf-streaming') { $operation.'x-protobuf-streaming' } else { [ordered]@{ client = $false; server = $false } }
+            $operationEntries.Add([ordered]@{
+                family = $family
+                method = $methodProperty.Name.ToUpperInvariant()
+                path = $pathProperty.Name
+                operation_id = [string]$operation.operationId
+                rpc = [string]$operation.'x-protobuf-rpc'
+                request_schema = $requestRef
+                response_schema = $responseRef
+                streaming = $streaming
+                polling = if ($null -ne $operation.'x-acyclic-http-polling') { $operation.'x-acyclic-http-polling' } else { $null }
+            })
+        }
+    }
+}
+$operationPlan = [ordered]@{
+    schema = 'acyclic.sdk.http-operation-plan.v1'
+    authority = 'rust-openapi-stage'
+    source_revision = $sourceGitSha.ToLowerInvariant()
+    source_digest = $sourceModelDigest.ToLowerInvariant()
+    operations = @($operationEntries)
+}
+$operationPlan | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $TargetOutput 'operation-plan.json') -Encoding utf8NoBOM
+
 $toolReceipt = [ordered]@{
     schema = 'acyclic.sdk.language-toolchain-receipt.v1'
     target = $TargetId
