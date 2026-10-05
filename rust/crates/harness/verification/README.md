@@ -74,8 +74,10 @@ This is a design model, not an implementation conformance proof. Captures are
 abstract immutable revision identities: it does not check serialization bytes,
 reference authorization, storage corruption, recursive depth, crashes, or
 scheduler progress. The real provider-input and recursive-fork tests remain
-necessary. In particular, the current publisher awaits child completion and
-this safety model does not establish live parent-child communication.
+necessary. In the current implementation (`ebd74c762`), the publisher first
+completes the durable admission barrier and then enqueues an owned child worker;
+the parent publication does not wait for child model completion. This safety
+model still does not establish live parent-child communication.
 
 ## Verification direction
 
@@ -109,10 +111,10 @@ identity alone cannot establish byte equality or absence of hidden input.
 
 Check progress separately from safety. Eventual completion needs explicit
 fairness and availability assumptions; permanent uncertainty is an allowed
-outcome. A parent servicing a live child, bounded cancellation/shutdown, and a
-wait reaching delivery, cancellation or timeout need runtime scenarios as well
-as any temporal model. The currently synchronous child publisher remains an
-open implementation gap; the models must not assume it has already been fixed.
+outcome. The owned worker and cancellation paths in `ebd74c762` still need
+runtime scenarios for parent servicing, bounded shutdown, and waits reaching
+delivery, cancellation or timeout; the models must not treat worker enqueue as
+a liveness proof.
 
 Bounded model checking does not establish an unbounded recursive theorem, a Rust
 refinement proof, filesystem/process correctness, or model coding quality. Keep
