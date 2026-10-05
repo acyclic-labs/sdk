@@ -226,12 +226,14 @@ type alias Flags =
     }
 
 type Model
-    = Loading
+    = Loading Flags
+    | Inspecting
     | Passed
     | Failed String
 
 type Msg
-    = Finished (Result Http.Error AcyclicActorsV1CreateActorResponse)
+    = Created (Result Http.Error AcyclicActorsV1CreateActorResponse)
+    | Inspected (Result Http.Error AcyclicActorsV1InspectActorResponse)
 
 main : Program Flags Model Msg
 main =
@@ -244,8 +246,8 @@ main =
 
 init : Flags -> ( Model, Cmd Msg )
 init flags =
-    ( Loading
-    , Api.send Finished
+    ( Loading flags
+    , Api.send Created
         (Api.withBasePath flags.basePath
             (Api.Request.Default.createActor request flags.token))
     )
@@ -265,20 +267,36 @@ request =
     }
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
+update msg model =
     case msg of
-        Finished (Ok response) ->
+        Created (Ok response) ->
+            case ( model, response.actor ) of
+                ( Loading flags, Just actor ) ->
+                    ( Inspecting
+                    , Api.send Inspected
+                        (Api.withBasePath flags.basePath
+                            (Api.Request.Default.inspectActor
+                                { actorId = actor.actorId }
+                                flags.token)) )
+                ( _, Nothing ) -> ( Failed "generated Elm client decoded an empty actor response", Cmd.none )
+                _ -> ( Failed "generated Elm client returned an actor response in an invalid state", Cmd.none )
+
+        Created (Err error) ->
+            ( Failed (Debug.toString error), Cmd.none )
+
+        Inspected (Ok response) ->
             case response.actor of
                 Just _ -> ( Passed, Cmd.none )
-                Nothing -> ( Failed "generated Elm client decoded an empty actor response", Cmd.none )
+                Nothing -> ( Failed "generated Elm client decoded an empty inspect response", Cmd.none )
 
-        Finished (Err error) ->
+        Inspected (Err error) ->
             ( Failed (Debug.toString error), Cmd.none )
 
 view : Model -> Html Msg
 view model =
     case model of
-        Loading -> div [ id "elm-qualification" ] [ text "loading" ]
+        Loading _ -> div [ id "elm-qualification" ] [ text "loading" ]
+        Inspecting -> div [ id "elm-qualification" ] [ text "inspecting" ]
         Passed -> div [ id "elm-qualification", attribute "data-result" "passed" ] [ text "passed" ]
         Failed detail -> div [ id "elm-qualification", attribute "data-result" "failed" ] [ text detail ]
 EOF
@@ -289,6 +307,7 @@ EOF
     done
     if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
       client_transport='elm-generated-client-browser-fixture-roundtrip'
+      client_operations='actors.create_actor,actors.inspect_actor'
     else
       client_transport='not-run-fixture-endpoint-unset'
     fi
