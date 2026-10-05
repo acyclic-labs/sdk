@@ -8,15 +8,12 @@ use std::process::Command;
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
     BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
-    generate_csharp_typed_facade,
     family_registry::family_view,
     filesystem::{filesystem_descriptor, filesystem_proto},
-    generate_embedded_facades, generate_jvm_semantic_types, generate_jvm_typed_clients,
-    generate_jvm_typed_requests, generate_jvm_typed_responses,
-    generate_swift_cpp_typed_facades,
-    generate_product_bindings,
-    generate_remote_facades,
-    generate_type_policy_qualification_tests,
+    generate_csharp_typed_facade, generate_embedded_facades, generate_jvm_semantic_types,
+    generate_jvm_typed_clients, generate_jvm_typed_requests, generate_jvm_typed_responses,
+    generate_portable_typed_facades, generate_product_bindings, generate_remote_facades,
+    generate_swift_cpp_typed_facades, generate_type_policy_qualification_tests,
     harness::{harness_descriptor, harness_proto},
     inference::{inference_descriptor, inference_proto},
     machines::{machines_descriptor, machines_proto},
@@ -26,9 +23,9 @@ use acyclic_sdk_contract_wire::{
     stream::{stream_descriptor, stream_proto},
     transport_control::{control_descriptor, control_proto},
     type_policy::{
-        FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES, PublicFieldDirection, SemanticRule, TYPE_PROJECTION_PROFILES,
-        WIRE_UNION_VARIANTS,
-        TypePolicyLanguage, WireValueKind,
+        FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, PublicFieldDirection, SEMANTIC_TYPES,
+        SemanticRule, TYPE_PROJECTION_PROFILES, TypePolicyLanguage, WIRE_UNION_VARIANTS,
+        WireValueKind,
     },
     workers::{workers_descriptor, workers_proto},
 };
@@ -106,6 +103,16 @@ fn public_field_direction_name(direction: PublicFieldDirection) -> &'static str 
         PublicFieldDirection::NestedMessage => "nested_message",
         PublicFieldDirection::EmbeddedOnly => "embedded_only",
     }
+}
+
+fn resolved_field_identity_json(field: &acyclic_sdk_contract_wire::ResolvedRequestField) -> Value {
+    serde_json::json!({
+        "family": field.family, "rpc": field.rpc, "root_message": field.root_message,
+        "message_path": field.message_path, "field": field.field, "number": field.number,
+        "json_name": field.json_name, "type_name": field.type_name,
+        "oneof_name": field.oneof_name, "oneof_index": field.oneof_index,
+        "proto3_optional": field.proto3_optional,
+    })
 }
 
 fn type_policy_json() -> Vec<u8> {
@@ -236,6 +243,50 @@ fn type_policy_json() -> Vec<u8> {
             })
         })
         .collect::<Vec<_>>();
+    let rpc_methods = acyclic_sdk_contract_wire::resolved_rpc_methods()
+        .expect("Rust RPC descriptor inventory must resolve")
+        .into_iter().map(|method| serde_json::json!({
+            "family": method.family, "rpc": method.rpc,
+            "service": method.service, "method": method.method,
+            "input_message": method.input_message, "output_message": method.output_message,
+            "client_streaming": method.client_streaming, "server_streaming": method.server_streaming,
+        })).collect::<Vec<_>>();
+    let enum_fields = acyclic_sdk_contract_wire::resolved_enum_fields()
+        .expect("Rust enum descriptor inventory must resolve")
+        .into_iter()
+        .map(|item| {
+            serde_json::json!({
+                "field": resolved_field_identity_json(&item.field),
+                "enum_type": item.enum_type,
+                "values": item.values.into_iter().map(|value| serde_json::json!({
+                    "name": value.name, "number": value.number,
+                })).collect::<Vec<_>>(),
+                "preserves_unknown_numeric": item.preserves_unknown_numeric,
+            })
+        })
+        .collect::<Vec<_>>();
+    let oneof_members = acyclic_sdk_contract_wire::resolved_oneof_members()
+        .expect("Rust oneof descriptor inventory must resolve")
+        .into_iter()
+        .map(|item| {
+            serde_json::json!({
+                "field": resolved_field_identity_json(&item.field),
+                "payload_protobuf_type": item.payload_kind.as_str_name(),
+                "payload_type": item.payload_type,
+                "preserves_unknown_members": item.preserves_unknown_members,
+            })
+        })
+        .collect::<Vec<_>>();
+    let presence_fields = acyclic_sdk_contract_wire::resolved_presence_fields()
+        .expect("Rust presence descriptor inventory must resolve")
+        .into_iter().map(|item| serde_json::json!({
+            "field": resolved_field_identity_json(&item.field),
+            "kind": match item.kind {
+                acyclic_sdk_contract_wire::ResolvedPresenceKind::Message => "message",
+                acyclic_sdk_contract_wire::ResolvedPresenceKind::Oneof => "oneof",
+                acyclic_sdk_contract_wire::ResolvedPresenceKind::ExplicitOptional => "explicit_optional",
+            },
+        })).collect::<Vec<_>>();
     let document = serde_json::json!({
         "schema": "acyclic.sdk.type-policy.v1",
         "source": "rust/crates/sdk-contract-wire/src/type_policy.rs",
@@ -244,6 +295,10 @@ fn type_policy_json() -> Vec<u8> {
         "field_mappings": field_mappings,
         "public_field_bindings": public_field_bindings,
         "union_variants": union_variants,
+        "rpc_methods": rpc_methods,
+        "enum_fields": enum_fields,
+        "oneof_members": oneof_members,
+        "presence_fields": presence_fields,
     });
     serde_json::to_vec_pretty(&document).expect("type policy JSON is serializable")
 }
@@ -525,6 +580,9 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
     artifacts.push((path.to_owned(), source.into_bytes()));
     for (path, source) in generate_swift_cpp_typed_facades() {
         artifacts.push((path.to_owned(), source.into_bytes()));
+    }
+    for facade in generate_portable_typed_facades() {
+        artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
     }
     for facade in generate_embedded_facades() {
         artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
@@ -1522,7 +1580,9 @@ mod tests {
     #[test]
     fn type_policy_preserves_embedded_fields_without_claiming_remote_bindings() {
         let document: Value = serde_json::from_slice(&type_policy_json()).expect("type policy");
-        let fields = document["public_field_bindings"].as_array().expect("bindings");
+        let fields = document["public_field_bindings"]
+            .as_array()
+            .expect("bindings");
         assert_eq!(fields.len(), PUBLIC_FIELD_BINDINGS.len());
         for (binding, exported) in PUBLIC_FIELD_BINDINGS.iter().zip(fields) {
             assert_eq!(exported["field"], binding.field);
@@ -1530,7 +1590,10 @@ mod tests {
                 assert_eq!(exported["direction"], "embedded_only");
             }
         }
-        assert_eq!(public_field_direction_name(PublicFieldDirection::EmbeddedOnly), "embedded_only");
+        assert_eq!(
+            public_field_direction_name(PublicFieldDirection::EmbeddedOnly),
+            "embedded_only"
+        );
     }
 
     fn evidence_item() -> Value {
@@ -1580,6 +1643,47 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&document).expect("test JSON"))
             .expect("write test evidence");
         path
+    }
+
+    #[test]
+    fn exported_policy_retains_descriptor_enum_union_and_presence_shapes() {
+        let document: Value = serde_json::from_slice(&type_policy_json()).expect("policy JSON");
+        assert_eq!(
+            document["rpc_methods"].as_array().unwrap().len(),
+            acyclic_sdk_contract_wire::resolved_rpc_methods()
+                .unwrap()
+                .len()
+        );
+        let enums = document["enum_fields"].as_array().expect("enum inventory");
+        assert!(!enums.is_empty());
+        assert!(
+            enums
+                .iter()
+                .all(|item| item["preserves_unknown_numeric"] == true
+                    && !item["values"].as_array().unwrap().is_empty())
+        );
+        let members = document["oneof_members"]
+            .as_array()
+            .expect("oneof inventory");
+        assert!(
+            members
+                .iter()
+                .any(|item| item["payload_protobuf_type"] == "TYPE_MESSAGE"
+                    && item["payload_type"].is_string())
+        );
+        assert!(
+            members
+                .iter()
+                .all(|item| item["field"]["number"].is_number()
+                    && item["field"]["oneof_name"].is_string()
+                    && item["preserves_unknown_members"] == true)
+        );
+        let presence = document["presence_fields"]
+            .as_array()
+            .expect("presence inventory");
+        for kind in ["message", "oneof", "explicit_optional"] {
+            assert!(presence.iter().any(|item| item["kind"] == kind));
+        }
     }
 
     #[test]
