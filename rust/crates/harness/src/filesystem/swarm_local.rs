@@ -18,7 +18,7 @@ use crate::{
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
-    executor::{ExecutionEvent, TurnOutput},
+    executor::{ExecutionEvent, TerminalFailureState, TurnOutput},
     fork::{
         Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed,
         ForkSelection, ResourceRevision,
@@ -4960,14 +4960,19 @@ impl PersistentLocalSwarm {
         harness: Option<&PersistentLocalHarness>,
         error: &Error,
     ) -> Result<()> {
-        if matches!(error, Error::Indeterminate(_)) {
-            return Ok(());
-        }
         let Some(harness) = harness else {
             return Ok(());
         };
-        if !self.child_model_started(harness, operation).await? {
-            self.mark_failed(child, error.to_string()).await?;
+        match crate::executor::classify_terminal_failure(
+            harness.storage().journal().as_ref(),
+            operation,
+        )
+        .await?
+        {
+            TerminalFailureState::NotStarted | TerminalFailureState::TerminalFailure => {
+                self.mark_failed(child, error.to_string()).await?;
+            }
+            TerminalFailureState::Unresolved => {}
         }
         Ok(())
     }
