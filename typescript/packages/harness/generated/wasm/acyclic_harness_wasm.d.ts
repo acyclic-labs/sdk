@@ -1136,6 +1136,14 @@ export function validateModelContextSelection(conversation: any, selection: any)
 export function validateModelMessages(messages: readonly WasmModelMessageInput[], limits: WasmModelLimitsInput): void;
 
 /**
+ * Admit one retryable browser command through the same Rust policy used by
+ * native Harness hosts. The JavaScript facade keeps persistence and event
+ * callbacks, while command shape, identity, and credential/body exclusions
+ * remain owned by this boundary.
+ */
+export function validateOfflineCommand(value: any): any;
+
+/**
  * Validate one canonical Stream path using the same parser used by every
  * provider and wire decoder.
  *
@@ -1143,6 +1151,13 @@ export function validateModelMessages(messages: readonly WasmModelMessageInput[]
  * consumed by the TypeScript adapter.
  */
 export function validatePath(path: string): string;
+
+/**
+ * Validate one replay delivery against the previously committed cursor and
+ * return the resulting cursor. Listener dispatch and durable persistence stay
+ * in the host, but generation, contiguity, and authority rules are Rust-owned.
+ */
+export function validateReplayDelivery(previous: any, delivery: any): any;
 
 /**
  * Validate one canonical protobuf request at the browser boundary.
@@ -1359,6 +1374,8 @@ export interface InitOutput {
     readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateModelContextSelection: (a: any, b: any) => [number, number];
     readonly validateModelMessages: (a: any, b: any) => [number, number];
+    readonly validateOfflineCommand: (a: any) => [number, number, number];
+    readonly validateReplayDelivery: (a: any, b: any) => [number, number, number];
     readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
     readonly validateTaskChildrenPage: (a: any) => [number, number, number];
     readonly validateTaskRequirements: (a: any) => [number, number];
