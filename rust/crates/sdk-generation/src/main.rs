@@ -3925,6 +3925,53 @@ fn run_contract_validation(
     })
 }
 
+fn copy_type_audit_tree(source: &Path, destination: &Path) -> Result<(), CliError> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        return Err(CliError::new(format!(
+            "generated type audit source contains a symlink: {}",
+            source.display()
+        )));
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            copy_type_audit_tree(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+    } else if metadata.is_file() {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, destination)?;
+    }
+    Ok(())
+}
+
+fn prepare_type_audit_root(output: &Path) -> Result<PathBuf, CliError> {
+    let parent = output
+        .parent()
+        .ok_or_else(|| CliError::new("generated output has no parent for audit staging"))?;
+    let staging = parent.join(format!(
+        ".acyclic-generated-type-audit-{}",
+        std::process::id()
+    ));
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    fs::create_dir_all(&staging)?;
+    // These roots are the Rust product generator's public facade closure. The
+    // audit intentionally receives no logs, requests, wire descriptors, or
+    // prior audit report, so its artifact hash map is stable across reruns.
+    for relative in ["generated", "python", "go", "jvm", "csharp", "swift", "cpp"] {
+        let source = output.join(relative);
+        if source.exists() {
+            copy_type_audit_tree(&source, &staging.join(relative))?;
+        }
+    }
+    Ok(staging)
+}
+
 fn run_generated_type_audit(
     root: &Path,
     output: &Path,
@@ -3945,6 +3992,7 @@ fn run_generated_type_audit(
             message: Some("generated type audit manifest is not present in this checkout".into()),
         });
     };
+    let audit_root = prepare_type_audit_root(output)?;
     let command = vec![
         cargo_program(),
         OsString::from("run"),
@@ -3955,7 +4003,7 @@ fn run_generated_type_audit(
         OsString::from("audit-generated-types"),
         OsString::from("--"),
         OsString::from("--artifact-root"),
-        output.as_os_str().to_os_string(),
+        audit_root.as_os_str().to_os_string(),
     ];
     let command_text = command
         .iter()
@@ -3967,7 +4015,7 @@ fn run_generated_type_audit(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output();
-    match process {
+    let result = match process {
         Ok(process) => {
             let report = serde_json::from_slice::<Value>(&process.stdout)
                 .ok()
@@ -3995,9 +4043,9 @@ fn run_generated_type_audit(
             if let Some(report) = report {
                 write_json_value(&output.join("generated/public-type-audit.json"), &report)?;
             }
-            Ok(result)
+            result
         }
-        Err(error) => Ok(ToolResult {
+        Err(error) => ToolResult {
             id: spec.id.into(),
             status: "failed".into(),
             required: spec.required,
@@ -4007,8 +4055,10 @@ fn run_generated_type_audit(
             stderr_sha256: None,
             exit_code: None,
             message: Some(format!("could not start generated type audit: {error}")),
-        }),
-    }
+        },
+    };
+    let _ = fs::remove_dir_all(&audit_root);
+    Ok(result)
 }
 fn run_product_artifacts(
     root: &Path,
