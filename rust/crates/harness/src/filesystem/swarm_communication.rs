@@ -105,6 +105,62 @@ impl DurableTaskHost for SwarmCommunicationHost {
         })
     }
 
+    fn replay_message<'a>(
+        &'a self,
+        sender: TaskId,
+        recipient: TaskId,
+        message: OperationId,
+        payload: FileRef,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let swarm = self.swarm()?;
+            let recipient_harness = swarm.open_session(recipient).await?;
+            let mailbox = MailboxStore::new(
+                self.stream.clone(),
+                recipient_harness.storage().content_verifier(),
+            );
+            let Some(existing) = mailbox
+                .find_message(self, sender, recipient, message)
+                .await?
+            else {
+                return Ok(false);
+            };
+            if existing != payload {
+                return Err(Error::Conflict(
+                    "message identity was reused with another payload".into(),
+                ));
+            }
+            Ok(true)
+        })
+    }
+
+    fn replay_message_body<'a>(
+        &'a self,
+        sender: TaskId,
+        recipient: TaskId,
+        message: OperationId,
+        body: &'a [u8],
+    ) -> BoxFuture<'a, Result<Option<FileRef>>> {
+        Box::pin(async move {
+            let swarm = self.swarm()?;
+            let recipient_harness = swarm.open_session(recipient).await?;
+            let storage = recipient_harness.storage();
+            let mailbox = MailboxStore::new(self.stream.clone(), storage.content_verifier());
+            let Some(existing) = mailbox
+                .find_message(self, sender, recipient, message)
+                .await?
+            else {
+                return Ok(None);
+            };
+            if storage.read(&existing).await? != body {
+                return Err(Error::Conflict(
+                    "message identity was reused with another payload".into(),
+                ));
+            }
+            Ok(Some(existing))
+        })
+    }
+
     fn send<'a>(
         &'a self,
         sender: TaskId,
@@ -119,14 +175,25 @@ impl DurableTaskHost for SwarmCommunicationHost {
             let swarm = self.swarm()?;
             let sender_scope = self.communication_scope(sender).await?;
             let recipient_scope = self.communication_scope(recipient).await?;
-            sender_scope.require_new_mutation()?;
-            recipient_scope.require_new_mutation()?;
             if sender_scope.parent != Some(recipient) && recipient_scope.parent != Some(sender) {
                 return Err(Error::Unauthorized(
                     "message endpoints are not direct parent and child".into(),
                 ));
             }
             recipient_scope.limits.validate_file(&payload)?;
+            // A lifecycle-fenced endpoint may still recover the exact
+            // committed delivery. Probe before admitting any new mutation;
+            // the normal publication path remains the sole ledger for active
+            // sends.
+            if (!sender_scope.accepts_new_mutations || !recipient_scope.accepts_new_mutations)
+                && self
+                    .replay_message(sender, recipient, message, payload.clone())
+                    .await?
+            {
+                return Ok(());
+            }
+            sender_scope.require_new_mutation()?;
+            recipient_scope.require_new_mutation()?;
             let recipient_harness = swarm.open_session(recipient).await?;
             let storage = recipient_harness.storage();
             let sender_harness = swarm.open_session(sender).await?;
