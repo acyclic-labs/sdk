@@ -1,6 +1,6 @@
 {
-  "source_commit": "1c73979c23fb5e5337f07ab419a98aae0cd22b47",
-  "source_tree": "572000cf66113851b781568519ba0593a5d14a09",
+  "source_commit": "04ba4e5014e5f452124fff64530c6f829d7dbe39",
+  "source_tree": "df0d7d8df6de5ee9d002b3a74cba64cc2fea0974",
   "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
   "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
   "tools_jar": {
@@ -212,24 +212,29 @@
     "valid_count": 2,
     "invalid_count": 9,
     "fixture_log_sha256": {
+      "double-delivery.log": "6e8bd4421ed57e1c61686fc61039a7a82cc3537a26918a27b3abb1e5bf350e0e",
+      "forged-capture.log": "27c28af446aa72169f9b30222db53304c3b38544e9057170a9990c89f46681de",
+      "invalid-bool.log": "b6b3ad5c0efcdc055d1bbfdf4c9f27c3c2ab0af3ea2ba548e6273348afb92470",
       "missing-id.log": "808ca0a4bbbee150b69c6609520231f95c13ea93e5e518875a83d883d04e7bf7",
       "orphan-delivery.log": "603a50e0c79fc480bbdffb8931eecb4186cba483ec776a6a120ed40bf24783f1",
-      "valid-publication-first.log": "0fdec18e0f6184a97b3730edb616e916d30ca70400d9665d9caa13607163dc39",
-      "stale-publication.log": "f9ce3293004e533a23a49ada32ce46cccceb62e66af170d69d51347b31fab1cc",
-      "valid.log": "72bbb71d27e436462c235bfe3f8e9912bce9991960900e7b85cb61993da1eeeb",
-      "wrong-agent.log": "9b9322f16f4c2034d33b05dda3f73abc9c3b380187005ecb66417dd2dd9d2a6e",
-      "forged-capture.log": "27c28af446aa72169f9b30222db53304c3b38544e9057170a9990c89f46681de",
-      "swapped-parent.log": "e788f1ad05b552b3bf77fc0f44069892db958949dc4bf71395e890ae5dfd0834",
-      "invalid-bool.log": "b6b3ad5c0efcdc055d1bbfdf4c9f27c3c2ab0af3ea2ba548e6273348afb92470",
       "overspend.log": "60d0deff5bd82018a2363ee560f3b64489321f5df5ae05a62fbd6a780af5cbcd",
-      "double-delivery.log": "6e8bd4421ed57e1c61686fc61039a7a82cc3537a26918a27b3abb1e5bf350e0e"
+      "stale-publication.log": "f9ce3293004e533a23a49ada32ce46cccceb62e66af170d69d51347b31fab1cc",
+      "swapped-parent.log": "e788f1ad05b552b3bf77fc0f44069892db958949dc4bf71395e890ae5dfd0834",
+      "valid-publication-first.log": "0fdec18e0f6184a97b3730edb616e916d30ca70400d9665d9caa13607163dc39",
+      "valid.log": "72bbb71d27e436462c235bfe3f8e9912bce9991960900e7b85cb61993da1eeeb",
+      "wrong-agent.log": "9b9322f16f4c2034d33b05dda3f73abc9c3b380187005ecb66417dd2dd9d2a6e"
     },
     "scope": "fixture adapter evidence only; no production trace qualification"
   },
   "runtime_conformance": {
     "status": "open",
-    "qualification": "qualify-real-trace.ps1",
-    "reason": "No Cargo/native real-trace gate was run in this slot; source semantic checks are self-reported until an authoritative production journal run is available."
+    "qualification": "rust/crates/harness/verification/qualify-real-trace.ps1",
+    "reason": "No Cargo/native real-trace gate was run in this slot; complete source semantic binding and mutation checks are implemented for the named gate, but actual runtime evidence remains open."
   },
-  "scope": "bounded finite safety design evidence only; no Rust refinement, liveness, OS confinement, approval/budget trace proof, or whole-swarm theorem"
+  "scope": "bounded finite safety design evidence only; no Rust refinement, liveness, OS confinement, approval/budget trace proof, or whole-swarm theorem",
+  "model_evidence": {
+    "evidence_directory": "D:/graphcoder-builds/formal-evidence/formal-6e80cc375-20261005",
+    "run_scope": "model inputs unchanged since the pinned TLC run; current model/config/checker hashes are recorded in model_files and runner",
+    "model_files_unchanged_since_run": true
+  }
 }
