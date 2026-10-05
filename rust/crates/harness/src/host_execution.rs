@@ -2734,8 +2734,9 @@ mod tests {
     #[cfg(all(windows, not(feature = "native-process-tree")))]
     #[test]
     fn native_runner_reports_unknown_for_hidden_descendant_held_pipe() -> Result<()> {
-        let temporary = tempfile::tempdir()
-            .map_err(|error| Error::Storage(format!("failed creating held-pipe fixture: {error}")))?;
+        let temporary = tempfile::tempdir().map_err(|error| {
+            Error::Storage(format!("failed creating held-pipe fixture: {error}"))
+        })?;
         let marker = temporary.path().join("parent-started.marker");
         let done = temporary.path().join("descendant-finished.marker");
         let parent_script = temporary.path().join("parent.cmd");
@@ -2786,7 +2787,10 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(marker.exists(), "parent marker was not written");
-        assert!(done.exists(), "descendant did not reach its terminal marker");
+        assert!(
+            done.exists(),
+            "descendant did not reach its terminal marker"
+        );
         let markers = std::fs::read_to_string(&marker).map_err(|error| {
             Error::Storage(format!("held-pipe marker was not written: {error}"))
         })?;
