@@ -443,9 +443,6 @@ function sourceResult(
   );
   const { status, reason } = projection;
   const selected = response.generation;
-  if ((status === "clean" || status === "sealed") !== (selected !== undefined)) {
-    throw new HostedFsError("invalid_response", "source generation does not match its state");
-  }
   if (selected !== undefined) {
     const owner = required(selected.workspace, "source generation workspace");
     client.rustPolicy.validateHostedGenerationIdentity(
