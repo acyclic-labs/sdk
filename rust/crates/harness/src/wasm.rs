@@ -9,12 +9,11 @@ use crate::wire_codec::{
     protocol_identity,
 };
 use crate::{
-    AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
-    SessionId, TaskId, TurnId,
     conversation::{
-        Attachment, ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
-        Limits, ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
-        VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
+        decode_attachment_manifest, encode_attachment_manifest, Attachment, ContentGrant,
+        ConversationMessage, ConversationState, FileDescriptor, FileRef, Limits,
+        ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
+        VolumeRef,
     },
     core::{
         AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
@@ -27,18 +26,20 @@ use crate::{
     merge::ProjectMergeReceipt,
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{
-        AttachmentListResolver, SelectedModelContext, select_model_context_at_revision,
-        validate_model_context_selection_at_revision,
+        select_model_context_at_revision, validate_model_context_selection_at_revision,
+        AttachmentListResolver, SelectedModelContext,
     },
     resources::{ProviderRef, ResourceRef},
     runtime::{
+        batch_member_operation_id, task_admission_identities, task_definition_digest,
+        validate_children_page, validate_children_request, validate_task_requirements,
         BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
-        TaskDependencyEnvironment, TaskRunLimits, batch_member_operation_id,
-        task_admission_identities, task_definition_digest, validate_children_page,
-        validate_children_request, validate_task_requirements,
+        TaskDependencyEnvironment, TaskRunLimits,
     },
-    tool::{ToolDefinition, validate_value},
+    tool::{validate_value, ToolDefinition},
     turn::prepare_turn,
+    AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
+    SessionId, TaskId, TurnId,
 };
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
@@ -1263,16 +1264,23 @@ pub fn validate_offline_command(value: JsValue) -> Result<JsValue, JsValue> {
     let object = value
         .as_object()
         .ok_or_else(|| JsValue::from_str("offline outbox command must be an object"))?;
-    require_exact_keys(object, &["operationId", "authority", "kind", "payload", "offlineSafe"])?;
+    require_exact_keys(
+        object,
+        &["operationId", "authority", "kind", "payload", "offlineSafe"],
+    )?;
     if object.get("offlineSafe") != Some(&serde_json::Value::Bool(true)) {
-        return Err(JsValue::from_str("command is not safe for the offline outbox"));
+        return Err(JsValue::from_str(
+            "command is not safe for the offline outbox",
+        ));
     }
     let kind = object
         .get("kind")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| JsValue::from_str("offline outbox command kind is invalid"))?;
     if kind == "interaction.resolve.approval" {
-        return Err(JsValue::from_str("command is not safe for the offline outbox"));
+        return Err(JsValue::from_str(
+            "command is not safe for the offline outbox",
+        ));
     }
     let operation_id = object
         .get("operationId")
@@ -1298,8 +1306,13 @@ pub fn validate_offline_command(value: JsValue) -> Result<JsValue, JsValue> {
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| JsValue::from_str("offline outbox payload must be a ref-only record"))?;
     for key in payload.keys() {
-        if !matches!(key.as_str(), "content" | "attachments" | "artifacts" | "references" | "metadata") {
-            return Err(JsValue::from_str("offline outbox payload contains an unsupported field"));
+        if !matches!(
+            key.as_str(),
+            "content" | "attachments" | "artifacts" | "references" | "metadata"
+        ) {
+            return Err(JsValue::from_str(
+                "offline outbox payload contains an unsupported field",
+            ));
         }
     }
     if let Some(content) = payload.get("content") {
@@ -1316,9 +1329,8 @@ pub fn validate_offline_command(value: JsValue) -> Result<JsValue, JsValue> {
                 .as_array()
                 .ok_or_else(|| JsValue::from_str("offline outbox references must be a list"))?;
             for reference in references {
-                serde_json::from_value::<FileRef>(reference.clone()).map_err(|_| {
-                    JsValue::from_str("offline outbox file reference is invalid")
-                })?;
+                serde_json::from_value::<FileRef>(reference.clone())
+                    .map_err(|_| JsValue::from_str("offline outbox file reference is invalid"))?;
             }
         }
     }
@@ -1326,23 +1338,60 @@ pub fn validate_offline_command(value: JsValue) -> Result<JsValue, JsValue> {
         let metadata = metadata
             .as_object()
             .ok_or_else(|| JsValue::from_str("offline outbox metadata must be a record"))?;
-        if metadata.values().any(|value| {
-            !value.is_null() && !value.is_boolean() && !value.is_number()
-        }) {
-            return Err(JsValue::from_str("offline outbox metadata contains an unsafe value"));
+        if metadata
+            .values()
+            .any(|value| !value.is_null() && !value.is_boolean() && !value.is_number())
+        {
+            return Err(JsValue::from_str(
+                "offline outbox metadata contains an unsafe value",
+            ));
         }
     }
     reject_forbidden_keys(&value)?;
     to_js(&value)
 }
 
-/// Validate one replay delivery against the previously committed cursor and
-/// return the resulting cursor. Listener dispatch and durable persistence stay
-/// in the host, but generation, contiguity, and authority rules are Rust-owned.
+/// Rust owns the retry schedule. Hosts only wait using the returned duration
+/// and carry the opaque attempt token into the next call.
+#[wasm_bindgen(js_name = harnessReplayBackoff)]
+pub fn harness_replay_backoff(attempt: u32) -> Result<JsValue, JsValue> {
+    let exponent = attempt.min(7);
+    let delay_ms = 50_u32.saturating_mul(1_u32 << exponent).min(5_000);
+    to_js(&serde_json::json!({
+        "delayMs": delay_ms,
+        "nextAttempt": attempt.saturating_add(1),
+    }))
+}
+
+/// Validate one replay delivery and return the durable state transitions. The
+/// host performs listener dispatch and storage I/O, while Rust owns generation,
+/// contiguity, operation identity, and the per-event acknowledgement cursors.
+#[wasm_bindgen(js_name = reconcileReplayDelivery)]
+pub fn reconcile_replay_delivery(previous: JsValue, delivery: JsValue) -> Result<JsValue, JsValue> {
+    let previous = js_json_value(&previous)?;
+    let delivery = js_json_value(&delivery)?;
+    let result = reconcile_replay_delivery_value(&previous, &delivery)?;
+    to_js(&result)
+}
+
+/// Backward-compatible cursor-only projection for generated consumers that do
+/// not need acknowledgement details.
 #[wasm_bindgen(js_name = validateReplayDelivery)]
 pub fn validate_replay_delivery(previous: JsValue, delivery: JsValue) -> Result<JsValue, JsValue> {
     let previous = js_json_value(&previous)?;
     let delivery = js_json_value(&delivery)?;
+    let result = reconcile_replay_delivery_value(&previous, &delivery)?;
+    to_js(
+        result
+            .get("cursor")
+            .ok_or_else(|| JsValue::from_str("replay cursor is missing"))?,
+    )
+}
+
+fn reconcile_replay_delivery_value(
+    previous: &serde_json::Value,
+    delivery: &serde_json::Value,
+) -> Result<serde_json::Value, JsValue> {
     let delivery = delivery
         .as_object()
         .ok_or_else(|| JsValue::from_str("replay delivery must be an object"))?;
@@ -1393,6 +1442,8 @@ pub fn validate_replay_delivery(previous: JsValue, delivery: JsValue) -> Result<
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| JsValue::from_str("replay delivery events are invalid"))?;
     let mut revision = expected_revision;
+    let mut acknowledgements = Vec::with_capacity(events.len());
+    let mut operation_ids = BTreeSet::new();
     for event in events {
         let event = event
             .as_object()
@@ -1400,7 +1451,11 @@ pub fn validate_replay_delivery(previous: JsValue, delivery: JsValue) -> Result<
         let event_authority = event
             .get("authority")
             .ok_or_else(|| JsValue::from_str("replay event authority is missing"))?;
-        if event_authority != delivery.get("authority").unwrap_or(&serde_json::Value::Null) {
+        if event_authority
+            != delivery
+                .get("authority")
+                .unwrap_or(&serde_json::Value::Null)
+        {
             return Err(JsValue::from_str("replay event authority mismatch"));
         }
         revision = revision
@@ -1409,11 +1464,28 @@ pub fn validate_replay_delivery(previous: JsValue, delivery: JsValue) -> Result<
         if json_u64(event.get("revision"), "replay event revision")? != revision {
             return Err(JsValue::from_str("replay event revision mismatch"));
         }
+        let operation_id = event
+            .get("operationId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| JsValue::from_str("replay event operation identity is invalid"))?;
+        let normalized = validate_identity("operation", operation_id)?;
+        if !operation_ids.insert(normalized.clone()) {
+            return Err(JsValue::from_str(
+                "replay event operation identity is duplicated",
+            ));
+        }
+        acknowledgements.push(serde_json::json!({
+            "operationId": normalized,
+            "cursor": { "generation": generation, "revision": revision },
+        }));
     }
     if revision != through_revision {
         return Err(JsValue::from_str("replay delivery coverage mismatch"));
     }
-    to_js(&serde_json::json!({ "generation": generation, "revision": revision }))
+    Ok(serde_json::json!({
+        "cursor": { "generation": generation, "revision": revision },
+        "acknowledgements": acknowledgements,
+    }))
 }
 
 fn json_u64(value: Option<&serde_json::Value>, field: &str) -> Result<u64, JsValue> {
@@ -1426,11 +1498,13 @@ fn validate_safe_authority_id(kind: &str, value: &str) -> Result<(), JsValue> {
     if kind.is_empty()
         || value.is_empty()
         || matches!(value, "." | "..")
-        || value.chars().any(|character| {
-            character == '/' || character == '\\' || character.is_control()
-        })
+        || value
+            .chars()
+            .any(|character| character == '/' || character == '\\' || character.is_control())
     {
-        return Err(JsValue::from_str("authority identity is not a safe path segment"));
+        return Err(JsValue::from_str(
+            "authority identity is not a safe path segment",
+        ));
     }
     Ok(())
 }
@@ -1440,7 +1514,9 @@ fn require_exact_keys(
     expected: &[&str],
 ) -> Result<(), JsValue> {
     if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
-        return Err(JsValue::from_str("offline outbox command contains an unsupported field"));
+        return Err(JsValue::from_str(
+            "offline outbox command contains an unsupported field",
+        ));
     }
     Ok(())
 }
@@ -1457,7 +1533,10 @@ fn reject_forbidden_keys(value: &serde_json::Value) -> Result<(), JsValue> {
                     || normalized.contains("password")
                     || normalized.contains("api_key")
                     || normalized.contains("api-key")
-                    || matches!(normalized.as_str(), "scope" | "proof" | "body" | "text" | "bytes" | "base64" | "data")
+                    || matches!(
+                        normalized.as_str(),
+                        "scope" | "proof" | "body" | "text" | "bytes" | "base64" | "data"
+                    )
                 {
                     return Err(JsValue::from_str(
                         "offline outbox cannot persist inline bytes or credentials",
