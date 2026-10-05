@@ -38,10 +38,13 @@ pub struct ResolvedRequestField {
     pub field: String,
     pub number: i32,
     pub json_name: String,
+    pub type_name: Option<String>,
     pub wire_type: Option<i32>,
     pub label: Option<i32>,
     pub oneof_index: Option<i32>,
     pub proto3_optional: bool,
+    pub semantic_type: Option<String>,
+    pub validation_rules: Vec<String>,
 }
 
 /// Rust-owned operation identity retained alongside the field inventory.
@@ -263,10 +266,13 @@ fn collect_reachable_fields(
                 .json_name
                 .clone()
                 .unwrap_or_else(|| field_name.to_owned()),
+            type_name: field.type_name.clone(),
             wire_type: field.r#type,
             label: field.label,
             oneof_index: field.oneof_index,
             proto3_optional: field.proto3_optional.unwrap_or(false),
+            semantic_type: semantic_binding_for_field(family, message_path, field_name),
+            validation_rules: validation_rules_for_field(family, rpc, field_name),
         });
         if field.r#type == Some(FieldType::Message as i32)
             || field.r#type == Some(FieldType::Group as i32)
@@ -303,6 +309,39 @@ fn collect_reachable_fields(
 
 fn is_known_external_message(name: &str) -> bool {
     name.starts_with("google.protobuf.")
+}
+
+fn semantic_binding_for_field(family: &str, message_path: &str, field: &str) -> Option<String> {
+    let message = message_path.rsplit('.').next().unwrap_or(message_path);
+    PUBLIC_FIELD_BINDINGS
+        .iter()
+        .find(|binding| {
+            binding.family == family && binding.message == message && binding.field == field
+        })
+        .map(|binding| binding.semantic_type.to_owned())
+}
+
+fn validation_rules_for_field(family: &str, rpc: &str, field: &str) -> Vec<String> {
+    let Some(view) = crate::family_registry::family_view(family) else {
+        return Vec::new();
+    };
+    view.operation_policies
+        .iter()
+        .find(|policy| policy.rpc == rpc)
+        .map(|policy| {
+            policy
+                .validations
+                .iter()
+                .filter(|validation| {
+                    validation
+                        .split('.')
+                        .next()
+                        .is_some_and(|head| head == field)
+                })
+                .map(|validation| (*validation).to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Every language target currently inventoried by the generation pipeline.
@@ -1924,6 +1963,11 @@ mod tests {
             assert!(!field.message_path.is_empty());
             assert!(!field.field.is_empty());
             assert!(field.number > 0);
+            if field.wire_type == Some(FieldType::Message as i32)
+                || field.wire_type == Some(FieldType::Group as i32)
+            {
+                assert!(field.type_name.is_some());
+            }
         }
     }
 }
