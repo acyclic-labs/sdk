@@ -1,0 +1,32 @@
+{
+  "schema": "acyclic.installed-wasm-qualification.v1",
+  "family": "harness",
+  "package": "@acyclic-labs/harness",
+  "packageVersion": "0.2.0",
+  "sourceRevision": "8df699516f5cda27cee5e20540aa94af34aee307",
+  "packageArtifact": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\.tmp-installed-harness-wasm\\acyclic-labs-harness-0.2.0.tgz",
+  "packageSha256": "012f3289f0f72df08d9a3f5b2566fb2def0a480a46944d6b71ffa26aa5b489a8",
+  "wasmArtifact": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\typescript\\packages\\harness\\generated\\wasm\\acyclic_harness_wasm_bg.wasm",
+  "wasmSha256": "ae0eeb771edcf5ce0a6a59c80f5ae2c69c958e902bd83746c2c4c0b39292d217",
+  "rustDescriptor": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\rust\\crates\\harness\\src\\generated\\harness-archived-v2.bin",
+  "rustDescriptorSha256": "b1d721a657f40f652a560769ff440b7a1ca44739765fd3114269b727de5474e4",
+  "rustHandshakeVersion": "2",
+  "rustHandshakeDescriptorDigest": "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf",
+  "consumer": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\installed-harness-consumer",
+  "qualificationCommand": "node qualify.mjs",
+  "symlinkFreeInstall": true,
+  "transport": "rust-wasm-grpc-web",
+  "handshakeFirst": true,
+  "operations": [
+    "replay",
+    "submit",
+    "observe",
+    "cancel"
+  ],
+  "replayDeliveries": 1,
+  "observeState": "RUNNING",
+  "cancelState": "CANCELLED",
+  "auth": "Bearer qualification-token",
+  "result": "passed",
+  "generatedAt": "2026-10-05T08:07:41.1279286Z"
+}
