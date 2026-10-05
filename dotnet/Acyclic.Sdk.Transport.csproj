@@ -14,9 +14,13 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
-    <PathMap>$(MSBuildProjectDirectory)=/_/acyclic-sdk-transport</PathMap>
+    <!-- Map both the producer checkout and generated intermediates.  The
+         latter path changes for every isolated build output directory and is
+         part of the deterministic compiler input set. -->
+    <PathMap>$(MSBuildProjectDirectory)=/_/acyclic-sdk-transport,$(BaseIntermediateOutputPath)=/_/obj</PathMap>
     <!-- Produced by sdk-contract-wire; override with /p:SchemaRoot=... -->
     <SchemaRoot Condition="'$(SchemaRoot)' == ''">$(MSBuildThisFileDirectory)..\target\sdk-contract</SchemaRoot>
+    <NativeTlsRoot Condition="'$(NativeTlsRoot)' == ''">$(MSBuildThisFileDirectory)..\target\native\sdk-dotnet-transport</NativeTlsRoot>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,9 +31,28 @@
 
   <ItemGroup>
     <Compile Remove="consumer\**\*.cs" />
+    <Compile Remove="embedded-consumer\**\*.cs" />
     <None Include="README.md" Pack="true" PackagePath="\" />
     <None Include="$(MSBuildThisFileDirectory)..\LICENSE" Pack="true" PackagePath="LICENSE" />
     <None Include="$(MSBuildThisFileDirectory)..\NOTICE" Pack="true" PackagePath="NOTICE" />
+    <!-- RID assets are selected by NuGet from this package's runtime graph.
+         The producer stages them under NativeTlsRoot; consumers install one
+         package and never choose a platform flag. -->
+    <None Include="$(NativeTlsRoot)\**\sdk_dotnet_transport.dll"
+          Pack="true"
+          PackagePath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('$(NativeTlsRoot)')" />
+    <None Include="$(NativeTlsRoot)\**\libsdk_dotnet_transport.so"
+          Pack="true"
+          PackagePath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('$(NativeTlsRoot)')" />
+    <None Include="$(NativeTlsRoot)\**\libsdk_dotnet_transport.dylib"
+          Pack="true"
+          PackagePath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('$(NativeTlsRoot)')" />
     <None Include="$(SchemaRoot)\rust-authority.json" Pack="true" PackagePath="build\rust-authority.json" />
     <!-- The Rust authority manifest is the family closure. Consume every
          emitted proto so newly qualified families do not require SDK edits. -->
@@ -54,3 +77,6 @@
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\reproducible-pack.ps1&quot; -PackagePath &quot;$(PackageOutputPath)\$(PackageId).$(PackageVersion).nupkg&quot;" />
   </Target>
 </Project>
+
+
+
