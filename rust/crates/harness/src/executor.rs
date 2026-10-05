@@ -16,6 +16,10 @@ use crate::{
     runtime::{
         RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval, validate_policy_identity,
     },
+    swarm_budget::{
+        SwarmDispatchContext, SwarmRootDispatchContext, SwarmUsage, SwarmUsageReceiptCursor,
+        SwarmUsageSource, VerifiedSwarmUsageReceipt,
+    },
     tool::{
         ModelToolContext, ToolInvocation, ToolRegistry, ToolRejectionFeedback, ToolResult,
         validate_value,
@@ -363,6 +367,116 @@ pub trait Executor: Send + Sync {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>>;
+}
+
+/// Provider-side admission and measurement boundary for one child dispatch.
+///
+/// This adapter deliberately accepts only measurements made at the provider
+/// boundary. It does not derive usage from [`TurnOutput`], model metadata, or
+/// caller supplied totals. The caller issues a verified receipt after the
+/// provider reports its cumulative counters and commits that receipt through
+/// [`crate::swarm_budget_journal::SwarmBudgetJournal`].
+pub struct SwarmProviderBoundary<S: SwarmUsageSource> {
+    context: SwarmDispatchContext<S>,
+}
+
+impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
+    /// Creates a boundary from the journal-issued dispatch context.
+    #[must_use]
+    pub fn new(context: SwarmDispatchContext<S>) -> Self {
+        Self { context }
+    }
+
+    /// Admits one model step before invoking the provider.
+    pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        self.context.admit_model_step()
+    }
+
+    /// Admits bytes measured from the provider response before accepting them.
+    pub fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        self.context.admit_output(bytes)
+    }
+
+    /// Admits elapsed provider execution time at a scheduling boundary.
+    pub fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        self.context.admit_execution_time(elapsed_ms)
+    }
+
+    /// Issues the next provider-authenticated cumulative usage receipt.
+    pub fn issue_usage_receipt(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.context.issue_usage_receipt()
+    }
+
+    /// Returns the durable cursor represented by the last issued receipt.
+    #[must_use]
+    pub fn receipt_cursor(&self) -> SwarmUsageReceiptCursor {
+        self.context.receipt_cursor()
+    }
+
+    /// Returns the dispatch authorization used by this boundary.
+    #[must_use]
+    pub fn context(&self) -> &SwarmDispatchContext<S> {
+        &self.context
+    }
+
+    /// Returns the mutable dispatch authorization for provider adapters that
+    /// need to retain the boundary across a callback.
+    pub fn context_mut(&mut self) -> &mut SwarmDispatchContext<S> {
+        &mut self.context
+    }
+
+    /// Unwraps the boundary after the provider has finished or was handed off
+    /// for recovery.
+    #[must_use]
+    pub fn into_context(self) -> SwarmDispatchContext<S> {
+        self.context
+    }
+}
+
+/// Provider-side admission and measurement boundary for the canonical root
+/// dispatch lease. Root work is accepted only when the journal has a real
+/// scheduler/provider lease and measurement source.
+pub struct SwarmRootProviderBoundary<S: SwarmUsageSource> {
+    context: SwarmRootDispatchContext<S>,
+}
+
+impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
+    /// Creates a root boundary from the journal-issued context.
+    #[must_use]
+    pub fn new(context: SwarmRootDispatchContext<S>) -> Self {
+        Self { context }
+    }
+
+    /// Admits one root model step before invoking the provider.
+    pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        self.context.admit_model_step()
+    }
+
+    /// Admits bytes measured from the provider response before accepting them.
+    pub fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        self.context.admit_output(bytes)
+    }
+
+    /// Admits elapsed provider execution time at a scheduling boundary.
+    pub fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        self.context.admit_execution_time(elapsed_ms)
+    }
+
+    /// Issues the next provider-authenticated cumulative root usage receipt.
+    pub fn issue_usage_receipt(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.context.issue_usage_receipt()
+    }
+
+    /// Returns the durable cursor represented by the last issued receipt.
+    #[must_use]
+    pub fn receipt_cursor(&self) -> SwarmUsageReceiptCursor {
+        self.context.receipt_cursor()
+    }
+
+    /// Returns the mutable root context for provider adapters.
+    pub fn context_mut(&mut self) -> &mut SwarmRootDispatchContext<S> {
+        &mut self.context
+    }
 }
 
 /// Complete default streaming model/tool loop assembled from replaceable values.

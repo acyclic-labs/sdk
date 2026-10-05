@@ -369,7 +369,7 @@ impl VerifiedSwarmUsageReceipt {
 /// Implementations are owned by the execution route and must read the
 /// provider's measured counters rather than values supplied by a task or
 /// caller. The coordinator only accepts receipts issued through this source.
-pub trait SwarmUsageSource {
+pub trait SwarmUsageSource: Send + Sync {
     /// Stable provider identity retained in each receipt.
     fn provider_identity(&self) -> &str;
 
@@ -626,6 +626,21 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         &mut self.limiter
     }
 
+    /// Admits one model step at the provider boundary.
+    pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        self.limiter.admit_model_step()
+    }
+
+    /// Admits provider output measured at the provider boundary.
+    pub fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        self.limiter.admit_output(bytes)
+    }
+
+    /// Admits measured provider execution time at the provider boundary.
+    pub fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        self.limiter.admit_execution_time(elapsed_ms)
+    }
+
     /// Returns the mutable provider receipt issuer.
     pub fn issuer_mut(&mut self) -> &mut SwarmUsageReceiptIssuer<S> {
         &mut self.issuer
@@ -667,6 +682,21 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     /// Returns the mutable pre-work provider limiter.
     pub fn limiter_mut(&mut self) -> &mut SwarmUsageLimiter {
         &mut self.limiter
+    }
+
+    /// Admits one root model step at the provider boundary.
+    pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        self.limiter.admit_model_step()
+    }
+
+    /// Admits root provider output measured at the provider boundary.
+    pub fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        self.limiter.admit_output(bytes)
+    }
+
+    /// Admits measured root provider execution time at the provider boundary.
+    pub fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        self.limiter.admit_execution_time(elapsed_ms)
     }
 
     /// Returns the mutable provider receipt issuer.
