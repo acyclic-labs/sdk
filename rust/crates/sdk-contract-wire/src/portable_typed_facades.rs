@@ -64,7 +64,7 @@ fn rpc_method_name(method: &crate::type_policy::ResolvedRpcMethod) -> String {
 fn semantic_class(value: &str) -> String { format!("Rust{}", camel(value)) }
 
 fn semantic_names() -> &'static [&'static str] {
-    &["ActorId", "Method", "Path", "Source", "Destination", "BucketName", "ObjectKey", "Alias", "JobId", "MachineId", "OperationId", "CheckpointId", "IdempotencyKeyBytes", "IdempotencyKeyText", "IdempotencyKeyMessage", "OpaqueText", "UploadId", "VersionSha256", "Sha256Digest", "RevisionDigest", "ImmutableImage", "Revision", "RunId", "EvaluationId", "PageLimit", "StreamPageLimit", "MachinePageLimit", "MachineEventPageLimit", "CommitId", "OneofArm"]
+    &["ActorId", "OpenEnumValue", "Method", "Path", "Source", "Destination", "BucketName", "ObjectKey", "Alias", "JobId", "MachineId", "OperationId", "CheckpointId", "IdempotencyKeyBytes", "IdempotencyKeyText", "IdempotencyKeyMessage", "OpaqueText", "UploadId", "VersionSha256", "Sha256Digest", "RevisionDigest", "ImmutableImage", "Revision", "RunId", "EvaluationId", "PageLimit", "StreamPageLimit", "MachinePageLimit", "MachineEventPageLimit", "CommitId", "OneofArm"]
 }
 
 fn semantic_value_type(name: &str) -> &'static str {
@@ -177,6 +177,52 @@ fn php_default(field: &ResolvedRequestField) -> String {
     }
 }
 
+fn php_scalar_default(field: &ResolvedRequestField) -> &'static str {
+    match semantic_or_wire(field).as_str() {
+        "bool" => "false",
+        "float" => "0.0",
+        "int" => "0",
+        "String" | "Bytes" => "''",
+        _ => "null",
+    }
+}
+
+fn php_decode_single(field: &ResolvedRequestField, value: &str) -> String {
+    if message_field(field) {
+        let class = field.type_name.as_deref().map(message_class).unwrap_or_else(|| "RustWireMessage".into());
+        return format!("is_array({value}) ? {class}::fromWire({value}) : throw new \\InvalidArgumentException('expected nested message')");
+    }
+    match semantic_or_wire(field).as_str() {
+        "bool" => format!("(bool)({value})"),
+        "float" => format!("(float)({value})"),
+        "int" => format!("(int)({value})"),
+        "String" | "Bytes" => format!("(string)({value})"),
+        "RustOpenEnumValue" => format!("new RustOpenEnumValue((int)({value}))"),
+        semantic => format!("new {semantic}((string)({value}))"),
+    }
+}
+
+fn php_decode_value(field: &ResolvedRequestField) -> String {
+    let raw = format!("$value['{}'] ?? {}", field.json_name, if optional(field) { "null" } else if repeated(field) { "[]" } else { php_scalar_default(field) });
+    if repeated(field) {
+        let item = php_decode_single(field, "$item");
+        return format!("array_map(static fn(mixed $item) => {item}, is_array({raw}) ? {raw} : [])");
+    }
+    let decoded = php_decode_single(field, &raw);
+    if optional(field) { format!("({raw} === null ? null : ({decoded}))") } else { decoded }
+}
+
+fn php_doc_type(field: &ResolvedRequestField) -> String {
+    let base = match semantic_or_wire(field).as_str() {
+        "bool" => "bool".to_owned(),
+        "float" => "float".to_owned(),
+        "int" => "int".to_owned(),
+        "String" | "Bytes" => "string".to_owned(),
+        value => value.to_owned(),
+    };
+    if repeated(field) { format!("array<int, {base}>") } else if optional(field) { format!("?{base}") } else { base }
+}
+
 fn dart_type(field: &ResolvedRequestField) -> String {
     let semantic = semantic_or_wire(field);
     let base = match semantic.as_str() {
@@ -277,10 +323,14 @@ fn sorbet_type(field: &ResolvedRequestField) -> String {
 
 fn php_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     let mut out = format!("final readonly class {name}\n{{\n    public function __construct(\n");
-    for field in fields { out.push_str(&format!("        public {} ${}{},\n", php_type(field), php_field(field), php_default(field))); }
-    out.push_str("    ) {}\n    private static function wireValue(mixed $value): mixed\n    {\n        if (is_object($value) && method_exists($value, 'toWire')) { return $value->toWire(); }\n        if (is_array($value)) { return array_map([self::class, 'wireValue'], $value); }\n        return $value;\n    }\n    public function toWire(): array\n    {\n        return [\n");
+    for field in fields {
+        out.push_str(&format!("        /** @var {} */\n        public {} ${}{},\n", php_doc_type(field), php_type(field), php_field(field), php_default(field)));
+    }
+    out.push_str("    ) {}\n    private static function wireValue(mixed $value): mixed\n    {\n        if (is_object($value) && method_exists($value, 'toWire')) { return $value->toWire(); }\n        if (is_array($value)) { return array_map(static fn(mixed $item): mixed => self::wireValue($item), $value); }\n        return $value;\n    }\n    /** @return array<string, mixed> */\n    public function toWire(): array\n    {\n        return [\n");
     for field in fields { out.push_str(&format!("            '{0}' => self::wireValue($this->{0}),\n", php_field(field))); }
-    out.push_str("        ];\n    }\n}\n");
+    out.push_str("        ];\n    }\n    /** @param array<mixed, mixed> $value */\n    public static function fromWire(array $value): self\n    {\n        return new self(\n");
+    for field in fields { out.push_str(&format!("            {0}: {1},\n", php_field(field), php_decode_value(field))); }
+    out.push_str("        );\n    }\n}\n");
     out
 }
 
@@ -288,7 +338,6 @@ fn render_php() -> String {
     let (methods, _, _) = models();
     let mut out = String::from("<?php\n\n// Generated by acyclic-sdk-contract-wire; do not edit.\n// Public types and RPC signatures originate in Rust type_policy.rs.\n\nnamespace Acyclic\\Generated;\n\n");
     for name in semantic_names().iter() { let scalar = if semantic_value_type(name) == "Integer" { "int" } else { "string" }; out.push_str(&format!("final readonly class Rust{name} {{ public function __construct(public readonly {scalar} $value) {{ }} public function toWire(): {scalar} {{ return $this->value; }} }}\n")); }
-    out.push_str("final readonly class RustOpenEnumValue { public function __construct(public readonly int $value) {} public function toWire(): int { return $this->value; } }\n");
     for (message, fields) in all_messages() { out.push_str(&php_message(&message_class(&message), &fields)); }
     out.push_str("final class RustTypedClient\n{\n    public function __construct(private readonly \\Closure $call) {}\n");
     for method in methods {
@@ -297,7 +346,13 @@ fn render_php() -> String {
         let req = if method.client_streaming { format!("array") } else { req };
         let ret = if method.server_streaming { format!("array") } else { resp.clone() };
         let call_input = if method.client_streaming { "$request" } else { "$request->toWire()" };
-        let response = if method.server_streaming { format!("return array_map(static fn($item) => $item instanceof {resp} ? $item : new {resp}(...$item), $value);") } else { format!("return $value instanceof {resp} ? $value : new {resp}(...$value);") };
+        let response = if method.server_streaming {
+            format!("if (!is_array($value)) {{ throw new \\UnexpectedValueException('expected stream array'); }} return array_values(array_map(static fn($item) => $item instanceof {resp} ? $item : (is_array($item) ? {resp}::fromWire($item) : throw new \\UnexpectedValueException('expected response object')), $value));")
+        } else {
+            format!("if ($value instanceof {resp}) {{ return $value; }} if (!is_array($value)) {{ throw new \\UnexpectedValueException('expected response object'); }} return {resp}::fromWire($value);")
+        };
+        if method.client_streaming { out.push_str(&format!("    /** @param array<int, {}> $request */\n", message_class(&method.input_message))); }
+        if method.server_streaming { out.push_str(&format!("    /** @return array<int, {resp}> */\n")); }
         out.push_str(&format!("    public function {}({} $request): {}\n    {{\n        $value = ($this->call)({:?}, {});\n        {}\n    }}\n", rpc_method_name(&method), req, ret, method.rpc, call_input, response));
     }
     out.push_str("}\n");
