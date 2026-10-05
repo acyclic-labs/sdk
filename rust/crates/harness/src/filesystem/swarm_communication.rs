@@ -54,6 +54,10 @@ impl DurableTaskHost for SwarmCommunicationHost {
         true
     }
 
+    fn supports_admitted_timer_recovery(&self) -> bool {
+        true
+    }
+
     fn observe_admission<'a>(
         &'a self,
         task: TaskId,
@@ -316,9 +320,12 @@ impl DurableTaskHost for SwarmCommunicationHost {
         deadline: u64,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            self.communication_scope(task)
-                .await?
-                .require_new_mutation()?;
+            let scope = self.communication_scope(task).await?;
+            let swarm = self.swarm()?;
+            let admitted = swarm.admit_timer(task, operation, deadline).await?;
+            if !admitted {
+                scope.require_new_mutation()?;
+            }
             let timer = self
                 .stream
                 .stream(format!("harness/v2/swarm-timers/{task}"))

@@ -2673,6 +2673,14 @@ enum StoredEvent {
         message_id: OperationId,
         payload: FileRef,
     },
+    /// Owner-journal admission for one durable deadline timer. The timer
+    /// stream is only the publication surface; this record orders it against
+    /// task cancellation on the same lifecycle CAS.
+    TimerAdmitted {
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    },
     /// Atomically records the selected child and host issuer binding.
     ForkIntentSelected {
         intent: LocalForkIntent,
@@ -4800,6 +4808,100 @@ impl PersistentLocalSwarm {
                 if candidate_payload != *payload {
                     return Err(Error::Conflict(
                         "message identity was reused with another payload".into(),
+                    ));
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Wins the lifecycle journal CAS for one timer before its timer-stream
+    /// publication. An identical prior admission is safe to finish after a
+    /// cancellation; a cancellation that wins first rejects the timer.
+    pub(crate) async fn admit_timer(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    ) -> Result<bool> {
+        if task.into_bytes() == [0; 16]
+            || operation.into_bytes() == [0; 16]
+            || deadline == 0
+        {
+            return Err(Error::Invalid("timer admission identity is invalid".into()));
+        }
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        if self.find_timer_admission(task, operation, deadline).await? {
+            return Ok(true);
+        }
+        let session = self.session(task).await?;
+        if !matches!(
+            session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) {
+            return Err(Error::Conflict(
+                "timer admission lost the lifecycle cancellation race".into(),
+            ));
+        }
+        let event = StoredEvent::TimerAdmitted {
+            task,
+            operation,
+            deadline,
+        };
+        match append_record_at(&registry, event, observed_tail).await {
+            Ok(()) => {
+                *self.registry_tail.lock().await = observed_tail
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                Ok(true)
+            }
+            Err(error) => {
+                if self.refresh_registry_state().await.is_ok() {
+                    match self.find_timer_admission(task, operation, deadline).await {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if matches!(error, Error::Conflict(_)) {
+                    return Err(Error::Conflict(
+                        "timer admission lost its durable lifecycle race".into(),
+                    ));
+                }
+                Err(Error::Indeterminate(operation))
+            }
+        }
+    }
+
+    async fn find_timer_admission(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    ) -> Result<bool> {
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        for record in load_records(&registry).await? {
+            if let StoredEvent::TimerAdmitted {
+                task: candidate_task,
+                operation: candidate_operation,
+                deadline: candidate_deadline,
+            } = record.event
+                && candidate_task == task
+                && candidate_operation == operation
+            {
+                if candidate_deadline != deadline {
+                    return Err(Error::Conflict(
+                        "timer identity was reused with another deadline".into(),
                     ));
                 }
                 return Ok(true);
@@ -7096,6 +7198,23 @@ fn apply_record(
                 return Err(Error::Conflict(
                     "message admission endpoints are not direct parent and child".into(),
                 ));
+            }
+        }
+        StoredEvent::TimerAdmitted {
+            task,
+            operation,
+            deadline,
+        } => {
+            if task.into_bytes() == [0; 16]
+                || operation.into_bytes() == [0; 16]
+                || deadline == 0
+            {
+                return Err(Error::Conflict(
+                    "persisted timer admission identity is invalid".into(),
+                ));
+            }
+            if !sessions.contains_key(&task) {
+                return Err(Error::Storage("timer admission task is missing".into()));
             }
         }
         StoredEvent::ForkIntent { intent } => {
@@ -9651,8 +9770,11 @@ mod tests {
             .await?;
         let message = OperationId::from_bytes([0xDB; 16]);
         assert!(swarm.admit_message(parent, child, message, payload.clone()).await?);
+        let timer = OperationId::from_bytes([0xDC; 16]);
+        assert!(swarm.admit_timer(child, timer, 10_000).await?);
         swarm.cancel(child).await?;
         assert!(swarm.admit_message(parent, child, message, payload).await?);
+        assert!(swarm.admit_timer(child, timer, 10_000).await?);
         let records = load_records(&registry).await?;
         assert_eq!(
             records
@@ -9665,6 +9787,17 @@ mod tests {
                         message_id,
                         ..
                     } if sender == parent && recipient == child && message_id == message
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::TimerAdmitted { task, operation, deadline }
+                        if task == child && operation == timer && deadline == 10_000
                 ))
                 .count(),
             1
