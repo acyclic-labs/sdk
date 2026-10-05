@@ -3104,7 +3104,10 @@ mod tests {
         send_release: Arc<tokio::sync::Barrier>,
         timer_entered: Arc<tokio::sync::Barrier>,
         timer_release: Arc<tokio::sync::Barrier>,
-        cancelled: AtomicBool,
+        scope_entered: Arc<tokio::sync::Barrier>,
+        scope_release: Arc<tokio::sync::Barrier>,
+        block_scope: AtomicBool,
+        cancelled: Arc<AtomicBool>,
         cancellation: tokio::sync::watch::Sender<bool>,
     }
 
@@ -3113,16 +3116,30 @@ mod tests {
             &self,
             task_id: TaskId,
         ) -> futures::future::BoxFuture<'_, Result<TaskCommunicationScope>> {
-            let admission = self.inner.admissions.get(&task_id).cloned();
-            let accepts_new_mutations = !self.cancelled.load(Ordering::SeqCst);
+            let inner = self.inner.clone();
+            let cancelled = self.cancelled.clone();
+            let block_scope = self.block_scope.swap(false, Ordering::SeqCst);
+            let scope_entered = self.scope_entered.clone();
+            let scope_release = self.scope_release.clone();
             Box::pin(async move {
-                let admission = admission.ok_or_else(|| Error::NotFound("task admission".into()))?;
+                if block_scope {
+                    scope_entered.wait().await;
+                    scope_release.wait().await;
+                }
+                let admission = inner
+                    .admissions
+                    .get(&task_id)
+                    .cloned()
+                    .ok_or_else(|| Error::NotFound("task admission".into()))?;
                 Ok(TaskCommunicationScope {
                     parent: admission.parent,
                     grants: admission.grants,
                     limits: admission.limits,
                     run_limits: admission.run_limits,
-                    accepts_new_mutations,
+                    // Read cancellation after the admission seam is released.  This
+                    // models the durable owner CAS: the first handle to win the
+                    // boundary decides whether a new mutation is admitted.
+                    accepts_new_mutations: !cancelled.load(Ordering::SeqCst),
                 })
             })
         }
@@ -3240,7 +3257,10 @@ mod tests {
                 send_release: Arc::new(tokio::sync::Barrier::new(2)),
                 timer_entered: Arc::new(tokio::sync::Barrier::new(2)),
                 timer_release: Arc::new(tokio::sync::Barrier::new(2)),
-                cancelled: AtomicBool::new(false),
+                scope_entered: Arc::new(tokio::sync::Barrier::new(2)),
+                scope_release: Arc::new(tokio::sync::Barrier::new(2)),
+                block_scope: AtomicBool::new(false),
+                cancelled: Arc::new(AtomicBool::new(false)),
                 cancellation,
             }),
             receiver,
@@ -3248,7 +3268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_publication_is_rejected_when_second_handle_cancels_after_admission(
+    async fn message_publication_finishes_after_admission_when_second_handle_cancels(
     ) -> Result<()> {
         let (host, _) = publication_race_host()?;
         let first = DurableCommunication::new(host.clone());
@@ -3261,19 +3281,21 @@ mod tests {
             payload: payload()?,
         };
         let mut sending = tokio::spawn(async move { first.send(request).await });
+        // Returning a scope is the test seam for a committed owner admission.
+        // Cancellation after that boundary cannot retroactively reject the send.
         host.send_entered.wait().await;
         second.host.cancel(task(2)).await?;
         host.send_release.wait().await;
         let result = (&mut sending)
             .await
             .map_err(|error| Error::Storage(format!("send task failed: {error}")))?;
-        assert!(matches!(result, Err(Error::Conflict(_))));
-        assert!(host.inner.sent.lock().expect("recording host lock").is_empty());
+        assert!(result.is_ok());
+        assert_eq!(host.inner.sent.lock().expect("recording host lock").len(), 1);
         Ok(())
     }
 
     #[tokio::test]
-    async fn timer_publication_is_rejected_when_cancellation_wins_after_admission() -> Result<()> {
+    async fn timer_publication_finishes_after_admission_when_cancellation_follows() -> Result<()> {
         let (host, receiver) = publication_race_host()?;
         let communication = DurableCommunication::new(host.clone())
             .with_wait_store(Arc::new(PendingWaitStore));
@@ -3288,6 +3310,8 @@ mod tests {
             cancellation_id: Some(operation(92)),
         };
         let mut waiting = tokio::spawn(async move { communication.wait(request, Some(receiver)).await });
+        // The timer call is reached only after the owner admission boundary.
+        // The admitted timer may finish even when cancellation wins observation.
         host.timer_entered.wait().await;
         host.cancel_for_second_handle();
         host.timer_release.wait().await;
@@ -3295,6 +3319,62 @@ mod tests {
             .await
             .map_err(|error| Error::Storage(format!("wait task failed: {error}")))??;
         assert_eq!(result, WaitCompletion::Cancelled);
+        assert_eq!(host.inner.timers.lock().expect("recording host lock").len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn message_admission_is_rejected_when_cancellation_wins_before_scope_cas() -> Result<()> {
+        let (host, _) = publication_race_host()?;
+        host.block_scope.store(true, Ordering::SeqCst);
+        let first = DurableCommunication::new(host.clone());
+        let second = DurableCommunication::new(host.clone());
+        let request = MessageRequest {
+            sender: task(1),
+            recipient: task(2),
+            message_id: operation(93),
+            target: MessageTarget::Child,
+            payload: payload()?,
+        };
+        let mut sending = tokio::spawn(async move { first.send(request).await });
+        // Hold the owner admission boundary, then cancel through a second handle.
+        // Cancellation wins before admission, so no message publication is allowed.
+        host.scope_entered.wait().await;
+        second.host.cancel(task(2)).await?;
+        host.scope_release.wait().await;
+        let result = (&mut sending)
+            .await
+            .map_err(|error| Error::Storage(format!("send task failed: {error}")))?;
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert!(host.inner.sent.lock().expect("recording host lock").is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn timer_admission_is_rejected_when_cancellation_wins_before_scope_cas() -> Result<()> {
+        let (host, receiver) = publication_race_host()?;
+        host.block_scope.store(true, Ordering::SeqCst);
+        let communication = DurableCommunication::new(host.clone())
+            .with_wait_store(Arc::new(PendingWaitStore));
+        let request = WaitRequest {
+            operation_id: operation(94),
+            waiter: task(1),
+            target: WaitTarget::Deadline {
+                deadline_epoch_ms: host.now_unix_millis() + 60_000,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(95)),
+        };
+        let mut waiting = tokio::spawn(async move { communication.wait(request, Some(receiver)).await });
+        // Cancellation wins before the owner admission CAS, so timer publication
+        // and all later wait effects must remain absent.
+        host.scope_entered.wait().await;
+        host.cancel_for_second_handle();
+        host.scope_release.wait().await;
+        let result = (&mut waiting)
+            .await
+            .map_err(|error| Error::Storage(format!("wait task failed: {error}")))?;
+        assert!(matches!(result, Err(Error::Conflict(_))));
         assert!(host.inner.timers.lock().expect("recording host lock").is_empty());
         Ok(())
     }
