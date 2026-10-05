@@ -36,5 +36,10 @@ native-runtime benchmark ignored. The nonblocking scheduler at ebd74c762 passes
 and four of six fault scenarios. Source 7fb3b1e99 passes 389 Harness cases and
 three of five model-swarm scenarios, including the live overlapping-child and
 recursive-grandchild handshake. It still fails two swarm and four fault cases.
-Later recovery and fixture repairs require a new native run. These receipts do
-not qualify the full matrix.
+Source b78db8259 compiles and passes 390 Harness library cases, but fails six
+library cases, all five model-swarm cases, and all six fault cases. The newly
+integrated owner-admission check rejects the default root composition before
+provider dispatch; initialization and wait-admission races also remain open.
+Source, logs, and all three native binaries are retained with digests in
+checkpoint-canonical-admission-native-2026-10-05.json. Earlier passing receipts
+do not qualify this source or the full matrix.

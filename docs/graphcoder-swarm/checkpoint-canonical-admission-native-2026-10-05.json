@@ -1,0 +1,50 @@
+{
+  "source_commit": "b78db8259acd21e5133e7bbb3c5feecf11efe684",
+  "platform": "Windows native execution",
+  "features": [
+    "test-support",
+    "native-process-tree"
+  ],
+  "cargo_session": 70696,
+  "cargo_exit_code": 101,
+  "retained_session": 59580,
+  "retained_exit_code": 101,
+  "artifact_directory": "D:\\graphcoder-builds\\root-qualification-artifacts\\b78db8259\\admission-depth-cancellation",
+  "source_sha256": "536628b3efec779b3eaa478af14c0eef0f9e5e7bdd72acb93b48d42517b3b2d3",
+  "suites": [
+    {
+      "passed": 390,
+      "failed": 6,
+      "ignored": 0,
+      "log_sha256": "4ac549f8a5d0b6c52d8ecd3377d274aa0fe3c51d6fc5574985146edc30b31d7e",
+      "name": "Harness library"
+    },
+    {
+      "passed": 0,
+      "failed": 5,
+      "ignored": 0,
+      "log_sha256": "3bbd16c1e3065712a7524fdc8b3a02717450dc845b3e7479e2294722982e91ff",
+      "name": "local_model_swarm"
+    },
+    {
+      "passed": 0,
+      "failed": 6,
+      "ignored": 0,
+      "log_sha256": "91fb379cd3c391f9bcc8cd0a55b74c733710a79f47876a6a5da32c28382a8ea8",
+      "name": "local_swarm_faults"
+    }
+  ],
+  "artifacts": {
+    "faults": "a4bd5e58271fce578c0b26f2b6a1204fa2261bb9bd63260203e6bb6ee6f55d64",
+    "swarm": "415c722cbf2cf141891f0d435863345b58808fd989363d2513e185c4a44f9886",
+    "library": "763a9aaf52bbe27644f2a8be9a27982bf635c4b429826018b6709c2c70b63536"
+  },
+  "failures": [
+    "root composition rejected by owner admission before provider dispatch",
+    "concurrent initialization loses ownership",
+    "root wait does not reach timer admission",
+    "one concurrent budget test constructs invalid session limits"
+  ],
+  "qualification": "open; failures prohibit completion",
+  "next_action": "Repair actual root/child composition admission without weakening grants or replay identity; validate the corrected default runtime, then integrate and qualify exact-provider cleanup."
+}
