@@ -1,0 +1,24 @@
+{
+  "source_commit": "2138b761f0ea5565d10583a30a0699afed458608",
+  "platform": "Windows native",
+  "suite": "acyclic-harness lib, local_model_swarm, local_swarm_faults",
+  "features": [
+    "test-support",
+    "native-process-tree"
+  ],
+  "session": 78798,
+  "exit_code": 101,
+  "result": "compile_failure",
+  "tests_executed": false,
+  "source_archive": "D:/graphcoder-builds/root-qualification-artifacts/2138b761f/compile-failure/source.zip",
+  "source_sha256": "76ff2d5771b4da2db32484cb008bf2ccd76b120526927f179e0ab84c1f72104f",
+  "log": "D:/graphcoder-builds/root-qualification-artifacts/2138b761f/compile-failure/native.log",
+  "log_sha256": "f2ee8aae69b752466aa5999efdf26c3c3a8d38581751bf8af48bea4cdfa73b31",
+  "errors": [
+    "unsupported usize::from(u32)",
+    "scheduled child destructure omits admission",
+    "owned child dispatch omits admission"
+  ],
+  "repair_commit": "ea8f8ccfc",
+  "qualification": "open"
+}
