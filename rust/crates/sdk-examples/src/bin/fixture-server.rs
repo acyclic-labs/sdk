@@ -1685,7 +1685,7 @@ macro_rules! actor_http_unary {
             body: &[u8],
         ) -> Result<Value, HttpError> {
             let request = decode_actor_message::<$request>(content_type, body, $request_name)?;
-            let response = <ActorsFixture as actors_wire::actors_service_server::ActorsService>::$method(
+            let response = <CanonicalActorsFixture as actors_wire::actors_service_server::ActorsService>::$method(
                 fixture,
                 Request::new(request),
             )
