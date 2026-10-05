@@ -728,6 +728,40 @@ async fn install_git_branch(
     Ok(())
 }
 
+async fn mark_git_tracked_paths(
+    root: &std::path::Path,
+    workspace: WorkspaceId,
+    branch: &str,
+    paths: &[&str],
+) -> Result<()> {
+    let store = LocalCoreStateStore::new(root.join("git"));
+    let current = store
+        .load(workspace)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let (expected, mut state) = current
+        .map(|state| (state.revision, state))
+        .ok_or_else(|| Error::NotFound(format!("runtime Git workspace {workspace}")))?;
+    let tracked = state
+        .branches
+        .get_mut(branch)
+        .ok_or_else(|| Error::NotFound(format!("runtime Git branch {branch}")))?;
+    tracked
+        .tracked_paths
+        .extend(paths.iter().map(|path| (*path).to_owned()));
+    if expected != 0 {
+        state.revision = expected + 1;
+    }
+    let replaced = store
+        .compare_and_swap(workspace, expected, state)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    if !replaced {
+        return Err(Error::Conflict("runtime Git tracked paths raced".into()));
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn default_local_swarm_opens_with_the_git_facade_bound() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -918,6 +952,13 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
         &acyclic_harness::IdempotencyKey::new("runtime-root-baseline")?,
     )
     .await?;
+    mark_git_tracked_paths(
+        directory.path(),
+        root_workspace_id,
+        "main",
+        &["runtime-baseline.txt"],
+    )
+    .await?;
     provider.commit_root.store(true, Ordering::SeqCst);
     swarm
         .run_root(
@@ -934,6 +975,13 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
             bytes: b"rebased child change".to_vec(),
         }],
         &acyclic_harness::IdempotencyKey::new("runtime-child-rebase-edit")?,
+    )
+    .await?;
+    mark_git_tracked_paths(
+        directory.path(),
+        root_workspace_id,
+        "child",
+        &["runtime-rebase.txt"],
     )
     .await?;
     provider.rebase_root.store(true, Ordering::SeqCst);
