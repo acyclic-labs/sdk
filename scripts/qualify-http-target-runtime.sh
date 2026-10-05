@@ -361,6 +361,8 @@ EOF
       cat >"$actors_root/qualification-transport.gd" <<'EOF'
 extends SceneTree
 
+var api
+
 func _init() -> void:
     var endpoint := OS.get_environment("ACYCLIC_FIXTURE_HTTP_ENDPOINT")
     var host_and_port := endpoint.trim_prefix("http://").trim_prefix("https://")
@@ -373,7 +375,7 @@ func _init() -> void:
     var config := ApiConfig.new()
     config.host = "http://" + host
     config.port = port
-    var api := DefaultApi.new(config)
+    api = DefaultApi.new(config)
     var limits := AcyclicActorsV1ActorLimits.new()
     limits.checkpointBytes = "1048576"
     limits.handlerTimeoutMillis = "1000"
@@ -390,6 +392,15 @@ func _success(response: ApiResponse) -> void:
         push_error("Rust fixture rejected generated GDScript request or response")
         quit(1)
         return
+    var inspect_request := AcyclicActorsV1InspectActorRequest.new()
+    inspect_request.actorId = response.data.actor.actorId
+    api.inspect_actor(inspect_request, Callable(self, "_inspect_success"), Callable(self, "_failure"))
+
+func _inspect_success(response: ApiResponse) -> void:
+    if response.code < 200 or response.code >= 300 or response.data == null or response.data.actor == null:
+        push_error("Rust fixture rejected generated GDScript inspect request or response")
+        quit(1)
+        return
     quit(0)
 
 func _failure(error: ApiError) -> void:
@@ -399,6 +410,7 @@ EOF
       cp "$actors_root/qualification-transport.gd" "$transport_dir/qualification-transport.gd"
       run_logged gdscript-transport env ACYCLIC_FIXTURE_HTTP_ENDPOINT="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" godot --headless --path "$actors_root" --script qualification-transport.gd
       client_transport='gdscript-generated-client-fixture-roundtrip'
+      client_operations='actors.create_actor,actors.inspect_actor'
     else
       client_transport='not-run-fixture-endpoint-unset'
     fi
