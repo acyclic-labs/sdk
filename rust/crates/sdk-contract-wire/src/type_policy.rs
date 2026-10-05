@@ -659,7 +659,7 @@ fn operation_rule(validation: &str) -> Option<OperationRule> {
 /// request values and provider/response invariants; the fallback retains the
 /// complete policy identity so a newly added rule cannot disappear from a
 /// generated SDK.
-fn operation_target(validation: &'static str) -> OperationTarget {
+pub fn operation_target(validation: &'static str) -> OperationTarget {
     let (path, enforcement) = match validation {
         "bucket.empty" => ("bucket", OperationEnforcement::ProviderState),
         "bucket.name.non_empty" => ("bucket.name", OperationEnforcement::ClientLocal),
@@ -745,6 +745,79 @@ fn operation_target(validation: &'static str) -> OperationTarget {
         _ => (validation, OperationEnforcement::Unsupported),
     };
     OperationTarget { path, enforcement }
+}
+
+/// Return the enforcement boundary for a descriptor-attached validation rule.
+/// Descriptor resolution owns these strings in `String` values, so this
+/// borrowing API lets emitters apply the same Rust policy without manufacturing
+/// a leaked `'static` target path merely to classify a field check.
+pub fn operation_enforcement(validation: &str) -> OperationEnforcement {
+    match validation {
+        "bucket.empty" => OperationEnforcement::ProviderState,
+        "response.identity.matches"
+        | "status.identity.matches"
+        | "delivery.identity.preserving"
+        | "admission.identity.matches" => OperationEnforcement::ResponseInvariant,
+        "scope.capability.operation_cancel"
+        | "scope.capability.operation_observe"
+        | "bucket.name.non_empty"
+        | "object.key.non_empty"
+        | "request_identity.nonzero"
+        | "action.present"
+        | "message.bounded"
+        | "contract.valid"
+        | "limits.valid"
+        | "protocol.identity.exact"
+        | "protocol.version.exact"
+        | "descriptor_digest.matches"
+        | "workspace.identity.matches"
+        | "join.plan_identity.matches"
+        | "workspace.selector.required"
+        | "workspace.reference.required"
+        | "generation.reference.required"
+        | "generation.references.required"
+        | "owner.required"
+        | "scope.required"
+        | "required_capability.nonempty"
+        | "required_capability.supported"
+        | "operation_id.16_bytes"
+        | "operation_id.nonempty"
+        | "idempotency_key.nonempty"
+        | "operation.idempotency_key.16_bytes"
+        | "mutation.oneof"
+        | "transaction.bounded"
+        | "preconditions.atomic"
+        | "upload.completion_frame"
+        | "part_number.positive"
+        | "limit.max_stream_items"
+        | "expected_configuration_revision.non_negative"
+        | "image.immutable_digest"
+        | "source.present"
+        | "maximum_output.positive"
+        | "parts.ordered_exact"
+        | "records.max_bytes"
+        | "mutations.max_command_bytes" => OperationEnforcement::ClientLocal,
+        _ if validation.ends_with(".valid")
+            || validation.ends_with(".bounded")
+            || validation.ends_with(".supported")
+            || validation.ends_with(".proven")
+            || validation.ends_with(".declared")
+            || validation.ends_with(".required")
+            || validation.ends_with(".nonempty")
+            || validation.ends_with(".non_empty")
+            || validation.ends_with(".non_empty_utf8")
+            || validation.ends_with(".non_empty_bytes")
+            || validation.ends_with(".nonzero")
+            || validation.ends_with(".16_bytes")
+            || validation.ends_with(".32_bytes")
+            || validation.ends_with(".length_16")
+            || validation.ends_with(".length_32")
+            || validation.ends_with(".exact")
+            || validation.ends_with(".preserving")
+            || validation.ends_with(".contiguous")
+            || validation.ends_with(".monotonic") => OperationEnforcement::ClientLocal,
+        _ => OperationEnforcement::Unsupported,
+    }
 }
 
 /// Every language target currently inventoried by the generation pipeline.

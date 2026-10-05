@@ -124,8 +124,8 @@ public readonly record struct MachineId
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
-        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(Value));
+        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(Value));
         return ByteString.CopyFrom(bytes);
     }
 }
@@ -144,8 +144,8 @@ public readonly record struct OperationId
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
-        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(Value));
+        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(Value));
         return ByteString.CopyFrom(bytes);
     }
 }
@@ -164,8 +164,8 @@ public readonly record struct CheckpointId
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
-        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(Value));
+        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(Value));
         return ByteString.CopyFrom(bytes);
     }
 }
@@ -183,7 +183,7 @@ public readonly record struct IdempotencyKeyBytes
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(Value));
         return ByteString.CopyFrom(bytes);
     }
 }
@@ -253,7 +253,7 @@ public readonly record struct Sha256Digest
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length != 32) throw new ArgumentException("value has the wrong length", nameof(value));
+                if (bytes.Length != 32) throw new ArgumentException("value has the wrong length", nameof(Value));
         // Rust policy marks this as a SHA-256 digest; length is enforced above.
         return ByteString.CopyFrom(bytes);
     }
@@ -272,7 +272,7 @@ public readonly record struct RevisionDigest
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length != 32) throw new ArgumentException("value has the wrong length", nameof(value));
+                if (bytes.Length != 32) throw new ArgumentException("value has the wrong length", nameof(Value));
         return ByteString.CopyFrom(bytes);
     }
 }
@@ -305,7 +305,7 @@ public readonly record struct RunId
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+                if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(Value));
         return ByteString.CopyFrom(bytes);
     }
 }
@@ -323,7 +323,7 @@ public readonly record struct EvaluationId
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+                if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(Value));
         return ByteString.CopyFrom(bytes);
     }
 }
@@ -409,7 +409,7 @@ public readonly record struct CommitId
     internal ByteString ToWire()
     {
         var bytes = _value ?? Array.Empty<byte>();
-                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(Value));
         return ByteString.CopyFrom(bytes);
     }
 }
@@ -733,6 +733,7 @@ public sealed record RustActorsAddSubscriptionRequest(
     {
         var wire = new Acyclic.Actors.V1.AddSubscriptionRequest();
         wire.ActorId = ActorId.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.non_empty_utf8", IdempotencyKey);
         wire.IdempotencyKey = IdempotencyKey;
         if (Subscription is not null) wire.Subscription = Subscription;
         return wire;
@@ -747,6 +748,7 @@ public sealed record RustActorsCheckpointActorRequest(
     internal Acyclic.Actors.V1.CheckpointActorRequest ToWire()
     {
         var wire = new Acyclic.Actors.V1.CheckpointActorRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("actor_id.non_empty_utf8", ActorId);
         wire.ActorId = ActorId.ToWire();
         wire.IdempotencyKey = IdempotencyKey;
         return wire;
@@ -760,6 +762,7 @@ public sealed record RustActorsInspectActorRequest(
     internal Acyclic.Actors.V1.InspectActorRequest ToWire()
     {
         var wire = new Acyclic.Actors.V1.InspectActorRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("actor_id.non_empty_utf8", ActorId);
         wire.ActorId = ActorId.ToWire();
         return wire;
     }
@@ -776,9 +779,11 @@ public sealed record RustActorsInvokeActorRequest(
     internal Acyclic.Actors.V1.InvokeActorRequest ToWire()
     {
         var wire = new Acyclic.Actors.V1.InvokeActorRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("actor_id.non_empty_utf8", ActorId);
         wire.ActorId = ActorId.ToWire();
         wire.Body = Body;
         wire.Headers.AddRange(Headers);
+        RustOperationValidationPolicy.ValidateClientPolicy("method.non_empty_utf8", Method);
         wire.Method = Method.ToWire();
         wire.Url = Url;
         return wire;
@@ -795,6 +800,7 @@ public sealed record RustActorsRemoveSubscriptionRequest(
     {
         var wire = new Acyclic.Actors.V1.RemoveSubscriptionRequest();
         wire.ActorId = ActorId.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.non_empty_utf8", IdempotencyKey);
         wire.IdempotencyKey = IdempotencyKey;
         wire.SubscriptionId = SubscriptionId;
         return wire;
@@ -811,6 +817,7 @@ public sealed record RustActorsResumeSubscriptionRequest(
     {
         var wire = new Acyclic.Actors.V1.ResumeSubscriptionRequest();
         wire.ActorId = ActorId.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.non_empty_utf8", IdempotencyKey);
         wire.IdempotencyKey = IdempotencyKey;
         wire.SubscriptionId = SubscriptionId;
         return wire;
@@ -829,9 +836,11 @@ public sealed record RustActorsUpdateActorRequest(
     internal Acyclic.Actors.V1.UpdateActorRequest ToWire()
     {
         var wire = new Acyclic.Actors.V1.UpdateActorRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("actor_id.non_empty_utf8", ActorId);
         wire.ActorId = ActorId.ToWire();
         wire.Bindings.AddRange(Bindings);
         wire.CodeSha256 = CodeSha256;
+        RustOperationValidationPolicy.ValidateClientPolicy("expected_configuration_revision.non_negative", ExpectedConfigurationRevision);
         wire.ExpectedConfigurationRevision = ExpectedConfigurationRevision;
         wire.IdempotencyKey = IdempotencyKey;
         if (Limits is not null) wire.Limits = Limits;
@@ -848,7 +857,9 @@ public sealed record RustFilesystemListDirectoryRequest(
     internal Acyclic.Filesystem.V2.ListDirectoryRequest ToWire()
     {
         var wire = new Acyclic.Filesystem.V2.ListDirectoryRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("generation.reference.required", Generation);
         if (Generation is not null) wire.Generation = Generation;
+        RustOperationValidationPolicy.ValidateClientPolicy("page.maximum_items.bounded", Page);
         if (Page is not null) wire.Page = Page;
         wire.Path = Path.ToWire();
         return wire;
@@ -865,9 +876,12 @@ public sealed record RustFilesystemPlanExtentsRequest(
     internal Acyclic.Filesystem.V2.PlanExtentsRequest ToWire()
     {
         var wire = new Acyclic.Filesystem.V2.PlanExtentsRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("generation.reference.required", Generation);
         if (Generation is not null) wire.Generation = Generation;
         wire.MaximumExtents = MaximumExtents;
+        RustOperationValidationPolicy.ValidateClientPolicy("path.valid", Path);
         wire.Path = Path.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("range.valid", Range);
         if (Range is not null) wire.Range = Range;
         return wire;
     }
@@ -882,8 +896,11 @@ public sealed record RustFilesystemReadLinkRequest(
     internal Acyclic.Filesystem.V2.ReadLinkRequest ToWire()
     {
         var wire = new Acyclic.Filesystem.V2.ReadLinkRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("generation.reference.required", Generation);
         if (Generation is not null) wire.Generation = Generation;
+        RustOperationValidationPolicy.ValidateClientPolicy("maximum_bytes.bounded", MaximumBytes);
         wire.MaximumBytes = MaximumBytes;
+        RustOperationValidationPolicy.ValidateClientPolicy("path.valid", Path);
         wire.Path = Path.ToWire();
         return wire;
     }
@@ -899,9 +916,13 @@ public sealed record RustFilesystemReadRequest(
     internal Acyclic.Filesystem.V2.ReadRequest ToWire()
     {
         var wire = new Acyclic.Filesystem.V2.ReadRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("generation.reference.required", Generation);
         if (Generation is not null) wire.Generation = Generation;
+        RustOperationValidationPolicy.ValidateClientPolicy("maximum_bytes.bounded", MaximumBytes);
         wire.MaximumBytes = MaximumBytes;
+        RustOperationValidationPolicy.ValidateClientPolicy("path.valid", Path);
         wire.Path = Path.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("range.bounded", Range);
         if (Range is not null) wire.Range = Range;
         return wire;
     }
@@ -915,7 +936,9 @@ public sealed record RustFilesystemStatRequest(
     internal Acyclic.Filesystem.V2.StatRequest ToWire()
     {
         var wire = new Acyclic.Filesystem.V2.StatRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("generation.reference.required", Generation);
         if (Generation is not null) wire.Generation = Generation;
+        RustOperationValidationPolicy.ValidateClientPolicy("path.valid", Path);
         wire.Path = Path.ToWire();
         return wire;
     }
@@ -928,6 +951,7 @@ public sealed record RustInferenceInspectContextRequest(
     internal Inference.Customer.V1.InspectContextRequest ToWire()
     {
         var wire = new Inference.Customer.V1.InspectContextRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("revision.length_32", Revision);
         wire.Revision = Revision.ToWire();
         return wire;
     }
@@ -940,6 +964,7 @@ public sealed record RustInferenceInspectEvaluationRequest(
     internal Inference.Customer.V1.InspectEvaluationRequest ToWire()
     {
         var wire = new Inference.Customer.V1.InspectEvaluationRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("evaluation_id.length_16", EvaluationId);
         wire.EvaluationId = EvaluationId.ToWire();
         return wire;
     }
@@ -952,6 +977,7 @@ public sealed record RustInferenceInspectRunRequest(
     internal Inference.Customer.V1.InspectRunRequest ToWire()
     {
         var wire = new Inference.Customer.V1.InspectRunRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("run_id.length_16", RunId);
         wire.RunId = RunId.ToWire();
         return wire;
     }
@@ -964,6 +990,7 @@ public sealed record RustInferenceInspectWarmRequest(
     internal Inference.Customer.V1.InspectWarmRequest ToWire()
     {
         var wire = new Inference.Customer.V1.InspectWarmRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("commitment.length_32", Commitment);
         wire.Commitment = Commitment.ToWire();
         return wire;
     }
@@ -977,6 +1004,7 @@ public sealed record RustInferenceReleaseWarmRequest(
     internal Inference.Customer.V1.ReleaseWarmRequest ToWire()
     {
         var wire = new Inference.Customer.V1.ReleaseWarmRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("commitment.length_32", Commitment);
         wire.Commitment = Commitment.ToWire();
         if (Identity is not null) wire.Identity = Identity;
         return wire;
@@ -993,10 +1021,11 @@ public sealed record RustInferenceRenewWarmRequest(
     internal Inference.Customer.V1.RenewWarmRequest ToWire()
     {
         var wire = new Inference.Customer.V1.RenewWarmRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("commitment.length_32", Commitment);
         wire.Commitment = Commitment.ToWire();
         wire.ExpiresAtMs = ExpiresAtMs;
         if (Identity is not null) wire.Identity = Identity;
-        wire.IdleTimeoutMs = IdleTimeoutMs;
+        wire.IdleTimeoutMs = IdleTimeoutMs ?? 0;
         return wire;
     }
 }
@@ -1010,6 +1039,7 @@ public sealed record RustInferenceWatchRunRequest(
     {
         var wire = new Inference.Customer.V1.WatchRunRequest();
         wire.FromSequence = FromSequence;
+        RustOperationValidationPolicy.ValidateClientPolicy("run_id.length_16", RunId);
         wire.RunId = RunId.ToWire();
         return wire;
     }
@@ -1024,8 +1054,9 @@ public sealed record RustMachinesCheckpointMachineRequest(
     internal Acyclic.Machines.V1.CheckpointMachineRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.CheckpointMachineRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.nonzero", IdempotencyKey);
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
-        wire.Machine = Machine.ToWire();
+        wire.Machine = new Acyclic.Machines.V1.MachineId { Value = Machine.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
     }
@@ -1040,7 +1071,8 @@ public sealed record RustMachinesCheckpointMutationRequest(
     internal Acyclic.Machines.V1.CheckpointMutationRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.CheckpointMutationRequest();
-        wire.Checkpoint = Checkpoint.ToWire();
+        wire.Checkpoint = new Acyclic.Machines.V1.CheckpointId { Value = Checkpoint.ToWire() };
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.nonzero", IdempotencyKey);
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
@@ -1064,6 +1096,7 @@ public sealed record RustMachinesCreateMachineRequest(
         if (Budgets is not null) wire.Budgets = Budgets;
         if (Compatibility is not null) wire.Compatibility = Compatibility;
         if (Expiration is not null) wire.Expiration = Expiration;
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.nonzero", IdempotencyKey);
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
         wire.Image = Image.ToWire();
         wire.NetworkPolicyDigest = NetworkPolicyDigest;
@@ -1084,8 +1117,9 @@ public sealed record RustMachinesEventsRequest(
     {
         var wire = new Acyclic.Machines.V1.EventsRequest();
         wire.AfterSequence = AfterSequence;
-        wire.Limit = Limit.ToWire();
-        wire.Machine = Machine.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("page_limit.bounded", Limit);
+        wire.Limit = checked((uint)Limit.ToWire());
+        wire.Machine = new Acyclic.Machines.V1.MachineId { Value = Machine.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
     }
@@ -1101,8 +1135,10 @@ public sealed record RustMachinesForkCheckpointRequest(
     internal Acyclic.Machines.V1.ForkCheckpointRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.ForkCheckpointRequest();
-        wire.Checkpoint = Checkpoint.ToWire();
+        wire.Checkpoint = new Acyclic.Machines.V1.CheckpointId { Value = Checkpoint.ToWire() };
+        RustOperationValidationPolicy.ValidateClientPolicy("count.bounded", Count);
         wire.Count = Count;
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.nonzero", IdempotencyKey);
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
@@ -1119,9 +1155,10 @@ public sealed record RustMachinesForkMachineRequest(
     internal Acyclic.Machines.V1.ForkMachineRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.ForkMachineRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("count.bounded", Count);
         wire.Count = Count;
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
-        wire.Machine = Machine.ToWire();
+        wire.Machine = new Acyclic.Machines.V1.MachineId { Value = Machine.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
     }
@@ -1135,7 +1172,8 @@ public sealed record RustMachinesInspectCheckpointRequest(
     internal Acyclic.Machines.V1.InspectCheckpointRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.InspectCheckpointRequest();
-        wire.Checkpoint = Checkpoint.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("checkpoint_id.nonzero", Checkpoint);
+        wire.Checkpoint = new Acyclic.Machines.V1.CheckpointId { Value = Checkpoint.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
     }
@@ -1149,7 +1187,8 @@ public sealed record RustMachinesInspectMachineRequest(
     internal Acyclic.Machines.V1.InspectMachineRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.InspectMachineRequest();
-        wire.Machine = Machine.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("machine_id.nonzero", Machine);
+        wire.Machine = new Acyclic.Machines.V1.MachineId { Value = Machine.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
     }
@@ -1165,7 +1204,8 @@ public sealed record RustMachinesListMachinesRequest(
     {
         var wire = new Acyclic.Machines.V1.ListMachinesRequest();
         if (After is not null) wire.After = After;
-        wire.Limit = Limit.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("page_limit.bounded", Limit);
+        wire.Limit = checked((uint)Limit.ToWire());
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
     }
@@ -1180,8 +1220,9 @@ public sealed record RustMachinesMachineMutationRequest(
     internal Acyclic.Machines.V1.MachineMutationRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.MachineMutationRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.nonzero", IdempotencyKey);
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
-        wire.Machine = Machine.ToWire();
+        wire.Machine = new Acyclic.Machines.V1.MachineId { Value = Machine.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
     }
@@ -1195,7 +1236,8 @@ public sealed record RustMachinesOperationRequest(
     internal Acyclic.Machines.V1.OperationRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.OperationRequest();
-        wire.Operation = Operation.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("operation_id.nonzero", Operation);
+        wire.Operation = new Acyclic.Machines.V1.OperationId { Value = Operation.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
     }
@@ -1209,6 +1251,7 @@ public sealed record RustMachinesQualifyImageRequest(
     internal Acyclic.Machines.V1.QualifyImageRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.QualifyImageRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("image.immutable_digest", Image);
         wire.Image = Image.ToWire();
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
@@ -1223,6 +1266,7 @@ public sealed record RustMachinesRecoverRequest(
     internal Acyclic.Machines.V1.RecoverRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.RecoverRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.nonzero", IdempotencyKey);
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
@@ -1239,8 +1283,10 @@ public sealed record RustMachinesSetSuspensionPolicyRequest(
     internal Acyclic.Machines.V1.SetSuspensionPolicyRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.SetSuspensionPolicyRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.nonzero", IdempotencyKey);
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
-        wire.Machine = Machine.ToWire();
+        wire.Machine = new Acyclic.Machines.V1.MachineId { Value = Machine.ToWire() };
+        RustOperationValidationPolicy.ValidateClientPolicy("policy.valid", Policy);
         if (Policy is not null) wire.Policy = Policy;
         if (Protocol is not null) wire.Protocol = Protocol;
         return wire;
@@ -1258,7 +1304,7 @@ public sealed record RustMachinesUsageRequest(
     {
         var wire = new Acyclic.Machines.V1.UsageRequest();
         wire.EndUnixMs = EndUnixMs;
-        wire.Machine = Machine.ToWire();
+        wire.Machine = new Acyclic.Machines.V1.MachineId { Value = Machine.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
         wire.StartUnixMs = StartUnixMs;
         return wire;
@@ -1278,6 +1324,7 @@ public sealed record RustObjectsAbortMultipartRequest(
         if (Bucket is not null) wire.Bucket = Bucket;
         if (Mutation is not null) wire.Mutation = Mutation;
         wire.ObjectKey = ObjectKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("upload_id.non_empty", UploadId);
         wire.UploadId = UploadId.ToWire();
         return wire;
     }
@@ -1298,8 +1345,10 @@ public sealed record RustObjectsCompleteMultipartRequest(
         if (Bucket is not null) wire.Bucket = Bucket;
         if (Mutation is not null) wire.Mutation = Mutation;
         wire.ObjectKey = ObjectKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("parts.ordered_exact", Parts);
         wire.Parts.AddRange(Parts);
         if (Preconditions is not null) wire.Preconditions = Preconditions;
+        RustOperationValidationPolicy.ValidateClientPolicy("upload_id.non_empty", UploadId);
         wire.UploadId = UploadId.ToWire();
         return wire;
     }
@@ -1315,6 +1364,7 @@ public sealed record RustObjectsCreateMultipartRequest(
     internal Acyclic.Objects.V2.CreateMultipartRequest ToWire()
     {
         var wire = new Acyclic.Objects.V2.CreateMultipartRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("bucket.name.non_empty", Bucket);
         if (Bucket is not null) wire.Bucket = Bucket;
         if (Metadata is not null) wire.Metadata = Metadata;
         if (Mutation is not null) wire.Mutation = Mutation;
@@ -1333,9 +1383,11 @@ public sealed record RustObjectsDeleteObjectRequest(
     internal Acyclic.Objects.V2.DeleteObjectRequest ToWire()
     {
         var wire = new Acyclic.Objects.V2.DeleteObjectRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("bucket.name.non_empty", Bucket);
         if (Bucket is not null) wire.Bucket = Bucket;
         if (Mutation is not null) wire.Mutation = Mutation;
         wire.ObjectKey = ObjectKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("preconditions.atomic", Preconditions);
         if (Preconditions is not null) wire.Preconditions = Preconditions;
         return wire;
     }
@@ -1352,10 +1404,12 @@ public sealed record RustObjectsGetObjectRequest(
     internal Acyclic.Objects.V2.GetObjectRequest ToWire()
     {
         var wire = new Acyclic.Objects.V2.GetObjectRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("bucket.name.non_empty", Bucket);
         if (Bucket is not null) wire.Bucket = Bucket;
         wire.IfMatch = IfMatch;
         wire.IfNoneMatch = IfNoneMatch;
         wire.ObjectKey = ObjectKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("range.valid", Range);
         if (Range is not null) wire.Range = Range;
         return wire;
     }
@@ -1371,6 +1425,7 @@ public sealed record RustObjectsHeadObjectRequest(
     internal Acyclic.Objects.V2.HeadObjectRequest ToWire()
     {
         var wire = new Acyclic.Objects.V2.HeadObjectRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("bucket.name.non_empty", Bucket);
         if (Bucket is not null) wire.Bucket = Bucket;
         wire.IfMatch = IfMatch;
         wire.IfNoneMatch = IfNoneMatch;
@@ -1390,6 +1445,7 @@ public sealed record RustObjectsListObjectsRequest(
     internal Acyclic.Objects.V2.ListObjectsRequest ToWire()
     {
         var wire = new Acyclic.Objects.V2.ListObjectsRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("bucket.name.non_empty", Bucket);
         if (Bucket is not null) wire.Bucket = Bucket;
         wire.ContinuationToken = ContinuationToken;
         wire.Delimiter = Delimiter;
@@ -1413,7 +1469,8 @@ public sealed record RustObjectsListPartsRequest(
         wire.AfterPartNumber = AfterPartNumber;
         if (Bucket is not null) wire.Bucket = Bucket;
         wire.ObjectKey = ObjectKey.ToWire();
-        wire.PageSize = PageSize.ToWire();
+        wire.PageSize = checked((uint)PageSize.ToWire());
+        RustOperationValidationPolicy.ValidateClientPolicy("upload_id.non_empty", UploadId);
         wire.UploadId = UploadId.ToWire();
         return wire;
     }
@@ -1430,8 +1487,10 @@ public sealed record RustStreamAppendRequest(
     {
         var wire = new Acyclic.Stream.V2.AppendRequest();
         wire.IdempotencyKey = IdempotencyKey.ToWire();
-        wire.IfTail = IfTail;
+        wire.IfTail = IfTail ?? 0;
+        RustOperationValidationPolicy.ValidateClientPolicy("path.non_empty_utf8", Path);
         wire.Path = Path.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("records.max_bytes", Records);
         wire.Records.AddRange(Records);
         return wire;
     }
@@ -1449,7 +1508,8 @@ public sealed record RustStreamChildrenPageRequest(
         var wire = new Acyclic.Stream.V2.ChildrenPageRequest();
         wire.After = After;
         wire.HierarchyVersion = HierarchyVersion;
-        wire.Limit = Limit.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("limit.max_stream_items", Limit);
+        wire.Limit = checked((uint)Limit.ToWire());
         wire.Parent = Parent;
         return wire;
     }
@@ -1463,7 +1523,8 @@ public sealed record RustStreamChildrenRequest(
     internal Acyclic.Stream.V2.ChildrenRequest ToWire()
     {
         var wire = new Acyclic.Stream.V2.ChildrenRequest();
-        wire.Limit = Limit.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("limit.max_stream_items", Limit);
+        wire.Limit = checked((uint)Limit.ToWire());
         wire.Parent = Parent;
         return wire;
     }
@@ -1480,8 +1541,9 @@ public sealed record RustStreamCommitRequest(
     {
         var wire = new Acyclic.Stream.V2.CommitRequest();
         wire.Conditions.AddRange(Conditions);
-        wire.DeadlineUnixMillis = DeadlineUnixMillis;
+        wire.DeadlineUnixMillis = DeadlineUnixMillis ?? 0;
         wire.IdempotencyKey = IdempotencyKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("mutations.max_command_bytes", Mutations);
         wire.Mutations.AddRange(Mutations);
         return wire;
     }
@@ -1496,6 +1558,7 @@ public sealed record RustStreamFollowRequest(
     {
         var wire = new Acyclic.Stream.V2.FollowRequest();
         wire.From = From;
+        RustOperationValidationPolicy.ValidateClientPolicy("path.non_empty_utf8", Path);
         wire.Path = Path.ToWire();
         return wire;
     }
@@ -1511,9 +1574,11 @@ public sealed record RustStreamForkRequest(
     internal Acyclic.Stream.V2.ForkRequest ToWire()
     {
         var wire = new Acyclic.Stream.V2.ForkRequest();
-        wire.AtTail = AtTail;
+        wire.AtTail = AtTail ?? 0;
+        RustOperationValidationPolicy.ValidateClientPolicy("destination.non_empty_utf8", Destination);
         wire.Destination = Destination.ToWire();
         wire.IdempotencyKey = IdempotencyKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("source.non_empty_utf8", Source);
         wire.Source = Source.ToWire();
         return wire;
     }
@@ -1526,6 +1591,7 @@ public sealed record RustStreamInspectIdempotencyRequest(
     internal Acyclic.Stream.V2.InspectIdempotencyRequest ToWire()
     {
         var wire = new Acyclic.Stream.V2.InspectIdempotencyRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.non_empty_bytes", IdempotencyKey);
         wire.IdempotencyKey = IdempotencyKey.ToWire();
         return wire;
     }
@@ -1538,6 +1604,7 @@ public sealed record RustStreamReadCommitRequest(
     internal Acyclic.Stream.V2.ReadCommitRequest ToWire()
     {
         var wire = new Acyclic.Stream.V2.ReadCommitRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("commit_id.non_empty_bytes", CommitId);
         wire.CommitId = CommitId.ToWire();
         return wire;
     }
@@ -1553,7 +1620,9 @@ public sealed record RustStreamReadRequest(
     {
         var wire = new Acyclic.Stream.V2.ReadRequest();
         wire.From = From;
+        RustOperationValidationPolicy.ValidateClientPolicy("limit.max_stream_items", Limit);
         wire.Limit = checked((uint)Limit.ToWire());
+        RustOperationValidationPolicy.ValidateClientPolicy("path.non_empty_utf8", Path);
         wire.Path = Path.ToWire();
         return wire;
     }
@@ -1566,6 +1635,7 @@ public sealed record RustStreamTailRequest(
     internal Acyclic.Stream.V2.TailRequest ToWire()
     {
         var wire = new Acyclic.Stream.V2.TailRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("path.non_empty_utf8", Path);
         wire.Path = Path.ToWire();
         return wire;
     }
@@ -1580,6 +1650,7 @@ public sealed record RustWorkersCancelJobRequest(
     {
         var wire = new Acyclic.Workers.V1.CancelJobRequest();
         wire.IdempotencyKey = IdempotencyKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("job_id.non_empty_utf8", JobId);
         wire.JobId = JobId.ToWire();
         return wire;
     }
@@ -1592,6 +1663,7 @@ public sealed record RustWorkersInspectJobRequest(
     internal Acyclic.Workers.V1.InspectJobRequest ToWire()
     {
         var wire = new Acyclic.Workers.V1.InspectJobRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("job_id.non_empty_utf8", JobId);
         wire.JobId = JobId.ToWire();
         return wire;
     }
@@ -1608,9 +1680,11 @@ public sealed record RustWorkersInvokeDeploymentRequest(
     internal Acyclic.Workers.V1.InvokeDeploymentRequest ToWire()
     {
         var wire = new Acyclic.Workers.V1.InvokeDeploymentRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("alias.non_empty_utf8", Alias);
         wire.Alias = Alias.ToWire();
         wire.Body = Body;
         wire.Headers.AddRange(Headers);
+        RustOperationValidationPolicy.ValidateClientPolicy("method.non_empty_utf8", Method);
         wire.Method = Method.ToWire();
         wire.Url = Url;
         return wire;
@@ -1630,8 +1704,10 @@ public sealed record RustWorkersInvokeVersionRequest(
         var wire = new Acyclic.Workers.V1.InvokeVersionRequest();
         wire.Body = Body;
         wire.Headers.AddRange(Headers);
+        RustOperationValidationPolicy.ValidateClientPolicy("method.non_empty_utf8", Method);
         wire.Method = Method.ToWire();
         wire.Url = Url;
+        RustOperationValidationPolicy.ValidateClientPolicy("version_sha256.length_32", VersionSha256);
         wire.VersionSha256 = VersionSha256.ToWire();
         return wire;
     }
@@ -1646,8 +1722,10 @@ public sealed record RustWorkersPublishVersionRequest(
     internal Acyclic.Workers.V1.PublishVersionRequest ToWire()
     {
         var wire = new Acyclic.Workers.V1.PublishVersionRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("expected_sha256.length_32", ExpectedSha256);
         wire.ExpectedSha256 = ExpectedSha256;
         wire.IdempotencyKey = IdempotencyKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("javascript_module.non_empty_bytes", JavascriptModule);
         wire.JavascriptModule = JavascriptModule;
         return wire;
     }
@@ -1663,9 +1741,11 @@ public sealed record RustWorkersSelectDeploymentRequest(
     internal Acyclic.Workers.V1.SelectDeploymentRequest ToWire()
     {
         var wire = new Acyclic.Workers.V1.SelectDeploymentRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("alias.non_empty_utf8", Alias);
         wire.Alias = Alias.ToWire();
-        wire.ExpectedRevision = ExpectedRevision;
+        wire.ExpectedRevision = ExpectedRevision ?? 0;
         wire.IdempotencyKey = IdempotencyKey.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("version_sha256.length_32", VersionSha256);
         wire.VersionSha256 = VersionSha256.ToWire();
         return wire;
     }
@@ -1682,6 +1762,7 @@ public sealed record RustWorkersSubmitJobRequest(
     internal Acyclic.Workers.V1.SubmitJobRequest ToWire()
     {
         var wire = new Acyclic.Workers.V1.SubmitJobRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("idempotency_key.non_empty_utf8", IdempotencyKey);
         wire.IdempotencyKey = IdempotencyKey.ToWire();
         if (Input is not null) wire.Input = Input;
         if (Limits is not null) wire.Limits = Limits;
@@ -2042,6 +2123,119 @@ internal static class RustOperationPolicies
     };
 }
 
+internal static class RustOperationValidationPolicy
+{
+    private static object? Unwrap(object? value)
+    {
+        if (value is null) return null;
+        if (value is string || value is ByteString || value is Array || value is IConvertible) return value;
+        var property = value.GetType().GetProperty("Value");
+        return property?.GetValue(value) ?? value;
+    }
+
+    private static void RequirePresent(string validation, object? value)
+    {
+        var unwrapped = Unwrap(value);
+        if (unwrapped is null) throw new ArgumentNullException(nameof(value), validation);
+        if (unwrapped is string text && string.IsNullOrEmpty(text)) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+        if (unwrapped is ByteString bytes && bytes.Length == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+        if (unwrapped is ReadOnlyMemory<byte> memory && memory.Length == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+    }
+
+    private static long RequireNumber(string validation, object? value)
+    {
+        if (Unwrap(value) is not IConvertible number) throw new ArgumentException($"{validation} requires a numeric value", nameof(value));
+        return number.ToInt64(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static int RequireLength(string validation, object? value)
+    {
+        var unwrapped = Unwrap(value);
+        return unwrapped switch
+        {
+            ByteString bytes => bytes.Length,
+            ReadOnlyMemory<byte> memory => memory.Length,
+            byte[] bytes => bytes.Length,
+            _ => throw new ArgumentException($"{validation} requires bytes", nameof(value)),
+        };
+    }
+
+    internal static void ValidateClientPolicy(string validation, object? value)
+    {
+        switch (validation)
+        {
+            case "bucket.name.non_empty":
+            case "object.key.non_empty":
+            case "source.present":
+            case "upload.completion_frame":
+                RequirePresent(validation, value);
+                break;
+            case "image.immutable_digest":
+                if (value is not ImmutableImage) throw new ArgumentException($"{validation} requires an immutable image variant", nameof(value));
+                break;
+            case "mutation.oneof":
+                if (value is not IMessage) throw new ArgumentException($"{validation} requires a selected wire arm", nameof(value));
+                break;
+            case "protocol.version.exact":
+                if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                break;
+            case "request_identity.nonzero":
+            case "operation_id.nonzero":
+            case "machine_id.nonzero":
+            case "checkpoint_id.nonzero":
+            case "idempotency_key.nonzero":
+                if (RequireLength(validation, value) == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+                break;
+            case "part_number.positive":
+            case "maximum_output.positive":
+                if (RequireNumber(validation, value) <= 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                break;
+            case "limit.max_stream_items":
+                if (RequireNumber(validation, value) <= 0 || RequireNumber(validation, value) > 1024) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                break;
+            case "preconditions.atomic":
+                if (value is not IMessage) throw new ArgumentException($"{validation} requires a wire message", nameof(value));
+                break;
+            case "expected_configuration_revision.non_negative":
+                if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                break;
+            default:
+                if (validation.EndsWith(".non_empty", StringComparison.Ordinal)
+                    || validation.EndsWith(".non_empty_utf8", StringComparison.Ordinal)
+                    || validation.EndsWith(".non_empty_bytes", StringComparison.Ordinal)
+                    || validation.EndsWith(".nonempty", StringComparison.Ordinal)
+                    || validation.EndsWith(".required", StringComparison.Ordinal)
+                    || validation.EndsWith(".present", StringComparison.Ordinal))
+                {
+                    RequirePresent(validation, value);
+                    break;
+                }
+                if (validation.EndsWith(".nonzero", StringComparison.Ordinal))
+                {
+                    if (RequireLength(validation, value) == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+                    break;
+                }
+                if (validation.EndsWith(".length_16", StringComparison.Ordinal) && RequireLength(validation, value) != 16)
+                    throw new ArgumentException($"{validation} must have length 16", nameof(value));
+                if (validation.EndsWith(".length_32", StringComparison.Ordinal) && RequireLength(validation, value) != 32)
+                    throw new ArgumentException($"{validation} must have length 32", nameof(value));
+                if (validation.EndsWith(".positive", StringComparison.Ordinal) && RequireNumber(validation, value) <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), validation);
+                if (validation.EndsWith(".valid", StringComparison.Ordinal)
+                    || validation.EndsWith(".bounded", StringComparison.Ordinal)
+                    || validation.EndsWith(".supported", StringComparison.Ordinal)
+                    || validation.EndsWith(".exact", StringComparison.Ordinal)
+                    || validation.EndsWith(".preserving", StringComparison.Ordinal)
+                    || validation.EndsWith(".monotonic", StringComparison.Ordinal))
+                {
+                    RequirePresent(validation, value);
+                    break;
+                }
+                throw new NotSupportedException($"Rust policy '{validation}' has no C# client projection");
+        }
+    }
+}
+
 public sealed class ActorsClient
 {
     private readonly Acyclic.Actors.V1.ActorsService.ActorsServiceClient _actors;
@@ -2135,10 +2329,10 @@ public sealed class InferenceClient
         _runs = runs;
         _warmContexts = warmContexts;
     }
-    public Inference.Customer.V1.MutationReceipt Create(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Create(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.MutationReceipt CreateContext(Inference.Customer.V1.CreateContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Create(request, headers, deadline, cancellationToken);
     public Inference.Customer.V1.ContextView Inspect(RustInferenceInspectContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Inspect(request.ToWire(), headers, deadline, cancellationToken);
     public Inference.Customer.V1.MutationReceipt Mutate(Inference.Customer.V1.MutateContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Mutate(request, headers, deadline, cancellationToken);
-    public Inference.Customer.V1.EvaluationView Create(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Create(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.EvaluationView CreateEvaluation(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Create(request.ToWire(), headers, deadline, cancellationToken);
     public Inference.Customer.V1.EvaluationView Inspect(RustInferenceInspectEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Inspect(request.ToWire(), headers, deadline, cancellationToken);
     public Inference.Customer.V1.ListModelsResponse List(Inference.Customer.V1.ListModelsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _models.List(request, headers, deadline, cancellationToken);
     public Inference.Customer.V1.RunView Cancel(RustInferenceInspectRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Cancel(request.ToWire(), headers, deadline, cancellationToken);

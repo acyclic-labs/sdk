@@ -9,7 +9,7 @@ use prost_types::field_descriptor_proto::Type as FieldType;
 
 use crate::type_policy::{
     resolved_operation_rules, resolved_request_fields, resolved_rpc_methods, semantic_type,
-    OperationEnforcement, PublicFieldBinding,
+    operation_enforcement, OperationEnforcement, PublicFieldBinding,
     PublicFieldDirection,
     ResolvedRequestField, SemanticRule, WireValueKind,
     PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, SEMANTIC_TYPES, WIRE_UNION_VARIANTS,
@@ -90,6 +90,7 @@ fn render() -> String {
     render_nested_models(&mut out);
     render_object_stream(&mut out);
     render_operation_validation(&mut out);
+    render_operation_validation_policy(&mut out);
     render_clients(&mut out);
     out
 }
@@ -129,8 +130,9 @@ fn render_semantic_types(out: &mut String) {
                 out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(string value)\n    {{\n        if (string.IsNullOrEmpty(value)) throw new ArgumentException(\"{ty} must be non-empty\", nameof(value));\n        Value = value;\n    }}\n    public string Value {{ get; }}\n    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException(\"{ty} must be non-empty\", nameof(Value)) : Value;\n}}\n\n"));
             }
             WireValueKind::Bytes => {
-                let checks = checks(item.rules);
-                out.push_str(&format!("public readonly record struct {ty}\n{{\n    private readonly byte[] _value;\n    public {ty}(ReadOnlyMemory<byte> value)\n    {{\n        var bytes = value.ToArray();\n        {checks}        _value = bytes;\n    }}\n    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();\n    internal ByteString ToWire()\n    {{\n        var bytes = _value ?? Array.Empty<byte>();\n        {checks}        return ByteString.CopyFrom(bytes);\n    }}\n}}\n\n"));
+                let constructor_checks = checks(item.rules, "value");
+                let wire_checks = checks(item.rules, "Value");
+                out.push_str(&format!("public readonly record struct {ty}\n{{\n    private readonly byte[] _value;\n    public {ty}(ReadOnlyMemory<byte> value)\n    {{\n        var bytes = value.ToArray();\n        {constructor_checks}        _value = bytes;\n    }}\n    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();\n    internal ByteString ToWire()\n    {{\n        var bytes = _value ?? Array.Empty<byte>();\n        {wire_checks}        return ByteString.CopyFrom(bytes);\n    }}\n}}\n\n"));
             }
             WireValueKind::UnsignedInteger => {
                 let max = item.rules.iter().find_map(|rule| match rule {
@@ -170,12 +172,12 @@ fn render_machine_image(out: &mut String) {
     );
 }
 
-fn checks(rules: &[SemanticRule]) -> String {
+fn checks(rules: &[SemanticRule], parameter: &str) -> String {
     let mut result = String::new();
     for rule in rules {
         match rule {
-            SemanticRule::NonEmpty => result.push_str("        if (bytes.Length == 0) throw new ArgumentException(\"value must be non-empty\", nameof(value));\n"),
-            SemanticRule::FixedLength(length) => result.push_str(&format!("        if (bytes.Length != {length}) throw new ArgumentException(\"value has the wrong length\", nameof(value));\n")),
+            SemanticRule::NonEmpty => result.push_str(&format!("        if (bytes.Length == 0) throw new ArgumentException(\"value must be non-empty\", nameof({parameter}));\n")),
+            SemanticRule::FixedLength(length) => result.push_str(&format!("        if (bytes.Length != {length}) throw new ArgumentException(\"value has the wrong length\", nameof({parameter}));\n")),
             SemanticRule::Sha256Digest => result.push_str("        // Rust policy marks this as a SHA-256 digest; length is enforced above.\n"),
             _ => {}
         }
@@ -296,6 +298,15 @@ fn render_full_semantic_request_models(out: &mut String) {
             qualified_fq_message(&root, &family)
         ));
         for field in &fields {
+            for validation in &field.validation_rules {
+                if operation_enforcement(validation) == OperationEnforcement::ClientLocal {
+                    out.push_str(&format!(
+                        "        RustOperationValidationPolicy.ValidateClientPolicy(\"{}\", {});\n",
+                        validation,
+                        upper(&field.field)
+                    ));
+                }
+            }
             out.push_str(&full_csharp_wire_assignment(field, &family));
         }
         out.push_str("        return wire;\n    }\n}\n\n");
@@ -404,14 +415,33 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
     }
     if let Some(semantic_id) = field.semantic_type.as_deref() {
         let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
+        if family == "machines"
+            && matches!(
+                semantic_id,
+                "machine_id" | "checkpoint_id" | "operation_id" | "idempotency_key_message"
+            )
+        {
+            let message = match field.field.as_str() {
+                "machine" => "MachineId",
+                "checkpoint" => "CheckpointId",
+                "operation" => "OperationId",
+                "idempotency_key" => "IdempotencyKey",
+                _ => return format!("        wire.{property} = {property}.ToWire();\n"),
+            };
+            return format!(
+                "        wire.{property} = new Acyclic.Machines.V1.{message} {{ Value = {property}.ToWire() }};\n"
+            );
+        }
         return match semantic.wire_kind {
             WireValueKind::String
             | WireValueKind::Bytes
-            | WireValueKind::UnsignedInteger
             | WireValueKind::SignedInteger
             | WireValueKind::Boolean
             | WireValueKind::Timestamp => {
                 format!("        wire.{property} = {property}.ToWire();\n")
+            }
+            WireValueKind::UnsignedInteger => {
+                format!("        wire.{property} = checked((uint){property}.ToWire());\n")
             }
             WireValueKind::Message if family == "machines" && field.field == "image" => {
                 format!("        wire.{property} = {property}.ToWire();\n")
@@ -456,6 +486,18 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
             family,
         );
         return format!("        wire.{property} = ({enum_type}){property};\n");
+    }
+    if field.proto3_optional
+        && matches!(
+            field.wire_type,
+            Some(kind)
+                if kind == FieldType::Uint64 as i32
+                    || kind == FieldType::Int64 as i32
+                    || kind == FieldType::Uint32 as i32
+                    || kind == FieldType::Int32 as i32
+        )
+    {
+        return format!("        wire.{property} = {property} ?? 0;\n");
     }
     format!("        wire.{property} = {property};\n")
 }
@@ -532,6 +574,125 @@ fn render_operation_validation(out: &mut String) {
         ));
     }
     out.push_str("    };\n}\n\n");
+}
+
+fn render_operation_validation_policy(out: &mut String) {
+    out.push_str(
+        r#"internal static class RustOperationValidationPolicy
+{
+    private static object? Unwrap(object? value)
+    {
+        if (value is null) return null;
+        if (value is string || value is ByteString || value is Array || value is IConvertible) return value;
+        var property = value.GetType().GetProperty("Value");
+        return property?.GetValue(value) ?? value;
+    }
+
+    private static void RequirePresent(string validation, object? value)
+    {
+        var unwrapped = Unwrap(value);
+        if (unwrapped is null) throw new ArgumentNullException(nameof(value), validation);
+        if (unwrapped is string text && string.IsNullOrEmpty(text)) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+        if (unwrapped is ByteString bytes && bytes.Length == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+        if (unwrapped is ReadOnlyMemory<byte> memory && memory.Length == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+    }
+
+    private static long RequireNumber(string validation, object? value)
+    {
+        if (Unwrap(value) is not IConvertible number) throw new ArgumentException($"{validation} requires a numeric value", nameof(value));
+        return number.ToInt64(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static int RequireLength(string validation, object? value)
+    {
+        var unwrapped = Unwrap(value);
+        return unwrapped switch
+        {
+            ByteString bytes => bytes.Length,
+            ReadOnlyMemory<byte> memory => memory.Length,
+            byte[] bytes => bytes.Length,
+            _ => throw new ArgumentException($"{validation} requires bytes", nameof(value)),
+        };
+    }
+
+    internal static void ValidateClientPolicy(string validation, object? value)
+    {
+        switch (validation)
+        {
+            case "bucket.name.non_empty":
+            case "object.key.non_empty":
+            case "source.present":
+            case "upload.completion_frame":
+                RequirePresent(validation, value);
+                break;
+            case "image.immutable_digest":
+                if (value is not ImmutableImage) throw new ArgumentException($"{validation} requires an immutable image variant", nameof(value));
+                break;
+            case "mutation.oneof":
+                if (value is not IMessage) throw new ArgumentException($"{validation} requires a selected wire arm", nameof(value));
+                break;
+            case "protocol.version.exact":
+                if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                break;
+            case "request_identity.nonzero":
+            case "operation_id.nonzero":
+            case "machine_id.nonzero":
+            case "checkpoint_id.nonzero":
+            case "idempotency_key.nonzero":
+                if (RequireLength(validation, value) == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+                break;
+            case "part_number.positive":
+            case "maximum_output.positive":
+                if (RequireNumber(validation, value) <= 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                break;
+            case "limit.max_stream_items":
+                if (RequireNumber(validation, value) <= 0 || RequireNumber(validation, value) > 1024) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                break;
+            case "preconditions.atomic":
+                if (value is not IMessage) throw new ArgumentException($"{validation} requires a wire message", nameof(value));
+                break;
+            case "expected_configuration_revision.non_negative":
+                if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                break;
+            default:
+                if (validation.EndsWith(".non_empty", StringComparison.Ordinal)
+                    || validation.EndsWith(".non_empty_utf8", StringComparison.Ordinal)
+                    || validation.EndsWith(".non_empty_bytes", StringComparison.Ordinal)
+                    || validation.EndsWith(".nonempty", StringComparison.Ordinal)
+                    || validation.EndsWith(".required", StringComparison.Ordinal)
+                    || validation.EndsWith(".present", StringComparison.Ordinal))
+                {
+                    RequirePresent(validation, value);
+                    break;
+                }
+                if (validation.EndsWith(".nonzero", StringComparison.Ordinal))
+                {
+                    if (RequireLength(validation, value) == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+                    break;
+                }
+                if (validation.EndsWith(".length_16", StringComparison.Ordinal) && RequireLength(validation, value) != 16)
+                    throw new ArgumentException($"{validation} must have length 16", nameof(value));
+                if (validation.EndsWith(".length_32", StringComparison.Ordinal) && RequireLength(validation, value) != 32)
+                    throw new ArgumentException($"{validation} must have length 32", nameof(value));
+                if (validation.EndsWith(".positive", StringComparison.Ordinal) && RequireNumber(validation, value) <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), validation);
+                if (validation.EndsWith(".valid", StringComparison.Ordinal)
+                    || validation.EndsWith(".bounded", StringComparison.Ordinal)
+                    || validation.EndsWith(".supported", StringComparison.Ordinal)
+                    || validation.EndsWith(".exact", StringComparison.Ordinal)
+                    || validation.EndsWith(".preserving", StringComparison.Ordinal)
+                    || validation.EndsWith(".monotonic", StringComparison.Ordinal))
+                {
+                    RequirePresent(validation, value);
+                    break;
+                }
+                throw new NotSupportedException($"Rust policy '{validation}' has no C# client projection");
+        }
+    }
+}
+
+"#,
+    );
 }
 
 fn render_clients(out: &mut String) {
@@ -629,8 +790,11 @@ fn render_family_client(
             ("stream", "Commit") => out.push_str(&format!(
                 "    public {output} Commit({public_input} request, {args}) {{ RustOperationValidation.ValidateCommandSize({validation_request_expr}); return _{service_field}.Commit({request_expr}, headers, deadline, cancellationToken); }}\n"
             )),
+            ("inference", "Create") if method.service == "ContextsService" => out.push_str(&format!(
+                "    public {output} CreateContext(Inference.Customer.V1.CreateContextRequest request, {args}) => _{service_field}.Create(request, headers, deadline, cancellationToken);\n"
+            )),
             ("inference", "Create") => out.push_str(&format!(
-                "    public {output} Create(InferenceCreateEvaluationRequest request, {args}) => _{service_field}.Create(request.ToWire(), headers, deadline, cancellationToken);\n"
+                "    public {output} CreateEvaluation(InferenceCreateEvaluationRequest request, {args}) => _{service_field}.Create(request.ToWire(), headers, deadline, cancellationToken);\n"
             )),
             ("machines", "QualifyImage") => out.push_str(&format!(
                 "    public {output} QualifyImage({public_input} request, {args}) => _{service_field}.QualifyImage({request_expr}, headers, deadline, cancellationToken);\n"
@@ -879,6 +1043,20 @@ mod tests {
         assert!(source.contains("FrameOneofCase"));
         assert!(source.contains("record Unknown"));
         assert!(source.contains("ObjectsGetObjectStream"));
+    }
+
+    #[test]
+    fn csharp_bounded_unsigned_types_validate_default_struct_values() {
+        let (_, source) = generate_csharp_typed_facade();
+        assert!(source.contains(
+            "if (Value > 1000) throw new ArgumentOutOfRangeException(nameof(Value));"
+        ));
+        assert!(source.contains(
+            "if (Value > 1024) throw new ArgumentOutOfRangeException(nameof(Value));"
+        ));
+        assert!(source.contains(
+            "if (Value > 256) throw new ArgumentOutOfRangeException(nameof(Value));"
+        ));
     }
 
     #[test]
