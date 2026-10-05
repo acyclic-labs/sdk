@@ -891,7 +891,7 @@ fn render_swift() -> String {
                 let assignments = nested.iter().map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field))).collect::<String>();
                 let raw_assignments = nested.iter().map(|field| format!("self.{} = nil\n", swift_field_name(&field.field))).collect::<String>();
                 let typed_checks = nested.iter().map(|field| swift_nested_value_checks(field, item.rules)).collect::<String>();
-                out.push_str(&format!("public struct {}: Sendable {{\n private let wire: RustWireMessage\n{} internal init?(_ wire: RustWireMessage) {{{} self.wire = wire\n{} }}\n internal init?(wire: RustWireMessage, {}) {{{} self.wire = wire\n{} }}\n}}\n", item.rust_name, declarations, swift_message_checks(item.rules), raw_assignments, params, typed_checks, assignments));
+                out.push_str(&format!("public final class {}: Sendable {{\n private let wire: RustWireMessage\n{} internal init?(_ wire: RustWireMessage) {{{} self.wire = wire\n{} }}\n internal init?(wire: RustWireMessage, {}) {{{} self.wire = wire\n{} }}\n}}\n", item.rust_name, declarations, swift_message_checks(item.rules), raw_assignments, params, typed_checks, assignments));
             }
             _ => {}
         }
@@ -937,7 +937,7 @@ fn render_swift() -> String {
             .map(|field| format!(" self.{0} = {0};\n", swift_field_name(&field.field)))
             .collect::<String>();
         out.push_str(&format!(
-            "public struct {name}: Sendable {{\n private let wire: RustWireMessage\n{declarations} internal init(_ wire: RustWireMessage) {{ self.wire = wire\n{raw_assignments} }}\n public init(wire: RustWireMessage = RustWireMessage(wire: Data()), {params}) {{ self.wire = wire\n{assignments} }}\n}}\n"
+            "public final class {name}: Sendable {{\n private let wire: RustWireMessage\n{declarations} internal init(_ wire: RustWireMessage) {{ self.wire = wire\n{raw_assignments} }}\n public init(wire: RustWireMessage = RustWireMessage(wire: Data()), {params}) {{ self.wire = wire\n{assignments} }}\n}}\n"
         ));
     }
     let mut ordinary_enums = ordinary_descriptor_names(FieldType::Enum);
