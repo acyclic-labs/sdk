@@ -36,6 +36,7 @@ const INVENTORY_SCHEMA: &str = "acyclic.sdk.language-inventory.v1";
 const OPENAPI_STAGE_RECEIPT_SCHEMA: &str = "acyclic.sdk.openapi.stage-receipt.v1";
 const REQUIRED_TOOL_IDS: &[&str] = &[
     "sdk-product-artifacts",
+    "sdk-generated-type-audit",
     "sdk-contract-wire",
     "sdk-contract-validation",
     "sdk-openapi-prototype",
@@ -2717,6 +2718,12 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
             script: None,
         },
         ToolSpec {
+            id: "sdk-generated-type-audit",
+            required: true,
+            manifest: some_file(root, "rust/crates/sdk-contract-wire/Cargo.toml"),
+            script: None,
+        },
+        ToolSpec {
             id: "sdk-contract-wire",
             required: true,
             manifest: some_file(root, "rust/crates/sdk-contract-wire/Cargo.toml"),
@@ -3091,7 +3098,18 @@ fn run_tools(
                 output,
                 &spec,
                 relative_request,
+                source,
                 operation,
+            )?);
+            continue;
+        }
+        if spec.id == "sdk-generated-type-audit" {
+            results.push(run_generated_type_audit(
+                root,
+                output,
+                &spec,
+                relative_request,
+                source,
             )?);
             continue;
         }
@@ -3718,6 +3736,89 @@ fn run_contract_validation(
     })
 }
 
+fn run_generated_type_audit(
+    root: &Path,
+    output: &Path,
+    spec: &ToolSpec,
+    request: String,
+    source: &SourceIdentity,
+) -> Result<ToolResult, CliError> {
+    let Some(manifest) = spec.manifest.as_ref() else {
+        return Ok(ToolResult {
+            id: spec.id.into(),
+            status: "failed".into(),
+            required: spec.required,
+            command: Vec::new(),
+            request,
+            stdout_sha256: None,
+            stderr_sha256: None,
+            exit_code: Some(1),
+            message: Some("generated type audit manifest is not present in this checkout".into()),
+        });
+    };
+    let command = vec![
+        cargo_program(),
+        OsString::from("run"),
+        OsString::from("--manifest-path"),
+        manifest.as_os_str().to_os_string(),
+        OsString::from("--locked"),
+        OsString::from("--bin"),
+        OsString::from("audit-generated-types"),
+        OsString::from("--"),
+        OsString::from("--artifact-root"),
+        output.as_os_str().to_os_string(),
+    ];
+    let command_text = command
+        .iter()
+        .map(|part| part.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let process = Command::new(&command[0])
+        .args(&command[1..])
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+    match process {
+        Ok(process) => {
+            let report = serde_json::from_slice::<Value>(&process.stdout).ok().map(|mut report| {
+                if let Some(object) = report.as_object_mut() {
+                    object.insert(
+                        "source".into(),
+                        json!({
+                            "revision": source.revision,
+                            "digest": source.digest,
+                            "dirty": source.dirty,
+                        }),
+                    );
+                }
+                report
+            });
+            let result = tool_result(
+                spec.id,
+                spec.required,
+                request,
+                command_text,
+                process,
+                output,
+            )?;
+            if let Some(report) = report {
+                write_json_value(&output.join("generated/public-type-audit.json"), &report)?;
+            }
+            Ok(result)
+        }
+        Err(error) => Ok(ToolResult {
+            id: spec.id.into(),
+            status: "failed".into(),
+            required: spec.required,
+            command: command_text,
+            request,
+            stdout_sha256: None,
+            stderr_sha256: None,
+            exit_code: None,
+            message: Some(format!("could not start generated type audit: {error}")),
+        }),
+    }
+}
 fn run_product_artifacts(
     root: &Path,
     output: &Path,
@@ -4126,6 +4227,7 @@ fn run_language_producers(
                                 "exit_code": process.status.code(),
                                 "output": relative_or_absolute(&target_output, output),
                                 "artifact_digest": artifact_digest,
+                                "package_policy": package_policy,
                             });
                         }
                     }
@@ -4685,6 +4787,22 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
                 }
             }
         }
+        "sdk-generated-type-audit" => {
+            for path in [
+                "rust/crates/sdk-contract-wire",
+                "generated",
+                "python",
+                "go",
+                "jvm",
+                "csharp",
+                "swift",
+                "cpp",
+            ] {
+                if root.join(path).exists() {
+                    inputs.push(path.into());
+                }
+            }
+        }
         "sdk-product-artifacts" => {
             for path in [
                 "rust/crates/sdk-contract-wire",
@@ -4758,6 +4876,21 @@ fn tool_command(
     source: &SourceIdentity,
 ) -> Option<Vec<std::ffi::OsString>> {
     let output_path = output.to_path_buf();
+    if spec.id == "sdk-generated-type-audit" {
+        let manifest = spec.manifest.as_ref()?;
+        return Some(vec![
+            cargo_program(),
+            OsString::from("run"),
+            OsString::from("--manifest-path"),
+            manifest.as_os_str().to_os_string(),
+            OsString::from("--locked"),
+            OsString::from("--bin"),
+            OsString::from("audit-generated-types"),
+            OsString::from("--"),
+            OsString::from("--artifact-root"),
+            output_path.as_os_str().to_os_string(),
+        ]);
+    }
     if spec.id == "sdk-contract-wire" {
         let manifest = spec.manifest.as_ref()?;
         let wire_operation = if operation == Operation::Check {
@@ -7996,6 +8129,8 @@ mod tests {
             .map(|spec| spec.id)
             .collect::<Vec<_>>();
         let index = |id: &str| ids.iter().position(|candidate| *candidate == id).unwrap();
+        assert!(index("sdk-product-artifacts") < index("sdk-generated-type-audit"));
+        assert!(index("sdk-generated-type-audit") < index("sdk-contract-wire"));
         assert!(index("sdk-contract-wire") < index("sdk-language-producers"));
         assert!(index("sdk-openapi-prototype") < index("sdk-language-producers"));
         assert!(index("sdk-language-producers") < index("sdk-python"));
