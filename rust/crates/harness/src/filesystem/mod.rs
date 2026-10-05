@@ -62,6 +62,7 @@ pub use interaction_host::{
     InteractionOperatorAuthorizer,
 };
 mod project_workspaces;
+mod workspace_tools;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod project_merge_recovery;
 pub use project_merge_recovery::{

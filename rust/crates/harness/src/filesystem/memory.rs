@@ -9,7 +9,7 @@ use crate::{
     Result, SessionId,
     conversation::{
         Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, ConversationMessage,
-        ConversationState, FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass,
+        ConversationState, FileDescriptor, FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass,
         VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
@@ -93,6 +93,9 @@ pub struct HarnessStorage<P, A, O> {
     publisher: Arc<FilesystemContentPublisher<A, O>>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
+    /// Owner-selected project workspace used by coding tools. The private
+    /// volume remains the conversation and attachment store.
+    project: Option<VolumeRef>,
     read_capability: String,
     inherited_reads: Capabilities,
     write_capability: String,
@@ -633,6 +636,25 @@ where
         Ok(tools)
     }
 
+    /// Returns the project workspace selected when this storage was composed.
+    #[must_use]
+    pub const fn project(&self) -> Option<&VolumeRef> {
+        self.project.as_ref()
+    }
+
+    /// Builds caller-authorized tools for the generation-pinned project volume.
+    pub(crate) fn workspace_tools(&self, limits: Limits) -> Result<ToolRegistry> {
+        let project = self
+            .project
+            .clone()
+            .ok_or_else(|| Error::Unsupported("project workspace is not bound".into()))?;
+        crate::filesystem::workspace_tools::project_tools(
+            Arc::clone(&self.host),
+            project,
+            limits,
+        )
+    }
+
     fn list_files_tool(&self, limits: Limits) -> Tool {
         let implementation = Arc::new(LocalListFilesTool {
             verifier: self.content_verifier.clone(),
@@ -858,6 +880,13 @@ where
             .iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
+        let project = seed.resources.iter().find_map(|resource| {
+            if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.revision {
+                Some(volume.clone())
+            } else {
+                None
+            }
+        });
         for resource in &seed.resources {
             if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.revision {
                 inherited_reads.extend([
@@ -892,6 +921,7 @@ where
             Capabilities::new(inherited_reads),
             SessionId::new(),
             inherited_prefix,
+            project,
         )
         .await
     }
@@ -918,7 +948,7 @@ where
         inherited_reads: Capabilities,
     ) -> Result<Self> {
         let session_id = SessionId::new();
-        Self::from_providers_with_session_and_reads(
+        Self::from_providers_with_session_and_reads_and_project(
             agent,
             maximum_file_bytes,
             host,
@@ -928,6 +958,7 @@ where
             issuer,
             inherited_reads,
             session_id,
+            None,
         )
         .await
     }
@@ -961,10 +992,35 @@ where
         .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "authority boundaries remain explicit"
-    )]
+    /// Composes providers with owner grants for one project workspace.
+    #[allow(clippy::too_many_arguments, reason = "provider boundaries remain explicit")]
+    pub(crate) async fn from_providers_with_reads_and_project(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        inherited_reads: Capabilities,
+        project: VolumeRef,
+    ) -> Result<Self> {
+        Self::from_providers_with_session_and_reads_and_project(
+            agent,
+            maximum_file_bytes,
+            host,
+            stream,
+            volume,
+            conversation,
+            issuer,
+            inherited_reads,
+            SessionId::new(),
+            Some(project),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "authority boundaries remain explicit")]
     pub(crate) async fn from_providers_with_session_and_reads(
         agent: AgentId,
         maximum_file_bytes: u64,
@@ -975,6 +1031,34 @@ where
         issuer: AuthorityIssuer,
         inherited_reads: Capabilities,
         session_id: SessionId,
+    ) -> Result<Self> {
+        Self::from_providers_with_session_and_reads_and_project(
+            agent,
+            maximum_file_bytes,
+            host,
+            stream,
+            volume,
+            conversation,
+            issuer,
+            inherited_reads,
+            session_id,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "authority boundaries remain explicit")]
+    pub(crate) async fn from_providers_with_session_and_reads_and_project(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        inherited_reads: Capabilities,
+        session_id: SessionId,
+        project: Option<VolumeRef>,
     ) -> Result<Self> {
         Self::from_providers_with_session_and_reads_and_prefix(
             agent,
@@ -987,6 +1071,7 @@ where
             inherited_reads,
             session_id,
             None,
+            project,
         )
         .await
     }
@@ -1002,8 +1087,25 @@ where
         inherited_reads: Capabilities,
         session_id: SessionId,
         inherited_prefix: Option<crate::filesystem::execution_journal::AuthenticatedInheritedPrefix>,
+        project: Option<VolumeRef>,
     ) -> Result<Self> {
         validate_storage_owner(agent, maximum_file_bytes, &volume)?;
+        if let Some(project) = &project {
+            if project.class() != VolumeClass::Project || project.provider() != &host.provider
+            {
+                return Err(Error::Invalid(
+                    "project workspace provider or class does not match filesystem host".into(),
+                ));
+            }
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                let capability = project.capability(operation)?;
+                if !inherited_reads.contains(&capability) {
+                    return Err(Error::Unauthorized(format!(
+                        "project workspace grant is missing {capability}"
+                    )));
+                }
+            }
+        }
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         if session_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid("session identity cannot be zero".into()));
@@ -1118,6 +1220,7 @@ where
             publisher,
             host,
             volume,
+            project,
             read_capability,
             inherited_reads,
             write_capability,
