@@ -278,8 +278,8 @@ fn sorbet_type(field: &ResolvedRequestField) -> String {
 fn php_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     let mut out = format!("final readonly class {name}\n{{\n    public function __construct(\n");
     for field in fields { out.push_str(&format!("        public {} ${}{},\n", php_type(field), php_field(field), php_default(field))); }
-    out.push_str("    ) {}\n    public function toWire(): array\n    {\n        return [\n");
-    for field in fields { out.push_str(&format!("            '{0}' => is_object($this->{0}) && method_exists($this->{0}, 'toWire') ? $this->{0}->toWire() : $this->{0},\n", php_field(field))); }
+    out.push_str("    ) {}\n    private static function wireValue(mixed $value): mixed\n    {\n        if (is_object($value) && method_exists($value, 'toWire')) { return $value->toWire(); }\n        if (is_array($value)) { return array_map([self::class, 'wireValue'], $value); }\n        return $value;\n    }\n    public function toWire(): array\n    {\n        return [\n");
+    for field in fields { out.push_str(&format!("            '{0}' => self::wireValue($this->{0}),\n", php_field(field))); }
     out.push_str("        ];\n    }\n}\n");
     out
 }
@@ -297,7 +297,8 @@ fn render_php() -> String {
         let req = if method.client_streaming { format!("array") } else { req };
         let ret = if method.server_streaming { format!("array") } else { resp.clone() };
         let call_input = if method.client_streaming { "$request" } else { "$request->toWire()" };
-        out.push_str(&format!("    public function {}({} $request): {}\n    {{\n        $value = ($this->call)({:?}, {});\n        return $value;\n    }}\n", rpc_method_name(&method), req, ret, method.rpc, call_input));
+        let response = if method.server_streaming { format!("return array_map(static fn($item) => $item instanceof {resp} ? $item : new {resp}(...$item), $value);") } else { format!("return $value instanceof {resp} ? $value : new {resp}(...$value);") };
+        out.push_str(&format!("    public function {}({} $request): {}\n    {{\n        $value = ($this->call)({:?}, {});\n        {}\n    }}\n", rpc_method_name(&method), req, ret, method.rpc, call_input, response));
     }
     out.push_str("}\n");
     out
