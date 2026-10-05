@@ -2105,32 +2105,54 @@ impl LocalModelForkPlans {
         operation: OperationId,
         fork_children: &[(OperationId, OperationId, [u8; 32])],
     ) -> Result<bool> {
-        self.refresh_journal_state().await?;
-        if self.has_intent(operation).await? {
-            return Ok(true);
+        let mut supplied = BTreeMap::new();
+        for (fork, child, plan_digest) in fork_children {
+            if fork.into_bytes() == [0; 16]
+                || child.into_bytes() == [0; 16]
+                || *plan_digest == [0; 32]
+            {
+                return Ok(false);
+            }
+            if supplied
+                .insert((*fork, *child), *plan_digest)
+                .is_some()
+            {
+                return Err(Error::Conflict(
+                    "model fork publication repeats a child identity".into(),
+                ));
+            }
         }
-        if fork_children.is_empty()
-            || fork_children.iter().any(|(fork, child, plan_digest)| {
-                fork.into_bytes() == [0; 16] || child.into_bytes() == [0; 16]
-                    || *plan_digest == [0; 32]
-            })
-        {
+        if supplied.is_empty() {
             return Ok(false);
         }
-        Ok(self
+        self.refresh_journal_state().await?;
+        let expected = self
             .expected_plans
             .lock()
             .await
             .get(&operation)
-            .is_some_and(|expected| {
-                fork_children
-                    .iter()
-                    .all(|(fork, child, plan_digest)| {
-                        expected
-                            .get(&(*fork, *child))
-                            .is_some_and(|expected_digest| expected_digest == plan_digest)
-                    })
-            }))
+            .cloned();
+        if let Some(expected) = expected {
+            return Ok(
+                expected.len() == supplied.len()
+                    && supplied.iter().all(|(identity, plan_digest)| {
+                        expected.get(identity).is_some_and(|expected_digest| {
+                            expected_digest == plan_digest
+                        })
+                    }),
+            );
+        }
+        let intents = self.intents.lock().await;
+        let intent_identities = intents
+            .values()
+            .filter(|intent| intent.publication_operation == Some(operation))
+            .map(|intent| (intent.fork_operation, intent.child_operation))
+            .collect::<BTreeSet<_>>();
+        Ok(!intent_identities.is_empty()
+            && intent_identities.len() == supplied.len()
+            && supplied
+                .keys()
+                .all(|identity| intent_identities.contains(identity)))
     }
 
     async fn mark_completed(
@@ -2407,6 +2429,17 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 .conversation_aggregate(swarm.config.limits)
                 .await?;
             crate::stack_diagnostics::marker("fork-publisher-after-parent-open");
+            let mut all_fork_children = Vec::with_capacity(plans.len());
+            for plan in &plans {
+                let fork_operation = plan.request.fork_operation.ok_or_else(|| {
+                    Error::Conflict("resolved fork plan has no fork operation".into())
+                })?;
+                all_fork_children.push((
+                    fork_operation,
+                    plan.request.child_operation,
+                    local_model_fork_plan_digest(plan)?,
+                ));
+            }
             let mut prepared = Vec::with_capacity(plans.len());
             for mut plan in plans {
                 if publication.operation_id != plan.publication_operation
@@ -2478,17 +2511,6 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             }
             // Every child is now durably admitted and bound to the parent
             // aggregate. Only after that barrier may a child model dispatch.
-            let mut fork_children = Vec::with_capacity(prepared.len());
-            for (plan, _) in &prepared {
-                let fork_operation = plan.request.fork_operation.ok_or_else(|| {
-                    Error::Conflict("prepared fork plan has no fork operation".into())
-                })?;
-                fork_children.push((
-                    fork_operation,
-                    plan.request.child_operation,
-                    local_model_fork_plan_digest(plan)?,
-                ));
-            }
             for (plan, seed) in prepared {
                 let child_operation = plan.request.child_operation;
                 let child = TaskId::from_bytes(child_operation.into_bytes());
@@ -2517,7 +2539,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 .mark_completed(
                     publication.operation_id,
                     publication_digest,
-                    &fork_children,
+                    &all_fork_children,
                 )
                 .await
         })
@@ -8871,7 +8893,7 @@ mod tests {
 
     #[tokio::test]
     async fn fork_publication_completion_receipt_survives_restart_and_fences_substitution(
-    ) -> Result<()> {
+        ) -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let provider = Arc::new(
             LocalStream::open(root.path(), LocalStreamLimits::default())
@@ -8950,6 +8972,91 @@ mod tests {
         let reopened = LocalModelForkPlans::new();
         reopened.bind_journal(client).await?;
         assert_eq!(reopened.completed(operation).await?, Some(digest));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completion_authority_requires_exact_selected_children() -> Result<()> {
+        let plans = LocalModelForkPlans::new();
+        let first = test_fork_intent(21);
+        let second = test_fork_intent(22);
+        let publication = first.publication_operation.unwrap();
+        plans.record_intent(first.clone()).await?;
+        plans.record_intent(second.clone()).await?;
+
+        let first_identity = (first.fork_operation, first.child_operation, [14; 32]);
+        let second_identity = (second.fork_operation, second.child_operation, [15; 32]);
+        assert!(matches!(
+            plans
+                .mark_completed(publication, [16; 32], &[first_identity])
+                .await,
+            Err(Error::Unauthorized(message)) if message.contains("no retained intent")
+        ));
+        assert!(matches!(
+            plans
+                .mark_completed(
+                    publication,
+                    [16; 32],
+                    &[first_identity, first_identity],
+                )
+                .await,
+            Err(Error::Conflict(message)) if message.contains("repeats a child identity")
+        ));
+        plans
+            .mark_completed(
+                publication,
+                [16; 32],
+                &[first_identity, second_identity],
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completion_authority_requires_exact_prepared_plans_after_reopen() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let client = StreamClient::new(provider);
+        let plans = LocalModelForkPlans::new();
+        plans.bind_journal(client.clone()).await?;
+        let publication = OperationId::from_bytes([31; 16]);
+        let first = (OperationId::from_bytes([32; 16]), OperationId::from_bytes([33; 16]));
+        let second = (OperationId::from_bytes([34; 16]), OperationId::from_bytes([35; 16]));
+        plans
+            .record_plan_registration(publication, first.0, first.1, [36; 32])
+            .await?;
+        plans
+            .record_plan_registration(publication, second.0, second.1, [37; 32])
+            .await?;
+        let reopened = LocalModelForkPlans::new();
+        reopened.bind_journal(client).await?;
+        assert!(matches!(
+            reopened
+                .mark_completed(publication, [38; 32], &[(first.0, first.1, [36; 32])])
+                .await,
+            Err(Error::Unauthorized(message)) if message.contains("no retained intent")
+        ));
+        assert!(matches!(
+            reopened
+                .mark_completed(
+                    publication,
+                    [38; 32],
+                    &[(first.0, first.1, [36; 32]), (first.0, first.1, [36; 32])],
+                )
+                .await,
+            Err(Error::Conflict(message)) if message.contains("repeats a child identity")
+        ));
+        reopened
+            .mark_completed(
+                publication,
+                [38; 32],
+                &[(first.0, first.1, [36; 32]), (second.0, second.1, [37; 32])],
+            )
+            .await?;
         Ok(())
     }
 
