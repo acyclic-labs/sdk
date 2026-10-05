@@ -198,6 +198,62 @@ pub struct PublicFieldBinding {
     pub direction: PublicFieldDirection,
 }
 
+impl PublicFieldBinding {
+    /// Service client attribute used by generated remote facades.
+    pub fn client_attribute(self) -> Option<&'static str> {
+        match (self.module, self.message) {
+            ("actors", "InvokeActorRequest") => Some("actors"),
+            ("workers", "SelectDeploymentRequest")
+            | ("workers", "InspectJobRequest")
+            | ("workers", "InvokeVersionRequest") => Some("workers"),
+            ("stream", "AppendRequest")
+            | ("stream", "ForkRequest")
+            | ("stream", "ReadRequest")
+            | ("stream", "ReadCommitRequest") => Some("stream"),
+            ("objects", "GetObjectRequest") | ("objects", "ListObjectsRequest") => Some("objects"),
+            ("objects", "ListPartsRequest") => Some("multipart"),
+            ("inference", "InspectRunRequest") => Some("inference.runs"),
+            ("inference", "InspectContextRequest") => Some("inference.contexts"),
+            ("inference", "InspectWarmRequest") => Some("inference.warm_contexts"),
+            ("inference", "InspectEvaluationRequest") => Some("inference.evaluations"),
+            ("machines", "CreateMachineRequest")
+            | ("machines", "InspectMachineRequest")
+            | ("machines", "InspectCheckpointRequest")
+            | ("machines", "OperationRequest")
+            | ("machines", "ListMachinesRequest") => Some("machines"),
+            ("filesystem", "ReadRequest") => Some("filesystem"),
+            _ => None,
+        }
+    }
+
+    /// RPC method corresponding to the concrete request message.
+    pub fn rpc(self) -> Option<&'static str> {
+        match (self.module, self.message) {
+            (_, "InvokeActorRequest") => Some("InvokeActor"),
+            (_, "SelectDeploymentRequest") => Some("SelectDeployment"),
+            (_, "InspectJobRequest") => Some("InspectJob"),
+            (_, "InvokeVersionRequest") => Some("InvokeVersion"),
+            (_, "AppendRequest") => Some("Append"),
+            (_, "ForkRequest") => Some("Fork"),
+            (_, "ReadRequest") => Some("Read"),
+            (_, "ReadCommitRequest") => Some("ReadCommit"),
+            (_, "GetObjectRequest") => Some("GetObject"),
+            (_, "ListObjectsRequest") => Some("ListObjects"),
+            (_, "ListPartsRequest") => Some("ListParts"),
+            (_, "InspectRunRequest") => Some("Inspect"),
+            (_, "InspectContextRequest") => Some("Inspect"),
+            (_, "InspectWarmRequest") => Some("Inspect"),
+            (_, "InspectEvaluationRequest") => Some("Inspect"),
+            (_, "CreateMachineRequest") => Some("Create"),
+            (_, "InspectMachineRequest") => Some("InspectMachine"),
+            (_, "InspectCheckpointRequest") => Some("InspectCheckpoint"),
+            (_, "OperationRequest") => Some("InspectOperation"),
+            (_, "ListMachinesRequest") => Some("ListMachines"),
+            _ => None,
+        }
+    }
+}
+
 /// A Rust-owned discriminated union projection.  The open `unknown` arm is
 /// part of the wire contract, while the `known` arm gives every target a
 /// statically visible payload-bearing variant for values understood by the
@@ -493,6 +549,16 @@ mod tests {
             assert!(!binding.module.is_empty());
             assert!(!binding.message.is_empty());
             assert!(!binding.wire_field.is_empty());
+        }
+    }
+
+    #[test]
+    fn every_request_binding_has_a_generated_client_route() {
+        for binding in PUBLIC_FIELD_BINDINGS {
+            if binding.direction == PublicFieldDirection::Request {
+                assert!(binding.client_attribute().is_some(), "missing service for {}.{}", binding.family, binding.field);
+                assert!(binding.rpc().is_some(), "missing rpc for {}.{}", binding.family, binding.field);
+            }
         }
     }
 

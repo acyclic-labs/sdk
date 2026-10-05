@@ -202,6 +202,8 @@ class Client:
         response = await self.actors.InvokeActor(request.to_wire(), timeout=timeout)
         return ActorInvokeResponse.from_wire(response)
 
+#PUBLIC_CLIENT_METHODS#
+
     async def __aenter__(self) -> "Client":
         return self
 
@@ -233,6 +235,7 @@ TRANSPORTS_BY_RUNTIME = {
     output = output.replace("#BINDING#", binding);
     output = output.replace("#TYPES#", &python_type_projection());
     output = output.replace("#PUBLIC_TYPE_EXPORTS#", &python_public_type_exports());
+    output = output.replace("#PUBLIC_CLIENT_METHODS#", &python_public_client_methods());
     output = output.replace("#SELECTION_PROBE#", FACADE_SELECTION_POLICY.probe);
     output = output.replace(
         "#POST_FAILURE_FALLBACK#",
@@ -266,6 +269,31 @@ fn python_public_type_exports() -> String {
     names.sort();
     names.dedup();
     names.iter().map(|name| format!("\"{}\"", name)).collect::<Vec<_>>().join(", ")
+}
+
+/// Generate one public client entry point per Rust-owned request binding. The
+/// wrapper owns conversion to the protobuf message, so consumers construct a
+/// refined model and never need to call a wire conversion method themselves.
+fn python_public_client_methods() -> String {
+    let mut output = String::new();
+    for binding in PUBLIC_FIELD_BINDINGS {
+        if binding.direction != PublicFieldDirection::Request {
+            continue;
+        }
+        let (Some(service), Some(rpc)) = (binding.client_attribute(), binding.rpc()) else {
+            continue;
+        };
+        let method = format!("{}_{}", camel_to_snake(rpc), binding.field);
+        let model = python_public_binding_name(binding);
+        output.push_str(&format!(
+            "    async def {method}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ):\n        return await self.{service}.{rpc}(request.to_wire(), timeout=timeout)\n\n",
+            method = method,
+            model = model,
+            service = service,
+            rpc = rpc,
+        ));
+    }
+    output
 }
 
 pub(super) fn render_go(binding: &str) -> String {
@@ -382,6 +410,8 @@ func (client *Client) InvokeActor(ctx context.Context, request ActorInvokeReques
     return actorInvokeResponseFromWire(response), nil
 }
 
+#PUBLIC_CLIENT_METHODS#
+
 func normalizeEndpoint(endpoint string) (string, bool, error) {
     value := strings.TrimSpace(endpoint)
     if value == "" { return "", false, fmt.Errorf("endpoint must not be empty") }
@@ -487,6 +517,7 @@ var TransportsByRuntime = map[string]map[string][]string{
     );
     output = output.replace("#BINDING#", binding);
     output = output.replace("#TYPES#", &go_type_projection());
+    output = output.replace("#PUBLIC_CLIENT_METHODS#", &go_public_client_methods());
     output = output.replace("#SELECTION_PROBE#", FACADE_SELECTION_POLICY.probe);
     output = output.replace(
         "#POST_FAILURE_FALLBACK#",
@@ -746,12 +777,18 @@ fn python_public_field_models() -> String {
             }
             PublicFieldDirection::Request | PublicFieldDirection::NestedMessage => {
                 let expression = python_public_binding_wire_value(binding, item, &field_name, &function);
+                let presence = if public_binding_is_message(binding) {
+                    format!("        if self.{field_name} is None:\n            raise ValueError(\"{field_name} must be present\")\n")
+                } else {
+                    String::new()
+                };
                 output.push_str(&format!(
-                    "    def to_wire(self) -> {module}.{message}:\n        value = {expression}\n        return {module}.{message}({wire_field}=value)\n\n",
+                    "    def to_wire(self) -> {module}.{message}:\n{presence}        value = {expression}\n        return {module}.{message}({wire_field}=value)\n\n",
                     module = module,
                     message = binding.message,
                     expression = expression,
                     wire_field = binding.wire_field,
+                    presence = presence,
                 ));
             }
         }
@@ -1055,7 +1092,7 @@ fn go_public_field_models() -> String {
             PublicFieldDirection::Request | PublicFieldDirection::NestedMessage => {
                 if public_binding_is_message(binding) {
                     output.push_str(&format!(
-                        "func (request {type_name}) ToWire() (*{module}.{message}, error) {{\n\treturn &{module}.{message}{{{wire_field}: request.{field_name}}}, nil\n}}\n\n",
+                        "func (request {type_name}) ToWire() (*{module}.{message}, error) {{\n\tif request.{field_name} == nil {{ return nil, fmt.Errorf(\"{field_name} must be present\") }}\n\treturn &{module}.{message}{{{wire_field}: request.{field_name}}}, nil\n}}\n\n",
                         type_name = type_name,
                         module = module,
                         message = binding.message,
@@ -1135,6 +1172,89 @@ fn go_public_binding_annotation(binding: &PublicFieldBinding, item: &crate::type
 
 fn public_binding_is_message(binding: &PublicFieldBinding) -> bool {
     matches!(binding.semantic_type, "immutable_image" | "idempotency_key_message" | "machine_id" | "checkpoint_id" | "operation_id")
+}
+
+fn go_client_expression(attribute: &str) -> &'static str {
+    match attribute {
+        "actors" => "client.Actors",
+        "workers" => "client.Workers",
+        "stream" => "client.Stream",
+        "objects" => "client.Objects",
+        "multipart" => "client.Multipart",
+        "filesystem" => "client.Filesystem",
+        "machines" => "client.Machines",
+        "inference.models" => "client.Inference.Models",
+        "inference.contexts" => "client.Inference.Contexts",
+        "inference.warm_contexts" => "client.Inference.WarmContexts",
+        "inference.runs" => "client.Inference.Runs",
+        "inference.evaluations" => "client.Inference.Evaluations",
+        _ => "client",
+    }
+}
+
+/// Return the concrete generated response type and whether the RPC is server
+/// streaming. The mapping is derived from the Rust request identity rather
+/// than asking consumers to know protobuf service details.
+fn go_public_response(binding: &PublicFieldBinding, rpc: &str) -> Option<(&'static str, bool)> {
+    match (binding.module, binding.message, rpc) {
+        ("workers", "SelectDeploymentRequest", "SelectDeployment") => Some(("workersv1.SelectDeploymentResponse", false)),
+        ("workers", "InspectJobRequest", "InspectJob") => Some(("workersv1.InspectJobResponse", false)),
+        ("workers", "InvokeVersionRequest", "InvokeVersion") => Some(("workersv1.InvokeResponse", false)),
+        ("stream", "AppendRequest", "Append") => Some(("streamv2.AppendResponse", false)),
+        ("stream", "ForkRequest", "Fork") => Some(("streamv2.ForkReceipt", false)),
+        ("stream", "ReadRequest", "Read") => Some(("grpc.ServerStreamingClient[streamv2.ReadResponse]", true)),
+        ("stream", "ReadCommitRequest", "ReadCommit") => Some(("streamv2.CommittedEnvelope", false)),
+        ("objects", "GetObjectRequest", "GetObject") => Some(("grpc.ServerStreamingClient[objectsv2.GetObjectResponse]", true)),
+        ("objects", "ListObjectsRequest", "ListObjects") => Some(("objectsv2.ListObjectsResponse", false)),
+        ("objects", "ListPartsRequest", "ListParts") => Some(("objectsv2.ListPartsResponse", false)),
+        ("inference", "InspectRunRequest", "Inspect") => Some(("inferencev1.RunView", false)),
+        ("inference", "InspectContextRequest", "Inspect") => Some(("inferencev1.ContextView", false)),
+        ("inference", "InspectWarmRequest", "Inspect") => Some(("inferencev1.WarmView", false)),
+        ("inference", "InspectEvaluationRequest", "Inspect") => Some(("inferencev1.EvaluationView", false)),
+        ("machines", "CreateMachineRequest", "Create") => Some(("machinesv1.MachineAdmission", false)),
+        ("machines", "InspectMachineRequest", "InspectMachine") => Some(("machinesv1.MachineState", false)),
+        ("machines", "InspectCheckpointRequest", "InspectCheckpoint") => Some(("machinesv1.CheckpointState", false)),
+        ("machines", "OperationRequest", "InspectOperation") => Some(("machinesv1.OperationState", false)),
+        ("machines", "ListMachinesRequest", "ListMachines") => Some(("machinesv1.MachinePage", false)),
+        ("filesystem", "ReadRequest", "Read") => Some(("filesystemv2.ReadResponse", false)),
+        _ => None,
+    }
+}
+
+fn go_public_client_methods() -> String {
+    let mut output = String::new();
+    for binding in PUBLIC_FIELD_BINDINGS {
+        if binding.direction != PublicFieldDirection::Request {
+            continue;
+        }
+        let (Some(service), Some(rpc)) = (binding.client_attribute(), binding.rpc()) else {
+            continue;
+        };
+        let method = pascal_case(&format!("{}_{}", rpc, binding.field));
+        let model = go_public_binding_name(binding);
+        let client = go_client_expression(service);
+        if binding.module == "actors" {
+            output.push_str(&format!(
+                "func (client *Client) {method}(ctx context.Context, request {model}, opts ...grpc.CallOption) (ActorInvokeResponse, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return ActorInvokeResponse{{}}, err }}\n\tresponse, err := client.Actors.InvokeActor(ctx, wireRequest, opts...)\n\tif err != nil {{ return ActorInvokeResponse{{}}, err }}\n\treturn actorInvokeResponseFromWire(response), nil\n}}\n\n",
+                method = method,
+                model = model,
+            ));
+            continue;
+        }
+        let Some((response, streaming)) = go_public_response(binding, rpc) else {
+            continue;
+        };
+        output.push_str(&format!(
+            "func (client *Client) {method}(ctx context.Context, request {model}, opts ...grpc.CallOption) ({response}, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\treturn {client}.{rpc}(ctx, wireRequest, opts...)\n}}\n\n",
+            method = method,
+            model = model,
+            response = response,
+            client = client,
+            rpc = rpc,
+        ));
+        let _ = streaming;
+    }
+    output
 }
 
 fn go_constructor_call(item: &crate::type_policy::SemanticType, expression: &str) -> String {
@@ -1354,6 +1474,17 @@ fn go_field_identifier(family: &str, field: &str) -> String {
 }
 
 fn snake_case(value: &str) -> String { value.to_owned() }
+
+fn camel_to_snake(value: &str) -> String {
+    let mut output = String::new();
+    for (index, character) in value.chars().enumerate() {
+        if character.is_ascii_uppercase() && index != 0 {
+            output.push('_');
+        }
+        output.push(character.to_ascii_lowercase());
+    }
+    output
+}
 
 fn pascal_case(value: &str) -> String {
     value
