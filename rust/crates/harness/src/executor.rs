@@ -700,9 +700,14 @@ impl StockExecutor {
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         crate::contract::canonical_json_digest(&json!({
-            "executor": "acyclic.stock.v4",
+            // v5 includes the canonical composition plus the effective
+            // execution scope and authenticated task binding. Keep the
+            // preallocation admission contract volume-neutral below.
+            "executor": "acyclic.stock.v5",
             "input": input,
             "contract": self.admission_contract()?,
+            "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
+            "authenticated_task": self.authenticated_task,
         }))
     }
 
@@ -2384,6 +2389,49 @@ mod tests {
         let mut extra = value;
         extra["unexpected"] = json!(true);
         assert!(validate_value(&turn_output_schema(), &extra, "turn output").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn request_digest_binds_scope_and_authenticated_task() -> Result<()> {
+        let provider = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new("example", "digest", "1", Value::Null)?;
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([8; 16]),
+            input: ModelContent::Text("same".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let scope = RuntimeScope::new(
+            Capabilities::new(["model:generate", "scope:one"]),
+            Limits::default(),
+        )?;
+        let first = StockExecutor::new(
+            model.clone(),
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_tool_authority(scope.clone(), None)?
+        .with_authenticated_task(TaskId::from_bytes([1; 16]));
+        let second = StockExecutor::new(
+            model,
+            provider,
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["model:generate", "scope:two"]),
+                Limits::default(),
+            )?,
+            None,
+        )?
+        .with_authenticated_task(TaskId::from_bytes([2; 16]));
+        assert_ne!(first.request_digest(&input)?, second.request_digest(&input)?);
         Ok(())
     }
 
