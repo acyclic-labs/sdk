@@ -2279,6 +2279,7 @@ pub(crate) async fn classify_terminal_failure(
     let mut started_tools = BTreeSet::new();
     let mut resolved_tools = BTreeSet::new();
     let mut failed_tool = false;
+    let mut completed_batches = BTreeSet::new();
     let mut publications = BTreeMap::<u32, ([u8; 32], bool)>::new();
     for (index, record) in records.iter().enumerate() {
         record.event.validate_schema_version()?;
@@ -2398,6 +2399,7 @@ pub(crate) async fn classify_terminal_failure(
                 if invocation.operation_id != expected.operation_id
                     || invocation.name != *name
                     || invocation.arguments != *arguments
+                    || started_tools.contains(&key)
                     || !resolved_tools.insert(key)
                 {
                     return Err(Error::Storage(
@@ -2450,6 +2452,7 @@ pub(crate) async fn classify_terminal_failure(
                     || invocation.operation_id != expected.operation_id
                     || invocation.name != *name
                     || invocation.arguments != *arguments
+                    || resolved_tools.contains(&key)
                     || !started_tools.insert(key)
                 {
                     return Err(Error::Storage(
@@ -2500,7 +2503,28 @@ pub(crate) async fn classify_terminal_failure(
                 }
                 failed_tool = true;
             }
+            ExecutionEvent::ToolBatchCompleted { step, boundary } => {
+                if !completed_steps.contains(step)
+                    || !declared_tools.keys().filter(|(declared_step, _)| declared_step == step)
+                        .all(|key| resolved_tools.contains(key))
+                    || !completed_batches.insert(*step)
+                {
+                    return Err(Error::Storage(
+                        "tool batch completion is out of order or duplicated while classifying terminal failure".into(),
+                    ));
+                }
+                let boundary = load_json::<crate::model_input::CompletedModelBoundary>(
+                    journal, boundary,
+                )
+                .await?;
+                boundary.verify(limits)?;
+            }
             ExecutionEvent::BatchPublicationStarted { step, publication } => {
+                if !completed_batches.contains(step) {
+                    return Err(Error::Storage(
+                        "batch publication has no completed tool batch while classifying terminal failure".into(),
+                    ));
+                }
                 let publication = load_json::<ModelBatchPublication>(journal, publication).await?;
                 if publication.parent_operation != operation
                     || publication.step != *step
@@ -2546,8 +2570,7 @@ pub(crate) async fn classify_terminal_failure(
                 }
                 *completed = true;
             }
-            ExecutionEvent::Started { .. }
-            | ExecutionEvent::ToolBatchCompleted { .. } => {}
+            ExecutionEvent::Started { .. } => {}
         }
     }
     if started_steps.is_empty() {
@@ -2555,7 +2578,10 @@ pub(crate) async fn classify_terminal_failure(
     }
     if completed_steps.len() != started_steps.len()
         || declared_tools.len() != resolved_tools.len()
-        || publications.values().any(|completed| !completed)
+        || !started_tools
+            .iter()
+            .all(|key| resolved_tools.contains(key))
+        || publications.values().any(|(_, completed)| !*completed)
         || !failed_tool
     {
         return Ok(TerminalFailureState::Unresolved);
@@ -3786,10 +3812,10 @@ mod tests {
                 },
             )
             .await?;
-        assert_eq!(
-            classify_terminal_failure(&open_publication, operation, Limits::default()).await?,
-            TerminalFailureState::Unresolved
-        );
+        assert!(matches!(
+            classify_terminal_failure(&open_publication, operation, Limits::default()).await,
+            Err(Error::Storage(message)) if message.contains("completed tool batch")
+        ));
 
         let after_completed = Journal::default();
         let operation = OperationId::from_bytes([45; 16]);
