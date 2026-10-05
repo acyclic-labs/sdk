@@ -1870,6 +1870,7 @@ impl LocalModelForkPlans {
                 intent.child_operation == input.child_operation
                     && intent.task == input.task
                     && intent.prompt == input.prompt
+                    && intent.requested_resources == input.requested_resources
                     && input
                         .fork_operation
                         .is_none_or(|operation| operation == intent.fork_operation)
@@ -8132,7 +8133,12 @@ mod tests {
 
     #[test]
     fn intent_replay_rejects_zero_issuer_and_conflicting_payloads() {
-        let intent = test_fork_intent(6);
+        let mut intent = test_fork_intent(6);
+        intent.requested_resources = Some(SwarmResourceRequest {
+            model_steps: 2,
+            output_bytes: 8,
+            execution_time_ms: 16,
+        });
         let mut intents = BTreeMap::new();
         let mut order = BTreeMap::new();
         let mut bindings = BTreeMap::new();
@@ -8156,6 +8162,11 @@ mod tests {
             .expect("first durable intent replays");
         let mut changed = intent;
         changed.prompt = "changed after selection".into();
+        changed.requested_resources = Some(SwarmResourceRequest {
+            model_steps: 3,
+            output_bytes: 8,
+            execution_time_ms: 16,
+        });
         let conflicting = StoredRecord {
             version: REGISTRY_VERSION,
             event: StoredEvent::ForkIntent { intent: changed },
