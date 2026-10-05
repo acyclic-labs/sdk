@@ -167,7 +167,10 @@ mod tests {
             .env(ROOT, root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::from(
+                fs::File::create(root.join(format!("{mode}-stderr.log")))
+                    .expect("helper stderr log"),
+            ));
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -316,8 +319,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
         markers.sort();
+        let grandchild_state = fs::read_to_string(root.join("grandchild-spawned"))
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+            .map(|pid| format!("pid={pid}, alive={:?}", process_is_alive(pid)))
+            .unwrap_or_else(|| "pid=missing".into());
         panic!(
-            "process-tree helper did not signal readiness: direct_status={status:?}, markers={markers:?}"
+            "process-tree helper did not signal readiness: direct_status={status:?}, \
+             grandchild_state={grandchild_state}, markers={markers:?}"
         );
     }
 
