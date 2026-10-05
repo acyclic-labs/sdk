@@ -1504,7 +1504,9 @@ async fn handle_connection(mut stream: TcpStream, app: App) -> Result<bool, io::
         }
     };
     let is_shutdown = request.path == "/shutdown";
-    let is_control_handshake = request.method == "GET"
+    // Generated HTTP clients negotiate with POST and a JSON request body;
+    // retain GET as a read-only probe for operators and browser previews.
+    let is_control_handshake = matches!(request.method.as_str(), "GET" | "POST")
         && request.path.starts_with("/v1/sdk/")
         && request.path.ends_with("/handshake");
     let result = if request.path == "/health" && request.method == "GET" {
