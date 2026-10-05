@@ -872,8 +872,7 @@ public final class GeneratedRemotePolicy {{
   }
 
   public static String validateBearer(String token) {
-    if (token == null || token.isBlank() || token.indexOf('\r') >= 0 || token.indexOf('
-') >= 0) {
+    if (token == null || token.isBlank() || token.indexOf('\r') >= 0 || token.indexOf('\n') >= 0) {
       throw new IllegalArgumentException("invalid bearer credential");
     }
     return token;
@@ -2444,18 +2443,11 @@ mod tests {
             );
             for operation in operations {
                 count += 1;
-                if family.name == "machines" {
-                    assert!(
-                        !operation.bearer_auth,
-                        "Machines must use native mTLS metadata"
-                    );
-                } else {
-                    assert!(
-                        operation.bearer_auth,
-                        "{} missing bearer policy",
-                        operation.rpc
-                    );
-                }
+                assert!(
+                    operation.bearer_auth,
+                    "{} missing bearer policy",
+                    operation.rpc
+                );
                 if operation.cancellation == CancellationKind::Call {
                     assert!(
                         operation.client_streaming || operation.server_streaming,

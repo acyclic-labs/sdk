@@ -1330,8 +1330,8 @@ mod tests {
     #[test]
     fn descriptor_docs_overlay_covers_rust_owned_protocol_dependency() {
         let model = crate::protocol::protocol_descriptor();
-        let overlaid = descriptor_set_with_docs(BindingFamily::Actors, &model)
-            .expect("protocol docs overlay");
+        let overlaid =
+            descriptor_set_with_docs(BindingFamily::Actors, &model).expect("protocol docs overlay");
         let generated = FileDescriptorSet::decode(overlaid.as_slice()).expect("overlay");
         let protocol = generated
             .file
@@ -1476,7 +1476,12 @@ mod tests {
             boundary.transport.native.options[0].kind,
             crate::transport::TransportKind::Grpc
         );
-        assert!(boundary.transport.browser.options.is_empty());
+        assert_eq!(boundary.transport.browser.options.len(), 1);
+        assert_eq!(
+            boundary.transport.browser.options[0].kind,
+            crate::transport::TransportKind::GrpcWeb
+        );
+        assert!(boundary.transport.browser.options[0].bearer_auth);
         let operation_names = boundary
             .methods
             .iter()
