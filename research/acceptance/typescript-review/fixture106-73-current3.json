@@ -1,0 +1,810 @@
+{
+  "schema": "acyclic.sdk.rust-fixture.runtime.v1",
+  "endpoint": "http://127.0.0.1:50102",
+  "execution_mode": "remote",
+  "installed_packages": true,
+  "services": [
+    {
+      "name": "actors",
+      "methods": 8
+    },
+    {
+      "name": "workers",
+      "methods": 7
+    },
+    {
+      "name": "objects.buckets",
+      "methods": 3
+    },
+    {
+      "name": "objects",
+      "methods": 5
+    },
+    {
+      "name": "objects.multipart",
+      "methods": 5
+    },
+    {
+      "name": "stream",
+      "methods": 10
+    },
+    {
+      "name": "filesystem",
+      "methods": 30
+    },
+    {
+      "name": "harness",
+      "methods": 5
+    }
+  ],
+  "passed": 73,
+  "failed": 0,
+  "results": [
+    {
+      "family": "actors",
+      "method": "CreateActor",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "UpdateActor",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "InspectActor",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "AddSubscription",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "RemoveSubscription",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "ResumeSubscription",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "CheckpointActor",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "InvokeActor",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "PublishVersion",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "SelectDeployment",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "SubmitJob",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "InspectJob",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "CancelJob",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "InvokeVersion",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "InvokeDeployment",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.buckets",
+      "method": "CreateBucket",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.buckets",
+      "method": "HeadBucket",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.buckets",
+      "method": "DeleteBucket",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "PutObject",
+      "kind": "client_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "GetObject",
+      "kind": "server_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "frames": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "HeadObject",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "DeleteObject",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "ListObjects",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "CreateMultipart",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "UploadPart",
+      "kind": "client_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "ListParts",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "CompleteMultipart",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "AbortMultipart",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "InspectIdempotency",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Append",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Tail",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Fork",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Read",
+      "kind": "server_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "frames": 1,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Follow",
+      "kind": "server_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 1,
+      "code": 1,
+      "message": "[canceled] This operation was aborted",
+      "status": "passed",
+      "cancelled": true
+    },
+    {
+      "family": "stream",
+      "method": "Children",
+      "kind": "server_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "frames": 1,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "ChildrenPage",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Commit",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "commitRoundTrip": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "ReadCommit",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Handshake",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "CreateWorkspace",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "OpenWorkspace",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "DeleteWorkspace",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "GetHead",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "GetGeneration",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Read",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Stat",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ListDirectory",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ReadLink",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "PlanExtents",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ApplyTransaction",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "RebaseTransaction",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ForkWorkspace",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Diff",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Rebase",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "PlanJoin",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ApplyJoin",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Checkpoint",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Pin",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Export",
+      "kind": "server_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "frames": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Import",
+      "kind": "client_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "IssueMountCredential",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "IssueS3Credential",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "GetSourceState",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ReconcileSource",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "RescanSource",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "SealSource",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Observe",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Cancel",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Handshake",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Submit",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Replay",
+      "kind": "server_streaming",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "frames": 1,
+      "serialized": true,
+      "semantic": {
+        "nonEmptyDelivery": true,
+        "eventCount": 1,
+        "operationIds": [
+          "0c0c0c0c-0c0c-0c0c-0c0c-0c0c0c0c0c0c"
+        ],
+        "eventTypes": [
+          "fixture.command.accepted"
+        ]
+      },
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Observe",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Cancel",
+      "kind": "unary",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Append.idempotencyReplay",
+      "status": "passed",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "equal": true
+    },
+    {
+      "family": "stream",
+      "method": "Follow.cancellation",
+      "status": "passed",
+      "execution_mode": "remote",
+      "invoked": true,
+      "exit_code": 0,
+      "code": 1
+    }
+  ]
+}

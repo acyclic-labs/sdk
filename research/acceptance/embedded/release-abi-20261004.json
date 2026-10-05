@@ -1,0 +1,130 @@
+{
+  "schema": "acyclic.sdk.embedded.release-abi.v1",
+  "status": "qualified-local-release-package",
+  "source": {
+    "revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+    "crate": "rust/crates/sdk-embedded-prototype",
+    "version": "0.2.0",
+    "abi_version": 1,
+    "source_digest": "36055ba48a01d08909cc152f480f3570e0fd81cad29cce0b5aca229f852a7555",
+    "source_inputs": [
+      "rust/crates/sdk-embedded-prototype/Cargo.toml",
+      "rust/crates/sdk-embedded-prototype/Cargo.lock",
+      "rust/crates/sdk-embedded-prototype/build.rs",
+      "rust/crates/sdk-embedded-prototype/src/lib.rs",
+      "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+      "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+      "cpp/embedded-consumer/CMakeLists.txt",
+      "cpp/embedded-consumer/AcyclicEmbeddedConfig.cmake.in",
+      "cpp/embedded-consumer/include/acyclic/embedded.hpp",
+      "cpp/embedded-consumer/main.cpp",
+      "cpp/embedded-consumer/negative_lifetime_smoke.cpp",
+      "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp"
+    ],
+    "cargo_lock_sha256": "6483b04e38523feab1b14815d834f01adc91f6c641afc68cd950bf435016a7c8"
+  },
+  "toolchain": {
+    "rust": "1.98.1",
+    "cbindgen": "0.29.4",
+    "clang": "17.0.2",
+    "cmake": "3.26.4",
+    "ninja": true,
+    "offline_locked": true
+  },
+  "foreign_consumers": {
+    "rust_unit_tests": { "status": "passed", "tests": 14 },
+    "c_consumer": { "status": "passed", "checks": ["layout", "append", "read", "release", "stale_handles"] },
+    "python_ctypes_consumer": { "status": "passed", "checks": ["append", "follow", "owned_buffers", "cancel", "stale_handles"] },
+    "cpp_cross_thread_consumer": { "status": "passed", "checks": ["blocked_pull_wakeup", "cross_thread_cancel"] },
+    "cmake_ctest": { "status": "passed", "passed": 3, "total": 3 },
+    "clean_prefix_cpp_consumer": { "status": "passed" }
+  },
+  "consumer_receipts": {
+    "c": {
+      "status": "passed",
+      "language": "C",
+      "source": "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+      "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+      "source_sha256": "1f4b1afbd8b5c21ef22be337c442f1e9c60ca49a2e5e19790a64eeabe331a97b",
+      "scope": "embedded-native-abi",
+      "invoked": true,
+      "exit_code": 0,
+      "command": "clang -I<prefix>/include tests/c_consumer.c <prefix>/lib/acyclic_sdk_embedded_prototype.dll.lib -o c-consumer.exe",
+      "package_artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+      "package_artifact_sha256": "1ca59457792c86cd6d9359dd6d207afebf9abf5f9978588ec110e034ffe84b58",
+      "scope": "embedded-native-abi",
+      "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+      "source_sha256": "1f4b1afbd8b5c21ef22be337c442f1e9c60ca49a2e5e19790a64eeabe331a97b",
+      "invoked": true,
+      "exit_code": 0,
+      "package_artifact_sha256": "1ca59457792c86cd6d9359dd6d207afebf9abf5f9978588ec110e034ffe84b58",
+      "checks": ["layout", "append", "read", "release", "stale_handles"]
+    },
+    "python": {
+      "status": "passed",
+      "language": "Python ctypes",
+      "source": "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+      "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+      "source_sha256": "380176344bdaaaea6d080f51a8480356b19ff7e9b09d741e98b3b20a433818c9",
+      "scope": "embedded-native-abi",
+      "invoked": true,
+      "exit_code": 0,
+      "command": "python tests/python_consumer.py <prefix>/bin/acyclic_sdk_embedded_prototype.dll",
+      "package_artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+      "package_artifact_sha256": "1ca59457792c86cd6d9359dd6d207afebf9abf5f9978588ec110e034ffe84b58",
+      "scope": "embedded-native-abi",
+      "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+      "source_sha256": "380176344bdaaaea6d080f51a8480356b19ff7e9b09d741e98b3b20a433818c9",
+      "invoked": true,
+      "exit_code": 0,
+      "package_artifact_sha256": "1ca59457792c86cd6d9359dd6d207afebf9abf5f9978588ec110e034ffe84b58",
+      "checks": ["append", "follow", "owned_buffers", "cancel", "stale_handles"]
+    },
+    "cpp": {
+      "status": "passed",
+      "language": "C++",
+      "source": "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp",
+      "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+      "source_sha256": "60662aa507595a9ee8ba5a8a52e85d7703529243e0acc2b31a85d694c6b3369f",
+      "scope": "embedded-native-abi",
+      "invoked": true,
+      "exit_code": 0,
+      "command": "ctest --test-dir <build>/consumer --output-on-failure",
+      "package_artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+      "package_artifact_sha256": "1ca59457792c86cd6d9359dd6d207afebf9abf5f9978588ec110e034ffe84b58",
+      "scope": "embedded-native-abi",
+      "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+      "source_sha256": "60662aa507595a9ee8ba5a8a52e85d7703529243e0acc2b31a85d694c6b3369f",
+      "invoked": true,
+      "exit_code": 0,
+      "package_artifact_sha256": "1ca59457792c86cd6d9359dd6d207afebf9abf5f9978588ec110e034ffe84b58",
+      "checks": ["blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install"]
+    }
+  },
+  "reproducibility": {
+    "independent_clean_builds": 2,
+    "source_digests_equal": true,
+    "artifact_hashes_equal": true,
+    "pe_coff_timestamp_normalized": 0,
+    "pe_debug_timestamps_normalized": 0,
+    "codeview_pdb_guid_normalized": true
+  },
+  "artifacts": {
+    "include/acyclic_embedded_prototype.h": "64837e5a4e468e9748969025d3631e39b69e9de7f77d66d26e7876247b90c109",
+    "include/acyclic/embedded.hpp": "49e06d55fe822c65604eb5699b1672fa8262ee9feb5a58019aa77d85b3f12572",
+    "bin/acyclic_sdk_embedded_prototype.dll": "1ca59457792c86cd6d9359dd6d207afebf9abf5f9978588ec110e034ffe84b58",
+    "lib/acyclic_sdk_embedded_prototype.dll.lib": "67ae3ed7a570c2bf1961c234b21ef1af15204cd84c5ecab9b499fe73c9b7eefc",
+    "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfig.cmake": "0836e861a779ceede1c0624507125c50ead8182ae99e00b716415fd3d5e1f066",
+    "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfigVersion.cmake": "c626df80d51f26a450ee36ae47e466121b32f0a9a98894687c0b7edc332170c4"
+  },
+  "validation": {
+    "normalized_pe": { "mz": true, "pe": true, "export": "acyclic_embedded_abi_version" },
+    "normalized_consumers": { "c": "passed", "python": "passed", "cpp": "passed" },
+    "tampered_artifact_rejected": true
+  },
+  "publication": {
+    "registry_published": false,
+    "production_deployed": false,
+    "qualification_scope": "local Windows release ABI and clean CMake prefix"
+  }
+}

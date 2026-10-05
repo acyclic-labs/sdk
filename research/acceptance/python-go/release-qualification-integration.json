@@ -1,0 +1,30 @@
+{
+  "schema": "acyclic.sdk.python-go.release-qualification-integration.v1",
+  "canonical_base_commit": "9d417bdf3219c83731362cb1fe22835420c57b1a",
+  "current_branch_head_at_review": "f716a7b7d4275a6f0824568a9392f3bc818a0a2e",
+  "candidate_commit": "uncommitted; scoped commit is pending repository object-database ACL repair",
+  "files": {
+    ".github/workflows/python-go-release-qualification.yml": {
+      "sha256": "sha256:f288551309be2107257f4de5ed63ffc80e5a63ef3391a556c4743664d261d5f0",
+      "bytes": 7389
+    },
+    "research/acceptance/python-go/release-python-consumer.py": {
+      "sha256": "sha256:26b3985061021f8350acfbb70745d5c1b7a46c2982f38c3ac80c9e5518a278c4",
+      "bytes": 9728
+    },
+    "research/acceptance/python-go/release-go-consumer.go": {
+      "sha256": "sha256:91e7101676758ef825559b9b5cee5e77e1df748bd88e8b3232d32a65fe2fd625",
+      "bytes": 9144
+    },
+    "research/acceptance/python-go/validate-runtime-frames.py": {
+      "sha256": "sha256:a57f3164582c3dfe4b9d613d8148af4fd78e2c69c1b63434eee286d9bd3f8ec7",
+      "bytes": 7434
+    },
+    "research/acceptance/python-go/release-qualification.md": {
+      "sha256": "sha256:128794764f2e76a06a1b94fe8358729ad3d48b7bc3d4197d57920a27c874942d",
+      "bytes": 1282
+    }
+  },
+  "execution": "release/workflow_dispatch/workflow_call only",
+  "semantic_gate": "Rust shared semantic verifier through the canonical observation adapter"
+}

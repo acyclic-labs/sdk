@@ -1,0 +1,402 @@
+name: Stream native package qualification
+
+on:
+  workflow_call:
+    inputs:
+      source_revision:
+        description: Exact Rust source revision to bind to the package receipts
+        required: false
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stream-native-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  typescript_identity:
+    name: Generate Rust-bound TypeScript package identity
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      source_model_revision: ${{ steps.identity.outputs.source_model_revision }}
+      source_content_sha256: ${{ steps.identity.outputs.source_content_sha256 }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust and WASM target
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Install pinned Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install package generation dependencies
+        shell: bash
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Install pinned wasm-bindgen
+        shell: bash
+        run: cargo install wasm-bindgen-cli --version 0.2.117 --locked
+
+      - name: Generate Rust wire and installable TypeScript packages
+        shell: bash
+        env:
+          SDK_RELEASE: '1'
+          CARGO_TARGET_DIR: ${{ runner.temp }}/typescript-identity-target
+        run: |
+          set -euo pipefail
+          wire="$RUNNER_TEMP/rust-wire"
+          out="$RUNNER_TEMP/rust-typescript"
+          cargo run --locked --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --bin sdk-contract-wire -- generate --out "$wire"
+          cargo run --locked --manifest-path rust/crates/sdk-typescript/Cargo.toml -- packages-write "$GITHUB_WORKSPACE" "$out" "$wire"
+          node scripts/build-stream-wasm.mjs "$out/typescript/packages/stream/generated/wasm"
+          test -s "$out/typescript/packages/stream/generated/wasm/acyclic_stream_wasm_bg.wasm"
+
+      - name: Export exact package identities
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          provenance="$RUNNER_TEMP/rust-typescript/typescript/packages/stream/generated/rust-provenance.json"
+          node --input-type=module -e 'const p=JSON.parse(await (await import("node:fs/promises")).readFile(process.argv[1],"utf8")); const family=p.acyclicGenerated ?? p; if (family.sourceGitSha !== process.env.GITHUB_SHA) throw new Error(`package Git identity ${family.sourceGitSha} differs from ${process.env.GITHUB_SHA}`); if (!/^[0-9a-f]{64}$/.test(family.sourceModelRevision ?? "")) throw new Error("missing model identity"); if (!/^[0-9a-f]{64}$/.test(family.sourceContentSha256 ?? "")) throw new Error("missing content identity"); console.log(`source_model_revision=${family.sourceModelRevision}`); console.log(`source_content_sha256=${family.sourceContentSha256}`);' "$provenance" >> "$GITHUB_OUTPUT"
+
+      - name: Upload generated TypeScript package
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: stream-typescript-generated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rust-typescript
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: typescript_identity
+    name: ${{ matrix.package_target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_target: linux-x64-gnu
+            rust_target: x86_64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404
+            native_arch: X64
+            musl: false
+            llvm: false
+            native_runtime: true
+          - package_target: linux-x64-musl
+            rust_target: x86_64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404
+            native_arch: X64
+            musl: true
+            llvm: false
+            native_runtime: true
+          - package_target: linux-arm64-gnu
+            rust_target: aarch64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            native_arch: ARM64
+            musl: false
+            llvm: false
+            native_runtime: true
+          - package_target: linux-arm64-musl
+            rust_target: aarch64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            native_arch: ARM64
+            musl: true
+            llvm: false
+            native_runtime: true
+          - package_target: darwin-x64
+            rust_target: x86_64-apple-darwin
+            runner: macos-15-intel
+            native_arch: X64
+            musl: false
+            llvm: false
+            native_runtime: true
+          - package_target: darwin-arm64
+            rust_target: aarch64-apple-darwin
+            runner: macos-15
+            native_arch: ARM64
+            musl: false
+            llvm: false
+            native_runtime: true
+          - package_target: win32-x64
+            rust_target: x86_64-pc-windows-msvc
+            runner: blacksmith-4vcpu-windows-2025
+            native_arch: X64
+            musl: false
+            llvm: false
+            native_runtime: true
+          - package_target: win32-arm64
+            rust_target: aarch64-pc-windows-msvc
+            runner: windows-11-vs2026-arm
+            native_arch: ARM64
+            musl: false
+            llvm: true
+            native_runtime: true
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust and target
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Provision the pinned musl linker
+        if: matrix.musl
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          command -v musl-gcc
+          musl-gcc --version
+
+      - name: Provision the Windows ARM linker
+        if: matrix.llvm
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 20.1.8
+          arch: arm64
+          directory: ${{ runner.temp }}/llvm
+          env: false
+
+      - name: Select the native Windows ARM linker
+        if: matrix.llvm
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "CC_aarch64_pc_windows_msvc=$env:RUNNER_TEMP\llvm\bin\clang.exe"
+
+      - name: Record compiler identity
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: "\"RUSTC_VERSION=$((rustc -V) -join ' ')\" >> $env:GITHUB_ENV"
+
+      - name: Record compiler identity
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "RUSTC_VERSION=$(rustc -V)" >> "$GITHUB_ENV"
+
+      - name: Require a native runner for runtime qualification
+        if: matrix.native_runtime
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.native_arch }}
+          ACTUAL_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          test "$ACTUAL_ARCH" = "$EXPECTED_ARCH"
+
+      - name: Build and package the Rust native bridge
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-target
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+          SOURCE_MODEL_REVISION: ${{ needs.typescript_identity.outputs.source_model_revision }}
+          SOURCE_CONTENT_SHA256: ${{ needs.typescript_identity.outputs.source_content_sha256 }}
+        run: |
+          set -euo pipefail
+          verify_install=''
+          if [[ "${{ matrix.native_runtime }}" == 'true' ]]; then
+            verify_install='--verify-install'
+          fi
+          if [[ "${{ matrix.musl }}" == 'true' ]]; then
+            # Rust's musl target spec does not infer the provisioned wrapper on
+            # every runner image. Bind the linker explicitly so the package
+            # cannot accidentally link against the host glibc toolchain.
+            target_env=$(printf '%s' "${{ matrix.rust_target }}" | tr '[:lower:]-' '[:upper:]_')
+            export "CARGO_TARGET_${target_env}_LINKER=musl-gcc"
+            command -v musl-gcc
+          fi
+          node scripts/build-stream-native-package.mjs \
+            --target "${{ matrix.package_target }}" \
+            --target-dir "$CARGO_TARGET_DIR" \
+            --output "$STREAM_NATIVE_OUTPUT" \
+            --provenance "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}.provenance.json" \
+            $verify_install
+
+      - name: Pack the installable companion archive
+        shell: bash
+        env:
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          NPM_CACHE: ${{ runner.temp }}/stream-native-npm-cache
+        run: |
+          set -euo pipefail
+          mkdir -p "$NPM_CACHE"
+          cd "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}"
+          npm pack --ignore-scripts --offline --cache "$NPM_CACHE" --pack-destination "$STREAM_NATIVE_OUTPUT"
+
+      - name: Run the full ten-RPC native Stream consumer
+        if: matrix.native_runtime
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-runtime-target
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          package_root="$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}"
+          package_name=$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1])).name)' "$package_root/package.json")
+          export ACYCLIC_STREAM_NATIVE_PACKAGE="$package_name"
+          export ACYCLIC_STREAM_NATIVE_PACKAGE_SOURCE="$package_root"
+          export ACYCLIC_STREAM_NATIVE_MODULE="$package_name"
+          export ACYCLIC_STREAM_NATIVE_MODULE_OVERRIDE="$package_root/acyclic_stream_native.node"
+          export ACYCLIC_STREAM_SCENARIO_DIR="$STREAM_NATIVE_OUTPUT/scenarios/stream"
+          export ACYCLIC_STREAM_SCENARIO_PREFIX=stream
+          export ACYCLIC_STREAM_CONSUMER_OUTPUT="$STREAM_NATIVE_OUTPUT/scenarios/stream-native-consumer.json"
+          cargo test --locked --offline \
+            --manifest-path rust/crates/sdk-stream-native/Cargo.toml \
+            --test runtime_fixture -- --nocapture
+
+      - name: Verify the Rust-owned ten-RPC qualification receipt
+        if: matrix.native_runtime
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-receipt-target
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          archive=$(find "$STREAM_NATIVE_OUTPUT" -maxdepth 1 -name '*.tgz' -type f | head -n 1)
+          test -n "$archive"
+          mkdir -p "$STREAM_NATIVE_OUTPUT/qualification"
+          cargo run --locked --offline \
+            --manifest-path rust/crates/sdk-generation/Cargo.toml \
+            --bin sdk-stream-native-receipt -- verify \
+            --provenance "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}.provenance.json" \
+            --package-root "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}" \
+            --scenario "$STREAM_NATIVE_OUTPUT/scenarios/stream-native-consumer.json" \
+            --archive "$archive" \
+            --source-revision "$SOURCE_REVISION" \
+            --output "$STREAM_NATIVE_OUTPUT/qualification/${{ matrix.package_target }}.native-qualification.json"
+
+      - name: Verify the packed archive in a clean consumer
+        shell: bash
+        env:
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          NPM_CACHE: ${{ runner.temp }}/stream-native-npm-cache
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+          PACKAGE_TARGET: ${{ matrix.package_target }}
+        run: |
+          set -euo pipefail
+          archive=$(find "$STREAM_NATIVE_OUTPUT" -maxdepth 1 -name '*.tgz' -type f | head -n 1)
+          test -n "$archive"
+          package_root="$STREAM_NATIVE_OUTPUT/$PACKAGE_TARGET"
+          package_name=$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1])).name)' "$package_root/package.json")
+          consumer="$RUNNER_TEMP/stream-native-packed-consumer"
+          rm -rf "$consumer"
+          mkdir -p "$consumer"
+          npm install --ignore-scripts --offline --cache "$NPM_CACHE" --prefix "$consumer" "$archive"
+          node --input-type=module -e 'import {createRequire} from "node:module"; import {createHash} from "node:crypto"; import {readFileSync,writeFileSync} from "node:fs"; const root=process.argv[1]; const archive=process.argv[2]; const pkg=process.argv[3]; const requireFromConsumer=createRequire(`${root}/package.json`); const binding=requireFromConsumer(pkg); if(binding.nativeStreamCapabilities().maxEndpoints!==16) throw new Error(`installed ${pkg} reported unexpected capabilities`); const sha256=p=>"sha256:"+createHash("sha256").update(readFileSync(p)).digest("hex"); writeFileSync(`${process.env.STREAM_NATIVE_OUTPUT}/${process.env.PACKAGE_TARGET}.install.json`,JSON.stringify({schema:"acyclic.sdk.stream.native.installed-consumer.v1",source_revision:process.env.SOURCE_REVISION,status:"passed",package:pkg,package_target:process.env.PACKAGE_TARGET,archive_sha256:sha256(archive),resolver:"npm install archive then node_modules package name",checks:["npm-install","napi-loader","capability-bounds"]},null,2)+"\n");' "$consumer" "$archive" "$package_name"
+
+      - name: Upload installable package artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: stream-native-${{ matrix.package_target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stream-native-packages
+          if-no-files-found: error
+          retention-days: 90
+
+  typescript_native:
+    name: Installed generated TypeScript native and WASM lane
+    needs: [typescript_identity, build]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Install pinned Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install package runtime dependencies
+        shell: bash
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Download generated TypeScript package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stream-typescript-generated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rust-typescript
+
+      - name: Download matching native companion
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stream-native-linux-x64-gnu-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stream-native
+
+      - name: Run installed native and WASM qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_root="$RUNNER_TEMP/stream-native/linux-x64-gnu"
+          archive=$(find "$RUNNER_TEMP/stream-native" -maxdepth 2 -name '*.tgz' -type f | head -n 1)
+          test -d "$native_root"
+          test -n "$archive"
+          mkdir -p "$RUNNER_TEMP/qualification"
+          node scripts/qualify-typescript-native-wasm.mjs \
+            --package-root "$RUNNER_TEMP/rust-typescript/typescript/packages/stream" \
+            --native-package "$native_root" \
+            --dependencies-root "$GITHUB_WORKSPACE" \
+            --archive "$archive" \
+            --output "$RUNNER_TEMP/qualification/typescript-native-wasm.json"
+
+      - name: Qualify Rust-selected remote defaults and bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/qualification"
+          node scripts/qualify-typescript-remote-defaults.mjs \
+            --packages-root "$RUNNER_TEMP/rust-typescript/typescript/packages" \
+            --output "$RUNNER_TEMP/qualification/typescript-remote-defaults.json"
+
+      - name: Compile generated TypeScript consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/qualify-typescript-generated-consumer.mjs \
+            --packages-root "$RUNNER_TEMP/rust-typescript/typescript/packages" \
+            --output "$RUNNER_TEMP/qualification/typescript-generated-consumer.json"
+
+      - name: Upload TypeScript native and WASM receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: stream-typescript-native-wasm-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification
+          if-no-files-found: error
+          retention-days: 90

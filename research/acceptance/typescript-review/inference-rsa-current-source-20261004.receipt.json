@@ -1,0 +1,38 @@
+{
+  "schema": "acyclic.sdk.inference-rsa-current-source-receipt.v2",
+  "capturedAt": "2026-10-04",
+  "scope": "Installed generated TypeScript Inference gRPC consumer against the current Rust-owned bounded RSA/mTLS fixture",
+  "source": {
+    "path": "rust/crates/sdk-examples",
+    "revisionAtCapture": "9da44c179bcf01ea3731b1681ad3618de2cbc40d",
+    "closureSha256": "sha256:b975bd15f3eefb7a0cbb63f38bfc9c26d5385ca2539a6e01cd270d5f7f31e6cb"
+  },
+  "fixture": {
+    "binary": "rust/crates/sdk-examples/src/bin/inference-rsa-fixture.rs",
+    "transcript": "research/acceptance/typescript-review/inference-rsa-current-source-transcript-20261004.json",
+    "transcriptSha256": "sha256:63b913ba9768558e6ccec7ce8dbb0489805ec7e5749a87dd89109e15eeb581ef",
+    "tls": "RSA-2048 mutual TLS with localhost hostname verification",
+    "serviceAvailability": "local_fixture_only"
+  },
+  "consumer": {
+    "package": "typescript/packages/inference",
+    "test": "installed generated gRPC probe",
+    "command": "node inference-probe.mjs (generated service descriptors)",
+    "exitCode": 0,
+    "passed": true
+  },
+  "rpcCoverage": {
+    "expected": 14,
+    "observed": 14,
+    "complete": true,
+    "requestAndResponseHashes": true,
+    "streamingWatch": true,
+    "streamEvents": 2,
+    "streamSequences": [
+      0,
+      1
+    ],
+    "tlsVerification": "node-default"
+  },
+  "credentials": "Ephemeral fixture credentials were used only through the process-local connection handoff and are absent from this receipt and transcript."
+}

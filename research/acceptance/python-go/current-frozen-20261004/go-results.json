@@ -1,0 +1,11 @@
+{
+  "schema":"acyclic.sdk.go.remote-qualification.v1",
+  "rust_model_source_revision":"f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "go_package_tree_sha256":"DA8F60F35AEC8D0FA665264F12BB51BBEDCF843F699C73819D6686EFDCFD245B",
+  "runs":[
+    {"consumer":"go","family":"actors+stream","status":"passed","execution_mode":"remote","transport":"grpc","semantic":"actor create; append; idempotency recovery; tail; read; follow cancellation"},
+    {"consumer":"go","family":"inference","status":"passed","execution_mode":"remote","transport":"grpc+mtls","methods":4,"semantic":"generate; inspect; cancel; watch [0,1]"},
+    {"consumer":"go","family":"machines","status":"passed","execution_mode":"remote","transport":"grpc+mtls","methods":19,"semantic":"all advertised methods; watch_states=2"}
+  ],
+  "fixture_binary_sha256":{"full":"1CFB09F18959E4013513B40C4F68ADCE935583803E9BA936BFD2EE6885D5DAE6","inference":"9370C5BF666B6BD8C194D1DFDF6DC3A9FC9F63675EA45DDB18C0130263FF01D2","machines":"67C821A5A9158320F65112C6576ED4A749792B98B18579844051AB51F448A18C"}
+}

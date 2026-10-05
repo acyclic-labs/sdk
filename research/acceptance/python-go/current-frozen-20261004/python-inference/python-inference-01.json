@@ -1,0 +1,24 @@
+{
+  "schema": "acyclic.sdk.rpc-scenario-result.v1",
+  "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "source_revision_kind": "rust-model-sha256",
+  "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "execution_mode": "remote",
+  "status": "passed",
+  "invoked": true,
+  "exit_code": 0,
+  "family": "inference",
+  "rpc": "inference.customer.v1.ModelsService/List",
+  "shape": "unary",
+  "transport": "grpc+mtls",
+  "checks": [
+    "invocation",
+    "transport",
+    "serialization",
+    "tls-hostname-verification"
+  ],
+  "response_sha256": "sha256:be3e30b29042e75f68e704d66bb5f1c57d5ba1ae08c619f867aad03ab7fd773e",
+  "response_bytes": 75,
+  "fixture_binary_sha256": "9370C5BF666B6BD8C194D1DFDF6DC3A9FC9F63675EA45DDB18C0130263FF01D2",
+  "fixture_source_revision": "37598a1b2908d4091cefb1bb37ca1441d9539b4e"
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "acyclic.sdk.docs.artifact-observation.v1",
+  "observed_at": "2026-10-04T09:02:25.6878645Z",
+  "artifact_count": 28,
+  "profile_counts": [
+    {
+      "Name": "host-capabilities",
+      "Count": 6
+    },
+    {
+      "Name": "host-default",
+      "Count": 13
+    },
+    {
+      "Name": "native-bindings",
+      "Count": 1
+    },
+    {
+      "Name": "wasm-bindings",
+      "Count": 8
+    }
+  ],
+  "claimed_source_revision": "a9e072ad09d64746abe241804c885cc6e7f732e8",
+  "toolchain": "1.98.1",
+  "generation_receipt_sha256": "e0c0d99492214787e430c9c0b19f24327e4923e64d3dcd38c9a05d36363d2924",
+  "missing_files": [],
+  "revision_mismatches": [],
+  "verified_scope": "Artifact and per-artifact receipt existence, count, profile split, revision equality",
+  "rust_blake3_validation": "pending",
+  "clean_committed_checkout_reproduction": "pending",
+  "qualification_claim": "none",
+  "required_next": "Commit Harness platform fixes; validate content hashes and complete docs graph; regenerate from frozen final source; verify website and executable snippets"
+}

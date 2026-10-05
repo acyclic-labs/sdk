@@ -1,0 +1,141 @@
+{
+  "schema": "acyclic.sdk.python-go.remote-scenario-log.v2",
+  "consumer": "python-current-installed-resume",
+  "address": "127.0.0.1:62310",
+  "execution_mode": "remote",
+  "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "source_revision_kind": "rust-model-sha256",
+  "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "artifact_sha256": "8496E7D67AF04F60E6197BAF9FF521F79D3B28F62B71A119541E2077F73505AD",
+  "scenarios": [
+    {
+      "schema": "acyclic.sdk.rpc-scenario-result.v1",
+      "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "source_revision_kind": "rust-model-sha256",
+      "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "status": "passed",
+      "invoked": true,
+      "execution_mode": "remote",
+      "exit_code": 0,
+      "family": "acyclic.harness.v2.HarnessService",
+      "rpc": "acyclic.harness.v2.HarnessService/Handshake",
+      "shape": "unary",
+      "transport": "grpc",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "checks": [
+        "invocation",
+        "transport",
+        "serialization"
+      ],
+      "elapsed_ms": 12.111
+    },
+    {
+      "schema": "acyclic.sdk.rpc-scenario-result.v1",
+      "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "source_revision_kind": "rust-model-sha256",
+      "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "status": "passed",
+      "invoked": true,
+      "execution_mode": "remote",
+      "exit_code": 0,
+      "family": "acyclic.harness.v2.HarnessService",
+      "rpc": "acyclic.harness.v2.HarnessService/Submit",
+      "shape": "unary",
+      "transport": "grpc",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "checks": [
+        "invocation",
+        "transport",
+        "serialization"
+      ],
+      "elapsed_ms": 4.043
+    },
+    {
+      "schema": "acyclic.sdk.rpc-scenario-result.v1",
+      "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "source_revision_kind": "rust-model-sha256",
+      "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "status": "passed",
+      "invoked": true,
+      "execution_mode": "remote",
+      "exit_code": 0,
+      "family": "acyclic.harness.v2.HarnessService",
+      "rpc": "acyclic.harness.v2.HarnessService/Replay",
+      "shape": "server-streaming",
+      "transport": "grpc",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "checks": [
+        "invocation",
+        "transport",
+        "serialization"
+      ],
+      "elapsed_ms": 2.112
+    },
+    {
+      "schema": "acyclic.sdk.rpc-scenario-result.v1",
+      "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "source_revision_kind": "rust-model-sha256",
+      "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "status": "passed",
+      "invoked": true,
+      "execution_mode": "remote",
+      "exit_code": 0,
+      "family": "acyclic.harness.v2.HarnessService",
+      "rpc": "acyclic.harness.v2.HarnessService/Observe",
+      "shape": "unary",
+      "transport": "grpc",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "checks": [
+        "invocation",
+        "transport",
+        "serialization"
+      ],
+      "elapsed_ms": 3.352
+    },
+    {
+      "schema": "acyclic.sdk.rpc-scenario-result.v1",
+      "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "source_revision_kind": "rust-model-sha256",
+      "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+      "status": "passed",
+      "invoked": true,
+      "execution_mode": "remote",
+      "exit_code": 0,
+      "family": "acyclic.harness.v2.HarnessService",
+      "rpc": "acyclic.harness.v2.HarnessService/Cancel",
+      "shape": "unary",
+      "transport": "grpc",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "checks": [
+        "invocation",
+        "transport",
+        "serialization"
+      ],
+      "elapsed_ms": 1.95
+    }
+  ],
+  "passed": 5,
+  "failed": 0,
+  "fixture_binary_sha256": "1CFB09F18959E4013513B40C4F68ADCE935583803E9BA936BFD2EE6885D5DAE6",
+  "fixture_source_sha256": "7096011f17bf2760e7c19ec72f2e55d9cff953f52963c754918f45c786ef2d81"
+}
