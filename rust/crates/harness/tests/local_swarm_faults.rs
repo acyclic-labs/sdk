@@ -131,6 +131,7 @@ struct ForkFaultProvider {
     reconcile_completed: AtomicBool,
     child_a_blocked: AtomicBool,
     child_stream_dropped: Arc<AtomicBool>,
+    child_stream_drop_notified: Arc<tokio::sync::Notify>,
     child_a_started: AtomicBool,
     child_a_dispatched: Arc<tokio::sync::Notify>,
     dispatches: AtomicUsize,
@@ -138,11 +139,15 @@ struct ForkFaultProvider {
     child_b: OperationId,
 }
 
-struct BlockedChildStreamGuard(Arc<AtomicBool>);
+struct BlockedChildStreamGuard {
+    dropped: Arc<AtomicBool>,
+    notified: Arc<tokio::sync::Notify>,
+}
 
 impl Drop for BlockedChildStreamGuard {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.dropped.store(true, Ordering::SeqCst);
+        self.notified.notify_waiters();
     }
 }
 
@@ -159,6 +164,7 @@ impl ForkFaultProvider {
             reconcile_completed: AtomicBool::new(false),
             child_a_blocked: AtomicBool::new(false),
             child_stream_dropped: Arc::new(AtomicBool::new(false)),
+            child_stream_drop_notified: Arc::new(tokio::sync::Notify::new()),
             child_a_started: AtomicBool::new(false),
             child_a_dispatched: Arc::new(tokio::sync::Notify::new()),
             dispatches: AtomicUsize::new(0),
@@ -394,7 +400,10 @@ impl ModelProvider for ForkFaultProvider {
             // occurs before its notification future is first polled.
             self.child_a_dispatched.notify_one();
             if self.child_a_blocked.load(Ordering::SeqCst) {
-                let guard = BlockedChildStreamGuard(self.child_stream_dropped.clone());
+                let guard = BlockedChildStreamGuard {
+                    dropped: self.child_stream_dropped.clone(),
+                    notified: self.child_stream_drop_notified.clone(),
+                };
                 let first = stream::once(async move {
                     let _guard = guard;
                     futures::future::pending::<Result<ModelEvent>>().await
@@ -549,6 +558,26 @@ async fn wait_for_child_dispatch<T: std::fmt::Debug>(
         running.abort();
         let stopped = running.await;
         panic!("child dispatch did not reach the provider; owned run stopped: {stopped:?}");
+    }
+}
+
+async fn wait_for_child_stream_drop<T: std::fmt::Debug>(
+    provider: &ForkFaultProvider,
+    running: &mut tokio::task::JoinHandle<T>,
+) {
+    if provider.child_stream_dropped.load(Ordering::SeqCst) {
+        return;
+    }
+    let notified = provider.child_stream_drop_notified.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    if provider.child_stream_dropped.load(Ordering::SeqCst) {
+        return;
+    }
+    if timeout(Duration::from_secs(30), notified).await.is_err() {
+        running.abort();
+        let stopped = running.await;
+        panic!("child provider stream did not drop after cancellation; owned run stopped: {stopped:?}");
     }
 }
 
@@ -917,6 +946,7 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
         LocalSessionPhase::Cancelled,
         "the second handle must observe durable cancellation before the owner is joined"
     );
+    wait_for_child_stream_drop(&provider, &mut running).await;
     let result = finish_owned_run(&mut running, Duration::from_secs(2)).await;
     assert!(result.is_ok(), "root admission should complete before child cancellation: {result:?}");
     first.shutdown_workers().await;
@@ -1038,6 +1068,7 @@ async fn concurrent_handle_reconciles_live_admission_without_duplicate_dispatch(
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
 
     second.cancel(task(child_a)).await?;
+    wait_for_child_stream_drop(&provider, &mut first_run).await;
     let first_output = finish_owned_run(&mut first_run, Duration::from_secs(5)).await;
     assert!(first_output.is_ok(), "root admission should complete before cancellation: {first_output:?}");
     first.shutdown_workers().await;
