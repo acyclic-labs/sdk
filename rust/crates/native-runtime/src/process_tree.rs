@@ -183,6 +183,11 @@ mod tests {
         };
         let root = std::path::PathBuf::from(std::env::var_os(ROOT).expect("helper root"));
         if mode == "grandchild" {
+            fs::write(
+                root.join("grandchild-started"),
+                std::process::id().to_string(),
+            )
+            .expect("grandchild started");
             fs::write(root.join("grandchild-pid"), std::process::id().to_string())
                 .expect("grandchild pid");
             fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
@@ -193,8 +198,19 @@ mod tests {
             return;
         }
         if mode == "parent-exits" {
+            fs::write(root.join("parent-started"), std::process::id().to_string())
+                .expect("parent started");
             let mut grandchild = helper_command("grandchild", &root);
-            let _grandchild = grandchild.spawn().expect("spawn grandchild");
+            let grandchild = match grandchild.spawn() {
+                Ok(grandchild) => grandchild,
+                Err(error) => {
+                    fs::write(root.join("grandchild-spawn-error"), error.to_string())
+                        .expect("grandchild spawn error");
+                    panic!("spawn grandchild: {error}");
+                }
+            };
+            fs::write(root.join("grandchild-spawned"), grandchild.id().to_string())
+                .expect("grandchild spawned");
             let deadline = Instant::now() + Duration::from_secs(5);
             while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(10));
@@ -204,8 +220,19 @@ mod tests {
             return;
         }
         assert_eq!(mode, "child");
+        fs::write(root.join("child-started"), std::process::id().to_string())
+            .expect("child started");
         let mut grandchild = helper_command("grandchild", &root);
-        let mut grandchild = grandchild.spawn().expect("spawn grandchild");
+        let mut grandchild = match grandchild.spawn() {
+            Ok(grandchild) => grandchild,
+            Err(error) => {
+                fs::write(root.join("grandchild-spawn-error"), error.to_string())
+                    .expect("grandchild spawn error");
+                panic!("spawn grandchild: {error}");
+            }
+        };
+        fs::write(root.join("grandchild-spawned"), grandchild.id().to_string())
+            .expect("grandchild spawned");
         let deadline = Instant::now() + Duration::from_secs(5);
         while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
@@ -224,7 +251,7 @@ mod tests {
         while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(temporary.path().join("tree-ready").exists());
+        assert_tree_ready(&mut tree, temporary.path());
         let grandchild_pid = read_pid(temporary.path());
         assert!(
             process_is_alive(grandchild_pid).expect("query grandchild liveness"),
@@ -244,7 +271,7 @@ mod tests {
         while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(temporary.path().join("tree-ready").exists());
+        assert_tree_ready(&mut tree, temporary.path());
         let grandchild_pid = read_pid(temporary.path());
         assert!(
             process_is_alive(grandchild_pid).expect("query grandchild liveness"),
@@ -271,6 +298,27 @@ mod tests {
             .trim()
             .parse()
             .expect("valid grandchild pid")
+    }
+
+    fn assert_tree_ready(tree: &mut ProcessTree, root: &Path) {
+        if root.join("tree-ready").exists() {
+            return;
+        }
+        let status = tree.try_wait().expect("poll process tree for diagnostics");
+        let mut markers = fs::read_dir(root)
+            .expect("read process-tree diagnostics")
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                let name = path.file_name()?.to_string_lossy().into_owned();
+                let contents = fs::read_to_string(&path).ok()?;
+                Some(format!("{name}={contents:?}"))
+            })
+            .collect::<Vec<_>>();
+        markers.sort();
+        panic!(
+            "process-tree helper did not signal readiness: direct_status={status:?}, markers={markers:?}"
+        );
     }
 
     fn wait_for_process_exit(pid: u32) {
