@@ -1731,6 +1731,18 @@ mod tests {
             .as_str()
             .expect("root session id")
             .to_owned();
+        let reopened = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"reopen-1",
+                "method":"open_session",
+                "params":{"session_id": session_id}
+            }),
+        )
+        .await;
+        assert_eq!(reopened["ok"], true, "{reopened}");
+        assert_eq!(reopened["result"]["summary"]["id"], session_id);
+        assert_eq!(reopened["result"]["summary"]["state"], "completed");
         let input = exchange(
             runtime.clone(),
             json!({
