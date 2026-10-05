@@ -1,16 +1,7 @@
 use acyclic_sdk_examples::guide_projections;
 use serde_json::json;
-use std::process::Command;
-
 fn main() {
-    let source_git_revision = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|revision| !revision.is_empty());
+    let source_git_revision = option_env!("SDK_EXAMPLES_SOURCE_GIT_REVISION");
     let projections = guide_projections::all()
         .into_iter()
         .map(|projection| {
