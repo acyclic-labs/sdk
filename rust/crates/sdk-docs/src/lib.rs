@@ -1703,7 +1703,12 @@ pub fn to_website_json(
         "$schema": "https://acyclic.dev/schemas/sdk-reference-bundle.v1.json",
         "schemaVersion": "sdk-reference-bundle.v1",
         "source": projection_source,
-        "landing": bundle.landing,
+        "landing": {
+            "schemaVersion": bundle.landing.schema_version,
+            "navigation": bundle.landing.navigation,
+            "categories": bundle.landing.categories,
+            "packageInstructions": bundle.landing.package_instructions,
+        },
         "profiles": bundle.profiles,
         "scenarioBundle": bundle.scenario_bundle,
         "families": families,
@@ -5986,7 +5991,9 @@ mod tests {
             released_projection["source"]["release"]["bundleBlake3"],
             "bundle-release-blake3"
         );
-        assert_eq!(released_projection["landing"]["schema_version"], 1);
+        assert_eq!(released_projection["landing"]["schemaVersion"], 1);
+        assert!(released_projection["landing"]["packageInstructions"].is_array());
+        assert!(released_projection["landing"].get("package_instructions").is_none());
         assert!(released_projection["landing"]["navigation"]
             .as_array()
             .is_some_and(Vec::is_empty));
