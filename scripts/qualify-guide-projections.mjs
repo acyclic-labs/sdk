@@ -453,6 +453,7 @@ summary.evidence_complete = everyReceiptHasEvidence;
 const verification = verifyQualificationSummary(summary, {
   expectedProjections: projections,
   requireExecution: args.has("--execute"),
+  readArtifact: (path) => readFileSync(resolve(repo, path)),
 });
 summary.verification = verification;
 writeFileSync(join(output, "qualification.json"), `${JSON.stringify(summary, null, 2)}\n`);
