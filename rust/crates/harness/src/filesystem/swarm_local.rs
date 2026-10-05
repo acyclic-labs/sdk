@@ -10,16 +10,18 @@ use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool,
     FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
     LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
-    ProjectWorkspaceTree, VerifiedModelForkBoundary,
-    PersistentLocalHarness, workspace_ref, workspace_tools,
+    FilesystemProjectMergeVerifier, ParentMergePlan, PersistentLocalHarness,
+    ProjectMergeRecovery, ProjectMergeRecoveryEntry, ProjectWorkspaceTree,
+    RootWritebackApproval, RootWritebackRequest, VerifiedModelForkBoundary,
+    workspace_ref, workspace_tools,
 };
 use crate::{
     AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
-    conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
+    conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, EffectGuarantee, Reducer, SchemaRegistry, Scope},
     executor::{
         ExecutionEvent, SwarmProviderBoundary, SwarmRootProviderBoundary,
         TerminalFailureState, TurnOutput,
@@ -35,6 +37,7 @@ use crate::{
     model::{
         Model, ModelContent, ModelMessage, ModelProvider, ModelRole, ProviderDispatchContext,
     },
+    merge::ProjectMergeVerifier,
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
@@ -53,8 +56,10 @@ use crate::{
 };
 use acyclic_fs::{
     GitFilesystemAction, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
-    LocalOptions,
+    LocalOptions, WorkspaceId,
 };
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+use acyclic_fs::{HostCheckout, SourceBinding, SourceOptions};
 use acyclic_stream::{
     AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError, StreamProvider,
 };
@@ -98,6 +103,73 @@ const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+fn native_path_digest(paths: &[PathBuf]) -> Result<[u8; 32]> {
+    let mut normalized = paths
+        .iter()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    if normalized.is_empty() {
+        return Err(Error::Invalid("native writeback path set is empty".into()));
+    }
+    crate::contract::canonical_json_digest(&normalized)
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+fn native_filesystem_key(label: impl AsRef<str>) -> acyclic_fs::IdempotencyKey {
+    let digest = blake3::hash(label.as_ref().as_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    acyclic_fs::IdempotencyKey::from_bytes(bytes)
+}
+
+/// Derives the local operator issuer from the durable session descriptor's
+/// host-only signing key. The derived domain is separate from conversation
+/// signatures and never enters model-visible bindings or filesystem grants.
+fn local_operator_issuer_from_descriptor_key(secret: [u8; 32]) -> Result<AuthorityIssuer> {
+    if secret == [0; 32] {
+        return Err(Error::Conflict(
+            "local operator issuer secret cannot be zero".into(),
+        ));
+    }
+    let mut hasher = blake3::Hasher::new_keyed(&secret);
+    hasher.update(b"acyclic.local-swarm.operator-issuer.v1\0");
+    Ok(AuthorityIssuer::new(
+        "local-swarm-operator",
+        *hasher.finalize().as_bytes(),
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "local-operator".into(),
+        },
+    ))
+}
+
+/// Keep the host checkout physically separate from Harness' durable runtime.
+///
+/// The runtime contains journals, credentials, and private task state. A
+/// native checkout is a host-owned publication boundary, so allowing either
+/// path to contain the other would make capture or writeback able to address
+/// runtime state accidentally. Canonicalizing both existing paths also makes
+/// this check reject aliases such as `..` and junction-resolved paths.
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+fn ensure_native_checkout_is_external(runtime_root: &Path, checkout: &Path) -> Result<()> {
+    let runtime_root = std::fs::canonicalize(runtime_root)
+        .map_err(|error| Error::Storage(format!("cannot resolve local runtime root: {error}")))?;
+    let checkout = std::fs::canonicalize(checkout)
+        .map_err(|error| Error::Storage(format!("cannot resolve native checkout: {error}")))?;
+    if runtime_root == checkout
+        || runtime_root.starts_with(&checkout)
+        || checkout.starts_with(&runtime_root)
+    {
+        return Err(Error::Conflict(
+            "native checkout cannot overlap Harness runtime storage".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// A spawned child turn remains owned by its activation future. Dropping the
 /// activation must cancel the child task instead of detaching a model worker
 /// that can continue dispatching effects after its caller has gone away.
@@ -126,6 +198,15 @@ impl<T> Drop for AbortOnDrop<T> {
 }
 
 type LocalFilesystemHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
+
+/// Host-owned checkout bridge retained by the local composition. The source
+/// binding is private so a caller cannot redirect a later writeback to a
+/// replacement directory.
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+struct LocalNativeCheckout {
+    checkout: HostCheckout<LocalAuthorityBackend, LocalObjectBackend>,
+    binding: SourceBinding,
+}
 
 /// Prepared through the typed fork path, with its live writer fence retained
 /// until execution and durable completion have both finished.
@@ -368,6 +449,15 @@ pub struct LocalSwarmBindings {
     /// Concrete local provider allocator. When supplied without an explicit
     /// plan index, the swarm builds one durable index around this resolver.
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
+    pub operator_authority: Option<AuthorityVerifier>,
+    operator_issuer: Option<AuthorityIssuer>,
+    /// Host checkout path retained until its provider-owned source binding is
+    /// attached during composition startup.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    native_checkout_path: Option<PathBuf>,
+    /// Authenticated checkout bridge retained by Harness after startup.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    native_checkout: Option<Arc<LocalNativeCheckout>>,
     /// Optional host-only observation sink for lazy qualification metrics.
     pub observer: Option<Arc<dyn LocalSwarmObserver>>,
     /// Authenticated provider measurement source used for durable receipt
@@ -393,6 +483,12 @@ impl LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
+            operator_authority: None,
+            operator_issuer: None,
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            native_checkout_path: None,
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            native_checkout: None,
             observer: None,
             budget_usage_source: None,
             workspace_tools: None,
@@ -424,6 +520,28 @@ impl LocalSwarmBindings {
         resolver: Arc<LocalFilesystemForkResolver>,
     ) -> Self {
         self.filesystem_fork_resolver = Some(resolver);
+        self
+    }
+
+    #[must_use]
+    pub fn with_operator_authority(mut self, authority: AuthorityVerifier) -> Self {
+        self.operator_authority = Some(authority);
+        self
+    }
+
+    #[must_use]
+    pub fn with_operator_issuer(mut self, issuer: AuthorityIssuer) -> Self {
+        self.operator_authority = Some(issuer.verifier());
+        self.operator_issuer = Some(issuer);
+        self
+    }
+
+    /// Attaches one host checkout to the local composition. Harness captures
+    /// and retains its source binding; model tools never receive the path.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub fn with_native_checkout(mut self, path: impl Into<PathBuf>) -> Self {
+        self.native_checkout_path = Some(path.into());
         self
     }
 
@@ -2794,6 +2912,7 @@ struct StoredRecord {
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 enum StoredEvent {
     Session(StoredSession),
+    AuthorityBinding { identity: [u8; 32], audience: Authority },
     /// Canonical owner admission for one local task turn. The value is kept
     /// in canonical form so recovery validates the same runtime record that
     /// the execution boundary consumed.
@@ -2985,6 +3104,7 @@ pub struct PersistentLocalSwarm {
     config: LocalSwarmConfig,
     provider: Arc<dyn ModelProvider>,
     bindings: LocalSwarmBindings,
+    operator_authority: Option<AuthorityVerifier>,
     model_fork_publisher: Option<Arc<LocalModelForkPublisher>>,
     registry: StreamClient<LocalStream>,
     budget_journal: Arc<Mutex<SwarmBudgetJournal<LocalStream>>>,
@@ -3027,6 +3147,269 @@ pub struct PersistentLocalSwarm {
     /// with the exact ticket binding so a public resolve request cannot swap
     /// an operation or action digest between the private decision and commit.
     operator_choices: Mutex<BTreeMap<String, LocalOperatorChoice>>,
+}
+
+struct LocalRootWritebackContext {
+    host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    facade: FilesystemGitFacade<LocalCoreStateStore>,
+    parent: Reducer,
+    root_project: VolumeRef,
+    scope: Scope,
+    verifier: AuthorityVerifier,
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    native_checkout: Option<Arc<LocalNativeCheckout>>,
+}
+
+impl LocalRootWritebackContext {
+    fn child_approval(&self, child: Authority, child_project: VolumeRef, operation: OperationId,
+        source: GenerationRef, target: GenerationRef) -> Result<RootWritebackApproval> {
+        RootWritebackApproval::issue_for_child(&self.verifier, &self.scope, self.root_project.clone(),
+            child_project, child, operation, source, target)
+    }
+    fn root_approval(&self, operation: OperationId, source: GenerationRef, target: GenerationRef)
+        -> Result<RootWritebackApproval> {
+        RootWritebackApproval::issue(&self.verifier, &self.scope, self.root_project.clone(),
+            operation, source, target)
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    fn root_approval_with_paths(
+        &self,
+        operation: OperationId,
+        source: GenerationRef,
+        target: GenerationRef,
+        paths: &[PathBuf],
+    ) -> Result<RootWritebackApproval> {
+        RootWritebackApproval::issue_with_paths(
+            &self.verifier,
+            &self.scope,
+            self.root_project.clone(),
+            operation,
+            source,
+            target,
+            paths,
+        )
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    async fn restore_native_checkout(
+        &self,
+        generation: &GenerationRef,
+        reconciliation_key: acyclic_fs::IdempotencyKey,
+        paths: &[PathBuf],
+        replacement: acyclic_fs::HostPathReplacement,
+        options: &acyclic_fs::MaterializeOptions,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<acyclic_fs::HostCheckoutRestore> {
+        let checkout = self.native_checkout.as_ref().ok_or_else(|| {
+            Error::Unsupported("root writeback has no host checkout binding".into())
+        })?;
+        self.host
+            .restore_native_checkout(
+                &checkout.checkout,
+                generation,
+                &checkout.binding,
+                reconciliation_key,
+                paths,
+                replacement,
+                options,
+                budget,
+                cancellation,
+            )
+            .await
+    }
+}
+
+pub struct LocalApprovedRootWriteback {
+    context: LocalRootWritebackContext,
+    request: RootWritebackRequest,
+    child: Authority,
+    child_project: VolumeRef,
+    root_only: bool,
+}
+
+impl LocalApprovedRootWriteback {
+    #[must_use]
+    pub const fn root_project(&self) -> &VolumeRef { &self.context.root_project }
+
+    pub async fn prepare_merge_plan(&self) -> Result<ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>> {
+        if self.root_only { return Err(Error::Invalid("root-task writeback has no child merge plan".into())); }
+        self.context.facade.prepare_project_merge_for_child(self.context.host.as_ref(), &self.context.parent,
+            &self.child, &self.child_project).await
+    }
+
+    pub async fn apply_with_receipt(&self, plan: &ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage) -> Result<crate::merge::ProjectMergeReceipt> {
+        if self.root_only { return Err(Error::Invalid("root-task writeback has no child merge receipt".into())); }
+        self.context.facade.apply_root_writeback_plan_for_child_with_receipt(&self.request,
+            self.context.host.as_ref(), &self.context.parent, self.child.clone(), &self.child_project,
+            plan, BTreeMap::new(), notice).await
+    }
+
+    /// Applies the approved logical merge and restores its exact approved
+    /// path set to the attached host checkout. The merge receipt is durable
+    /// before the host operation begins, making a lost acknowledgement safe to
+    /// recover with `restore_native_receipt`.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn apply_with_native_restore(
+        &self,
+        plan: &ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage,
+        paths: &[PathBuf],
+        replacement: acyclic_fs::HostPathReplacement,
+        options: &acyclic_fs::MaterializeOptions,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<(crate::merge::ProjectMergeReceipt, acyclic_fs::HostCheckoutRestore)> {
+        self.verify_native_path_set(paths)?;
+        let receipt = self.apply_with_receipt(plan, notice).await?;
+        let restored = self
+            .restore_native_receipt_inner(&receipt, paths, replacement, options, budget, cancellation)
+            .await?;
+        Ok((receipt, restored))
+    }
+
+    /// Restores a root task's exact generation when no child merge exists.
+    /// The target binding and source generation are sealed into the approval.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn apply_root_with_native_restore(
+        &self,
+        paths: &[PathBuf],
+        replacement: acyclic_fs::HostPathReplacement,
+        options: &acyclic_fs::MaterializeOptions,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<acyclic_fs::HostCheckoutRestore> {
+        if !self.root_only {
+            return Err(Error::Invalid("child writeback requires a merge receipt".into()));
+        }
+        self.verify_native_path_set(paths)?;
+        let checkout = self.context.native_checkout.as_ref().ok_or_else(|| {
+            Error::Unsupported("root writeback has no host checkout binding".into())
+        })?;
+        let expected = self.context.host.generation_ref_id(checkout.binding.generation_id)?;
+        if &expected != self.request.approval.expected_target_generation() {
+            return Err(Error::Conflict("host checkout generation differs from approved root target".into()));
+        }
+        self.context
+            .restore_native_checkout(
+                self.request.approval.source_generation(),
+                self.native_root_restore_key(paths)?,
+                paths,
+                replacement,
+                options,
+                budget,
+                cancellation,
+            )
+            .await
+    }
+
+    /// Replays a durable child merge receipt after restart or a lost host
+    /// acknowledgement. The sealed operation and exact path digest prevent
+    /// redirecting recovery to another checkout or action.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn restore_native_receipt(
+        &self,
+        receipt: &crate::merge::ProjectMergeReceipt,
+        paths: &[PathBuf],
+        replacement: acyclic_fs::HostPathReplacement,
+        options: &acyclic_fs::MaterializeOptions,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<acyclic_fs::HostCheckoutRestore> {
+        self.verify_native_path_set(paths)?;
+        if receipt.operation_id != self.request.approval.operation_id()
+            || receipt.child != self.child
+            || receipt.source_project != self.child_project
+            || receipt.target_project != *self.context.root_project()
+        {
+            return Err(Error::Unauthorized("merge receipt does not belong to this approved native writeback".into()));
+        }
+        FilesystemProjectMergeVerifier::new(self.context.host.clone())
+            .verify(receipt)
+            .await?;
+        self.restore_native_receipt_inner(receipt, paths, replacement, options, budget, cancellation).await
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    fn verify_native_path_set(&self, paths: &[PathBuf]) -> Result<()> {
+        let expected = self.request.approval.path_digest().ok_or_else(|| {
+            Error::Unauthorized("native writeback requires an approval bound to host paths".into())
+        })?;
+        if native_path_digest(paths)?.as_ref() != expected {
+            return Err(Error::Conflict("native writeback paths differ from approved path set".into()));
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    async fn restore_native_receipt_inner(
+        &self,
+        receipt: &crate::merge::ProjectMergeReceipt,
+        paths: &[PathBuf],
+        replacement: acyclic_fs::HostPathReplacement,
+        options: &acyclic_fs::MaterializeOptions,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<acyclic_fs::HostCheckoutRestore> {
+        self.context
+            .restore_native_checkout(
+                &receipt.result_generation,
+                self.native_restore_key(receipt, paths)?,
+                paths,
+                replacement,
+                options,
+                budget,
+                cancellation,
+            )
+            .await
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    fn native_restore_key(
+        &self,
+        receipt: &crate::merge::ProjectMergeReceipt,
+        paths: &[PathBuf],
+    ) -> Result<acyclic_fs::IdempotencyKey> {
+        let digest = native_path_digest(paths)?;
+        if self.request.approval.path_digest() != Some(&digest) {
+            return Err(Error::Unauthorized("native restore paths are not approval-bound".into()));
+        }
+        Ok(native_filesystem_key(format!(
+            "native-restore:{}:{}",
+            receipt.operation_id,
+            hex::encode(digest),
+        )))
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    fn native_root_restore_key(&self, paths: &[PathBuf]) -> Result<acyclic_fs::IdempotencyKey> {
+        let digest = native_path_digest(paths)?;
+        if self.request.approval.path_digest() != Some(&digest) {
+            return Err(Error::Unauthorized("native root restore paths are not approval-bound".into()));
+        }
+        Ok(native_filesystem_key(format!(
+            "native-root-restore:{}:{}",
+            self.request.approval.operation_id(),
+            hex::encode(digest),
+        )))
+    }
+
+    pub async fn apply_with_recovery(&self, plan: &ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage, recovery: &ProjectMergeRecovery<'_>) -> Result<crate::merge::ProjectMergeReceipt> {
+        if self.root_only { return Err(Error::Invalid("root-task writeback has no child merge receipt".into())); }
+        self.context.facade.apply_root_writeback_plan_for_child_with_recovery(&self.request,
+            self.context.host.as_ref(), &self.context.parent, self.child.clone(), &self.child_project,
+            plan, BTreeMap::new(), notice, recovery).await
+    }
+
+    pub async fn recover_receipt(&self, entry: &ProjectMergeRecoveryEntry) -> Result<crate::merge::ProjectMergeReceipt> {
+        self.context.facade.recover_root_writeback_receipt(self.context.host.as_ref(), &self.context.parent, entry).await
+    }
+
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId { self.request.approval.operation_id() }
 }
 
 impl PersistentLocalSwarm {
@@ -3399,6 +3782,15 @@ impl PersistentLocalSwarm {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         let records = load_records_at(&stream, initial_tail).await?;
+        let persisted_authority = persisted_operator_authority(&records)?;
+        let supplied_authority = bindings.operator_authority.clone();
+        if let (Some((identity, audience)), Some(authority)) = (&persisted_authority, &supplied_authority)
+            && (identity != &authority.identity_digest()? || audience != authority.audience()) {
+            return Err(Error::Unauthorized("configured operator authority differs from pinned binding".into()));
+        }
+        if persisted_authority.is_some() && supplied_authority.is_none() {
+            return Err(Error::Unauthorized("swarm requires its operator authority on reopen".into()));
+        }
         let mut sessions = BTreeMap::new();
         let mut requests = BTreeMap::new();
         let mut seeds = BTreeMap::new();
@@ -3434,15 +3826,21 @@ impl PersistentLocalSwarm {
                 operation: None,
                 phase: LocalSessionPhase::Ready,
             };
+            let root_tail = if let Some(authority) = supplied_authority.as_ref() {
+                append_record_at(&stream, StoredEvent::AuthorityBinding {
+                    identity: authority.identity_digest()?, audience: authority.audience().clone(),
+                }, initial_tail).await?;
+                initial_tail.checked_add(1).ok_or_else(|| Error::Storage("swarm registry sequence overflow".into()))?
+            } else { initial_tail };
             match append_record_at(
                 &stream,
                 StoredEvent::Session(root_session.clone().into()),
-                initial_tail,
+                root_tail,
             )
             .await
             {
                 Ok(()) => {
-                    registry_tail = initial_tail
+                    registry_tail = root_tail
                         .checked_add(1)
                         .ok_or_else(|| Error::Storage("swarm registry sequence overflow".into()))?;
                     sessions.insert(root_task, root_session);
@@ -3562,6 +3960,7 @@ impl PersistentLocalSwarm {
             registry_refresh: Mutex::new(()),
             sessions: Mutex::new(opened),
             operator_choices: Mutex::new(BTreeMap::new()),
+            operator_authority: supplied_authority,
         };
         swarm.observe(LocalSwarmObservation::HarnessOpened { task: root_task });
         Ok(swarm)
@@ -3662,7 +4061,7 @@ impl PersistentLocalSwarm {
     /// Opens the shared local composition with owner-authenticated recursive
     /// filesystem support. The caller supplies only the model/provider
     /// boundary; provider caches, project ownership, the durable fork
-    /// resolver, and its persisted issuer secret stay in Harness.
+    /// resolver, and its host-only operator authority stay in Harness.
     pub async fn open_shared_with_model_and_recursive_filesystem(
         root: impl AsRef<Path>,
         model: Model,
@@ -3688,7 +4087,26 @@ impl PersistentLocalSwarm {
         model: Model,
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
-        bindings: LocalSwarmBindings,
+            bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_internal(
+            root,
+            model,
+            provider,
+            limits,
+            None,
+            bindings,
+        )
+        .await
+    }
+
+    async fn open_shared_with_model_and_recursive_filesystem_internal(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        project_override: Option<VolumeRef>,
+        mut bindings: LocalSwarmBindings,
     ) -> Result<Arc<Self>> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
@@ -3698,13 +4116,74 @@ impl PersistentLocalSwarm {
             shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone()).await?;
         let stream_provider = ProviderRef::new("local", "stream", "2")?;
         let stream = shared_local_stream(root.join("conversation")).await?;
-        let project = VolumeRef::new(
-            filesystem_provider,
+        let project = project_override.unwrap_or(VolumeRef::new(
+            filesystem_provider.clone(),
             "local-project",
             VolumeClass::Project,
             VolumeOwner::Project("local-swarm".into()),
-        )?;
+        )?);
+        if project.provider() != &filesystem_provider || project.class() != VolumeClass::Project {
+            return Err(Error::Invalid(
+                "recursive local composition requires a local project volume".into(),
+            ));
+        }
         host.create_volume(&project).await?;
+        if bindings.operator_issuer.is_none() && bindings.operator_authority.is_some() {
+            return Err(Error::Unauthorized(
+                "local operator authority requires its host issuer".into(),
+            ));
+        }
+        if bindings.operator_issuer.is_none() {
+            // Establish the durable session descriptor first. Its signing
+            // material is host-only and is reused through a separated issuer
+            // domain; no second credential file or mutable secret race is
+            // needed for local composition.
+            let descriptor_harness =
+                PersistentLocalHarness::open_with_tools_and_project_on_providers(
+                    root.clone(),
+                    model.clone(),
+                    provider.clone(),
+                    limits,
+                    LocalHarnessTools::new(),
+                    Some(project.clone()),
+                    host.clone(),
+                    stream.clone(),
+                    stream_provider.clone(),
+                )
+                .await?;
+            bindings = bindings.with_operator_issuer(local_operator_issuer_from_descriptor_key(
+                descriptor_harness.signing_key(),
+            )?);
+        }
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if let Some(checkout_path) = bindings.native_checkout_path.take() {
+            ensure_native_checkout_is_external(&root, &checkout_path)?;
+            let checkout = host
+                .attach_native_checkout(
+                    format!("native-checkout-{}", project.storage_name()?),
+                    &checkout_path,
+                    SourceOptions::default(),
+                )
+                .await?;
+            let attached = checkout.binding().await;
+            if attached.source_root != checkout_path {
+                return Err(Error::Conflict(
+                    "native checkout binding does not match the requested host path".into(),
+                ));
+            }
+            let binding = checkout
+                .revalidate_with_key(native_filesystem_key(format!(
+                    "native-checkout-bind:{}", project.storage_name()?
+                )))
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            if binding.source_root != checkout_path {
+                return Err(Error::Conflict(
+                    "native checkout revalidation changed its host path".into(),
+                ));
+            }
+            bindings.native_checkout = Some(Arc::new(LocalNativeCheckout { checkout, binding }));
+        }
         let mut config = LocalSwarmConfig::new(model.clone(), limits)?;
         config.project = Some(project.clone());
         let mut swarm = Self::open_with_bindings(
@@ -3762,6 +4241,226 @@ impl PersistentLocalSwarm {
         communication.bind(Arc::downgrade(&swarm))?;
         swarm.ensure_root_owner_admission(root_task).await?;
         Ok(swarm)
+    }
+
+    pub async fn open_shared_with_model_and_recursive_filesystem_with_operator_authority(
+        root: impl AsRef<Path>, model: Model, provider: Arc<dyn ModelProvider>, limits: Limits,
+        issuer: AuthorityIssuer,
+    ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_with_bindings(
+            root, model, provider, limits, LocalSwarmBindings::default().with_operator_issuer(issuer),
+        ).await
+    }
+
+    pub async fn open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings(
+        root: impl AsRef<Path>, model: Model, provider: Arc<dyn ModelProvider>, limits: Limits,
+        project: VolumeRef, checkout: impl AsRef<Path>, bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        {
+            return Self::open_shared_with_model_and_recursive_filesystem_internal(
+                root, model, provider, limits, Some(project),
+                bindings.with_native_checkout(checkout.as_ref().to_path_buf()),
+            ).await;
+        }
+        #[cfg(any(not(feature = "filesystem-local"), target_arch = "wasm32"))]
+        {
+            let _ = (root, model, provider, limits, project, checkout, bindings);
+            Err(Error::Unsupported("native checkout composition is unavailable on this target".into()))
+        }
+    }
+
+    pub async fn open_shared_with_model_and_recursive_filesystem_at_checkout_with_operator_authority(
+        root: impl AsRef<Path>, model: Model, provider: Arc<dyn ModelProvider>, limits: Limits,
+        project: VolumeRef, checkout: impl AsRef<Path>, issuer: AuthorityIssuer, bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        {
+            return Self::open_shared_with_model_and_recursive_filesystem_internal(
+                root, model, provider, limits, Some(project),
+                bindings.with_native_checkout(checkout.as_ref().to_path_buf())
+                    .with_operator_issuer(issuer),
+            ).await;
+        }
+        #[cfg(any(not(feature = "filesystem-local"), target_arch = "wasm32"))]
+        {
+            let _ = (root, model, provider, limits, project, checkout, issuer, bindings);
+            Err(Error::Unsupported("native checkout composition is unavailable on this target".into()))
+        }
+    }
+
+    async fn root_writeback_context(&self, scope: &Scope, child_project: &VolumeRef) -> Result<LocalRootWritebackContext> {
+        let verifier = self.operator_authority.clone().ok_or_else(|| Error::Unauthorized("root writeback requires an operator authority".into()))?;
+        verifier.verify(scope)?;
+        if !scope.capabilities().contains(super::ROOT_WRITEBACK_CAPABILITY) { return Err(Error::Unauthorized("operator scope lacks project:writeback".into())); }
+        let root_project = self.config.project.clone().ok_or_else(|| Error::Unsupported("local swarm has no root project".into()))?;
+        if root_project.class() != VolumeClass::Project || child_project.class() != VolumeClass::Project || root_project.provider() != child_project.provider() { return Err(Error::Invalid("root writeback projects are inconsistent".into())); }
+        let store = self.git_store.clone().ok_or_else(|| Error::Unsupported("local swarm has no Git facade state".into()))?;
+        let root_task = self.root_task().await?;
+        let harness = self.open_session(root_task).await?;
+        let digest = crate::contract::canonical_json_digest(&("acyclic.local-root-writeback-workspace.v1", &root_project, root_task))?;
+        let mut workspace = [0; 16]; workspace.copy_from_slice(&digest[..16]);
+        let facade = FilesystemGitFacade::new(WorkspaceId::from_bytes(workspace), (*store).clone(), root_project.clone(), verifier.clone(), scope.clone())?;
+        let parent = harness.conversation_aggregate(self.config.limits).await?.reducer().clone();
+        Ok(LocalRootWritebackContext {
+            host: self.filesystem_host.clone(),
+            facade,
+            parent,
+            root_project,
+            scope: scope.clone(),
+            verifier,
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            native_checkout: self.bindings.native_checkout.clone(),
+        })
+    }
+
+    async fn approved_interaction(&self, task: TaskId, id: InteractionId) -> Result<LocalSwarmApproval> {
+        let approval = self.list_approvals(task).await?.into_iter().find(|item| item.ticket.id == id).ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
+        if !matches!(approval.resolution.as_ref().map(|r| &r.outcome), Some(InteractionOutcome::Approved)) { return Err(Error::Unauthorized("root writeback requires a durably approved interaction".into())); }
+        if approval.ticket.approval.is_none() { return Err(Error::Invalid("root writeback interaction has no exact approval binding".into())); }
+        Ok(approval)
+    }
+
+    pub async fn issue_approved_root_writeback(&self, task: TaskId, interaction: InteractionId, scope: &Scope, child: Authority, child_project: &VolumeRef, source: GenerationRef, target: GenerationRef) -> Result<LocalApprovedRootWriteback> {
+        if task != self.root_task().await? { return Err(Error::Unauthorized("root writeback must be issued by the root task".into())); }
+        let approval = self.approved_interaction(task, interaction).await?;
+        let binding = approval.ticket.approval.ok_or_else(|| Error::Invalid("root writeback approval binding missing".into()))?;
+        let context = self.root_writeback_context(scope, child_project).await?;
+        let typed = context.child_approval(child.clone(), child_project.clone(), binding.operation_id, source, target)?;
+        if typed.action_digest() != &binding.action_digest { return Err(Error::Conflict("operator approval does not match exact root writeback".into())); }
+        Ok(LocalApprovedRootWriteback { context, request: RootWritebackRequest::new(typed, scope.clone()), child, child_project: child_project.clone(), root_only: false })
+    }
+
+    pub async fn issue_host_approved_root_writeback(&self, task: TaskId, interaction: InteractionId, child: Authority, child_project: &VolumeRef, source: GenerationRef, target: GenerationRef) -> Result<LocalApprovedRootWriteback> {
+        let issuer = self.bindings.operator_issuer.clone().ok_or_else(|| Error::Unauthorized("root writeback requires a host supplied operator issuer".into()))?;
+        let root = self.config.project.clone().ok_or_else(|| Error::Unsupported("local swarm has no root project".into()))?;
+        let scope = issuer.root(format!("root-writeback:{task}:{interaction}"), Capabilities::new([super::ROOT_WRITEBACK_CAPABILITY.to_owned(), root.capability(VolumeOperation::Read)?, root.capability(VolumeOperation::Write)?, child_project.capability(VolumeOperation::Read)?]));
+        self.issue_approved_root_writeback(task, interaction, &scope, child, child_project, source, target).await
+    }
+
+    /// Issues a host-approved child publication bound to an exact path set.
+    /// The path digest is part of the durable ticket action, so the returned
+    /// handle cannot be redirected to a broader checkout write.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn issue_host_approved_root_writeback_with_paths(
+        &self,
+        task: TaskId,
+        interaction: InteractionId,
+        child: Authority,
+        child_project: &VolumeRef,
+        source: GenerationRef,
+        target: GenerationRef,
+        paths: &[PathBuf],
+    ) -> Result<LocalApprovedRootWriteback> {
+        if task != self.root_task().await? {
+            return Err(Error::Unauthorized("root writeback must be issued by the root task".into()));
+        }
+        let issuer = self.bindings.operator_issuer.clone().ok_or_else(|| {
+            Error::Unauthorized("root writeback requires a host supplied operator issuer".into())
+        })?;
+        let root = self.config.project.clone().ok_or_else(|| {
+            Error::Unsupported("local swarm has no root project".into())
+        })?;
+        let scope = issuer.root(
+            format!("root-writeback:{task}:{interaction}:child-native"),
+            Capabilities::new([
+                super::ROOT_WRITEBACK_CAPABILITY.to_owned(),
+                root.capability(VolumeOperation::Read)?,
+                root.capability(VolumeOperation::Write)?,
+                child_project.capability(VolumeOperation::Read)?,
+            ]),
+        );
+        let approval = self.approved_interaction(task, interaction).await?;
+        let binding = approval.ticket.approval.ok_or_else(|| {
+            Error::Invalid("root writeback approval binding missing".into())
+        })?;
+        let context = self.root_writeback_context(&scope, child_project).await?;
+        let typed = RootWritebackApproval::issue_for_child_with_paths(
+            &context.verifier,
+            &scope,
+            root,
+            child_project.clone(),
+            child.clone(),
+            binding.operation_id,
+            source,
+            target,
+            paths,
+        )?;
+        if typed.action_digest() != &binding.action_digest {
+            return Err(Error::Conflict("operator approval does not match exact root writeback".into()));
+        }
+        Ok(LocalApprovedRootWriteback {
+            context,
+            request: RootWritebackRequest::new(typed, scope),
+            child,
+            child_project: child_project.clone(),
+            root_only: false,
+        })
+    }
+
+    /// Issues an exact host approval for root-task edits. The source is the
+    /// root project's current authenticated generation and the target is the
+    /// attached checkout binding, so a root session with zero children still
+    /// has a real, fenced publication path.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn issue_host_approved_root_task_writeback_with_paths(
+        &self,
+        task: TaskId,
+        interaction: InteractionId,
+        paths: &[PathBuf],
+    ) -> Result<LocalApprovedRootWriteback> {
+        if task != self.root_task().await? {
+            return Err(Error::Unauthorized("root-task writeback must be issued for the root session".into()));
+        }
+        let issuer = self.bindings.operator_issuer.clone().ok_or_else(|| {
+            Error::Unauthorized("root writeback requires a host supplied operator issuer".into())
+        })?;
+        let root_project = self.config.project.clone().ok_or_else(|| {
+            Error::Unsupported("local swarm has no root project".into())
+        })?;
+        let checkout = self.bindings.native_checkout.as_ref().ok_or_else(|| {
+            Error::Unsupported("root writeback has no host checkout binding".into())
+        })?;
+        let approval = self.approved_interaction(task, interaction).await?;
+        let binding = approval.ticket.approval.ok_or_else(|| {
+            Error::Invalid("root writeback approval binding missing".into())
+        })?;
+        let root_workspace = workspace_ref(root_project.provider().clone(), &root_project.storage_name()?)?;
+        let source = self.filesystem_host.resolve(&root_workspace).await?.generation;
+        let target = self.filesystem_host.generation_ref_id(checkout.binding.generation_id)?;
+        let scope = issuer.root(
+            format!("root-writeback:{task}:{interaction}:root-native"),
+            Capabilities::new([
+                super::ROOT_WRITEBACK_CAPABILITY.to_owned(),
+                root_project.capability(VolumeOperation::Read)?,
+                root_project.capability(VolumeOperation::Write)?,
+            ]),
+        );
+        let context = self.root_writeback_context(&scope, &root_project).await?;
+        let typed = context.root_approval_with_paths(binding.operation_id, source, target, paths)?;
+        if typed.action_digest() != &binding.action_digest {
+            return Err(Error::Conflict("operator approval does not match exact root-task writeback".into()));
+        }
+        Ok(LocalApprovedRootWriteback {
+            context,
+            request: RootWritebackRequest::new(typed, scope),
+            child: self.root_conversation.clone(),
+            child_project: root_project,
+            root_only: true,
+        })
+    }
+
+    /// Compatibility entry point that deliberately requires the interaction
+    /// ticket to carry its exact path set; callers must use the path-bound form
+    /// to perform a native restore.
+    pub async fn issue_host_approved_root_task_writeback(
+        &self,
+        task: TaskId,
+        interaction: InteractionId,
+    ) -> Result<LocalApprovedRootWriteback> {
+        Err(Error::Invalid(format!(
+            "root-task native writeback requires explicit approved paths for task {task} interaction {interaction}"
+        )))
     }
 
     /// Returns the stable root task without opening any child session.
@@ -7373,6 +8072,22 @@ async fn append_record_at<P: StreamProvider>(
     }
 }
 
+fn persisted_operator_authority(records: &[StoredRecord]) -> Result<Option<([u8; 32], Authority)>> {
+    let mut binding = None;
+    for record in records {
+        let StoredEvent::AuthorityBinding { identity, audience } = &record.event else { continue };
+        if identity == &[0; 32] || audience.id.is_empty() {
+            return Err(Error::Conflict("persisted operator authority binding is invalid".into()));
+        }
+        let next = (*identity, audience.clone());
+        if let Some(existing) = &binding && existing != &next {
+            return Err(Error::Conflict("operator authority binding changed in registry".into()));
+        }
+        binding = Some(next);
+    }
+    Ok(binding)
+}
+
 fn apply_record(
     sessions: &mut BTreeMap<TaskId, LocalSwarmSession>,
     requests: &mut BTreeMap<TaskId, LocalForkRequest>,
@@ -7408,6 +8123,11 @@ fn apply_record(
                 }
             }
             sessions.insert(next.task, next);
+        }
+        StoredEvent::AuthorityBinding { identity, audience } => {
+            if identity == [0; 32] || audience.id.is_empty() {
+                return Err(Error::Conflict("persisted operator authority binding is invalid".into()));
+            }
         }
         StoredEvent::TaskAdmitted { task, admission } => {
             let admission = crate::runtime::TaskAdmissionRecord::from_canonical_value(admission)?;
@@ -7795,6 +8515,34 @@ mod tests {
         Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn local_operator_issuer_reuses_descriptor_key_and_fail_closes_zero() -> Result<()> {
+        let first = local_operator_issuer_from_descriptor_key([7; 32])?;
+        let second = local_operator_issuer_from_descriptor_key([7; 32])?;
+        assert_eq!(first.verifier(), second.verifier());
+        assert!(matches!(
+            local_operator_issuer_from_descriptor_key([0; 32]),
+            Err(Error::Conflict(message)) if message.contains("zero")
+        ));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_checkout_cannot_overlap_runtime_storage() -> Result<()> {
+        let runtime = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let nested = runtime.path().join("checkout");
+        std::fs::create_dir_all(&nested).map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            ensure_native_checkout_is_external(runtime.path(), &nested),
+            Err(Error::Conflict(message)) if message.contains("overlap")
+        ));
+
+        let sibling = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        ensure_native_checkout_is_external(runtime.path(), sibling.path())?;
+        Ok(())
+    }
 
     /// Provider used by the activation recovery test. The underlying
     /// provider commits the append normally, while this adapter loses the
@@ -9978,12 +10726,13 @@ mod tests {
         let first_key = first.open_session(task).await?.signing_key();
         let first_project = first.config.project.clone();
         assert!(first.bindings.filesystem_fork_resolver.is_some());
+        assert!(!root.path().join(".local-operator-issuer").exists());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         drop(first);
 
         let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
             root.path(),
-            model,
+            model.clone(),
             provider.clone(),
             Limits::default(),
         )
