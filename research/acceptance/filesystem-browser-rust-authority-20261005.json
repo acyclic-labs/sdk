@@ -1,0 +1,34 @@
+{
+  "schema": "acyclic.acceptance.v2",
+  "kind": "filesystem-installed-rust-wasm-browser",
+  "status": "passed",
+  "captured_at": "2026-10-05T22:02:27.6320304Z",
+  "source_revision": "51556e48d6c8eb0f896426afd23cf5d4a466b1a4",
+  "source_worktree": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk",
+  "artifact": {
+    "package": "work/fs-wasm-package-handshake",
+    "wasm_bg_sha256": "DA21DE80DFBC45FD12CEA56AF46D5C22E5189C069397DEB23BD90C87C7D613DF",
+    "js_sha256": "03A95BBE1E0BD1EE541B007017CD918E222830626A464E6F9E4FAF522213D74F",
+    "dts_sha256": "821130D0F406B70DEB3D872F89FB7D0D37AB3B559CE28C5DBA389612BBBCFB29"
+  },
+  "generated_commits": [
+    "6df228851eae9db73967682a2e8f87097d2ba42e",
+    "e470ee55442a304fc74793de7d1227d569b40aba",
+    "f7ef3a847eeb2eee52a4c96f8b64af15625b3d0f",
+    "afec86dcdb72bf295818846f41fa3a569c70842a"
+  ],
+  "build": {
+    "command": "cargo build --locked -p acyclic-fs-wasm --target wasm32-unknown-unknown --profile wasm-release",
+    "linker": "C:/Program Files/LLVM/bin/wasm-ld.exe",
+    "packager": "wasm-bindgen --target web"
+  },
+  "runner": {
+    "command": "bun test/browser-qualify.mjs browser-smoke.html",
+    "multitab_command": "bun test/browser-qualify.mjs browser-multitab.html",
+    "runner": "typescript/packages/filesystem/test/browser-qualify.mjs",
+    "browser": "Chrome headless",
+    "smoke": "passed: memoryWorkspace, IndexedDB authority, OPFS objects, 18 exported objects",
+    "multitab": "passed: authority winner/conflict, fresh context, reload, abrupt-tab recovery, IndexedDB and OPFS, 12 targeted consistency/speculation cases"
+  },
+  "policy_cases": "installed generated package handshake, descriptor, capability, source state, generation identity, and JS numeric boundary positive/negative cases all passed"
+}
