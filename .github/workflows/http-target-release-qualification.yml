@@ -122,8 +122,6 @@ jobs:
 
       - name: Generate the selected HTTP package from Rust authority
         shell: bash
-        env:
-          ACYCLIC_RUST_GENERATION_ENTRYPOINT: '1'
         run: |
           mkdir -p "$RUNNER_TEMP/http-target"
           pwsh -NoProfile -File scripts/run-language-producer.ps1 \
