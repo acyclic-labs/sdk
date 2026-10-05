@@ -611,6 +611,10 @@ fn validate_native_relative_path(
 ) -> Result<(), NativeTreeMaterializationError> {
     validate_materialization_path(path)
         .map_err(|()| NativeTreeMaterializationError::InvalidPath(path.to_owned()))?;
+    let metadata = std::fs::symlink_metadata(root)?;
+    if native_component_is_alias(&metadata) || !metadata.is_dir() {
+        return Err(NativeTreeMaterializationError::AliasedPath(path.to_owned()));
+    }
     let components = Path::new(path).components().collect::<Vec<_>>();
     let mut cursor = root.to_path_buf();
     for (index, component) in components.iter().enumerate() {
@@ -646,6 +650,11 @@ fn validate_windows_native_component(
     let name = name
         .to_str()
         .ok_or_else(|| NativeTreeMaterializationError::InvalidPath(path.to_owned()))?;
+    if name.as_bytes().get(1) == Some(&b':')
+        && name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+    {
+        return Err(NativeTreeMaterializationError::InvalidPath(path.to_owned()));
+    }
     // Win32 normalizes trailing spaces and periods and treats ':' as an
     // alternate data stream separator. Neither spelling addresses an exact
     // logical workspace object, so reject it before any host lookup.
@@ -726,17 +735,31 @@ fn validate_native_plan_aliases(
             })
             .collect::<Vec<_>>();
         folded.sort_by(|left, right| left.0.cmp(&right.0));
+        let folded_paths = folded
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<std::collections::BTreeSet<_>>();
         for pair in folded.windows(2) {
             let [left, right] = pair else { continue };
-            if left.0 == right.0
-                || right
-                    .0
-                    .strip_prefix(&left.0)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-            {
+            if left.0 == right.0 {
                 return Err(NativeTreeMaterializationError::AliasedPath(
                     right.1.to_owned(),
                 ));
+            }
+        }
+        for (folded_path, original) in &folded {
+            let components = folded_path.split('/').collect::<Vec<_>>();
+            let mut prefix = String::new();
+            for component in components.iter().take(components.len().saturating_sub(1)) {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(component);
+                if folded_paths.contains(prefix.as_str()) {
+                    return Err(NativeTreeMaterializationError::AliasedPath(
+                        (*original).to_owned(),
+                    ));
+                }
             }
         }
     }
@@ -818,6 +841,7 @@ impl NativeTreeMaterializationBackend {
             .map(|path| {
                 validate_materialization_path(&path)
                     .map_err(|()| NativeTreeMaterializationError::InvalidPath(path.clone()))?;
+                self.validate_effect_paths(&path)?;
                 if native_entry_exists(&self.target.join(&path))? {
                     Ok(MaterializationEdit::Install {
                         path,
@@ -836,7 +860,28 @@ impl NativeTreeMaterializationBackend {
         };
         validate_plan(&plan).map_err(|()| NativeTreeMaterializationError::OverlappingPaths)?;
         validate_native_plan_aliases(&plan)?;
+        self.validate_plan_paths(&plan)?;
         Ok(plan)
+    }
+
+    fn validate_effect_paths(&self, path: &str) -> Result<(), NativeTreeMaterializationError> {
+        for root in [&self.root, &self.target, &self.backup] {
+            validate_native_relative_path(root, path)?;
+        }
+        Ok(())
+    }
+
+    fn validate_plan_paths(
+        &self,
+        plan: &MaterializationPlan,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        for edit in &plan.edits {
+            self.validate_effect_paths(edit_path(edit))?;
+            if let MaterializationEdit::Rename { to, .. } = edit {
+                self.validate_effect_paths(to)?;
+            }
+        }
+        Ok(())
     }
 
     fn paths(&self, path: &str) -> (PathBuf, PathBuf, PathBuf) {
@@ -942,6 +987,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let edit = edit.clone();
         acyclic_native_runtime::run_blocking_io(move || {
             let edit = &edit;
+            backend.validate_effect_paths(edit_path(edit))?;
             let path = edit_path(edit);
             let (live, target, backup) = backend.paths(path);
             if native_entry_exists(&backup)? {
@@ -986,6 +1032,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         acyclic_native_runtime::run_blocking_io(move || {
             let edit = &edit;
             let preimage = &preimage;
+            backend.validate_effect_paths(edit_path(edit))?;
             let (before, after) = decode_native_witness(&preimage.image)?;
             let path = edit_path(edit);
             let (live, target, backup) = backend.paths(path);
@@ -1042,6 +1089,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         acyclic_native_runtime::run_blocking_io(move || {
             let edit = &edit;
             let preimage = &preimage;
+            backend.validate_effect_paths(edit_path(edit))?;
             let path = edit_path(edit);
             let (live, target, backup) = backend.paths(path);
             let (before, after) = decode_native_witness(&preimage.image)?;
@@ -1055,6 +1103,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                         path.to_owned(),
                     ));
                 }
+                backend.validate_effect_paths(path)?;
                 return apply_native_metadata(&live, &decode_native_metadata(image)?);
             }
             let target_expected = matches!(edit, MaterializationEdit::Install { .. });
@@ -1086,13 +1135,16 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
             }
             if backup_exists {
                 if target_expected && target_exists {
+                    backend.validate_effect_paths(path)?;
                     remove_native_entry_durable(&live)?;
+                    backend.validate_effect_paths(path)?;
                     durable_native_rename(&target, &live)?;
                 } else if target_expected && !live_exists {
                     return Err(NativeTreeMaterializationError::MissingTarget(
                         path.to_owned(),
                     ));
                 } else if !target_expected {
+                    backend.validate_effect_paths(path)?;
                     remove_native_entry_durable(&live)?;
                 }
                 return Ok(());
@@ -1101,6 +1153,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 if let Some(parent) = backup.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
+                backend.validate_effect_paths(path)?;
                 durable_native_rename(&live, &backup)?;
             }
             if target_expected {
@@ -1112,8 +1165,10 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 if let Some(parent) = live.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
+                backend.validate_effect_paths(path)?;
                 if let Err(error) = durable_native_rename(&target, &live) {
                     if native_entry_exists(&backup)? && !native_entry_exists(&live)? {
+                        backend.validate_effect_paths(path)?;
                         durable_native_rename(&backup, &live)?;
                     }
                     return Err(error);
@@ -1135,6 +1190,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         acyclic_native_runtime::run_blocking_io(move || {
             let edit = &edit;
             let preimage = &preimage;
+            backend.validate_effect_paths(edit_path(edit))?;
             let path = edit_path(edit);
             let (live, _, backup) = backend.paths(path);
             let (before, after) = decode_native_witness(&preimage.image)?;
@@ -1150,6 +1206,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 }
                 let metadata = decode_native_preimage_metadata(&preimage.image)?
                     .ok_or(NativeTreeMaterializationError::InvalidPreimage)?;
+                backend.validate_effect_paths(path)?;
                 return apply_native_metadata(&live, &metadata);
             }
             let backup_current = native_entry_fingerprint(&backup)?;
@@ -1168,9 +1225,14 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 ));
             }
             match before {
-                None => remove_native_entry_durable(&live),
+                None => {
+                    backend.validate_effect_paths(path)?;
+                    remove_native_entry_durable(&live)
+                }
                 Some(_) if backup_exists => {
+                    backend.validate_effect_paths(path)?;
                     remove_native_entry_durable(&live)?;
+                    backend.validate_effect_paths(path)?;
                     durable_native_rename(&backup, &live)
                 }
                 Some(expected) if current == Some(expected) => Ok(()),
@@ -1833,6 +1895,7 @@ where
         let after_directory = change
             .after
             .is_some_and(|record| record.kind == crate::kernel::FileKind::Directory);
+        validate_native_relative_path(&root, &path)?;
         // A directory with no earlier record that already exists on the host
         // is a lazily promoted source directory. Replacing it wholesale would
         // give it and every file under it new host identities; it is kept,
@@ -1936,6 +1999,7 @@ where
     .await??;
     plan.edits.extend(metadata_edits);
     validate_native_plan_aliases(&plan)?;
+    backend.validate_plan_paths(&plan)?;
     JournaledMaterializer::new(state.clone(), backend)
         .apply(plan)
         .await
@@ -3045,6 +3109,42 @@ mod tests {
         assert!(!outside.join("escape.txt").exists());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_tree_backend_rejects_a_parent_alias_before_effects() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        let outside = temporary.path().join("outside");
+        std::fs::create_dir_all(root.join("alias")).expect("root alias");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::create_dir_all(operation.join("target/alias")).expect("target");
+        std::fs::write(operation.join("target/alias/escape.txt"), b"after").expect("target file");
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+        let plan = backend
+            .plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["alias/escape.txt".to_owned()],
+            )
+            .expect("plan");
+        let edit = plan.edits.first().expect("edit").clone();
+        let preimage = backend.capture(&edit).await.expect("capture");
+        std::fs::remove_dir(root.join("alias")).expect("remove source alias");
+        symlink(&outside, root.join("alias")).expect("replace with source alias");
+
+        assert!(matches!(
+            backend.apply(&edit, &preimage).await,
+            Err(NativeTreeMaterializationError::AliasedPath(path))
+                if path == "alias/escape.txt"
+        ));
+        assert!(!outside.join("escape.txt").exists());
+    }
+
     #[cfg(windows)]
     #[test]
     fn native_tree_backend_rejects_drive_relative_alias_paths() {
@@ -3072,9 +3172,11 @@ mod tests {
     #[test]
     fn native_tree_backend_rejects_an_unprivileged_junction_parent() {
         use std::os::windows::fs::MetadataExt as _;
+        use std::os::windows::process::CommandExt as _;
         use std::process::Command;
 
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
         let temporary = tempfile::tempdir().expect("temporary root");
         let root = temporary.path().join("checkout");
         let operation = temporary.path().join("operation");
@@ -3083,12 +3185,13 @@ mod tests {
         std::fs::create_dir_all(&root).expect("root");
         std::fs::create_dir_all(&outside).expect("outside");
         std::fs::create_dir_all(operation.join("target")).expect("target");
-        let result = Command::new("cmd")
+        let mut command = Command::new("cmd");
+        command
+            .creation_flags(CREATE_NO_WINDOW)
             .args(["/C", "mklink", "/J"])
             .arg(&junction)
-            .arg(&outside)
-            .output()
-            .expect("mklink is available on Windows");
+            .arg(&outside);
+        let result = command.output().expect("mklink is available on Windows");
         assert!(
             result.status.success(),
             "unprivileged junction creation failed: {}",
@@ -3158,6 +3261,21 @@ mod tests {
             ),
             Err(NativeTreeMaterializationError::AliasedPath(path))
                 if path == "case.txt"
+        ));
+
+        assert!(matches!(
+            backend.plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                [
+                    "a".to_owned(),
+                    "a-foo".to_owned(),
+                    "a/file.txt".to_owned(),
+                ],
+            ),
+            Err(NativeTreeMaterializationError::AliasedPath(path))
+                if path == "a/file.txt"
         ));
     }
 
