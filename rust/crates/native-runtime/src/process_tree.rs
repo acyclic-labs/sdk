@@ -66,13 +66,14 @@ impl ProcessTree {
         // tree error for the caller (the descendant outcome is then unknown),
         // but still make a best-effort direct-child kill and wait.
         let tree_error = self.terminate_descendants().err();
-        let child_error = if let Some(child) = self.child.as_mut() {
+        let child_error = if let Some(mut child) = self.child.take() {
             if tree_error.is_some() {
                 let _ = child.kill();
             }
-            let result = child.wait();
-            if result.is_ok() {
-                self.child.take();
+            let mut result = child.wait();
+            if result.is_err() {
+                let _ = child.kill();
+                result = child.wait();
             }
             result.err()
         } else {
