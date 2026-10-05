@@ -14,7 +14,7 @@ use acyclic_harness::executor::{
 };
 use acyclic_harness::model::{ModelContent, ModelEvent};
 use acyclic_harness::{Admission, HarnessBuilder, Outcome, TaskGroup};
-use futures::{FutureExt as _, future::BoxFuture};
+use futures::{future::BoxFuture, FutureExt as _};
 use serde_json::json;
 
 /// Stable source identity consumed by the examples manifest.
@@ -24,13 +24,33 @@ pub const SCENARIO_ID: &str = "harness-admission-recovery-cancel";
 
 /// Rust source shown in the Harness custom executor projection.
 pub const QUICKSTART_SNIPPET: &str = r#"use std::sync::Arc;
-use acyclic_harness::{HarnessBuilder, TaskGroup};
+use acyclic_harness::{Admission, HarnessBuilder, Outcome, TaskGroup};
 
-let group = TaskGroup::new(2);
-let _harness = HarnessBuilder::new()
+let group = TaskGroup::new(1);
+let completed = match group.try_spawn(async { 7_u8 }).await {
+    Admission::Accepted(handle) => matches!(handle.result().await, Outcome::Succeeded(7)),
+    Admission::Rejected { .. } | Admission::Indeterminate { .. } => false,
+};
+assert!(completed);
+
+group.cancel();
+assert!(matches!(
+    group.try_spawn(async { 9_u8 }).await,
+    Admission::Rejected { .. }
+));
+
+let recovered = match TaskGroup::new(1).try_spawn(async { 11_u8 }).await {
+    Admission::Accepted(handle) => matches!(handle.result().await, Outcome::Succeeded(11)),
+    Admission::Rejected { .. } | Admission::Indeterminate { .. } => false,
+};
+assert!(recovered);
+
+// A durable custom executor must bind its journal explicitly.
+let result = HarnessBuilder::new()
     .name("example")
     .executor(Arc::new(MyExecutor))
-    .build(); // journal binding is intentionally application-owned"#;
+    .build();
+assert!(result.is_err());"#;
 
 /// Application-owned executor demonstrating the complete typed callback.
 pub struct CustomExecutor;

@@ -48,8 +48,10 @@ let cancel = CancellationToken::default();
 let workspace = fs.create_volume(VolumeConfig::portable(Lifecycle::Durable), WorkBudget::UNBOUNDED, &cancel).await?.value;
 let scratch = fs.create_volume(VolumeConfig::portable(Lifecycle::Ephemeral), WorkBudget::UNBOUNDED, &cancel).await?.value;
 let mode = CheckoutMode { access: AccessMode::ReadWrite, consistency: ConsistencyMode::TrackingSafe, mutations: MutationMode::PrivateOverlay };
+let workspace_checkout = workspace.checkout(GenerationSelector::Head, mode, WorkBudget::UNBOUNDED, &cancel).await?.value;
+let checkpoint = workspace_checkout.checkpoint(WorkBudget::UNBOUNDED, &cancel).await?.value;
 let mut view = MountedView::builder()
-    .mount("/", workspace.checkout(GenerationSelector::Head, mode, WorkBudget::UNBOUNDED, &cancel).await?.value)?
+    .mount("/", workspace_checkout)?
     .mount("/.scratch", scratch.checkout(GenerationSelector::Head, mode, WorkBudget::UNBOUNDED, &cancel).await?.value)?
     .build()?;
 let routed = view.route_mut(&PortablePath::parse("/.scratch/tool-output.txt", acyclic_fs::model::VolumeLimits::default())?)?;
@@ -68,8 +70,8 @@ fn scenario_root() -> PathBuf {
 
 /// Runs the mounted local workspace scenario against the real Filesystem
 /// provider and returns a source-bound receipt.
-pub async fn execute_filesystem_scenario()
--> Result<FilesystemScenarioReceipt, Box<dyn Error + Send + Sync>> {
+pub async fn execute_filesystem_scenario(
+) -> Result<FilesystemScenarioReceipt, Box<dyn Error + Send + Sync>> {
     let root = scenario_root();
     std::fs::create_dir_all(&root)?;
     let result = execute_filesystem_at(&root).await;
