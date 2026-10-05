@@ -159,11 +159,13 @@ traces. It retains the directed parent map, allocated agent set, operation to
 agent bindings, captured generations, current generations, durable completions,
 message deliveries and wait targets. It rejects swapped parent/child roles,
 missing or mistyped fields, forged generations, operation/agent mismatches,
-orphan and duplicate delivery, stale publication, and session overspend. The
-communication relation is bidirectional only for messages and waits; fork and
-publication remain parent-to-child operations.
+orphan and duplicate delivery, stale publication, and session overspend. A
+parent publication may arrive before its registry admission record; the
+checker retains that bounded witness and binds it when the matching admission
+arrives. The communication relation is bidirectional only for messages and
+waits; fork and publication remain parent-to-child operations.
 
-`check-trace-fixtures.ps1` accepts one valid trace and rejects nine negative
+`check-trace-fixtures.ps1` accepts two valid traces and rejects nine negative
 fixtures covering swapped parent, missing identity, wrong agent, forged
 capture, orphan delivery, double delivery, invalid boolean, overspend and
 stale publication. These fixtures prove the adapter's own behavior; no
@@ -175,23 +177,28 @@ journal and run this adapter against that trace.
 
 `real_harness_trace.rs` is a test-only exporter included beneath the local
 swarm tests. It runs the real Filesystem-backed `PersistentLocalSwarm` with a
-deterministic mock provider, then joins the durable swarm registry's
-`ForkAdmitted`/`ForkCompleted` records with the child's authenticated
-execution-journal `ModelStarted` record. It writes a normalized four-event
-trace and a provenance manifest containing source stream sequences, operation
-identities, and the raw opaque project generation. Task identities map to
-finite agent labels and the first observed project generation maps to ordinal
-zero only at this adapter boundary.
+deterministic mock provider, then projects the current durable records:
+`ForkPrepared` (with `ForkAdmitted` retained only for legacy read
+compatibility), the parent conversation's `ForkPublished`, the child's
+authenticated execution-journal `ModelStarted`, and `ForkCompleted`. It
+writes a normalized four-event trace and a provenance manifest containing
+source stream sequences, operation identities, and the raw opaque project
+generation. Registry sequence, parent conversation revision, and child journal
+sequence remain independent; the projection records causal prerequisites and
+does not manufacture a cross-stream total order. Task identities map to finite
+agent labels and the first observed project generation maps to ordinal zero
+only at this adapter boundary.
 
-The ignored test requires an explicit output path so ordinary test runs do not
-write artifacts:
+The ignored exporter requires an explicit output path so ordinary test runs do
+not write artifacts. Use the named qualification gate, which runs the
+exporter with the repository's test features and then invokes the canonical
+checker:
 
 ```powershell
-$env:GRAPHCODER_REAL_TRACE_PATH = 'D:/evidence/real-harness-trace.json'
-cargo test -p acyclic-harness --features filesystem-local exports_real_harness_trace_for_canonical_checker -- --ignored
-./check-real-trace.ps1 -TracePath D:/evidence/real-harness-trace.json -ManifestPath D:/evidence/real-harness-trace.manifest.json
+./qualify-real-trace.ps1 -EvidenceDirectory D:/evidence/real-harness-trace
 ```
 
-The result is runtime conformance evidence for this bounded trace only. The
-export does not claim Rust refinement, unbounded recursion, liveness, or OS
-confinement.
+Running the ignored test directly is an export step only; it does not qualify
+the implementation. A passing named gate is runtime conformance evidence for
+this bounded trace only. The export does not claim Rust refinement, unbounded
+recursion, liveness, or OS confinement.

@@ -21,6 +21,7 @@ $completedAgents = @{}
 $messages = @{}
 $waits = @{}
 $published = @{}
+$pendingPublications = @{}
 $activeAgents = [System.Collections.Generic.HashSet[int]]::new()
 $null = $activeAgents.Add(1)
 $workspaceGeneration = @{ 1 = 0; 2 = 0; 3 = 0; 4 = 0; 5 = 0 }
@@ -85,6 +86,13 @@ foreach ($event in $trace) {
                 captured_generation = $capture
             }
             $null = $activeAgents.Add($child)
+            if ($pendingPublications.ContainsKey($op)) {
+                $pending = $pendingPublications[$op]
+                Require ($pending.parent -eq $parent -and $pending.child -eq $child) 'publication identity does not match its fork admission.'
+                Require ($pending.captured_generation -eq $capture) 'publication supplied a forged captured generation.'
+                $published[$op] = $pending.current_generation
+                $pendingPublications.Remove($op)
+            }
         }
         'workspace_advanced' {
             $agent = RequireInt $event.agent 'workspace_advanced agent' 1 5
@@ -97,6 +105,7 @@ foreach ($event in $trace) {
             $op = RequireString $event.operation_id 'model_started operation_id'
             $agent = RequireInt $event.agent 'model_started agent' 1 5
             Require ($admitted.ContainsKey($op)) 'model started without a fork admission.'
+            Require ($published.ContainsKey($op)) 'model started before workspace publication.'
             Require (-not $started.ContainsKey($op)) 'model operation was started twice.'
             Require ($agent -eq $admitted[$op].child) 'model start agent does not match its fork admission.'
             $started[$op] = $agent
@@ -149,18 +158,31 @@ foreach ($event in $trace) {
             $child = RequireInt $event.child 'publication child' 1 5
             $capture = RequireInt $event.captured_generation 'publication captured_generation' 0 $generationBound
             $current = RequireInt $event.current_generation 'publication current_generation' 0 $generationBound
-            Require ($completed.ContainsKey($op)) 'workspace publication lacks durable completion.'
-            Require ($admitted[$op].parent -eq $parent -and $admitted[$op].child -eq $child) 'publication identity does not match its fork admission.'
             Require (IsChild $parent $child) 'publication target is not the directed direct parent.'
-            Require ($capture -eq $admitted[$op].captured_generation) 'publication supplied a forged captured generation.'
             Require ($current -eq $workspaceGeneration[$parent]) 'publication supplied a forged current generation.'
             Require ($capture -eq $current) 'publication crossed a stale workspace generation.'
-            Require (-not $published.ContainsKey($op)) 'workspace publication was repeated.'
-            $published[$op] = $current
+            Require (-not $published.ContainsKey($op) -and -not $pendingPublications.ContainsKey($op)) 'workspace publication was repeated.'
+            if ($admitted.ContainsKey($op)) {
+                Require ($admitted[$op].parent -eq $parent -and $admitted[$op].child -eq $child) 'publication identity does not match its fork admission.'
+                Require ($capture -eq $admitted[$op].captured_generation) 'publication supplied a forged captured generation.'
+                $published[$op] = $current
+            } else {
+                # A parent conversation can publish before the swarm registry
+                # persists its prepared admission. Retain the exact bounded
+                # witness and bind it when the admission record arrives.
+                $pendingPublications[$op] = [ordered]@{
+                    parent = $parent
+                    child = $child
+                    captured_generation = $capture
+                    current_generation = $current
+                }
+            }
         }
         default { throw "trace conformance: unsupported event kind '$kind'." }
     }
 }
+
+Require ($pendingPublications.Count -eq 0) 'workspace publication has no matching fork admission.'
 
 Write-Output (ConvertTo-Json ([ordered]@{
     valid = $true

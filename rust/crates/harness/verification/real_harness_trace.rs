@@ -156,27 +156,75 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         .stream(REGISTRY_STREAM)
         .map_err(|error| Error::Storage(error.to_string()))?;
     let events = registry_events(&registry).await?;
-    let (admission_sequence, admitted) = events
-        .iter()
-        .find_map(|(sequence, event)| match event {
-            StoredEvent::ForkAdmitted { .. } => Some((*sequence, event.clone())),
-            _ => None,
-        })
-        .ok_or_else(|| Error::Storage("real registry has no ForkAdmitted record".into()))?;
-    let StoredEvent::ForkAdmitted {
+    // ForkPrepared is the current durable admission record. ForkAdmitted is
+    // retained only as a read-compatibility fallback for older registries;
+    // the adapter never invents an admission record from a later event.
+    let (
+        admission_sequence,
+        admission_kind,
         parent,
         parent_operation,
         parent_step,
         child,
-        child_operation: recorded_child_operation,
+        recorded_child_operation,
+        child_authority,
         fork_operation,
         report,
         publication,
-        ..
-    } = admitted
-    else {
-        unreachable!();
-    };
+    ) = events
+        .iter()
+        .find_map(|(sequence, event)| match event {
+            StoredEvent::ForkPrepared {
+                parent,
+                parent_operation,
+                parent_step,
+                child,
+                child_operation,
+                child_authority,
+                fork_operation,
+                report,
+                publication,
+                ..
+            } => Some((
+                *sequence,
+                "fork_prepared",
+                *parent,
+                *parent_operation,
+                *parent_step,
+                *child,
+                *child_operation,
+                child_authority.clone(),
+                *fork_operation,
+                report.clone(),
+                publication.clone(),
+            )),
+            StoredEvent::ForkAdmitted {
+                parent,
+                parent_operation,
+                parent_step,
+                child,
+                child_operation,
+                child_authority,
+                fork_operation,
+                report,
+                publication,
+                ..
+            } => Some((
+                *sequence,
+                "fork_admitted_legacy",
+                *parent,
+                *parent_operation,
+                *parent_step,
+                *child,
+                *child_operation,
+                child_authority.clone(),
+                *fork_operation,
+                report.clone(),
+                publication.clone(),
+            )),
+            _ => None,
+        })
+        .ok_or_else(|| Error::Storage("real registry has no ForkPrepared record".into()))?;
     if parent != root_task
         || child != child_task
         || parent_operation != root_operation
@@ -186,6 +234,8 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "real registry fork identities do not match the executed operations".into(),
         ));
     }
+    let child_authority = child_authority
+        .ok_or_else(|| Error::Storage("real admission omitted child authority".into()))?;
     let fork_operation = fork_operation
         .ok_or_else(|| Error::Storage("real admission omitted fork operation".into()))?;
     let publication =
@@ -193,6 +243,26 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     let report =
         report.ok_or_else(|| Error::Storage("real admission omitted fork report".into()))?;
     let (generation, raw_generation) = generation_projection(&report)?;
+
+    let parent_harness = swarm.open_session(root_task).await?;
+    let parent_events = parent_harness
+        .conversation_events(0, 1_024, crate::conversation::Limits::default())
+        .await?;
+    let (publication_revision, publication_event_operation) = parent_events
+        .iter()
+        .find_map(|event| match &event.payload {
+            crate::core::EventPayload::ForkPublished { seed }
+                if seed.operation_id == fork_operation
+                    && seed.child == child_authority
+                    && event.operation_id == fork_operation =>
+            {
+                Some((event.revision, event.operation_id))
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            Error::Storage("parent conversation has no matching ForkPublished event".into())
+        })?;
 
     let child_harness = swarm.open_session(child_task).await?;
     let child_records = child_harness
@@ -224,6 +294,18 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         .ok_or_else(|| Error::Storage("real registry has no ForkCompleted record".into()))?;
 
     let trace = vec![
+        // The parent aggregate publishes its ForkPublished event before the
+        // local swarm registry records ForkPrepared. Keep the projection in
+        // that observed causal order; the checker binds the pending
+        // publication when it later sees the admission record.
+        json!({
+            "kind": "workspace_published",
+            "operation_id": child_operation.to_string(),
+            "parent": 1,
+            "child": 2,
+            "captured_generation": generation,
+            "current_generation": generation
+        }),
         json!({
             "kind": "fork_admitted",
             "operation_id": child_operation.to_string(),
@@ -243,14 +325,6 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "agent": 2,
             "outcome_durable": true
         }),
-        json!({
-            "kind": "workspace_published",
-            "operation_id": child_operation.to_string(),
-            "parent": 1,
-            "child": 2,
-            "captured_generation": generation,
-            "current_generation": generation
-        }),
     ];
     let bytes = serde_json::to_vec_pretty(&trace)?;
     if let Some(parent) = path.parent() {
@@ -264,8 +338,12 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         "trace": path,
         "source": {
             "registry_stream": REGISTRY_STREAM,
+            "admission_record": admission_kind,
             "fork_admitted_sequence": admission_sequence,
             "fork_completed_sequence": completion_sequence,
+            "parent_conversation_event": "ForkPublished",
+            "parent_conversation_revision": publication_revision,
+            "parent_conversation_operation": publication_event_operation,
             "child_execution_operation": child_operation,
             "child_execution_model_started_sequence": model_sequence,
             "child_execution_model_started_request_digest": model_digest,
@@ -278,6 +356,13 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "publication_step": parent_step,
             "completion_operation": completion_operation
         },
+        "ordering": {
+            "basis": "causal projection across independently ordered durable streams",
+            "registry": "registry sequence orders ForkPrepared and ForkCompleted",
+            "parent_conversation": "conversation revision identifies ForkPublished",
+            "child_execution": "child journal sequence identifies ModelStarted",
+            "cross_stream_sequences_compared": false
+        },
         "normalization": {
             "agent_ids": {"1": root_task, "2": child_task},
             "generation": {
@@ -289,7 +374,7 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         "assumptions": [
             "The trace is one real local Filesystem-backed Harness run using a deterministic mock provider.",
             "Task and opaque generation identities are normalized only at the adapter boundary.",
-            "The adapter checks event ordering and bindings; it does not prove Rust refinement, liveness, or OS confinement."
+            "The adapter checks event bindings and causal prerequisites; it does not prove Rust refinement, liveness, OS confinement, or a total order across streams."
         ]
     });
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
