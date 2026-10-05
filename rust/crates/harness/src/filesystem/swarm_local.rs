@@ -33,7 +33,11 @@ use crate::{
     resources::{GenerationRef, ProviderRef, StreamRef},
     runtime::TaskRunLimits,
     store::StreamAggregate,
-    swarm_budget::{SwarmBudgetLimits, SwarmOwnerFence, SwarmUsageSource},
+    swarm_budget::{
+        SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
+        SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource, VerifiedForkPublication,
+    },
+    swarm_budget_journal::SwarmBudgetJournal,
     tool::{
         ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
         ToolRegistry, ToolResult,
@@ -2555,6 +2559,7 @@ pub struct PersistentLocalSwarm {
     bindings: LocalSwarmBindings,
     model_fork_publisher: Option<Arc<LocalModelForkPublisher>>,
     registry: StreamClient<LocalStream>,
+    budget_journal: Arc<Mutex<SwarmBudgetJournal<LocalStream>>>,
     /// Shared provider bindings used by the root and lazily reopened task
     /// harnesses. The resolver must observe the same host and stream domain.
     filesystem_host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
@@ -2620,6 +2625,9 @@ impl PersistentLocalSwarm {
             &config.model.options,
             provider.model_option_policy(),
         )?;
+        if bindings.budget_usage_source.is_none() {
+            bindings.budget_usage_source = provider.swarm_usage_source();
+        }
         let root = root.as_ref().to_path_buf();
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
@@ -2770,6 +2778,14 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
+        let budget_session = OperationId::from_bytes(root_task.into_bytes());
+        let budget_journal = SwarmBudgetJournal::start(
+            &registry,
+            budget_session,
+            config.budget.owner.clone(),
+            config.budget.limits,
+        )
+        .await?;
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
             PersistentLocalHarness::open_with_tools_and_project_on_providers(
@@ -2804,6 +2820,7 @@ impl PersistentLocalSwarm {
             bindings,
             model_fork_publisher,
             registry,
+            budget_journal: Arc::new(Mutex::new(budget_journal)),
             filesystem_host,
             conversation_stream,
             stream_provider,
@@ -2961,12 +2978,16 @@ impl PersistentLocalSwarm {
         let publisher = Arc::new(LocalModelForkPublisher::new(plans.clone()));
         let communication = Arc::new(communication_host::SwarmCommunicationHost::new(stream.clone()));
         let waits = Arc::new(crate::communication::StreamWaitStore::new(stream.clone()));
+        let budget_usage_source = swarm.bindings.budget_usage_source.clone();
         swarm.bindings = LocalSwarmBindings::communication(
             communication.clone(), Some(waits), Some(swarm.live.clone()),
         )
             .with_filesystem_fork_resolver(resolver)
             .with_model_fork_plans(plans.clone())
             .with_model_batch_publisher(publisher.clone());
+        if let Some(source) = budget_usage_source {
+            swarm.bindings = swarm.bindings.with_budget_usage_source(source);
+        }
         let root_harness = root_harness.with_local_tools(
             model, provider, limits, swarm.bindings.tools_for(root_task)?,
         )?;
@@ -2988,6 +3009,75 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm root session is missing".into()))
+    }
+
+    /// Returns the single durable session budget shared by root and all
+    /// recursive children. The journal stream is reopened on every process
+    /// start and remains the authority for reservation state.
+    pub fn budget_journal(&self) -> Arc<Mutex<SwarmBudgetJournal<LocalStream>>> {
+        self.budget_journal.clone()
+    }
+
+    /// Atomically reserves a child from the owner-retained task admission.
+    /// Callers must invoke this before workspace fork preparation or provider
+    /// dispatch; the local fork request is never used to reconstruct limits.
+    pub async fn reserve_child_budget(
+        &self,
+        child_task: TaskId,
+        idempotency_key: crate::IdempotencyKey,
+        parent_operation_id: Option<OperationId>,
+        depth: u32,
+        resources: SwarmResourceRequest,
+    ) -> Result<SwarmAdmissionReceipt> {
+        let admission = self.bindings.authenticated_admission(child_task).await?;
+        let mut journal = self.budget_journal.lock().await;
+        journal
+            .reserve_after_admission(
+                &admission,
+                idempotency_key,
+                parent_operation_id,
+                depth,
+                resources,
+            )
+            .await
+    }
+
+    /// Activates a child only after authoritative publication evidence has
+    /// been verified. The returned token is the sole provider dispatch proof.
+    pub async fn activate_child_budget(
+        &self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        dispatch_id: crate::IdempotencyKey,
+        publication: VerifiedForkPublication,
+    ) -> Result<SwarmDispatchToken> {
+        self.budget_journal
+            .lock()
+            .await
+            .activate_verified_with_dispatch(
+                operation_id,
+                owner,
+                dispatch_id,
+                publication,
+            )
+            .await
+    }
+
+    /// Settles a child from the provider-owned cumulative measurement source.
+    /// Receipt issuance and durable completion remain one journal path and are
+    /// replay-safe after a process restart.
+    pub async fn complete_child_budget(
+        &self,
+        token: &SwarmDispatchToken,
+    ) -> Result<SwarmForkReservation> {
+        let source = self.bindings.budget_usage_source.clone().ok_or_else(|| {
+            Error::Unauthorized("provider usage source is not configured".into())
+        })?;
+        self.budget_journal
+            .lock()
+            .await
+            .complete_from_source(token, source)
+            .await
     }
 
     /// Returns the host-only signer bound to one task's durable interaction

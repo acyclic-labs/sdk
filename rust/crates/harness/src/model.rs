@@ -398,6 +398,17 @@ pub trait ModelProvider: Send + Sync {
         None
     }
 
+    /// Returns the authenticated provider measurement source used by the
+    /// durable recursive swarm budget. Implementations should expose actual
+    /// cumulative counters keyed by the operation and dispatch identities;
+    /// returning `None` leaves budget settlement unavailable to compositions
+    /// that require provider receipts.
+    fn swarm_usage_source(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::swarm_budget::SwarmUsageSource>> {
+        None
+    }
+
     /// Validates immutable input before a new dispatch or recovered attempt.
     /// This hook must not perform I/O or mutate the request.
     fn admit(&self, request: &ModelRequest) -> Result<()> {
