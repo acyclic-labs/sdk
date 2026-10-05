@@ -73,11 +73,11 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_child_is_rejected_before_the_new_future_starts()
-    -> Result<(), Box<dyn std::error::Error>> {
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let workers = LocalChildWorkers::default();
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, dropped_observed) = oneshot::channel();
+        let (dropped, mut dropped_observed) = oneshot::channel();
         workers
             .enqueue(task, pending_worker(started, dropped))
             .await?;
@@ -102,11 +102,11 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_the_composition_registry_cancels_owned_workers()
-    -> Result<(), Box<dyn std::error::Error>> {
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let workers = LocalChildWorkers::default();
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, dropped_observed) = oneshot::channel();
+        let (dropped, mut dropped_observed) = oneshot::channel();
         workers
             .enqueue(task, pending_worker(started, dropped))
             .await?;
@@ -118,11 +118,11 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_joins_workers_and_closes_admission()
-    -> Result<(), Box<dyn std::error::Error>> {
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let workers = LocalChildWorkers::default();
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, dropped_observed) = oneshot::channel();
+        let (dropped, mut dropped_observed) = oneshot::channel();
         workers
             .enqueue(task, pending_worker(started, dropped))
             .await?;
@@ -146,11 +146,11 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_shutdown_future_keeps_handles_owned()
-    -> Result<(), Box<dyn std::error::Error>> {
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let workers = Arc::new(LocalChildWorkers::default());
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, dropped_observed) = oneshot::channel();
+        let (dropped, mut dropped_observed) = oneshot::channel();
         workers
             .enqueue(task, pending_worker(started, dropped))
             .await?;
@@ -165,7 +165,7 @@ mod tests {
         tokio::task::yield_now().await;
         shutdown.abort();
         assert!(shutdown.await.expect_err("shutdown unexpectedly completed").is_cancelled());
-        assert!(!dropped_observed.is_closed());
+        assert!(matches!(dropped_observed.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
         drop(lock);
         drop(workers);
         tokio::time::timeout(Duration::from_secs(1), dropped_observed).await??;
@@ -174,12 +174,12 @@ mod tests {
 
     #[tokio::test]
     async fn worker_registry_has_no_strong_arc_cycle()
-    -> Result<(), Box<dyn std::error::Error>> {
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let workers = Arc::new(LocalChildWorkers::default());
         let weak = Arc::downgrade(&workers);
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, dropped_observed) = oneshot::channel();
+        let (dropped, mut dropped_observed) = oneshot::channel();
         let worker_weak = weak.clone();
         workers
             .enqueue(task, async move {
