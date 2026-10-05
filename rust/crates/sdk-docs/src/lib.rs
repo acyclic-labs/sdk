@@ -1405,7 +1405,17 @@ fn collect_generation_input_paths(
             .is_some_and(|name| {
                 matches!(
                     name,
-                    ".git" | "node_modules" | ".toolchains" | "target" | "cargo-home-private"
+                    ".git"
+                        | "node_modules"
+                        | ".toolchains"
+                        | ".toolchain"
+                        | "target"
+                        | "build"
+                        | "dist"
+                        | "obj"
+                        | ".dart_tool"
+                        | ".pub-cache"
+                        | "cargo-home-private"
                 )
             })
     {
