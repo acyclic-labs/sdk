@@ -1966,4 +1966,103 @@ mod tests {
         assert!(manifest_index < started_index);
         Ok(())
     }
+
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn invalid_content_reference_is_rejected_before_provider_dispatch() -> Result<()> {
+        use crate::{
+            filesystem::LocalHarness,
+            model::{ModelAttempt, ModelEvent, ModelProvider},
+        };
+        use futures::{future::BoxFuture, stream::BoxStream};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        struct Capture {
+            dispatches: AtomicUsize,
+        }
+        impl ModelProvider for Capture {
+            fn generate<'a>(
+                &'a self,
+                _: PreparedModelInput,
+            ) -> BoxStream<'a, Result<ModelEvent>> {
+                self.dispatches.fetch_add(1, Ordering::SeqCst);
+                Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                })]))
+            }
+
+            fn reconcile<'a>(
+                &'a self,
+                _: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                Box::pin(async { Ok(None) })
+            }
+        }
+
+        let provider = Arc::new(Capture {
+            dispatches: AtomicUsize::new(0),
+        });
+        let local = LocalHarness::new(
+            Model::new("mock", "capture", "1", json!({}))?,
+            provider.clone(),
+        )
+        .await?;
+        let staged = local
+            .storage()
+            .stage(
+                crate::OperationId::new(),
+                "input/pinned.txt",
+                b"generation-pinned",
+                "text/plain",
+                "pinned.txt",
+            )
+            .await?;
+
+        let missing = FileRef::new(
+            staged.volume().clone(),
+            "input/missing.txt",
+            staged.version(),
+            staged.descriptor().clone(),
+            "missing.txt",
+        )?;
+        assert!(
+            local
+                .storage()
+                .run_conversation(
+                    local.bundle(),
+                    crate::OperationId::new(),
+                    missing,
+                    Vec::new(),
+                    8,
+                )
+                .await
+                .is_err()
+        );
+
+        let corrupt = FileRef::new(
+            staged.volume().clone(),
+            staged.path(),
+            staged.version(),
+            crate::conversation::FileDescriptor::from_bytes(b"different", "text/plain")?,
+            staged.display_name(),
+        )?;
+        assert!(
+            local
+                .storage()
+                .run_conversation(
+                    local.bundle(),
+                    crate::OperationId::new(),
+                    corrupt,
+                    Vec::new(),
+                    8,
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(provider.dispatches.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
 }
