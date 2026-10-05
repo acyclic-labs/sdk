@@ -1754,11 +1754,29 @@ mod tests {
                 },
             )
             .await?;
+        // Replay identity is transport/admission metadata. Changing the
+        // owning operation and step must never cause the provider boundary to
+        // regenerate or rewrite the already frozen model-input bytes.
+        provider
+            .reconcile_admitted(
+                restored_prepared.clone(),
+                ModelAttempt {
+                    operation_id: crate::OperationId::from_bytes([0x5a; 16]),
+                    step: 17,
+                    request_digest: restored_prepared.manifest().request_digest,
+                    observed: vec![ModelEvent::Content {
+                        delta: "transport-only replay marker".into(),
+                    }],
+                },
+            )
+            .await?;
         let seen = downstream
             .seen
             .lock()
             .map_err(|_| Error::Storage("capture lock poisoned".into()))?;
-        assert_eq!(seen.as_slice(), &[(expected_bytes, expected_manifest)]);
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], (expected_bytes.clone(), expected_manifest.clone()));
+        assert_eq!(seen[1], (expected_bytes, expected_manifest));
         assert_eq!(seen[0].1.model_option_policy, Some(policy.identity.clone()));
         assert_eq!(
             seen[0].1.model_option_schema_digest,
