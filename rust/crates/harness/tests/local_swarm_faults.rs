@@ -384,7 +384,9 @@ impl ModelProvider for ForkFaultProvider {
 
         if is_child_a {
             self.child_a_started.store(true, Ordering::SeqCst);
-            self.child_a_dispatched.notify_waiters();
+            // One observer must retain the permit when provider dispatch
+            // occurs before its notification future is first polled.
+            self.child_a_dispatched.notify_one();
             if self.child_a_blocked.load(Ordering::SeqCst) {
                 let guard = BlockedChildStreamGuard(self.child_stream_dropped.clone());
                 let first = stream::once(async move {
@@ -518,7 +520,18 @@ async fn open_swarm(
     .await
 }
 
-async fn wait_for_child_dispatch(provider: &ForkFaultProvider) {
+struct AbortRun(tokio::task::AbortHandle);
+
+impl Drop for AbortRun {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn wait_for_child_dispatch<T: std::fmt::Debug>(
+    provider: &ForkFaultProvider,
+    running: &mut tokio::task::JoinHandle<T>,
+) {
     if provider.child_a_started.load(Ordering::SeqCst) {
         return;
     }
@@ -526,9 +539,25 @@ async fn wait_for_child_dispatch(provider: &ForkFaultProvider) {
     if provider.child_a_started.load(Ordering::SeqCst) {
         return;
     }
-    timeout(Duration::from_secs(30), notified)
-        .await
-        .expect("child dispatch did not reach the provider");
+    if timeout(Duration::from_secs(30), notified).await.is_err() {
+        running.abort();
+        let stopped = running.await;
+        panic!("child dispatch did not reach the provider; owned run stopped: {stopped:?}");
+    }
+}
+
+async fn finish_owned_run<T: std::fmt::Debug>(
+    running: &mut tokio::task::JoinHandle<T>,
+    maximum: Duration,
+) -> T {
+    match timeout(maximum, &mut *running).await {
+        Ok(result) => result.expect("owned swarm task panicked"),
+        Err(error) => {
+            running.abort();
+            let stopped = running.await;
+            panic!("owned swarm task did not stop: {error}; abort result: {stopped:?}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -794,17 +823,15 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
     )
     .await?;
     let root_operation = operation(0x03);
-    let running = tokio::spawn(async move {
+    let mut running = tokio::spawn(async move {
         first
             .run_root(root_operation, "cancel child after publication")
             .await
     });
-    wait_for_child_dispatch(&provider).await;
+    let _abort_run = AbortRun(running.abort_handle());
+    wait_for_child_dispatch(&provider, &mut running).await;
     second.cancel(task(child_a)).await?;
-    let result = timeout(Duration::from_secs(2), running)
-        .await
-        .expect("cancelled publication did not finish")
-        .expect("publication task panicked");
+    let result = finish_owned_run(&mut running, Duration::from_secs(2)).await;
     assert!(result.is_err());
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst),
         "cancellation returned while the child model stream was still live");
@@ -868,12 +895,13 @@ async fn concurrent_handle_reconciles_live_admission_without_duplicate_dispatch(
     )
     .await?;
     let root_operation = operation(0x06);
-    let first_run = tokio::spawn(async move {
+    let mut first_run = tokio::spawn(async move {
         first
             .run_root(root_operation, "reconcile a live child admission")
             .await
     });
-    wait_for_child_dispatch(&provider).await;
+    let _abort_run = AbortRun(first_run.abort_handle());
+    wait_for_child_dispatch(&provider, &mut first_run).await;
 
     // Child A has a durable ModelStarted record while the first provider
     // stream is still blocked. Reopen its parent aggregate and ask a second
@@ -915,10 +943,7 @@ async fn concurrent_handle_reconciles_live_admission_without_duplicate_dispatch(
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
 
     second.cancel(task(child_a)).await?;
-    let first_output = timeout(Duration::from_secs(5), first_run)
-        .await
-        .expect("first handle did not stop after cancellation")
-        .expect("first handle panicked");
+    let first_output = finish_owned_run(&mut first_run, Duration::from_secs(5)).await;
     assert!(first_output.is_err());
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
