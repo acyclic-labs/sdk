@@ -136,6 +136,36 @@ fn prepare(case: &Case, limits: Limits, policy: &ModelOptionPolicy) -> Result<Pr
 fn rejection_request(base: &ModelRequest, name: &str) -> Result<ModelRequest> {
     let mut request = base.clone();
     match name {
+        "malformed-tool-call" => {
+            let Some(message) = request.messages.get_mut(2) else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "malformed-tool-call fixture is missing its tool call".into(),
+                ));
+            };
+            let ModelContent::Part(ModelContentPart::ToolCall { arguments, .. }) =
+                &mut message.content
+            else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "malformed-tool-call fixture is not a tool call".into(),
+                ));
+            };
+            arguments["path"] = json!(17);
+        }
+        "unpaired-tool-result" => {
+            let Some(message) = request.messages.get_mut(3) else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "unpaired-tool-result fixture is missing its tool result".into(),
+                ));
+            };
+            let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
+                &mut message.content
+            else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "unpaired-tool-result fixture is not a tool result".into(),
+                ));
+            };
+            *call_id = "missing-call".into();
+        }
         "unknown-tool-result" => {
             let Some(message) = request.messages.get_mut(3) else {
                 return Err(acyclic_harness::Error::Invalid(

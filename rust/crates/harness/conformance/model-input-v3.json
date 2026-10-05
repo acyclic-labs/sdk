@@ -1339,6 +1339,16 @@
   },
   "rejections": [
     {
+      "name": "malformed-tool-call",
+      "error_kind": "invalid",
+      "error_message": "malformed tool call lacks correlated rejection feedback"
+    },
+    {
+      "name": "unpaired-tool-result",
+      "error_kind": "invalid",
+      "error_message": "tool result is not paired"
+    },
+    {
       "name": "unknown-tool-result",
       "error_kind": "conflict",
       "error_message": "tool result changed tool"

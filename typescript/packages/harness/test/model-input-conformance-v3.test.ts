@@ -104,6 +104,28 @@ test("TypeScript consumes the native frozen model-input vector exactly", async (
   )).toBe(true);
 
   const rejectionRequest = (name: string): WasmModelRequestWire => {
+    if (name === "malformed-tool-call") {
+      return {
+        ...vector.root.request,
+        messages: vector.root.request.messages.map((message, index) => index === 2
+          ? { ...message, content: {
+            kind: "tool_call" as const, call_id: "call-π", name: "read_file",
+            arguments: { path: 17, whitespace: "  preserve  " },
+          } }
+          : message),
+      };
+    }
+    if (name === "unpaired-tool-result") {
+      return {
+        ...vector.root.request,
+        messages: vector.root.request.messages.map((message, index) => index === 3
+          ? { ...message, content: {
+            kind: "tool_result" as const, call_id: "missing-call", name: "read_file",
+            value: { bytes: 17, text: "résultat\r\n" },
+          } }
+          : message),
+      };
+    }
     if (name === "unknown-tool-result") {
       return {
         ...vector.root.request,
