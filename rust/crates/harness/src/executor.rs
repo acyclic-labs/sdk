@@ -2272,6 +2272,8 @@ pub(crate) async fn classify_terminal_failure(
 ) -> Result<TerminalFailureState> {
     let records = journal.replay(operation).await?;
     let mut prepared_steps = BTreeSet::new();
+    let mut prepared_digests = BTreeMap::<u32, [u8; 32]>::new();
+    let mut prepared_requests = BTreeMap::<u32, ModelRequest>::new();
     let mut started_steps = BTreeSet::new();
     let mut completed_steps = BTreeSet::new();
     let mut model_admissions = BTreeMap::<u32, ModelEventAdmission>::new();
@@ -2304,7 +2306,10 @@ pub(crate) async fn classify_terminal_failure(
                 manifest,
                 request,
             } => {
-                if started_steps.contains(step) || !prepared_steps.insert(*step) {
+                if started_steps.contains(step)
+                    || *step != prepared_steps.len() as u32
+                    || !prepared_steps.insert(*step)
+                {
                     return Err(Error::Storage(
                         "model input preparation is duplicated or out of order while classifying terminal failure".into(),
                     ));
@@ -2314,20 +2319,34 @@ pub(crate) async fn classify_terminal_failure(
                 )
                 .await?;
                 let request = load_json::<ModelRequest>(journal, request).await?;
-                if manifest.version != crate::model_input::MODEL_INPUT_VERSION
-                    || manifest.request_digest
-                        != crate::contract::canonical_json_digest(&request)?
-                {
+                let prepared = crate::model_input::PreparedModelInput::prepare(
+                    request.clone(),
+                    limits,
+                )?
+                .with_rejection_evidence(manifest.rejection_evidence.clone())?;
+                if manifest != *prepared.manifest() {
                     return Err(Error::Conflict(
                         "prepared model input does not match its pinned request".into(),
                     ));
                 }
+                prepared_digests.insert(*step, manifest.request_digest);
+                prepared_requests.insert(*step, request);
             }
-            ExecutionEvent::ModelStarted { step, .. } => {
+            ExecutionEvent::ModelStarted {
+                step,
+                request_digest,
+            } => {
                 if !prepared_steps.contains(step) {
                     return Err(Error::Storage(
                         "model start is missing preparation while classifying terminal failure"
                             .into(),
+                    ));
+                }
+                if *step != started_steps.len() as u32
+                    || prepared_digests.get(step) != Some(request_digest)
+                {
+                    return Err(Error::Conflict(
+                        "model start is bound to another prepared request".into(),
                     ));
                 }
                 if !started_steps.insert(*step) {
@@ -2518,6 +2537,21 @@ pub(crate) async fn classify_terminal_failure(
                 )
                 .await?;
                 boundary.verify(limits)?;
+                let Some(prepared) = prepared_requests.get(step) else {
+                    return Err(Error::Storage(
+                        "tool batch completion has no prepared request while classifying terminal failure".into(),
+                    ));
+                };
+                if boundary.request.model != prepared.model
+                    || boundary.request.tools != prepared.tools
+                    || boundary.request.messages.len() <= prepared.messages.len()
+                    || boundary.request.messages.get(..prepared.messages.len())
+                        != Some(prepared.messages.as_slice())
+                {
+                    return Err(Error::Conflict(
+                        "tool batch boundary is not bound to its prepared exchange".into(),
+                    ));
+                }
             }
             ExecutionEvent::BatchPublicationStarted { step, publication } => {
                 if !completed_batches.contains(step) {
