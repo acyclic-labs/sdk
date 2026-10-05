@@ -751,6 +751,14 @@ pub trait DurableTaskHost: Send + Sync {
         })
     }
 
+    /// Whether this host retains an owner-journal admission for messages
+    /// whose publication may finish after a lifecycle cancellation. Hosts
+    /// that do not implement that durable admission must keep the generic
+    /// fenced replay path closed.
+    fn supports_admitted_message_recovery(&self) -> bool {
+        false
+    }
+
     /// Reconciles an already committed message without publishing or staging
     /// a new payload. `true` means the exact endpoint, identity, and payload
     /// were already committed; `false` leaves a new send eligible for the

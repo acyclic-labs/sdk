@@ -1064,8 +1064,16 @@ impl DurableCommunication {
         {
             return Ok(());
         }
-        sender.require_new_mutation()?;
-        recipient.require_new_mutation()?;
+        // A host with an owner-journal message admission may finish an
+        // already admitted publication after cancellation. The host owns
+        // that admission CAS and must reject any operation that did not win
+        // it before the lifecycle fence. Generic hosts remain fail-closed.
+        if (sender.accepts_new_mutations && recipient.accepts_new_mutations)
+            || !self.host.supports_admitted_message_recovery()
+        {
+            sender.require_new_mutation()?;
+            recipient.require_new_mutation()?;
+        }
         self.host
             .send(
                 request.sender,
