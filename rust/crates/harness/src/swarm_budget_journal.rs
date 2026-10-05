@@ -1458,6 +1458,7 @@ mod tests {
     }
 
     #[tokio::test]
+<<<<<<< HEAD
     async fn unknown_provider_usage_keeps_active_reservation_for_recovery() -> Result<()> {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let session_id = OperationId::new();
@@ -1637,6 +1638,8 @@ mod tests {
     }
 
     #[tokio::test]
+=======
+>>>>>>> ba11d0bca (harness: wire durable swarm budget through default composition)
     async fn terminal_child_rejects_late_measured_receipt_without_budget_mutation() -> Result<()> {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let session_id = OperationId::new();
