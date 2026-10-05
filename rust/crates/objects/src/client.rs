@@ -183,11 +183,7 @@ impl ObjectsProvider for Client {
         let body = futures::stream::once(async move { Ok(body) }).boxed();
         #[cfg(target_arch = "wasm32")]
         let body = futures::stream::once(async move { Ok(body) }).boxed_local();
-        self.put_stream(
-            header,
-            body,
-        )
-        .await
+        self.put_stream(header, body).await
     }
     async fn get(
         &self,
@@ -248,11 +244,7 @@ impl ObjectsProvider for Client {
         let body = futures::stream::once(async move { Ok(body) }).boxed();
         #[cfg(target_arch = "wasm32")]
         let body = futures::stream::once(async move { Ok(body) }).boxed_local();
-        self.upload_part_stream(
-            header,
-            body,
-        )
-        .await
+        self.upload_part_stream(header, body).await
     }
     async fn list_parts(
         &self,
