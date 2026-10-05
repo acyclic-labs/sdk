@@ -3481,6 +3481,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stock_replay_with_changed_scope_or_task_is_fenced_before_dispatch() -> Result<()> {
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+                model_output_schema: json!({"type":"object"}),
+            },
+            executor: tool_executor.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let model_definition = Model::new("example", "model", "1", Value::Null)?;
+        let context = ContextPipeline::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([16; 16]),
+            input: ModelContent::Text("same operation".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+        let first = StockExecutor::new(
+            model_definition.clone(),
+            model.clone(),
+            context.clone(),
+            tools.clone(),
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo", "scope:one"]),
+                Limits::default(),
+            )?,
+            None,
+        )?
+        .with_authenticated_task(TaskId::from_bytes([1; 16]));
+        let second = StockExecutor::new(model_definition, model.clone(), context, tools)
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo", "scope:two"]),
+                    Limits::default(),
+                )?,
+                None,
+            )?
+            .with_authenticated_task(TaskId::from_bytes([2; 16]));
+        let journal = Journal::default();
+
+        first.execute(input.clone(), &journal).await?;
+        let model_calls = model.calls.load(Ordering::SeqCst);
+        let tool_calls = tool_executor.0.load(Ordering::SeqCst);
+        let records_before = journal.replay(input.operation_id).await?;
+        assert!(!records_before.is_empty());
+
+        assert!(matches!(
+            second.execute(input.clone(), &journal).await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), model_calls);
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), tool_calls);
+        assert_eq!(journal.replay(input.operation_id).await?, records_before);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn oversized_model_output_is_rejected_before_event_staging() -> Result<()> {
         let model = Arc::new(OversizedOutputModel {
             calls: AtomicUsize::new(0),
