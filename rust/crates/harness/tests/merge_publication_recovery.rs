@@ -1,90 +1,27 @@
 //! Production Git-facade merge publication recovery through a cold reopen.
-#![cfg(feature = "filesystem")]
+#![cfg(feature = "filesystem-local")]
 
 use acyclic_fs::GitCommand;
 use acyclic_fs::{
-    GitCompatState, GitCompatStore, GitFilesystemAction, GitFilesystemExecutor,
-    GitFilesystemResult, GitTreeRef, OperationId as FsOperationId, WorkspaceId,
+    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitTreeRef,
+    LocalCoreStateStore, LocalFs, LocalOptions, OperationId as FsOperationId, WorkspaceId,
 };
 use acyclic_harness::{
-    AgentId, Capabilities, Error, Result,
+    AgentId, Capabilities, Error, IdempotencyKey, Result,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
-    filesystem::FilesystemGitFacade,
-    resources::ProviderRef,
+    filesystem::{FilesystemGitFacade, FilesystemHost, WorkspaceMutation, workspace_ref},
+    resources::{ProviderRef, WorkspaceRef},
 };
-use std::collections::BTreeMap;
-use std::future::Future;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
-
-#[derive(Debug, thiserror::Error)]
-#[error("shared Git compatibility store is unavailable")]
-struct SharedStoreError;
-
-/// A process boundary for the facade's durable compatibility state. The
-/// reopened facade receives a fresh repository object over the same store,
-/// matching how a host reconstructs a typed Filesystem facade after restart.
-#[derive(Clone, Default)]
-struct SharedStore {
-    states: Arc<Mutex<BTreeMap<WorkspaceId, GitCompatState>>>,
-}
-
-impl GitCompatStore for SharedStore {
-    type Error = SharedStoreError;
-
-    fn load(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> impl Future<Output = std::result::Result<Option<GitCompatState>, Self::Error>> + Send {
-        let states = self.states.clone();
-        async move {
-            states
-                .lock()
-                .map_err(|_| SharedStoreError)
-                .map(|states| states.get(&workspace_id).cloned())
-        }
-    }
-
-    fn compare_and_swap(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: GitCompatState,
-    ) -> impl Future<Output = std::result::Result<bool, Self::Error>> + Send {
-        let states = self.states.clone();
-        async move {
-            let mut states = states.lock().map_err(|_| SharedStoreError)?;
-            let revision = states.get(&workspace_id).map_or(0, |state| state.revision);
-            if revision != expected_revision {
-                return Ok(false);
-            }
-            states.insert(workspace_id, replacement);
-            Ok(true)
-        }
-    }
-
-    fn compare_and_delete(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-    ) -> impl Future<Output = std::result::Result<bool, Self::Error>> + Send {
-        let states = self.states.clone();
-        async move {
-            let mut states = states.lock().map_err(|_| SharedStoreError)?;
-            let revision = states.get(&workspace_id).map_or(0, |state| state.revision);
-            if revision != expected_revision {
-                return Ok(false);
-            }
-            states.remove(&workspace_id);
-            Ok(true)
-        }
-    }
-}
+use tempfile::tempdir;
 
 struct PublishThenFailExecutor {
+    host: Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
+    workspace: WorkspaceRef,
     workspace_id: WorkspaceId,
     fail_after_publish: AtomicBool,
     published: AtomicBool,
@@ -92,8 +29,16 @@ struct PublishThenFailExecutor {
 }
 
 impl PublishThenFailExecutor {
-    fn new(workspace_id: WorkspaceId) -> Self {
+    fn new(
+        host: Arc<
+            FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
+        >,
+        workspace: WorkspaceRef,
+        workspace_id: WorkspaceId,
+    ) -> Self {
         Self {
+            host,
+            workspace,
             workspace_id,
             fail_after_publish: AtomicBool::new(false),
             published: AtomicBool::new(false),
@@ -111,7 +56,7 @@ impl PublishThenFailExecutor {
 }
 
 impl GitFilesystemExecutor for PublishThenFailExecutor {
-    type Error = SharedStoreError;
+    type Error = acyclic_fs::LocalCoreStateStoreError;
 
     async fn validate_workspace_tree(
         &self,
@@ -144,9 +89,31 @@ impl GitFilesystemExecutor for PublishThenFailExecutor {
                 tracked_paths: None,
             },
         };
+        if matches!(action, GitFilesystemAction::Join { .. }) {
+            self.host
+                .apply(
+                    &self.workspace,
+                    None,
+                    &[WorkspaceMutation::PutFile {
+                        path: "/merge-publication.txt".into(),
+                        bytes: b"merge publication applied before result persistence".to_vec(),
+                    }],
+                    &IdempotencyKey::new("merge-publication-real-fs").map_err(|error| {
+                        acyclic_fs::LocalCoreStateStoreError::Io(std::io::Error::other(
+                            error.to_string(),
+                        ))
+                    })?,
+                )
+                .await
+                .map_err(|error| {
+                    acyclic_fs::LocalCoreStateStoreError::Io(std::io::Error::other(
+                        error.to_string(),
+                    ))
+                })?;
+        }
         if self.fail_after_publish.swap(false, Ordering::SeqCst) {
             self.published.store(true, Ordering::SeqCst);
-            return Err(SharedStoreError);
+            return Err(acyclic_fs::LocalCoreStateStoreError::Integrity);
         }
         Ok(result)
     }
@@ -160,8 +127,8 @@ fn live_tree(workspace_id: WorkspaceId) -> GitTreeRef {
 }
 
 fn transition_facade(
-    store: SharedStore,
-) -> Result<(FilesystemGitFacade<SharedStore>, WorkspaceId)> {
+    store: LocalCoreStateStore,
+) -> Result<(FilesystemGitFacade<LocalCoreStateStore>, WorkspaceId)> {
     let provider = ProviderRef::new("git-facade-production", "filesystem", "2")?;
     let volume = VolumeRef::new(
         provider,
@@ -193,9 +160,30 @@ fn transition_facade(
 
 #[tokio::test]
 async fn merge_publication_failure_reopens_and_replays_exact_operation() -> Result<()> {
-    let store = SharedStore::default();
-    let (facade, workspace_id) = transition_facade(store.clone())?;
-    let executor = Arc::new(PublishThenFailExecutor::new(workspace_id));
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let provider = ProviderRef::new("git-facade-production", "filesystem", "2")?;
+    let host = Arc::new(FilesystemHost::new(
+        LocalFs::local(LocalOptions::new(directory.path().join("filesystem")))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        provider.clone(),
+    )?);
+    let project = VolumeRef::new(
+        provider.clone(),
+        "root-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("merge-publication-recovery".into()),
+    )?;
+    host.create_volume(&project).await?;
+    let workspace = workspace_ref(project.provider().clone(), &project.storage_name()?)?;
+    let store_root = directory.path().join("control-plane");
+    let store = LocalCoreStateStore::new(&store_root);
+    let (facade, workspace_id) = transition_facade(store)?;
+    let executor = Arc::new(PublishThenFailExecutor::new(
+        host.clone(),
+        workspace.clone(),
+        workspace_id,
+    ));
     facade
         .run(
             GitCommand::Branch {
@@ -219,11 +207,17 @@ async fn merge_publication_failure_reopens_and_replays_exact_operation() -> Resu
         .ok_or_else(|| Error::Invalid("published merge failure was reported as complete".into()))?;
     assert!(matches!(merge_error, Error::Storage(_)));
     assert!(executor.published.load(Ordering::SeqCst));
+    assert_eq!(
+        host.read(&workspace, None, "/merge-publication.txt", 256)
+            .await?
+            .as_ref(),
+        b"merge publication applied before result persistence"
+    );
     let before_restart = executor.operations();
     assert_eq!(before_restart.len(), 2);
 
     drop(facade);
-    let (reopened, _) = transition_facade(store)?;
+    let (reopened, _) = transition_facade(LocalCoreStateStore::new(&store_root))?;
     let resumed = reopened
         .resume(executor.as_ref())
         .await?
