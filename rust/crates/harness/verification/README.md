@@ -242,6 +242,11 @@ writeback is separately admitted only for a direct root child and binds the
 exact writeback operation, `writeback` action, and captured generation. The
 model includes a generation advance so publication at a captured generation is
 kept distinct from a claim that the captured generation is still current.
+Integrate and discard are explicit choices for every child. An approved
+writeback remains durable when the workspace generation advances, but safe
+execution rejects that stale approval; the approval invariant is evaluated on
+an executed writeback, so malformed retained approvals do not become false
+invariant failures before an effect is attempted.
 
 The shared checker runs one safe case and four reachable negative controls:
 
@@ -249,10 +254,11 @@ The shared checker runs one safe case and four reachable negative controls:
   `DirectIntegrationAuthority`.
 * `unsafe-grandchild` lets root approve child `2` but writes back child `3`,
   and must violate `RootWritebackScope`.
-* `unsafe-stale-approval` changes the approved generation, and must violate
-  `ApprovalBinding`.
-* `unsafe-mismatched-approval` changes the operation and action, and must
-  violate `ApprovalBinding`.
+* `unsafe-stale-approval` changes the approved generation, bypasses the safe
+  execution guard, and must violate `ApprovalBinding` on the written effect.
+* `unsafe-mismatched-approval` changes the operation and action, bypasses the
+  safe execution guard, and must violate `ApprovalBinding` on the written
+  effect.
 
 The exact production transition matrix is:
 
