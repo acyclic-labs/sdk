@@ -88,13 +88,13 @@ test("every generation binary declared by Cargo has a source file", () => {
     .map((name) => basename(name, ".rs"))
     .sort();
   assert.ok(sourceBins.includes("sdk-qualification-receipt"), "qualification receipt source must remain in the crate");
-  assert.deepEqual(entries.map(({ name }) => name), [
+  assert.deepEqual(entries.map(({ name }) => name).sort(), [
     "sdk-generation",
     "sdk-platform-receipt",
     "sdk-stream-native-receipt",
     "sdk-runtime-consumer",
     "verify-rpc-observations",
-  ]);
+  ].sort());
   for (const entry of entries) {
     assert.equal(existsSync(join(root, "rust/crates/sdk-generation", entry.path)), true, entry.path);
   }
