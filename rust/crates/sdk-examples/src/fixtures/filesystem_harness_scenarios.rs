@@ -205,6 +205,7 @@ where
         .clone()
         .ok_or_else(|| Status::internal("create response omitted workspace"))?;
     let created_ref = workspace_ref(&created_workspace)?;
+    let created_head = head_ref(&created_workspace)?;
     state.insert("created_workspace_id", b64(&created_ref.workspace_id));
     output.push(evidence(
         "filesystem",
@@ -539,7 +540,7 @@ where
         "acyclic.filesystem.v2.RetainGenerationResponse"
     );
     let export_request = fs_wire::ExportRequest {
-        generation: Some(fixture_head.clone()),
+        generation: Some(created_head),
         after: Vec::new(),
         maximum_objects: 32,
         maximum_bytes: 1024 * 1024,
@@ -601,7 +602,7 @@ where
     let import_chunks: Vec<_> = exported_chunks
         .iter()
         .map(|chunk| fs_wire::ImportChunk {
-            workspace: Some(fixture_ref.clone()),
+            workspace: Some(created_ref.clone()),
             operation_id: operation_id.clone(),
             cursor: chunk.cursor.clone(),
             object_id: chunk.object_id.clone(),
@@ -635,8 +636,9 @@ where
     // Import into a fresh production service. Reusing the exporting service
     // would correctly reject the already-created volume authority and would
     // turn this positive transfer conformance case into a duplicate-create
-    // probe. The destination still uses the same deterministic providers and
-    // accepts the exported workspace identity from the wire manifest.
+    // probe. The destination derives the named workspace identity from the
+    // manifest and creates its authority only after authenticating the full
+    // imported closure.
     let import_service = empty_filesystem_service()
         .map_err(|error| Status::internal(format!("empty import fixture: {error}")))?;
     let server = acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(import_service);
@@ -651,11 +653,33 @@ where
     // handoff, a fast local runtime can race the listener and turn a valid
     // import into a transport error.
     tokio::task::yield_now().await;
-    let mut client = acyclic_fs::wire::filesystem::v2::filesystem_service_client::FilesystemServiceClient::connect(
-        format!("http://{address}"),
-    )
-    .await
-    .map_err(|error| Status::internal(format!("connect import fixture: {error}")))?;
+    let mut client = None;
+    let mut last_connect_error = None;
+    for _ in 0..200 {
+        match acyclic_fs::wire::filesystem::v2::filesystem_service_client::FilesystemServiceClient::connect(
+            format!("http://{address}"),
+        )
+        .await
+        {
+            Ok(value) => {
+                client = Some(value);
+                break;
+            }
+            Err(error) => {
+                last_connect_error = Some(error);
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+    }
+    let mut client = client.ok_or_else(|| {
+        Status::internal(format!(
+            "connect import fixture: {}",
+            last_connect_error
+                .map(|error| format!("{error:?}"))
+                .map(|error| format!("{error}; server_finished={}", server_task.is_finished()))
+                .unwrap_or_else(|| format!("server did not start; server_finished={}", server_task.is_finished()))
+        ))
+    })?;
     let import_result = client.import(iter(import_chunks.clone())).await;
     let invalid_chunk = fs_wire::ImportChunk {
         workspace: Some(fixture_ref.clone()),
@@ -850,7 +874,7 @@ async fn export_harness() -> Result<Vec<Value>, acyclic_harness::Error> {
     };
     let protocol = current_protocol();
     let operation = harness_wire::OperationIdentity {
-        operation_id: "fixture-op".into(),
+        operation_id: "00000000-0000-0000-0000-000000000001".into(),
         idempotency_key: "fixture-key".into(),
     };
 
@@ -919,6 +943,13 @@ async fn export_harness() -> Result<Vec<Value>, acyclic_harness::Error> {
         operation_id: operation.operation_id.clone(),
         protocol: Some(protocol.clone()),
         owner: Some(owner.clone()),
+        scope: Some(harness_wire::Scope {
+            id: "fixture-control".into(),
+            capabilities: vec!["operation:observe".into(), "operation:cancel".into()],
+            issuer: "fixture".into(),
+            proof: vec![0; 32],
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let observed = backend.observe(observe.clone()).await?;
@@ -938,6 +969,13 @@ async fn export_harness() -> Result<Vec<Value>, acyclic_harness::Error> {
         operation_id: operation.operation_id,
         protocol: Some(protocol),
         owner: Some(owner),
+        scope: Some(harness_wire::Scope {
+            id: "fixture-control".into(),
+            capabilities: vec!["operation:observe".into(), "operation:cancel".into()],
+            issuer: "fixture".into(),
+            proof: vec![0; 32],
+            ..Default::default()
+        }),
         idempotency_key: "fixture-cancel".into(),
         ..Default::default()
     };
@@ -1107,7 +1145,10 @@ mod tests {
             .rev()
             .find(|record| record["family"] == "harness" && record["operation"] == "Cancel")
             .expect("harness cancel evidence");
-        assert_eq!(harness_cancel["state"]["operation_id"], "fixture-op");
+        assert_eq!(
+            harness_cancel["state"]["operation_id"],
+            "00000000-0000-0000-0000-000000000001"
+        );
         assert_eq!(harness_cancel["state"]["authority"], "task:fixture");
         assert_eq!(
             harness_cancel["state"]["observed_state_code"],
