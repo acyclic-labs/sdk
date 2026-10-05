@@ -518,6 +518,27 @@ impl LocalFilesystemForkResolver {
     pub fn stream_provider(&self) -> ProviderRef {
         self.stream_provider.clone()
     }
+
+    fn bind_process_capture(
+        &self,
+        parent_harness: &PersistentLocalHarness,
+        preparer: FilesystemForkPreparer<LocalAuthorityBackend, LocalObjectBackend>,
+        request: &ForkRequest,
+    ) -> Result<FilesystemForkPreparer<LocalAuthorityBackend, LocalObjectBackend>> {
+        let Some(selection) = request
+            .selections
+            .iter()
+            .find(|selection| matches!(selection.revision, ResourceRevision::Process(_)))
+        else {
+            return Ok(preparer);
+        };
+        let provider = NativeExecutionForkCaptureProvider::from_selection(
+            parent_harness.execution_receipt_store()?,
+            selection.revision.provider().clone(),
+            selection,
+        )?;
+        preparer.with_capture_provider(Arc::new(provider))
+    }
 }
 
 impl LocalModelForkResolver for LocalFilesystemForkResolver {
@@ -633,7 +654,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     storage.owner_scope().clone(),
                     swarm.config.limits.file_bytes,
                 )?);
-                let mut preparer = FilesystemForkPreparer::new(
+                let preparer = FilesystemForkPreparer::new(
                     self.host.clone(),
                     parent.reducer().clone(),
                     storage.verifier(),
@@ -644,16 +665,11 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 )?;
                 let mut original_request = report.request.clone();
                 original_request.parent_revision = report.captured_history_revision()?;
-                if let Some(selection) = original_request.selections.iter().find(|selection| {
-                    matches!(selection.revision, ResourceRevision::Process(_))
-                }) {
-                    let provider = NativeExecutionForkCaptureProvider::from_selection(
-                        parent_harness.execution_receipt_store()?,
-                        selection.revision.provider().clone(),
-                        selection,
-                    )?;
-                    preparer = preparer.with_capture_provider(Arc::new(provider))?;
-                }
+                let preparer = self.bind_process_capture(
+                    parent_harness,
+                    preparer,
+                    &original_request,
+                )?;
                 let rebind_proof = preparer
                     .authenticate_rebind_records(&original_request)
                     .await?;
@@ -819,7 +835,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 storage.owner_scope().clone(),
                 swarm.config.limits.file_bytes,
             )?);
-            let mut preparer = FilesystemForkPreparer::new(
+            let preparer = FilesystemForkPreparer::new(
                 self.host.clone(),
                 parent.reducer().clone(),
                 storage.verifier(),
@@ -828,16 +844,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 self.stream_provider.clone(),
                 parent_reader,
             )?;
-            if let Some(selection) = request.selections.iter().find(|selection| {
-                matches!(selection.revision, ResourceRevision::Process(_))
-            }) {
-                let provider = NativeExecutionForkCaptureProvider::from_selection(
-                    parent_harness.execution_receipt_store()?,
-                    selection.revision.provider().clone(),
-                    selection,
-                )?;
-                preparer = preparer.with_capture_provider(Arc::new(provider))?;
-            }
+            let preparer = self.bind_process_capture(parent_harness, preparer, &request)?;
             let report = parent.prepare_fork(&preparer, request.clone()).await?;
             let declaration = LocalInheritedModelDeclaration {
                 boundary,
