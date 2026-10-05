@@ -46,7 +46,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let build_client = true;
     let native_transport = std::env::var("CARGO_CFG_TARGET_ARCH")?.as_str() != "wasm32";
     tonic_prost_build::configure()
+        // Keep the generated client available to the browser facade while
+        // omitting native transport/server glue from wasm32 builds.
         .build_client(build_client)
+        .build_transport(native_transport)
         .build_server(native_transport)
         .compile_fds_with_config(descriptors, prost)?;
     println!("cargo:rerun-if-changed=build.rs");
