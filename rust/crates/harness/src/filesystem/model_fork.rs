@@ -145,7 +145,9 @@ where
         if publication.operation_id != expected {
             return Err(Error::Conflict("fork publication identity changed".into()));
         }
+        crate::stack_diagnostics::marker("fork-boundary-before-journal-replay");
         let records = self.journal.replay(publication.parent_operation).await?;
+        crate::stack_diagnostics::marker("fork-boundary-after-journal-replay");
         let mut admitted = false;
         let mut original_manifest = None;
         let mut completed = false;
@@ -175,6 +177,7 @@ where
                 } if *step == publication.step => {
                     let actual: ModelBatchPublication =
                         load_json(self.journal.as_ref(), reference).await?;
+                    crate::stack_diagnostics::marker("fork-boundary-after-publication-load");
                     if &actual != publication || admitted {
                         return Err(Error::Conflict("fork publication admission changed".into()));
                     }
@@ -189,21 +192,26 @@ where
             ));
         }
         let request: ModelRequest = load_json(self.journal.as_ref(), &publication.request).await?;
+        crate::stack_diagnostics::marker("fork-boundary-after-request-load");
         let boundary: CompletedModelBoundary =
             load_json(self.journal.as_ref(), &publication.boundary).await?;
+        crate::stack_diagnostics::marker("fork-boundary-after-boundary-load");
         boundary.verify(limits)?;
+        crate::stack_diagnostics::marker("fork-boundary-after-boundary-verify");
         let manifest: ModelInputManifest = load_json(
             self.journal.as_ref(),
             original_manifest
                 .ok_or_else(|| Error::Conflict("fork input manifest is missing".into()))?,
         )
         .await?;
+        crate::stack_diagnostics::marker("fork-boundary-after-manifest-load");
         let original = PreparedModelInput::restore(
             request,
             limits,
             boundary.option_policy.as_ref(),
             manifest,
         )?;
+        crate::stack_diagnostics::marker("fork-boundary-after-original-restore");
         let original_prefix =
             FrozenModelPrefix::capture(&original, original.request().messages.len())?;
         original_prefix.verify(&PreparedModelInput::prepare_with_policy(
@@ -211,9 +219,11 @@ where
             limits,
             boundary.option_policy.as_ref(),
         )?)?;
+        crate::stack_diagnostics::marker("fork-boundary-after-prefix-verify");
         let parent = self
             .completed_conversation(publication.parent_operation, publication.step, limits)
             .await?;
+        crate::stack_diagnostics::marker("fork-boundary-after-conversation-publication");
         let state = parent
             .reducer()
             .conversation()
@@ -230,6 +240,7 @@ where
             limits.render_bytes,
         )
         .await?;
+        crate::stack_diagnostics::marker("fork-boundary-after-context-selection");
         match inherited {
             Some(declaration) => {
                 declaration.verify_composition(&boundary.request, &selected.messages, limits)?
