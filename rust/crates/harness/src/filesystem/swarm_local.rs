@@ -3187,6 +3187,24 @@ impl PersistentLocalSwarm {
         Ok(Some(Arc::new(tool).into_tool()))
     }
 
+    /// Builds the model-facing task tools from the durable composition and
+    /// installs the scoped project Git facade before any admission contract is
+    /// verified. Child activation and cold reopen must use this same path as
+    /// the inherited model turn so the pinned tool definitions cannot drift.
+    async fn local_tools_for(
+        &self,
+        task: TaskId,
+        harness: &PersistentLocalHarness,
+    ) -> Result<LocalHarnessTools> {
+        let mut tools = self.bindings.tools_for(task)?;
+        if let Some(project) = self.project_for_task(task).await?
+            && let Some(tool) = self.git_tool_for(task, harness, &project).await?
+        {
+            tools = tools.with_tool(tool)?;
+        }
+        Ok(tools)
+    }
+
     async fn project_for_task(&self, task: TaskId) -> Result<Option<VolumeRef>> {
         if self.root_task().await? == task {
             return Ok(self.config.project.clone());
@@ -3730,14 +3748,7 @@ impl PersistentLocalSwarm {
             plans.clone(),
             publisher.clone(),
         );
-        let mut root_tools = swarm.bindings.tools_for(root_task)?;
-        if let Some(project) = swarm.config.project.clone()
-            && let Some(tool) = swarm
-                .git_tool_for(root_task, &root_harness, &project)
-                .await?
-        {
-            root_tools = root_tools.with_tool(tool)?;
-        }
+        let root_tools = swarm.local_tools_for(root_task, &root_harness).await?;
         let root_harness = root_harness.with_local_tools(model, provider, limits, root_tools)?;
         swarm.sessions.get_mut().insert(root_task, Arc::new(root_harness));
         swarm.model_fork_publisher = Some(publisher.clone());
@@ -5577,30 +5588,41 @@ impl PersistentLocalSwarm {
         let activation_gate = self.task_gate(child)?;
         let activation_guard = activation_gate.try_lock_owned()
             .map_err(|_| Error::Indeterminate(request.child_operation))?;
-        let harness =
-            match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
+        let harness_result: Result<Arc<PersistentLocalHarness>> = async {
+            let harness =
+                PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
+                    self.config.model.clone(),
+                    self.provider.clone(),
+                    self.config.limits,
+                    host,
+                    stream,
+                    issuer,
+                    storage_parent,
+                    seed,
+                    LocalHarnessTools::new(),
+                    self.stream_provider.clone(),
+                )
+                .await?;
+            let tools = self.local_tools_for(child, &harness).await?;
+            Ok(Arc::new(harness.with_local_tools(
                 self.config.model.clone(),
                 self.provider.clone(),
                 self.config.limits,
-                host,
-                stream,
-                issuer,
-                storage_parent,
-                seed,
-                self.bindings.tools_for(child)?,
-                self.stream_provider.clone(),
-            )
-            .await
-            {
-                Ok(harness) => Arc::new(harness),
-                Err(error) => {
-                    self.mark_activation_failed_if_safe(
-                        child, request.child_operation, None, &error,
-                    ).await?;
-                    self.cancel_child_budget(request.child_operation).await?;
-                    return Err(error);
-                }
-            };
+                tools,
+            )?))
+        }
+        .await;
+        let harness = match harness_result {
+            Ok(harness) => harness,
+            Err(error) => {
+                self.mark_activation_failed_if_safe(
+                    child, request.child_operation, None, &error,
+                )
+                .await?;
+                self.cancel_child_budget(request.child_operation).await?;
+                return Err(error);
+            }
+        };
         let child_admission = self.authenticated_admission(child).await?;
         if let Err(error) = self
             .verify_admitted_task(Some(request.parent), &child_admission, &harness)
@@ -6580,12 +6602,7 @@ impl PersistentLocalSwarm {
             .grant(super::local::LOCAL_EXECUTION_CAPABILITY)
             .grant(super::local::INTERACTION_ROUTE_CAPABILITY)
             .limits(self.config.limits);
-        let mut tools = self.bindings.tools_for(task)?;
-        if let Some(project) = self.project_for_task(task).await?
-            && let Some(tool) = self.git_tool_for(task, harness, &project).await?
-        {
-            tools = tools.with_tool(tool)?;
-        }
+        let tools = self.local_tools_for(task, harness).await?;
         tools.install_into(builder)?.build()
     }
 
@@ -6774,7 +6791,7 @@ impl PersistentLocalSwarm {
                 let parent_aggregate = parent_harness
                     .conversation_aggregate(self.config.limits)
                     .await?;
-                let harness = Arc::new(
+                let harness =
                     PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
                         self.config.model.clone(),
                         self.provider.clone(),
@@ -6784,11 +6801,17 @@ impl PersistentLocalSwarm {
                         LocalFilesystemForkResolver::child_issuer(&seed.child, operation, secret),
                         &parent_aggregate,
                         &seed,
-                        self.bindings.tools_for(task)?,
+                        LocalHarnessTools::new(),
                         self.stream_provider.clone(),
                     )
-                    .await?,
-                );
+                    .await?;
+                let tools = self.local_tools_for(task, &harness).await?;
+                let harness = Arc::new(harness.with_local_tools(
+                    self.config.model.clone(),
+                    self.provider.clone(),
+                    self.config.limits,
+                    tools,
+                )?);
                 self.sessions.lock().await.insert(task, harness.clone());
                 self.observe(LocalSwarmObservation::HarnessOpened { task });
                 return Ok(harness);
