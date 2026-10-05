@@ -282,7 +282,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         conditions: vec![
             CommitCondition::Tail {
                 path: source.clone(),
-                expected: 2,
+                expected: 3,
             },
             CommitCondition::Absent {
                 path: committed_path.clone(),
@@ -377,7 +377,7 @@ async fn verify_stale_tail_condition(
     let stale_conflict = CommitOutcome::Conflict(vec![CommitConflict::Tail {
         path: source.clone(),
         expected: 1,
-        actual: Some(2),
+        actual: Some(3),
     }]);
     if provider
         .commit(CommitRequest {
@@ -402,7 +402,7 @@ async fn verify_stale_tail_condition(
         .map_err(|err| error(&err))?
         != stale_conflict
         || provider.tail(stale_path).await != Err(StreamError::NotFound)
-        || provider.tail(source).await.map_err(|err| error(&err))? != 2
+        || provider.tail(source).await.map_err(|err| error(&err))? != 3
     {
         return Err("stale tail condition mutated a coordinated commit".into());
     }
@@ -420,7 +420,7 @@ async fn verify_fork_with_records(
         conditions: vec![
             CommitCondition::Tail {
                 path: source.clone(),
-                expected: 2,
+                expected: 3,
             },
             CommitCondition::Absent {
                 path: destination.clone(),
