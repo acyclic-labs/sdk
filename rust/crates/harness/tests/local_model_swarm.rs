@@ -218,9 +218,7 @@ impl ModelProvider for LiveHandshakeProvider {
         let is_child_a = declared_task == Some("live-child-a");
         let is_child_b = declared_task == Some("live-child-b");
         let is_grandchild = declared_task == Some("live-grandchild");
-        let is_root = !is_child_a && !is_child_b && !is_grandchild;
-
-        if is_child_a {
+    if is_child_a {
             if !self.child_a_fork_sent.swap(true, Ordering::SeqCst) {
                 let started = self.child_a_started.clone();
                 let active = self.child_a_active.clone();
@@ -979,7 +977,7 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
 
     let root_operation = id(0xD1);
     let child_operation = id(0xD2);
-    let running = {
+    let mut running = {
         let swarm = swarm.clone();
         tokio::spawn(async move {
             swarm
@@ -1230,16 +1228,20 @@ async fn nonblocking_recursive_runtime_preserves_live_handshake_and_prefixes() -
     let shared_prefix = child_a_suffix.min(child_b_suffix);
     for index in 0..shared_prefix {
         assert_eq!(
-            serde_json::to_vec(&child_a_request.messages[index])?,
-            serde_json::to_vec(&child_b_request.messages[index])?,
+            serde_json::to_vec(&child_a_request.messages[index])
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            serde_json::to_vec(&child_b_request.messages[index])
+                .map_err(|error| Error::Storage(error.to_string()))?,
             "sibling inherited prefix changed at message {index}"
         );
     }
     assert!(grandchild_request.messages.len() > child_a_request.messages.len());
     for (index, parent_message) in child_a_request.messages.iter().enumerate() {
         assert_eq!(
-            serde_json::to_vec(parent_message)?,
-            serde_json::to_vec(&grandchild_request.messages[index])?,
+            serde_json::to_vec(parent_message)
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            serde_json::to_vec(&grandchild_request.messages[index])
+                .map_err(|error| Error::Storage(error.to_string()))?,
             "recursive inherited prefix changed at message {index}"
         );
     }
@@ -1259,7 +1261,6 @@ async fn nonblocking_recursive_runtime_preserves_live_handshake_and_prefixes() -
         limits,
     )
     .await?;
-    provider.bind_swarm(&reopened);
     assert_eq!(
         reopened
             .session(acyclic_harness::TaskId::from_bytes(child_a.into_bytes()))
