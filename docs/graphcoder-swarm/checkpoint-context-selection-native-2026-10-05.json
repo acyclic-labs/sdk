@@ -1,0 +1,52 @@
+{
+  "source": "d4203d25e811e6f972938366a0e796d2809e3d71",
+  "swarm": {
+    "exit_code": -1073741571,
+    "last_phase": "fork-boundary-after-context-selection",
+    "outcome": "STATUS_STACK_OVERFLOW"
+  },
+  "input": {
+    "exit_code": 101,
+    "outcome": "compile_failure",
+    "cause": "json macro recursion in real_harness_trace.rs manifest",
+    "cases_executed": 0
+  },
+  "artifacts": [
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\d4203d25e\\boundary-and-input\\input-exit.txt",
+      "bytes": 5,
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\d4203d25e\\boundary-and-input\\input.log",
+      "bytes": 1320,
+      "sha256": "f81e33feba253ce005ee7710a885b67a8f036d20da78cd9b77c211e9c3671180"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\d4203d25e\\boundary-and-input\\local_model_swarm-d3511dedf296d78f.exe",
+      "bytes": 32297472,
+      "sha256": "4b1ec43414c5eec9a86a3abdfb51edd59611f666f952a7a04455f1d2fa2c3249"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\d4203d25e\\boundary-and-input\\results.json",
+      "bytes": 57,
+      "sha256": "d314dd2cdf8bd76cc5218d22c9acd116793858286fc93e0afcb50daf9ce7219e"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\d4203d25e\\boundary-and-input\\source.zip",
+      "bytes": 7638960,
+      "sha256": "0406e2b883aa894f549c2b0e8e8253f030ef44ea4f1d361233ad0f7ab3775c30"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\d4203d25e\\boundary-and-input\\swarm-exit.txt",
+      "bytes": 13,
+      "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\d4203d25e\\boundary-and-input\\swarm.log",
+      "bytes": 5695,
+      "sha256": "143c85665716cbe1fb031ad8efcc11d8e8c9b6ec725189ba6c1ddf6bc94703cb"
+    }
+  ],
+  "qualification_complete": false
+}
