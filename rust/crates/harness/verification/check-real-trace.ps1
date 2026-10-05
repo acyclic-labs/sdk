@@ -116,6 +116,32 @@ function DecodeHex([string]$Value, [string]$Name) {
     return $bytes
 }
 
+$python = Get-Command python -ErrorAction SilentlyContinue
+if ($null -eq $python) {
+    throw 'real trace qualification requires Python with the blake3 package for an independent SDK digest check.'
+}
+
+function InvokePythonHex([byte[]]$Bytes, [string]$Code, [string]$Name) {
+    $temporary = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllBytes($temporary, $Bytes)
+        $output = @(& $python.Source -c $Code $temporary 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Name helper failed: $($output -join ' ')"
+        }
+        $hex = ($output -join "`n").Trim()
+        if ($hex -notmatch '^[0-9a-fA-F]+$') {
+            throw "$Name helper returned invalid hexadecimal output."
+        }
+        return $hex.ToLowerInvariant()
+    } finally {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$canonicalJsonCode = 'import json,sys; raw=open(sys.argv[1],"rb").read(); value=json.loads(raw.decode("utf-8")); sys.stdout.write(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode("utf-8").hex())'
+$blake3Code = 'import blake3,sys; sys.stdout.write(blake3.blake3(open(sys.argv[1],"rb").read()).hexdigest())'
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
 $observedCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $manifest.provenance.source_commit -ne $observedCommit) {
@@ -151,6 +177,10 @@ foreach ($entry in @(
 
 function ParseCanonicalJson([string]$Hex, [string]$Name) {
     $bytes = DecodeHex $Hex $Name
+    $canonicalHex = InvokePythonHex $bytes $canonicalJsonCode $Name
+    if ($canonicalHex -ne (Hex $bytes)) {
+        throw "$Name bytes are not canonical JSON."
+    }
     try { return ([System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json) }
     catch { throw "$Name canonical bytes are not valid JSON." }
 }
@@ -229,6 +259,10 @@ RequireJsonEqual $manifest.source.declaration $declarationCanonical 'manifest de
 if ((JsonByteArrayHex $admissionMessage.seed_digest 'admission seed digest') -ne
     (JsonByteArrayHex $manifest.source.seed_digest 'manifest seed digest')) {
     throw 'admission seed digest does not match the source binding.'
+}
+$recomputedSeedDigest = InvokePythonHex (DecodeHex ([string]$manifest.source.seed_canonical_bytes_hex) 'seed') $blake3Code 'seed digest'
+if ($recomputedSeedDigest -ne (JsonByteArrayHex $admissionMessage.seed_digest 'admission seed digest')) {
+    throw 'admission seed digest does not match the SDK blake3 digest of canonical seed bytes.'
 }
 if ([string]$admissionPublication.operation_id -ne [string]$manifest.identity_binding.publication_operation_id -or
     [string]$admissionPublication.parent_operation -ne [string]$manifest.source.root_operation -or

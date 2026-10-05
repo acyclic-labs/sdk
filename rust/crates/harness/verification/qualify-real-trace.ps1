@@ -54,6 +54,8 @@ $mutations = @(
     @{ Name = 'parent-step'; Apply = { param($m) $m.source.parent_step = [int64]$m.source.parent_step + 1 } },
     @{ Name = 'child-agent'; Apply = { param($m) $m.source.child_agent = [int64]$m.source.child_agent + 1 } },
     @{ Name = 'seed'; Apply = { param($m) $m.source.seed.operation_id = '00000000-0000-0000-0000-000000000000' } },
+    @{ Name = 'seed-noncanonical'; Apply = { param($m) $m.source.seed_canonical_bytes_hex = "20$($m.source.seed_canonical_bytes_hex)" } },
+    @{ Name = 'seed-digest'; Apply = { param($m) $m.source.seed_digest = @(0..31) } },
     @{ Name = 'report'; Apply = { param($m) $m.source.report_sha256 = ('0' * 64) } },
     @{ Name = 'publication'; Apply = { param($m) $m.source.publication.operation_id = '00000000-0000-0000-0000-000000000000' } },
     @{ Name = 'declaration'; Apply = { param($m) $m.source.declaration.suffix = @() } },

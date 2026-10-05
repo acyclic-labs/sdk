@@ -228,6 +228,9 @@ requires the semantic checker to reject every mutation. There is no production
 causal publication negative case because the current APIs expose independent
 registry, conversation, and child-journal orderings without an authenticated
 cross-stream causal witness; the gate does not invent one.
+The checker also requires the qualification environment's Python `blake3`
+package to independently recompute the SDK's BLAKE3 seed digest over the exact
+canonical seed bytes; SHA-256 remains the artifact-integrity digest.
 
 ## Direct-parent integration and root approval model
 
