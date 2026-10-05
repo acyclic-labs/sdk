@@ -1,0 +1,6 @@
+[
+  {"kind":"fork_admitted","operation_id":"child-a","parent":1,"child":2,"depth":1,"captured_generation":0},
+  {"kind":"fork_admitted","operation_id":"child-b","parent":1,"child":3,"depth":1,"captured_generation":0},
+  {"kind":"fork_admitted","operation_id":"child-c","parent":1,"child":5,"depth":1,"captured_generation":0},
+  {"kind":"fork_admitted","operation_id":"grandchild","parent":2,"child":4,"depth":2,"captured_generation":0}
+]

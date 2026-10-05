@@ -128,8 +128,8 @@ files do not depend on symbolic function expressions:
   identities. It checks that message and wait admission is restricted to direct
   parent/child pairs. `SwarmAuthorityUnsafe.cfg` enables one sibling admission
   path and must violate `DirectMessageAuthority`.
-* `SwarmBudget.tla` has six finite agent identities, a depth bound of two, a
-  session allocation budget of four, and a two-step per-agent budget. It
+* `SwarmBudget.tla` has five finite agent identities, a depth bound of two, a
+  session allocation budget of three, and a two-step per-agent budget. It
   separately checks aggregate allocation, per-agent steps, and recursive depth.
   The three unsafe configurations enable exactly one over-allocation, over-step,
   or over-depth transition and must violate the corresponding invariant.
@@ -154,12 +154,19 @@ eventual completion, deadlock freedom, storage correctness, or Rust refinement.
 
 ## Trace conformance adapter
 
-`check-trace.ps1` is a lightweight adapter for actual Harness event traces. It
-checks the event-level obligations that the TLA models abstract: unique fork
-admission and model start, durable completion before publication, direct-parent
-message and wait authority, at-most-once message delivery, and matching
-captured/current workspace generations. `check-trace-fixtures.ps1` accepts the
-valid seven-event fixture and rejects the stale-publication fixture. The
-fixtures prove the adapter's own behavior; they are not runtime qualification.
-To claim implementation conformance, a production test must export the same
-event fields from the real journal and run this adapter against that trace.
+`check-trace.ps1` is a strict finite event adapter for future Harness event
+traces. It retains the directed parent map, allocated agent set, operation to
+agent bindings, captured generations, current generations, durable completions,
+message deliveries and wait targets. It rejects swapped parent/child roles,
+missing or mistyped fields, forged generations, operation/agent mismatches,
+orphan and duplicate delivery, stale publication, and session overspend. The
+communication relation is bidirectional only for messages and waits; fork and
+publication remain parent-to-child operations.
+
+`check-trace-fixtures.ps1` accepts one valid trace and rejects nine negative
+fixtures covering swapped parent, missing identity, wrong agent, forged
+capture, orphan delivery, double delivery, invalid boolean, overspend and
+stale publication. These fixtures prove the adapter's own behavior; no
+production Harness event trace is claimed as evidence. To claim implementation
+conformance, a production test must export the same event fields from the real
+journal and run this adapter against that trace.

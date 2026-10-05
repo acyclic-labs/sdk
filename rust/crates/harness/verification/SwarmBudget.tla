@@ -3,18 +3,16 @@ EXTENDS Naturals, FiniteSets
 
 CONSTANTS UnsafeAllocation, UnsafeStep, UnsafeDepth
 
-Agents == 1..6
+Agents == 1..5
 Root == 1
 MaxDepth == 2
-SessionBudget == 4
+SessionBudget == 3
 StepBudget == 2
 
 Parent(a) == IF a = 1 THEN 1 ELSE IF a = 2 THEN 1 ELSE
-             IF a = 3 THEN 1 ELSE IF a = 4 THEN 2 ELSE
-             IF a = 5 THEN 1 ELSE 4
+             IF a = 3 THEN 1 ELSE IF a = 4 THEN 2 ELSE 1
 Depth(a) == IF a = 1 THEN 0 ELSE IF a = 2 THEN 1 ELSE
-            IF a = 3 THEN 1 ELSE IF a = 4 THEN 2 ELSE
-            IF a = 5 THEN 2 ELSE 3
+            IF a = 3 THEN 3 ELSE IF a = 4 THEN 2 ELSE 2
 
 VARIABLES phase, allocated, totalAllocated, used
 

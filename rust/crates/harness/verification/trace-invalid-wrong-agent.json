@@ -1,0 +1,4 @@
+[
+  {"kind":"fork_admitted","operation_id":"child-op","parent":1,"child":2,"depth":1,"captured_generation":0},
+  {"kind":"model_started","operation_id":"child-op","agent":3}
+]
