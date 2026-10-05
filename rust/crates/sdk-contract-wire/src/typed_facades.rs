@@ -492,7 +492,12 @@ fn descriptor_semantic_type(field: &ResolvedRequestField) -> Option<&'static Sem
         WireValueKind::String => matches!(wire, Some(FieldType::String)),
         WireValueKind::Bytes => matches!(wire, Some(FieldType::Bytes))
             || (matches!(wire, Some(FieldType::Message | FieldType::Group))
-                && matches!(semantic.rust_name, "MachineId" | "CheckpointId" | "OperationId")),
+                && matches!(semantic.rust_name, "MachineId" | "CheckpointId" | "OperationId")
+                && field
+                    .type_name
+                    .as_deref()
+                    .and_then(|name| name.rsplit('.').next())
+                    == Some(semantic.rust_name)),
         WireValueKind::Boolean => matches!(wire, Some(FieldType::Bool)),
         WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => matches!(
             wire,
@@ -581,14 +586,23 @@ fn descriptor_field_expression(field: &ResolvedRequestField, chain: &[ResolvedRe
     expression.push_str(&upper_camel(&field.field));
     if field.label == Some(FieldLabel::Repeated as i32) {
         expression.push_str("List");
+        if field.wire_type == Some(FieldType::Enum as i32) {
+            expression.push_str("Value");
+        }
     } else if field.wire_type == Some(FieldType::Enum as i32) {
         expression.push_str("Value");
     }
     expression.push_str("()");
-    if field.semantic_type.is_some()
-        && field.wire_type == Some(FieldType::Message as i32)
-        && field.label != Some(FieldLabel::Repeated as i32)
-    {
+    let message_backed_bytes = matches!(
+        field.semantic_type.as_deref().and_then(semantic_type),
+        Some(semantic)
+            if matches!(
+                semantic.rust_name,
+                "MachineId" | "CheckpointId" | "OperationId"
+            )
+    ) && field.wire_type == Some(FieldType::Message as i32)
+        && field.label != Some(FieldLabel::Repeated as i32);
+    if message_backed_bytes {
         expression.push_str(".getValue()");
     }
     expression
