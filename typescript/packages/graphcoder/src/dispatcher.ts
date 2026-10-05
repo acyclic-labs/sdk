@@ -41,6 +41,7 @@ export class GraphCoderWireDispatcher {
     switch (request.method) {
       case "list_sessions": return wirePage(await this.transport.listSessions(decodePageQuery(params.query)), wireSessionSummary);
       case "start_session": return wireSnapshot(await this.transport.startSession({ prompt: checkedPublicText(params.prompt, "prompt", MAX_PROMPT_BYTES), operationId: checkedPublicText(params.operation_id, "operation_id", MAX_OPERATION_ID_BYTES), ...(params.model_fixture === undefined ? {} : { modelFixture: checkedPublicText(params.model_fixture, "model_fixture", MAX_OPERATION_ID_BYTES) }) }));
+      case "input_session": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wireSnapshot(await this.transport.inputSession({ sessionId: id, prompt: checkedPublicText(params.prompt, "prompt", MAX_PROMPT_BYTES), operationId: checkedPublicText(params.operation_id, "operation_id", MAX_OPERATION_ID_BYTES) })); }
       case "open_session": return wireSnapshot(await this.transport.openSession(sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES))));
       case "resume_session": return wireSnapshot(await this.transport.resumeSession(sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES))));
       case "read_activity": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wirePage(await this.transport.readActivity(id, decodePageQuery(params.query)), wireActivity); }

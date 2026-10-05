@@ -123,6 +123,14 @@ export interface StartSessionInput {
   readonly modelFixture?: string;
 }
 
+/** A fresh root turn in an existing session. */
+export interface InputSessionInput {
+  readonly sessionId: SessionId;
+  readonly prompt: string;
+  /** Stable caller-owned identity used to recover this distinct turn. */
+  readonly operationId: string;
+}
+
 export interface WritebackApproval {
   readonly sessionId: SessionId;
   readonly operationId: string;
@@ -141,6 +149,8 @@ export interface GraphCoderTransport {
   /** Returns summaries only; it must not start workers or hydrate workspaces. */
   listSessions(query?: PageQuery): Promise<SessionPage>;
   startSession(input: StartSessionInput): Promise<SessionSnapshot>;
+  /** Runs a fresh root turn after completion or reopening without creating a new session. */
+  inputSession(input: InputSessionInput): Promise<SessionSnapshot>;
   openSession(sessionId: SessionId): Promise<SessionSnapshot>;
   resumeSession(sessionId: SessionId): Promise<SessionSnapshot>;
   readActivity(sessionId: SessionId, query?: PageQuery): Promise<ActivityPage>;
@@ -199,6 +209,7 @@ export interface GraphCoderUiState {
 export type GraphCoderUiCommand =
   | { readonly kind: "list_sessions"; readonly after?: string; readonly limit?: number }
   | { readonly kind: "start_session"; readonly prompt: string; readonly operationId: string; readonly modelFixture?: string }
+  | { readonly kind: "input_session"; readonly prompt: string; readonly operationId: string }
   | { readonly kind: "open_session"; readonly sessionId: SessionId }
   | { readonly kind: "resume_session"; readonly sessionId: SessionId }
   | { readonly kind: "load_activity"; readonly after?: string; readonly limit?: number }
@@ -348,6 +359,18 @@ export class GraphCoderUi {
         if (command.modelFixture !== undefined) input.modelFixture = command.modelFixture;
         const snapshot = await this.transport.startSession(input);
         if (epoch !== this.#commandEpoch) return;
+        this.#select(snapshot);
+        return;
+      }
+      case "input_session": {
+        const session = this.#requireSelected();
+        const snapshot = await this.transport.inputSession({
+          sessionId: session.summary.id,
+          prompt: checkedPublicText(command.prompt, "session prompt", MAX_PROMPT_BYTES),
+          operationId: checkedPublicText(command.operationId, "operation id", MAX_OPERATION_ID_BYTES),
+        });
+        if (epoch !== this.#commandEpoch) return;
+        if (snapshot.summary.id !== session.summary.id) throw new GraphCoderError("transport", "input session response is not bound to the selected session");
         this.#select(snapshot);
         return;
       }
