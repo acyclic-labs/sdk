@@ -18,7 +18,9 @@ if (vector.version !== 3 || vector.children?.length !== 2 || vector.grandchild =
   throw new Error("model-input-v3 must retain root, two sibling, and grandchild cases");
 }
 if (!Array.isArray(vector.rejections) || vector.rejections.length !== 2
-  || vector.rejections.some(entry => typeof entry.name !== "string" || typeof entry.error_contains !== "string")) {
+  || vector.rejections.some(entry => typeof entry.name !== "string"
+    || !["conflict", "invalid"].includes(entry.error_kind)
+    || typeof entry.error_message !== "string")) {
   throw new Error("model-input-v3 must retain its unknown-result and schema-result rejection cases");
 }
 for (const entry of [vector.root, ...vector.children, vector.grandchild]) {
@@ -81,8 +83,8 @@ if (runNative) {
   }
   for (const [index, expected] of vector.rejections.entries()) {
     const actual = emitted.rejections[index];
-    if (actual?.name !== expected.name || actual.kind !== "invalid"
-      || typeof actual.message !== "string" || !actual.message.startsWith(expected.error_contains)) {
+    if (actual?.name !== expected.name || actual.kind !== expected.error_kind
+      || actual.message !== expected.error_message) {
       throw new Error(`native model-input rejection drift at ${expected.name}`);
     }
   }

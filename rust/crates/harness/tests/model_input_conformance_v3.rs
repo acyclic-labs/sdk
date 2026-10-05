@@ -57,7 +57,8 @@ struct Expected {
 #[derive(Debug, Deserialize)]
 struct RejectionCase {
     name: String,
-    error_contains: String,
+    error_kind: String,
+    error_message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,7 +82,7 @@ struct NativeCase {
 #[derive(Debug, Serialize)]
 struct NativeRejection {
     name: String,
-    kind: &'static str,
+    kind: String,
     message: String,
 }
 
@@ -242,21 +243,25 @@ fn emit_native_model_input_v3_fixture() -> Result<()> {
         let error =
             PreparedModelInput::prepare_with_policy(request, vector.limits, Some(&vector.policy))
                 .expect_err("rejection fixture unexpectedly admitted");
-        let Error::Invalid(message) = error else {
+        let (kind, message) = match error {
+            Error::Conflict(message) => ("conflict", message),
+            Error::Invalid(message) => ("invalid", message),
+            error => {
+                return Err(acyclic_harness::Error::Invalid(format!(
+                    "{} rejection returned unexpected error: {error:?}",
+                    case.name
+                )));
+            }
+        };
+        if kind != case.error_kind || message != case.error_message {
             return Err(acyclic_harness::Error::Invalid(format!(
-                "{} rejection returned a non-invalid error: {error:?}",
-                case.name
+                "{} rejection mismatch: expected {} {:?}, got {} {:?}",
+                case.name, case.error_kind, case.error_message, kind, message
             )));
         };
-        if !message.starts_with(&case.error_contains) {
-            return Err(acyclic_harness::Error::Invalid(format!(
-                "{} rejection message does not start with {:?}: {message}",
-                case.name, case.error_contains
-            )));
-        }
         rejections.push(NativeRejection {
             name: case.name.clone(),
-            kind: "invalid",
+            kind: kind.into(),
             message,
         });
     }
