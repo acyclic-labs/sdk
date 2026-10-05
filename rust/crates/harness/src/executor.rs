@@ -1279,7 +1279,11 @@ impl StockExecutor {
                         provider_started,
                         input.operation_id,
                     )?;
-                    let delta_ms = elapsed_ms.saturating_sub(admitted_time_ms);
+                    let delta_ms = elapsed_provider_delta(
+                        elapsed_ms,
+                        admitted_time_ms,
+                        input.operation_id,
+                    )?;
                     if delta_ms != 0 {
                         budget.admit_execution_time_ms(delta_ms)?;
                         admitted_time_ms = elapsed_ms;
@@ -1394,7 +1398,11 @@ impl StockExecutor {
                         provider_started,
                         input.operation_id,
                     )?;
-                    let delta_ms = elapsed_ms.saturating_sub(admitted_time_ms);
+                    let delta_ms = elapsed_provider_delta(
+                        elapsed_ms,
+                        admitted_time_ms,
+                        input.operation_id,
+                    )?;
                     if delta_ms != 0 {
                         budget.admit_execution_time_ms(delta_ms)?;
                         admitted_time_ms = elapsed_ms;
@@ -3633,6 +3641,18 @@ fn elapsed_provider_time(
         .ok_or(Error::Indeterminate(operation_id))
 }
 
+/// Computes the newly observed provider interval without hiding a clock
+/// regression between provider events.
+fn elapsed_provider_delta(
+    elapsed_ms: u64,
+    admitted_time_ms: u64,
+    operation_id: OperationId,
+) -> Result<u64> {
+    elapsed_ms
+        .checked_sub(admitted_time_ms)
+        .ok_or(Error::Indeterminate(operation_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3643,7 +3663,7 @@ mod tests {
         resources::ProviderRef,
     };
     use futures::{FutureExt as _, stream};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -3658,11 +3678,42 @@ mod tests {
         }
     }
 
+    struct SequenceClock(Mutex<VecDeque<u64>>);
+
+    impl UnixMillisClock for SequenceClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0
+                .lock()
+                .expect("sequence clock is not poisoned")
+                .pop_front()
+                .expect("sequence clock has a sample")
+        }
+    }
+
     #[test]
     fn provider_clock_regression_is_indeterminate() {
         let operation_id = OperationId::from_bytes([61; 16]);
         let result = elapsed_provider_time(&FixedClock(99), 100, operation_id);
         assert_eq!(result, Err(Error::Indeterminate(operation_id)));
+    }
+
+    #[test]
+    fn provider_clock_regression_between_events_is_indeterminate() -> Result<()> {
+        let operation_id = OperationId::from_bytes([63; 16]);
+        let clock = SequenceClock(Mutex::new(VecDeque::from([100, 110, 105])));
+        let started_at_ms = clock.now_unix_millis();
+        let first_elapsed = elapsed_provider_time(&clock, started_at_ms, operation_id)?;
+        assert_eq!(
+            elapsed_provider_delta(first_elapsed, 0, operation_id)?,
+            10
+        );
+        let second_elapsed = elapsed_provider_time(&clock, started_at_ms, operation_id)?;
+        assert_eq!(second_elapsed, 5);
+        assert_eq!(
+            elapsed_provider_delta(second_elapsed, first_elapsed, operation_id),
+            Err(Error::Indeterminate(operation_id))
+        );
+        Ok(())
     }
 
     #[test]
