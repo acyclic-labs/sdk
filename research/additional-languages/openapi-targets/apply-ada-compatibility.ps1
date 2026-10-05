@@ -75,11 +75,14 @@ package $rootUnit is
    type Request_Type is record Stream : Output_Stream; end record;
    type Client_Base_Type is tagged record
       Server : UString;
+      User : UString;
+      Password : UString;
    end record;
    procedure Set_Accept (Client : in out Client_Base_Type; Value : Mime_List);
    procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accepted : Mime_List);
    procedure Call (Client : in out Client_Base_Type; Verb : Integer; URI : URI_Type; Request : Request_Type; Reply : out Value_Type);
    procedure Set_Server (Client : in out Client_Base_Type; Value : UString);
+   procedure Set_Basic_Credentials (Client : in out Client_Base_Type; User : UString; Password : UString);
    procedure Set_Credentials (Client : in out Client_Base_Type; Value : access Integer);
    POST : constant Integer := 1;
    subtype HTTP_Client_Type is Client_Base_Type;
@@ -170,7 +173,12 @@ package body $rootUnit is
       URL : constant String := To_String (Client.Server) & To_String (URI.Path);
    begin
       if Verb /= POST then raise Program_Error with "generated Ada adapter only supports POST"; end if;
-      Data := AWS.Client.Post (URL => URL, Data => To_String (Request.Stream.Payload), Content_Type => "application/json");
+      Data := AWS.Client.Post
+        (URL => URL,
+         Data => To_String (Request.Stream.Payload),
+         Content_Type => "application/json",
+         User => To_String (Client.User),
+         Pwd => To_String (Client.Password));
       Reply.Payload := To_UString (AWS.Response.Message_Body (Data));
       Reply.Status := AWS.Response.Status_Code (Data);
       if Reply.Status not in 200 .. 299 then
@@ -178,6 +186,11 @@ package body $rootUnit is
       end if;
    end Call;
    procedure Set_Server (Client : in out Client_Base_Type; Value : UString) is begin Client.Server := Value; end;
+   procedure Set_Basic_Credentials (Client : in out Client_Base_Type; User : UString; Password : UString) is
+   begin
+      Client.User := User;
+      Client.Password := Password;
+   end Set_Basic_Credentials;
    procedure Set_Credentials (Client : in out Client_Base_Type; Value : access Integer) is begin null; end;
 end $rootUnit;
 "@
