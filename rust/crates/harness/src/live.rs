@@ -248,7 +248,10 @@ impl<T> TaskHandle<T> {
 
     /// Waits for a terminal outcome.
     pub async fn result(mut self) -> Outcome<T> {
-        let Some(join) = self.join.take() else {
+        // Keep the JoinHandle inside `self` while awaiting it. If this result
+        // future is dropped while pending, `TaskHandle`'s destructor still
+        // sees the handle and aborts the worker instead of detaching it.
+        let Some(join) = self.join.as_mut() else {
             return Outcome::Failed {
                 message: "task handle has no join".into(),
             };
@@ -259,6 +262,17 @@ impl<T> TaskHandle<T> {
             Err(error) => Outcome::Failed {
                 message: error.to_string(),
             },
+        }
+    }
+}
+
+impl<T> Drop for TaskHandle<T> {
+    fn drop(&mut self) {
+        // Tokio detaches a task when its JoinHandle is dropped. A live task
+        // handle owns the task, so every non-result drop must request
+        // cancellation explicitly.
+        if let Some(join) = &self.join {
+            join.abort();
         }
     }
 }
@@ -378,7 +392,10 @@ fn recursive_sum_boxed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
     #[tokio::test]
     async fn recursive_work_joins_to_expected_value() {
@@ -393,6 +410,74 @@ mod tests {
         let handle = TaskGroup::new(1).spawn(std::future::pending::<u64>()).await;
         handle.cancel();
         assert_eq!(handle.result().await, Outcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn dropping_a_handle_cancels_and_releases_its_future()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct MarkDropped(Arc<AtomicBool>);
+        impl Drop for MarkDropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let flag = Arc::clone(&dropped);
+        let handle = TaskGroup::new(1)
+            .spawn(async move {
+                let _guard = MarkDropped(flag);
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
+        observed.await?;
+        drop(handle);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| "dropping a task handle left its future running")?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_a_pending_result_future_also_cancels_its_worker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct MarkDropped(Arc<AtomicBool>);
+        impl Drop for MarkDropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let flag = Arc::clone(&dropped);
+        let handle = TaskGroup::new(1)
+            .spawn(async move {
+                let _guard = MarkDropped(flag);
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
+        observed.await?;
+        let result = handle.result();
+        tokio::pin!(result);
+        tokio::select! {
+            result = &mut result => panic!("pending worker unexpectedly completed: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+        drop(result);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| "dropping a result future left its worker running")?;
+        Ok(())
     }
 
     #[tokio::test]
