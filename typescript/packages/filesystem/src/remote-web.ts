@@ -2,6 +2,7 @@ type FilesystemWasm = typeof import("../generated/wasm/acyclic_fs_wasm.js");
 type RustRemoteWebPolicy = FilesystemWasm & {
   validateRemoteWebEndpoint(endpoint: string): void;
   validateRemoteWebGrpcEndpoint(endpoint: string): void;
+  validateRemoteWebFilesystemHandshake(response: Uint8Array): Uint8Array;
 };
 
 let binding: Promise<FilesystemWasm> | undefined;
@@ -47,6 +48,16 @@ export async function validateFilesystemGrpcEndpoint(endpoint: string): Promise<
   const module = await loadBinding() as RustRemoteWebPolicy;
   try {
     module.validateRemoteWebGrpcEndpoint(endpoint);
+  } catch (error) {
+    throw new TypeError(String(error));
+  }
+}
+
+/** Validate and canonicalize an encoded Filesystem handshake through Rust. */
+export async function validateFilesystemHandshake(response: Uint8Array): Promise<Uint8Array> {
+  const module = await loadBinding() as RustRemoteWebPolicy;
+  try {
+    return module.validateRemoteWebFilesystemHandshake(response);
   } catch (error) {
     throw new TypeError(String(error));
   }
