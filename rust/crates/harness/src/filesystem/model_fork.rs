@@ -245,17 +245,27 @@ where
             Some(declaration) => {
                 declaration.verify_composition(&boundary.request, &selected.messages, limits)?
             }
-            None if selected.messages == boundary.request.messages => {}
             None => {
-                return Err(Error::Conflict(
-                    "fork boundary differs from authoritative conversation".into(),
-                ));
+                crate::stack_diagnostics::marker("fork-boundary-before-message-bytes");
+                let authoritative = serde_json::to_vec(&selected.messages)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let captured = serde_json::to_vec(&boundary.request.messages)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                if authoritative != captured {
+                    return Err(Error::Conflict(
+                        "fork boundary differs from authoritative conversation".into(),
+                    ));
+                }
+                crate::stack_diagnostics::marker("fork-boundary-after-message-bytes");
             }
         }
-        Ok(VerifiedModelForkBoundary {
+        crate::stack_diagnostics::marker("fork-boundary-before-result");
+        let verified = VerifiedModelForkBoundary {
             boundary,
             publication: publication.clone(),
             parent,
-        })
+        };
+        crate::stack_diagnostics::marker("fork-boundary-after-result");
+        Ok(verified)
     }
 }
