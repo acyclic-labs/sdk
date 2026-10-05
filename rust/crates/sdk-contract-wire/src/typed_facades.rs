@@ -217,7 +217,7 @@ fn descriptor_nested_model_name(family: &str, message: &str) -> String {
 }
 
 fn descriptor_nested_messages() -> Vec<(String, String)> {
-    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let fields = descriptor_nested_model_fields();
     let mut messages = BTreeSet::new();
     for field in fields {
         if let Some(type_name) = field.type_name.as_deref() {
@@ -572,7 +572,7 @@ fn render_scala_responses() -> String {
     out.push_str("  def preserveKnown(tag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Known(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)\n");
     out.push_str("  def preserveUnknown(tag: Int, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Unknown(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)\n");
     out.push_str("  def preserveOneof(tag: Int, knownTag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");
-    out.push_str("  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = RustTypedResponses.frameChoice(value) match { case known: RustSemanticTypes.Known => RustSemanticTypesScala.Known(known.tag(), known.payload().toByteArray); case unknown: RustSemanticTypes.Unknown => RustSemanticTypesScala.Unknown(unknown.tag(), unknown.payload().toByteArray) }\n\n");
+    out.push_str("  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = RustTypedResponses.frameChoice(value) match { case known: RustSemanticTypes.Known => RustSemanticTypesScala.Known(known.tag(), RustSemanticTypesScala.WireBytes.from(known.payload().toWire).toOption.get); case unknown: RustSemanticTypes.Unknown => RustSemanticTypesScala.Unknown(unknown.tag(), RustSemanticTypesScala.WireBytes.from(unknown.payload().toWire).toOption.get) }\n\n");
     out.push_str("}\n");
     out
 }
@@ -1246,11 +1246,11 @@ fn render_scala_nested_models(out: &mut String) {
         let wire = descriptor_message_type(&family, &message);
         out.push_str("  final class ");
         out.push_str(&model);
-        out.push_str(" private (private val value: ");
+        out.push_str(" private (private val wireValue: ");
         out.push_str(&wire);
         out.push_str(") { def toWire: ");
         out.push_str(&wire);
-        out.push_str(" = value;");
+        out.push_str(" = wireValue;");
         let mut seen = BTreeSet::new();
         for field in fields.iter().filter(|field| field.family == family && field.message_path == message) {
             if !seen.insert(field.field.clone()) { continue; }
@@ -1260,9 +1260,9 @@ fn render_scala_nested_models(out: &mut String) {
             out.push_str(": ");
             out.push_str(&descriptor_field_type(&family, field, "scala"));
             out.push_str(" = ");
-            out.push_str(&descriptor_scala_value_at(field, "value"));
+            out.push_str(&descriptor_scala_value_at(field, "wireValue"));
             out.push(';');
-            if let Some(has) = descriptor_field_has_expression(field, "value") {
+            if let Some(has) = descriptor_field_has_expression(field, "wireValue") {
                 out.push_str(" def has");
                 out.push_str(&suffix);
                 out.push_str(": Boolean = ");
