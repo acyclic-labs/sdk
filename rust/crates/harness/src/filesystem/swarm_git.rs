@@ -6,16 +6,303 @@
 //! project generation and the typed filesystem action executor; no directory
 //! copying, process execution, or merge implementation lives here.
 
-use super::{FilesystemGitFacade, GIT_FACADE_TOOL_NAME, GIT_FACADE_TOOL_REVISION};
+use super::{
+    FilesystemGitFacade, FilesystemHost, GIT_FACADE_TOOL_NAME, GIT_FACADE_TOOL_REVISION,
+    workspace_ref,
+};
+use crate::conversation::{VolumeClass, VolumeOperation, VolumeRef};
+use crate::core::{AuthorityVerifier, Scope};
+use crate::resources::GenerationRef;
 use crate::{Error, Result};
 use acyclic_fs::{
-    GitCommandOutput, GitCompatStore, GitFilesystemAction, GitFilesystemExecutor,
-    GitFilesystemResult, GitTreeRef, OperationId as FilesystemOperationId, WorkspaceId,
+    AsyncAuthorityStore, AsyncObjectStore, Digest, GenerationId, GitCommandOutput, GitCompatStore,
+    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitTreeRef, IdempotencyKey,
+    OperationId as FilesystemOperationId, PublicationPermit, WorkspaceId,
 };
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+/// Authenticated local project binding used by the default swarm composition.
+///
+/// It is intentionally backed by the existing Filesystem host. Git-shaped
+/// operations therefore address SDK workspace generations and never a host
+/// directory or a separate merge implementation.
+pub struct LocalProjectWorkspaceTree<A, O> {
+    host: Arc<FilesystemHost<A, O>>,
+    project: VolumeRef,
+    workspace_id: WorkspaceId,
+}
+
+impl<A, O> LocalProjectWorkspaceTree<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Binds one project volume to an already-authenticated task scope.
+    pub fn new(
+        host: Arc<FilesystemHost<A, O>>,
+        project: VolumeRef,
+        verifier: &AuthorityVerifier,
+        scope: Scope,
+    ) -> Result<Self> {
+        project.validate()?;
+        if project.class() != VolumeClass::Project || project.provider() != host.provider() {
+            return Err(Error::Invalid(
+                "local Git project belongs to another provider or volume class".into(),
+            ));
+        }
+        verifier.verify(&scope)?;
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            if !scope
+                .capabilities()
+                .contains(&project.capability(operation)?)
+            {
+                let label = match operation {
+                    VolumeOperation::Read => "read",
+                    VolumeOperation::Write => "write",
+                };
+                return Err(Error::Unauthorized(format!(
+                    "local Git project requires {label} capability"
+                )));
+            }
+        }
+        let workspace_id = host
+            .workspace_id(project.storage_name()?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(Self {
+            host,
+            project,
+            workspace_id,
+        })
+    }
+
+    /// Returns the bound project identity.
+    #[must_use]
+    pub const fn project(&self) -> &VolumeRef {
+        &self.project
+    }
+
+    async fn workspace(&self) -> Result<acyclic_fs::Workspace<A, O>> {
+        self.host
+            .open_workspace(&workspace_ref(
+                self.host.provider().clone(),
+                &self.project.storage_name()?,
+            )?)
+            .await
+    }
+
+    async fn generation(&self, tree: GitTreeRef) -> Result<acyclic_fs::Generation<A, O>> {
+        if tree.workspace_id() != self.workspace_id {
+            return Err(Error::Unauthorized(
+                "Git action references a foreign project workspace".into(),
+            ));
+        }
+        let generation = GenerationRef::new(
+            self.host.provider().clone(),
+            tree.authored_generation().digest().into_bytes(),
+            None,
+        )?;
+        let workspace = self.workspace().await?;
+        self.host.open_generation(&workspace, &generation).await
+    }
+
+    async fn resulting_tree(
+        &self,
+        result: acyclic_fs::TransactionCommit<A, O>,
+    ) -> Result<GitFilesystemResult> {
+        match result {
+            acyclic_fs::TransactionCommit::Committed(generation)
+            | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => {
+                Ok(GitFilesystemResult::Applied {
+                    tree: Some(GitTreeRef::exact(self.workspace_id, generation.id())),
+                    tracked_paths: None,
+                })
+            }
+            acyclic_fs::TransactionCommit::Conflict { .. } => {
+                Err(Error::Conflict("Git workspace generation changed".into()))
+            }
+            acyclic_fs::TransactionCommit::Fenced => {
+                Err(Error::Conflict("Git workspace writer was fenced".into()))
+            }
+            acyclic_fs::TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
+                "Git operation identity was reused with different input".into(),
+            )),
+        }
+    }
+}
+
+impl<A, O> ProjectWorkspaceTree for LocalProjectWorkspaceTree<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    fn workspace_id(&self) -> WorkspaceId {
+        self.workspace_id
+    }
+
+    fn current_tree<'a>(&'a self) -> BoxFuture<'a, Result<GitTreeRef>> {
+        Box::pin(async move {
+            let observation = self
+                .host
+                .resolve(&workspace_ref(
+                    self.host.provider().clone(),
+                    &self.project.storage_name()?,
+                )?)
+                .await?;
+            let bytes: [u8; 32] = observation
+                .generation
+                .as_resource()
+                .key()
+                .try_into()
+                .map_err(|_| Error::Invalid("Filesystem generation identity is invalid".into()))?;
+            Ok(GitTreeRef::exact(
+                self.workspace_id,
+                GenerationId::new(Digest::from_bytes(bytes)),
+            ))
+        })
+    }
+
+    fn validate_workspace_tree<'a>(
+        &'a self,
+        workspace_tree: GitTreeRef,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.generation(workspace_tree).await.map(|_| ()) })
+    }
+
+    fn execute<'a>(
+        &'a self,
+        operation_id: FilesystemOperationId,
+        action: &'a GitFilesystemAction,
+    ) -> BoxFuture<'a, Result<GitFilesystemResult>> {
+        Box::pin(async move {
+            match action {
+                GitFilesystemAction::Diff {
+                    from,
+                    to,
+                    tracked_paths,
+                } => {
+                    let target = self.generation(*to).await?;
+                    let before = match from {
+                        Some(tree) => Some(self.generation(*tree).await?),
+                        None => None,
+                    };
+                    let counts = match before {
+                        Some(before) => acyclic_fs::git_compatible_diff_counts(
+                            &before,
+                            &target,
+                            tracked_paths,
+                            100_000,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                        None => acyclic_fs::GitDiffCounts {
+                            file_changes: 0,
+                            binding_changes: 0,
+                        },
+                    };
+                    Ok(GitFilesystemResult::Data {
+                        kind: "diff".into(),
+                        value: serde_json::to_value(counts)
+                            .map_err(|error| Error::Storage(error.to_string()))?,
+                    })
+                }
+                GitFilesystemAction::Grep {
+                    pattern,
+                    path,
+                    tree,
+                } => {
+                    let generation = self.generation(*tree).await?;
+                    let result = acyclic_fs::grep_git_generation(
+                        &generation,
+                        pattern,
+                        path.as_deref(),
+                        10_000,
+                        4 * 1024 * 1024,
+                        10_000,
+                    )
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                    Ok(GitFilesystemResult::Data {
+                        kind: "grep".into(),
+                        value: serde_json::to_value(result)
+                            .map_err(|error| Error::Storage(error.to_string()))?,
+                    })
+                }
+                GitFilesystemAction::Archive { tree } => {
+                    let generation = self.generation(*tree).await?;
+                    let entries = acyclic_fs::walk_git_tree(&generation, None, 100_000)
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    Ok(GitFilesystemResult::Data {
+                        kind: "archive".into(),
+                        value: serde_json::to_value(entries)
+                            .map_err(|error| Error::Storage(error.to_string()))?,
+                    })
+                }
+                GitFilesystemAction::ApplyPatch {
+                    patch,
+                    expected_workspace_tree,
+                } => {
+                    let workspace = self.workspace().await?;
+                    let current = workspace
+                        .head()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    if expected_workspace_tree.is_some_and(|tree| {
+                        tree != GitTreeRef::exact(self.workspace_id, current.id())
+                    }) {
+                        return Err(Error::Conflict(
+                            "Git patch workspace generation changed".into(),
+                        ));
+                    }
+                    let committed = acyclic_fs::apply_git_patch_with_permit_if_current(
+                        &workspace,
+                        &current,
+                        patch,
+                        IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        PublicationPermit::Unrestricted,
+                    )
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                    self.resulting_tree(committed).await
+                }
+                GitFilesystemAction::CaptureCommit {
+                    workspace_tree,
+                    tracked_paths,
+                    ..
+                } => {
+                    let workspace = self.workspace().await?;
+                    let capture = acyclic_fs::capture_git_compatible_generation_at(
+                        &workspace,
+                        workspace_tree.authored_generation(),
+                        &acyclic_fs::GitIgnorePolicy::default(),
+                        tracked_paths,
+                        operation_id,
+                    )
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                    if capture.generation.workspace_id() != self.workspace_id {
+                        return Err(Error::Unsupported(
+                            "local Git capture with ignored paths requires a lineage store binding"
+                                .into(),
+                        ));
+                    }
+                    Ok(GitFilesystemResult::Captured {
+                        tree: GitTreeRef::exact(self.workspace_id, capture.generation.id()),
+                        tracked_paths: capture.tracked_paths,
+                        proof: None,
+                    })
+                }
+                _ => Err(Error::Unsupported(
+                    "this local Git action is not wired to the Filesystem host yet".into(),
+                )),
+            }
+        })
+    }
+}
 
 /// Provider-owned project workspace boundary used by the model Git tool.
 ///

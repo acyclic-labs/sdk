@@ -56,7 +56,7 @@ pub use git_facade::{
     ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,
 };
 mod swarm_git;
-pub use swarm_git::{FilesystemGitTool, ProjectWorkspaceTree};
+pub use swarm_git::{FilesystemGitTool, LocalProjectWorkspaceTree, ProjectWorkspaceTree};
 mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
@@ -1690,9 +1690,41 @@ impl<A, O> FilesystemHost<A, O> {
             provider,
         })
     }
+
+    /// Returns the immutable provider identity bound to this host.
+    #[must_use]
+    pub const fn provider(&self) -> &ProviderRef {
+        &self.provider
+    }
+
+    /// Derives the deployment-scoped workspace identity for a named volume.
+    pub fn workspace_id(
+        &self,
+        name: impl AsRef<str>,
+    ) -> std::result::Result<acyclic_fs::WorkspaceId, acyclic_fs::WorkspaceNameError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.filesystem.workspace_id(name)
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// Opens one provider-authenticated workspace for a typed resource.
+    pub async fn open_workspace(&self, reference: &WorkspaceRef) -> Result<acyclic_fs::Workspace<A, O>> {
+        self.open(reference).await
+    }
+
+    /// Opens one exact generation in an already authenticated workspace.
+    pub async fn open_generation(
+        &self,
+        workspace: &acyclic_fs::Workspace<A, O>,
+        reference: &GenerationRef,
+    ) -> Result<acyclic_fs::Generation<A, O>> {
+        self.generation(workspace, reference).await
+    }
+
     /// Forks a project workspace from one exact generation into a new project volume.
     async fn fork_project(
         &self,

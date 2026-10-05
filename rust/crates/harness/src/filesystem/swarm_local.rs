@@ -7,7 +7,8 @@
 //! files are still owned by [`PersistentLocalHarness`].
 
 use super::{
-    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
+    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool, FilesystemHost,
+    LocalProjectWorkspaceTree,
     InteractionApprovalAuthorization, InteractionOperatorAuthorizer, LocalHarnessTools,
     PersistentLocalHarness, workspace_ref,
 };
@@ -38,7 +39,7 @@ use crate::{
         ToolRegistry, ToolResult,
     },
 };
-use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
+use acyclic_fs::{LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
@@ -2282,6 +2283,8 @@ pub struct PersistentLocalSwarm {
     /// Shared provider bindings used by the root and lazily reopened task
     /// harnesses. The resolver must observe the same host and stream domain.
     filesystem_host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    /// Shared durable compatibility state for the local Git facade.
+    git_store: Option<Arc<LocalCoreStateStore>>,
     conversation_stream: StreamClient<LocalStream>,
     stream_provider: ProviderRef,
     root_conversation: Authority,
@@ -2312,6 +2315,53 @@ impl PersistentLocalSwarm {
         if let Some(observer) = &self.bindings.observer {
             observer.observe(observation);
         }
+    }
+
+    fn git_tool_for(
+        &self,
+        task: TaskId,
+        harness: &PersistentLocalHarness,
+        project: &VolumeRef,
+    ) -> Result<Option<Tool>> {
+        let Some(store) = self.git_store.clone() else {
+            return Ok(None);
+        };
+        let workspace = Arc::new(LocalProjectWorkspaceTree::new(
+            self.filesystem_host.clone(),
+            project.clone(),
+            &harness.storage().verifier(),
+            harness.storage().owner_scope().clone(),
+        )?);
+        let facade = Arc::new(FilesystemGitFacade::new(
+            workspace.workspace_id(),
+            (*store).clone(),
+            project.clone(),
+            harness.storage().verifier(),
+            harness.storage().owner_scope().clone(),
+        )?);
+        let tool = FilesystemGitTool::new(facade, workspace, format!("local-task-{task}"), || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        })?;
+        Ok(Some(Arc::new(tool).into_tool()))
+    }
+
+    async fn project_for_task(&self, task: TaskId) -> Result<Option<VolumeRef>> {
+        if self.root_task().await? == task {
+            return Ok(self.config.project.clone());
+        }
+        let seed = self
+            .seeds
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local swarm seed {task}")))?;
+        Ok(seed.resources.into_iter().find_map(|resource| match resource.revision {
+            ResourceRevision::Project { volume, .. } => Some(volume),
+            _ => None,
+        }))
     }
 
     /// Opens or recovers a local swarm. Child sessions remain lazy until a
@@ -2522,6 +2572,7 @@ impl PersistentLocalSwarm {
             model_fork_publisher,
             registry,
             filesystem_host,
+            git_store: None,
             conversation_stream,
             stream_provider,
             root_conversation,
@@ -2662,6 +2713,10 @@ impl PersistentLocalSwarm {
             LocalSwarmBindings::default(),
         )
         .await?;
+        swarm.git_store = Some(Arc::new(
+            LocalCoreStateStore::open_owned(root.join("git"))
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
         let root_task = swarm.root_task().await?;
         let root_harness = swarm.sessions.get_mut().remove(&root_task)
             .ok_or_else(|| Error::Storage("new local composition has no root harness".into()))?;
@@ -2684,9 +2739,13 @@ impl PersistentLocalSwarm {
             .with_filesystem_fork_resolver(resolver)
             .with_model_fork_plans(plans.clone())
             .with_model_batch_publisher(publisher.clone());
-        let root_harness = root_harness.with_local_tools(
-            model, provider, limits, swarm.bindings.tools_for(root_task)?,
-        )?;
+        let mut root_tools = swarm.bindings.tools_for(root_task)?;
+        if let Some(project) = swarm.config.project.clone()
+            && let Some(tool) = swarm.git_tool_for(root_task, &root_harness, &project)?
+        {
+            root_tools = root_tools.with_tool(tool)?;
+        }
+        let root_harness = root_harness.with_local_tools(model, provider, limits, root_tools)?;
         swarm.sessions.get_mut().insert(root_task, Arc::new(root_harness));
         swarm.model_fork_publisher = Some(publisher.clone());
         let swarm = Arc::new(swarm);
@@ -3464,7 +3523,7 @@ impl PersistentLocalSwarm {
         let declaration = self.declarations.lock().await.get(&task).cloned();
         let run = async {
             if let Some(declaration) = declaration {
-                let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
+                let bundle = self.inherited_task_bundle(task, &harness, &declaration).await?;
                 harness.run_with_bundle(&bundle, operation, prompt, max_steps).await
             } else {
                 harness.run_with_max_steps(operation, prompt, max_steps).await
@@ -4172,7 +4231,7 @@ impl PersistentLocalSwarm {
             }]
         });
         let declaration = LocalInheritedModelDeclaration { boundary, suffix };
-        let bundle = match self.inherited_task_bundle(child, &harness, &declaration) {
+        let bundle = match self.inherited_task_bundle(child, &harness, &declaration).await {
             Ok(bundle) => bundle,
             Err(error) => {
                 self.mark_activation_failed_if_safe(
@@ -4461,7 +4520,7 @@ impl PersistentLocalSwarm {
             .await
     }
 
-    fn inherited_task_bundle(
+    async fn inherited_task_bundle(
         &self,
         task: TaskId,
         harness: &PersistentLocalHarness,
@@ -4475,7 +4534,13 @@ impl PersistentLocalSwarm {
             .grant("tool:call:acyclic.stage_file")
             .grant("tool:call:acyclic.list_files")
             .limits(self.config.limits);
-        self.bindings.tools_for(task)?.install_into(builder)?.build()
+        let mut tools = self.bindings.tools_for(task)?;
+        if let Some(project) = self.project_for_task(task).await?
+            && let Some(tool) = self.git_tool_for(task, harness, &project)?
+        {
+            tools = tools.with_tool(tool)?;
+        }
+        tools.install_into(builder)?.build()
     }
 
     /// Rechecks the owner-retained admission immediately before model
