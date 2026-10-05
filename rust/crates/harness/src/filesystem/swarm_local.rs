@@ -2799,11 +2799,22 @@ impl PersistentLocalSwarm {
                     )
                     .await?
                 {
-                    acyclic_fs::JoinOutcome::Applied(_application)
-                    | acyclic_fs::JoinOutcome::AlreadyApplied(_application)
-                    | acyclic_fs::JoinOutcome::NoChanges(_) => {
+                    acyclic_fs::JoinOutcome::Applied(application)
+                    | acyclic_fs::JoinOutcome::AlreadyApplied(application) => {
                         Ok(acyclic_fs::GitFilesystemResult::Applied {
-                            tree: Some(*target_tree),
+                            tree: Some(acyclic_fs::GitTreeRef::exact(
+                                target_tree.workspace_id(),
+                                application.generation().id(),
+                            )),
+                            tracked_paths: Some(tracked_paths),
+                        })
+                    }
+                    acyclic_fs::JoinOutcome::NoChanges(generation) => {
+                        Ok(acyclic_fs::GitFilesystemResult::Applied {
+                            tree: Some(acyclic_fs::GitTreeRef::exact(
+                                target_tree.workspace_id(),
+                                generation.id(),
+                            )),
                             tracked_paths: Some(tracked_paths),
                         })
                     }
