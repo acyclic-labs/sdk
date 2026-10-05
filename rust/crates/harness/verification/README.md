@@ -188,7 +188,7 @@ write artifacts:
 
 ```powershell
 $env:GRAPHCODER_REAL_TRACE_PATH = 'D:/evidence/real-harness-trace.json'
-cargo test -p acyclic-harness --features filesystem-local swarm_local::tests::real_harness_trace::exports_real_harness_trace_for_canonical_checker -- --ignored --exact
+cargo test -p acyclic-harness --features filesystem-local exports_real_harness_trace_for_canonical_checker -- --ignored
 ./check-real-trace.ps1 -TracePath D:/evidence/real-harness-trace.json -ManifestPath D:/evidence/real-harness-trace.manifest.json
 ```
 
