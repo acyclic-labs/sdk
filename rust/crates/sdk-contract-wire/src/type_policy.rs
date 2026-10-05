@@ -2453,6 +2453,9 @@ pub fn audit_generated_public_surfaces(
                 {
                     Some("Python semantic identity is erased to object")
                 }
+                "python" if python_erased_oneof_payload(line) => {
+                    Some("Python oneof payload is erased to object")
+                }
                 "python" if python_raw_public_return(&source, line_number, line) => {
                     Some("public Python route returns the raw transport response")
                 }
@@ -2467,6 +2470,9 @@ pub fn audit_generated_public_surfaces(
                         || line.contains("NewImage(value any)") =>
                 {
                     Some("Go semantic identity is erased to any")
+                }
+                "go" if go_erased_oneof_payload(line) => {
+                    Some("Go oneof payload is erased to any")
                 }
                 "jvm"
                     if jvm_raw_public_wire_record(line)
@@ -2575,6 +2581,20 @@ fn python_public_raw_stub(line: &str) -> bool {
         && !trimmed.starts_with("self._")
         && trimmed.contains("_pb2_grpc.")
         && trimmed.contains("Stub(")
+}
+
+fn python_erased_oneof_payload(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    (trimmed.starts_with("payload: object")
+        || trimmed.starts_with("def known_oneof(payload: object)"))
+        && !trimmed.starts_with("#")
+}
+
+fn go_erased_oneof_payload(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("type KnownOneof struct") && trimmed.contains("Payload any")
+        || trimmed.starts_with("func NewKnownOneof(payload any)")
+        || trimmed.starts_with("Payload any `json:\"payload")
 }
 
 fn go_raw_protobuf_response(line: &str) -> bool {
@@ -2931,6 +2951,37 @@ mod tests {
             1,
             "nominal Go response pointers should be allowed"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generated_surface_audit_rejects_erased_oneof_payloads() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-surface-audit-oneof-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("python")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("go")).expect("audit fixture directory");
+        fs::write(
+            root.join("python").join("remote.py"),
+            "@dataclass(frozen=True)\nclass KnownOneof:\n    payload: object\ndef known_oneof(payload: object) -> KnownOneof:\n    return KnownOneof(payload=payload)\n",
+        )
+        .expect("python fixture");
+        fs::write(
+            root.join("go").join("client.go"),
+            "type KnownOneof struct { Tag string; Payload any }\nfunc NewKnownOneof(payload any) KnownOneof { return KnownOneof{Payload: payload} }\n",
+        )
+        .expect("go fixture");
+
+        let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
+        assert!(findings.iter().any(|finding| {
+            finding.language == "python"
+                && finding.reason == "Python oneof payload is erased to object"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "go" && finding.reason == "Go oneof payload is erased to any"
+        }));
         let _ = fs::remove_dir_all(root);
     }
 
