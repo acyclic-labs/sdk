@@ -15,7 +15,7 @@ categories = ["api-bindings", "filesystem"]
 
 [features]
 default = ["grpc", "http"]
-grpc = ["dep:tonic", "dep:tonic-prost"]
+grpc = ["dep:tonic", "dep:tonic-prost", "http"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
 local = ["dep:fs2", "dep:libc"]
