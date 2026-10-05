@@ -523,7 +523,7 @@ async fn assert_git_branch_target(
         .load(parent)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?
-        .ok_or_else(|| Error::NotFound(format!("Git state for workspace {parent}")))?;
+        .ok_or_else(|| Error::NotFound("Git state for workspace".into()))?;
     let branch = state
         .branches
         .get(name)
@@ -775,13 +775,14 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
         ),
     ] {
         assert_eq!(
-            host.read(workspace, None, path, 1_024).await?,
+            host.read(workspace, None, path, 1_024).await?.as_ref(),
             expected.as_bytes()
         );
     }
     assert_eq!(
         host.read(&child_a_workspace, None, "/grandchild-note.txt", 1_024)
-            .await?,
+            .await?
+            .as_ref(),
         b"grandchild authored this exact note"
     );
     assert!(
@@ -809,7 +810,9 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
         ),
     ] {
         assert_eq!(
-            host.read(&root_workspace, None, path, 1_024).await?,
+            host.read(&root_workspace, None, path, 1_024)
+                .await?
+                .as_ref(),
             expected.as_bytes()
         );
     }
