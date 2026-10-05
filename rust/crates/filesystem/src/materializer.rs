@@ -604,6 +604,52 @@ fn validate_materialization_path(path: &str) -> Result<(), ()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_native_relative_path(
+    root: &Path,
+    path: &str,
+) -> Result<(), NativeTreeMaterializationError> {
+    validate_materialization_path(path)
+        .map_err(|()| NativeTreeMaterializationError::InvalidPath(path.to_owned()))?;
+    let components = Path::new(path).components().collect::<Vec<_>>();
+    let mut cursor = root.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(NativeTreeMaterializationError::InvalidPath(path.to_owned()));
+        };
+        cursor.push(name);
+        if index.saturating_add(1) == components.len() {
+            break;
+        }
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(metadata) if native_component_is_alias(&metadata) => {
+                return Err(NativeTreeMaterializationError::AliasedPath(path.to_owned()));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(NativeTreeMaterializationError::AliasedPath(path.to_owned()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(NativeTreeMaterializationError::Io(error)),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+fn native_component_is_alias(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+fn native_component_is_alias(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
 /// Native same-volume tree publisher used for root checkout application.
 ///
 /// Callers first materialize the exact target generation into `target`. The
@@ -662,8 +708,7 @@ impl NativeTreeMaterializationBackend {
         let edits = paths
             .into_iter()
             .map(|path| {
-                validate_materialization_path(&path)
-                    .map_err(|()| NativeTreeMaterializationError::InvalidPath(path.clone()))?;
+                validate_native_relative_path(&self.root, &path)?;
                 if native_entry_exists(&self.target.join(&path))? {
                     Ok(MaterializationEdit::Install {
                         path,
@@ -788,6 +833,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         acyclic_native_runtime::run_blocking_io(move || {
             let edit = &edit;
             let path = edit_path(edit);
+            validate_native_relative_path(&backend.root, path)?;
             let (live, target, backup) = backend.paths(path);
             if native_entry_exists(&backup)? {
                 return Err(NativeTreeMaterializationError::UnexpectedBackup(
@@ -833,6 +879,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
             let preimage = &preimage;
             let (before, after) = decode_native_witness(&preimage.image)?;
             let path = edit_path(edit);
+            validate_native_relative_path(&backend.root, path)?;
             let (live, target, backup) = backend.paths(path);
             let current = native_entry_fingerprint_for_edit(&live, edit)?;
             let target_current = if matches!(edit, MaterializationEdit::Install { .. }) {
@@ -888,6 +935,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
             let edit = &edit;
             let preimage = &preimage;
             let path = edit_path(edit);
+            validate_native_relative_path(&backend.root, path)?;
             let (live, target, backup) = backend.paths(path);
             let (before, after) = decode_native_witness(&preimage.image)?;
             if let MaterializationEdit::SetMetadata { image, .. } = edit {
@@ -981,6 +1029,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
             let edit = &edit;
             let preimage = &preimage;
             let path = edit_path(edit);
+            validate_native_relative_path(&backend.root, path)?;
             let (live, _, backup) = backend.paths(path);
             let (before, after) = decode_native_witness(&preimage.image)?;
             let current = native_entry_fingerprint_for_edit(&live, edit)?;
@@ -1539,6 +1588,9 @@ pub enum NativeTreeMaterializationError {
     /// A changed namespace path cannot be represented by this host publisher.
     #[error("native materialization path is invalid: '{0}'")]
     InvalidPath(String),
+    /// A relative path would traverse a symlink or reparse-point parent.
+    #[error("native materialization path traverses an alias: '{0}'")]
+    AliasedPath(String),
     /// Changed paths overlap and cannot be exchanged independently.
     #[error("native materialization paths overlap")]
     OverlappingPaths,
@@ -1683,6 +1735,8 @@ where
         if excluded_names.contains(top) {
             continue;
         }
+        validate_native_relative_path(&root, &path)
+            .map_err(NativeWorkspacePublicationError::Native)?;
         let before_directory = change
             .before
             .is_some_and(|record| record.kind == crate::kernel::FileKind::Directory);
@@ -2793,6 +2847,48 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_tree_backend_rollback_preserves_unrelated_user_edit() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        let target = operation.join("target");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&target).expect("target");
+        std::fs::write(root.join("file.txt"), b"before").expect("before");
+        std::fs::write(root.join("keep.txt"), b"keep-before").expect("keep before");
+        std::fs::write(target.join("file.txt"), b"after").expect("after");
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+        let plan = backend
+            .plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["file.txt".to_owned()],
+            )
+            .expect("plan");
+        let operation_id = plan.operation_id;
+        let materializer =
+            JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
+        materializer.apply(plan).await.expect("apply");
+        std::fs::write(root.join("keep.txt"), b"user-edit").expect("user edit");
+
+        materializer
+            .recover(operation_id, MaterializationRecovery::RollBack)
+            .await
+            .expect("rollback");
+        assert_eq!(
+            std::fs::read(root.join("file.txt")).expect("restored file"),
+            b"before"
+        );
+        assert_eq!(
+            std::fs::read(root.join("keep.txt")).expect("unrelated edit"),
+            b"user-edit"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn native_tree_backend_preserves_dangling_symlinks_on_rollback() {
@@ -2828,6 +2924,99 @@ mod tests {
             std::fs::read_link(root.join("link")).expect("restored symlink"),
             PathBuf::from("missing-target")
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_tree_backend_swaps_symlink_bindings_without_following_them() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        let target = operation.join("target");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&target).expect("target");
+        symlink("before-target", root.join("link")).expect("before link");
+        symlink("after-target", target.join("link")).expect("after link");
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+        let plan = backend
+            .plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["link".to_owned()],
+            )
+            .expect("plan");
+        let operation_id = plan.operation_id;
+        let materializer =
+            JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
+        materializer.apply(plan).await.expect("swap symlink");
+        assert_eq!(
+            std::fs::read_link(root.join("link")).expect("after link"),
+            PathBuf::from("after-target")
+        );
+        materializer
+            .recover(operation_id, MaterializationRecovery::RollBack)
+            .await
+            .expect("rollback symlink");
+        assert_eq!(
+            std::fs::read_link(root.join("link")).expect("before link"),
+            PathBuf::from("before-target")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_tree_backend_rejects_a_symlink_parent_before_planning() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        let outside = temporary.path().join("outside");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::create_dir_all(operation.join("target")).expect("target");
+        symlink(&outside, root.join("alias")).expect("alias");
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+
+        assert!(matches!(
+            backend.plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["alias/escape.txt".to_owned()],
+            ),
+            Err(NativeTreeMaterializationError::AliasedPath(path))
+                if path == "alias/escape.txt"
+        ));
+        assert!(!outside.join("escape.txt").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_tree_backend_rejects_drive_relative_alias_paths() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(operation.join("target")).expect("target");
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+
+        assert!(matches!(
+            backend.plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["C:escape.txt".to_owned()],
+            ),
+            Err(NativeTreeMaterializationError::InvalidPath(path))
+                if path == "C:escape.txt"
+        ));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
