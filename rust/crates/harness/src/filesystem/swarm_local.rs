@@ -2973,13 +2973,18 @@ impl PersistentLocalSwarm {
         limits: Limits,
         bindings: LocalSwarmBindings,
     ) -> Result<Self> {
-        Self::open_with_bindings(
+        let has_communication = bindings.communication_host.is_some();
+        let swarm = Self::open_with_bindings(
             root,
             LocalSwarmConfig::new(model, limits)?,
             provider,
             bindings,
         )
-        .await
+        .await?;
+        if has_communication {
+            swarm.ensure_root_owner_admission(swarm.root_task().await?).await?;
+        }
+        Ok(swarm)
     }
 
     /// Opens a shared swarm handle with the concrete model fork tool and
@@ -3005,6 +3010,7 @@ impl PersistentLocalSwarm {
         if let Some(publisher) = &swarm.model_fork_publisher {
             publisher.bind(Arc::downgrade(&swarm))?;
         }
+        swarm.ensure_root_owner_admission(swarm.root_task().await?).await?;
         Ok(swarm)
     }
 
@@ -3110,6 +3116,7 @@ impl PersistentLocalSwarm {
         plans.bind_swarm(Arc::downgrade(&swarm))?;
         publisher.bind(Arc::downgrade(&swarm))?;
         communication.bind(Arc::downgrade(&swarm))?;
+        swarm.ensure_root_owner_admission(root_task).await?;
         Ok(swarm)
     }
 
@@ -3149,6 +3156,59 @@ impl PersistentLocalSwarm {
 
     fn local_turn_input_schema() -> Value {
         json!({"type": "string", "maxLength": 65536})
+    }
+
+    fn root_owner_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["root_task", "model", "limits", "run_limits"],
+            "properties": {
+                "root_task": {"type": "string"},
+                "model": {"type": "object"},
+                "limits": {"type": "object"},
+                "run_limits": {"type": "object"}
+            }
+        })
+    }
+
+    /// Persists the owner admission needed by communication controls before
+    /// the first model turn. It binds the winning root identity and the final
+    /// installed bundle, but never claims a model prompt or starts a worker.
+    async fn ensure_root_owner_admission(&self, task: TaskId) -> Result<()> {
+        self.refresh_registry_state().await?;
+        if self.admissions.lock().await.contains_key(&task) {
+            return Ok(());
+        }
+        let harness = self.open_session(task).await?;
+        let (_, requirements, machine_digest) = self.local_execution_contract(&harness)?;
+        let input = json!({
+            "root_task": task,
+            "model": self.config.model,
+            "limits": harness.bundle().limits(),
+            "run_limits": self.config.run_limits,
+        });
+        let admission = crate::runtime::TaskAdmissionRecord::from_parts(
+            OperationId::from_bytes(task.into_bytes()),
+            "acyclic.local-swarm.owner",
+            "1",
+            input,
+            Self::root_owner_input_schema(),
+            crate::executor::turn_output_schema(),
+            &requirements,
+            &machine_digest,
+            None,
+            harness.bundle().capabilities().clone(),
+            harness.bundle().limits(),
+            self.config.run_limits,
+            self.provider
+                .model_option_policy()
+                .map(|policy| policy.identity.clone()),
+            None,
+            None,
+        )?;
+        self.persist_local_admission(task, admission).await?;
+        Ok(())
     }
 
     fn local_execution_contract(
@@ -7009,6 +7069,8 @@ mod tests {
         )
         .await?;
         let root_task = swarm.root_task().await?;
+        let owner_admission = swarm.authenticated_admission(root_task).await?;
+        assert_eq!(owner_admission.task.name, "acyclic.local-swarm.owner");
         assert!(matches!(
             swarm.read_inbox(TaskId::from_bytes([99; 16]), 0, 1).await,
             Err(Error::NotFound(_))
