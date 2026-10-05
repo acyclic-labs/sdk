@@ -3308,6 +3308,25 @@ impl PersistentLocalSwarm {
         Ok(Capabilities::new(grants))
     }
 
+    async fn existing_local_turn_admission(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        prompt: &str,
+        input_conflict: &'static str,
+    ) -> Result<Option<crate::runtime::TaskAdmissionRecord>> {
+        let Some(existing) = self.admissions.lock().await.get(&task).cloned() else {
+            return Ok(None);
+        };
+        if existing.operation_id != operation {
+            return Ok(None);
+        }
+        if existing.input.as_str() == Some(prompt) {
+            return Ok(Some(existing));
+        }
+        Err(Error::Conflict(input_conflict.into()))
+    }
+
     /// Admits the exact local turn through the authoritative swarm registry.
     /// The resulting record is later used by budget reservation and model
     /// execution; no turn output or fork request reconstructs its limits.
@@ -3318,15 +3337,16 @@ impl PersistentLocalSwarm {
         prompt: &str,
     ) -> Result<crate::runtime::TaskAdmissionRecord> {
         self.refresh_registry_state().await?;
-        if let Some(existing) = self.admissions.lock().await.get(&task).cloned() {
-            if existing.operation_id == operation {
-                if existing.input == Value::String(prompt.to_owned()) {
-                    return Ok(existing);
-                }
-                return Err(Error::Conflict(
-                    "local task admission input changed for the operation".into(),
-                ));
-            }
+        if let Some(existing) = self
+            .existing_local_turn_admission(
+                task,
+                operation,
+                prompt,
+                "local task admission input changed for the operation",
+            )
+            .await?
+        {
+            return Ok(existing);
         }
         let session = self.session(task).await?;
         let harness = self.open_session(task).await?;
@@ -3372,15 +3392,16 @@ impl PersistentLocalSwarm {
         parent_harness: &PersistentLocalHarness,
     ) -> Result<crate::runtime::TaskAdmissionRecord> {
         self.refresh_registry_state().await?;
-        if let Some(existing) = self.admissions.lock().await.get(&task).cloned() {
-            if existing.operation_id == operation {
-                if existing.input == Value::String(prompt.to_owned()) {
-                    return Ok(existing);
-                }
-                return Err(Error::Conflict(
-                    "local child admission input changed for the operation".into(),
-                ));
-            }
+        if let Some(existing) = self
+            .existing_local_turn_admission(
+                task,
+                operation,
+                prompt,
+                "local child admission input changed for the operation",
+            )
+            .await?
+        {
+            return Ok(existing);
         }
         let (tool_contract, requirements, machine_digest) =
             self.local_execution_contract(parent_harness)?;
