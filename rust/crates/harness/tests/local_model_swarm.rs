@@ -33,7 +33,9 @@ use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use tempfile::{TempDir, tempdir};
+use tempfile::tempdir;
+#[cfg(feature = "test-support")]
+use tempfile::TempDir;
 
 #[path = "swarm_provider_support.rs"]
 mod swarm_provider_support;
@@ -69,6 +71,7 @@ fn child_fork_operation(publication: OperationId, child: OperationId) -> Operati
     OperationId::from_bytes(bytes)
 }
 
+#[cfg(feature = "test-support")]
 async fn preserve_recursive_failure(
     directory: TempDir,
     swarm: &PersistentLocalSwarm,
@@ -1677,9 +1680,12 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
     {
         Ok(output) => output,
         Err(error) => {
+            #[cfg(feature = "test-support")]
             return Err(
                 preserve_recursive_failure(directory, &swarm, &provider, operation, error).await,
             );
+            #[cfg(not(feature = "test-support"))]
+            return Err(error);
         }
     };
     assert_eq!(output.text, "ordinary completion");
