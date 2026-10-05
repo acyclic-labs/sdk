@@ -1,4 +1,4 @@
-import { arch, platform } from "node:process";
+import { arch, platform, report } from "node:process";
 import type {
   CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image,
   ImageQualification, MachineEventPage, MachineId, MachineObservation, MachinesProvider,
@@ -19,6 +19,8 @@ interface NativeMachinesClient {
   create(requestJson: string): Promise<string>;
   inspectMachine(requestJson: string): Promise<string>;
   listMachines(requestJson: string): Promise<string>;
+  events(requestJson: string): Promise<string>;
+  usage(requestJson: string): Promise<string>;
   checkpoint(requestJson: string): Promise<string>;
   inspectCheckpoint(requestJson: string): Promise<string>;
   fork(requestJson: string): Promise<string>;
@@ -44,13 +46,31 @@ interface NativeMachinesModule {
 }
 
 const TARGETS = new Set([
-  "win32-x64", "win32-arm64", "linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64",
+  "win32-x64", "win32-arm64", "linux-x64-gnu", "linux-arm64-gnu", "darwin-x64", "darwin-arm64",
 ]);
 
 let bindingPromise: Promise<NativeMachinesModule> | undefined;
 
+/** Resolve the companion name from the runtime ABI and the package matrix. */
+export function nativeCompanionTarget(
+  currentPlatform: string = platform,
+  currentArch: string = arch,
+  currentReport: { getReport?: () => { header?: { glibcVersionRuntime?: unknown } } } | undefined = report,
+): string {
+  const base = `${currentPlatform}-${currentArch}`;
+  if (currentPlatform !== "linux") return base;
+  let libc = "gnu";
+  try {
+    const header = currentReport?.getReport?.().header;
+    if (currentReport !== undefined && typeof header?.glibcVersionRuntime !== "string") libc = "musl";
+  } catch {
+    // Keep the common glibc default when a runtime report is unavailable.
+  }
+  return `${base}-${libc}`;
+}
+
 async function binding(): Promise<NativeMachinesModule> {
-  const target = `${platform}-${arch}`;
+  const target = nativeCompanionTarget();
   if (!TARGETS.has(target)) throw new Error(`@acyclic-labs/machines has no native companion for ${target}`);
   bindingPromise ??= import(`@acyclic-labs/machines-${target}`).then((module) => {
     const namespace = module as NativeMachinesModule & { readonly default?: NativeMachinesModule };
@@ -95,22 +115,23 @@ export class NativeMachinesProvider implements MachinesProvider {
   create(request: CreateMachine): Promise<MutationOutcome> { return this.#client.create(encode(request)).then(decode<MutationOutcome>); }
   inspectMachine(machineId: MachineId): Promise<MachineObservation> { return this.#client.inspectMachine(encode(machineId)).then(decode<MachineObservation>); }
   listMachines(after: MachineId | null, limit: number): Promise<MachinePage> { return this.#client.listMachines(encode({ after, limit })).then(decode<MachinePage>); }
-  checkpoint(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.checkpoint(encode({ machine: machineId, idempotencyKey })).then(decode<MutationOutcome>); }
+  checkpoint(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.checkpoint(encode({ machineId, idempotencyKey })).then(decode<MutationOutcome>); }
   inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation> { return this.#client.inspectCheckpoint(encode(checkpointId)).then(decode<CheckpointObservation>); }
-  fork(checkpointId: CheckpointId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.fork(encode({ checkpoint: checkpointId, count, idempotencyKey })).then(decode<MutationOutcome>); }
-  forkMachine(machineId: MachineId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.forkMachine(encode({ machine: machineId, count, idempotencyKey })).then(decode<MutationOutcome>); }
-  suspend(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.suspend(encode({ machine: machineId, idempotencyKey })).then(decode<MutationOutcome>); }
-  wake(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.wake(encode({ machine: machineId, idempotencyKey })).then(decode<MutationOutcome>); }
-  setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.setSuspensionPolicy(encode({ machine: machineId, policy, idempotencyKey })).then(decode<MutationOutcome>); }
-  destroyMachine(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.destroyMachine(encode({ machine: machineId, idempotencyKey })).then(decode<MutationOutcome>); }
-  destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.destroyCheckpoint(encode({ checkpoint: checkpointId, idempotencyKey })).then(decode<MutationOutcome>); }
+  fork(checkpointId: CheckpointId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.fork(encode({ checkpointId, count, idempotencyKey })).then(decode<MutationOutcome>); }
+  forkMachine(machineId: MachineId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.forkMachine(encode({ machineId, count, idempotencyKey })).then(decode<MutationOutcome>); }
+  suspend(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.suspend(encode({ machineId, idempotencyKey })).then(decode<MutationOutcome>); }
+  wake(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.wake(encode({ machineId, idempotencyKey })).then(decode<MutationOutcome>); }
+  setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.setSuspensionPolicy(encode({ machineId, policy, idempotencyKey })).then(decode<MutationOutcome>); }
+  destroyMachine(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.destroyMachine(encode({ machineId, idempotencyKey })).then(decode<MutationOutcome>); }
+  destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#client.destroyCheckpoint(encode({ checkpointId, idempotencyKey })).then(decode<MutationOutcome>); }
   recover(key: IdempotencyKey): Promise<MutationOutcome> { return this.#client.recover(encode(key)).then(decode<MutationOutcome>); }
   recoverOperation(key: IdempotencyKey): Promise<OperationId> { return this.#client.recoverOperation(encode(key)).then(decode<OperationId>); }
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#client.inspectOperation(encode(operationId)).then(decode<OperationObservation>); }
   cancel(operationId: OperationId): Promise<OperationObservation> { return this.#client.cancel(encode(operationId)).then(decode<OperationObservation>); }
-  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return Promise.reject(new Error("native Machines bridge does not expose events yet")); }
-  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return Promise.reject(new Error("native Machines bridge does not expose usage yet")); }
+  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#client.events(encode({ machineId, afterSequence, limit })).then(decode<MachineEventPage>); }
+  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#client.usage(encode({ machineId, startUnixMs, endUnixMs })).then(decode<UsageReceipt>); }
   async *watchOperation(operationId: OperationId): AsyncIterable<OperationObservation> {
     for (const observation of decode<readonly OperationObservation[]>(await this.#client.watchOperation(encode(operationId)))) yield observation;
   }
 }
+

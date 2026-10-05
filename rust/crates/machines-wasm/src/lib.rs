@@ -15,7 +15,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 mod http;
-mod public;
+pub(crate) use sdk_machines_public as public;
 
 // Keep the hosted transport route/output relationship in one Rust declaration.
 // The macro emits the runtime route table and the TypeScript declarations from

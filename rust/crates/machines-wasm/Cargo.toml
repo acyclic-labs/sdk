@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+sdk-machines-public = { path = "../sdk-machines-public" }
 serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
@@ -30,3 +31,4 @@ wasm-bindgen-futures.workspace = true
 
 [lints]
 workspace = true
+

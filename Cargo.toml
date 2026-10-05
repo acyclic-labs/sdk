@@ -14,6 +14,7 @@ members = [
   "rust/crates/inference-wasm",
   "rust/crates/machines",
   "rust/crates/sdk-machines-native",
+  "rust/crates/sdk-machines-public",
   "rust/crates/machines-wasm",
   "rust/crates/machines-daytona",
   "rust/crates/native-runtime",
@@ -170,3 +171,4 @@ inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
+
