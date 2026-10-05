@@ -1274,10 +1274,11 @@ impl StockExecutor {
             let mut observed = replayed_model;
             for event in continuation.drain(..) {
                 if let Some(budget) = budget.as_deref_mut() {
-                    let elapsed_ms = self
-                        .execution_clock
-                        .now_unix_millis()
-                        .saturating_sub(provider_started);
+                    let elapsed_ms = elapsed_provider_time(
+                        self.execution_clock.as_ref(),
+                        provider_started,
+                        input.operation_id,
+                    )?;
                     let delta_ms = elapsed_ms.saturating_sub(admitted_time_ms);
                     if delta_ms != 0 {
                         budget.admit_execution_time_ms(delta_ms)?;
@@ -1388,10 +1389,11 @@ impl StockExecutor {
                 let Some(event) = next else { break };
                 let event = event?;
                 if let Some(budget) = budget.as_deref_mut() {
-                    let elapsed_ms = self
-                        .execution_clock
-                        .now_unix_millis()
-                        .saturating_sub(provider_started);
+                    let elapsed_ms = elapsed_provider_time(
+                        self.execution_clock.as_ref(),
+                        provider_started,
+                        input.operation_id,
+                    )?;
                     let delta_ms = elapsed_ms.saturating_sub(admitted_time_ms);
                     if delta_ms != 0 {
                         budget.admit_execution_time_ms(delta_ms)?;
@@ -3613,6 +3615,24 @@ fn admit_model_output_bytes(
     Ok(())
 }
 
+/// Measures one provider interval through the host clock boundary.
+///
+/// `UnixMillisClock` is shared with the durable host because it is available
+/// on native and WASM targets. A wall-clock regression cannot be interpreted
+/// as zero elapsed work: doing so would silently undercount a provider
+/// budget. Treat the operation as indeterminate so recovery can reconcile the
+/// provider attempt instead.
+fn elapsed_provider_time(
+    clock: &dyn UnixMillisClock,
+    started_at_ms: u64,
+    operation_id: OperationId,
+) -> Result<u64> {
+    clock
+        .now_unix_millis()
+        .checked_sub(started_at_ms)
+        .ok_or(Error::Indeterminate(operation_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3628,6 +3648,41 @@ mod tests {
         Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[derive(Clone, Copy)]
+    struct FixedClock(u64);
+
+    impl UnixMillisClock for FixedClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0
+        }
+    }
+
+    #[test]
+    fn provider_clock_regression_is_indeterminate() {
+        let operation_id = OperationId::from_bytes([61; 16]);
+        let result = elapsed_provider_time(&FixedClock(99), 100, operation_id);
+        assert_eq!(result, Err(Error::Indeterminate(operation_id)));
+    }
+
+    #[test]
+    fn provider_clock_checked_range_preserves_maximum_duration() -> Result<()> {
+        let operation_id = OperationId::from_bytes([62; 16]);
+        assert_eq!(
+            elapsed_provider_time(&FixedClock(u64::MAX), 0, operation_id)?,
+            u64::MAX
+        );
+        assert_eq!(
+            elapsed_provider_time(&FixedClock(u64::MAX), u64::MAX, operation_id)?,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn provider_clock_is_available_on_the_current_platform() {
+        let _ = SystemUnixMillisClock.now_unix_millis();
+    }
 
     #[test]
     fn turn_output_schema_matches_serialized_attachment() -> Result<()> {
