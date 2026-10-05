@@ -18,7 +18,21 @@ case "$target" in
 esac
 
 target_dir=/workspace/target/dotnet-transport
-export CARGO_TARGET_$(printf '%s' "$target" | tr '[:lower:]-' '[:upper:]_')_LINKER=musl-gcc
+compiler=${MUSL_CC:-}
+if [ -z "$compiler" ]; then
+  if command -v musl-gcc >/dev/null 2>&1; then
+    compiler=musl-gcc
+  elif command -v gcc >/dev/null 2>&1; then
+    # Alpine's gcc is already configured for its musl libc. The pinned
+    # image does not ship the Debian-style musl-gcc wrapper.
+    compiler=gcc
+  else
+    echo "no musl-compatible C compiler found for $target" >&2
+    exit 1
+  fi
+fi
+linker_var=CARGO_TARGET_$(printf '%s' "$target" | tr '[:lower:]-' '[:upper:]_')_LINKER
+export "$linker_var=$compiler"
 export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=-crt-static"
 
 cargo build \
