@@ -243,10 +243,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
     ) -> Result<HostCheckoutRestore, HostCheckoutError> {
         let actual = self.revalidate_with_key(reconciliation_key).await?;
         if actual != *expected {
-            return Err(HostCheckoutError::StaleSource {
-                expected: expected.generation_id,
-                actual: actual.generation_id,
-            });
+            // A source generation can advance for an unrelated user edit.
+            // Compare only the approved paths before deciding whether that
+            // edit conflicts; this keeps unrelated user work intact while
+            // still fencing an overlapping edit before any host mutation.
+            let baseline = self.workspace.generation(expected.generation_id).await?;
+            let current = self.workspace.generation(actual.generation_id).await?;
+            for path in paths {
+                if Self::path_state(&baseline, path).await?
+                    != Self::path_state(&current, path).await?
+                {
+                    return Err(HostCheckoutError::StaleSource {
+                        expected: expected.generation_id,
+                        actual: actual.generation_id,
+                    });
+                }
+            }
+            return self
+                .restore_paths(
+                    generation,
+                    &actual,
+                    paths,
+                    replacement,
+                    options,
+                    budget,
+                    cancellation,
+                )
+                .await;
         }
         self.restore_paths(
             generation,
@@ -258,6 +281,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
             cancellation,
         )
         .await
+    }
+
+    async fn path_state(
+        generation: &Generation<A, O>,
+        path: &Path,
+    ) -> Result<Option<(crate::WorkspaceStat, Option<Vec<u8>>)>, HostCheckoutError> {
+        let mut canonical = path.to_string_lossy().replace('\\', "/");
+        if !canonical.starts_with('/') {
+            canonical.insert(0, '/');
+        }
+        let stat = match generation.stat(&canonical).await {
+            Ok(stat) => stat,
+            Err(WorkspaceError::NotFound) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let bytes = if stat.kind == crate::kernel::FileKind::Regular {
+            Some(generation.read(&canonical, u64::MAX).await?.to_vec())
+        } else {
+            None
+        };
+        Ok(Some((stat, bytes)))
     }
 }
 
@@ -360,6 +404,63 @@ mod tests {
             .expect_err("a stale physical edit must fence restore");
         assert!(matches!(error, HostCheckoutError::StaleSource { .. }));
         assert_eq!(std::fs::read(root.path().join("tracked.txt"))?, b"user-edit");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn path_scoped_restore_preserves_an_unrelated_user_edit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        std::fs::write(root.path().join("approved.txt"), b"before")?;
+        std::fs::write(root.path().join("user.txt"), b"before")?;
+        let fs = Fs::memory();
+        let checkout = HostCheckout::attach(
+            &fs,
+            "host-checkout-unrelated-edit",
+            root.path(),
+            SourceOptions {
+                mode: SourceMode::Pinned,
+                ..SourceOptions::default()
+            },
+        )
+        .await?;
+        let approved = checkout.binding().await;
+        let generation = checkout.workspace().head().await?;
+        std::fs::write(root.path().join("user.txt"), b"user-change")?;
+
+        let options = MaterializeOptions::native(root.path());
+        let first = checkout
+            .restore_paths_after_revalidation(
+                &generation,
+                &approved,
+                IdempotencyKey::from_bytes([9; 16]),
+                &[PathBuf::from("approved.txt")],
+                HostPathReplacement::Atomic,
+                &options,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(first.outcomes.len(), 1);
+        assert_eq!(std::fs::read(root.path().join("user.txt"))?, b"user-change");
+        assert_eq!(std::fs::read(root.path().join("approved.txt"))?, b"before");
+
+        // A lost acknowledgement replays the same provider operation identity
+        // and must keep the unrelated user edit intact.
+        let replay = checkout
+            .restore_paths_after_revalidation(
+                &generation,
+                &approved,
+                IdempotencyKey::from_bytes([9; 16]),
+                &[PathBuf::from("approved.txt")],
+                HostPathReplacement::Atomic,
+                &options,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(replay, first);
+        assert_eq!(std::fs::read(root.path().join("user.txt"))?, b"user-change");
         Ok(())
     }
 }
