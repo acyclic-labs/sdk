@@ -95,18 +95,35 @@ tree:
    --locked`, capture `graphcoder-native-stage-e2e.mjs` with
    `graphcoder-native-stage-config.mjs`, and export its record as
    `GRAPHCODER_NATIVE_STAGE_RECEIPT`.
-2. Build and pack GraphCoder and Filesystem, then capture the real Harness
-   bridge through `graphcoder-production-entrypoint.mjs` once as `native` and
-   once as `package`. Export the records as
+2. Produce the Windows Filesystem N-API binding and its causal receipt before
+   running the package gate:
+
+   ```text
+   node scripts/graphcoder-native-binding-producer.mjs run --output target/graphcoder-package-qualification/native-binding
+   ```
+
+   This runs the exact `cargo build -p acyclic-fs-napi --locked --target-dir
+   <fresh-output>/cargo-target` argv, copies the post-dispatch DLL to the
+   package's `.node` filename, and verifies the receipt against the observed
+   bytes. Set `ACYCLIC_FS_NATIVE_BINDING` to that `.node` path and
+   `ACYCLIC_FS_NATIVE_BINDING_RECEIPT` to `producer-receipt.json`. Both paths
+   must remain in the same clean qualified worktree. A failed build, missing
+   output, stale output directory, or changed binding bytes produces no valid
+   receipt.
+3. With those two binding environment variables set, build and pack GraphCoder
+   and Filesystem by invoking `node scripts/graphcoder-package-gate.mjs run
+   --output target/graphcoder-package-qualification`. Then capture the real
+   Harness bridge through `graphcoder-production-entrypoint.mjs` once as
+   `native` and once as `package`. Export the records as
    `GRAPHCODER_HEADLESS_NATIVE_RECEIPT` and
    `GRAPHCODER_HEADLESS_PACKAGE_RECEIPT`.
-3. Run the same installed command sequence through
+4. Run the same installed command sequence through
    `graphcoder-production-pty.mjs` and the native WinPTY driver on Windows;
    export its record as `GRAPHCODER_PTY_RECEIPT`.
-4. Run `graphcoder-installed-transport-faults.mjs` against the extracted
+5. Run `graphcoder-installed-transport-faults.mjs` against the extracted
    package with descendant cleanup required; export its record as
    `GRAPHCODER_TRANSPORT_FAULTS_RECEIPT`.
-5. Run `node scripts/graphcoder-platform-gates.mjs run windows` with those
+6. Run `node scripts/graphcoder-platform-gates.mjs run windows` with those
    receipt variables. The runner validates every producer record, descriptor
    command, source identity, execution kind, status, and fresh artifact before
    reporting platform qualification as complete.
