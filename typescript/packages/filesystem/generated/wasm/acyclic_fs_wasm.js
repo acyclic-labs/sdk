@@ -1680,6 +1680,108 @@ export class BrowserGitCompatRepository {
 if (Symbol.dispose) BrowserGitCompatRepository.prototype[Symbol.dispose] = BrowserGitCompatRepository.prototype.free;
 
 /**
+ * Authenticated Rust-owned Harness gRPC-Web client for browser WASM.
+ */
+export class BrowserHarnessClient {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(BrowserHarnessClient.prototype);
+        obj.__wbg_ptr = ptr;
+        BrowserHarnessClientFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrowserHarnessClientFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_browserharnessclient_free(ptr, 0);
+    }
+    /**
+     * @param {Uint8Array} request
+     * @returns {Promise<Uint8Array>}
+     */
+    cancel(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_cancel(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * @returns {any}
+     */
+    capabilities() {
+        const ret = wasm.browserharnessclient_capabilities(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @param {string} endpoint
+     * @param {string} bearer_token
+     * @returns {Promise<BrowserHarnessClient>}
+     */
+    static connect(endpoint, bearer_token) {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(bearer_token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_connect(ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * @param {string} endpoint
+     * @param {string} bearer_token
+     * @param {bigint} maximum_request_bytes
+     * @param {bigint} maximum_response_bytes
+     * @returns {Promise<BrowserHarnessClient>}
+     */
+    static connectWithLimits(endpoint, bearer_token, maximum_request_bytes, maximum_response_bytes) {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(bearer_token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_connectWithLimits(ptr0, len0, ptr1, len1, maximum_request_bytes, maximum_response_bytes);
+        return ret;
+    }
+    /**
+     * @param {Uint8Array} request
+     * @returns {Promise<Uint8Array>}
+     */
+    observe(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_observe(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * @param {Uint8Array} request
+     * @returns {Promise<Array<any>>}
+     */
+    replay(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_replay(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * @param {Uint8Array} request
+     * @returns {Promise<Uint8Array>}
+     */
+    submit(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_submit(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+}
+if (Symbol.dispose) BrowserHarnessClient.prototype[Symbol.dispose] = BrowserHarnessClient.prototype.free;
+
+/**
  * One immutable, side-effect-free workspace join plan.
  */
 export class BrowserJoinPlan {
@@ -3662,6 +3764,19 @@ export function validateHostedAdvertisedLimits(maximum_transaction_mutations, ma
 }
 
 /**
+ * @param {string} expires_at_unix_seconds
+ * @param {bigint} now_unix_seconds
+ */
+export function validateHostedCredentialExpiry(expires_at_unix_seconds, now_unix_seconds) {
+    const ptr0 = passStringToWasm0(expires_at_unix_seconds, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validateHostedCredentialExpiry(ptr0, len0, now_unix_seconds);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
  * @param {number} maximum_generations
  * @param {number} maximum_changes
  * @param {number} maximum_conflicts
@@ -3669,6 +3784,21 @@ export function validateHostedAdvertisedLimits(maximum_transaction_mutations, ma
  */
 export function validateHostedGenerationBounds(maximum_generations, maximum_changes, maximum_conflicts, maximum_page_items) {
     const ret = wasm.validateHostedGenerationBounds(maximum_generations, maximum_changes, maximum_conflicts, maximum_page_items);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {Uint8Array} left_generation_id
+ * @param {Uint8Array} right_generation_id
+ */
+export function validateHostedGenerationContinuity(left_generation_id, right_generation_id) {
+    const ptr0 = passArray8ToWasm0(left_generation_id, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(right_generation_id, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validateHostedGenerationContinuity(ptr0, len0, ptr1, len1);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
@@ -4271,6 +4401,10 @@ function __wbg_get_imports() {
         },
         __wbg_browsergeneration_new: function(arg0) {
             const ret = BrowserGeneration.__wrap(arg0);
+            return ret;
+        },
+        __wbg_browserharnessclient_new: function(arg0) {
+            const ret = BrowserHarnessClient.__wrap(arg0);
             return ret;
         },
         __wbg_browserjoinplan_new: function(arg0) {
@@ -4946,17 +5080,17 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1299, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1347, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 919, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 967, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 962, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 1010, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_Event__Event______true_);
             return ret;
         },
@@ -4966,13 +5100,13 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 869, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1009, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_);
             return ret;
         },
         __wbindgen_cast_0000000000000006: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 961, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 917, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000007: function(arg0) {
@@ -5023,12 +5157,12 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_(arg0, arg1) {
-    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_(arg0, arg1);
-}
-
 function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_(arg0, arg1) {
     wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_(arg0, arg1);
+}
+
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_(arg0, arg1) {
+    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_(arg0, arg1);
 }
 
 function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_(arg0, arg1, arg2) {
@@ -5098,6 +5232,9 @@ const BrowserGenerationFinalization = (typeof FinalizationRegistry === 'undefine
 const BrowserGitCompatRepositoryFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browsergitcompatrepository_free(ptr >>> 0, 1));
+const BrowserHarnessClientFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_browserharnessclient_free(ptr >>> 0, 1));
 const BrowserJoinPlanFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserjoinplan_free(ptr >>> 0, 1));

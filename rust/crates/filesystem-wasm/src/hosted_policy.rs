@@ -156,6 +156,34 @@ pub fn validate_hosted_generation_identity(
     Ok(())
 }
 
+/// Validate that an issued credential remains usable at the current clock.
+pub fn validate_hosted_credential_expiry(
+    expires_at_unix_seconds: &str,
+    now_unix_seconds: u64,
+) -> Result<(), &'static str> {
+    let expires_at = expires_at_unix_seconds
+        .parse::<u64>()
+        .map_err(|_| "credential expiry is not an unsigned Unix timestamp")?;
+    if expires_at <= now_unix_seconds {
+        return Err("credential expiry must be in the future");
+    }
+    Ok(())
+}
+
+/// Validate that two generation identities can be composed into one change set.
+pub fn validate_hosted_generation_continuity(
+    left_generation_id: &[u8],
+    right_generation_id: &[u8],
+) -> Result<(), &'static str> {
+    if left_generation_id.len() != 32 || right_generation_id.len() != 32 {
+        return Err("generation identity has the wrong length");
+    }
+    if left_generation_id != right_generation_id {
+        return Err("change sets are not contiguous in this hosted workspace");
+    }
+    Ok(())
+}
+
 /// Convert a JavaScript number to a Rust `u32` without allowing wasm-bindgen's
 /// numeric coercion to wrap negative, fractional, non-finite, or overflowing
 /// inputs before the Rust-owned policy runs.
@@ -277,6 +305,24 @@ pub fn validate_hosted_generation_identity_js(
         .map_err(invalid)
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = validateHostedCredentialExpiry)]
+pub fn validate_hosted_credential_expiry_js(
+    expires_at_unix_seconds: &str,
+    now_unix_seconds: u64,
+) -> Result<(), JsValue> {
+    validate_hosted_credential_expiry(expires_at_unix_seconds, now_unix_seconds).map_err(invalid)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = validateHostedGenerationContinuity)]
+pub fn validate_hosted_generation_continuity_js(
+    left_generation_id: &[u8],
+    right_generation_id: &[u8],
+) -> Result<(), JsValue> {
+    validate_hosted_generation_continuity(left_generation_id, right_generation_id).map_err(invalid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +391,16 @@ mod tests {
         assert!(validate_hosted_generation_identity(&[7; 32], &[1; 16], &[1; 16]).is_ok());
         assert!(validate_hosted_generation_identity(&[7; 31], &[1; 16], &[1; 16]).is_err());
         assert!(validate_hosted_generation_identity(&[7; 32], &[1; 16], &[2; 16]).is_err());
+    }
+
+    #[test]
+    fn credential_expiry_and_generation_continuity_are_rust_owned() {
+        assert!(validate_hosted_credential_expiry("101", 100).is_ok());
+        assert!(validate_hosted_credential_expiry("100", 100).is_err());
+        assert!(validate_hosted_credential_expiry("not-a-timestamp", 100).is_err());
+        let generation = [7_u8; 32];
+        assert!(validate_hosted_generation_continuity(&generation, &generation).is_ok());
+        assert!(validate_hosted_generation_continuity(&generation, &[8_u8; 32]).is_err());
+        assert!(validate_hosted_generation_continuity(&generation[..31], &generation).is_err());
     }
 }

@@ -1196,6 +1196,22 @@ export class BrowserGitCompatRepository {
 }
 
 /**
+ * Authenticated Rust-owned Harness gRPC-Web client for browser WASM.
+ */
+export class BrowserHarnessClient {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    cancel(request: Uint8Array): Promise<Uint8Array>;
+    capabilities(): any;
+    static connect(endpoint: string, bearer_token: string): Promise<BrowserHarnessClient>;
+    static connectWithLimits(endpoint: string, bearer_token: string, maximum_request_bytes: bigint, maximum_response_bytes: bigint): Promise<BrowserHarnessClient>;
+    observe(request: Uint8Array): Promise<Uint8Array>;
+    replay(request: Uint8Array): Promise<Array<any>>;
+    submit(request: Uint8Array): Promise<Uint8Array>;
+}
+
+/**
  * One immutable, side-effect-free workspace join plan.
  */
 export class BrowserJoinPlan {
@@ -1848,7 +1864,11 @@ export function validateGrpcResponseIdentity(operation: string, input: Uint8Arra
 
 export function validateHostedAdvertisedLimits(maximum_transaction_mutations: number, maximum_page_items: number): void;
 
+export function validateHostedCredentialExpiry(expires_at_unix_seconds: string, now_unix_seconds: bigint): void;
+
 export function validateHostedGenerationBounds(maximum_generations: number, maximum_changes: number, maximum_conflicts: number, maximum_page_items: number): void;
+
+export function validateHostedGenerationContinuity(left_generation_id: Uint8Array, right_generation_id: Uint8Array): void;
 
 export function validateHostedGenerationIdentity(generation_id: Uint8Array, owner_workspace_id: Uint8Array, expected_workspace_id: Uint8Array): void;
 
@@ -2189,7 +2209,9 @@ export interface InitOutput {
     readonly openMemoryFs: (a: any) => [number, number, number];
     readonly projectHostedSourceState: (a: number, b: number, c: number) => [number, number, number];
     readonly validateHostedAdvertisedLimits: (a: number, b: number) => [number, number];
+    readonly validateHostedCredentialExpiry: (a: number, b: number, c: bigint) => [number, number];
     readonly validateHostedGenerationBounds: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateHostedGenerationContinuity: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateHostedGenerationIdentity: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly validateHostedPageBound: (a: number, b: number) => [number, number];
     readonly validateHostedResponseBytes: (a: number, b: number) => [number, number];
@@ -2199,10 +2221,18 @@ export interface InitOutput {
     readonly validateRemoteWebEndpoint: (a: number, b: number) => [number, number];
     readonly validateRemoteWebGrpcEndpoint: (a: number, b: number) => [number, number];
     readonly __wbg_browserfilesystemclient_free: (a: number, b: number) => void;
+    readonly __wbg_browserharnessclient_free: (a: number, b: number) => void;
     readonly browserfilesystemclient_cancel: (a: number, b: number, c: number) => any;
     readonly browserfilesystemclient_capabilities: (a: number) => [number, number, number];
     readonly browserfilesystemclient_connect: (a: number, b: number, c: number, d: number, e: bigint, f: bigint) => any;
     readonly browserfilesystemclient_export: (a: number, b: number, c: number) => any;
+    readonly browserharnessclient_cancel: (a: number, b: number, c: number) => any;
+    readonly browserharnessclient_capabilities: (a: number) => [number, number, number];
+    readonly browserharnessclient_connect: (a: number, b: number, c: number, d: number) => any;
+    readonly browserharnessclient_connectWithLimits: (a: number, b: number, c: number, d: number, e: bigint, f: bigint) => any;
+    readonly browserharnessclient_observe: (a: number, b: number, c: number) => any;
+    readonly browserharnessclient_replay: (a: number, b: number, c: number) => any;
+    readonly browserharnessclient_submit: (a: number, b: number, c: number) => any;
     readonly validateRemoteWebFilesystemHandshake: (a: number, b: number) => [number, number, number, number];
     readonly validate_actors_invoke: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_remote_web_ca_certificate: (a: number, b: number) => [number, number];
@@ -2275,8 +2305,8 @@ export interface InitOutput {
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_: (a: number, b: number) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

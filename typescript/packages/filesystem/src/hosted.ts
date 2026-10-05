@@ -120,6 +120,8 @@ type HostedRustPolicy = {
     ownerWorkspaceId: Uint8Array,
     expectedWorkspaceId: Uint8Array,
   ): void;
+  validateHostedCredentialExpiry(expiresAtUnixSeconds: string, nowUnixSeconds: bigint): void;
+  validateHostedGenerationContinuity(leftGenerationId: Uint8Array, rightGenerationId: Uint8Array): void;
 };
 
 export type * from "./public-types.js";
@@ -162,6 +164,8 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     validateHostedAdvertisedLimits: rustWasm.validateHostedAdvertisedLimits,
     validateHostedResponseBytes: rustWasm.validateHostedResponseBytes,
     validateHostedGenerationIdentity: rustWasm.validateHostedGenerationIdentity,
+    validateHostedCredentialExpiry: rustWasm.validateHostedCredentialExpiry,
+    validateHostedGenerationContinuity: rustWasm.validateHostedGenerationContinuity,
   };
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   try {
@@ -513,8 +517,16 @@ async function s3Access(
   requireName(credential.region);
   requireName(credential.accessKeyId);
   requireName(credential.secretAccessKey);
-  if (response.expiresAtUnixSeconds <= BigInt(Math.floor(Date.now() / 1_000))) {
-    throw new HostedFsError("invalid_response", "S3 credential expiry must be in the future");
+  try {
+    client.rustPolicy.validateHostedCredentialExpiry(
+      response.expiresAtUnixSeconds.toString(),
+      BigInt(Math.floor(Date.now() / 1_000)),
+    );
+  } catch (error) {
+    throw new HostedFsError(
+      "invalid_response",
+      `S3 ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   return {
     endpoint: response.endpoint,
@@ -779,8 +791,17 @@ async function diff(
     changes: () => semantic,
     async compose(next, bound) {
       const owner = changeSetOwners.get(next);
-      if (owner === undefined || owner.client !== client || !equalBytes(owner.workspaceId, workspaceId)
-        || !equalBytes(owner.from.generationId, to.generationId)) {
+      if (owner === undefined || owner.client !== client) {
+        throw new TypeError("change sets are not contiguous in this hosted workspace");
+      }
+      try {
+        client.rustPolicy.validateHostedGenerationContinuity(owner.from.generationId, to.generationId);
+        client.rustPolicy.validateHostedGenerationIdentity(
+          owner.from.generationId,
+          owner.workspaceId,
+          workspaceId,
+        );
+      } catch {
         throw new TypeError("change sets are not contiguous in this hosted workspace");
       }
       return diff(client, workspaceId, from, owner.to, bound);
