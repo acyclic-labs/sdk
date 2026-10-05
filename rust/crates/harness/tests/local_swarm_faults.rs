@@ -513,6 +513,17 @@ async fn open_swarm(
     stream: StreamClient<LocalStream>,
     project: VolumeRef,
 ) -> Result<Arc<PersistentLocalSwarm>> {
+    open_swarm_with_secret(root, provider, host, stream, project, [0x5A; 32]).await
+}
+
+async fn open_swarm_with_secret(
+    root: &Path,
+    provider: Arc<ForkFaultProvider>,
+    host: Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
+    stream: StreamClient<LocalStream>,
+    project: VolumeRef,
+    secret: [u8; 32],
+) -> Result<Arc<PersistentLocalSwarm>> {
     let resolver = Arc::new(
         LocalFilesystemForkResolver::new(
             host,
@@ -523,7 +534,7 @@ async fn open_swarm(
         // The resolver's owner secret is part of the durable constructor
         // identity.  Every reopen in this fixture deliberately supplies the
         // same secret; changing it must reject the persisted fork bindings.
-        .with_host_secret([0x5A; 32])?,
+        .with_host_secret(secret)?,
     );
     PersistentLocalSwarm::open_shared_with_model_and_bindings(
         root,
@@ -673,6 +684,67 @@ async fn fork_intent_disconnect_replays_publication_after_cold_restart() -> Resu
         assert!(reopened.prepared_report(task).await.is_ok());
         assert_eq!(reopened.outcome(task).await?.text, "ordinary completion");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_issuer_binding_rejects_recovery_before_child_dispatch() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (host, stream, project) = local_project(directory.path(), true).await?;
+    let child_a = operation(0xA7);
+    let child_b = operation(0xB7);
+    let provider = ForkFaultProvider::new(child_a, child_b);
+    provider.set_root_fault(FaultWindow::AfterIntent);
+    let swarm = open_swarm(
+        directory.path(),
+        provider.clone(),
+        host.clone(),
+        stream.clone(),
+        project.clone(),
+    )
+    .await?;
+    let root_operation = operation(0x07);
+    assert!(swarm
+        .run_root(root_operation, "reject changed owner binding")
+        .await
+        .is_err());
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 1);
+    let requests_before_reopen = provider.serialized();
+    let root_task = swarm.root_task().await?;
+    drop(swarm);
+    drop(host);
+    drop(stream);
+    drop(project);
+
+    // Reconciliation may prove the model batch completed, but a resolver
+    // reopened under another owner secret must reject the persisted issuer
+    // binding before it can allocate or dispatch either child.
+    provider.reconcile_completed.store(true, Ordering::SeqCst);
+    let (host, stream, project) = local_project(directory.path(), false).await?;
+    let reopened = open_swarm_with_secret(
+        directory.path(),
+        provider.clone(),
+        host,
+        stream,
+        project,
+        [0xA5; 32],
+    )
+    .await?;
+    let result = reopened
+        .run_root(root_operation, "reject changed owner binding")
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::Conflict(reason)) if reason.contains("issuer binding")
+    ));
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.serialized(), requests_before_reopen);
+    assert!(!matches!(
+        reopened.session(root_task).await?.phase,
+        LocalSessionPhase::Failed(_)
+    ));
+    assert!(reopened.published_seed(task(child_a)).await.is_err());
+    assert!(reopened.published_seed(task(child_b)).await.is_err());
     Ok(())
 }
 
