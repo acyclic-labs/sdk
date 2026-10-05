@@ -1,0 +1,23 @@
+{
+  "source_commit": "f4d20c1db48f24e11fb41eb09e01cfc4e0a1d2dd",
+  "platform": "Windows native",
+  "suite": "acyclic-harness lib, local_model_swarm, local_swarm_faults",
+  "features": [
+    "test-support",
+    "native-process-tree"
+  ],
+  "session": 8044,
+  "exit_code": 101,
+  "result": "compile_failure",
+  "tests_executed": false,
+  "library_compiled": true,
+  "source_archive": "D:/graphcoder-builds/root-qualification-artifacts/f4d20c1db/compile-failure/source.zip",
+  "source_sha256": "24323c9391d2929e7c9e01e8313623781478688a64566256d1da16f5eefbbc8c",
+  "log": "D:/graphcoder-builds/root-qualification-artifacts/f4d20c1db/compile-failure/native.log",
+  "log_sha256": "cac217fc2a4078ff5b53f7f9467078be1ab53ae243ba10a193d0ede3590d4ceb",
+  "errors": [
+    "sibling result assertion borrows temporary decoded request list"
+  ],
+  "repair_commit": "83e9a6960",
+  "qualification": "open"
+}
