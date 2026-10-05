@@ -1,0 +1,38 @@
+{
+  "kind": "passing-native-persistent-model-input-checkpoint",
+  "source_commit": "46852dc41e45aab8a4d53432f0a8f22c4ca0c5b8",
+  "platform": "Windows native",
+  "suite": "persistent_model_input_admission_v3",
+  "features": [
+    "test-support",
+    "native-process-tree"
+  ],
+  "build_jobs": 1,
+  "exit_code": 0,
+  "tests": {
+    "filtered": 0,
+    "ignored": 0,
+    "passed": 7,
+    "failed": 0
+  },
+  "evidence_directory": "target/graphcoder-qualification/46852dc41-persistent-input",
+  "artifacts": [
+    {
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "path": "exit-code.txt"
+    },
+    {
+      "sha256": "848cc32c8a963cf3ada994a4d5cdeb9a549d9935ab40a243c1ec2bc24afb11b1",
+      "path": "native.log"
+    },
+    {
+      "sha256": "49170b9c7b3b0287bfd903045d0a58655d1a3f05f900dae8d7c01199fa476e0d",
+      "path": "persistent_model_input_admission_v3.exe"
+    },
+    {
+      "sha256": "7cedc2d6d31d35692fca7d8b129c3e31e0457c0af34385e35910b4255c438b9d",
+      "path": "source.tar"
+    }
+  ],
+  "qualification_scope": "This native persistent-input suite only; recursive swarm, WASM, installed artifacts and full matrix remain open."
+}
