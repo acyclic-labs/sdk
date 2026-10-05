@@ -481,16 +481,10 @@ impl LocalSwarmBindings {
         self.communication_host = Some(communication_host);
         self.wait_store = wait_store;
         self.cancellation = cancellation;
-        self.workspace_tools = Some(workspace_tools::WorkspaceToolsBinding {
-            host: filesystem_host,
-            root_project,
-            root_task,
-            limits,
-        });
-        self.filesystem_fork_resolver = Some(resolver);
-        self.model_fork_plans = Some(plans);
-        self.model_batch_publisher = Some(publisher);
-        self
+        self.with_workspace_tools(filesystem_host, root_project, root_task, limits)
+            .with_filesystem_fork_resolver(resolver)
+            .with_model_fork_plans(plans)
+            .with_model_batch_publisher(publisher)
     }
 
     fn tools_for(&self, parent: TaskId) -> Result<LocalHarnessTools> {
