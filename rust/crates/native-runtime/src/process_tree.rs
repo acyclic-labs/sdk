@@ -240,11 +240,7 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary process-tree directory");
         let mut command = helper_command("child", temporary.path());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn process tree");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert_tree_ready(&mut tree, temporary.path());
+        wait_for_tree_ready(&mut tree, temporary.path());
         let grandchild_pid = read_pid(temporary.path());
         assert!(
             process_is_alive(grandchild_pid).expect("query grandchild liveness"),
@@ -260,11 +256,7 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary process-tree directory");
         let mut command = helper_command("parent-exits", temporary.path());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn process tree");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert_tree_ready(&mut tree, temporary.path());
+        wait_for_tree_ready(&mut tree, temporary.path());
         let grandchild_pid = read_pid(temporary.path());
         assert!(
             process_is_alive(grandchild_pid).expect("query grandchild liveness"),
@@ -293,8 +285,15 @@ mod tests {
             .expect("valid grandchild pid")
     }
 
-    fn assert_tree_ready(tree: &mut ProcessTree, root: &Path) {
-        if root.join("tree-ready").exists() {
+    fn wait_for_tree_ready(tree: &mut ProcessTree, root: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(root.join("tree-ready").exists() && root.join("grandchild-ready").exists())
+            && Instant::now() < deadline
+        {
+            let _ = tree.try_wait().expect("poll process tree for diagnostics");
+            thread::sleep(Duration::from_millis(10));
+        }
+        if root.join("tree-ready").exists() && root.join("grandchild-ready").exists() {
             return;
         }
         let status = tree.try_wait().expect("poll process tree for diagnostics");
