@@ -87,10 +87,15 @@ foreach ($family in $families) {
 
 $zipWriter = Join-Path $SourceRoot 'research/additional-languages/openapi-targets/write-deterministic-zip.ps1'
 $archive = Join-Path $TargetOutput ("acyclic-http-" + $TargetId + "-0.1.0.zip")
-& pwsh '-NoProfile' '-File' $zipWriter '-Root' $packageRoot '-Archive' $archive
-if ($LASTEXITCODE -ne 0) { throw "Deterministic archive validation failed for $TargetId" }
-$hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
-$bytes = (Get-Item -LiteralPath $archive).Length
+$rustGenerationEntrypoint = $env:ACYCLIC_RUST_GENERATION_ENTRYPOINT -eq '1'
+$hash = $null
+$bytes = $null
+if (-not $rustGenerationEntrypoint) {
+    & pwsh '-NoProfile' '-File' $zipWriter '-Root' $packageRoot '-Archive' $archive
+    if ($LASTEXITCODE -ne 0) { throw "Deterministic archive validation failed for $TargetId" }
+    $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+    $bytes = (Get-Item -LiteralPath $archive).Length
+}
 $report = [ordered]@{
     schema = 'acyclic.sdk.openapi.http-producer-receipt.v1'
     target = $TargetId
@@ -98,7 +103,7 @@ $report = [ordered]@{
     source_sha256 = [string]$authority.source_sha256
     generator = [ordered]@{ name = "OpenAPI Generator $TargetId"; version = '7.25.0'; jar_sha256 = $jarSha256 }
     families = $families
-    archive = [ordered]@{ path = [IO.Path]::GetFileName($archive); sha256 = $hash; bytes = $bytes }
+    archive = if ($rustGenerationEntrypoint) { $null } else { [ordered]@{ path = [IO.Path]::GetFileName($archive); sha256 = $hash; bytes = $bytes } }
     package_layout = if ($TargetId -eq 'nim') { 'Nimble metadata plus generated OpenAPI client tree' } else { 'CRAN DESCRIPTION/NAMESPACE plus generated OpenAPI client tree' }
     runtime = [ordered]@{ status = 'pending'; reason = if ($TargetId -eq 'nim') { 'nim and nimble are required for compile/install smoke' } else { 'Rscript and R CMD are required for package/check smoke' } }
 }

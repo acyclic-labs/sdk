@@ -21,6 +21,7 @@ use std::process::{Command, Output, Stdio};
 use tar::Archive;
 
 mod installed_package_receipts;
+mod target_packaging;
 #[path = "bin/verify-rpc-observations.rs"]
 #[allow(dead_code)]
 mod canonical_rust_verifier;
@@ -4019,6 +4020,7 @@ fn run_language_producers(
                 let process = Command::new(&command[0])
                     .args(&command[1..])
                     .current_dir(root)
+                    .env("ACYCLIC_RUST_GENERATION_ENTRYPOINT", "1")
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .output();
@@ -4065,6 +4067,53 @@ fn run_language_producers(
                                 "exit_code": process.status.code(),
                             });
                         } else {
+                            let package_policy = if let Some(policy) =
+                                target_packaging::target_package_policy(id)
+                            {
+                                let removed = target_packaging::sanitize_generated_package(
+                                    id,
+                                    &target_output,
+                                )
+                                .map_err(|error| {
+                                    CliError::new(format!(
+                                        "Rust package portability policy failed for {id}: {error}"
+                                    ))
+                                })?;
+                                let removed_files = removed
+                                    .iter()
+                                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                                    .collect::<Vec<_>>();
+                                let package_root = target_output.join("generated");
+                                let archive = target_packaging::write_deterministic_archive(
+                                    root,
+                                    id,
+                                    &package_root,
+                                    &target_output,
+                                )
+                                .map_err(|error| {
+                                    CliError::new(format!(
+                                        "Rust deterministic archive production failed for {id}: {error}"
+                                    ))
+                                })?;
+                                let archive_bytes = fs::metadata(&archive)?.len();
+                                let archive_sha256 = hash_bytes(&fs::read(&archive)?);
+                                Some(json!({
+                                    "target": policy.target_id,
+                                    "generator": policy.generator,
+                                    "generator_version": policy.generator_version,
+                                    "generator_commit": policy.generator_commit,
+                                    "generator_jar_sha256": policy.generator_jar_sha256,
+                                    "portable_excluded_files": policy.portable_excluded_files,
+                                    "removed_files": removed_files,
+                                    "archive": {
+                                        "path": relative_or_absolute(&archive, output),
+                                        "sha256": archive_sha256,
+                                        "bytes": archive_bytes,
+                                    },
+                                }))
+                            } else {
+                                None
+                            };
                             let artifact_digest = directory_digest(&target_output)?;
                             execution = json!({
                                 "status": "passed",
