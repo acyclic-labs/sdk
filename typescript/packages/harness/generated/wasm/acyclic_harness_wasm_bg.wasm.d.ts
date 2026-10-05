@@ -102,6 +102,8 @@ export const wasmreducer_verifyPrivateDirectoryRead: (a: number, b: any, c: any,
 export const wasmreducer_verifyScope: (a: number, b: any) => [number, number];
 export const wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
 export const wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
+export const harnessDefaultOutboxBytes: () => number;
+export const harnessDefaultOutboxCommands: () => number;
 export const harnessDefaultResidentBytes: () => number;
 export const harnessDefaultResidentFiles: () => number;
 export const __wbg_browserfilesystemclient_free: (a: number, b: number) => void;
@@ -117,6 +119,7 @@ export const browserharnessclient_connectWithLimits: (a: number, b: number, c: n
 export const browserharnessclient_observe: (a: number, b: number, c: number) => any;
 export const browserharnessclient_replay: (a: number, b: number, c: number) => any;
 export const browserharnessclient_submit: (a: number, b: number, c: number) => any;
+export const validateRemoteWebFilesystemHandshake: (a: number, b: number) => [number, number, number, number];
 export const validate_actors_invoke: (a: number, b: number, c: number, d: number) => [number, number];
 export const validate_remote_web_ca_certificate: (a: number, b: number) => [number, number];
 export const validate_remote_web_content_length: (a: number, b: number, c: bigint) => [number, number];

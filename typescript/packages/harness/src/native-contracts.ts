@@ -530,6 +530,21 @@ export class NativeContracts {
   ): HarnessReplayReconciliation<Cursor> {
     return this.native.reconcileReplayDelivery(previous, delivery) as HarnessReplayReconciliation<Cursor>;
   }
+
+  /** Rust-owned defaults for durable browser outbox capacity. */
+  harnessDefaultOutboxCommands(): number {
+    return safePolicyNumber(this.native.harnessDefaultOutboxCommands(), "outbox command limit");
+  }
+
+  harnessDefaultOutboxBytes(): number {
+    return safePolicyNumber(this.native.harnessDefaultOutboxBytes(), "outbox byte limit");
+  }
+}
+
+function safePolicyNumber(value: number | bigint, label: string): number {
+  const number = typeof value === "bigint" ? Number(value) : value;
+  if (!Number.isSafeInteger(number) || number <= 0) throw new RangeError(`Rust ${label} is invalid`);
+  return number;
 }
 
 /** Strip executable parser/handler members before crossing the serde WASM ABI. */

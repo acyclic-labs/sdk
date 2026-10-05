@@ -41,6 +41,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateOfflineCommand", "validateReplayDelivery", "reconcileReplayDelivery",
   "harnessReplayBackoff",
   "harnessDefaultResidentBytes", "harnessDefaultResidentFiles",
+  "harnessDefaultOutboxCommands", "harnessDefaultOutboxBytes",
   "harnessMaxInlineAttachments", "harnessAttachmentManifestMediaType",
 ] as const satisfies readonly (keyof typeof import("../generated/wasm/acyclic_harness_wasm.js"))[];
 

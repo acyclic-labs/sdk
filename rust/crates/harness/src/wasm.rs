@@ -63,6 +63,16 @@ pub fn harness_default_resident_files() -> f64 {
     crate::memory_store::DEFAULT_RESIDENT_FILES as f64
 }
 
+#[wasm_bindgen(js_name = harnessDefaultOutboxCommands)]
+pub fn harness_default_outbox_commands() -> f64 {
+    crate::memory_store::DEFAULT_OUTBOX_COMMANDS as f64
+}
+
+#[wasm_bindgen(js_name = harnessDefaultOutboxBytes)]
+pub fn harness_default_outbox_bytes() -> f64 {
+    crate::memory_store::DEFAULT_OUTBOX_BYTES as f64
+}
+
 #[wasm_bindgen(js_name = harnessMaxInlineAttachments)]
 pub fn harness_max_inline_attachments() -> u32 {
     crate::conversation::MAX_INLINE_ATTACHMENTS as u32

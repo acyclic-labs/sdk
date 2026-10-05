@@ -951,6 +951,10 @@ export function forkSeedFromReport(report: any): any;
 
 export function harnessAttachmentManifestMediaType(): string;
 
+export function harnessDefaultOutboxBytes(): number;
+
+export function harnessDefaultOutboxCommands(): number;
+
 /**
  * Returns the Rust-owned policy used by ephemeral memory content hosts.
  *
@@ -1164,6 +1168,14 @@ export function validateOfflineCommand(value: any): any;
  * consumed by the TypeScript adapter.
  */
 export function validatePath(path: string): string;
+
+/**
+ * Validates an encoded Filesystem handshake response and returns the
+ * canonical negotiated capabilities. Keeping decoding and admission in
+ * this Rust boundary prevents hosted TypeScript clients from re-owning
+ * protocol identity or capability validation.
+ */
+export function validateRemoteWebFilesystemHandshake(response: Uint8Array): Uint8Array;
 
 /**
  * Backward-compatible cursor-only projection for generated consumers that do
@@ -1447,6 +1459,8 @@ export interface InitOutput {
     readonly wasmreducer_verifyScope: (a: number, b: any) => [number, number];
     readonly wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
+    readonly harnessDefaultOutboxBytes: () => number;
+    readonly harnessDefaultOutboxCommands: () => number;
     readonly harnessDefaultResidentBytes: () => number;
     readonly harnessDefaultResidentFiles: () => number;
     readonly __wbg_browserfilesystemclient_free: (a: number, b: number) => void;
@@ -1462,6 +1476,7 @@ export interface InitOutput {
     readonly browserharnessclient_observe: (a: number, b: number, c: number) => any;
     readonly browserharnessclient_replay: (a: number, b: number, c: number) => any;
     readonly browserharnessclient_submit: (a: number, b: number, c: number) => any;
+    readonly validateRemoteWebFilesystemHandshake: (a: number, b: number) => [number, number, number, number];
     readonly validate_actors_invoke: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_remote_web_ca_certificate: (a: number, b: number) => [number, number];
     readonly validate_remote_web_content_length: (a: number, b: number, c: bigint) => [number, number];

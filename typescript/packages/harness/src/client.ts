@@ -2,6 +2,7 @@ import type { AggregateKind, Authority, OperationId } from "./index.js";
 import type { FileRef, ReferencedAttachments } from "./conversation.js";
 import { NativeContracts, type HarnessReplayReconciliation } from "./native-contracts.js";
 import { isSafeAuthorityId } from "./authority-contract.js";
+import { harnessDefaultOutboxBytes, harnessDefaultOutboxCommands } from "../generated/wasm/acyclic_harness_wasm.js";
 
 export interface ReplayCursor {
   readonly generation: string;
@@ -118,8 +119,9 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
   readonly #maximumBytes: number;
 
   constructor(options: IndexedDbClientStoreOptions) {
-    this.#maximumCommands = positiveBound(options.maximumCommands ?? 1_024, "maximumCommands");
-    this.#maximumBytes = positiveBound(options.maximumBytes ?? 16 * 1024 * 1024, "maximumBytes");
+    const policy = outboxPolicyDefaults();
+    this.#maximumCommands = positiveBound(options.maximumCommands ?? policy.maximumCommands, "maximumCommands");
+    this.#maximumBytes = positiveBound(options.maximumBytes ?? policy.maximumBytes, "maximumBytes");
     const factory = options.indexedDB ?? globalThis.indexedDB;
     if (factory === undefined) throw new Error("IndexedDB is not available");
     if (options.databaseName.trim() === "") throw new TypeError("databaseName is required");
@@ -201,6 +203,14 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     });
     await transactionDone(transaction);
   }
+}
+
+let outboxPolicy: { readonly maximumCommands: number; readonly maximumBytes: number } | undefined;
+function outboxPolicyDefaults(): { readonly maximumCommands: number; readonly maximumBytes: number } {
+  return outboxPolicy ??= {
+    maximumCommands: positiveBound(harnessDefaultOutboxCommands(), "Rust maximumCommands"),
+    maximumBytes: positiveBound(harnessDefaultOutboxBytes(), "Rust maximumBytes"),
+  };
 }
 
 export type ClientListener<Event> = (event: ClientEvent<Event>) => void;
