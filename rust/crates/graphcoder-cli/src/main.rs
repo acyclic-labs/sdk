@@ -62,9 +62,10 @@ const MAX_CONTROL_IN_FLIGHT: usize = 8;
     about = "Local GraphCoder JSON-lines host"
 )]
 struct Args {
-    /// Durable swarm root. It is created by the SDK's local storage provider.
+    /// Durable swarm root. When omitted, the host-local application data
+    /// directory is used, keeping session state outside a selected checkout.
     #[arg(long, env = "GRAPHCODER_ROOT")]
-    root: PathBuf,
+    root: Option<PathBuf>,
     /// Explicit deterministic model fixture.
     #[arg(long, default_value = "echo")]
     model_fixture: String,
@@ -77,6 +78,16 @@ struct Args {
     /// Native checkout root selected by the host composition.
     #[arg(long, env = "GRAPHCODER_CHECKOUT")]
     checkout: Option<PathBuf>,
+}
+
+fn default_runtime_root() -> PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("XDG_STATE_HOME"))
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("GraphCoder").join("local-sessions")
 }
 
 #[derive(Default)]
@@ -410,6 +421,7 @@ struct Runtime {
 
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
+        let root = args.root.clone().unwrap_or_else(default_runtime_root);
         let fixture = match args.model_fixture.as_str() {
             "echo" | "complete" | "stage" | "recursive" => args.model_fixture.clone(),
             value => {
@@ -459,7 +471,7 @@ impl Runtime {
                 // default bindings carry no authority; Harness attaches the
                 // checkout and creates or reopens its durable host issuer.
                 PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings(
-                    &args.root,
+                    &root,
                     model,
                     provider,
                     Limits::default(),
@@ -476,7 +488,7 @@ impl Runtime {
             }
             (None, _) => {
                 PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-                    &args.root,
+                    &root,
                     model,
                     provider,
                     Limits::default(),
@@ -1660,12 +1672,18 @@ mod tests {
 
     fn runtime_args(root: PathBuf, fixture: &str) -> Args {
         Args {
-            root,
+            root: Some(root),
             model_fixture: fixture.to_owned(),
             operator_token: None,
             project_id: None,
             checkout: None,
         }
+    }
+
+    #[test]
+    fn default_runtime_root_is_an_application_state_location() {
+        let root = default_runtime_root();
+        assert!(root.ends_with(PathBuf::from("GraphCoder").join("local-sessions")));
     }
 
     #[tokio::test]
