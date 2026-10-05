@@ -11,13 +11,15 @@
 
 use acyclic_harness::{
     Error as HarnessError, IdempotencyKey, InteractionId, OperationId, TaskId,
-    conversation::Limits,
-    filesystem::{LocalSessionPhase, PersistentLocalSwarm},
+    conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
+    filesystem::{LocalSessionPhase, LocalSwarmBindings, PersistentLocalSwarm},
+    interaction::InteractionResponse,
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
         ModelProvider, ProviderDispatchContext,
     },
     registry::ComponentIdentity,
+    resources::ProviderRef,
     swarm_budget::{SwarmUsage, SwarmUsageSource},
 };
 use clap::Parser;
@@ -36,6 +38,10 @@ use std::{
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+
+use acyclic_fs::{
+    CancellationToken, HostCheckoutRestore, HostPathReplacement, MaterializeOptions, WorkBudget,
+};
 
 #[cfg(test)]
 use tokio::io::AsyncReadExt;
@@ -65,6 +71,12 @@ struct Args {
     /// Private host-to-runtime credential for operator control messages.
     #[arg(long, env = "GRAPHCODER_OPERATOR_TOKEN", hide = true)]
     operator_token: Option<String>,
+    /// Stable project identity for an explicitly attached native checkout.
+    #[arg(long, env = "GRAPHCODER_PROJECT_ID", requires = "checkout")]
+    project_id: Option<String>,
+    /// Native checkout root selected by the host composition.
+    #[arg(long, env = "GRAPHCODER_CHECKOUT")]
+    checkout: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -88,7 +100,9 @@ impl SwarmUsageSource for MockUsageSource {
             .map_err(|_| HarnessError::Conflict("mock usage lock poisoned".into()))?
             .get(&(operation_id, dispatch_id.0.clone()))
             .copied()
-            .unwrap_or_default())
+            .ok_or_else(|| {
+                HarnessError::Conflict("mock provider usage measurement is unavailable".into())
+            }))
     }
 }
 
@@ -380,6 +394,7 @@ struct Runtime {
     swarm: Arc<PersistentLocalSwarm>,
     model_fixture: String,
     operator_token: Option<String>,
+    checkout: Option<PathBuf>,
 }
 
 impl Runtime {
@@ -419,17 +434,47 @@ impl Runtime {
             option_policy,
             usage: Arc::new(MockUsageSource::default()),
         });
-        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            &args.root,
-            model,
-            provider,
-            Limits::default(),
-        )
-        .await?;
+        let bindings = LocalSwarmBindings::default();
+        let swarm = match (&args.checkout, &args.project_id) {
+            (Some(checkout), Some(project_id)) => {
+                let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
+                let project = VolumeRef::new(
+                    filesystem_provider,
+                    project_id.clone(),
+                    VolumeClass::Project,
+                    VolumeOwner::Project(project_id.clone()),
+                )?;
+                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings(
+                    &args.root,
+                    model,
+                    provider,
+                    Limits::default(),
+                    project,
+                    checkout,
+                    bindings,
+                )
+                .await?
+            }
+            (Some(_), None) => {
+                return Err(HarnessError::Invalid(
+                    "--project-id is required with --checkout".into(),
+                ));
+            }
+            (None, _) => {
+                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+                    &args.root,
+                    model,
+                    provider,
+                    Limits::default(),
+                )
+                .await?
+            }
+        };
         Ok(Self {
             swarm,
             model_fixture: fixture,
             operator_token: args.operator_token.clone(),
+            checkout: args.checkout.clone(),
         })
     }
 
@@ -458,6 +503,9 @@ impl Runtime {
             "resolve_approval" => self.resolve_approval(&request.params).await,
             "cancel_session" => self.cancel_session(&request.params).await,
             "read_file" => self.read_file(&request.params).await,
+            "inspect_writeback" => self.inspect_writeback(&request.params).await,
+            "apply_writeback" => self.apply_writeback(&request.params).await,
+            "recover_writeback" => self.recover_writeback(&request.params).await,
             "list_changes" | "read_change" | "approve_writeback" => {
                 Err(DispatchError::unsupported(
                     "the durable local constructor does not expose this projection yet",
@@ -791,6 +839,116 @@ impl Runtime {
         }))
     }
 
+    async fn inspect_writeback(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let approval_id = InteractionId::parse(required_text(params, "approval_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let inspection_id = required_text(params, "inspection_id")?;
+        validate_identifier(inspection_id, "inspection_id")?;
+        let paths = relative_paths(params, "paths")?;
+        self.issue_writeback(task, approval_id, &paths).await?;
+        Ok(json!({
+            "inspection_id": inspection_id,
+            "session_id": task.to_string(),
+            "approval_id": approval_id.to_string(),
+            "paths": paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>(),
+            "scope": "harness-sealed-native-checkout",
+        }))
+    }
+
+    async fn apply_writeback(&self, params: &Value) -> Result<Value, DispatchError> {
+        self.apply_writeback_inner(params, "applied").await
+    }
+
+    async fn recover_writeback(&self, params: &Value) -> Result<Value, DispatchError> {
+        self.apply_writeback_inner(params, "recovered").await
+    }
+
+    async fn apply_writeback_inner(
+        &self,
+        params: &Value,
+        status: &str,
+    ) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let inspection = object(
+            params
+                .get("inspection")
+                .ok_or_else(|| DispatchError::invalid("inspection is required"))?,
+        )?;
+        let inspection_id = required_text(inspection, "inspection_id")?;
+        validate_identifier(inspection_id, "inspection_id")?;
+        if inspection.get("scope").and_then(Value::as_str) != Some("harness-sealed-native-checkout")
+        {
+            return Err(DispatchError::denied(
+                "writeback inspection is not a Harness-sealed native checkout handle",
+            ));
+        }
+        let task = task_from_value(inspection, "session_id")?;
+        let approval_id = InteractionId::parse(required_text(inspection, "approval_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let paths = relative_paths(inspection, "paths")?;
+        let requested_paths = params
+            .get("paths")
+            .map(|_| relative_paths(params, "paths"))
+            .transpose()?
+            .unwrap_or_else(|| paths.clone());
+        if requested_paths != paths {
+            return Err(DispatchError::invalid(
+                "writeback paths must match the sealed inspection",
+            ));
+        }
+        let replacement = replacement(params)?;
+        let destination = self.checkout.as_ref().ok_or_else(|| {
+            DispatchError::unsupported("native writeback requires an attached checkout")
+        })?;
+        if let Some(requested_destination) = params.get("destination").and_then(Value::as_str) {
+            if PathBuf::from(requested_destination) != *destination {
+                return Err(DispatchError::denied(
+                    "writeback destination must be the attached checkout",
+                ));
+            }
+        }
+        let handle = self.issue_writeback(task, approval_id, &paths).await?;
+        let options = MaterializeOptions::native(destination.clone());
+        let cancellation = CancellationToken::new();
+        let restored = handle
+            .apply_root_with_native_restore(
+                &paths,
+                replacement,
+                &options,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(DispatchError::from_harness)?;
+        Ok(writeback_result(status, inspection_id, task, restored))
+    }
+
+    async fn issue_writeback(
+        &self,
+        task: TaskId,
+        approval_id: InteractionId,
+        paths: &[PathBuf],
+    ) -> Result<acyclic_harness::filesystem::LocalApprovedRootWriteback, DispatchError> {
+        let root = self
+            .swarm
+            .root_task()
+            .await
+            .map_err(DispatchError::from_harness)?;
+        if task == root {
+            self.swarm
+                .issue_host_approved_root_task_writeback_with_paths(task, approval_id, paths)
+                .await
+                .map_err(DispatchError::from_harness)
+        } else {
+            self.swarm
+                .issue_host_approved_root_writeback_for_task_with_paths(task, approval_id, paths)
+                .await
+                .map_err(DispatchError::from_harness)
+        }
+    }
+
     async fn snapshot(&self, task: TaskId) -> Result<Value, DispatchError> {
         let (snapshot, agents) = self
             .swarm
@@ -843,6 +1001,13 @@ impl DispatchError {
         }
     }
 
+    fn denied(message: impl Into<String>) -> Self {
+        Self {
+            code: "denied",
+            message: message.into(),
+        }
+    }
+
     fn from_harness(error: HarnessError) -> Self {
         let code = match error {
             HarnessError::NotFound(_) => "not_found",
@@ -872,6 +1037,99 @@ fn required_text<'a>(
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| DispatchError::invalid(format!("{key} must be text")))
+}
+
+fn validate_identifier(value: &str, name: &str) -> Result<(), DispatchError> {
+    if value.trim().is_empty() || value.len() > 256 {
+        return Err(DispatchError::invalid(format!(
+            "{name} must be nonempty and at most 256 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn relative_paths(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Vec<PathBuf>, DispatchError> {
+    let values = object
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| DispatchError::invalid(format!("{key} must be an array")))?;
+    if values.is_empty() || values.len() > 16_384 {
+        return Err(DispatchError::invalid(format!(
+            "{key} must contain between 1 and 16384 paths"
+        )));
+    }
+    let mut paths = Vec::with_capacity(values.len());
+    for value in values {
+        let text = value
+            .as_str()
+            .ok_or_else(|| DispatchError::invalid(format!("{key} entries must be text")))?;
+        let path = PathBuf::from(text);
+        if text.is_empty()
+            || path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::Prefix(_)
+                        | std::path::Component::RootDir
+                        | std::path::Component::ParentDir
+                )
+            })
+            || path == PathBuf::from(".")
+        {
+            return Err(DispatchError::invalid(
+                "writeback paths must be nonempty relative paths",
+            ));
+        }
+        if paths.iter().any(|existing| existing == &path) {
+            return Err(DispatchError::invalid(
+                "writeback paths must not contain duplicates",
+            ));
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+fn replacement(
+    object: &serde_json::Map<String, Value>,
+) -> Result<HostPathReplacement, DispatchError> {
+    match object
+        .get("replacement")
+        .and_then(Value::as_str)
+        .unwrap_or("atomic")
+    {
+        "atomic" => Ok(HostPathReplacement::Atomic),
+        "live_mount" => Ok(HostPathReplacement::LiveMount),
+        _ => Err(DispatchError::invalid(
+            "replacement must be atomic or live_mount",
+        )),
+    }
+}
+
+fn writeback_result(
+    status: &str,
+    inspection_id: &str,
+    task: TaskId,
+    restored: HostCheckoutRestore,
+) -> Value {
+    let outcomes = restored
+        .outcomes
+        .into_iter()
+        .map(|outcome| match outcome {
+            acyclic_fs::HostPathRestore::Restored => "restored",
+            acyclic_fs::HostPathRestore::Removed => "removed",
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "session_id": task.to_string(),
+        "inspection_id": inspection_id,
+        "status": status,
+        "outcomes": outcomes,
+        "work": restored.work,
+    })
 }
 
 fn task_from_value(
@@ -1391,6 +1649,8 @@ mod tests {
             root,
             model_fixture: fixture.to_owned(),
             operator_token: None,
+            project_id: None,
+            checkout: None,
         }
     }
 
@@ -1465,7 +1725,9 @@ mod tests {
         .await;
         assert_eq!(messages["ok"], true, "{messages}");
         assert!(messages["result"]["items"].as_array().is_some_and(|items| {
-            items.iter().any(|item| item["body"] == "follow-up  with exact bytes")
+            items
+                .iter()
+                .any(|item| item["body"] == "follow-up  with exact bytes")
         }));
     }
 
