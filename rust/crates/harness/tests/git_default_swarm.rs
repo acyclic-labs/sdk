@@ -447,9 +447,14 @@ struct RuntimeGitSwarmProvider {
     child_fork_sent: AtomicBool,
     merge_child: AtomicBool,
     merge_root: AtomicBool,
+    continue_root: AtomicBool,
+    abort_root: AtomicBool,
     reject_root_merge: AtomicBool,
     merge_child_sent: AtomicBool,
     merge_root_sent: AtomicBool,
+    abort_merge_sent: AtomicBool,
+    continue_sent: AtomicBool,
+    abort_sent: AtomicBool,
     reject_root_sent: AtomicBool,
 }
 
@@ -462,9 +467,14 @@ impl RuntimeGitSwarmProvider {
             child_fork_sent: AtomicBool::new(false),
             merge_child: AtomicBool::new(false),
             merge_root: AtomicBool::new(false),
+            continue_root: AtomicBool::new(false),
+            abort_root: AtomicBool::new(false),
             reject_root_merge: AtomicBool::new(false),
             merge_child_sent: AtomicBool::new(false),
             merge_root_sent: AtomicBool::new(false),
+            abort_merge_sent: AtomicBool::new(false),
+            continue_sent: AtomicBool::new(false),
+            abort_sent: AtomicBool::new(false),
             reject_root_sent: AtomicBool::new(false),
         })
     }
@@ -529,6 +539,48 @@ impl ModelProvider for RuntimeGitSwarmProvider {
                     call_id: "runtime-merge-grandchild".into(),
                     name: "acyclic.git".into(),
                     arguments: json!({"argv": ["merge", "grandchild"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if root
+            && self.abort_root.load(Ordering::SeqCst)
+            && !self.abort_merge_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-merge-child-for-abort".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "child"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if root
+            && self.continue_root.load(Ordering::SeqCst)
+            && !self.continue_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-merge-continue".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "--continue"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if root
+            && self.abort_root.load(Ordering::SeqCst)
+            && !self.abort_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-merge-abort".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "--abort"]}),
                 }),
                 Ok(ModelEvent::Completed {
                     metadata: json!({}),
@@ -795,13 +847,148 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
         child_workspace_id,
     )
     .await?;
+
+    // Make the direct child/root merge genuinely conflicted. Both workspaces
+    // still descend from the same empty generation, so the existing
+    // Filesystem three-way join must leave a durable pending transition.
+    let child_workspace = workspace_ref(host.provider().clone(), &child_project.storage_name()?)?;
+    let child_head = host.resolve(&child_workspace).await?;
+    host.apply(
+        &child_workspace,
+        Some(&child_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/runtime-conflict.txt".into(),
+            bytes: b"child side".to_vec(),
+        }],
+        &acyclic_harness::IdempotencyKey::new("runtime-child-conflict-edit")?,
+    )
+    .await?;
+    let root_head = host.resolve(&root_workspace).await?;
+    host.apply(
+        &root_workspace,
+        Some(&root_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/runtime-conflict.txt".into(),
+            bytes: b"root side".to_vec(),
+        }],
+        &acyclic_harness::IdempotencyKey::new("runtime-root-conflict-edit")?,
+    )
+    .await?;
     provider.merge_root.store(true, Ordering::SeqCst);
+    assert!(
+        swarm
+            .run_root(
+                OperationId::from_bytes([0xE4; 16]),
+                "attempt the conflicted child project merge",
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        host.read(&root_workspace, None, "/runtime-conflict.txt", 1_024)
+            .await?,
+        b"root side"[..]
+    );
+    assert!(
+        host.read(&root_workspace, None, "/runtime-final.txt", 1_024)
+            .await
+            .is_err()
+    );
+
+    // The failed model turn leaves the compatibility transition durable. A
+    // fresh model turn can resolve the workspace and explicitly continue it;
+    // it does not replay or guess the failed join.
+    let root_head = host.resolve(&root_workspace).await?;
+    host.apply(
+        &root_workspace,
+        Some(&root_head.generation),
+        &[
+            WorkspaceMutation::PutFile {
+                path: "/runtime-conflict.txt".into(),
+                bytes: b"child side".to_vec(),
+            },
+            // Continue captures the current target generation. Resolve the
+            // conflict and stage the non-conflicting child file in the same
+            // explicit workspace edit before admitting that continuation.
+            WorkspaceMutation::PutFile {
+                path: "/runtime-final.txt".into(),
+                bytes: b"grandchild authored this exact file".to_vec(),
+            },
+        ],
+        &acyclic_harness::IdempotencyKey::new("runtime-root-conflict-resolve")?,
+    )
+    .await?;
+    provider.continue_root.store(true, Ordering::SeqCst);
     swarm
         .run_root(
-            OperationId::from_bytes([0xE4; 16]),
-            "merge the completed child project",
+            OperationId::from_bytes([0xE6; 16]),
+            "continue the resolved child project merge",
         )
         .await?;
+    assert_eq!(
+        host.read(&root_workspace, None, "/runtime-conflict.txt", 1_024)
+            .await?,
+        b"child side"[..]
+    );
+
+    // A second conflict exercises the explicit abort path. The durable
+    // compatibility layer restores the exact target generation captured by
+    // the pending merge, leaving the child workspace untouched.
+    let child_head = host.resolve(&child_workspace).await?;
+    host.apply(
+        &child_workspace,
+        Some(&child_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/runtime-abort.txt".into(),
+            bytes: b"child abort side".to_vec(),
+        }],
+        &acyclic_harness::IdempotencyKey::new("runtime-child-abort-edit")?,
+    )
+    .await?;
+    let root_head = host.resolve(&root_workspace).await?;
+    host.apply(
+        &root_workspace,
+        Some(&root_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/runtime-abort.txt".into(),
+            bytes: b"root abort side".to_vec(),
+        }],
+        &acyclic_harness::IdempotencyKey::new("runtime-root-abort-edit")?,
+    )
+    .await?;
+    provider.merge_root_sent.store(false, Ordering::SeqCst);
+    provider.abort_root.store(true, Ordering::SeqCst);
+    assert!(
+        swarm
+            .run_root(
+                OperationId::from_bytes([0xE7; 16]),
+                "attempt a merge that will be aborted",
+            )
+            .await
+            .is_err()
+    );
+    swarm
+        .run_root(
+            OperationId::from_bytes([0xE8; 16]),
+            "abort the conflicted child project merge",
+        )
+        .await?;
+    assert!(
+        host.read(&root_workspace, None, "/runtime-abort.txt", 1_024)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        host.read(&child_workspace, None, "/runtime-abort.txt", 1_024)
+            .await?,
+        b"child abort side"[..]
+    );
+
+    // The successful, non-conflicted path remains covered after recovery.
+    provider.merge_root.store(false, Ordering::SeqCst);
+    provider.abort_root.store(false, Ordering::SeqCst);
+    provider.continue_root.store(false, Ordering::SeqCst);
+    provider.merge_root_sent.store(true, Ordering::SeqCst);
     assert_eq!(
         host.read(&root_workspace, None, "/runtime-final.txt", 1_024)
             .await?,
