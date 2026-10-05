@@ -2159,6 +2159,7 @@ mod tests {
         core::{AggregateKind, Authority, AuthorityIssuer},
         resources::ProviderRef,
     };
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
     async fn wait_for_flag(flag: &AtomicBool, label: &str) -> Result<()> {
@@ -2179,6 +2180,26 @@ mod tests {
         })
         .await
         .map_err(|_| Error::Storage(format!("{label} did not start within 5 seconds")))
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    async fn wait_for_native_active_empty(provider: &NativeExecutionProvider) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let empty = provider
+                    .active
+                    .lock()
+                    .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
+                    .is_empty();
+                if empty {
+                    break Ok::<(), Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Storage("native dispatch left an active attempt".into()))??;
+        Ok(())
     }
 
     struct MemoryContent {
@@ -2743,6 +2764,185 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    fn native_cancellation_fixture(
+        root: &Path,
+    ) -> Result<(ExecutionSpec, PathBuf, PathBuf, PathBuf)> {
+        let started = root.join("started.marker");
+        let pid = root.join("child.pid");
+        let late = root.join("late.marker");
+        let release = root.join("release.marker");
+        let executable = std::env::current_exe()
+            .map_err(|error| Error::Storage(format!("failed locating test executable: {error}")))?;
+        let mut request = spec();
+        request.executable = executable.to_string_lossy().into_owned();
+        request.working_directory = root.to_string_lossy().into_owned();
+        request.arguments = vec![
+            "--exact".into(),
+            "host_execution::tests::native_process_fixture_helper".into(),
+            "--nocapture".into(),
+            "--".into(),
+            "--graphcoder-process-fixture".into(),
+            started.to_string_lossy().into_owned(),
+            pid.to_string_lossy().into_owned(),
+            late.to_string_lossy().into_owned(),
+            release.to_string_lossy().into_owned(),
+        ];
+        Ok((request, started, pid, late))
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FixtureProcessState {
+        Alive,
+        Exited,
+        Unknown,
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    fn fixture_process_state(pid: u32) -> FixtureProcessState {
+        #[cfg(windows)]
+        {
+            let system_root =
+                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            let tasklist = Path::new(&system_root)
+                .join("System32")
+                .join("tasklist.exe");
+            let mut command = Command::new(tasklist);
+            command
+                .arg("/FI")
+                .arg(format!("PID eq {pid}"))
+                .args(["/FO", "CSV", "/NH"]);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let Ok(output) = command.output() else {
+                return FixtureProcessState::Unknown;
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains(&format!("\"{pid}\"")) {
+                return FixtureProcessState::Alive;
+            }
+            if output.status.success() && stdout.trim_start().starts_with("INFO:") {
+                return FixtureProcessState::Exited;
+            }
+            return FixtureProcessState::Unknown;
+        }
+        #[cfg(unix)]
+        {
+            let Ok(output) = Command::new("ps")
+                .arg("-p")
+                .arg(pid.to_string())
+                .args(["-o", "pid="])
+                .output()
+            else {
+                return FixtureProcessState::Unknown;
+            };
+            if !output.status.success() {
+                return FixtureProcessState::Unknown;
+            }
+            let pid_text = pid.to_string();
+            if String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .any(|value| value == pid_text)
+            {
+                FixtureProcessState::Alive
+            } else {
+                FixtureProcessState::Exited
+            }
+        }
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    fn wait_for_fixture_exit(pid: u32) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match fixture_process_state(pid) {
+                FixtureProcessState::Exited => return Ok(()),
+                FixtureProcessState::Unknown => {
+                    return Err(Error::Storage(format!(
+                        "native process fixture {pid} could not be inspected"
+                    )));
+                }
+                FixtureProcessState::Alive if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                FixtureProcessState::Alive => break,
+            }
+        }
+        if fixture_process_state(pid) != FixtureProcessState::Alive {
+            return Err(Error::Storage(format!(
+                "native process fixture {pid} changed state during cleanup"
+            )));
+        }
+        #[cfg(windows)]
+        {
+            let system_root =
+                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            let taskkill = Path::new(&system_root)
+                .join("System32")
+                .join("taskkill.exe");
+            let mut command = Command::new(taskkill);
+            command.arg("/PID").arg(pid.to_string()).args(["/T", "/F"]);
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+            let _ = command.status();
+        }
+        #[cfg(unix)]
+        {
+            let _ = Command::new("/bin/kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status();
+        }
+        let forced_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match fixture_process_state(pid) {
+                FixtureProcessState::Exited => {
+                    return Err(Error::Storage(format!(
+                        "native process fixture {pid} required forced cleanup"
+                    )));
+                }
+                FixtureProcessState::Unknown => {
+                    return Err(Error::Storage(format!(
+                        "native process fixture {pid} became uninspectable during cleanup"
+                    )));
+                }
+                FixtureProcessState::Alive if Instant::now() < forced_deadline => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                FixtureProcessState::Alive => {
+                    return Err(Error::Storage(format!(
+                        "native process fixture {pid} survived forced cleanup"
+                    )));
+                }
+            }
+        }
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_process_fixture_helper() {
+        let arguments: Vec<_> = std::env::args().collect();
+        let Some(index) = arguments
+            .iter()
+            .position(|argument| argument == "--graphcoder-process-fixture")
+        else {
+            return;
+        };
+        let started = Path::new(&arguments[index + 1]);
+        let pid = Path::new(&arguments[index + 2]);
+        let late = Path::new(&arguments[index + 3]);
+        let release = Path::new(&arguments[index + 4]);
+        std::fs::write(pid, std::process::id().to_string()).expect("fixture pid marker");
+        std::fs::write(started, b"started").expect("fixture started marker");
+        while !release.exists() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::write(late, b"late").expect("fixture late marker");
+    }
+
     #[test]
     fn approval_digest_binds_every_process_field() -> Result<()> {
         let operation = OperationId::from_bytes([1; 16]);
@@ -3141,6 +3341,146 @@ mod tests {
             matches!(outcome, RunnerOutcome::Cancelled { .. })
                 || (!cfg!(feature = "native-process-tree")
                     && matches!(outcome, RunnerOutcome::Unknown { ref reason } if reason.contains("process-tree support")))
+        );
+        Ok(())
+    }
+
+    /// The process-tree adapter must own descendants when cancellation races
+    /// with a shell command.  The late marker is the external effect that a
+    /// leaked descendant would publish after the runner had returned.
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_runner_cancellation_terminates_descendants_before_late_effect() -> Result<()> {
+        let temporary = tempfile::tempdir().map_err(|error| {
+            Error::Storage(format!("failed creating cancellation fixture: {error}"))
+        })?;
+        let (request, started, pid_path, late) = native_cancellation_fixture(temporary.path())?;
+
+        let cancellation = ExecutionCancellation::new();
+        let signal = cancellation.clone();
+        let handle =
+            thread::spawn(move || NativeExecutionRunner.run_with_cancellation(&request, &signal));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !started.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !started.exists() {
+            cancellation.cancel();
+            let _ = handle.join();
+            if let Ok(pid) = std::fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|pid| pid.trim().parse::<u32>().ok())
+            {
+                let _ = wait_for_fixture_exit(pid);
+            }
+            return Err(Error::Storage(
+                "fixture did not reach its running phase".into(),
+            ));
+        }
+        let pid = match std::fs::read_to_string(&pid_path)
+            .map_err(|error| Error::Storage(format!("fixture pid marker was not written: {error}")))
+            .and_then(|pid| {
+                pid.trim().parse::<u32>().map_err(|error| {
+                    Error::Storage(format!("fixture pid marker was invalid: {error}"))
+                })
+            }) {
+            Ok(pid) => pid,
+            Err(error) => {
+                cancellation.cancel();
+                let _ = handle.join();
+                return Err(error);
+            }
+        };
+        cancellation.cancel();
+        let joined = handle
+            .join()
+            .map_err(|_| Error::Storage("native cancellation runner panicked".into()));
+        wait_for_fixture_exit(pid)?;
+        let outcome = joined??;
+        assert!(matches!(outcome, RunnerOutcome::Cancelled { .. }));
+        assert!(
+            !late.exists(),
+            "descendant published its late effect after cancellation"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn dropping_real_native_dispatch_stops_descendants_before_late_effect() -> Result<()> {
+        let temporary = tempfile::tempdir().map_err(|error| {
+            Error::Storage(format!("failed creating dropped dispatch fixture: {error}"))
+        })?;
+        let (request, started, pid_path, late) = native_cancellation_fixture(temporary.path())?;
+        let operation = OperationId::from_bytes([133; 16]);
+        let approval = ExecutionApproval::approve(operation, request)?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let provider = Arc::new(NativeExecutionProvider::new(
+            content.clone(),
+            content,
+            Arc::new(NativeExecutionRunner),
+            approval_verifier(),
+        )?);
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([134; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file,
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.dispatch(dispatch).await }
+        });
+        let started_result = tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        if started_result.is_err() {
+            task.abort();
+            let _ = task.await;
+            let _ = wait_for_native_active_empty(&provider).await;
+            return Err(Error::Storage(
+                "dropped dispatch fixture did not start".into(),
+            ));
+        }
+        let pid = match std::fs::read_to_string(&pid_path)
+            .map_err(|error| Error::Storage(format!("fixture pid marker was not written: {error}")))
+            .and_then(|pid| {
+                pid.trim().parse::<u32>().map_err(|error| {
+                    Error::Storage(format!("fixture pid marker was invalid: {error}"))
+                })
+            }) {
+            Ok(pid) => pid,
+            Err(error) => {
+                task.abort();
+                let _ = task.await;
+                let _ = wait_for_native_active_empty(&provider).await;
+                return Err(error);
+            }
+        };
+        task.abort();
+        assert!(
+            task.await
+                .expect_err("dropped dispatch unexpectedly completed")
+                .is_cancelled()
+        );
+        wait_for_native_active_empty(&provider).await?;
+        drop(provider);
+        wait_for_fixture_exit(pid)?;
+        assert!(
+            !late.exists(),
+            "dropped dispatch leaked a late process effect"
         );
         Ok(())
     }
