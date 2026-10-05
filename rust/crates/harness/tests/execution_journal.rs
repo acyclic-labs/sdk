@@ -210,7 +210,10 @@ impl ToolProjection for NoopTool {
 struct CapturingModel(Mutex<Vec<ModelRequest>>);
 
 impl ModelProvider for CapturingModel {
-    fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         self.0
             .lock()
@@ -227,7 +230,10 @@ impl ModelProvider for CapturingModel {
 }
 
 impl ModelProvider for TextModel {
-    fn generate<'a>(&'a self, _: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        _: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(stream::iter(vec![
             Ok(ModelEvent::Content {
@@ -842,9 +848,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     );
     let denied_approval = Interaction::approval("Install echo", denied_operation, digest)?;
     let approved_approval = Interaction::approval("Install echo", approved_operation, digest)?;
-    journal
-        .open_interaction(denied_id, denied_approval)
-        .await?;
+    journal.open_interaction(denied_id, denied_approval).await?;
     journal
         .open_interaction(approved_id, approved_approval)
         .await?;

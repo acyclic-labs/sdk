@@ -2185,13 +2185,9 @@ impl TaskInbox {
             ));
         }
         item.payload.validate()?;
-        if let Some(existing) = self
-            .items
-            .iter()
-            .find(|existing| {
-                existing.sender == item.sender && existing.message_id == item.message_id
-            })
-        {
+        if let Some(existing) = self.items.iter().find(|existing| {
+            existing.sender == item.sender && existing.message_id == item.message_id
+        }) {
             return if existing == &item {
                 Ok(())
             } else {

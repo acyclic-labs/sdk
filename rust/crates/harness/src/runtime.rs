@@ -18,8 +18,8 @@ use crate::{
     },
     live::{TaskGroup, TaskHandle},
     model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
-        ModelProvider, ModelRequest,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelProvider,
+        ModelRequest,
     },
     registry::{ComponentIdentity, validate_component_label},
     resources::{ArtifactRef, GenerationRef, SandboxRef},

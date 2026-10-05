@@ -12,15 +12,11 @@ use crate::{
     swarm_budget::{
         ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
         SwarmBudgetUsage, SwarmDispatchContext, SwarmDispatchToken, SwarmForkRequest,
-        SwarmForkReservation,
-        SwarmOwnerFence, SwarmResourceRequest, SwarmRootDispatchContext, SwarmUsage,
-        SwarmUsageReceiptCursor,
-        VerifiedForkPublication, VerifiedSwarmUsageReceipt,
+        SwarmForkReservation, SwarmOwnerFence, SwarmResourceRequest, SwarmRootDispatchContext,
+        SwarmUsage, SwarmUsageReceiptCursor, VerifiedForkPublication, VerifiedSwarmUsageReceipt,
     },
 };
-use acyclic_stream::{
-    AppendOutcome, Stream, StreamClient, StreamError, StreamProvider,
-};
+use acyclic_stream::{AppendOutcome, Stream, StreamClient, StreamError, StreamProvider};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -91,14 +87,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         limits: SwarmBudgetLimits,
         root_dispatch_id: IdempotencyKey,
     ) -> Result<Self> {
-        Self::start_inner(
-            client,
-            session_id,
-            owner,
-            limits,
-            Some(root_dispatch_id),
-        )
-        .await
+        Self::start_inner(client, session_id, owner, limits, Some(root_dispatch_id)).await
     }
 
     async fn start_inner(
@@ -146,8 +135,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 let (_, observed_owner, observed_limits) = reopened.descriptor()?;
                 if observed_owner == event_owner(&event)?
                     && observed_limits == limits
-                    && reopened.budget.root_dispatch_id()?
-                        == event_root_dispatch_id(&event)?
+                    && reopened.budget.root_dispatch_id()? == event_root_dispatch_id(&event)?
                 {
                     Ok(reopened)
                 } else {
@@ -196,9 +184,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
 
     /// Creates the provider guard that root model work must use before it
     /// consumes another session resource slice.
-    pub fn root_usage_limiter(
-        &self,
-    ) -> Result<crate::swarm_budget::SwarmUsageLimiter> {
+    pub fn root_usage_limiter(&self) -> Result<crate::swarm_budget::SwarmUsageLimiter> {
         self.budget.root_usage_limiter()
     }
 
@@ -354,9 +340,9 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         token: &SwarmDispatchToken,
         source: S,
     ) -> Result<SwarmDispatchContext<S>> {
-        let cursor = self
-            .usage_cursor(token.operation_id())?
-            .ok_or_else(|| Error::NotFound(format!("swarm reservation {}", token.operation_id())))?;
+        let cursor = self.usage_cursor(token.operation_id())?.ok_or_else(|| {
+            Error::NotFound(format!("swarm reservation {}", token.operation_id()))
+        })?;
         token.resume_usage_context(source, cursor)
     }
 
@@ -494,9 +480,9 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     ) -> Result<SwarmUsage> {
         let receipt = receipt.into_receipt();
         let projected = SwarmBudget::replay(self.events.clone())?;
-        let root_dispatch_id = projected.root_dispatch_id()?.ok_or_else(|| {
-            Error::Unauthorized("canonical root dispatch lease required".into())
-        })?;
+        let root_dispatch_id = projected
+            .root_dispatch_id()?
+            .ok_or_else(|| Error::Unauthorized("canonical root dispatch lease required".into()))?;
         if receipt.dispatch_id != root_dispatch_id {
             return Err(Error::Conflict(
                 "swarm root usage receipt is not bound to the canonical root lease".into(),
