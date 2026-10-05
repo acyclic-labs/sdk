@@ -43,6 +43,11 @@ case "$target" in
     for project in "${projects[@]}"; do
       run_logged "ada-$(basename "${project%.gpr}")" gprbuild -p -P "$project"
     done
+    # The generated Ada package currently supplies compile-time models and
+    # client facades; its compatibility adapter does not provide a network
+    # implementation. Keep that fact explicit in the receipt so a successful
+    # build cannot be mistaken for transport qualification.
+    client_transport='not-run-ada-transport-adapter'
     runtime='gnat/gprbuild'
     ;;
   clojure)
@@ -148,6 +153,10 @@ main =
 EOF
       run_logged "elm-$(basename "$dir")" bash -c "cd \"$dir\" && elm make src/QualificationMain.elm --output=qualification.js"
     done
+    # Elm's generated Http client is browser-hosted. The release lane proves
+    # the generated package compiles; browser transport execution is covered
+    # by the website/browser lane rather than this headless job.
+    client_transport='not-run-elm-browser-http'
     runtime='elm'
     ;;
   gdscript)
@@ -190,6 +199,55 @@ func _collect(path: String, files: Array) -> void:
 EOF
       run_logged "gdscript-$(basename "$dir")" godot --headless --path "$dir" --script qualification.gd
     done
+    if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
+      actors_root="$package_root/actors"
+      [[ -d "$actors_root" ]] || { echo 'generated Actors GDScript package is missing' >&2; exit 1; }
+      transport_dir="$output_root/gdscript-transport"
+      mkdir -p "$transport_dir"
+      cat >"$actors_root/qualification-transport.gd" <<'EOF'
+extends SceneTree
+
+func _init() -> void:
+    var endpoint := OS.get_environment("ACYCLIC_FIXTURE_HTTP_ENDPOINT")
+    var host_and_port := endpoint.trim_prefix("http://").trim_prefix("https://")
+    var separator := host_and_port.rfind(":")
+    var host := host_and_port
+    var port := 80
+    if separator > 0:
+        host = host_and_port.substr(0, separator)
+        port = int(host_and_port.substr(separator + 1))
+    var config := ApiConfig.new()
+    config.host = "http://" + host
+    config.port = port
+    var api := DefaultApi.new(config)
+    var limits := AcyclicActorsV1ActorLimits.new()
+    limits.checkpointBytes = "1048576"
+    limits.handlerTimeoutMillis = "1000"
+    limits.memoryBytes = "1048576"
+    var request := AcyclicActorsV1CreateActorRequest.new()
+    request.codeSha256 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+    request.homeRegion = "qualification"
+    request.idempotencyKey = "http-target-gdscript-qualification"
+    request.limits = limits
+    api.create_actor(request, Callable(self, "_success"), Callable(self, "_failure"))
+
+func _success(response: ApiResponse) -> void:
+    if response.code < 200 or response.code >= 300 or response.data == null or response.data.actor == null:
+        push_error("Rust fixture rejected generated GDScript request or response")
+        quit(1)
+        return
+    quit(0)
+
+func _failure(error: ApiError) -> void:
+    push_error("generated GDScript client transport failed: " + error.message)
+    quit(1)
+EOF
+      cp "$actors_root/qualification-transport.gd" "$transport_dir/qualification-transport.gd"
+      run_logged gdscript-transport env ACYCLIC_FIXTURE_HTTP_ENDPOINT="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" godot --headless --path "$actors_root" --script qualification-transport.gd
+      client_transport='gdscript-generated-client-fixture-roundtrip'
+    else
+      client_transport='not-run-fixture-endpoint-unset'
+    fi
     runtime='godot-4/gdscript'
     ;;
   nim)
