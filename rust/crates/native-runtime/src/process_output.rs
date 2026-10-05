@@ -290,9 +290,8 @@ mod windows {
     };
     use windows_sys::Win32::{
         Foundation::HANDLE,
-        Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType},
+        Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType, ReadFile},
         System::{
-            IO::ReadFile,
             Pipes::PeekNamedPipe,
             Threading::{CreateEventW, SetEvent, WaitForSingleObject},
         },
