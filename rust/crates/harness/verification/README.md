@@ -171,9 +171,9 @@ eventual completion, deadlock freedom, storage correctness, or Rust refinement.
 
 ### Qualified property inventory
 
-The current source-bound run was executed at commit `24ed1706b` in the
+The current source-bound run is recorded by the qualification receipt in the
 isolated qualification worktree. Its TLC logs are under
-`target/formal-evidence/24ed1706b` and use the pinned
+`target/formal-evidence/current` and use the pinned
 `tla2tools-1.7.4.jar`, one worker, fingerprint index `0`, seed `1`, and a
 512 MB heap. The run contains 25 cases across the seven model families below;
 the evidence directory is generated output and must be retained with the
