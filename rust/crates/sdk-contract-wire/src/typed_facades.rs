@@ -695,7 +695,8 @@ fn descriptor_field_type(_family: &str, field: &ResolvedRequestField, language: 
             .map(|entry| descriptor_scalar_type(&entry, language))
             .unwrap_or_else(|| "String".to_owned());
         return match language {
-            "java" | "scala" => format!("java.util.Map<{key}, {value}>"),
+            "java" => format!("java.util.Map<{key}, {value}>"),
+            "scala" => format!("java.util.Map[{key}, {value}]"),
             "kotlin" => format!("kotlin.collections.Map<{key}, {value}>"),
             _ => unreachable!(),
         };
