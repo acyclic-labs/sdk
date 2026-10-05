@@ -1,0 +1,16 @@
+{
+  "source_commit": "3bce6e2b34d0c582f4f9ef4caa5e22f4e0be7e00",
+  "suite": "cargo test -p acyclic-harness --features test-support,native-process-tree --test local_swarm_faults",
+  "platform": "Windows native",
+  "exit_code": 101,
+  "passed": 5,
+  "failed": 1,
+  "ignored": 0,
+  "archive": "D:/graphcoder-builds/root-qualification-artifacts/3bce6e2b3/fault-reconciliation",
+  "source_archive_sha256": "e0347f4d83b2568139e112a08b8e19c198c71c94d8052b4aff23e18c95ee89f8",
+  "log_sha256": "acf8373ed48c57a2dff862095ab61bcb2f41f276f7668a3c9e71945e4b1d21c2",
+  "executable_sha256": "f9217a8144dd8e709e4cb6e66d5bc9bccb2afe4f9d74814997ab59124228148d",
+  "unmet": "Cross-handle cancellation intermittently fails to stop the owner within the strict watchdog. The preceding run reached cold reopen; this later failure establishes unresolved liveness/flakiness and must not be counted as passed.",
+  "execution": "Session 68231 terminated 101. Exact source/log/executable archived and hashed before further source changes.",
+  "completion": false
+}
