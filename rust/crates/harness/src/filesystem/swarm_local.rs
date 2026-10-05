@@ -526,6 +526,15 @@ fn source_project_for_parent(
     }
 }
 
+fn validate_recursive_depth(parent_depth: usize, maximum_depth: usize) -> Result<()> {
+    if parent_depth >= maximum_depth {
+        return Err(Error::Unauthorized(
+            "local swarm depth limit exceeded".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Owner allocator invoked only after the parent completed batch is
 /// published. Implementations allocate child authorities/resources and return
 /// the existing typed report/declaration plan used by activation.
@@ -547,6 +556,14 @@ pub trait LocalModelForkResolver: Send + Sync {
     /// Returns the owner-selected source project when this resolver binds one.
     fn source_project(&self) -> Option<VolumeRef> {
         None
+    }
+
+    /// Performs deterministic policy checks before a model fork intent is
+    /// retained. Implementations may use the authoritative parent session;
+    /// the resolver repeats the check during publication for stale-policy
+    /// protection.
+    fn preflight_depth<'a>(&'a self, _parent: TaskId) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Resolves one authenticated model intent against its exact publication.
@@ -689,6 +706,14 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
         Some(self.project.clone())
     }
 
+    fn preflight_depth<'a>(&'a self, parent: TaskId) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let swarm = self.target()?;
+            let parent_session = swarm.session(parent).await?;
+            validate_recursive_depth(parent_session.depth, swarm.config.maximum_depth)
+        })
+    }
+
     fn resolve<'a>(
         &'a self,
         intent: LocalForkIntent,
@@ -699,11 +724,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             let swarm = self.target()?;
             let parent_harness = swarm.open_session(intent.parent).await?;
             let parent_session = swarm.session(intent.parent).await?;
-            if parent_session.depth >= swarm.config.maximum_depth {
-                return Err(Error::Unauthorized(
-                    "local swarm depth limit exceeded".into(),
-                ));
-            }
+            validate_recursive_depth(parent_session.depth, swarm.config.maximum_depth)?;
             let existing_task_ids = swarm
                 .records
                 .lock()
@@ -1184,6 +1205,13 @@ impl LocalModelForkPlans {
     pub fn with_resolver(mut self, resolver: Arc<dyn LocalModelForkResolver>) -> Self {
         self.resolver = Some(resolver);
         self
+    }
+
+    async fn preflight_depth(&self, parent: TaskId) -> Result<()> {
+        if let Some(resolver) = &self.resolver {
+            resolver.preflight_depth(parent).await?;
+        }
+        Ok(())
     }
 
     /// Binds a concrete allocator to this opened swarm without exposing the
@@ -1899,6 +1927,10 @@ impl ToolExecutor for LocalForkToolExecutor {
                     "local fork tool task binding differs from the authenticated parent".into(),
                 ));
             }
+            // Depth is a deterministic owner policy. Reject before retaining
+            // an intent so an out-of-depth request cannot become an orphaned
+            // publication or a later unknown allocation failure.
+            self.plans.preflight_depth(self.parent).await?;
             let intent = LocalForkIntent {
                 parent: self.parent,
                 parent_operation: context.parent_operation,
@@ -3666,11 +3698,7 @@ impl PersistentLocalSwarm {
     pub async fn fork(&self, request: LocalForkRequest) -> Result<LocalForkOutcome> {
         request.validate()?;
         let parent = self.session(request.parent).await?;
-        if parent.depth >= self.config.maximum_depth {
-            return Err(Error::Unauthorized(
-                "local swarm depth limit exceeded".into(),
-            ));
-        }
+        validate_recursive_depth(parent.depth, self.config.maximum_depth)?;
         let parent_harness = self.open_session(request.parent).await?;
         let _boundary = parent_harness
             .storage()
@@ -3957,11 +3985,7 @@ impl PersistentLocalSwarm {
         let _completion_guard = gate.lock().await;
         self.refresh_registry_state().await?;
         let parent = self.session(request.parent).await?;
-        if parent.depth >= self.config.maximum_depth {
-            return Err(Error::Unauthorized(
-                "local swarm depth limit exceeded".into(),
-            ));
-        }
+        validate_recursive_depth(parent.depth, self.config.maximum_depth)?;
         let child_count = self
             .records
             .lock()
@@ -5625,6 +5649,15 @@ mod tests {
             Err(Error::Conflict(message)) if message.contains("direct parent project binding")
         ));
         Ok(())
+    }
+
+    #[test]
+    fn recursive_depth_policy_denies_at_the_configured_boundary() {
+        assert!(validate_recursive_depth(0, 1).is_ok());
+        assert!(matches!(
+            validate_recursive_depth(1, 1),
+            Err(Error::Unauthorized(message)) if message.contains("depth limit")
+        ));
     }
 
     fn test_fork_intent(child: u8) -> LocalForkIntent {
