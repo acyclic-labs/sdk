@@ -449,6 +449,7 @@ import acyclic_actors_nim/apis/api_default
 import acyclic_actors_nim/models/model_acyclic_actors_v1_create_actor_request
 import acyclic_actors_nim/models/model_acyclic_actors_v1_actor_limits
 import acyclic_actors_nim/models/model_byte_array
+import acyclic_actors_nim/models/model_acyclic_actors_v1_inspect_actor_request
 
 let client = newHttpClient()
 let request = AcyclicActorsV1CreateActorRequest(
@@ -464,9 +465,19 @@ if response.code != Http200:
   quit("Rust fixture rejected generated Nim request: " & $response.status, 1)
 if decoded.isNone:
   quit("generated Nim client did not decode the Rust fixture response", 1)
+let actor_id = decoded.get().actor.get().actorId
+if actor_id.isNone:
+  quit("generated Nim client did not decode actor_id", 1)
+let inspect_request = AcyclicActorsV1InspectActorRequest(actorId: actor_id)
+let (inspect_decoded, inspect_response) = inspectActor(client, inspect_request)
+if inspect_response.code != Http200:
+  quit("Rust fixture rejected generated Nim inspect request: " & $inspect_response.status, 1)
+if inspect_decoded.isNone or inspect_decoded.get().actor.isNone:
+  quit("generated Nim client did not decode the inspect response", 1)
 EOF
       run_logged nim-transport env ACYCLIC_BASE_URL="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" nim c -r --hints:off --path:"$package_root/actors" "$transport_dir/qualification.nim"
       client_transport='nim-generated-client-fixture-roundtrip'
+      client_operations='actors.create_actor,actors.inspect_actor'
     else
       client_transport='not-run-fixture-endpoint-unset'
     fi
