@@ -1,0 +1,47 @@
+{
+  "source_commit": "d3eb2f289eb77c3cb784a79cb24f7dec1b6e5651",
+  "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
+  "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
+  "tools_jar": {
+    "path": "C:/graphcoder-builds/formal-tools/tla2tools-1.7.4.jar",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+  },
+  "runner": {
+    "path": "rust/crates/harness/verification/check-models.ps1",
+    "sha256": "24BA4AA93E616975BF8892B324D0B71B13DE3F2D14D858C5430AB4613BF142FD",
+    "workers": 1,
+    "fingerprint_index": 0,
+    "seed": 1,
+    "heap": "512MB"
+  },
+  "model_results": [
+    {"model":"SwarmAuthority","safe":"pass:81 distinct states","negative":"pass:DirectMessageAuthority counterexample; 4 distinct states"},
+    {"model":"SwarmBudget","safe":"pass:6852 distinct states","negative":"pass:TotalBudgetConserved, StepBudgetConserved, and DepthBounded counterexamples"},
+    {"model":"SwarmPublication","safe":"pass:14 distinct states","negative":"pass:PublicationAtCapturedGeneration counterexample"},
+    {"model":"SwarmMessage","safe":"pass:3 distinct states","negative":"pass:AtMostOnce and DeliveredRequiresAdmission counterexamples"}
+  ],
+  "trace_adapter": {
+    "runner": "check-trace-fixtures.ps1",
+    "valid_fixture": "trace-valid.json",
+    "valid_result": "accepted seven-event trace",
+    "invalid_fixture": "trace-invalid-stale.json",
+    "invalid_result": "rejected stale workspace publication",
+    "scope": "fixture adapter evidence only; no production Harness trace was exported"
+  },
+  "log_sha256": {
+    "swarm-authority-safe.log": "746E45BFF38021260150DCAF921B1C327E3A3B1DE15714D4915F0169F4C51AF1",
+    "swarm-authority-unsafe-authority.log": "02286DA1DB56CBAD336468CB7BF7DF2E97D9D225361701DFC82D28E5E3FDB9B7",
+    "swarm-budget-safe.log": "D0EA33DF36786E4278613007214B8706E2AE2F443CB235B3CBC50AA117BCA5DA",
+    "swarm-budget-unsafe-allocation.log": "326DF02ADABFC56B3A5356ADC5BB62A7D691A02710AA73DA38EF3754E37DC40D",
+    "swarm-budget-unsafe-depth.log": "332336156C39F197A0D2D5004A91E00E98C2A2FD7EB4CBA2726355B43933CA1C",
+    "swarm-budget-unsafe-step.log": "031F12CABDDAE211A908417A3DEF854C358BE38EA5048441CEAE9382D4C74F36",
+    "swarm-publication-safe.log": "768B9A4CA6BEFC10629C888932CE36BEB0EDE68D56060B14F08DFF81C6EBF9DB",
+    "swarm-publication-unsafe-stale.log": "390CA3606E2A4089278E50B1C925DCF4C880AF40FDB7A24F841BB381EBE7E8BF",
+    "swarm-message-safe.log": "37FDF00C0B8D07A1EA6BC00D3B0B353F8AFCD4C67BF12F96CF7EA147621D5A44",
+    "swarm-message-unsafe-duplicate.log": "ADB8FF48C8BDB457730CE67DBCCC90CB7928EF324D8580BAE5FACB558964E57F",
+    "swarm-message-unsafe-orphan.log": "62AE3ADEFA4004FB63D55F5CE4A20B8E6F50D1F5E51201E59E900B7974CE3EA6",
+    "trace-valid.log": "6336840F0292754DB035572CB7CC181923139C1FDBFE79394A71C1EB8AE8D27E",
+    "trace-invalid.log": "6D67C9910399E466DDB9C70C60E4BD889F5C0A6026ABE5D4F0BFDAB5598694DF"
+  },
+  "qualification_boundary": "bounded design-level safety only; no Rust refinement, liveness, production event-trace conformance, or whole-swarm proof"
+}
