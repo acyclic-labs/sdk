@@ -1997,7 +1997,7 @@ mod tests {
             reopened
                 .tail(StreamPath::new("conformance/source")?)
                 .await?,
-            2
+            3
         );
         Ok(())
     }
