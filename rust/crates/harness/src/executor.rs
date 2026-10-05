@@ -490,6 +490,21 @@ pub trait Executor: Send + Sync {
     }
 }
 
+/// Durable Harness-side effect measurement bound to one authenticated model
+/// dispatch.  The recorder is deliberately separate from the provider usage
+/// source: provider counters cannot observe time spent in tools or fork
+/// publication, and an in-memory queue would let the next model request race
+/// ahead of the durable budget event.
+pub trait HarnessEffectRecorder: Send + Sync {
+    fn record<'a>(
+        &'a self,
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> BoxFuture<'a, Result<()>>;
+}
+
 /// Erased provider-side budget guard used by the canonical stock loop.
 /// Implementations must perform checks against their journal-issued limiter;
 /// callers never supply or derive ceilings from model output.
@@ -497,34 +512,21 @@ pub trait SwarmProviderAdmission: Send {
     fn admit_model_step(&mut self) -> Result<SwarmUsage>;
     fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage>;
     fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage>;
-    /// Persists trusted Harness-side time for a generic effect (for example a
-    /// tool or fork publication) under this exact provider dispatch.  Sources
-    /// that cannot durably retain this measurement must fail closed.
-    fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
-        let _ = elapsed_ms;
-        Err(Error::Unsupported(
-            "provider budget does not persist Harness effect time".into(),
-        ))
-    }
-    /// Queues a measured effect with its exact retry identity. The owning
-    /// journal persists this after execution and before issuing the receipt.
-    fn record_harness_effect(
-        &mut self,
+    /// Records a host-measured effect before the caller publishes completion
+    /// or dispatches another provider request. Implementations with a durable
+    /// journal override this with an asynchronous append; the default keeps
+    /// compatibility for providers that have no durable effect boundary.
+    fn record_harness_effect_async<'a>(
+        &'a mut self,
         effect_id: IdempotencyKey,
         elapsed_ms: u64,
-    ) -> Result<()> {
-        let _ = effect_id;
-        self.record_harness_effect_time_ms(elapsed_ms)
-    }
-    /// Drains effects measured by this dispatch for journal persistence.
-    fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
-        Vec::new()
-    }
-    /// Returns the operation and dispatch identity needed by the journal.
-    fn dispatch_identity(&self) -> Result<(OperationId, IdempotencyKey)> {
-        Err(Error::Unsupported(
-            "provider budget has no durable dispatch identity".into(),
-        ))
+    ) -> BoxFuture<'a, Result<()>> {
+        let _ = (effect_id, elapsed_ms);
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "budgeted Harness effects require a durable journal recorder".into(),
+            ))
+        })
     }
     /// Returns whether generic Harness effects may be dispatched under this
     /// budget.  Unsupported sources are rejected before their effect claim.
@@ -551,13 +553,20 @@ pub trait SwarmProviderAdmission: Send {
 /// [`crate::swarm_budget_journal::SwarmBudgetJournal`].
 pub struct SwarmProviderBoundary<S: SwarmUsageSource> {
     context: SwarmDispatchContext<S>,
+    effect_recorder: Option<Arc<dyn HarnessEffectRecorder>>,
 }
 
 impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     /// Creates a boundary from the journal-issued dispatch context.
     #[must_use]
     pub fn new(context: SwarmDispatchContext<S>) -> Self {
-        Self { context }
+        Self { context, effect_recorder: None }
+    }
+
+    /// Binds the journal-owned effect recorder before any tool or fork
+    /// publication can be claimed.
+    pub fn set_harness_effect_recorder(&mut self, recorder: Arc<dyn HarnessEffectRecorder>) {
+        self.effect_recorder = Some(recorder);
     }
 
     /// Admits one model step before invoking the provider.
@@ -575,37 +584,29 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
         self.context.admit_execution_time(elapsed_ms)
     }
 
-    /// Persists host-measured time spent by a generic Harness effect under
-    /// this exact child dispatch identity.
-    pub fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
-        self.context.record_harness_effect_time_ms(elapsed_ms)
-    }
-
-    /// Queues a measured effect under its exact durable identity.
-    pub fn record_harness_effect(
-        &mut self,
+    /// Persists one measured Harness effect immediately at the effect
+    /// boundary. Completion publication is intentionally sequenced after the
+    /// returned future resolves.
+    pub fn record_harness_effect_async<'a>(
+        &'a mut self,
         effect_id: IdempotencyKey,
         elapsed_ms: u64,
-    ) -> Result<()> {
-        self.context.record_harness_effect(effect_id, elapsed_ms)
-    }
-
-    /// Drains measured effects for journal persistence.
-    pub fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
-        self.context.take_harness_effects()
-    }
-
-    /// Returns the exact operation and dispatch identities for journal
-    /// settlement.
-    #[must_use]
-    pub fn dispatch_identity(&self) -> (OperationId, &IdempotencyKey) {
-        self.context.dispatch_identity()
+    ) -> BoxFuture<'a, Result<()>> {
+        let Some(recorder) = self.effect_recorder.clone() else {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "budgeted Harness effects require a durable journal recorder".into(),
+                ))
+            });
+        };
+        let (operation_id, dispatch_id) = self.context.dispatch_identity();
+        recorder.record(operation_id, dispatch_id.clone(), effect_id, elapsed_ms)
     }
 
     /// Returns whether generic Harness effects have durable time measurement.
     #[must_use]
     pub fn supports_harness_effect_time(&self) -> bool {
-        self.context.supports_harness_effect_time()
+        self.effect_recorder.is_some()
     }
 
     /// Returns the remaining execution ceiling from the authenticated
@@ -668,25 +669,12 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
         Self::admit_execution_time_ms(self, elapsed_ms)
     }
 
-    fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
-        Self::record_harness_effect_time_ms(self, elapsed_ms)
-    }
-
-    fn record_harness_effect(
-        &mut self,
+    fn record_harness_effect_async<'a>(
+        &'a mut self,
         effect_id: IdempotencyKey,
         elapsed_ms: u64,
-    ) -> Result<()> {
-        Self::record_harness_effect(self, effect_id, elapsed_ms)
-    }
-
-    fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
-        Self::take_harness_effects(self)
-    }
-
-    fn dispatch_identity(&self) -> Result<(OperationId, IdempotencyKey)> {
-        let (operation, dispatch) = Self::dispatch_identity(self);
-        Ok((operation, dispatch.clone()))
+    ) -> BoxFuture<'a, Result<()>> {
+        Self::record_harness_effect_async(self, effect_id, elapsed_ms)
     }
 
     fn supports_harness_effect_time(&self) -> bool {
@@ -710,13 +698,20 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
 /// scheduler/provider lease and measurement source.
 pub struct SwarmRootProviderBoundary<S: SwarmUsageSource> {
     context: SwarmRootDispatchContext<S>,
+    effect_recorder: Option<Arc<dyn HarnessEffectRecorder>>,
 }
 
 impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
     /// Creates a root boundary from the journal-issued context.
     #[must_use]
     pub fn new(context: SwarmRootDispatchContext<S>) -> Self {
-        Self { context }
+        Self { context, effect_recorder: None }
+    }
+
+    /// Binds the journal-owned recorder before root tools or fork publication
+    /// can be claimed.
+    pub fn set_harness_effect_recorder(&mut self, recorder: Arc<dyn HarnessEffectRecorder>) {
+        self.effect_recorder = Some(recorder);
     }
 
     /// Admits one root model step before invoking the provider.
@@ -734,37 +729,28 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
         self.context.admit_execution_time(elapsed_ms)
     }
 
-    /// Persists host-measured time spent by a generic Harness effect under
-    /// the canonical root dispatch identity.
-    pub fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
-        self.context.record_harness_effect_time_ms(elapsed_ms)
-    }
-
-    /// Queues a measured effect under its exact durable identity.
-    pub fn record_harness_effect(
-        &mut self,
+    /// Persists one measured Harness effect immediately at the effect
+    /// boundary, before completion publication or another model dispatch.
+    pub fn record_harness_effect_async<'a>(
+        &'a mut self,
         effect_id: IdempotencyKey,
         elapsed_ms: u64,
-    ) -> Result<()> {
-        self.context.record_harness_effect(effect_id, elapsed_ms)
-    }
-
-    /// Drains measured effects for journal persistence.
-    pub fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
-        self.context.take_harness_effects()
-    }
-
-    /// Returns the exact root operation and dispatch identities for journal
-    /// settlement.
-    #[must_use]
-    pub fn dispatch_identity(&self) -> (OperationId, &IdempotencyKey) {
-        self.context.dispatch_identity()
+    ) -> BoxFuture<'a, Result<()>> {
+        let Some(recorder) = self.effect_recorder.clone() else {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "budgeted Harness effects require a durable journal recorder".into(),
+                ))
+            });
+        };
+        let (operation_id, dispatch_id) = self.context.dispatch_identity();
+        recorder.record(operation_id, dispatch_id.clone(), effect_id, elapsed_ms)
     }
 
     /// Returns whether generic Harness effects have durable time measurement.
     #[must_use]
     pub fn supports_harness_effect_time(&self) -> bool {
-        self.context.supports_harness_effect_time()
+        self.effect_recorder.is_some()
     }
 
     /// Returns the remaining root execution ceiling.
@@ -812,25 +798,12 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmRootProviderBoundary<S
         Self::admit_execution_time_ms(self, elapsed_ms)
     }
 
-    fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
-        Self::record_harness_effect_time_ms(self, elapsed_ms)
-    }
-
-    fn record_harness_effect(
-        &mut self,
+    fn record_harness_effect_async<'a>(
+        &'a mut self,
         effect_id: IdempotencyKey,
         elapsed_ms: u64,
-    ) -> Result<()> {
-        Self::record_harness_effect(self, effect_id, elapsed_ms)
-    }
-
-    fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
-        Self::take_harness_effects(self)
-    }
-
-    fn dispatch_identity(&self) -> Result<(OperationId, IdempotencyKey)> {
-        let (operation, dispatch) = Self::dispatch_identity(self);
-        Ok((operation, dispatch.clone()))
+    ) -> BoxFuture<'a, Result<()>> {
+        Self::record_harness_effect_async(self, effect_id, elapsed_ms)
     }
 
     fn supports_harness_effect_time(&self) -> bool {
@@ -2354,7 +2327,8 @@ impl StockExecutor {
                         "tool:{step}:{}",
                         invocation.call_id
                     ))?,
-                )?;
+                )
+                .await?;
             }
             if validate_value(&tool.definition.output_schema, &result.value, "tool output").is_err()
             {
@@ -3849,7 +3823,7 @@ fn elapsed_provider_delta(
         .ok_or(Error::Indeterminate(operation_id))
 }
 
-fn admit_effect_elapsed(
+async fn admit_effect_elapsed(
     budget: &mut Option<&mut dyn SwarmProviderAdmission>,
     clock: &dyn UnixMillisClock,
     started_at_ms: u64,
@@ -3859,7 +3833,7 @@ fn admit_effect_elapsed(
     if let Some(budget) = budget.as_deref_mut() {
         let elapsed_ms = elapsed_provider_time(clock, started_at_ms, operation_id)?;
         if elapsed_ms != 0 {
-            budget.record_harness_effect(effect_id, elapsed_ms)?;
+            budget.record_harness_effect_async(effect_id, elapsed_ms).await?;
         }
         budget.admit_execution_time_ms(elapsed_ms)?;
     }

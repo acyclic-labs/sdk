@@ -262,16 +262,6 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Ok(())
     }
 
-    /// Returns unsettled host-measured effect time for one dispatch.
-    pub fn pending_harness_effect_time(
-        &self,
-        operation_id: OperationId,
-        dispatch_id: &IdempotencyKey,
-    ) -> Result<u64> {
-        self.budget
-            .pending_harness_effect_time(operation_id, dispatch_id)
-    }
-
     /// Reloads all committed records from the provider's current tail.
     pub async fn refresh(&mut self) -> Result<()> {
         let events = read_events(&self.stream).await?;
@@ -534,11 +524,10 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     ) -> Result<SwarmForkReservation> {
         let owner = token.owner().clone();
         let mut context = self.usage_context(token, source)?;
-        let pending = self.pending_harness_effect_time(
-            token.operation_id(),
-            token.required_dispatch_id()?,
-        )?;
-        let receipt = context.issue_usage_receipt_with_harness_effect_time_ms(pending)?;
+        // Harness effects are appended synchronously at each effect boundary;
+        // provider receipts therefore contain only provider counters and must
+        // never re-count retained effect events during recovery.
+        let receipt = context.issue_usage_receipt()?;
         self.report_usage_with_receipt(token.operation_id(), &owner, receipt)
             .await
     }
@@ -654,9 +643,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 "root usage cursor changed while binding provider source".into(),
             ));
         }
-        let (operation_id, dispatch_id) = context.dispatch_identity();
-        let pending = self.pending_harness_effect_time(operation_id, dispatch_id)?;
-        let receipt = context.issue_usage_receipt_with_harness_effect_time_ms(pending)?;
+        let receipt = context.issue_usage_receipt()?;
         self.report_root_usage_with_receipt(owner, receipt).await
     }
 
@@ -961,7 +948,7 @@ mod tests {
         SwarmReservationState, SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptIssuer,
         SwarmUsageReceipt, SwarmUsageSource,
     };
-    use acyclic_stream::{MemoryStream, StreamClient};
+    use acyclic_stream::{LocalStream, LocalStreamLimits, MemoryStream, StreamClient};
     use std::sync::Arc;
 
     fn limits() -> SwarmBudgetLimits {
@@ -1235,7 +1222,13 @@ mod tests {
 
     #[tokio::test]
     async fn harness_effect_measurement_replays_and_is_not_double_charged() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let client = StreamClient::new(provider);
         let session_id = OperationId::new();
         let owner = SwarmOwnerFence::new("effect-worker", 0)?;
         let dispatch_id = IdempotencyKey::new("effect-root-dispatch")?;
@@ -1270,8 +1263,28 @@ mod tests {
             .await?;
         assert_eq!(journal.usage()?.consumed.execution_time_ms, 37);
 
+        // Reopen from a fresh LocalStream provider after dropping the journal
+        // and client. This exercises the durable event boundary rather than
+        // replaying through the same in-memory provider handle.
         drop(journal);
-        let mut reopened = SwarmBudgetJournal::open(&client, session_id).await?;
+        drop(client);
+        let reopened_provider = Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let reopened_client = StreamClient::new(reopened_provider);
+        let mut reopened = SwarmBudgetJournal::open(&reopened_client, session_id).await?;
+        assert_eq!(reopened.usage()?.consumed.execution_time_ms, 37);
+        reopened
+            .record_harness_effect_time_ms(
+                session_id,
+                &owner,
+                IdempotencyKey::new("effect-root-dispatch")?,
+                IdempotencyKey::new("tool:0:approved-shell")?,
+                37,
+            )
+            .await?;
         assert_eq!(reopened.usage()?.consumed.execution_time_ms, 37);
         let mut context = reopened.root_usage_context(FixedSource(SwarmUsage::default()))?;
         let receipt = context.issue_usage_receipt()?;
