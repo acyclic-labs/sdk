@@ -310,7 +310,7 @@ fn observation_outcome(object: &serde_json::Map<String, Value>) -> ExpectedOutco
     if object
         .get("response_frames")
         .and_then(Value::as_array)
-        .is_some_and(|frames| frames.len() > 1)
+        .is_some_and(|frames| !frames.is_empty())
     {
         return ExpectedOutcome::stream_terminal("eof", None);
     }
@@ -1625,6 +1625,26 @@ fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String>
             continue;
         };
         let Some(response_base64) = record.response_base64.as_deref() else {
+            if record.expected_outcome.kind == "stream" && !record.response_frames.is_empty() {
+                for (index, frame) in record.response_frames.iter().enumerate() {
+                    if frame.sequence != index {
+                        return Err(format!(
+                            "{} response frame order is invalid at index {} (sequence {})",
+                            record.rpc, index, frame.sequence
+                        ));
+                    }
+                    let bytes = decode_base64(&frame.response_base64)
+                        .map_err(|error| format!("{} response frame {index}: {error}", record.rpc))?;
+                    let digest = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+                    if frame.response_sha256 != digest || frame.response_type.is_empty() {
+                        return Err(format!(
+                            "{} response frame {index} has invalid type or digest",
+                            record.rpc
+                        ));
+                    }
+                }
+                continue;
+            }
             if record.expected_outcome.kind == "error" && record.response_frames.is_empty() {
                 continue;
             }
