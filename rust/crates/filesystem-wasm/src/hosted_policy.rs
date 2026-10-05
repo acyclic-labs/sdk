@@ -68,6 +68,76 @@ pub fn validate_hosted_source_state(
     Ok(())
 }
 
+/// Project a wire source lifecycle response into the public hosted API tags.
+/// The wire enum values and public strings remain Rust-owned contract data.
+pub fn project_hosted_source_state(
+    state: u32,
+    reason: u32,
+    has_generation: bool,
+) -> Result<(&'static str, Option<&'static str>), &'static str> {
+    validate_hosted_source_state(state, reason, has_generation)?;
+    let status = match state {
+        1 => "clean",
+        2 => "pending-capture",
+        3 => "needs-rescan",
+        4 => "conflict",
+        5 => "sealed",
+        _ => return Err("source state is invalid"),
+    };
+    let reason = match reason {
+        0 => None,
+        1 => Some("initial-snapshot-required"),
+        2 => Some("queue-overflow"),
+        3 => Some("native-rescan-required"),
+        4 => Some("backend-error"),
+        5 => Some("unrepresentable-path"),
+        6 => Some("ambiguous-rename"),
+        7 => Some("root-changed"),
+        _ => return Err("source invalidation reason is invalid"),
+    };
+    Ok((status, reason))
+}
+
+/// Validate negotiated positive capability limits before the generated
+/// hosted facade consumes them.
+pub fn validate_hosted_advertised_limits(
+    maximum_transaction_mutations: u32,
+    maximum_page_items: u32,
+) -> Result<(), &'static str> {
+    if maximum_transaction_mutations == 0 || maximum_page_items == 0 {
+        return Err("advertised hosted limits must be positive");
+    }
+    Ok(())
+}
+
+/// Validate caller-selected response and handshake bounds in Rust.
+pub fn validate_hosted_response_bytes(
+    maximum_response_bytes: f64,
+    minimum_handshake_response_bytes: f64,
+) -> Result<(), &'static str> {
+    for value in [maximum_response_bytes, minimum_handshake_response_bytes] {
+        if !value.is_finite()
+            || value.fract() != 0.0
+            || value <= 0.0
+            || value > 9_007_199_254_740_991.0
+        {
+            return Err("response byte bounds must be positive safe integers");
+        }
+    }
+    if maximum_response_bytes < minimum_handshake_response_bytes {
+        return Err("maximum response bytes is below the handshake minimum");
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(serde::Serialize)]
+struct HostedSourceProjection<'a> {
+    status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
+}
+
 /// Validate a generation identity and its owning workspace identity.
 pub fn validate_hosted_generation_identity(
     generation_id: &[u8],
@@ -159,18 +229,52 @@ pub fn validate_hosted_source_state_js(
 }
 
 #[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = projectHostedSourceState)]
+pub fn project_hosted_source_state_js(
+    state: f64,
+    reason: f64,
+    has_generation: bool,
+) -> Result<JsValue, JsValue> {
+    let state = js_u32(state).map_err(invalid)?;
+    let reason = js_u32(reason).map_err(invalid)?;
+    let (status, reason) =
+        project_hosted_source_state(state, reason, has_generation).map_err(invalid)?;
+    let projection = HostedSourceProjection { status, reason };
+    serde_wasm_bindgen::to_value(&projection)
+        .map_err(|_| invalid("failed to encode hosted source projection"))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = validateHostedAdvertisedLimits)]
+pub fn validate_hosted_advertised_limits_js(
+    maximum_transaction_mutations: f64,
+    maximum_page_items: f64,
+) -> Result<(), JsValue> {
+    let maximum_transaction_mutations = js_u32(maximum_transaction_mutations).map_err(invalid)?;
+    let maximum_page_items = js_u32(maximum_page_items).map_err(invalid)?;
+    validate_hosted_advertised_limits(maximum_transaction_mutations, maximum_page_items)
+        .map_err(invalid)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = validateHostedResponseBytes)]
+pub fn validate_hosted_response_bytes_js(
+    maximum_response_bytes: f64,
+    minimum_handshake_response_bytes: f64,
+) -> Result<(), JsValue> {
+    validate_hosted_response_bytes(maximum_response_bytes, minimum_handshake_response_bytes)
+        .map_err(invalid)
+}
+
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(js_name = validateHostedGenerationIdentity)]
 pub fn validate_hosted_generation_identity_js(
     generation_id: &[u8],
     owner_workspace_id: &[u8],
     expected_workspace_id: &[u8],
 ) -> Result<(), JsValue> {
-    validate_hosted_generation_identity(
-        generation_id,
-        owner_workspace_id,
-        expected_workspace_id,
-    )
-    .map_err(invalid)
+    validate_hosted_generation_identity(generation_id, owner_workspace_id, expected_workspace_id)
+        .map_err(invalid)
 }
 
 #[cfg(test)]
@@ -215,6 +319,25 @@ mod tests {
         assert!(validate_hosted_source_state(3, 0, false).is_err());
         assert!(validate_hosted_source_state(1, 0, false).is_err());
         assert!(validate_hosted_source_state(2, 1, false).is_err());
+    }
+
+    #[test]
+    fn source_projection_uses_public_contract_tags() {
+        assert_eq!(project_hosted_source_state(1, 0, true), Ok(("clean", None)));
+        assert_eq!(
+            project_hosted_source_state(3, 2, false),
+            Ok(("needs-rescan", Some("queue-overflow")))
+        );
+        assert!(project_hosted_source_state(2, 1, false).is_err());
+    }
+
+    #[test]
+    fn advertised_and_response_limits_are_rust_owned() {
+        assert!(validate_hosted_advertised_limits(1, 1).is_ok());
+        assert!(validate_hosted_advertised_limits(0, 1).is_err());
+        assert!(validate_hosted_response_bytes(1_024.0, 512.0).is_ok());
+        assert!(validate_hosted_response_bytes(511.0, 512.0).is_err());
+        assert!(validate_hosted_response_bytes(1.5, 1.0).is_err());
     }
 
     #[test]
