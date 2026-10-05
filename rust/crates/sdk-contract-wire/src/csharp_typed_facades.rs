@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
     OperationEnforcement, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
-    PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule, WIRE_UNION_VARIANTS,
+    PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule,
     WireValueKind, operation_enforcement, resolved_operation_rules, resolved_request_fields,
     resolved_response_fields, resolved_rpc_methods, semantic_type,
 };
@@ -83,7 +83,7 @@ fn render() -> String {
     );
     render_semantic_types(&mut out);
     render_machine_image(&mut out);
-    render_unions(&mut out);
+    render_union_marker(&mut out);
     render_request_models(&mut out);
     render_full_semantic_request_models(&mut out);
     render_nested_models(&mut out);
@@ -196,24 +196,16 @@ fn checks(rules: &[SemanticRule], parameter: &str) -> String {
     result
 }
 
-fn render_unions(out: &mut String) {
-    let mut emitted = BTreeSet::new();
-    for union in WIRE_UNION_VARIANTS {
-        if !emitted.insert(union.union) {
-            continue;
-        }
-        out.push_str(&format!(
-            "public abstract record {}(string Tag, ByteString Payload)\n{{\n",
-            union.union
-        ));
-        out.push_str(&format!(
-            "    public sealed record {}(string Tag, ByteString Payload) : {}(Tag, Payload);\n",
-            upper(union.variant),
-            union.union
-        ));
-        out.push_str(&format!("    public sealed record Unknown(int RawTag, ByteString Payload) : {}(\"unknown\", Payload);\n", union.union));
-        out.push_str("}\n\n");
-    }
+fn render_union_marker(out: &mut String) {
+    // `wire_choice` is the Rust policy identity. Concrete descriptor-bound
+    // choices are emitted by render_oneof_models below, where each known arm
+    // receives its resolved Rust message type and only the Unknown arm keeps
+    // raw bytes. A marker interface keeps generic request plumbing open
+    // without reintroducing an erased ByteString known arm.
+    out.push_str(
+        "// Rust wire_choice unions use descriptor-bound concrete ADTs below.\n"
+    );
+    out.push_str("public interface WireChoice { }\n\n");
 }
 
 fn render_request_models(out: &mut String) {
@@ -368,7 +360,13 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
             }
             Some(kind) if kind == FieldType::Float as i32 => "float".to_owned(),
             Some(kind) if kind == FieldType::Double as i32 => "double".to_owned(),
-            Some(kind) if kind == FieldType::Enum as i32 => "int".to_owned(),
+            Some(kind) if kind == FieldType::Enum as i32 => response_open_enum_name(
+                field
+                    .type_name
+                    .as_deref()
+                    .unwrap_or("google.protobuf.NullValue"),
+                family,
+            ),
             Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
                 qualified_fq_message(
                     field
@@ -383,17 +381,14 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
     };
     if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
         base = format!("IReadOnlyList<{base}>");
-    } else if field.proto3_optional
-        && matches!(
-            field.wire_type,
-            Some(kind)
-                if kind != FieldType::Message as i32
-                    && kind != FieldType::Group as i32
-                    && kind != FieldType::String as i32
-                    && kind != FieldType::Bytes as i32
-        )
-    {
-        base.push('?');
+    } else if field.proto3_optional {
+        // C# nullable values plus the generated Has/Clear accessors preserve
+        // explicit proto3 optional presence for every scalar kind, including
+        // strings and bytes. Message references already carry nullability in
+        // their descriptor-bound projection.
+        if !base.ends_with('?') {
+            base.push('?');
+        }
     }
     base
 }
@@ -409,6 +404,33 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
         && let Some(assignment) = csharp_wire_assignment(family, binding)
     {
         return assignment;
+    }
+    if field.proto3_optional
+        && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32)
+    {
+        let clear = format!("        wire.Clear{property}();\n");
+        return match field.wire_type {
+            Some(kind) if kind == FieldType::Enum as i32 => {
+                format!(
+                    "        if ({property}.HasValue) wire.{property} = ({}){property}.Value.ToWire(); else\n{clear}",
+                    qualified_fq_message(
+                        field
+                            .type_name
+                            .as_deref()
+                            .unwrap_or("google.protobuf.NullValue"),
+                        family,
+                    )
+                )
+            }
+            Some(kind)
+                if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
+                    format!("        if ({property} is not null) wire.{property} = {property}; else\n{clear}")
+                }
+            Some(kind) if kind == FieldType::String as i32 || kind == FieldType::Bytes as i32 => {
+                format!("        if ({property} is not null) wire.{property} = {property}; else\n{clear}")
+            }
+            _ => format!("        if ({property}.HasValue) wire.{property} = {property}.Value; else\n{clear}"),
+        };
     }
     if let Some(semantic_id) = field.semantic_type.as_deref() {
         let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
@@ -465,6 +487,18 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
         };
     }
     let repeated = field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32);
+    if repeated && field.wire_type == Some(FieldType::Enum as i32) {
+        let enum_type = qualified_fq_message(
+            field
+                .type_name
+                .as_deref()
+                .unwrap_or("google.protobuf.NullValue"),
+            family,
+        );
+        return format!(
+            "        wire.{property}.AddRange({property}.Select(value => ({enum_type})value.ToWire()));\n"
+        );
+    }
     let message = matches!(
         field.wire_type,
         Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32
@@ -483,7 +517,7 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
                 .unwrap_or("google.protobuf.NullValue"),
             family,
         );
-        return format!("        wire.{property} = ({enum_type}){property};\n");
+        return format!("        wire.{property} = ({enum_type}){property}.ToWire();\n");
     }
     if field.proto3_optional
         && matches!(
@@ -799,7 +833,15 @@ fn response_field_accessor(field: &ResolvedRequestField) -> String {
 }
 
 fn render_open_enum_models(out: &mut String) {
-    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let fields = resolved_request_fields()
+        .expect("Rust request descriptors must resolve")
+        .into_iter()
+        .chain(
+            resolved_response_fields()
+                .expect("Rust response descriptors must resolve")
+                .into_iter(),
+        )
+        .collect::<Vec<_>>();
     let mut enums = BTreeMap::<String, (String, String)>::new();
     for field in fields.iter().filter(|field| field.wire_type == Some(FieldType::Enum as i32)) {
         let Some(type_name) = field.type_name.as_deref() else { continue };
@@ -815,7 +857,7 @@ fn render_open_enum_models(out: &mut String) {
     }
     for (model, (wire_enum, _family)) in enums {
         out.push_str(&format!(
-            "public readonly record struct {model}(int Number)\n{{\n    public bool IsKnown => Enum.IsDefined(typeof({wire_enum}), Number);\n    public {wire_enum}? Known => IsKnown ? ({wire_enum})Number : null;\n}}\n\n"
+            "public readonly record struct {model}(int Number)\n{{\n    public bool IsKnown => Enum.IsDefined(typeof({wire_enum}), Number);\n    public {wire_enum}? Known => IsKnown ? ({wire_enum})Number : null;\n    internal int ToWire() => Number;\n    internal static {model} FromWire(int value) => new(value);\n}}\n\n"
         ));
     }
 }
@@ -840,7 +882,7 @@ fn render_oneof_models(out: &mut String) {
         let Some(model) = response_oneof_model_name(first, family) else { continue };
         let wire = qualified_fq_message(&message, family);
         let case_property = format!("{}Case", upper(&oneof));
-        out.push_str(&format!("public abstract record {model}\n{{\n"));
+        out.push_str(&format!("public abstract record {model} : WireChoice\n{{\n"));
         for field in &members {
             let variant = response_field_property(field);
             let value_type = response_field_type(field, family);
@@ -1833,10 +1875,16 @@ mod tests {
         }
         assert!(source.contains("checked((uint)Limit.ToWire())"));
         assert!(source.contains("checked((uint)PageSize.ToWire())"));
-        assert!(source.contains("wire.IdleTimeoutMs = IdleTimeoutMs ?? 0;"));
-        assert!(source.contains("wire.IfTail = IfTail ?? 0;"));
-        assert!(source.contains("wire.AtTail = AtTail ?? 0;"));
-        assert!(source.contains("wire.ExpectedRevision = ExpectedRevision ?? 0;"));
+        for field in ["IdleTimeoutMs", "IfTail", "AtTail", "ExpectedRevision"] {
+            assert!(
+                source.contains(&format!("{field}.HasValue")),
+                "optional scalar {field} lost explicit presence"
+            );
+            assert!(
+                source.contains(&format!("wire.Clear{field}();")),
+                "optional scalar {field} lacks an absent-state projection"
+            );
+        }
     }
 
     #[test]
@@ -1905,6 +1953,9 @@ mod tests {
         let (_, source) = generate_csharp_typed_facade();
         assert!(source.contains("record Unknown(int RawCase, ByteString WireBytes)"));
         assert!(source.contains("ObjectsGetObjectFrame.Unknown((int)message.FrameCase, ByteString.CopyFrom(message.ToByteArray()))"));
+        assert!(source.contains("public interface WireChoice"));
+        assert!(!source.contains("public sealed record KnownOneof(string Tag, ByteString Payload)"));
+        assert!(source.contains(": WireChoice"));
     }
 
     #[test]
