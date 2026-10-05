@@ -1,5 +1,6 @@
 {
   "source_commit": "d3eb2f289eb77c3cb784a79cb24f7dec1b6e5651",
+  "source_tree": "2e561c800b85344c1cbc897947348d9ef0a35f4c",
   "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
   "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
   "tools_jar": {
