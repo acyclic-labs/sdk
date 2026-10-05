@@ -89,10 +89,12 @@ pub use type_policy::{
     OBJECTS_MAX_MULTIPART_ITEMS, STREAM_MAX_COMMAND_BYTES, STREAM_MAX_RECORD_BYTES,
     PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES,
     FieldSemanticType, PublicFieldBinding, PublicFieldDirection,
-    OperationRule, ResolvedRequestField, ResolvedRpcMethod, ResolvedValidationConstraint,
+    OperationRule, ResolvedOperationRule, ResolvedRequestField, ResolvedRpcMethod,
+    ResolvedValidationConstraint,
     SemanticRule, SemanticType, TypePolicyLanguage, TypeProjectionProfile,
     WIRE_UNION_VARIANTS, WireUnionVariant, WireValueKind, field_semantic_type, semantic_type,
-    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, type_projection_profile,
+    resolved_operation_rules, resolved_request_fields, resolved_response_fields,
+    resolved_rpc_methods, type_projection_profile,
 };
 pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,

@@ -635,6 +635,974 @@ public sealed record WorkersSelectDeploymentRequest(
     }
 }
 
+public sealed record RustActorsAddSubscriptionRequest(
+    ActorId ActorId,
+    string IdempotencyKey,
+    Acyclic.Actors.V1.SubscriptionSpec Subscription
+)
+{
+    internal Acyclic.Actors.V1.AddSubscriptionRequest ToWire()
+    {
+        var wire = new Acyclic.Actors.V1.AddSubscriptionRequest();
+        wire.ActorId = ActorId.ToWire();
+        wire.IdempotencyKey = IdempotencyKey;
+        if (Subscription is not null) wire.Subscription = Subscription;
+        return wire;
+    }
+}
+
+public sealed record RustActorsCheckpointActorRequest(
+    ActorId ActorId,
+    string IdempotencyKey
+)
+{
+    internal Acyclic.Actors.V1.CheckpointActorRequest ToWire()
+    {
+        var wire = new Acyclic.Actors.V1.CheckpointActorRequest();
+        wire.ActorId = ActorId.ToWire();
+        wire.IdempotencyKey = IdempotencyKey;
+        return wire;
+    }
+}
+
+public sealed record RustActorsInspectActorRequest(
+    ActorId ActorId
+)
+{
+    internal Acyclic.Actors.V1.InspectActorRequest ToWire()
+    {
+        var wire = new Acyclic.Actors.V1.InspectActorRequest();
+        wire.ActorId = ActorId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustActorsInvokeActorRequest(
+    ActorId ActorId,
+    ByteString Body,
+    IReadOnlyList<Acyclic.Actors.V1.Header> Headers,
+    MethodName Method,
+    string Url
+)
+{
+    internal Acyclic.Actors.V1.InvokeActorRequest ToWire()
+    {
+        var wire = new Acyclic.Actors.V1.InvokeActorRequest();
+        wire.ActorId = ActorId.ToWire();
+        wire.Body = Body;
+        wire.Headers.AddRange(Headers);
+        wire.Method = Method.ToWire();
+        wire.Url = Url;
+        return wire;
+    }
+}
+
+public sealed record RustActorsRemoveSubscriptionRequest(
+    ActorId ActorId,
+    string IdempotencyKey,
+    string SubscriptionId
+)
+{
+    internal Acyclic.Actors.V1.RemoveSubscriptionRequest ToWire()
+    {
+        var wire = new Acyclic.Actors.V1.RemoveSubscriptionRequest();
+        wire.ActorId = ActorId.ToWire();
+        wire.IdempotencyKey = IdempotencyKey;
+        wire.SubscriptionId = SubscriptionId;
+        return wire;
+    }
+}
+
+public sealed record RustActorsResumeSubscriptionRequest(
+    ActorId ActorId,
+    string IdempotencyKey,
+    string SubscriptionId
+)
+{
+    internal Acyclic.Actors.V1.ResumeSubscriptionRequest ToWire()
+    {
+        var wire = new Acyclic.Actors.V1.ResumeSubscriptionRequest();
+        wire.ActorId = ActorId.ToWire();
+        wire.IdempotencyKey = IdempotencyKey;
+        wire.SubscriptionId = SubscriptionId;
+        return wire;
+    }
+}
+
+public sealed record RustActorsUpdateActorRequest(
+    ActorId ActorId,
+    IReadOnlyList<Acyclic.Actors.V1.Binding> Bindings,
+    ByteString CodeSha256,
+    ulong ExpectedConfigurationRevision,
+    string IdempotencyKey,
+    Acyclic.Actors.V1.ActorLimits Limits
+)
+{
+    internal Acyclic.Actors.V1.UpdateActorRequest ToWire()
+    {
+        var wire = new Acyclic.Actors.V1.UpdateActorRequest();
+        wire.ActorId = ActorId.ToWire();
+        wire.Bindings.AddRange(Bindings);
+        wire.CodeSha256 = CodeSha256;
+        wire.ExpectedConfigurationRevision = ExpectedConfigurationRevision;
+        wire.IdempotencyKey = IdempotencyKey;
+        if (Limits is not null) wire.Limits = Limits;
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemListDirectoryRequest(
+    Acyclic.Filesystem.V2.GenerationRef Generation,
+    Acyclic.Filesystem.V2.PageOptions Page,
+    ResourcePath Path
+)
+{
+    internal Acyclic.Filesystem.V2.ListDirectoryRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.ListDirectoryRequest();
+        if (Generation is not null) wire.Generation = Generation;
+        if (Page is not null) wire.Page = Page;
+        wire.Path = Path.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemPlanExtentsRequest(
+    Acyclic.Filesystem.V2.GenerationRef Generation,
+    uint MaximumExtents,
+    ResourcePath Path,
+    Acyclic.Filesystem.V2.ByteRange Range
+)
+{
+    internal Acyclic.Filesystem.V2.PlanExtentsRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.PlanExtentsRequest();
+        if (Generation is not null) wire.Generation = Generation;
+        wire.MaximumExtents = MaximumExtents;
+        wire.Path = Path.ToWire();
+        if (Range is not null) wire.Range = Range;
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemReadLinkRequest(
+    Acyclic.Filesystem.V2.GenerationRef Generation,
+    ulong MaximumBytes,
+    ResourcePath Path
+)
+{
+    internal Acyclic.Filesystem.V2.ReadLinkRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.ReadLinkRequest();
+        if (Generation is not null) wire.Generation = Generation;
+        wire.MaximumBytes = MaximumBytes;
+        wire.Path = Path.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemReadRequest(
+    Acyclic.Filesystem.V2.GenerationRef Generation,
+    ulong MaximumBytes,
+    ResourcePath Path,
+    Acyclic.Filesystem.V2.ByteRange Range
+)
+{
+    internal Acyclic.Filesystem.V2.ReadRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.ReadRequest();
+        if (Generation is not null) wire.Generation = Generation;
+        wire.MaximumBytes = MaximumBytes;
+        wire.Path = Path.ToWire();
+        if (Range is not null) wire.Range = Range;
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemStatRequest(
+    Acyclic.Filesystem.V2.GenerationRef Generation,
+    ResourcePath Path
+)
+{
+    internal Acyclic.Filesystem.V2.StatRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.StatRequest();
+        if (Generation is not null) wire.Generation = Generation;
+        wire.Path = Path.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustInferenceInspectContextRequest(
+    RevisionDigest Revision
+)
+{
+    internal Inference.Customer.V1.InspectContextRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.InspectContextRequest();
+        wire.Revision = Revision.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustInferenceInspectEvaluationRequest(
+    EvaluationId EvaluationId
+)
+{
+    internal Inference.Customer.V1.InspectEvaluationRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.InspectEvaluationRequest();
+        wire.EvaluationId = EvaluationId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustInferenceInspectRunRequest(
+    RunId RunId
+)
+{
+    internal Inference.Customer.V1.InspectRunRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.InspectRunRequest();
+        wire.RunId = RunId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustInferenceInspectWarmRequest(
+    Sha256Digest Commitment
+)
+{
+    internal Inference.Customer.V1.InspectWarmRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.InspectWarmRequest();
+        wire.Commitment = Commitment.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustInferenceReleaseWarmRequest(
+    Sha256Digest Commitment,
+    Inference.Customer.V1.RequestIdentity Identity
+)
+{
+    internal Inference.Customer.V1.ReleaseWarmRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.ReleaseWarmRequest();
+        wire.Commitment = Commitment.ToWire();
+        if (Identity is not null) wire.Identity = Identity;
+        return wire;
+    }
+}
+
+public sealed record RustInferenceRenewWarmRequest(
+    Sha256Digest Commitment,
+    ulong ExpiresAtMs,
+    Inference.Customer.V1.RequestIdentity Identity,
+    ulong? IdleTimeoutMs
+)
+{
+    internal Inference.Customer.V1.RenewWarmRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.RenewWarmRequest();
+        wire.Commitment = Commitment.ToWire();
+        wire.ExpiresAtMs = ExpiresAtMs;
+        if (Identity is not null) wire.Identity = Identity;
+        wire.IdleTimeoutMs = IdleTimeoutMs;
+        return wire;
+    }
+}
+
+public sealed record RustInferenceWatchRunRequest(
+    ulong FromSequence,
+    RunId RunId
+)
+{
+    internal Inference.Customer.V1.WatchRunRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.WatchRunRequest();
+        wire.FromSequence = FromSequence;
+        wire.RunId = RunId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustMachinesCheckpointMachineRequest(
+    IdempotencyKey IdempotencyKey,
+    MachineId Machine,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.CheckpointMachineRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.CheckpointMachineRequest();
+        wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        wire.Machine = Machine.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesCheckpointMutationRequest(
+    CheckpointId Checkpoint,
+    IdempotencyKey IdempotencyKey,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.CheckpointMutationRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.CheckpointMutationRequest();
+        wire.Checkpoint = Checkpoint.ToWire();
+        wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesCreateMachineRequest(
+    Acyclic.Machines.V1.Budgets Budgets,
+    Acyclic.Machines.V1.CompatibilityPolicy Compatibility,
+    Acyclic.Machines.V1.ExpirationPolicy Expiration,
+    IdempotencyKey IdempotencyKey,
+    ImmutableImage Image,
+    ByteString NetworkPolicyDigest,
+    Acyclic.Machines.V1.ProtocolVersion Protocol,
+    Acyclic.Machines.V1.SuspensionPolicy Suspension
+)
+{
+    internal Acyclic.Machines.V1.CreateMachineRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.CreateMachineRequest();
+        if (Budgets is not null) wire.Budgets = Budgets;
+        if (Compatibility is not null) wire.Compatibility = Compatibility;
+        if (Expiration is not null) wire.Expiration = Expiration;
+        wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        wire.Image = Image.ToWire();
+        wire.NetworkPolicyDigest = NetworkPolicyDigest;
+        if (Protocol is not null) wire.Protocol = Protocol;
+        if (Suspension is not null) wire.Suspension = Suspension;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesEventsRequest(
+    ulong AfterSequence,
+    MachineEventPageLimit Limit,
+    MachineId Machine,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.EventsRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.EventsRequest();
+        wire.AfterSequence = AfterSequence;
+        wire.Limit = Limit.ToWire();
+        wire.Machine = Machine.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesForkCheckpointRequest(
+    CheckpointId Checkpoint,
+    uint Count,
+    IdempotencyKey IdempotencyKey,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.ForkCheckpointRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.ForkCheckpointRequest();
+        wire.Checkpoint = Checkpoint.ToWire();
+        wire.Count = Count;
+        wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesForkMachineRequest(
+    uint Count,
+    IdempotencyKey IdempotencyKey,
+    MachineId Machine,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.ForkMachineRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.ForkMachineRequest();
+        wire.Count = Count;
+        wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        wire.Machine = Machine.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesInspectCheckpointRequest(
+    CheckpointId Checkpoint,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.InspectCheckpointRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.InspectCheckpointRequest();
+        wire.Checkpoint = Checkpoint.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesInspectMachineRequest(
+    MachineId Machine,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.InspectMachineRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.InspectMachineRequest();
+        wire.Machine = Machine.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesListMachinesRequest(
+    Acyclic.Machines.V1.MachineId After,
+    MachinePageLimit Limit,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.ListMachinesRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.ListMachinesRequest();
+        if (After is not null) wire.After = After;
+        wire.Limit = Limit.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesMachineMutationRequest(
+    IdempotencyKey IdempotencyKey,
+    MachineId Machine,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.MachineMutationRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.MachineMutationRequest();
+        wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        wire.Machine = Machine.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesOperationRequest(
+    OperationId Operation,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.OperationRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.OperationRequest();
+        wire.Operation = Operation.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesQualifyImageRequest(
+    ImmutableImage Image,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.QualifyImageRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.QualifyImageRequest();
+        wire.Image = Image.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesRecoverRequest(
+    IdempotencyKey IdempotencyKey,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.RecoverRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.RecoverRequest();
+        wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesSetSuspensionPolicyRequest(
+    IdempotencyKey IdempotencyKey,
+    MachineId Machine,
+    Acyclic.Machines.V1.SuspensionPolicy Policy,
+    Acyclic.Machines.V1.ProtocolVersion Protocol
+)
+{
+    internal Acyclic.Machines.V1.SetSuspensionPolicyRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.SetSuspensionPolicyRequest();
+        wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        wire.Machine = Machine.ToWire();
+        if (Policy is not null) wire.Policy = Policy;
+        if (Protocol is not null) wire.Protocol = Protocol;
+        return wire;
+    }
+}
+
+public sealed record RustMachinesUsageRequest(
+    ulong EndUnixMs,
+    MachineId Machine,
+    Acyclic.Machines.V1.ProtocolVersion Protocol,
+    ulong StartUnixMs
+)
+{
+    internal Acyclic.Machines.V1.UsageRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.UsageRequest();
+        wire.EndUnixMs = EndUnixMs;
+        wire.Machine = Machine.ToWire();
+        if (Protocol is not null) wire.Protocol = Protocol;
+        wire.StartUnixMs = StartUnixMs;
+        return wire;
+    }
+}
+
+public sealed record RustObjectsAbortMultipartRequest(
+    Acyclic.Objects.V2.BucketRef Bucket,
+    Acyclic.Objects.V2.MutationIdentity Mutation,
+    ObjectKey ObjectKey,
+    UploadId UploadId
+)
+{
+    internal Acyclic.Objects.V2.AbortMultipartRequest ToWire()
+    {
+        var wire = new Acyclic.Objects.V2.AbortMultipartRequest();
+        if (Bucket is not null) wire.Bucket = Bucket;
+        if (Mutation is not null) wire.Mutation = Mutation;
+        wire.ObjectKey = ObjectKey.ToWire();
+        wire.UploadId = UploadId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustObjectsCompleteMultipartRequest(
+    Acyclic.Objects.V2.BucketRef Bucket,
+    Acyclic.Objects.V2.MutationIdentity Mutation,
+    ObjectKey ObjectKey,
+    IReadOnlyList<Acyclic.Objects.V2.UploadedPart> Parts,
+    Acyclic.Objects.V2.Preconditions Preconditions,
+    UploadId UploadId
+)
+{
+    internal Acyclic.Objects.V2.CompleteMultipartRequest ToWire()
+    {
+        var wire = new Acyclic.Objects.V2.CompleteMultipartRequest();
+        if (Bucket is not null) wire.Bucket = Bucket;
+        if (Mutation is not null) wire.Mutation = Mutation;
+        wire.ObjectKey = ObjectKey.ToWire();
+        wire.Parts.AddRange(Parts);
+        if (Preconditions is not null) wire.Preconditions = Preconditions;
+        wire.UploadId = UploadId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustObjectsCreateMultipartRequest(
+    Acyclic.Objects.V2.BucketRef Bucket,
+    Acyclic.Objects.V2.ObjectMetadata Metadata,
+    Acyclic.Objects.V2.MutationIdentity Mutation,
+    ObjectKey ObjectKey
+)
+{
+    internal Acyclic.Objects.V2.CreateMultipartRequest ToWire()
+    {
+        var wire = new Acyclic.Objects.V2.CreateMultipartRequest();
+        if (Bucket is not null) wire.Bucket = Bucket;
+        if (Metadata is not null) wire.Metadata = Metadata;
+        if (Mutation is not null) wire.Mutation = Mutation;
+        wire.ObjectKey = ObjectKey.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustObjectsDeleteObjectRequest(
+    Acyclic.Objects.V2.BucketRef Bucket,
+    Acyclic.Objects.V2.MutationIdentity Mutation,
+    ObjectKey ObjectKey,
+    Acyclic.Objects.V2.Preconditions Preconditions
+)
+{
+    internal Acyclic.Objects.V2.DeleteObjectRequest ToWire()
+    {
+        var wire = new Acyclic.Objects.V2.DeleteObjectRequest();
+        if (Bucket is not null) wire.Bucket = Bucket;
+        if (Mutation is not null) wire.Mutation = Mutation;
+        wire.ObjectKey = ObjectKey.ToWire();
+        if (Preconditions is not null) wire.Preconditions = Preconditions;
+        return wire;
+    }
+}
+
+public sealed record RustObjectsGetObjectRequest(
+    Acyclic.Objects.V2.BucketRef Bucket,
+    string IfMatch,
+    string IfNoneMatch,
+    ObjectKey ObjectKey,
+    Acyclic.Objects.V2.ByteRange Range
+)
+{
+    internal Acyclic.Objects.V2.GetObjectRequest ToWire()
+    {
+        var wire = new Acyclic.Objects.V2.GetObjectRequest();
+        if (Bucket is not null) wire.Bucket = Bucket;
+        wire.IfMatch = IfMatch;
+        wire.IfNoneMatch = IfNoneMatch;
+        wire.ObjectKey = ObjectKey.ToWire();
+        if (Range is not null) wire.Range = Range;
+        return wire;
+    }
+}
+
+public sealed record RustObjectsHeadObjectRequest(
+    Acyclic.Objects.V2.BucketRef Bucket,
+    string IfMatch,
+    string IfNoneMatch,
+    ObjectKey ObjectKey
+)
+{
+    internal Acyclic.Objects.V2.HeadObjectRequest ToWire()
+    {
+        var wire = new Acyclic.Objects.V2.HeadObjectRequest();
+        if (Bucket is not null) wire.Bucket = Bucket;
+        wire.IfMatch = IfMatch;
+        wire.IfNoneMatch = IfNoneMatch;
+        wire.ObjectKey = ObjectKey.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustObjectsListObjectsRequest(
+    Acyclic.Objects.V2.BucketRef Bucket,
+    string ContinuationToken,
+    string Delimiter,
+    PageLimit PageSize,
+    string Prefix
+)
+{
+    internal Acyclic.Objects.V2.ListObjectsRequest ToWire()
+    {
+        var wire = new Acyclic.Objects.V2.ListObjectsRequest();
+        if (Bucket is not null) wire.Bucket = Bucket;
+        wire.ContinuationToken = ContinuationToken;
+        wire.Delimiter = Delimiter;
+        wire.PageSize = checked((uint)PageSize.ToWire());
+        wire.Prefix = Prefix;
+        return wire;
+    }
+}
+
+public sealed record RustObjectsListPartsRequest(
+    uint AfterPartNumber,
+    Acyclic.Objects.V2.BucketRef Bucket,
+    ObjectKey ObjectKey,
+    PageLimit PageSize,
+    UploadId UploadId
+)
+{
+    internal Acyclic.Objects.V2.ListPartsRequest ToWire()
+    {
+        var wire = new Acyclic.Objects.V2.ListPartsRequest();
+        wire.AfterPartNumber = AfterPartNumber;
+        if (Bucket is not null) wire.Bucket = Bucket;
+        wire.ObjectKey = ObjectKey.ToWire();
+        wire.PageSize = PageSize.ToWire();
+        wire.UploadId = UploadId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustStreamAppendRequest(
+    IdempotencyKeyBytes IdempotencyKey,
+    ulong? IfTail,
+    ResourcePath Path,
+    IReadOnlyList<ByteString> Records
+)
+{
+    internal Acyclic.Stream.V2.AppendRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.AppendRequest();
+        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        wire.IfTail = IfTail;
+        wire.Path = Path.ToWire();
+        wire.Records.AddRange(Records);
+        return wire;
+    }
+}
+
+public sealed record RustStreamChildrenPageRequest(
+    string After,
+    ByteString HierarchyVersion,
+    StreamPageLimit Limit,
+    string Parent
+)
+{
+    internal Acyclic.Stream.V2.ChildrenPageRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.ChildrenPageRequest();
+        wire.After = After;
+        wire.HierarchyVersion = HierarchyVersion;
+        wire.Limit = Limit.ToWire();
+        wire.Parent = Parent;
+        return wire;
+    }
+}
+
+public sealed record RustStreamChildrenRequest(
+    StreamPageLimit Limit,
+    string Parent
+)
+{
+    internal Acyclic.Stream.V2.ChildrenRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.ChildrenRequest();
+        wire.Limit = Limit.ToWire();
+        wire.Parent = Parent;
+        return wire;
+    }
+}
+
+public sealed record RustStreamCommitRequest(
+    IReadOnlyList<Acyclic.Stream.V2.CommitCondition> Conditions,
+    ulong? DeadlineUnixMillis,
+    IdempotencyKeyBytes IdempotencyKey,
+    IReadOnlyList<Acyclic.Stream.V2.CommitMutation> Mutations
+)
+{
+    internal Acyclic.Stream.V2.CommitRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.CommitRequest();
+        wire.Conditions.AddRange(Conditions);
+        wire.DeadlineUnixMillis = DeadlineUnixMillis;
+        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        wire.Mutations.AddRange(Mutations);
+        return wire;
+    }
+}
+
+public sealed record RustStreamFollowRequest(
+    ulong From,
+    ResourcePath Path
+)
+{
+    internal Acyclic.Stream.V2.FollowRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.FollowRequest();
+        wire.From = From;
+        wire.Path = Path.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustStreamForkRequest(
+    ulong? AtTail,
+    DestinationName Destination,
+    IdempotencyKeyBytes IdempotencyKey,
+    SourceName Source
+)
+{
+    internal Acyclic.Stream.V2.ForkRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.ForkRequest();
+        wire.AtTail = AtTail;
+        wire.Destination = Destination.ToWire();
+        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        wire.Source = Source.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustStreamInspectIdempotencyRequest(
+    IdempotencyKeyBytes IdempotencyKey
+)
+{
+    internal Acyclic.Stream.V2.InspectIdempotencyRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.InspectIdempotencyRequest();
+        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustStreamReadCommitRequest(
+    CommitId CommitId
+)
+{
+    internal Acyclic.Stream.V2.ReadCommitRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.ReadCommitRequest();
+        wire.CommitId = CommitId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustStreamReadRequest(
+    ulong From,
+    StreamPageLimit Limit,
+    ResourcePath Path
+)
+{
+    internal Acyclic.Stream.V2.ReadRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.ReadRequest();
+        wire.From = From;
+        wire.Limit = checked((uint)Limit.ToWire());
+        wire.Path = Path.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustStreamTailRequest(
+    ResourcePath Path
+)
+{
+    internal Acyclic.Stream.V2.TailRequest ToWire()
+    {
+        var wire = new Acyclic.Stream.V2.TailRequest();
+        wire.Path = Path.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustWorkersCancelJobRequest(
+    IdempotencyKeyText IdempotencyKey,
+    JobId JobId
+)
+{
+    internal Acyclic.Workers.V1.CancelJobRequest ToWire()
+    {
+        var wire = new Acyclic.Workers.V1.CancelJobRequest();
+        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        wire.JobId = JobId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustWorkersInspectJobRequest(
+    JobId JobId
+)
+{
+    internal Acyclic.Workers.V1.InspectJobRequest ToWire()
+    {
+        var wire = new Acyclic.Workers.V1.InspectJobRequest();
+        wire.JobId = JobId.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustWorkersInvokeDeploymentRequest(
+    VersionAlias Alias,
+    ByteString Body,
+    IReadOnlyList<Acyclic.Workers.V1.Header> Headers,
+    MethodName Method,
+    string Url
+)
+{
+    internal Acyclic.Workers.V1.InvokeDeploymentRequest ToWire()
+    {
+        var wire = new Acyclic.Workers.V1.InvokeDeploymentRequest();
+        wire.Alias = Alias.ToWire();
+        wire.Body = Body;
+        wire.Headers.AddRange(Headers);
+        wire.Method = Method.ToWire();
+        wire.Url = Url;
+        return wire;
+    }
+}
+
+public sealed record RustWorkersInvokeVersionRequest(
+    ByteString Body,
+    IReadOnlyList<Acyclic.Workers.V1.Header> Headers,
+    MethodName Method,
+    string Url,
+    Sha256Digest VersionSha256
+)
+{
+    internal Acyclic.Workers.V1.InvokeVersionRequest ToWire()
+    {
+        var wire = new Acyclic.Workers.V1.InvokeVersionRequest();
+        wire.Body = Body;
+        wire.Headers.AddRange(Headers);
+        wire.Method = Method.ToWire();
+        wire.Url = Url;
+        wire.VersionSha256 = VersionSha256.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustWorkersPublishVersionRequest(
+    ByteString ExpectedSha256,
+    IdempotencyKeyText IdempotencyKey,
+    ByteString JavascriptModule
+)
+{
+    internal Acyclic.Workers.V1.PublishVersionRequest ToWire()
+    {
+        var wire = new Acyclic.Workers.V1.PublishVersionRequest();
+        wire.ExpectedSha256 = ExpectedSha256;
+        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        wire.JavascriptModule = JavascriptModule;
+        return wire;
+    }
+}
+
+public sealed record RustWorkersSelectDeploymentRequest(
+    VersionAlias Alias,
+    ulong? ExpectedRevision,
+    IdempotencyKeyText IdempotencyKey,
+    Sha256Digest VersionSha256
+)
+{
+    internal Acyclic.Workers.V1.SelectDeploymentRequest ToWire()
+    {
+        var wire = new Acyclic.Workers.V1.SelectDeploymentRequest();
+        wire.Alias = Alias.ToWire();
+        wire.ExpectedRevision = ExpectedRevision;
+        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        wire.VersionSha256 = VersionSha256.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustWorkersSubmitJobRequest(
+    IdempotencyKeyText IdempotencyKey,
+    Acyclic.Workers.V1.Payload Input,
+    Acyclic.Workers.V1.JobLimits Limits,
+    Acyclic.Workers.V1.RetryPolicy Retry,
+    Acyclic.Workers.V1.JobTarget Target
+)
+{
+    internal Acyclic.Workers.V1.SubmitJobRequest ToWire()
+    {
+        var wire = new Acyclic.Workers.V1.SubmitJobRequest();
+        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        if (Input is not null) wire.Input = Input;
+        if (Limits is not null) wire.Limits = Limits;
+        if (Retry is not null) wire.Retry = Retry;
+        if (Target is not null) wire.Target = Target;
+        return wire;
+    }
+}
+
 public sealed record ObjectsCreateBucketRequest(string Name, IdempotencyKeyText IdempotencyKey)
 {
     internal Acyclic.Objects.V2.CreateBucketRequest ToWire() => new() { Name = Name, Mutation = new Acyclic.Objects.V2.MutationIdentity { IdempotencyKey = IdempotencyKey.ToWire() } };
@@ -686,27 +1654,234 @@ public sealed class ObjectsGetObjectStream
     }
 }
 
+internal static class RustOperationValidation
+{
+    internal const int MaxMultipartParts = 10000;
+    internal const int MaxRecordBytes = 65536;
+    internal const int MaxCommandBytes = 1056768;
+
+    internal static void ValidateOrderedPartNumbers(IEnumerable<uint> partNumbers)
+    {
+        var count = 0;
+        uint previous = 0;
+        foreach (var partNumber in partNumbers)
+        {
+            if (++count > MaxMultipartParts || partNumber == 0 || partNumber > MaxMultipartParts || (count > 1 && partNumber <= previous))
+                throw new ArgumentOutOfRangeException(nameof(partNumbers), "Rust multipart parts must be strictly increasing and within the canonical bound.");
+            previous = partNumber;
+        }
+    }
+
+    internal static void ValidateRecordBytes(IEnumerable<ByteString> records)
+    {
+        foreach (var record in records)
+            if (record.Length > MaxRecordBytes)
+                throw new ArgumentOutOfRangeException(nameof(records), "Rust stream record exceeds the canonical byte limit.");
+    }
+
+    internal static void ValidateCommandSize(IMessage request)
+    {
+        if (request.CalculateSize() > MaxCommandBytes)
+            throw new ArgumentOutOfRangeException(nameof(request), "Rust stream command exceeds the canonical byte limit.");
+    }
+
+    internal static void RequireCapability(IReadOnlySet<string> capabilities, string capability)
+    {
+        if (!capabilities.Contains(capability))
+            throw new UnauthorizedAccessException($"Rust operation requires capability '{capability}'.");
+    }
+
+    // Bucket emptiness is provider state. The server remains authoritative;
+    // the generated client preserves this rule as operation metadata.
+}
+
+public sealed class ActorsClient
+{
+    private readonly Acyclic.Actors.V1.ActorsService.ActorsServiceClient _actors;
+    public ActorsClient(Acyclic.Actors.V1.ActorsService.ActorsServiceClient actors)
+    {
+        _actors = actors;
+    }
+    public Acyclic.Actors.V1.AddSubscriptionResponse AddSubscription(RustActorsAddSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.AddSubscription(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Actors.V1.CheckpointActorResponse CheckpointActor(RustActorsCheckpointActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.CheckpointActor(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Actors.V1.CreateActorResponse CreateActor(Acyclic.Actors.V1.CreateActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.CreateActor(request, headers, deadline, cancellationToken);
+    public Acyclic.Actors.V1.InspectActorResponse InspectActor(RustActorsInspectActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.InspectActor(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Actors.V1.InvokeActorResponse InvokeActor(RustActorsInvokeActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.InvokeActor(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Actors.V1.RemoveSubscriptionResponse RemoveSubscription(RustActorsRemoveSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.RemoveSubscription(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Actors.V1.ResumeSubscriptionResponse ResumeSubscription(RustActorsResumeSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.ResumeSubscription(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Actors.V1.UpdateActorResponse UpdateActor(RustActorsUpdateActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.UpdateActor(request.ToWire(), headers, deadline, cancellationToken);
+}
+
+public sealed class WorkersClient
+{
+    private readonly Acyclic.Workers.V1.WorkersService.WorkersServiceClient _workers;
+    public WorkersClient(Acyclic.Workers.V1.WorkersService.WorkersServiceClient workers)
+    {
+        _workers = workers;
+    }
+    public Acyclic.Workers.V1.CancelJobResponse CancelJob(RustWorkersCancelJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.CancelJob(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Workers.V1.InspectJobResponse InspectJob(RustWorkersInspectJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.InspectJob(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Workers.V1.InvokeResponse InvokeDeployment(RustWorkersInvokeDeploymentRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.InvokeDeployment(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Workers.V1.InvokeResponse InvokeVersion(RustWorkersInvokeVersionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.InvokeVersion(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Workers.V1.PublishVersionResponse PublishVersion(RustWorkersPublishVersionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.PublishVersion(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Workers.V1.SelectDeploymentResponse SelectDeployment(RustWorkersSelectDeploymentRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.SelectDeployment(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Workers.V1.SubmitJobResponse SubmitJob(RustWorkersSubmitJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.SubmitJob(request.ToWire(), headers, deadline, cancellationToken);
+}
+
 public sealed class ObjectsClient
 {
     private readonly Acyclic.Objects.V2.BucketsService.BucketsServiceClient _buckets;
+    private readonly Acyclic.Objects.V2.MultipartService.MultipartServiceClient _multipart;
     private readonly Acyclic.Objects.V2.ObjectsService.ObjectsServiceClient _objects;
-    public ObjectsClient(Acyclic.Objects.V2.BucketsService.BucketsServiceClient buckets, Acyclic.Objects.V2.ObjectsService.ObjectsServiceClient objects) => (_buckets, _objects) = (buckets, objects);
+    public ObjectsClient(Acyclic.Objects.V2.BucketsService.BucketsServiceClient buckets, Acyclic.Objects.V2.MultipartService.MultipartServiceClient multipart, Acyclic.Objects.V2.ObjectsService.ObjectsServiceClient objects)
+    {
+        _buckets = buckets;
+        _multipart = multipart;
+        _objects = objects;
+    }
     public Acyclic.Objects.V2.Bucket CreateBucket(ObjectsCreateBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.CreateBucket(request.ToWire(), headers, deadline, cancellationToken);
-    public ObjectsGetObjectStream GetObject(ObjectsGetObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_objects.GetObject(request.ToWire(), headers, deadline, cancellationToken));
+    public Acyclic.Objects.V2.DeleteBucketResponse DeleteBucket(Acyclic.Objects.V2.DeleteBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.DeleteBucket(request, headers, deadline, cancellationToken);
+    public Acyclic.Objects.V2.Bucket HeadBucket(Acyclic.Objects.V2.HeadBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.HeadBucket(request, headers, deadline, cancellationToken);
+    public Acyclic.Objects.V2.AbortMultipartResponse AbortMultipart(RustObjectsAbortMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.AbortMultipart(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Objects.V2.ObjectInfo CompleteMultipart(RustObjectsCompleteMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateOrderedPartNumbers(System.Linq.Enumerable.Select(request.Parts, part => part.PartNumber)); return _multipart.CompleteMultipart(request.ToWire(), headers, deadline, cancellationToken); }
+    public Acyclic.Objects.V2.MultipartUpload CreateMultipart(RustObjectsCreateMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.CreateMultipart(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Objects.V2.ListPartsResponse ListParts(RustObjectsListPartsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.ListParts(request.ToWire(), headers, deadline, cancellationToken);
+    public AsyncClientStreamingCall<Acyclic.Objects.V2.UploadPartRequest, Acyclic.Objects.V2.UploadedPart> UploadPart(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.UploadPart(headers, deadline, cancellationToken);
+    public Acyclic.Objects.V2.DeleteObjectResponse DeleteObject(RustObjectsDeleteObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _objects.DeleteObject(request.ToWire(), headers, deadline, cancellationToken);
+    public ObjectsGetObjectStream GetObject(RustObjectsGetObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_objects.GetObject(request.ToWire(), headers, deadline, cancellationToken));
+    public Acyclic.Objects.V2.HeadObjectResponse HeadObject(RustObjectsHeadObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _objects.HeadObject(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Objects.V2.ListObjectsResponse ListObjects(RustObjectsListObjectsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _objects.ListObjects(request.ToWire(), headers, deadline, cancellationToken);
+    public AsyncClientStreamingCall<Acyclic.Objects.V2.PutObjectRequest, Acyclic.Objects.V2.ObjectInfo> PutObject(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _objects.PutObject(headers, deadline, cancellationToken);
+}
+
+public sealed class StreamClient
+{
+    private readonly Acyclic.Stream.V2.StreamService.StreamServiceClient _stream;
+    public StreamClient(Acyclic.Stream.V2.StreamService.StreamServiceClient stream)
+    {
+        _stream = stream;
+    }
+    public Acyclic.Stream.V2.AppendResponse Append(RustStreamAppendRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateRecordBytes(request.Records); return _stream.Append(request.ToWire(), headers, deadline, cancellationToken); }
+    public AsyncServerStreamingCall<Acyclic.Stream.V2.ChildrenResponse> Children(RustStreamChildrenRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Children(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Stream.V2.ChildrenPageResponse ChildrenPage(RustStreamChildrenPageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.ChildrenPage(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Stream.V2.CommitResponse Commit(RustStreamCommitRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateCommandSize(request.ToWire()); return _stream.Commit(request.ToWire(), headers, deadline, cancellationToken); }
+    public AsyncServerStreamingCall<Acyclic.Stream.V2.ReadResponse> Follow(RustStreamFollowRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Follow(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Stream.V2.ForkReceipt Fork(RustStreamForkRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Fork(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Stream.V2.InspectIdempotencyResponse InspectIdempotency(RustStreamInspectIdempotencyRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.InspectIdempotency(request.ToWire(), headers, deadline, cancellationToken);
+    public AsyncServerStreamingCall<Acyclic.Stream.V2.ReadResponse> Read(RustStreamReadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Read(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Stream.V2.CommittedEnvelope ReadCommit(RustStreamReadCommitRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.ReadCommit(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Stream.V2.TailResponse Tail(RustStreamTailRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Tail(request.ToWire(), headers, deadline, cancellationToken);
 }
 
 public sealed class InferenceClient
 {
+    private readonly Inference.Customer.V1.ContextsService.ContextsServiceClient _contexts;
     private readonly Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient _evaluations;
-    public InferenceClient(Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient evaluations) => _evaluations = evaluations;
-    public Inference.Customer.V1.EvaluationView CreateEvaluation(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Create(request.ToWire(), headers, deadline, cancellationToken);
+    private readonly Inference.Customer.V1.ModelsService.ModelsServiceClient _models;
+    private readonly Inference.Customer.V1.RunsService.RunsServiceClient _runs;
+    private readonly Inference.Customer.V1.WarmContextsService.WarmContextsServiceClient _warmContexts;
+    public InferenceClient(Inference.Customer.V1.ContextsService.ContextsServiceClient contexts, Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient evaluations, Inference.Customer.V1.ModelsService.ModelsServiceClient models, Inference.Customer.V1.RunsService.RunsServiceClient runs, Inference.Customer.V1.WarmContextsService.WarmContextsServiceClient warmContexts)
+    {
+        _contexts = contexts;
+        _evaluations = evaluations;
+        _models = models;
+        _runs = runs;
+        _warmContexts = warmContexts;
+    }
+    public Inference.Customer.V1.MutationReceipt Create(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Create(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.ContextView Inspect(RustInferenceInspectContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Inspect(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.MutationReceipt Mutate(Inference.Customer.V1.MutateContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Mutate(request, headers, deadline, cancellationToken);
+    public Inference.Customer.V1.EvaluationView Create(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Create(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.EvaluationView Inspect(RustInferenceInspectEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Inspect(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.ListModelsResponse List(Inference.Customer.V1.ListModelsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _models.List(request, headers, deadline, cancellationToken);
+    public Inference.Customer.V1.RunView Cancel(RustInferenceInspectRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Cancel(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.GenerateRunResponse Generate(Inference.Customer.V1.GenerateRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Generate(request, headers, deadline, cancellationToken);
+    public Inference.Customer.V1.RunView Inspect(RustInferenceInspectRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Inspect(request.ToWire(), headers, deadline, cancellationToken);
+    public AsyncServerStreamingCall<Inference.Customer.V1.RunEvent> Watch(RustInferenceWatchRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Watch(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.WarmView Inspect(RustInferenceInspectWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _warmContexts.Inspect(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.WarmView Release(RustInferenceReleaseWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _warmContexts.Release(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.WarmView Renew(RustInferenceRenewWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _warmContexts.Renew(request.ToWire(), headers, deadline, cancellationToken);
+    public Inference.Customer.V1.WarmView Retain(Inference.Customer.V1.RetainWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _warmContexts.Retain(request, headers, deadline, cancellationToken);
 }
 
 public sealed class MachinesClient
 {
     private readonly Acyclic.Machines.V1.MachinesService.MachinesServiceClient _machines;
-    public MachinesClient(Acyclic.Machines.V1.MachinesService.MachinesServiceClient machines) => _machines = machines;
-    public Acyclic.Machines.V1.ImageQualification QualifyImage(MachinesQualifyImageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.QualifyImage(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.MachineAdmission Create(MachinesCreateMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Create(request.ToWire(), headers, deadline, cancellationToken);
+    public MachinesClient(Acyclic.Machines.V1.MachinesService.MachinesServiceClient machines)
+    {
+        _machines = machines;
+    }
+    public Acyclic.Machines.V1.OperationState Cancel(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Cancel(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.CheckpointAdmission Checkpoint(RustMachinesCheckpointMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Checkpoint(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.MachineAdmission Create(RustMachinesCreateMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Create(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.MutationAdmission DestroyCheckpoint(RustMachinesCheckpointMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.DestroyCheckpoint(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.MutationAdmission DestroyMachine(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.DestroyMachine(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.EventPage Events(RustMachinesEventsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Events(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.ForkAdmission Fork(RustMachinesForkCheckpointRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Fork(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.ForkMachineAdmission ForkMachine(RustMachinesForkMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.ForkMachine(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.CheckpointState InspectCheckpoint(RustMachinesInspectCheckpointRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.InspectCheckpoint(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.MachineState InspectMachine(RustMachinesInspectMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.InspectMachine(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.OperationState InspectOperation(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.InspectOperation(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.MachinePage ListMachines(RustMachinesListMachinesRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.ListMachines(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.ImageQualification QualifyImage(RustMachinesQualifyImageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.QualifyImage(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.RecoveredAdmission Recover(RustMachinesRecoverRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Recover(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.PolicyAdmission SetSuspensionPolicy(RustMachinesSetSuspensionPolicyRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.SetSuspensionPolicy(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.MutationAdmission Suspend(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Suspend(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.UsageReceipt Usage(RustMachinesUsageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Usage(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.MutationAdmission Wake(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Wake(request.ToWire(), headers, deadline, cancellationToken);
+    public AsyncServerStreamingCall<Acyclic.Machines.V1.OperationState> WatchOperation(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.WatchOperation(request.ToWire(), headers, deadline, cancellationToken);
+}
+
+public sealed class FilesystemClient
+{
+    private readonly Acyclic.Filesystem.V2.FilesystemService.FilesystemServiceClient _filesystem;
+    public FilesystemClient(Acyclic.Filesystem.V2.FilesystemService.FilesystemServiceClient filesystem)
+    {
+        _filesystem = filesystem;
+    }
+    public Acyclic.Filesystem.V2.JoinResponse ApplyJoin(Acyclic.Filesystem.V2.ApplyJoinRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ApplyJoin(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.MutationResponse ApplyTransaction(Acyclic.Filesystem.V2.ApplyTransactionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ApplyTransaction(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.CancelResponse Cancel(Acyclic.Filesystem.V2.CancelRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Cancel(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.RetainGenerationResponse Checkpoint(Acyclic.Filesystem.V2.RetainGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Checkpoint(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.WorkspaceResponse CreateWorkspace(Acyclic.Filesystem.V2.CreateWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.CreateWorkspace(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.MutationResponse DeleteWorkspace(Acyclic.Filesystem.V2.DeleteWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.DeleteWorkspace(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.DiffResponse Diff(Acyclic.Filesystem.V2.DiffRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Diff(request, headers, deadline, cancellationToken);
+    public AsyncServerStreamingCall<Acyclic.Filesystem.V2.ExportChunk> Export(Acyclic.Filesystem.V2.ExportRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Export(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.WorkspaceResponse ForkWorkspace(Acyclic.Filesystem.V2.ForkWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ForkWorkspace(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.GenerationResponse GetGeneration(Acyclic.Filesystem.V2.GetGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.GetGeneration(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.GenerationResponse GetHead(Acyclic.Filesystem.V2.GetHeadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.GetHead(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.SourceResponse GetSourceState(Acyclic.Filesystem.V2.SourceStateRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.GetSourceState(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.HandshakeResponse Handshake(Acyclic.Filesystem.V2.HandshakeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Handshake(request, headers, deadline, cancellationToken);
+    public AsyncClientStreamingCall<Acyclic.Filesystem.V2.ImportChunk, Acyclic.Filesystem.V2.ImportResponse> Import(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Import(headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.CredentialResponse IssueMountCredential(Acyclic.Filesystem.V2.CredentialRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.IssueMountCredential(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.CredentialResponse IssueS3Credential(Acyclic.Filesystem.V2.CredentialRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.IssueS3Credential(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.ListDirectoryResponse ListDirectory(RustFilesystemListDirectoryRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ListDirectory(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.ObserveResponse Observe(Acyclic.Filesystem.V2.ObserveRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Observe(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.WorkspaceResponse OpenWorkspace(Acyclic.Filesystem.V2.OpenWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.OpenWorkspace(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.RetainGenerationResponse Pin(Acyclic.Filesystem.V2.RetainGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Pin(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.PlanExtentsResponse PlanExtents(RustFilesystemPlanExtentsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.PlanExtents(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.JoinPlan PlanJoin(Acyclic.Filesystem.V2.PlanJoinRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.PlanJoin(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.ReadResponse Read(RustFilesystemReadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Read(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.ReadResponse ReadLink(RustFilesystemReadLinkRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ReadLink(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.RebaseResponse Rebase(Acyclic.Filesystem.V2.RebaseRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Rebase(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.RebaseTransactionResponse RebaseTransaction(Acyclic.Filesystem.V2.RebaseTransactionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.RebaseTransaction(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.SourceResponse ReconcileSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ReconcileSource(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.SourceResponse RescanSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.RescanSource(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.SourceResponse SealSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.SealSource(request, headers, deadline, cancellationToken);
+    public Acyclic.Filesystem.V2.StatResponse Stat(RustFilesystemStatRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Stat(request.ToWire(), headers, deadline, cancellationToken);
+}
+
+public sealed class HarnessClient
+{
+    private readonly Acyclic.Harness.V2.HarnessService.HarnessServiceClient _harness;
+    public HarnessClient(Acyclic.Harness.V2.HarnessService.HarnessServiceClient harness)
+    {
+        _harness = harness;
+    }
+    public Acyclic.Harness.V2.CancelResponse Cancel(Acyclic.Harness.V2.CancelRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Cancel(request, headers, deadline, cancellationToken);
+    public Acyclic.Protocol.V1.HandshakeResponse Handshake(Acyclic.Protocol.V1.HandshakeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Handshake(request, headers, deadline, cancellationToken);
+    public Acyclic.Harness.V2.OperationStatus Observe(Acyclic.Harness.V2.ObserveRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Observe(request, headers, deadline, cancellationToken);
+    public AsyncServerStreamingCall<Acyclic.Harness.V2.Delivery> Replay(Acyclic.Harness.V2.ResumeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Replay(request, headers, deadline, cancellationToken);
+    public Acyclic.Harness.V2.Admission Submit(Acyclic.Harness.V2.CommandEnvelope request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Submit(request, headers, deadline, cancellationToken);
 }
 

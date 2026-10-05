@@ -9,7 +9,7 @@ public static class RustTypedFacadeConsumer
     {
         var bucket = objects.CreateBucket(new ObjectsCreateBucketRequest(
             "customer.inputs", new IdempotencyKeyText("retry-1")));
-        var stream = objects.GetObject(new ObjectsGetObjectRequest(new ObjectKey("artifact")));
+        var stream = objects.GetObject(new RustObjectsGetObjectRequest(null!, "", "", new ObjectKey("artifact"), null!));
         await foreach (var frame in stream.ReadAllAsync(CancellationToken.None))
         {
             _ = frame.Frame;

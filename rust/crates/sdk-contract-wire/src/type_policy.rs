@@ -99,6 +99,18 @@ pub enum OperationRule {
     MaxCommandBytes(u32),
 }
 
+/// A Rust-owned operation validation that cannot be represented by a scalar
+/// field refinement.  Keeping the policy identity beside the structured rule
+/// lets generators project the rule onto the real operation method instead of
+/// serializing a descriptive string and silently dropping enforcement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResolvedOperationRule {
+    pub family: &'static str,
+    pub rpc: &'static str,
+    pub validation: &'static str,
+    pub rule: OperationRule,
+}
+
 /// Resolve every reachable request field from the single Rust contract model.
 ///
 /// A fresh vector is returned so generators can sort or group fields without
@@ -159,6 +171,31 @@ pub fn resolved_rpc_methods() -> Result<Vec<ResolvedRpcMethod>, String> {
     }
     methods.sort_by(|left, right| left.rpc.cmp(&right.rpc));
     Ok(methods)
+}
+
+/// Resolve all structured operation rules directly from the Rust operation
+/// policies.  This inventory is independent of field attachment because rules
+/// such as bucket emptiness and capability admission are properties of the
+/// operation as a whole.  Generators must consume this API for operation-level
+/// validation and must fail closed when a rule has no projection.
+pub fn resolved_operation_rules() -> Vec<ResolvedOperationRule> {
+    let mut rules = Vec::new();
+    for family in FAMILY_VIEWS {
+        for policy in family.operation_policies {
+            for validation in policy.validations {
+                if let Some(rule) = operation_rule(validation) {
+                    rules.push(ResolvedOperationRule {
+                        family: family.name,
+                        rpc: policy.rpc,
+                        validation,
+                        rule,
+                    });
+                }
+            }
+        }
+    }
+    rules.sort_by(|left, right| (left.rpc, left.validation).cmp(&(right.rpc, right.validation)));
+    rules
 }
 
 fn resolve_rpc_fields(request: bool) -> Result<Vec<ResolvedRequestField>, String> {
@@ -2322,6 +2359,30 @@ mod tests {
         assert!(rules.iter().any(|rule| rule.contains("AtomicPrecondition")));
         assert!(rules.iter().any(|rule| rule.contains("MaxRecordBytes(65536)")));
         assert!(rules.iter().any(|rule| rule.contains("MaxCommandBytes(1056768)")));
+    }
+
+    #[test]
+    fn structured_operation_inventory_retains_rust_policy_identity() {
+        let rules = resolved_operation_rules();
+        assert!(!rules.is_empty());
+        assert!(rules.iter().any(|rule| {
+            rule.family == "objects"
+                && rule.rpc.ends_with("/CompleteMultipart")
+                && rule.validation == "parts.ordered_exact"
+                && matches!(
+                    rule.rule,
+                    OperationRule::OrderedParts {
+                        max_items: OBJECTS_MAX_MULTIPART_ITEMS,
+                        max_part_number: OBJECTS_MAX_MULTIPART_ITEMS,
+                    }
+                )
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.family == "stream"
+                && rule.validation == "records.max_bytes"
+                && matches!(rule.rule, OperationRule::MaxRecordBytes(STREAM_MAX_RECORD_BYTES))
+        }));
+        assert!(rules.iter().all(|rule| !rule.rpc.is_empty() && !rule.validation.is_empty()));
     }
 
     #[test]

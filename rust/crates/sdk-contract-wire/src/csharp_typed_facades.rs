@@ -5,11 +5,12 @@
 //! methods; conversion to protobuf happens inside the generated adapter.
 
 use std::collections::{BTreeMap, BTreeSet};
+use prost_types::field_descriptor_proto::Type as FieldType;
 
 use crate::type_policy::{
     resolved_request_fields, resolved_rpc_methods, semantic_type, PublicFieldBinding,
     PublicFieldDirection,
-    SemanticRule, WireValueKind,
+    ResolvedRequestField, SemanticRule, WireValueKind,
     PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, SEMANTIC_TYPES, WIRE_UNION_VARIANTS,
 };
 
@@ -44,7 +45,7 @@ public static class RustTypedFacadeConsumer
     {
         var bucket = objects.CreateBucket(new ObjectsCreateBucketRequest(
             "customer.inputs", new IdempotencyKeyText("retry-1")));
-        var stream = objects.GetObject(new ObjectsGetObjectRequest(new ObjectKey("artifact")));
+        var stream = objects.GetObject(new RustObjectsGetObjectRequest(null!, "", "", new ObjectKey("artifact"), null!));
         await foreach (var frame in stream.ReadAllAsync(CancellationToken.None))
         {
             _ = frame.Frame;
@@ -84,8 +85,10 @@ fn render() -> String {
     render_machine_image(&mut out);
     render_unions(&mut out);
     render_request_models(&mut out);
+    render_full_semantic_request_models(&mut out);
     render_nested_models(&mut out);
     render_object_stream(&mut out);
+    render_operation_validation(&mut out);
     render_clients(&mut out);
     out
 }
@@ -239,6 +242,220 @@ fn render_request_models(out: &mut String) {
     }
 }
 
+/// Emit complete request records for every descriptor root that carries a
+/// Rust semantic binding. These records include ordinary fields as well as
+/// refined fields, so a typed public method cannot accidentally discard
+/// required, optional, repeated, or oneof wire members.
+fn render_full_semantic_request_models(out: &mut String) {
+    let fields = resolved_request_fields().expect("Rust request descriptors must resolve");
+    let semantic_roots = fields
+        .iter()
+        .filter(|field| field.message_path == field.root_message && field.semantic_type.is_some())
+        .map(|field| (field.family.clone(), field.root_message.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut groups = BTreeMap::<(String, String), BTreeMap<String, ResolvedRequestField>>::new();
+    for field in fields {
+        if field.message_path != field.root_message
+            || !semantic_roots.contains(&(field.family.clone(), field.root_message.clone()))
+        {
+            continue;
+        }
+        let key = (field.family.clone(), field.root_message.clone());
+        let entry = groups.entry(key).or_default();
+        entry
+            .entry(field.field.clone())
+            .and_modify(|existing| {
+                if existing.semantic_type.is_none() && field.semantic_type.is_some() {
+                    *existing = field.clone();
+                }
+            })
+            .or_insert(field);
+    }
+    for ((family, root), fields) in groups {
+        let short_root = root.rsplit('.').next().unwrap_or(root.as_str());
+        let model_name = full_request_model_name(&family, short_root);
+        out.push_str(&format!("public sealed record {model_name}(\n"));
+        let fields = fields.into_values().collect::<Vec<_>>();
+        for (index, field) in fields.iter().enumerate() {
+            let comma = if index + 1 == fields.len() { "" } else { "," };
+            out.push_str(&format!(
+                "    {} {}{}\n",
+                full_csharp_field_type(field, &family),
+                upper(&field.field),
+                comma
+            ));
+        }
+        out.push_str(")\n{\n    internal ");
+        out.push_str(&format!(
+            "{} ToWire()\n    {{\n        var wire = new {}();\n",
+            qualified_fq_message(&root, &family),
+            qualified_fq_message(&root, &family)
+        ));
+        for field in &fields {
+            out.push_str(&full_csharp_wire_assignment(field, &family));
+        }
+        out.push_str("        return wire;\n    }\n}\n\n");
+    }
+}
+
+fn full_request_model_name(family: &str, message: &str) -> String {
+    format!("Rust{}{}", upper(family), message)
+}
+
+fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String {
+    let mut base = if let Some(semantic_id) = field.semantic_type.as_deref() {
+        let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
+        if semantic_id == "immutable_image" {
+            "ImmutableImage".to_owned()
+        } else {
+            csharp_type(semantic.wire_kind, semantic.rust_name)
+        }
+    } else {
+        match field.wire_type {
+            Some(kind) if kind == FieldType::String as i32 => "string".to_owned(),
+            Some(kind) if kind == FieldType::Bytes as i32 => "ByteString".to_owned(),
+            Some(kind) if kind == FieldType::Bool as i32 => "bool".to_owned(),
+            Some(kind)
+                if matches!(
+                    kind,
+                    x if x == FieldType::Uint32 as i32
+                        || x == FieldType::Fixed32 as i32
+                        || x == FieldType::Sfixed32 as i32
+                ) =>
+            {
+                "uint".to_owned()
+            }
+            Some(kind)
+                if matches!(
+                    kind,
+                    x if x == FieldType::Uint64 as i32
+                        || x == FieldType::Fixed64 as i32
+                        || x == FieldType::Sfixed64 as i32
+                ) =>
+            {
+                "ulong".to_owned()
+            }
+            Some(kind)
+                if matches!(
+                    kind,
+                    x if x == FieldType::Int32 as i32
+                        || x == FieldType::Sint32 as i32
+                ) =>
+            {
+                "int".to_owned()
+            }
+            Some(kind)
+                if matches!(
+                    kind,
+                    x if x == FieldType::Int64 as i32
+                        || x == FieldType::Sint64 as i32
+                ) =>
+            {
+                "long".to_owned()
+            }
+            Some(kind) if kind == FieldType::Float as i32 => "float".to_owned(),
+            Some(kind) if kind == FieldType::Double as i32 => "double".to_owned(),
+            Some(kind) if kind == FieldType::Enum as i32 => "int".to_owned(),
+            Some(kind)
+                if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 =>
+            {
+                qualified_fq_message(
+                    field.type_name.as_deref().unwrap_or("google.protobuf.Message"),
+                    family,
+                )
+            }
+            _ => "IMessage".to_owned(),
+        }
+    };
+    if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
+        base = format!("IReadOnlyList<{base}>");
+    } else if field.proto3_optional
+        && matches!(
+            field.wire_type,
+            Some(kind)
+                if kind != FieldType::Message as i32
+                    && kind != FieldType::Group as i32
+                    && kind != FieldType::String as i32
+                    && kind != FieldType::Bytes as i32
+        )
+    {
+        base.push('?');
+    }
+    base
+}
+
+fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> String {
+    let property = upper(&field.field);
+    if let Some(binding) = PUBLIC_FIELD_BINDINGS.iter().find(|binding| {
+        binding.family == family
+            && binding.message == field.root_message.rsplit('.').next().unwrap_or_default()
+            && binding.wire_field == field.field
+            && binding.direction == PublicFieldDirection::Request
+    }) {
+        if upper(binding.field) == property {
+            if let Some(assignment) = csharp_wire_assignment(family, binding) {
+                return assignment;
+            }
+        }
+    }
+    if let Some(semantic_id) = field.semantic_type.as_deref() {
+        let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
+        return match semantic.wire_kind {
+            WireValueKind::String
+            | WireValueKind::Bytes
+            | WireValueKind::UnsignedInteger
+            | WireValueKind::SignedInteger
+            | WireValueKind::Boolean
+            | WireValueKind::Timestamp => {
+                format!("        wire.{property} = {property}.ToWire();\n")
+            }
+            WireValueKind::Message if family == "machines" && field.field == "image" => {
+                format!("        wire.{property} = {property}.ToWire();\n")
+            }
+            WireValueKind::Message if family == "machines" => {
+                let message = match field.field.as_str() {
+                    "machine" => "MachineId",
+                    "checkpoint" => "CheckpointId",
+                    "operation" => "OperationId",
+                    "idempotency_key" => "IdempotencyKey",
+                    _ => "",
+                };
+                if message.is_empty() {
+                    format!("        wire.{property} = {property};\n")
+                } else {
+                    format!(
+                        "        wire.{property} = new Acyclic.Machines.V1.{message} {{ Value = {property}.ToWire() }};\n"
+                    )
+                }
+            }
+            WireValueKind::Message | WireValueKind::Enum | WireValueKind::Oneof => {
+                format!("        wire.{property} = {property};\n")
+            }
+        };
+    }
+    let repeated = field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32);
+    let message = matches!(
+        field.wire_type,
+        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32
+    );
+    if repeated {
+        return format!("        wire.{property}.AddRange({property});\n");
+    }
+    if message {
+        return format!(
+            "        if ({property} is not null) wire.{property} = {property};\n"
+        );
+    }
+    if field.wire_type == Some(FieldType::Enum as i32) {
+        let enum_type = qualified_fq_message(
+            field.type_name.as_deref().unwrap_or("google.protobuf.NullValue"),
+            family,
+        );
+        return format!("        wire.{property} = ({enum_type}){property};\n");
+    }
+    format!("        wire.{property} = {property};\n")
+}
+
 fn csharp_wire_assignment(module: &str, binding: &PublicFieldBinding) -> Option<String> {
     let semantic = semantic_type(binding.semantic_type).expect("Rust binding semantic type");
     let property = upper(binding.wire_field);
@@ -292,7 +509,139 @@ fn render_object_stream(out: &mut String) {
     out.push_str("public sealed class ObjectsGetObjectStream\n{\n    private readonly AsyncServerStreamingCall<Acyclic.Objects.V2.GetObjectResponse> _inner;\n    internal ObjectsGetObjectStream(AsyncServerStreamingCall<Acyclic.Objects.V2.GetObjectResponse> inner) => _inner = inner;\n    public async IAsyncEnumerable<ObjectsGetObjectResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)\n    {\n        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return ObjectsGetObjectResponse.FromWire(_inner.ResponseStream.Current);\n    }\n}\n\n");
 }
 
+fn render_operation_validation(out: &mut String) {
+    out.push_str(
+        "internal static class RustOperationValidation\n{\n    internal const int MaxMultipartParts = 10000;\n    internal const int MaxRecordBytes = 65536;\n    internal const int MaxCommandBytes = 1056768;\n\n    internal static void ValidateOrderedPartNumbers(IEnumerable<uint> partNumbers)\n    {\n        var count = 0;\n        uint previous = 0;\n        foreach (var partNumber in partNumbers)\n        {\n            if (++count > MaxMultipartParts || partNumber == 0 || partNumber > MaxMultipartParts || (count > 1 && partNumber <= previous))\n                throw new ArgumentOutOfRangeException(nameof(partNumbers), \"Rust multipart parts must be strictly increasing and within the canonical bound.\");\n            previous = partNumber;\n        }\n    }\n\n    internal static void ValidateRecordBytes(IEnumerable<ByteString> records)\n    {\n        foreach (var record in records)\n            if (record.Length > MaxRecordBytes)\n                throw new ArgumentOutOfRangeException(nameof(records), \"Rust stream record exceeds the canonical byte limit.\");\n    }\n\n    internal static void ValidateCommandSize(IMessage request)\n    {\n        if (request.CalculateSize() > MaxCommandBytes)\n            throw new ArgumentOutOfRangeException(nameof(request), \"Rust stream command exceeds the canonical byte limit.\");\n    }\n\n    internal static void RequireCapability(IReadOnlySet<string> capabilities, string capability)\n    {\n        if (!capabilities.Contains(capability))\n            throw new UnauthorizedAccessException($\"Rust operation requires capability '{capability}'.\");\n    }\n\n    // Bucket emptiness is provider state. The server remains authoritative;\n    // the generated client preserves this rule as operation metadata.\n}\n\n",
+    );
+}
+
 fn render_clients(out: &mut String) {
+    let methods = resolved_rpc_methods()
+        .expect("Rust RPC identities must resolve before C# client generation");
+    for family in [
+        "actors", "workers", "objects", "stream", "inference", "machines", "filesystem", "harness",
+    ] {
+        render_family_client(out, family, &methods);
+    }
+}
+
+fn render_family_client(
+    out: &mut String,
+    family: &str,
+    all_methods: &[crate::type_policy::ResolvedRpcMethod],
+) {
+    let methods = all_methods
+        .iter()
+        .filter(|method| method.family == family)
+        .collect::<Vec<_>>();
+    if methods.is_empty() {
+        return;
+    }
+    let mut services = BTreeSet::new();
+    for method in &methods {
+        services.insert(method.service.as_str());
+    }
+    let client_name = format!("{}Client", upper(family));
+    out.push_str(&format!("public sealed class {client_name}\n{{\n"));
+    for service in &services {
+        let service_field = lower_camel(service.trim_end_matches("Service"));
+        out.push_str(&format!(
+            "    private readonly {}.{}.{service}Client _{};\n",
+            qualified_namespace(family), service, service_field
+        ));
+    }
+    out.push_str(&format!("    public {client_name}("));
+    for (index, service) in services.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        let service_field = lower_camel(service.trim_end_matches("Service"));
+        out.push_str(&format!(
+            "{}.{}.{service}Client {}",
+            qualified_namespace(family), service, service_field
+        ));
+    }
+    out.push_str(")\n    {\n");
+    for service in &services {
+        let service_field = lower_camel(service.trim_end_matches("Service"));
+        out.push_str(&format!("        _{service_field} = {service_field};\n"));
+    }
+    out.push_str("    }\n");
+    for method in methods {
+        let service_field = lower_camel(method.service.trim_end_matches("Service"));
+        let input = qualified_fq_message(&method.input_message, family);
+        let output = qualified_fq_message(&method.output_message, family);
+        let semantic_model = resolved_request_fields()
+            .ok()
+            .and_then(|fields| {
+                let short = method.input_message.rsplit('.').next().unwrap_or_default();
+                fields.iter().any(|field| {
+                    field.family == family
+                        && field.root_message == method.input_message
+                        && field.message_path == field.root_message
+                        && field.semantic_type.is_some()
+                }).then(|| full_request_model_name(family, short))
+        });
+        let public_input = semantic_model.as_deref().unwrap_or(&input);
+        let request_expr = if semantic_model.is_some() {
+            "request.ToWire()"
+        } else {
+            "request"
+        };
+        let validation_request_expr = if semantic_model.is_some() {
+            "request.ToWire()"
+        } else {
+            "request"
+        };
+        let args = "Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default";
+        match (family, method.method.as_str()) {
+            ("objects", "CreateBucket") => out.push_str(&format!(
+                "    public {output} CreateBucket(ObjectsCreateBucketRequest request, {args}) => _{service_field}.CreateBucket(request.ToWire(), headers, deadline, cancellationToken);\n"
+            )),
+            ("objects", "GetObject") => out.push_str(&format!(
+                "    public ObjectsGetObjectStream GetObject({public_input} request, {args}) => new(_{service_field}.GetObject({request_expr}, headers, deadline, cancellationToken));\n"
+            )),
+            ("objects", "CompleteMultipart") => out.push_str(&format!(
+                "    public {output} CompleteMultipart({public_input} request, {args}) {{ RustOperationValidation.ValidateOrderedPartNumbers(System.Linq.Enumerable.Select(request.Parts, part => part.PartNumber)); return _{service_field}.CompleteMultipart({request_expr}, headers, deadline, cancellationToken); }}\n"
+            )),
+            ("stream", "Append") => out.push_str(&format!(
+                "    public {output} Append({public_input} request, {args}) {{ RustOperationValidation.ValidateRecordBytes(request.Records); return _{service_field}.Append({request_expr}, headers, deadline, cancellationToken); }}\n"
+            )),
+            ("stream", "Commit") => out.push_str(&format!(
+                "    public {output} Commit({public_input} request, {args}) {{ RustOperationValidation.ValidateCommandSize({validation_request_expr}); return _{service_field}.Commit({request_expr}, headers, deadline, cancellationToken); }}\n"
+            )),
+            ("inference", "Create") => out.push_str(&format!(
+                "    public {output} Create(InferenceCreateEvaluationRequest request, {args}) => _{service_field}.Create(request.ToWire(), headers, deadline, cancellationToken);\n"
+            )),
+            ("machines", "QualifyImage") => out.push_str(&format!(
+                "    public {output} QualifyImage({public_input} request, {args}) => _{service_field}.QualifyImage({request_expr}, headers, deadline, cancellationToken);\n"
+            )),
+            ("machines", "Create") => out.push_str(&format!(
+                "    public {output} Create({public_input} request, {args}) => _{service_field}.Create({request_expr}, headers, deadline, cancellationToken);\n"
+            )),
+            _ if method.client_streaming && method.server_streaming => out.push_str(&format!(
+                "    public AsyncDuplexStreamingCall<{input}, {output}> {}({args}) => _{service_field}.{}(headers, deadline, cancellationToken);\n",
+                method.method, method.method
+            )),
+            _ if method.client_streaming => out.push_str(&format!(
+                "    public AsyncClientStreamingCall<{input}, {output}> {}({args}) => _{service_field}.{}(headers, deadline, cancellationToken);\n",
+                method.method, method.method
+            )),
+            _ if method.server_streaming => out.push_str(&format!(
+                "    public AsyncServerStreamingCall<{output}> {}({public_input} request, {args}) => _{service_field}.{}({request_expr}, headers, deadline, cancellationToken);\n",
+                method.method, method.method
+            )),
+            _ => out.push_str(&format!(
+                "    public {output} {}({public_input} request, {args}) => _{service_field}.{}({request_expr}, headers, deadline, cancellationToken);\n",
+                method.method, method.method,
+            )),
+        }
+    }
+    out.push_str("}\n\n");
+}
+
+/*
+fn render_clients_legacy(out: &mut String) {
     out.push_str("public sealed class ObjectsClient\n{\n    private readonly Acyclic.Objects.V2.BucketsService.BucketsServiceClient _buckets;\n    private readonly Acyclic.Objects.V2.ObjectsService.ObjectsServiceClient _objects;\n    public ObjectsClient(Acyclic.Objects.V2.BucketsService.BucketsServiceClient buckets, Acyclic.Objects.V2.ObjectsService.ObjectsServiceClient objects) => (_buckets, _objects) = (buckets, objects);\n    public Acyclic.Objects.V2.Bucket CreateBucket(ObjectsCreateBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.CreateBucket(request.ToWire(), headers, deadline, cancellationToken);\n    public ObjectsGetObjectStream GetObject(ObjectsGetObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_objects.GetObject(request.ToWire(), headers, deadline, cancellationToken));\n}\n\n");
     out.push_str("public sealed class InferenceClient\n{\n    private readonly Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient _evaluations;\n    public InferenceClient(Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient evaluations) => _evaluations = evaluations;\n    public Inference.Customer.V1.EvaluationView CreateEvaluation(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Create(request.ToWire(), headers, deadline, cancellationToken);\n}\n\n");
     render_machines_client(out);
@@ -344,6 +693,8 @@ fn render_machines_client(out: &mut String) {
     out.push_str("}\n\n");
 }
 
+*/
+
 fn csharp_type(kind: WireValueKind, rust_name: &str) -> String {
     match kind {
         WireValueKind::String | WireValueKind::Message => rust_name.to_owned(),
@@ -366,9 +717,63 @@ fn qualified_message(module: &str, message: &str) -> String {
         "machines" => "Acyclic.Machines.V1",
         "filesystem" => "Acyclic.Filesystem.V2",
         "harness" => "Acyclic.Harness.V2",
+        "protocol" => "Acyclic.Protocol.V1",
+        "transport" => "Acyclic.Transport.V1",
         _ => "Acyclic",
     };
     format!("{ns}.{message}")
+}
+
+fn qualified_namespace(module: &str) -> &'static str {
+    match module {
+        "actors" => "Acyclic.Actors.V1",
+        "workers" => "Acyclic.Workers.V1",
+        "stream" => "Acyclic.Stream.V2",
+        "objects" => "Acyclic.Objects.V2",
+        "inference" => "Inference.Customer.V1",
+        "machines" => "Acyclic.Machines.V1",
+        "filesystem" => "Acyclic.Filesystem.V2",
+        "harness" => "Acyclic.Harness.V2",
+        "protocol" => "Acyclic.Protocol.V1",
+        "transport" => "Acyclic.Transport.V1",
+        _ => "Acyclic",
+    }
+}
+
+fn qualified_fq_message(name: &str, fallback_module: &str) -> String {
+    let trimmed = name.trim_start_matches('.');
+    let module = if trimmed.starts_with("acyclic.actors.v1.") {
+        "actors"
+    } else if trimmed.starts_with("acyclic.workers.v1.") {
+        "workers"
+    } else if trimmed.starts_with("acyclic.objects.v2.") {
+        "objects"
+    } else if trimmed.starts_with("acyclic.stream.v2.") {
+        "stream"
+    } else if trimmed.starts_with("acyclic.machines.v1.") {
+        "machines"
+    } else if trimmed.starts_with("acyclic.filesystem.v2.") {
+        "filesystem"
+    } else if trimmed.starts_with("acyclic.harness.v2.") {
+        "harness"
+    } else if trimmed.starts_with("inference.customer.v1.") {
+        "inference"
+    } else if trimmed.starts_with("acyclic.protocol.v1.") {
+        "protocol"
+    } else if trimmed.starts_with("acyclic.transport.v1.") {
+        "transport"
+    } else {
+        fallback_module
+    };
+    qualified_message(module, trimmed.rsplit('.').next().unwrap_or(trimmed))
+}
+
+fn lower_camel(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    first.to_ascii_lowercase().to_string() + chars.as_str()
 }
 
 fn upper(value: &str) -> String {
@@ -507,6 +912,66 @@ mod tests {
                 "missing Machines RPC {}",
                 method.method
             );
+        }
+    }
+
+    #[test]
+    fn csharp_clients_cover_every_rust_owned_family_and_rpc() {
+        let (_, source) = generate_csharp_typed_facade();
+        let methods = crate::type_policy::resolved_rpc_methods()
+            .expect("Rust RPC identities must resolve");
+        assert_eq!(methods.len(), 106);
+        for family in [
+            "actors", "workers", "objects", "stream", "inference", "machines", "filesystem",
+            "harness",
+        ] {
+            assert!(source.contains(&format!("public sealed class {}Client", super::upper(family))));
+        }
+        for method in methods {
+            assert!(
+                source.contains(&format!(" {}(", method.method)),
+                "missing generated C# RPC method {}",
+                method.rpc
+            );
+        }
+    }
+
+    #[test]
+    fn csharp_operation_rules_are_executable_or_explicitly_provider_enforced() {
+        let (_, source) = generate_csharp_typed_facade();
+        assert!(source.contains("ValidateOrderedPartNumbers"));
+        assert!(source.contains("ValidateRecordBytes"));
+        assert!(source.contains("ValidateCommandSize"));
+        assert!(source.contains("CompleteMultipart"));
+        assert!(source.contains("Rust operation requires capability"));
+        assert!(source.contains("Bucket emptiness is provider state"));
+    }
+
+    #[test]
+    fn csharp_semantic_models_retain_all_top_level_request_fields() {
+        let (_, source) = generate_csharp_typed_facade();
+        let fields = crate::type_policy::resolved_request_fields()
+            .expect("Rust request descriptors must resolve");
+        let roots = fields
+            .iter()
+            .filter(|field| field.message_path == field.root_message && field.semantic_type.is_some())
+            .map(|field| (field.family.as_str(), field.root_message.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        for (family, root) in roots {
+            let message = root.rsplit('.').next().unwrap_or(root);
+            let model = format!("Rust{}{}", super::upper(family), message);
+            assert!(source.contains(&format!("record {model}")), "missing {model}");
+            for field in fields.iter().filter(|field| {
+                field.family == family
+                    && field.root_message == root
+                    && field.message_path == field.root_message
+            }) {
+                assert!(
+                    source.contains(&format!(" {}", super::upper(&field.field))),
+                    "{model} dropped {}",
+                    field.field
+                );
+            }
         }
     }
 }
