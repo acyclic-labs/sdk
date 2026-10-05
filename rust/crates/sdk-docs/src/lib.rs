@@ -1405,7 +1405,7 @@ fn collect_generation_input_paths(
             .is_some_and(|name| {
                 matches!(
                     name,
-                    ".git" | "node_modules" | ".toolchains" | "cargo-home-private"
+                    ".git" | "node_modules" | ".toolchains" | "target" | "cargo-home-private"
                 )
             })
     {
@@ -7230,7 +7230,7 @@ mod tests {
             .input_closure
             .iter()
             .any(|input| input.path == "guide.md"));
-        assert!(before
+        assert!(!before
             .input_closure
             .iter()
             .any(|input| input.path == "target/authoritative-source.txt"));
