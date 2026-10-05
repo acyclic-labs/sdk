@@ -23,7 +23,28 @@ foreach ($targetName in $targets) {
   if (-not $targetMap.ContainsKey($targetName)) {
     throw "Unsupported .NET native target '$targetName'. Supported targets: $($targetMap.Keys -join ', ')"
   }
-  & cargo build --manifest-path (Join-Path $root "Cargo.toml") -p sdk-dotnet-transport --release --target $targetName --target-dir $targetDir
+  $savedRustFlags = $env:RUSTFLAGS
+  $savedLinkerVariable = $null
+  $savedLinkerValue = $null
+  try {
+    if ($targetName -like "*-unknown-linux-musl") {
+      # musl's default Rust target enables a static CRT, which suppresses
+      # cdylib output. .NET RID assets must be dynamically loadable, so use
+      # the pinned musl linker with a dynamic musl CRT exactly as the embedded
+      # producer does.
+      $env:RUSTFLAGS = (($savedRustFlags + " -C target-feature=-crt-static").Trim())
+      $targetEnv = $targetName.ToUpperInvariant().Replace('-', '_')
+      $savedLinkerVariable = "CARGO_TARGET_${targetEnv}_LINKER"
+      $savedLinkerValue = [Environment]::GetEnvironmentVariable($savedLinkerVariable, "Process")
+      [Environment]::SetEnvironmentVariable($savedLinkerVariable, "musl-gcc", "Process")
+    }
+    & cargo build --manifest-path (Join-Path $root "Cargo.toml") -p sdk-dotnet-transport --release --target $targetName --target-dir $targetDir
+  } finally {
+    $env:RUSTFLAGS = $savedRustFlags
+    if ($savedLinkerVariable) {
+      [Environment]::SetEnvironmentVariable($savedLinkerVariable, $savedLinkerValue, "Process")
+    }
+  }
   if ($LASTEXITCODE -ne 0) { throw "Rust native .NET transport build failed for $targetName : $LASTEXITCODE" }
   $spec = $targetMap[$targetName]
   $binary = Join-Path $targetDir "$targetName/release/$($spec.File)"
