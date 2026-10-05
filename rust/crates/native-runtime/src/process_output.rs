@@ -8,7 +8,7 @@
 #![allow(unsafe_code, reason = "native pipe and event APIs require raw handles")]
 
 use std::{
-    io::{self, Read},
+    io,
     sync::mpsc::{Receiver, RecvTimeoutError},
     thread::JoinHandle,
     time::Duration,
@@ -101,7 +101,7 @@ impl Drop for OutputReader {
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub fn spawn_output_reader<R, F>(reader: R, mut consume: F) -> io::Result<OutputReader>
 where
-    R: Read + std::os::fd::AsRawFd + Send + 'static,
+    R: std::io::Read + std::os::fd::AsRawFd + Send + 'static,
     F: FnMut(&[u8]) -> bool + Send + 'static,
 {
     unix::spawn(reader, move |chunk| consume(chunk))
@@ -128,7 +128,7 @@ where
 #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
 pub fn spawn_output_reader<R, F>(reader: R, mut consume: F) -> io::Result<OutputReader>
 where
-    R: Read + Send + 'static,
+    R: std::io::Read + Send + 'static,
     F: FnMut(&[u8]) -> bool + Send + 'static,
 {
     let _ = (reader, &mut consume);
