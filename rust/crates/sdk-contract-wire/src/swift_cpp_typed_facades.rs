@@ -566,9 +566,7 @@ fn ordinary_descriptor_fields(name: &str) -> Vec<crate::type_policy::ResolvedReq
         .expect("Rust request descriptors must resolve")
         .into_iter()
         .chain(
-            resolved_response_fields()
-                .expect("Rust response descriptors must resolve")
-                .into_iter(),
+            resolved_response_fields().expect("Rust response descriptors must resolve"),
         )
     {
         if descriptor_type_name(&field).as_deref() == Some(name)
@@ -607,10 +605,10 @@ fn semantic_nested_descriptor_names(kind: FieldType) -> BTreeSet<String> {
         .filter(|item| item.wire_kind == WireValueKind::Message)
     {
         for field in semantic_nested_fields(item.rust_name) {
-            if field.wire_type == Some(kind as i32) {
-                if let Some(name) = descriptor_type_name(&field) {
-                    names.insert(name);
-                }
+            if field.wire_type == Some(kind as i32)
+                && let Some(name) = descriptor_type_name(&field)
+            {
+                names.insert(name);
             }
         }
     }
@@ -779,14 +777,13 @@ fn swift_field_cast(field: &crate::type_policy::ResolvedRequestField) -> String 
     // Dictionaries carry the protobuf wire holder.  Public fields may use a
     // named descriptor wrapper, so decoding must cast the raw holder before
     // constructing that wrapper.
-    let base = match field.wire_type {
+    match field.wire_type {
         Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
             "RustWireMessage".to_owned()
         }
         Some(kind) if kind == FieldType::Enum as i32 => "RustWireEnum".to_owned(),
         _ => swift_wire_type(field),
-    };
-    base
+    }
 }
 
 fn swift_wire_cast(kind: WireValueKind) -> &'static str {
