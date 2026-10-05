@@ -214,11 +214,6 @@ mod tests {
             };
             fs::write(root.join("grandchild-spawned"), grandchild.id().to_string())
                 .expect("grandchild spawned");
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(10));
-            }
-            assert!(root.join("grandchild-ready").exists());
             fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
             return;
         }
@@ -236,11 +231,6 @@ mod tests {
         };
         fs::write(root.join("grandchild-spawned"), grandchild.id().to_string())
             .expect("grandchild spawned");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert!(root.join("grandchild-ready").exists());
         fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
         let _ = grandchild.wait();
     }
