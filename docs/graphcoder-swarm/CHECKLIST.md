@@ -8,9 +8,9 @@ do not substitute for full acceptance gates.
 - [x] Shared exact request and manifest admission matches frozen native/WASM vectors.
 - [ ] Immutable completed prefixes through production recursive forks and cold restart on current source.
 - [x] Durable single-agent local storage composition and replay.
-- [ ] Complete batch publication admission and safe reconciliation (nonblocking source ebd74c762 faults pass 2/6; four failures remain under repair).
+- [ ] Complete batch publication admission and safe reconciliation (source 7fb3b1e99 faults pass 2/6; immutable-boundary recovery repair is integrated but unqualified).
 - [ ] Exact authoritative exchange publication and child inherited binding on current source.
-- [ ] Native sibling fork/provider-prefix scenario and stale-boundary refusal on current source (focused recursive/default communication scenarios pass at ebd74c762; full concurrent and fault qualification remains open).
+- [ ] Native sibling fork/provider-prefix scenario and stale-boundary refusal on current source (source 7fb3b1e99 live two-child/grandchild handshake, actual provider-prefix assertions and restart replay pass; full fault qualification remains open).
 - [ ] Runtime model-tool provenance and disjoint completed-batch publication identity qualified through current recursive execution.
 - [ ] Production fork intent tools and durable child task activation.
 - [ ] Session-wide active/total/depth/step/output/time budget admission.
@@ -33,4 +33,8 @@ Latest retained checkpoints: source 822294d51 passes 408 native regression cases
 source a473a63dd passes 376 Harness and 45 native-runtime cases, with one existing
 native-runtime benchmark ignored. The nonblocking scheduler at ebd74c762 passes
 380 Harness cases and two of four model-swarm scenarios, but fails two model-swarm
-and four of six fault scenarios. These receipts do not qualify the full matrix.
+and four of six fault scenarios. Source 7fb3b1e99 passes 389 Harness cases and
+three of five model-swarm scenarios, including the live overlapping-child and
+recursive-grandchild handshake. It still fails two swarm and four fault cases.
+Later recovery and fixture repairs require a new native run. These receipts do
+not qualify the full matrix.
