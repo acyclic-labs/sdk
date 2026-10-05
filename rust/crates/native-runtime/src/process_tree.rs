@@ -151,12 +151,30 @@ mod platform {
 mod tests {
     use super::ProcessTree;
     use std::fs;
+    use std::path::Path;
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
 
     const MODE: &str = "ACYCLIC_PROCESS_TREE_TEST_MODE";
     const ROOT: &str = "ACYCLIC_PROCESS_TREE_TEST_ROOT";
+
+    fn helper_command(mode: &str, root: &Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args(["--exact", "process_tree::tests::process_tree_helper"])
+            .env(MODE, mode)
+            .env(ROOT, root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        command
+    }
 
     #[test]
     fn process_tree_helper() {
@@ -171,14 +189,7 @@ mod tests {
             return;
         }
         if mode == "parent-exits" {
-            let mut grandchild = Command::new(std::env::current_exe().expect("test executable"));
-            grandchild
-                .args(["--exact", "process_tree::tests::process_tree_helper"])
-                .env(MODE, "grandchild")
-                .env(ROOT, &root)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+            let mut grandchild = helper_command("grandchild", &root);
             let _grandchild = grandchild.spawn().expect("spawn grandchild");
             let deadline = Instant::now() + Duration::from_secs(5);
             while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
@@ -189,14 +200,7 @@ mod tests {
             return;
         }
         assert_eq!(mode, "child");
-        let mut grandchild = Command::new(std::env::current_exe().expect("test executable"));
-        grandchild
-            .args(["--exact", "process_tree::tests::process_tree_helper"])
-            .env(MODE, "grandchild")
-            .env(ROOT, &root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        let mut grandchild = helper_command("grandchild", &root);
         let mut grandchild = grandchild.spawn().expect("spawn grandchild");
         let deadline = Instant::now() + Duration::from_secs(5);
         while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
@@ -210,14 +214,7 @@ mod tests {
     #[test]
     fn termination_contains_descendants() {
         let temporary = tempfile::tempdir().expect("temporary process-tree directory");
-        let mut command = Command::new(std::env::current_exe().expect("test executable"));
-        command
-            .args(["--exact", "process_tree::tests::process_tree_helper"])
-            .env(MODE, "child")
-            .env(ROOT, temporary.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        let mut command = helper_command("child", temporary.path());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn process tree");
         let deadline = Instant::now() + Duration::from_secs(5);
         while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
@@ -232,14 +229,7 @@ mod tests {
     #[test]
     fn drop_contains_descendants_after_direct_child_exit() {
         let temporary = tempfile::tempdir().expect("temporary process-tree directory");
-        let mut command = Command::new(std::env::current_exe().expect("test executable"));
-        command
-            .args(["--exact", "process_tree::tests::process_tree_helper"])
-            .env(MODE, "parent-exits")
-            .env(ROOT, temporary.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        let mut command = helper_command("parent-exits", temporary.path());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn process tree");
         let deadline = Instant::now() + Duration::from_secs(5);
         while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
@@ -279,7 +269,8 @@ mod platform {
         SetInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread,
+        THREAD_SUSPEND_RESUME,
     };
 
     pub(super) struct Guard {
@@ -289,7 +280,10 @@ mod platform {
 
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Guard)> {
         let mut guard = Guard::new()?;
-        command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
+        // Keep the process tree hidden as well as contained. Command flags
+        // replace the caller's existing flags, so include CREATE_NO_WINDOW
+        // here instead of relying on the root command to set it.
+        command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
         let mut child = command.spawn()?;
         // SAFETY: the Job and Child each own live handles for the duration of
         // this call. The suspended child cannot create descendants before it
