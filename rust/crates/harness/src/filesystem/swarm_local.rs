@@ -67,7 +67,6 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
-    io::Write,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak},
@@ -123,63 +122,20 @@ fn native_filesystem_key(label: impl AsRef<str>) -> acyclic_fs::IdempotencyKey {
     acyclic_fs::IdempotencyKey::from_bytes(bytes)
 }
 
-/// Opens the local host operator issuer without asking an application to
-/// assemble credentials. The key is retained in a private runtime file and
-/// is never copied into model bindings or durable model-visible content.
-fn local_operator_issuer(root: &Path) -> Result<AuthorityIssuer> {
-    let secret_path = root.join(".local-operator-issuer");
-    let secret = match std::fs::read(&secret_path) {
-        Ok(bytes) => {
-            let secret: [u8; 32] = bytes.try_into().map_err(|_| {
-                Error::Conflict("local operator issuer secret has invalid length".into())
-            })?;
-            if secret == [0; 32] {
-                return Err(Error::Conflict(
-                    "local operator issuer secret cannot be zero".into(),
-                ));
-            }
-            secret
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let nonce = OperationId::new().into_bytes();
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(b"acyclic.local-operator-issuer.v1\0");
-            hasher.update(root.to_string_lossy().as_bytes());
-            hasher.update(&nonce);
-            let generated = *hasher.finalize().as_bytes();
-            let mut file = std::fs::OpenOptions::new();
-            file.write(true).create_new(true);
-            match file.open(&secret_path) {
-                Ok(mut output) => {
-                    output
-                        .write_all(&generated)
-                        .map_err(|error| Error::Storage(error.to_string()))?;
-                    output
-                        .sync_all()
-                        .map_err(|error| Error::Storage(error.to_string()))?;
-                    generated
-                }
-                Err(race) if race.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let bytes = std::fs::read(&secret_path)
-                        .map_err(|read_error| Error::Storage(read_error.to_string()))?;
-                    let secret: [u8; 32] = bytes.try_into().map_err(|_| {
-                        Error::Conflict("local operator issuer secret has invalid length".into())
-                    })?;
-                    if secret == [0; 32] {
-                        return Err(Error::Conflict(
-                            "local operator issuer secret cannot be zero".into(),
-                        ));
-                    }
-                    secret
-                }
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            }
-        }
-        Err(error) => return Err(Error::Storage(error.to_string())),
-    };
+/// Derives the local operator issuer from the durable session descriptor's
+/// host-only signing key. The derived domain is separate from conversation
+/// signatures and never enters model-visible bindings or filesystem grants.
+fn local_operator_issuer(secret: [u8; 32]) -> Result<AuthorityIssuer> {
+    if secret == [0; 32] {
+        return Err(Error::Conflict(
+            "local operator issuer secret cannot be zero".into(),
+        ));
+    }
+    let mut hasher = blake3::Hasher::new_keyed(&secret);
+    hasher.update(b"acyclic.local-swarm.operator-issuer.v1\0");
     Ok(AuthorityIssuer::new(
         "local-swarm-operator",
-        secret,
+        *hasher.finalize().as_bytes(),
         Authority {
             kind: AggregateKind::Conversation,
             id: "local-operator".into(),
@@ -3768,7 +3724,7 @@ impl PersistentLocalSwarm {
     /// Opens the shared local composition with owner-authenticated recursive
     /// filesystem support. The caller supplies only the model/provider
     /// boundary; provider caches, project ownership, the durable fork
-    /// resolver, and its persisted issuer secret stay in Harness.
+    /// resolver, and its host-only operator authority stay in Harness.
     pub async fn open_shared_with_model_and_recursive_filesystem(
         root: impl AsRef<Path>,
         model: Model,
@@ -3817,7 +3773,26 @@ impl PersistentLocalSwarm {
             ));
         }
         if bindings.operator_issuer.is_none() {
-            bindings = bindings.with_operator_issuer(local_operator_issuer(&root)?);
+            // Establish the durable session descriptor first. Its signing
+            // material is host-only and is reused through a separated issuer
+            // domain; no second credential file or mutable secret race is
+            // needed for local composition.
+            let descriptor_harness =
+                PersistentLocalHarness::open_with_tools_and_project_on_providers(
+                    root.clone(),
+                    model.clone(),
+                    provider.clone(),
+                    limits,
+                    LocalHarnessTools::new(),
+                    Some(project.clone()),
+                    host.clone(),
+                    stream.clone(),
+                    stream_provider.clone(),
+                )
+                .await?;
+            bindings = bindings.with_operator_issuer(local_operator_issuer(
+                descriptor_harness.signing_key(),
+            )?);
         }
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         if let Some(checkout_path) = bindings.native_checkout_path.take() {
@@ -7803,58 +7778,14 @@ mod tests {
     };
 
     #[test]
-    fn local_operator_issuer_is_persistent_create_once_and_fail_closed() -> Result<()> {
-        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        let first = local_operator_issuer(root.path())?;
-        let second = local_operator_issuer(root.path())?;
+    fn local_operator_issuer_reuses_descriptor_key_and_fail_closes_zero() -> Result<()> {
+        let first = local_operator_issuer([7; 32])?;
+        let second = local_operator_issuer([7; 32])?;
         assert_eq!(first.verifier(), second.verifier());
-        let secret = root.path().join(".local-operator-issuer");
-        assert_eq!(
-            std::fs::metadata(&secret)
-                .map_err(|error| Error::Storage(error.to_string()))?
-                .len(),
-            32
-        );
-
-        std::fs::write(&secret, [1_u8; 31])
-            .map_err(|error| Error::Storage(error.to_string()))?;
         assert!(matches!(
-            local_operator_issuer(root.path()),
-            Err(Error::Conflict(message)) if message.contains("invalid length")
-        ));
-
-        std::fs::write(&secret, [0_u8; 32])
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        assert!(matches!(
-            local_operator_issuer(root.path()),
+            local_operator_issuer([0; 32]),
             Err(Error::Conflict(message)) if message.contains("zero")
         ));
-        Ok(())
-    }
-
-    #[test]
-    fn local_operator_issuer_reopen_race_keeps_one_identity() -> Result<()> {
-        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        let root = Arc::new(root);
-        let mut workers = Vec::new();
-        for _ in 0..8 {
-            let root = root.clone();
-            workers.push(std::thread::spawn(move || local_operator_issuer(root.path())));
-        }
-        let issuers = workers
-            .into_iter()
-            .map(|worker| worker.join().expect("issuer opener must not panic"))
-            .collect::<Result<Vec<_>>>()?;
-        assert!(!issuers.is_empty());
-        for issuer in &issuers[1..] {
-            assert_eq!(issuers[0].verifier(), issuer.verifier());
-        }
-        assert_eq!(
-            std::fs::metadata(root.path().join(".local-operator-issuer"))
-                .map_err(|error| Error::Storage(error.to_string()))?
-                .len(),
-            32
-        );
         Ok(())
     }
 
@@ -9922,19 +9853,6 @@ mod tests {
         assert_eq!(reopened.open_session(task).await?.signing_key(), first_key);
         assert!(reopened.bindings.filesystem_fork_resolver.is_some());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
-        drop(reopened);
-        std::fs::write(root.path().join(".local-operator-issuer"), [9_u8; 32])
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        let error = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            root.path(),
-            model,
-            provider,
-            Limits::default(),
-        )
-        .await
-        .err()
-        .ok_or_else(|| Error::Invalid("a changed host issuer reopened a pinned swarm".into()))?;
-        assert!(matches!(error, Error::Unauthorized(message) if message.contains("differs from pinned")));
         Ok(())
     }
 
