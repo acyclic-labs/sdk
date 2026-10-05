@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "source": "5c757f5b0ff6e6a77279cfe1c1b10c2cfdc0cc69",
+  "suite_descriptors": [
+    {
+      "path": "rust/crates/harness/tests/local_model_swarm.rs",
+      "sha256": "6fb78325c9316fe157b14afba5858388274d875390bd36354c5799ddcff75292"
+    },
+    {
+      "path": "rust/crates/harness/tests/local_swarm_faults.rs",
+      "sha256": "65596925846009e7767cf2673704e39c8a03ef3953f51140115b4c6f575a4474"
+    },
+    {
+      "path": "rust/crates/harness/tests/model_input_conformance_v3.rs",
+      "sha256": "af5eced283e594fff54f0c55c722f16e19dc716c3d0f1599b7fb7dc497a149ef"
+    },
+    {
+      "path": "rust/crates/harness/tests/model_input_rejection_conformance_v3.rs",
+      "sha256": "3432902d90cfb48dd5871157ce7610182ddbd9154092bf3647a184230bbd1dcd"
+    },
+    {
+      "path": "rust/crates/harness/tests/persistent_model_input_admission_v3.rs",
+      "sha256": "0a6b7f27b816623348e474619bdc4380179988c5111cfb8ba19cf9d37a8d1f3b"
+    }
+  ],
+  "limitations": [
+    "Prepared activation owns its live gate and frozen bundle, but publisher still awaits each child turn. Concurrent live scheduling remains unmet.",
+    "Session budget journal is not yet wired into local fork allocation or provider usage settlement.",
+    "Earlier fault preparation watchdog failures remain unresolved; this passing run does not prove all timing failures fixed.",
+    "Installed terminal, approvals, root writeback, bindings and full matrix remain unqualified."
+  ],
+  "preserved_failures": [
+    {
+      "repair": "Box preparation future and prepared activation payload; normal Windows test stack retained",
+      "source": "7b01527f5",
+      "artifacts": [
+        {
+          "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\7b01527f5\\prepared-child-stack-failure\\local_model_swarm-2a4724405f2fc4cd.exe",
+          "sha256": "543f855eb57534020fb5090f6086b6b92fc1c4d376cd37fa561792ae2a7945c5"
+        },
+        {
+          "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\7b01527f5\\prepared-child-stack-failure\\prepared-child-turn-native.log",
+          "sha256": "21f557fa8f9c39534044942083ad46d26e4b98fb1bbbc4ec4190f3abf325a04e"
+        },
+        {
+          "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\7b01527f5\\prepared-child-stack-failure\\source.zip",
+          "sha256": "89d7e5d71ed7a58316d273f422f1fda166b9227fe9d4eb8b4dbd4336eaa537ce"
+        }
+      ],
+      "outcome": "STATUS_STACK_OVERFLOW in recursive default test; fault suite not run"
+    },
+    {
+      "repair": "Same source retried with one build job; original compiler log retained",
+      "source": "5c757f5b0ff6e6a77279cfe1c1b10c2cfdc0cc69",
+      "outcome": "Input suite compilation failed allocating memory; no input tests executed"
+    }
+  ],
+  "input": {
+    "build_jobs": 1,
+    "rejection_passed": 3,
+    "frozen_passed": 3,
+    "failed": 0,
+    "ignored": 0,
+    "exit": 0,
+    "persistent_passed": 7
+  },
+  "features": [
+    "test-support",
+    "native-process-tree"
+  ],
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\local_model_swarm-2a4724405f2fc4cd.exe",
+      "sha256": "cd02d2626fad649e088e249d657725dc323afa788f515920bccc05a77df17a7f"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\local_swarm_faults-f5ff69a39607b16d.exe",
+      "sha256": "a92fb9938d02a23fe7f7b0e2d73320433468296046b6b1c033ccf7870514c4d1"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\model_input_conformance_v3-7bfbe7b944d2344a.exe",
+      "sha256": "f23755c0c0e947826a44e202df224269864f212482ada2170a2fc749ed87e89a"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\model_input_rejection_conformance_v3-e8b73bd7bf2435a4.exe",
+      "sha256": "8b95f8cbe45695dc3bd805b14aa29bbd47d876bb5d01c65cfb7c7af8c8df9730"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\persistent_model_input_admission_v3-f60cb1ad465a4372.exe",
+      "sha256": "04321e17d427732b6cfbb8b44ffe5c31add1a0cb2d35af13bda565d072ae8988"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\prepared-child-input-native.log",
+      "sha256": "e285a45608936f95a39adecb98443038f202bf45b1c205b396309654484a63bd"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\prepared-child-input-single-job-native.log",
+      "sha256": "ea404de26f0b3d76c064768b7bae1d69aa68ca5d94ff098d4e7a1f1b95f43dfa"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\prepared-child-turn-boxed-native.log",
+      "sha256": "afd1fc1c99c722c24f4f791f8a910cdd855f09ac88ac69eca76028c1fae4bb57"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\5c757f5b0\\prepared-child-turn\\source.zip",
+      "sha256": "f76e50c8cd7fadf390b1423f8ade369f45f50c2834b381390c911088767964ca"
+    }
+  ],
+  "runtime": {
+    "faults_passed": 6,
+    "exit": 0,
+    "failed": 0,
+    "ignored": 0,
+    "recursive_passed": 4
+  },
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef"
+}
