@@ -32,12 +32,17 @@ do not substitute for full acceptance gates.
 Current retained evidence is inside this checkout's ignored
 `target/graphcoder-qualification/evidence` directory. Source 75e6fe0b7 passes
 seven bounded formal models, sixteen expected negative controls, and trace
-fixtures; the real runtime trace gate remains open. Native recursive composition
-fails with stack overflow at both 75e6fe0b7 and f1981a6ee. The latter trace
-localizes the failure to parent session opening during physical fork resolution.
-Both failing executables, source archives, and logs are retained with digests in
-the corresponding worktree checkpoint receipts. These are diagnosis evidence,
-not completion of the recursive swarm gate.
+fixtures; the real runtime trace gate remains open. Source a936347ee passes all
+24 selected model-input library tests and the strict typed-file/orphan-context
+test. Those focused passes do not qualify the entire matrix. Source 88b88436e
+still fails native recursive composition after boundary verification and explicit
+cleanup; the caller's boundary clone remains to be distinguished from return.
+Source 4cab6b5a1 integrates activation acknowledgement recovery, measured budgets,
+and communication recovery, but fails compilation with fourteen errors and
+executes zero tests. Repair and qualification of that integration are open.
+Fresh source archives, logs, exit records, and binaries for suites that actually
+executed are retained in the checkout, with digests in the corresponding
+checkpoint receipts. They do not establish final qualification.
 
 Historical checkpoints below describe observed results. Their external
 `D:\graphcoder-builds` artifacts were removed; consult
@@ -55,6 +60,7 @@ Source b78db8259 compiles and passes 390 Harness library cases, but fails six
 library cases, all five model-swarm cases, and all six fault cases. The newly
 integrated owner-admission check rejects the default root composition before
 provider dispatch; initialization and wait-admission races also remain open.
-Source, logs, and all three native binaries are retained with digests in
-checkpoint-canonical-admission-native-2026-10-05.json. Earlier passing receipts
-do not qualify this source or the full matrix.
+The historical source, logs, and native binaries were indexed by
+checkpoint-canonical-admission-native-2026-10-05.json before the external artifact
+loss. That index does not prove the lost files remain available. Earlier passing
+receipts do not qualify the current source or the full matrix.
