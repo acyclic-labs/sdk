@@ -896,7 +896,7 @@ pub struct UsageIn {
     clippy::too_many_lines,
     reason = "the public WASM operation dispatch is the stable ABI route table"
 )]
-pub async fn dispatch<P: MachinesProvider>(
+pub async fn dispatch<P: MachinesProvider + ?Sized>(
     provider: &P,
     operation_name: &str,
     payload: JsValue,
