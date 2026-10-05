@@ -669,11 +669,21 @@ async fn prepared_batch_failure_retries_without_duplicate_child_dispatch() -> Re
     for child in [child_a, child_b] {
         assert!(swarm.published_seed(task(child)).await.is_ok());
         assert!(swarm.prepared_report(task(child)).await.is_ok());
-        assert_ne!(
-            swarm.session(task(child)).await?.phase,
-            LocalSessionPhase::Completed
-        );
     }
+    assert_eq!(
+        swarm.session(task(child_a)).await?.phase,
+        LocalSessionPhase::Activating,
+        "child A provider disconnect retains its uncertain activation claim"
+    );
+    assert_eq!(
+        swarm.session(task(child_b)).await?.phase,
+        LocalSessionPhase::Completed,
+        "sibling B completes independently while child A is uncertain"
+    );
+    assert_eq!(
+        swarm.outcome(task(child_b)).await?.text,
+        "ordinary completion"
+    );
     drop(swarm);
 
     let durable_prefix = provider.serialized();
