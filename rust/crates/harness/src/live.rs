@@ -415,68 +415,65 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_handle_cancels_and_releases_its_future()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct MarkDropped(Arc<AtomicBool>);
+        struct MarkDropped(Option<tokio::sync::oneshot::Sender<()>>);
         impl Drop for MarkDropped {
             fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
             }
         }
-        let dropped = Arc::new(AtomicBool::new(false));
+        let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
         let (started, observed) = tokio::sync::oneshot::channel();
-        let flag = Arc::clone(&dropped);
         let handle = TaskGroup::new(1)
             .spawn(async move {
-                let _guard = MarkDropped(flag);
+                let _guard = MarkDropped(Some(dropped));
                 let _ = started.send(());
                 std::future::pending::<()>().await;
             })
             .await;
         observed.await?;
         drop(handle);
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !dropped.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .map_err(|_| "dropping a task handle left its future running")?;
+        tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+            .await
+            .map_err(|_| "dropping a task handle left its future running")??;
         Ok(())
     }
 
     #[tokio::test]
     async fn dropping_a_pending_result_future_also_cancels_its_worker()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct MarkDropped(Arc<AtomicBool>);
+        struct MarkDropped(Option<tokio::sync::oneshot::Sender<()>>);
         impl Drop for MarkDropped {
             fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
             }
         }
-        let dropped = Arc::new(AtomicBool::new(false));
+        let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
         let (started, observed) = tokio::sync::oneshot::channel();
-        let flag = Arc::clone(&dropped);
         let handle = TaskGroup::new(1)
             .spawn(async move {
-                let _guard = MarkDropped(flag);
+                let _guard = MarkDropped(Some(dropped));
                 let _ = started.send(());
                 std::future::pending::<()>().await;
             })
             .await;
         observed.await?;
-        let result = handle.result();
-        tokio::pin!(result);
-        tokio::select! {
-            result = &mut result => panic!("pending worker unexpectedly completed: {result:?}"),
-            () = tokio::time::sleep(Duration::from_millis(10)) => {}
-        }
-        drop(result);
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !dropped.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
+        let mut result = Box::pin(handle.result());
+        let polled = futures::future::poll_fn(|cx| match result.as_mut().poll(cx) {
+            std::task::Poll::Pending => std::task::Poll::Ready(false),
+            std::task::Poll::Ready(outcome) => {
+                panic!("pending worker unexpectedly completed: {outcome:?}")
             }
         })
-        .await
-        .map_err(|_| "dropping a result future left its worker running")?;
+        .await;
+        assert!(!polled, "the result future was not pending on its first poll");
+        drop(result);
+        tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+            .await
+            .map_err(|_| "dropping a result future left its worker running")??;
         Ok(())
     }
 
