@@ -1,0 +1,97 @@
+{
+  "protocol": "acyclic.graphcoder.native-checkpoint.v1",
+  "source_commit": "66a38f1a74b86f5045d170daf61bb2eed5412310",
+  "platform": "Windows native",
+  "features": [
+    "test-support",
+    "native-process-tree"
+  ],
+  "build_jobs": 1,
+  "exit": 0,
+  "passed": 393,
+  "failed": 0,
+  "ignored": 0,
+  "suites": {
+    "library": 370,
+    "frozen_input": 3,
+    "rejection_input": 3,
+    "faults": 6,
+    "persistent_input": 7,
+    "recursive": 4
+  },
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "descriptors": [
+    {
+      "sha256": "0c03cf173d3c70449ccccab0c8c7b132c4e7f5fac0329e6e867d08230774d608",
+      "path": "rust/crates/harness/src/filesystem/swarm_local.rs"
+    },
+    {
+      "sha256": "568dba4c0042c3c8d246133d95eacd5468ede8cb9a7263ddefde3dd9b9a3e388",
+      "path": "rust/crates/harness/src/filesystem/local.rs"
+    },
+    {
+      "sha256": "6fb78325c9316fe157b14afba5858388274d875390bd36354c5799ddcff75292",
+      "path": "rust/crates/harness/tests/local_model_swarm.rs"
+    },
+    {
+      "sha256": "65596925846009e7767cf2673704e39c8a03ef3953f51140115b4c6f575a4474",
+      "path": "rust/crates/harness/tests/local_swarm_faults.rs"
+    },
+    {
+      "sha256": "af5eced283e594fff54f0c55c722f16e19dc716c3d0f1599b7fb7dc497a149ef",
+      "path": "rust/crates/harness/tests/model_input_conformance_v3.rs"
+    },
+    {
+      "sha256": "3432902d90cfb48dd5871157ce7610182ddbd9154092bf3647a184230bbd1dcd",
+      "path": "rust/crates/harness/tests/model_input_rejection_conformance_v3.rs"
+    },
+    {
+      "sha256": "0a6b7f27b816623348e474619bdc4380179988c5111cfb8ba19cf9d37a8d1f3b",
+      "path": "rust/crates/harness/tests/persistent_model_input_admission_v3.rs"
+    }
+  ],
+  "artifacts": [
+    {
+      "sha256": "d3d7e8b1306d2a63998ad6b0b62092b3548747c38412ccb08686162fe3cebbe3",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\retained-fork-clean-native.log"
+    },
+    {
+      "sha256": "54d8af86294c0f818cb0ef32b58f0439d8db46f99d45587b0118c5e9e46039e3",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\retained-fork-clean-native-corrected.log"
+    },
+    {
+      "sha256": "cf04c1f34044ce7d2b31b11007860ac6a1130a92318953f1e7e1dacd9ab012fe",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\acyclic_harness-012f082794ae6c50.exe"
+    },
+    {
+      "sha256": "71240ee3882e0d49de76d687afe3c414ec2ae1e9ed14d77a8cc26d7b553187bc",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\local_model_swarm-2a4724405f2fc4cd.exe"
+    },
+    {
+      "sha256": "f18825573be9dd37460081a8476986b2eaa70e24594600e80fa1c74b2f791ae6",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\local_swarm_faults-f5ff69a39607b16d.exe"
+    },
+    {
+      "sha256": "7e3e47446f515124fb7b922bfac33ac6e4430e745b5489555dcdbd402cd09936",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\model_input_conformance_v3-7bfbe7b944d2344a.exe"
+    },
+    {
+      "sha256": "7c80cc70a08e8df7c4369afd08cbbf36c057ec8a2bcfadd6b4b63703646d5a48",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\model_input_rejection_conformance_v3-e8b73bd7bf2435a4.exe"
+    },
+    {
+      "sha256": "25d18bb3e48afcd7a5f9e918f3a5beed3f02daa577a22a23daa52f2e6dcd5511",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\persistent_model_input_admission_v3-f60cb1ad465a4372.exe"
+    },
+    {
+      "sha256": "1da0235c5417c7880773855fa669b57e3f70c2d6d0c7aa323f25e7a51ca8e35e",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\66a38f1a7\\retained-admission\\source.zip"
+    }
+  ],
+  "limits": [
+    "Installed artifacts, live parent-child scheduling and full locked matrix remain unqualified.",
+    "Earlier fault flakiness is not closed by this passing run.",
+    "Initial command named nonexistent test targets and exited101 before compiling/executing; its log is preserved.",
+    "Worker isolation violation and mixed-source compile failure are preserved separately; neither counts as source qualification."
+  ]
+}
