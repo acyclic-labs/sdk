@@ -67,6 +67,7 @@ dependencies = [
  "hyper",
  "js-sys",
  "prost",
+ "prost-reflect",
  "protoc-bin-vendored",
  "reqwest",
  "serde",
