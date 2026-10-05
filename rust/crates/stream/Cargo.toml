@@ -20,6 +20,10 @@ crate-type = ["cdylib", "rlib"]
 name = "http-conformance"
 required-features = ["http"]
 
+[[example]]
+name = "local-contention"
+required-features = ["local"]
+
 [features]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost"]

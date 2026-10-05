@@ -95,7 +95,8 @@ tokio::task_local! {
 /// any mutation made outside such a scope flushes the journal, and with it
 /// every frame before. A power loss before then loses a suffix of those
 /// frames, as recovery then finds them torn. Mutations other tasks make
-/// flush as ever.
+/// flush as ever, and a deferred mutation that observed one of theirs
+/// still waits for it to flush.
 pub async fn deferring_durability<F: Future>(future: F) -> F::Output {
     DEFERRED.scope(true, future).await
 }
@@ -154,7 +155,11 @@ pub enum LocalStreamError {
 /// Exclusive-process durable local provider backed by a snapshot and a checksummed command
 /// journal.
 ///
-/// The journal is synchronized before a mutation becomes observable. Startup installs the
+/// The journal is synchronized before a mutation becomes observable. Mutations apply and write
+/// their frames one at a time, in one order, but flush together (group commit): the flush runs
+/// outside the visibility lock, so mutations on independent paths, and readers, do not queue
+/// behind it. A mutation is acknowledged, and a read returns state, only once every frame it
+/// could have observed is durable. Startup installs the
 /// snapshot and replays every complete frame after it through the same bounded [`MemoryStream`]
 /// state machine used by conformance. A torn final frame is removed; corruption in a complete
 /// frame fails closed. Once the journal is half full, the whole state is written as a new
@@ -173,9 +178,61 @@ struct LocalInner {
     clock: Arc<StoreClock>,
     commit_clock: Arc<PinnedCommitClock>,
     journal: OwnedJournal,
+    /// Held exclusively while a mutation applies and writes its frame, and
+    /// shared while a read observes state; never across a device flush.
     visibility: RwLock<()>,
+    /// The journal's `synced` sequence, published under the journal lock so
+    /// that callers can wait for their frame, and those before it, to flush.
+    synced: watch::Sender<u64>,
     changed: watch::Sender<u64>,
     poisoned: AtomicBool,
+}
+
+impl LocalInner {
+    fn poison(&self) -> StreamError {
+        self.poisoned.store(true, Ordering::Release);
+        // Wake every caller waiting for a flush, so it sees the poison.
+        self.synced.send_modify(|_| {});
+        StreamError::Unavailable
+    }
+
+    /// Records that every frame through `target` is durable.
+    fn publish_synced(&self, journal: &mut Journal, target: u64) {
+        journal.synced = journal.synced.max(target);
+        let synced = journal.synced;
+        self.synced.send_modify(|published| *published = synced);
+    }
+
+    /// Flushes the journal through `target`, the latest frame written when
+    /// this flush began, on a blocking thread. Releases the flush to the
+    /// next caller even if the one that started it went away.
+    fn flush_through(&self, target: u64, file: &File, durability: LocalDurability) {
+        #[cfg(test)]
+        {
+            let journal_identity = Arc::as_ptr(&self.journal.journal) as usize;
+            if let Ok(mut hook) = JOURNAL_PERSIST_BLOCKER.lock()
+                && hook
+                    .as_ref()
+                    .is_some_and(|(expected_journal, _, _)| *expected_journal == journal_identity)
+                && let Some((_, started, release)) = hook.take()
+            {
+                let _ = started.send(());
+                let _ = release.recv();
+            }
+        }
+        let flushed = sync_file_data(file, durability);
+        let Ok(mut journal) = self.journal.journal.lock() else {
+            self.poison();
+            return;
+        };
+        journal.syncing = false;
+        if flushed.is_ok() {
+            self.publish_synced(&mut journal, target);
+        } else {
+            drop(journal);
+            self.poison();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -187,18 +244,21 @@ struct OwnedJournal {
 }
 
 impl OwnedJournal {
-    fn append(&self, frame: &PreparedFrame, flush: bool) -> Result<(), LocalStreamError> {
+    fn append(&self, frame: &PreparedFrame, required: bool) -> Result<(), LocalStreamError> {
         self.journal
             .lock()
             .map_err(|_| LocalStreamError::Corrupt)?
-            .append(frame, flush)
+            .append(frame, required)
     }
 
-    fn flush(&self) -> Result<(), LocalStreamError> {
-        self.journal
+    /// The latest frame a caller that observed the current state must wait
+    /// to flush.
+    fn required(&self) -> Result<u64, StreamError> {
+        Ok(self
+            .journal
             .lock()
-            .map_err(|_| LocalStreamError::Corrupt)?
-            .flush()
+            .map_err(|_| StreamError::Unavailable)?
+            .required)
     }
 
     fn compaction_due(&self) -> Result<bool, LocalStreamError> {
@@ -207,13 +267,6 @@ impl OwnedJournal {
             .lock()
             .map_err(|_| LocalStreamError::Corrupt)?
             .compaction_due())
-    }
-
-    fn compact(&self, state: &[u8], store_time: u64) -> Result<(), LocalStreamError> {
-        self.journal
-            .lock()
-            .map_err(|_| LocalStreamError::Corrupt)?
-            .compact(state, store_time)
     }
 }
 
@@ -451,6 +504,7 @@ impl LocalStream {
                     _ownership_anchor: ownership_anchor,
                 },
                 visibility: RwLock::new(()),
+                synced: watch::channel(0_u64).0,
                 changed,
                 poisoned: AtomicBool::new(false),
             }),
@@ -499,39 +553,46 @@ impl LocalStream {
     ///
     /// Fails, and poisons the store, when the journal cannot be flushed.
     pub fn flush(&self) -> Result<(), StreamError> {
-        self.inner.journal.flush().map_err(|_| {
-            self.inner.poisoned.store(true, Ordering::Release);
-            StreamError::Unavailable
-        })
+        let (target, file, durability) = {
+            let journal = self
+                .inner
+                .journal
+                .journal
+                .lock()
+                .map_err(|_| self.inner.poison())?;
+            if journal.synced >= journal.appended {
+                return Ok(());
+            }
+            (
+                journal.appended,
+                Arc::clone(&journal.sync),
+                journal.limits.durability,
+            )
+        };
+        sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
+        let mut journal = self
+            .inner
+            .journal
+            .journal
+            .lock()
+            .map_err(|_| self.inner.poison())?;
+        self.inner.publish_synced(&mut journal, target);
+        Ok(())
     }
 
+    /// Writes `frame`, in the order its mutation applied, without waiting for
+    /// the device: [`Self::exclusive`] waits for the flush once it has
+    /// released visibility, so concurrent mutations share one flush.
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
-        let flush = !deferred();
+        let required = !deferred();
         let journal = self.inner.journal.clone();
-        #[cfg(test)]
-        let journal_identity = Arc::as_ptr(&journal.journal) as usize;
-        let persist = tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            {
-                if let Ok(mut hook) = JOURNAL_PERSIST_BLOCKER.lock()
-                    && hook.as_ref().is_some_and(|(expected_journal, _, _)| {
-                        *expected_journal == journal_identity
-                    })
-                    && let Some((_, started, release)) = hook.take()
-                {
-                    let _ = started.send(());
-                    let _ = release.recv();
-                }
-            }
-            journal.append(&frame, flush)
-        });
+        let persist = tokio::task::spawn_blocking(move || journal.append(&frame, required));
         let result = persist
             .await
             .map_err(|_| LocalStreamError::Executor)
             .and_then(|result| result);
         if result.is_err() {
-            self.inner.poisoned.store(true, Ordering::Release);
-            return Err(StreamError::Unavailable);
+            return Err(self.inner.poison());
         }
         self.inner.changed.send_modify(|revision| {
             *revision = revision.saturating_add(1);
@@ -541,29 +602,90 @@ impl LocalStream {
 
     /// Writes the whole state as the snapshot and starts the journal again,
     /// once the journal is half full. Runs inside a mutation, after its
-    /// frame, so the state is exactly what the journal describes.
+    /// frame, so the state is exactly what the journal describes; the
+    /// durable snapshot then holds every frame written, flushed or not.
     async fn compact_if_due(&self) -> Result<(), StreamError> {
-        let poison = |_| {
-            self.inner.poisoned.store(true, Ordering::Release);
-            StreamError::Unavailable
-        };
-        if !self.inner.journal.compaction_due().map_err(poison)? {
+        if !self
+            .inner
+            .journal
+            .compaction_due()
+            .map_err(|_| self.inner.poison())?
+        {
             return Ok(());
         }
         let state = self.inner.provider.encode_state().await;
         let store_time = self.inner.clock.now_unix_millis();
-        let journal = self.inner.journal.clone();
-        tokio::task::spawn_blocking(move || journal.compact(&state, store_time))
-            .await
-            .map_err(|_| LocalStreamError::Executor)
-            .and_then(|result| result)
-            .map_err(poison)
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            let mut journal = inner
+                .journal
+                .journal
+                .lock()
+                .map_err(|_| LocalStreamError::Corrupt)?;
+            journal.compact(&state, store_time)?;
+            let appended = journal.appended;
+            inner.publish_synced(&mut journal, appended);
+            Ok::<_, LocalStreamError>(())
+        })
+        .await
+        .map_err(|_| LocalStreamError::Executor)
+        .and_then(|result| result)
+        .map_err(|_| self.inner.poison())
+    }
+
+    /// Returns once every frame through `sequence` is durable: group commit.
+    /// One caller at a time flushes every frame written so far, on a blocking
+    /// thread and outside visibility; the rest wait for it and flush again
+    /// only for frames written after it began.
+    async fn await_durable(&self, sequence: u64) -> Result<(), StreamError> {
+        let mut synced = self.inner.synced.subscribe();
+        loop {
+            if *synced.borrow_and_update() >= sequence {
+                return Ok(());
+            }
+            self.check_available()?;
+            let lead = {
+                let mut journal = self
+                    .inner
+                    .journal
+                    .journal
+                    .lock()
+                    .map_err(|_| self.inner.poison())?;
+                if journal.synced >= sequence || journal.syncing {
+                    None
+                } else {
+                    journal.syncing = true;
+                    Some((
+                        journal.appended,
+                        Arc::clone(&journal.sync),
+                        journal.limits.durability,
+                    ))
+                }
+            };
+            match lead {
+                Some((target, file, durability)) => {
+                    let inner = Arc::clone(&self.inner);
+                    tokio::task::spawn_blocking(move || {
+                        inner.flush_through(target, &file, durability);
+                    })
+                    .await
+                    .map_err(|_| self.inner.poison())?;
+                }
+                None => {
+                    if synced.changed().await.is_err() {
+                        return Err(StreamError::Unavailable);
+                    }
+                }
+            }
+        }
     }
 
     /// Runs one mutation under exclusive visibility on its own task, so a
     /// cancelled caller can neither expose it before its frame is durable nor
-    /// leave a failed persist unpoisoned: readers wait until `mutation` has
-    /// applied and persisted, or poisoned the store.
+    /// leave a failed persist unpoisoned. Visibility is held only while the
+    /// mutation applies and writes its frame; the mutation then waits, with
+    /// visibility released, until its frame and every frame before it that
+    /// it may have observed are durable.
     async fn exclusive<T, F>(
         &self,
         mutation: impl FnOnce(Self) -> F + Send + 'static,
@@ -578,22 +700,41 @@ impl LocalStream {
         // durability scope with it.
         let deferred = deferred();
         tokio::spawn(DEFERRED.scope(deferred, async move {
-            let _visibility = stream.inner.visibility.write().await;
-            stream.check_available()?;
-            let result = mutation(stream.clone()).await;
-            stream.inner.clock.unpin();
-            stream.inner.commit_clock.unpin();
+            let (result, required) = {
+                let _visibility = stream.inner.visibility.write().await;
+                stream.check_available()?;
+                let result = mutation(stream.clone()).await;
+                stream.inner.clock.unpin();
+                stream.inner.commit_clock.unpin();
+                (result, stream.inner.journal.required()?)
+            };
+            stream.await_durable(required).await?;
             result
         }))
         .await
         .map_err(|_| StreamError::Unavailable)?
     }
 
+    /// Runs one read under shared visibility, then returns its result once
+    /// every frame it may have observed is durable. Reads never wait for a
+    /// mutation's flush while holding visibility, so they never hold back
+    /// the mutations behind it.
+    async fn visible<T>(
+        &self,
+        read: impl Future<Output = Result<T, StreamError>>,
+    ) -> Result<T, StreamError> {
+        self.check_available()?;
+        let (result, required) = {
+            let _visibility = self.inner.visibility.read().await;
+            self.check_available()?;
+            (read.await, self.inner.journal.required()?)
+        };
+        self.await_durable(required).await?;
+        result
+    }
+
     async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        self.check_available()?;
-        self.inner.provider.read(request).await
+        self.visible(self.inner.provider.read(request)).await
     }
 }
 
@@ -603,27 +744,16 @@ impl StreamProvider for LocalStream {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        self.check_available()?;
-        self.inner
-            .provider
-            .inspect_idempotency(idempotency_key)
+        self.visible(self.inner.provider.inspect_idempotency(idempotency_key))
             .await
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        self.check_available()?;
-        self.inner.provider.tail(path).await
+        self.visible(self.inner.provider.tail(path)).await
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        self.check_available()?;
-        self.inner.provider.bounds(path).await
+        self.visible(self.inner.provider.bounds(path)).await
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -703,20 +833,15 @@ impl StreamProvider for LocalStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        self.check_available()?;
-        self.inner.provider.children(request).await
+        self.visible(self.inner.provider.children(request)).await
     }
 
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        self.check_available()?;
-        self.inner.provider.children_page(request).await
+        self.visible(self.inner.provider.children_page(request))
+            .await
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
@@ -751,10 +876,8 @@ impl StreamProvider for LocalStream {
         &self,
         commit_id: crate::CommitId,
     ) -> Result<CommittedEnvelope, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        self.check_available()?;
-        self.inner.provider.read_commit(commit_id).await
+        self.visible(self.inner.provider.read_commit(commit_id))
+            .await
     }
 }
 
@@ -775,8 +898,18 @@ struct Journal {
     operations: u64,
     bytes: u64,
     limits: LocalStreamLimits,
-    /// Whether frames were written since the journal last flushed.
-    unflushed: bool,
+    /// A second handle on `file`, synchronized without holding the journal,
+    /// so frames keep being written while earlier ones flush.
+    sync: Arc<File>,
+    /// How many frames were ever written, across every epoch: the sequence of
+    /// the latest one.
+    appended: u64,
+    /// The latest frame written by a mutation that waits for the device.
+    required: u64,
+    /// Every frame through this sequence is durable.
+    synced: u64,
+    /// Whether a flush is under way; see [`LocalStream::await_durable`].
+    syncing: bool,
     root: PathBuf,
 }
 
@@ -860,12 +993,16 @@ impl Journal {
             .open(&path)?;
         let mut journal = Self {
             lock,
+            sync: Arc::new(file.try_clone()?),
             file,
             epoch,
             operations: 0,
             bytes: 0,
             limits,
-            unflushed: false,
+            appended: 0,
+            required: 0,
+            synced: 0,
+            syncing: false,
             root: root.to_path_buf(),
         };
         let header_bytes =
@@ -900,6 +1037,9 @@ impl Journal {
             _ => return Err(LocalStreamError::Corrupt),
         }
         journal.replay(length, recovered)?;
+        // Frames a crashed process wrote but never flushed are replayed, so
+        // they are made durable before anything can observe them.
+        sync_file_data(&journal.file, limits.durability)?;
         Ok(journal)
     }
 
@@ -976,7 +1116,8 @@ impl Journal {
         self.epoch = epoch;
         self.operations = 0;
         self.bytes = u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
-        self.unflushed = false;
+        // The header was synchronized after the snapshot holding every frame.
+        self.synced = self.appended;
         Ok(())
     }
 
@@ -1015,23 +1156,24 @@ impl Journal {
         Ok(())
     }
 
-    fn append(&mut self, frame: &PreparedFrame, flush: bool) -> Result<(), LocalStreamError> {
+    /// Writes `frame` after every earlier one, without waiting for the
+    /// device; it is durable once a flush covers its sequence. A frame that
+    /// is `required` holds back every reader until then.
+    fn append(&mut self, frame: &PreparedFrame, required: bool) -> Result<(), LocalStreamError> {
         self.file.write_all(&frame.encoded)?;
-        if flush {
-            sync_file_data(&self.file, self.limits.durability)?;
+        self.appended += 1;
+        if required {
+            self.required = self.appended;
         }
-        self.unflushed = !flush;
         self.operations += 1;
         self.bytes += frame.bytes;
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), LocalStreamError> {
-        if self.unflushed {
-            sync_file_data(&self.file, self.limits.durability)?;
-            self.unflushed = false;
-        }
-        Ok(())
+    /// Whether frames were written since the journal last flushed.
+    #[cfg(test)]
+    fn unflushed(&self) -> bool {
+        self.appended > self.synced
     }
 }
 
@@ -1598,6 +1740,189 @@ mod tests {
         })
     }
 
+    /// One record appended to `path` at `tail` under a key naming both.
+    fn keyed_commit(path: &str, tail: u64) -> Result<CommitRequest, StreamError> {
+        let path = StreamPath::new(path)?;
+        Ok(CommitRequest {
+            conditions: vec![if tail == 0 {
+                crate::CommitCondition::Absent { path: path.clone() }
+            } else {
+                crate::CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: tail,
+                }
+            }],
+            mutations: vec![crate::CommitMutation::Append {
+                path: path.clone(),
+                records: vec![Bytes::from(format!("{path}-{tail}"))],
+            }],
+            idempotency_key: IdempotencyKey::new(Bytes::from(format!("{path}@{tail}")))?,
+        })
+    }
+
+    /// While one mutation's flush is under way, a mutation on another path
+    /// applies and writes its frame instead of waiting for it; neither
+    /// mutation is acknowledged before a flush covers it.
+    #[test]
+    fn mutations_on_other_paths_write_while_a_flush_is_under_way()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _serial = PERSIST_BLOCKER_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+        runtime.block_on(async move {
+            let directory = tempfile::tempdir()?;
+            let provider =
+                LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+            let journal_identity = Arc::as_ptr(&provider.inner.journal.journal) as usize;
+            let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+            *JOURNAL_PERSIST_BLOCKER
+                .lock()
+                .map_err(|_| "journal-persist test hook was poisoned")? =
+                Some((journal_identity, started_tx, release_rx));
+            let commit = |path: &'static str| {
+                let provider = provider.clone();
+                tokio::spawn(async move { provider.commit(keyed_commit(path, 0)?).await })
+            };
+            let first = commit("first");
+            tokio::task::spawn_blocking(move || started_rx.recv()).await??;
+            let second = commit("second");
+            let appended = |provider: &LocalStream| {
+                provider
+                    .inner
+                    .journal
+                    .journal
+                    .lock()
+                    .map(|journal| journal.appended)
+                    .unwrap_or_default()
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while appended(&provider) < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await?;
+            assert!(!first.is_finished() && !second.is_finished());
+            release_tx.send(())?;
+            for (outcome, path) in [(first.await??, "first"), (second.await??, "second")] {
+                assert!(matches!(outcome, CommitOutcome::Committed(_)), "{path}");
+                assert_eq!(provider.tail(StreamPath::new(path)?).await?, 1, "{path}");
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+    }
+
+    /// Many writers commit concurrently to their own paths, some joined by a
+    /// commit spanning two paths; every acknowledged commit replays after an
+    /// abrupt reopen, in each path's order, with its retained outcome.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const WRITERS: usize = 8;
+        const COMMITS: u64 = 25;
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let mut writers = Vec::new();
+        for writer in 0..WRITERS {
+            let provider = provider.clone();
+            writers.push(tokio::spawn(async move {
+                let path = format!("agents/{writer}/memory");
+                let mut outcomes = Vec::new();
+                for tail in 0..COMMITS {
+                    let outcome = provider.commit(keyed_commit(&path, tail)?).await?;
+                    assert!(matches!(outcome, CommitOutcome::Committed(_)));
+                    outcomes.push(outcome);
+                }
+                Ok::<_, StreamError>(outcomes)
+            }));
+        }
+        // Cross-path atomic commits race the writers on paths of their own.
+        let joint = {
+            let provider = provider.clone();
+            tokio::spawn(async move {
+                let (left, right) = (
+                    StreamPath::new("joint/left")?,
+                    StreamPath::new("joint/right")?,
+                );
+                for tail in 0..COMMITS {
+                    let condition = |path: &StreamPath| {
+                        if tail == 0 {
+                            crate::CommitCondition::Absent { path: path.clone() }
+                        } else {
+                            crate::CommitCondition::Tail {
+                                path: path.clone(),
+                                expected: tail,
+                            }
+                        }
+                    };
+                    let outcome = provider
+                        .commit(CommitRequest {
+                            conditions: vec![condition(&left), condition(&right)],
+                            mutations: [&left, &right]
+                                .into_iter()
+                                .map(|path| crate::CommitMutation::Append {
+                                    path: path.clone(),
+                                    records: vec![Bytes::from(tail.to_le_bytes().to_vec())],
+                                })
+                                .collect(),
+                            idempotency_key: IdempotencyKey::new(Bytes::from(format!(
+                                "joint@{tail}"
+                            )))?,
+                        })
+                        .await?;
+                    assert!(matches!(outcome, CommitOutcome::Committed(_)));
+                }
+                Ok::<_, StreamError>(())
+            })
+        };
+        let mut outcomes = Vec::new();
+        for writer in writers {
+            outcomes.push(writer.await??);
+        }
+        joint.await??;
+        let frames = provider
+            .inner
+            .journal
+            .journal
+            .lock()
+            .map_err(|_| "journal poisoned")?
+            .appended;
+        assert_eq!(frames, (WRITERS as u64 + 1) * COMMITS);
+        // Nothing else flushes or closes the provider before it reopens.
+        drop(provider);
+
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        for (writer, outcomes) in outcomes.iter().enumerate() {
+            let path = format!("agents/{writer}/memory");
+            assert_eq!(reopened.tail(StreamPath::new(&path)?).await?, COMMITS);
+            let records = reopened
+                .read(ReadRequest {
+                    path: StreamPath::new(&path)?,
+                    from: 0,
+                    limit: 100,
+                })
+                .await?
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+            for (tail, record) in (0..).zip(&records) {
+                assert_eq!(record.value, Bytes::from(format!("{path}-{tail}")));
+            }
+            for (tail, outcome) in (0..).zip(outcomes) {
+                assert_eq!(&reopened.commit(keyed_commit(&path, tail)?).await?, outcome);
+            }
+        }
+        for path in ["joint/left", "joint/right"] {
+            assert_eq!(reopened.tail(StreamPath::new(path)?).await?, COMMITS);
+        }
+        Ok(())
+    }
+
     use crate::conformance;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1682,7 +2007,13 @@ mod tests {
             .await;
         assert_eq!(records.into_iter().collect::<Result<Vec<_>, _>>()?.len(), 2);
         let snapshot = reopened.inner.provider.encode_state().await;
-        reopened.inner.journal.compact(&snapshot, expiry + 1)?;
+        reopened
+            .inner
+            .journal
+            .journal
+            .lock()
+            .map_err(|_| "journal poisoned")?
+            .compact(&snapshot, expiry + 1)?;
         drop(reopened);
         let again = LocalStream::open(directory.path(), limits).await?;
         assert_eq!(again.append(first).await?, first_outcome);
@@ -1823,7 +2154,7 @@ mod tests {
                 .journal
                 .lock()
                 .map_err(|_| "journal poisoned")?
-                .unflushed)
+                .unflushed())
         };
         let append = |provider: LocalStream, key: &'static [u8]| async move {
             provider
