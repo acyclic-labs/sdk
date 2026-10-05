@@ -64,10 +64,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    future::Future,
     path::{Path, PathBuf},
-    pin::Pin,
     sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak},
+};
+#[cfg(test)]
+use std::{
+    future::Future,
+    pin::Pin,
     task::{Context, Poll},
 };
 use tokio::sync::Mutex;
@@ -98,19 +101,21 @@ const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 
-/// A spawned child turn remains owned by its activation future. Dropping the
-/// activation must cancel the child task instead of detaching a model worker
-/// that can continue dispatching effects after its caller has gone away.
+/// Test-only join wrapper used to assert that dropping an activation cancels
+/// its spawned task instead of detaching a model worker.
+#[cfg(test)]
 struct AbortOnDrop<T> {
     handle: tokio::task::JoinHandle<T>,
 }
 
+#[cfg(test)]
 impl<T> AbortOnDrop<T> {
     fn new(handle: tokio::task::JoinHandle<T>) -> Self {
         Self { handle }
     }
 }
 
+#[cfg(test)]
 impl<T> Future for AbortOnDrop<T> {
     type Output = std::result::Result<T, tokio::task::JoinError>;
 
@@ -119,6 +124,7 @@ impl<T> Future for AbortOnDrop<T> {
     }
 }
 
+#[cfg(test)]
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.handle.abort();
@@ -7152,6 +7158,7 @@ async fn load_records_range(
     Ok(decoded)
 }
 
+#[cfg(test)]
 async fn append_record(
     stream: &acyclic_stream::Stream<LocalStream>,
     event: StoredEvent,
