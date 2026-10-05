@@ -242,13 +242,25 @@ async fn production_provider_receives_exact_recursive_requests() -> Result<()> {
     let child_provider =
         PrefixBoundModelProvider::new(root_prefix.clone(), vector.limits, provider.clone())?;
 
-    // Both siblings pass through the real prefix-enforcing provider boundary.
-    for child in &vector.children {
-        let mut stream = child_provider.generate(prepare(child, vector.limits, &vector.policy)?);
+    // Both siblings pass through the real prefix-enforcing provider boundary
+    // concurrently. Their provider requests still retain the same immutable
+    // inherited bytes even though each child has a private suffix.
+    let sibling_streams = vector
+        .children
+        .iter()
+        .map(|child| {
+            child_provider.generate(prepare(child, vector.limits, &vector.policy)?)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    futures::future::join_all(sibling_streams.into_iter().map(async |mut stream| {
         while let Some(event) = stream.next().await {
             event?;
         }
-    }
+        Ok::<(), acyclic_harness::Error>(())
+    }))
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
 
     // A grandchild is checked against the first child's retained prefix.  Its
     // parent provider is still the same production adapter and the capture is
@@ -269,14 +281,12 @@ async fn production_provider_receives_exact_recursive_requests() -> Result<()> {
         .map_err(|_| acyclic_harness::Error::Storage("capture lock poisoned".into()))?
         .clone();
     assert_eq!(captured.len(), 3);
-    assert_eq!(
-        captured[0],
-        vector.children[0].expected.request_json.as_bytes()
-    );
-    assert_eq!(
-        captured[1],
-        vector.children[1].expected.request_json.as_bytes()
-    );
+    assert!(captured.contains(
+        &vector.children[0].expected.request_json.as_bytes().to_vec()
+    ));
+    assert!(captured.contains(
+        &vector.children[1].expected.request_json.as_bytes().to_vec()
+    ));
     assert_eq!(
         captured[2],
         vector.grandchild.expected.request_json.as_bytes()
@@ -328,6 +338,57 @@ async fn production_provider_receives_exact_recursive_requests() -> Result<()> {
             .is_ok()
     );
     assert_ne!(changed_parent.bytes(), captured[0]);
+    assert_eq!(
+        captured[0],
+        vector.children[0].expected.request_json.as_bytes()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reopened_prefix_replays_child_bytes_after_parent_changes() -> Result<()> {
+    let vector = parse_vector();
+    let root = prepare(&vector.root, vector.limits, &vector.policy)?;
+    let prefix = FrozenModelPrefix::capture(&root, vector.root.prefix_message_count)?;
+    let persisted = serde_json::to_vec(&prefix)
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    let reopened: FrozenModelPrefix = serde_json::from_slice(&persisted)
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    assert_eq!(reopened, prefix);
+
+    // Continue the parent independently after the fork. These changes are
+    // intentionally outside the persisted child prefix.
+    let mut changed_parent = vector.root.request;
+    changed_parent.model.options["mode"] = json!("creative");
+    changed_parent.messages[0] = serde_json::from_value(json!({
+        "role": "system",
+        "content": "parent changed after persisted fork"
+    }))
+    .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    let _changed_parent = PreparedModelInput::prepare_with_policy(
+        changed_parent,
+        vector.limits,
+        Some(&vector.policy),
+    )?;
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(CapturingProvider {
+        policy: vector.policy.clone(),
+        requests: requests.clone(),
+    });
+    let child_provider = PrefixBoundModelProvider::new(reopened, vector.limits, provider)?;
+    let mut stream = child_provider.generate(prepare(
+        &vector.children[0],
+        vector.limits,
+        &vector.policy,
+    )?);
+    while let Some(event) = stream.next().await {
+        event?;
+    }
+    let captured = requests
+        .lock()
+        .map_err(|_| acyclic_harness::Error::Storage("capture lock poisoned".into()))?;
+    assert_eq!(captured.len(), 1);
     assert_eq!(
         captured[0],
         vector.children[0].expected.request_json.as_bytes()
