@@ -2444,6 +2444,9 @@ pub fn audit_generated_public_surfaces(
                 {
                     Some("public TypeScript client method exposes a raw protobuf request/response")
                 }
+                "python" if python_public_raw_stub(line) => {
+                    Some("public Python client attribute exposes a raw gRPC stub")
+                }
                 "python" if python_raw_public_return(&source, line_number, line) => {
                     Some("public Python route returns the raw transport response")
                 }
@@ -2558,6 +2561,14 @@ fn python_raw_public_return(source: &str, line_number: usize, line: &str) -> boo
         }
     }
     method.is_some_and(|name| !name.starts_with('_'))
+}
+
+fn python_public_raw_stub(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("self.")
+        && !trimmed.starts_with("self._")
+        && trimmed.contains("_pb2_grpc.")
+        && trimmed.contains("Stub(")
 }
 
 fn go_raw_protobuf_response(line: &str) -> bool {
@@ -2825,7 +2836,7 @@ mod tests {
         .expect("typescript fixture");
         fs::write(
             root.join("python").join("remote.py"),
-            "    async def invoke_actor(self):\n        return await self.actors.InvokeActor(request)\n",
+            "        self.actors = actors_pb2_grpc.ActorsServiceStub(self._channel)\n    async def invoke_actor(self):\n        return await self.actors.InvokeActor(request)\n",
         )
         .expect("python fixture");
         fs::write(
@@ -2860,7 +2871,7 @@ mod tests {
         assert!(findings.iter().any(|finding| finding.language == "go"));
         assert!(findings.iter().any(|finding| finding.language == "jvm"));
         assert!(findings.iter().any(|finding| finding.language == "csharp"));
-        assert!(findings.iter().all(|finding| finding.line <= 2));
+        assert!(findings.iter().all(|finding| finding.line <= 3));
         let _ = fs::remove_dir_all(root);
     }
 
