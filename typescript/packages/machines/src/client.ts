@@ -5,6 +5,7 @@ import type {
 } from "./index.js";
 import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
 import type { NativeMachinesOptions } from "./native.js";
+import { MACHINES_REMOTE_POLICY, selectRustOwnedTransport, type RustOwnedRuntime } from "./generated-client.js";
 
 export interface MachinesEnvironment {
   readonly endpoint?: string;
@@ -28,13 +29,16 @@ export class Machines {
   constructor(readonly provider: MachinesProvider) {}
   /** Connects through the Rust-owned native provider selected for this runtime. */
   static async fromEnv(environment: Partial<MachinesEnvironment> = {}): Promise<Machines> {
-    if (!isNativeRuntime()) {
+    const runtime: RustOwnedRuntime = isNativeRuntime() ? "native" : "browser";
+    const selected = selectRustOwnedTransport(MACHINES_REMOTE_POLICY, runtime);
+    if (selected === "grpc-web") {
       if (environment.endpoint === undefined || environment.token === undefined) {
         throw new TypeError("Machines browser transport requires endpoint and token");
       }
       const { RemoteMachines } = await import("./remote.js");
       return new Machines(new RemoteMachines(environment.endpoint, environment.token));
     }
+    if (selected !== "grpc" || runtime !== "native") throw new TypeError("Machines transport is unavailable for this runtime");
     // Keep the native companion outside browser bundles; this path is reached only
     // after the runtime check above and is resolved by the Node conditional export.
     const nativeModule = "./native.js";
