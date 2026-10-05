@@ -205,6 +205,10 @@ checker:
 
 Running the ignored test directly is an export step only; it does not qualify
 the implementation. A passing named gate is runtime conformance evidence for
-this bounded trace only. The export does not claim Rust refinement, unbounded
-recursion, liveness, approval handling, aggregate budget exhaustion, or OS
-confinement.
+this bounded trace only. The manifest binds the bytes read by the exporter and
+checker to the current source, scripts, and test binary, but those hashes are
+self-reported by the same test process. Until a separately trusted journal
+reader or signed artifact supplies the source witness, this is self-reported
+integrity evidence rather than external provenance. The export does not claim
+Rust refinement, unbounded recursion, liveness, approval handling, aggregate
+budget exhaustion, or OS confinement.

@@ -118,6 +118,33 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex_bytes(&Sha256::digest(bytes))
 }
 
+fn file_sha256(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).map_err(|error| Error::Storage(error.to_string()))?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn verification_provenance() -> Result<Value> {
+    let verification = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("verification");
+    let executable = env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
+    let source = verification.join("real_harness_trace.rs");
+    let checker = verification.join("check-real-trace.ps1");
+    let trace_checker = verification.join("check-trace.ps1");
+    let qualification = verification.join("qualify-real-trace.ps1");
+    Ok(json!({
+        "source_commit": env::var("GRAPHCODER_REAL_TRACE_SOURCE_COMMIT").ok(),
+        "exporter_source_path": source,
+        "exporter_source_sha256": file_sha256(&source)?,
+        "binary_path": executable,
+        "binary_sha256": file_sha256(&executable)?,
+        "real_checker_path": checker,
+        "real_checker_sha256": file_sha256(&checker)?,
+        "trace_checker_path": trace_checker,
+        "trace_checker_sha256": file_sha256(&trace_checker)?,
+        "qualification_path": qualification,
+        "qualification_sha256": file_sha256(&qualification)?
+    }))
+}
+
 fn generation_projection(report: &ForkReport) -> Result<(u64, Value)> {
     for (selection, capture) in report.request.selections.iter().zip(&report.captures) {
         if !matches!(&selection.revision, ResourceRevision::Project { .. }) {
@@ -267,7 +294,10 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         .ok_or_else(|| Error::Storage("real admission omitted fork operation".into()))?;
     let publication =
         publication.ok_or_else(|| Error::Storage("real admission omitted publication".into()))?;
-    if fork_operation == publication.operation_id || fork_operation == child_operation {
+    if fork_operation == publication.operation_id
+        || fork_operation == child_operation
+        || publication.operation_id == child_operation
+    {
         return Err(Error::Conflict(
             "real fork, publication, and child operation identities are not distinct".into(),
         ));
@@ -391,6 +421,7 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "completion_record_sha256": sha256_hex(&hex_decode(&completion_record_bytes)?),
             "root_task": root_task,
             "child_task": child_task,
+            "child_authority": child_authority,
             "root_operation": root_operation,
             "fork_operation": fork_operation,
             "publication_operation": publication.operation_id,
@@ -409,6 +440,7 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "trace_path": path,
             "trace_sha256": trace_digest
         },
+        "provenance": verification_provenance()?,
         "ordering": {
             "basis": "causal projection across independently ordered durable streams",
             "registry": "registry sequence orders ForkPrepared and ForkCompleted",
