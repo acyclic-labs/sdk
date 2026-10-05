@@ -5,7 +5,7 @@
 //! evaluated here so browser and native projections share one policy.
 
 #[cfg(target_arch = "wasm32")]
-#[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
+#[allow(dead_code, missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
 mod filesystem_wire {
     pub mod protocol {
         pub mod v1 {
@@ -416,6 +416,16 @@ mod wasm {
         Ok(capabilities)
     }
 
+    /// Validate a wire handshake and return its canonical Rust-owned capabilities.
+    #[wasm_bindgen(js_name = validateRemoteWebFilesystemHandshake)]
+    pub fn validate_remote_web_filesystem_handshake(response: &[u8]) -> Result<Vec<u8>, JsValue> {
+        let response = wire::HandshakeResponse::decode(response)
+            .map_err(|error| invalid(&format!("invalid filesystem handshake: {error}")))?;
+        let capabilities = validate_handshake(response)
+            .map_err(|error| invalid(&error.to_string()))?;
+        Ok(capabilities.encode_to_vec())
+    }
+
     /// Checks an HTTP content-length without first narrowing it through a JS number.
     #[wasm_bindgen]
     pub fn validate_remote_web_content_length(
@@ -483,4 +493,8 @@ mod wasm {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use wasm::{BrowserFilesystemCapabilities, BrowserFilesystemClient};
+pub use wasm::{
+    BrowserFilesystemCapabilities, BrowserFilesystemClient,
+    validate_remote_web_endpoint, validate_remote_web_grpc_endpoint,
+    validate_remote_web_credential, validate_remote_web_filesystem_handshake,
+};
