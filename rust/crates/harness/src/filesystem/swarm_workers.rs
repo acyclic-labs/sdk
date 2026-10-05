@@ -179,7 +179,7 @@ mod tests {
         let weak = Arc::downgrade(&workers);
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, mut dropped_observed) = oneshot::channel();
+        let (dropped, dropped_observed) = oneshot::channel();
         let worker_weak = weak.clone();
         workers
             .enqueue(task, async move {
