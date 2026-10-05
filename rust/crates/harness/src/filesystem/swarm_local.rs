@@ -6665,11 +6665,22 @@ mod tests {
             let first = first.clone();
             async move { first.run_root(operation, "remain pending until cancelled").await }
         }));
-        if tokio::time::timeout(std::time::Duration::from_secs(120), provider.started.notified())
-            .await.is_err() {
-            running.handle.abort();
-            let _ = (&mut running).await;
-            panic!("root provider did not start; owned run was stopped");
+        let started = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            provider.started.notified(),
+        );
+        tokio::pin!(started);
+        tokio::select! {
+            result = &mut running => {
+                panic!("root run terminated before its provider started: {result:?}");
+            }
+            result = &mut started => {
+                if result.is_err() {
+                    running.handle.abort();
+                    let stopped = (&mut running).await;
+                    panic!("root provider did not start within the watchdog; owned run was stopped: {stopped:?}");
+                }
+            }
         }
         let second = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
             root.path(), model.clone(), provider.clone(), Limits::default(),
@@ -6698,11 +6709,15 @@ mod tests {
         Ok(())
     }
 
-    async fn await_timer_admissions(swarm: &PersistentLocalSwarm, expected: u64) -> Result<()> {
+    async fn await_timer_admissions<T: std::fmt::Debug>(
+        swarm: &PersistentLocalSwarm,
+        expected: u64,
+        running: &mut AbortOnDrop<T>,
+    ) -> Result<()> {
         let task = swarm.root_task().await?;
         let timer = swarm.conversation_stream.stream(format!("harness/v2/swarm-timers/{task}"))
             .map_err(|error| Error::Storage(error.to_string()))?;
-        tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        let admissions = tokio::time::timeout(std::time::Duration::from_secs(120), async {
             loop {
                 match timer.tail().await {
                     Ok(tail) if tail >= expected => return Ok(()),
@@ -6710,7 +6725,18 @@ mod tests {
                     Err(error) => return Err(Error::Storage(error.to_string())),
                 }
             }
-        }).await.map_err(|error| Error::Storage(format!("wait observation did not start: {error}")))?
+        });
+        tokio::pin!(admissions);
+        tokio::select! {
+            result = &mut *running => {
+                Err(Error::Conflict(format!(
+                    "waiter terminated before timer admission {expected}: {result:?}"
+                )))
+            }
+            result = &mut admissions => {
+                result.map_err(|error| Error::Storage(format!("wait observation did not start: {error}")))?
+            }
+        }
     }
 
     #[tokio::test]
@@ -6733,7 +6759,7 @@ mod tests {
             let first = first.clone(); let request = request.clone();
             async move { first.wait(request).await }
         }));
-        await_timer_admissions(&first, 1).await?;
+        await_timer_admissions(&first, 1, &mut live_wait).await?;
         let interrupted = WaitRequest {
             operation_id: OperationId::from_bytes([0xC7; 16]),
             cancellation_id: Some(OperationId::from_bytes([0xC8; 16])), ..request.clone()
@@ -6742,7 +6768,7 @@ mod tests {
             let first = first.clone(); let request = interrupted.clone();
             async move { first.wait(request).await }
         }));
-        await_timer_admissions(&first, 2).await?;
+        await_timer_admissions(&first, 2, &mut interrupted_wait).await?;
         interrupted_wait.handle.abort();
         assert!((&mut interrupted_wait).await.is_err());
         drop(interrupted_wait);
