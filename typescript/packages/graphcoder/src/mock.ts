@@ -21,6 +21,7 @@ import {
   type SessionSnapshot,
   type SessionSummary,
   type StartSessionInput,
+  type InputSessionInput,
   type WritebackApproval,
   type WritebackReceipt,
 } from "./api.js";
@@ -123,6 +124,29 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
     const files = new Map<string, FileBody>([["README.md", { path: "README.md", mediaType: "text/markdown", bytes: new TextEncoder().encode("# GraphCoder fixture\n"), generation }]]);
     this.#sessions.set(sessionId, { summary, snapshot, activity, messages, approvals: [approval], changes, bodies, files });
     return Promise.resolve(snapshot);
+  }
+
+  inputSession(input: InputSessionInput): Promise<SessionSnapshot> {
+    this.calls.push({ method: "inputSession", sessionId: input.sessionId });
+    try {
+      checkedPublicText(input.operationId, "operation id", MAX_OPERATION_ID_BYTES);
+      checkedPublicText(input.prompt, "session prompt", MAX_PROMPT_BYTES);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const session = this.#session(input.sessionId);
+    const at = nowIso(this.#now);
+    session.summary = { ...session.summary, state: "running", updatedAt: at };
+    session.snapshot = { ...session.snapshot, summary: session.summary };
+    session.activity.push({
+      sequence: BigInt(session.activity.length + 1),
+      id: `input-${session.activity.length + 1}`,
+      kind: "model",
+      actorId: session.summary.rootAgentId,
+      text: `fixture ${this.#fixture} accepted the follow-up prompt`,
+      at,
+    });
+    return Promise.resolve(session.snapshot);
   }
 
   openSession(sessionId: SessionId): Promise<SessionSnapshot> {

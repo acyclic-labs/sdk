@@ -19,6 +19,7 @@ import {
   type SessionSnapshot,
   type SessionSummary,
   type StartSessionInput,
+  type InputSessionInput,
   type WritebackApproval,
   type WritebackReceipt,
 } from "./api.js";
@@ -54,6 +55,7 @@ export { checkedRequestId, MAX_REQUEST_ID_BYTES } from "./wire-codec.js";
 export const GRAPH_CODER_WIRE_METHODS = Object.freeze([
   "list_sessions",
   "start_session",
+  "input_session",
   "open_session",
   "resume_session",
   "read_activity",
@@ -83,6 +85,7 @@ export interface GraphCoderWirePageQuery {
 export interface GraphCoderWireParamsByMethod {
   readonly list_sessions: { readonly query?: GraphCoderWirePageQuery };
   readonly start_session: { readonly prompt: string; readonly operation_id: string; readonly model_fixture?: string };
+  readonly input_session: { readonly session_id: string; readonly prompt: string; readonly operation_id: string };
   readonly open_session: { readonly session_id: string };
   readonly resume_session: { readonly session_id: string };
   readonly read_activity: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
@@ -143,6 +146,7 @@ export type GraphCoderWireSnapshot = Omit<SessionSnapshot, "summary" | "agents" 
 export interface GraphCoderWireResultByMethod {
   readonly list_sessions: { readonly items: readonly GraphCoderWireSessionSummary[]; readonly next?: string };
   readonly start_session: GraphCoderWireSnapshot;
+  readonly input_session: GraphCoderWireSnapshot;
   readonly open_session: GraphCoderWireSnapshot;
   readonly resume_session: GraphCoderWireSnapshot;
   readonly read_activity: { readonly session_id: string; readonly items: readonly GraphCoderWireActivityEvent[]; readonly next?: string };
@@ -191,6 +195,16 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
       ? { prompt, operation_id: requestedOperationId }
       : { prompt, operation_id: requestedOperationId, model_fixture: input.modelFixture };
     return decodeSnapshot(await this.#call("start_session", params));
+  }
+
+  async inputSession(input: InputSessionInput): Promise<SessionSnapshot> {
+    const prompt = checkedPublicText(input.prompt, "session prompt", MAX_PROMPT_BYTES);
+    const operationId = checkedPublicText(input.operationId, "operation id", MAX_OPERATION_ID_BYTES);
+    return boundSnapshot(
+      decodeSnapshot(await this.#call("input_session", { session_id: input.sessionId, prompt, operation_id: operationId })),
+      input.sessionId,
+      "input session",
+    );
   }
 
   async openSession(id: SessionSnapshot["summary"]["id"]): Promise<SessionSnapshot> {
