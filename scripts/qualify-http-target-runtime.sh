@@ -130,7 +130,7 @@ EOF
       cat >"$project_root/src/acyclic_actors_qualification.clj" <<'EOF'
 (ns acyclic-actors-qualification
   (:require [acyclic-actors-api.core :refer [with-api-context]]
-            [acyclic-actors-api.api.default :refer [create-actor-with-http-info]]))
+            [acyclic-actors-api.api.default :refer [create-actor-with-http-info inspect-actor-with-http-info]]))
 
 (defn -main [& _]
   (let [endpoint (System/getenv "ACYCLIC_FIXTURE_HTTP_ENDPOINT")
@@ -145,11 +145,22 @@ EOF
     (when-not (<= 200 (:status response) 299)
       (throw (ex-info "Rust fixture rejected generated Clojure request" {:status (:status response)})))
     (when-not (map? (:data response))
-      (throw (ex-info "generated Clojure client did not decode the Rust fixture response" {})))))
+      (throw (ex-info "generated Clojure client did not decode the Rust fixture response" {})))
+    (let [actor-id (or (get-in (:data response) [:actor :actorId])
+                       (get-in (:data response) [:actor :actor-id]))
+          inspect-response (with-api-context {:base-url endpoint}
+                             (inspect-actor-with-http-info {:actorId actor-id}))]
+      (when-not (string? actor-id)
+        (throw (ex-info "generated Clojure client did not decode actor_id" {})))
+      (when-not (<= 200 (:status inspect-response) 299)
+        (throw (ex-info "Rust fixture rejected generated Clojure inspect request" {:status (:status inspect-response)})))
+      (when-not (map? (:data inspect-response))
+        (throw (ex-info "generated Clojure client did not decode the inspect response" {})))))
 EOF
       cp "$project_root/src/acyclic_actors_qualification.clj" "$transport_dir/acyclic_actors_qualification.clj"
       run_logged clojure-transport env ACYCLIC_FIXTURE_HTTP_ENDPOINT="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" lein -f "${projects[0]}" run -m acyclic-actors-qualification
       client_transport='clojure-generated-client-fixture-roundtrip'
+      client_operations='actors.create_actor,actors.inspect_actor'
     else
       client_transport='not-run-fixture-endpoint-unset'
     fi
