@@ -11,7 +11,7 @@ use crate::type_policy::{
     OperationEnforcement, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
     PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule, WIRE_UNION_VARIANTS,
     WireValueKind, operation_enforcement, resolved_operation_rules, resolved_request_fields,
-    resolved_rpc_methods, semantic_type,
+    resolved_response_fields, resolved_rpc_methods, semantic_type,
 };
 
 pub const CSHARP_TYPED_PATH: &str = "dotnet/RustTypedClients.cs";
@@ -89,6 +89,7 @@ fn render() -> String {
     render_nested_models(&mut out);
     render_object_stream(&mut out);
     render_object_info_response(&mut out);
+    render_response_models(&mut out);
     render_operation_validation(&mut out);
     render_operation_validation_policy(&mut out);
     render_clients(&mut out);
@@ -579,6 +580,74 @@ fn render_object_info_response(out: &mut String) {
     );
 }
 
+fn response_model_name(family: &str, output_message: &str) -> Option<String> {
+    let short = output_message.rsplit('.').next().unwrap_or(output_message);
+    if (family == "objects" && matches!(short, "GetObjectResponse" | "ObjectInfo")) {
+        return None;
+    }
+    Some(format!("Rust{}{}Response", upper(family), short))
+}
+
+fn response_field_type(field: &ResolvedRequestField, family: &str) -> String {
+    full_csharp_field_type(field, family)
+}
+
+fn response_field_accessor(field: &ResolvedRequestField) -> String {
+    let property = upper(&field.field);
+    if field.wire_type == Some(FieldType::Enum as i32) {
+        format!("(int)Wire.{property}")
+    } else {
+        format!("Wire.{property}")
+    }
+}
+
+/// Emit a nominal response facade for every Rust-owned output message. The
+/// wire message remains available through `Wire`, while direct fields,
+/// optional presence, and open enum numbers are exposed through a stable
+/// generated surface. Reused output messages are emitted once per family.
+fn render_response_models(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve");
+    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let mut roots = BTreeSet::<(String, String)>::new();
+    for method in methods {
+        if response_model_name(&method.family, &method.output_message).is_some() {
+            roots.insert((method.family, method.output_message));
+        }
+    }
+    for (family, root) in roots {
+        let Some(model) = response_model_name(&family, &root) else { continue };
+        let wire = qualified_fq_message(&root, &family);
+        out.push_str(&format!("public sealed record {model}({wire} Wire)\n{{\n"));
+        let direct = fields
+            .iter()
+            .filter(|field| {
+                field.family == family
+                    && field.root_message == root
+                    && field.message_path == root
+            })
+            .collect::<Vec<_>>();
+        for field in direct {
+            let property = upper(&field.field);
+            out.push_str(&format!(
+                "    public {} {} => {};\n",
+                response_field_type(field, &family),
+                property,
+                response_field_accessor(field)
+            ));
+            if field.proto3_optional {
+                out.push_str(&format!("    public bool Has{property} => Wire.Has{property};\n"));
+            }
+            if field.wire_type == Some(FieldType::Enum as i32) {
+                out.push_str(&format!("    public int {property}Number => (int)Wire.{property};\n"));
+            }
+            if field.oneof_index.is_some() {
+                let oneof = field.oneof_index.unwrap();
+                out.push_str(&format!("    public int {property}OneofIndex => {oneof};\n"));
+            }
+        }
+        out.push_str(&format!("    internal static {model} FromWire({wire} message) => new(message);\n}}\n\n"));
+    }
+}
 fn render_operation_validation(out: &mut String) {
     let rules = resolved_operation_rules();
     out.push_str(
