@@ -5562,53 +5562,79 @@ impl PersistentLocalSwarm {
         if let Some(existing) = self.sessions.lock().await.get(&task).cloned() {
             return Ok(existing);
         }
-        let published_seed = self.seeds.lock().await.get(&task).cloned();
-        if let Some(seed) = published_seed {
-            let session = self.session(task).await?;
-            let parent = session.parent.ok_or_else(|| {
-                Error::Conflict("published child has no parent session".into())
-            })?;
-            let resolver = self.bindings.filesystem_fork_resolver.as_ref().ok_or_else(|| {
-                Error::Unsupported("reopening a published child requires its filesystem resolver".into())
-            })?;
-            let secret = resolver.issuer_secret.ok_or_else(|| {
-                Error::Unauthorized("local fork resolver has no durable host secret".into())
-            })?;
-            let operation = session.operation.ok_or_else(|| {
-                Error::Conflict("published child has no operation identity".into())
-            })?;
-            let parent_harness = Box::pin(self.open_session(parent)).await?;
-            let parent_aggregate = parent_harness.conversation_aggregate(self.config.limits).await?;
+        self.open_uncached_session(task).await
+    }
+
+    // Keep heavyweight cold-open constructors out of the cached-session future.
+    // Recursive fork resolution commonly reopens an already live parent.
+    fn open_uncached_session<'a>(
+        &'a self,
+        task: TaskId,
+    ) -> BoxFuture<'a, Result<Arc<PersistentLocalHarness>>> {
+        Box::pin(async move {
+            let published_seed = self.seeds.lock().await.get(&task).cloned();
+            if let Some(seed) = published_seed {
+                let session = self.session(task).await?;
+                let parent = session.parent.ok_or_else(|| {
+                    Error::Conflict("published child has no parent session".into())
+                })?;
+                let resolver =
+                    self.bindings
+                        .filesystem_fork_resolver
+                        .as_ref()
+                        .ok_or_else(|| {
+                            Error::Unsupported(
+                                "reopening a published child requires its filesystem resolver"
+                                    .into(),
+                            )
+                        })?;
+                let secret = resolver.issuer_secret.ok_or_else(|| {
+                    Error::Unauthorized("local fork resolver has no durable host secret".into())
+                })?;
+                let operation = session.operation.ok_or_else(|| {
+                    Error::Conflict("published child has no operation identity".into())
+                })?;
+                let parent_harness = Box::pin(self.open_session(parent)).await?;
+                let parent_aggregate = parent_harness
+                    .conversation_aggregate(self.config.limits)
+                    .await?;
+                let harness = Arc::new(
+                    PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
+                        self.config.model.clone(),
+                        self.provider.clone(),
+                        self.config.limits,
+                        resolver.host.clone(),
+                        resolver.stream.clone(),
+                        LocalFilesystemForkResolver::child_issuer(&seed.child, operation, secret),
+                        &parent_aggregate,
+                        &seed,
+                        self.bindings.tools_for(task)?,
+                        self.stream_provider.clone(),
+                    )
+                    .await?,
+                );
+                self.sessions.lock().await.insert(task, harness.clone());
+                self.observe(LocalSwarmObservation::HarnessOpened { task });
+                return Ok(harness);
+            }
             let harness = Arc::new(
-                PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
-                    self.config.model.clone(), self.provider.clone(), self.config.limits,
-                    resolver.host.clone(), resolver.stream.clone(),
-                    LocalFilesystemForkResolver::child_issuer(&seed.child, operation, secret),
-                    &parent_aggregate, &seed, self.bindings.tools_for(task)?,
+                PersistentLocalHarness::open_with_tools_and_project_on_providers(
+                    open_session_path(&self.root, task),
+                    self.config.model.clone(),
+                    self.provider.clone(),
+                    self.config.limits,
+                    self.bindings.tools_for(task)?,
+                    self.config.project.clone(),
+                    self.filesystem_host.clone(),
+                    self.conversation_stream.clone(),
                     self.stream_provider.clone(),
-                ).await?,
+                )
+                .await?,
             );
             self.sessions.lock().await.insert(task, harness.clone());
             self.observe(LocalSwarmObservation::HarnessOpened { task });
-            return Ok(harness);
-        }
-        let harness = Arc::new(
-            PersistentLocalHarness::open_with_tools_and_project_on_providers(
-                open_session_path(&self.root, task),
-                self.config.model.clone(),
-                self.provider.clone(),
-                self.config.limits,
-                self.bindings.tools_for(task)?,
-                self.config.project.clone(),
-                self.filesystem_host.clone(),
-                self.conversation_stream.clone(),
-                self.stream_provider.clone(),
-            )
-            .await?,
-        );
-        self.sessions.lock().await.insert(task, harness.clone());
-        self.observe(LocalSwarmObservation::HarnessOpened { task });
-        Ok(harness)
+            Ok(harness)
+        })
     }
 
     async fn update_session<F>(&self, task: TaskId, update: F) -> Result<()>
