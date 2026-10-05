@@ -291,29 +291,40 @@ impl ModelProvider for EchoModel {
         dispatch: ProviderDispatchContext,
     ) -> BoxStream<'a, acyclic_harness::Result<ModelEvent>> {
         let usage = self.usage.clone();
-        if let Ok(mut counters) = usage.usage.lock() {
-            let entry = counters
-                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                .or_default();
-            entry.model_steps = entry.model_steps.saturating_add(1);
-        }
+        let mut counters = match usage.usage.lock() {
+            Ok(counters) => counters,
+            Err(_) => {
+                return Box::pin(futures::stream::iter([Err(HarnessError::Storage(
+                    "mock provider usage lock is poisoned before dispatch".into(),
+                ))]));
+            }
+        };
+        let entry = counters
+            .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+            .or_default();
+        entry.model_steps = entry.model_steps.saturating_add(1);
+        drop(counters);
+        let operation_id = dispatch.operation_id;
+        let dispatch_id = dispatch.dispatch_id.0.clone();
         let started = Instant::now();
         Box::pin(self.generate(prepared).map(move |event| {
-            if let Ok(value) = &event {
-                let bytes = serde_json::to_vec(value)
-                    .map(|value| value.len() as u64)
-                    .unwrap_or_default();
-                if let Ok(mut counters) = usage.usage.lock() {
-                    let entry = counters
-                        .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                        .or_default();
-                    entry.output_bytes = entry.output_bytes.saturating_add(bytes);
-                    entry.execution_time_ms = entry
-                        .execution_time_ms
-                        .max(started.elapsed().as_millis() as u64);
-                }
-            }
-            event
+            let value = event?;
+            let bytes = serde_json::to_vec(&value).map_err(|error| {
+                HarnessError::Storage(format!(
+                    "mock provider could not serialize model event for usage accounting: {error}"
+                ))
+            })?;
+            let mut counters = usage.usage.lock().map_err(|_| {
+                HarnessError::Storage("mock provider usage lock is poisoned during dispatch".into())
+            })?;
+            let entry = counters
+                .entry((operation_id, dispatch_id.clone()))
+                .or_default();
+            entry.output_bytes = entry.output_bytes.saturating_add(bytes.len() as u64);
+            entry.execution_time_ms = entry
+                .execution_time_ms
+                .max(started.elapsed().as_millis() as u64);
+            Ok(value)
         }))
     }
 
