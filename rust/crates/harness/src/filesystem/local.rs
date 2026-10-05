@@ -1,5 +1,5 @@
 //! Durable local Harness composition using public Stream and Filesystem providers.
-use super::{FilesystemForkVerifier, FilesystemHost, HarnessStorage};
+use super::{FilesystemForkVerifier, FilesystemHost, HarnessStorage, NativeCaptureBoundary};
 use crate::{
     AgentId, Capabilities, ConversationId, Error, OperationId, Result, SessionId, TaskId,
     conversation::{
@@ -1867,10 +1867,10 @@ impl PersistentLocalHarness {
         let fs = LocalFs::local(LocalOptions::new(root.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let host = Arc::new(FilesystemHost::new(
-            fs,
-            descriptor.private_volume.provider().clone(),
-        )?);
+        let host = Arc::new(
+            FilesystemHost::new(fs, descriptor.private_volume.provider().clone())?
+                .with_native_capture_boundary(NativeCaptureBoundary::new([root])?),
+        );
         host.create_volume(&descriptor.private_volume).await?;
         if let Some(project) = &descriptor.project {
             host.create_volume(project).await?;
@@ -1939,6 +1939,11 @@ impl PersistentLocalHarness {
             ));
         }
         let root = root.as_ref();
+        let host = Arc::new(
+            host.as_ref()
+                .clone()
+                .with_native_capture_boundary(NativeCaptureBoundary::new([root])?),
+        );
         let descriptor_stream = stream
             .stream(shared_session_descriptor_path(root))
             .map_err(|error| Error::Storage(error.to_string()))?;
