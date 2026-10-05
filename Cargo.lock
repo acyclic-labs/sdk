@@ -332,6 +332,7 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+ "acyclic-sdk-contract-wire",
  "async-trait",
  "axum",
  "blake3",
