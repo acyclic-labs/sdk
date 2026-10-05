@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { delimiter, extname, join, relative, resolve } from "node:path";
+import { delimiter, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verifyQualificationSummary } from "./verify-guide-projection-receipts.mjs";
@@ -132,20 +132,6 @@ function artifact(root, pattern) {
 // Locate Rust manifests without descending into build targets. The install
 // archive needs every workspace manifest for Cargo's workspace resolver, but
 // only the selected crate's source and its local path-dependency closure.
-function rustManifestDirs(root) {
-  const dirs = [];
-  const pending = [root];
-  while (pending.length) {
-    const current = pending.pop();
-    if (!existsSync(current)) continue;
-    if (existsSync(join(current, "Cargo.toml"))) dirs.push(current);
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      if (entry.isDirectory() && !["target", ".git"].includes(entry.name)) pending.push(join(current, entry.name));
-    }
-  }
-  return dirs;
-}
-
 function rustPathDependencyClosure(root) {
   const closure = [];
   const visited = new Set();
@@ -162,6 +148,21 @@ function rustPathDependencyClosure(root) {
     }
   }
   return closure;
+}
+
+function rustIncludedAssets(crateDirs, repo) {
+  const assets = new Set();
+  for (const crateDir of crateDirs) {
+    for (const sourcePath of allFiles(crateDir)) {
+      if (!/\.(rs|toml|build|txt)$/i.test(sourcePath)) continue;
+      const source = readFileSync(sourcePath, "utf8");
+      for (const match of source.matchAll(/include_bytes!\s*\(\s*"([^"]+)"/g)) {
+        const asset = resolve(dirname(sourcePath), match[1]);
+        if (existsSync(asset) && asset.startsWith(`${resolve(repo)}${sep}`)) assets.add(asset);
+      }
+    }
+  }
+  return [...assets];
 }
 
 function extension(language) {
@@ -232,17 +233,29 @@ function prepare(language, packageArtifact, directory) {
     let packaged = { command: "", exitCode: 0, stdout: "", stderr: "" };
     if (!existsSync(packageManifest)) {
       mkdirSync(bundleSource, { recursive: true });
-      const workspaceCrates = rustManifestDirs(join(repo, "rust", "crates"));
+      const workspaceCrates = rustPathDependencyClosure(packageRoot);
       for (const crateDir of workspaceCrates) {
         const destination = join(bundleSource, relative(repo, crateDir));
         mkdirSync(destination, { recursive: true });
-        cpSync(join(crateDir, "Cargo.toml"), join(destination, "Cargo.toml"));
-      }
-      for (const crateDir of rustPathDependencyClosure(packageRoot)) {
-        const destination = join(bundleSource, relative(repo, crateDir));
         cpSync(crateDir, destination, { recursive: true, filter: (path) => !/(^|[\\/])(target|\.git)([\\/]|$)/i.test(path) });
       }
-      cpSync(join(repo, "Cargo.toml"), join(bundleSource, "Cargo.toml"));
+      for (const asset of rustIncludedAssets(workspaceCrates, repo)) {
+        const destination = join(bundleSource, relative(repo, asset));
+        mkdirSync(dirname(destination), { recursive: true });
+        cpSync(asset, destination);
+      }
+      const workspaceManifest = readFileSync(join(repo, "Cargo.toml"), "utf8");
+      const memberPaths = workspaceCrates
+        .map((crateDir) => `  "${relative(repo, crateDir).replaceAll("\\", "/")}",`)
+        .sort();
+      const stagedManifest = workspaceManifest.replace(
+        /members\s*=\s*\[[\s\S]*?\]\s*\nresolver\s*=/,
+        `members = [\n${memberPaths.join("\n")}\n]\nresolver =`,
+      );
+      if (stagedManifest === workspaceManifest) {
+        throw new Error("Rust workspace manifest has no replaceable members list");
+      }
+      writeFileSync(join(bundleSource, "Cargo.toml"), stagedManifest);
       cpSync(join(repo, "Cargo.lock"), join(bundleSource, "Cargo.lock"));
       const files = allFiles(bundleSource).map((path) => ({
         path: relative(bundleSource, path).replaceAll("\\", "/"),
@@ -251,7 +264,11 @@ function prepare(language, packageArtifact, directory) {
       writeFileSync(packageManifest, `${JSON.stringify({ schema: "acyclic.sdk.rust-package-bundle.v1", package: packageName, version: packageVersion, files }, null, 2)}\n`);
       packaged = { command: `internal rust package staging ${packageManifest}`, exitCode: 0, stdout: `staged ${files.length} immutable source files\n`, stderr: "" };
     }
-    const packageInstall = join(directory, "installed-package");
+    // Keep the installed workspace outside the consumer's directory. The
+    // consumer is its own tiny workspace, while the staged package must let
+    // Cargo discover the bundle's workspace root rather than inheriting the
+    // consumer (or any checkout ancestor) as its root.
+    const packageInstall = join(output, "installed-rust-packages", packageName);
     mkdirSync(packageInstall, { recursive: true });
     cpSync(bundleSource, packageInstall, { recursive: true });
     const installedRoot = join(packageInstall, relative(repo, packageRoot));

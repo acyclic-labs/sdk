@@ -43,6 +43,8 @@ pub const QUICKSTART_SNIPPET: &str = r#"use acyclic_fs::{CancellationToken, Fs, 
 use acyclic_fs::model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode, VolumeConfig};
 use acyclic_fs::path::PortablePath;
 
+let root = std::env::temp_dir().join(format!("acyclic-sdk-guide-fs-{}", std::process::id()));
+std::fs::create_dir_all(&root)?;
 let fs = Fs::local(LocalOptions::new(root)).await?;
 let cancel = CancellationToken::default();
 let workspace = fs.create_volume(VolumeConfig::portable(Lifecycle::Durable), WorkBudget::UNBOUNDED, &cancel).await?.value;
@@ -56,7 +58,8 @@ let mut view = MountedView::builder()
     .build()?;
 let routed = view.route_mut(&PortablePath::parse("/.scratch/tool-output.txt", acyclic_fs::model::VolumeLimits::default())?)?;
 routed.checkout.create_file(routed.path, bytes::Bytes::from_static(b"tool output"), WorkBudget::UNBOUNDED, &cancel).await?;
-assert_eq!(view.snapshot().bindings.len(), 2);"#;
+assert_eq!(view.snapshot().bindings.len(), 2);
+let _ = std::fs::remove_dir_all(&root);"#;
 
 fn scenario_root() -> PathBuf {
     let nonce = SystemTime::now()
