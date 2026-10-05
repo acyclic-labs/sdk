@@ -532,10 +532,10 @@ fn ordinary_descriptor_names(kind: FieldType) -> BTreeSet<String> {
         .into_iter()
         .chain(resolved_response_fields().expect("Rust response descriptors must resolve"))
     {
-        if field.wire_type == Some(kind as i32) {
-            if let Some(name) = descriptor_type_name(&field) {
-                names.insert(name);
-            }
+        if field.wire_type == Some(kind as i32)
+            && let Some(name) = descriptor_type_name(&field)
+        {
+            names.insert(name);
         }
     }
     for item in SEMANTIC_TYPES
@@ -545,10 +545,9 @@ fn ordinary_descriptor_names(kind: FieldType) -> BTreeSet<String> {
         for field in resolved_request_fields().expect("Rust request descriptors must resolve") {
             if message_leaf(&field.message_path) == item.rust_name
                 && field.wire_type == Some(kind as i32)
+                && let Some(name) = descriptor_type_name(&field)
             {
-                if let Some(name) = descriptor_type_name(&field) {
-                    names.insert(name);
-                }
+                names.insert(name);
             }
         }
     }
