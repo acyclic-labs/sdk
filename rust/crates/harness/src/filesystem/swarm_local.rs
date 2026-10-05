@@ -7848,19 +7848,42 @@ mod tests {
             "harness.test.local-swarm"
         }
 
+        fn supports_harness_effect_time(&self) -> bool {
+            true
+        }
+
         fn cumulative_usage(
             &self,
             operation_id: OperationId,
             dispatch_id: &IdempotencyKey,
         ) -> Result<SwarmUsage> {
-            Ok(self
-                .usage
+            self.usage
                 .lock()
                 .map_err(|_| Error::Conflict("mock usage lock poisoned".into()))?
                 .get(&(operation_id, dispatch_id.0.clone()))
                 .map(|measurement| measurement.usage)
                 .ok_or_else(|| Error::Indeterminate(operation_id))
-        )
+        }
+
+        fn record_harness_effect_time_ms(
+            &self,
+            operation_id: OperationId,
+            dispatch_id: &IdempotencyKey,
+            elapsed_ms: u64,
+        ) -> Result<()> {
+            let mut usage = self
+                .usage
+                .lock()
+                .map_err(|_| Error::Conflict("mock usage lock poisoned".into()))?;
+            let entry = usage
+                .get_mut(&(operation_id, dispatch_id.0.clone()))
+                .ok_or_else(|| Error::Indeterminate(operation_id))?;
+            entry.usage.execution_time_ms = entry
+                .usage
+                .execution_time_ms
+                .checked_add(elapsed_ms)
+                .ok_or_else(|| Error::Conflict("mock Harness time measurement overflow".into()))?;
+            Ok(())
         }
     }
 

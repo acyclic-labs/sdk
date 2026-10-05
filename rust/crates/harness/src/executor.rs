@@ -497,6 +497,20 @@ pub trait SwarmProviderAdmission: Send {
     fn admit_model_step(&mut self) -> Result<SwarmUsage>;
     fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage>;
     fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage>;
+    /// Persists trusted Harness-side time for a generic effect (for example a
+    /// tool or fork publication) under this exact provider dispatch.  Sources
+    /// that cannot durably retain this measurement must fail closed.
+    fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
+        let _ = elapsed_ms;
+        Err(Error::Unsupported(
+            "provider budget does not persist Harness effect time".into(),
+        ))
+    }
+    /// Returns whether generic Harness effects may be dispatched under this
+    /// budget.  Unsupported sources are rejected before their effect claim.
+    fn supports_harness_effect_time(&self) -> bool {
+        false
+    }
     /// Returns the remaining journal-issued execution ceiling. `None` keeps
     /// the compatibility path for providers that do not expose a budget.
     fn remaining_execution_time_ms(&self) -> Option<u64> {
@@ -539,6 +553,18 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     /// Admits elapsed provider execution time at a scheduling boundary.
     pub fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
         self.context.admit_execution_time(elapsed_ms)
+    }
+
+    /// Persists host-measured time spent by a generic Harness effect under
+    /// this exact child dispatch identity.
+    pub fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
+        self.context.record_harness_effect_time_ms(elapsed_ms)
+    }
+
+    /// Returns whether generic Harness effects have durable time measurement.
+    #[must_use]
+    pub fn supports_harness_effect_time(&self) -> bool {
+        self.context.supports_harness_effect_time()
     }
 
     /// Returns the remaining execution ceiling from the authenticated
@@ -601,6 +627,14 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
         Self::admit_execution_time_ms(self, elapsed_ms)
     }
 
+    fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
+        Self::record_harness_effect_time_ms(self, elapsed_ms)
+    }
+
+    fn supports_harness_effect_time(&self) -> bool {
+        Self::supports_harness_effect_time(self)
+    }
+
     fn remaining_execution_time_ms(&self) -> Option<u64> {
         Some(Self::remaining_execution_time_ms(self))
     }
@@ -640,6 +674,18 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
     /// Admits elapsed provider execution time at a scheduling boundary.
     pub fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
         self.context.admit_execution_time(elapsed_ms)
+    }
+
+    /// Persists host-measured time spent by a generic Harness effect under
+    /// the canonical root dispatch identity.
+    pub fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
+        self.context.record_harness_effect_time_ms(elapsed_ms)
+    }
+
+    /// Returns whether generic Harness effects have durable time measurement.
+    #[must_use]
+    pub fn supports_harness_effect_time(&self) -> bool {
+        self.context.supports_harness_effect_time()
     }
 
     /// Returns the remaining root execution ceiling.
@@ -685,6 +731,14 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmRootProviderBoundary<S
 
     fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
         Self::admit_execution_time_ms(self, elapsed_ms)
+    }
+
+    fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
+        Self::record_harness_effect_time_ms(self, elapsed_ms)
+    }
+
+    fn supports_harness_effect_time(&self) -> bool {
+        Self::supports_harness_effect_time(self)
     }
 
     fn remaining_execution_time_ms(&self) -> Option<u64> {
@@ -2055,6 +2109,15 @@ impl StockExecutor {
                     }
                 }
             }
+            if !started
+                && budget
+                    .as_deref()
+                    .is_some_and(|budget| !budget.supports_harness_effect_time())
+            {
+                return Err(Error::Unsupported(
+                    "budgeted tool dispatch requires durable Harness effect measurement".into(),
+                ));
+            }
             let claimed = if started {
                 false
             } else {
@@ -2185,12 +2248,14 @@ impl StockExecutor {
                     },
                 }
             };
-            admit_effect_elapsed(
-                &mut budget,
-                self.execution_clock.as_ref(),
-                effect_started,
-                operation_id,
-            )?;
+            if claimed {
+                admit_effect_elapsed(
+                    &mut budget,
+                    self.execution_clock.as_ref(),
+                    effect_started,
+                    operation_id,
+                )?;
+            }
             if validate_value(&tool.definition.output_schema, &result.value, "tool output").is_err()
             {
                 self.record_tool_failure(
@@ -3692,6 +3757,9 @@ fn admit_effect_elapsed(
 ) -> Result<()> {
     if let Some(budget) = budget.as_deref_mut() {
         let elapsed_ms = elapsed_provider_time(clock, started_at_ms, operation_id)?;
+        if elapsed_ms != 0 {
+            budget.record_harness_effect_time_ms(elapsed_ms)?;
+        }
         budget.admit_execution_time_ms(elapsed_ms)?;
     }
     Ok(())
@@ -7501,6 +7569,10 @@ mod tests {
     }
 
     impl SwarmProviderAdmission for DeadlineBudget {
+        fn supports_harness_effect_time(&self) -> bool {
+            true
+        }
+
         fn admit_model_step(&mut self) -> Result<SwarmUsage> {
             Ok(SwarmUsage::default())
         }
