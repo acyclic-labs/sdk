@@ -826,7 +826,7 @@ fn render_swift() -> String {
                 let assignments = nested.iter().map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field))).collect::<String>();
                 let raw_assignments = nested.iter().map(|field| format!("self.{} = nil\n", swift_field_name(&field.field))).collect::<String>();
                 let typed_checks = nested.iter().map(|field| swift_nested_value_checks(field, item.rules)).collect::<String>();
-                out.push_str(&format!("public struct {}: Sendable {{\n public let wire: RustWireMessage\n{} public init?(_ wire: RustWireMessage) {{{} self.wire = wire\n{} }}\n public init?(wire: RustWireMessage, {}) {{{} self.wire = wire\n{} }}\n}}\n", item.rust_name, declarations, swift_message_checks(item.rules), raw_assignments, params, typed_checks, assignments));
+                out.push_str(&format!("public struct {}: Sendable {{\n private let wire: RustWireMessage\n{} internal init?(_ wire: RustWireMessage) {{{} self.wire = wire\n{} }}\n internal init?(wire: RustWireMessage, {}) {{{} self.wire = wire\n{} }}\n}}\n", item.rust_name, declarations, swift_message_checks(item.rules), raw_assignments, params, typed_checks, assignments));
             }
             _ => {}
         }
@@ -872,7 +872,7 @@ fn render_swift() -> String {
             .map(|field| format!(" self.{0} = {0};\n", swift_field_name(&field.field)))
             .collect::<String>();
         out.push_str(&format!(
-            "public struct {name}: Sendable {{\n public let wire: RustWireMessage\n{declarations} public init(_ wire: RustWireMessage) {{ self.wire = wire\n{raw_assignments} }}\n public init(wire: RustWireMessage = RustWireMessage(wire: Data()), {params}) {{ self.wire = wire\n{assignments} }}\n}}\n"
+            "public struct {name}: Sendable {{\n private let wire: RustWireMessage\n{declarations} internal init(_ wire: RustWireMessage) {{ self.wire = wire\n{raw_assignments} }}\n public init(wire: RustWireMessage = RustWireMessage(wire: Data()), {params}) {{ self.wire = wire\n{assignments} }}\n}}\n"
         ));
     }
     let mut ordinary_enums = ordinary_descriptor_names(FieldType::Enum);
@@ -1048,7 +1048,7 @@ fn render_swift() -> String {
         .collect::<BTreeSet<_>>();
     for message in nested_messages {
         if !nested_message_groups().contains_key(message) {
-            out.push_str(&format!("public struct {}: Sendable {{ public let wire: Data; public init(wire: Data) {{ self.wire = wire }} }}\n", public_nested_type_name(message)));
+            out.push_str(&format!("public struct {}: Sendable {{ private let wire: Data; internal init(wire: Data) {{ self.wire = wire }} }}\n", public_nested_type_name(message)));
         }
     }
     for route in PUBLIC_NESTED_ROUTES {
@@ -1155,7 +1155,7 @@ fn render_cpp() -> String {
                 format!(" {ty} {};\n", field.field)
             })
             .collect::<String>();
-        out.push_str(&format!("struct {name} {{ RustWireMessage wire;{declarations} explicit {name}(RustWireMessage value) : wire(std::move(value)) {{}} }};\n"));
+        out.push_str(&format!("struct {name} {{ private: RustWireMessage wire; public: {declarations} explicit {name}(RustWireMessage value) : wire(std::move(value)) {{}} }};\n"));
     }
     let mut ordinary_enums = ordinary_descriptor_names(FieldType::Enum);
     ordinary_enums.extend(semantic_nested_descriptor_names(FieldType::Enum));
@@ -1179,7 +1179,7 @@ fn render_cpp() -> String {
                     let ty = if ty.starts_with("std::optional<") { ty } else { format!("std::optional<{ty}>") };
                     format!("{ty} {};\n", field.field)
                 }).collect::<String>();
-                out.push_str(&format!("struct {} {{ RustWireMessage wire; {} explicit {}(RustWireMessage value) {{{} wire = std::move(value); }} }};\n", item.rust_name, declarations, item.rust_name, cpp_message_checks(item.rules)));
+                out.push_str(&format!("struct {} {{ private: RustWireMessage wire; public: {} explicit {}(RustWireMessage value) {{{} wire = std::move(value); }} }};\n", item.rust_name, declarations, item.rust_name, cpp_message_checks(item.rules)));
             }
             _ => {}
         }
