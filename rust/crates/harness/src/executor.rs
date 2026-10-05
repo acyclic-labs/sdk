@@ -746,6 +746,22 @@ impl StockExecutor {
             .collect())
     }
 
+    fn project_replayed_tool_result(
+        &self,
+        tool: &crate::tool::Tool,
+        invocation: &ToolInvocation,
+        result: &ToolResult,
+    ) -> Result<Value> {
+        let projection = tool.projection.project(invocation, result)?;
+        Self::validate_persisted_tool_result(
+            &tool.definition,
+            result,
+            &projection,
+            self.limits,
+        )?;
+        Ok(projection)
+    }
+
     fn validate_persisted_tool_result(
         definition: &ToolDefinition,
         result: &ToolResult,
@@ -1595,13 +1611,21 @@ impl StockExecutor {
                 ));
             }
             let result: ToolResult = load_json(journal, &result_ref).await?;
-            let projection: Value = load_json(journal, &projection_ref).await?;
+            let projection = self.project_replayed_tool_result(tool, &invocation, &result)?;
+            let persisted_projection: Value = load_json(journal, &projection_ref).await?;
             Self::validate_persisted_tool_result(
                 &tool.definition,
                 &result,
-                &projection,
+                &persisted_projection,
                 self.limits,
             )?;
+            if crate::contract::canonical_json_bytes(&persisted_projection)?
+                != crate::contract::canonical_json_bytes(&projection)?
+            {
+                return Err(Error::Conflict(
+                    "completed tool projection differs from pinned projection".into(),
+                ));
+            }
             let message = ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -2813,6 +2837,11 @@ pub(crate) async fn classify_terminal_failure(
     limits: Limits,
 ) -> Result<TerminalFailureState> {
     let records = journal.replay(operation).await?;
+    if let Some(max_step) = records.iter().filter_map(|record| event_step(&record.event)).max() {
+        for next_step in 1..=max_step {
+            validate_prior_step_barrier(journal, &records, operation, next_step).await?;
+        }
+    }
     let mut prepared_steps = BTreeSet::new();
     let mut prepared_digests = BTreeMap::<u32, [u8; 32]>::new();
     let mut prepared_requests = BTreeMap::<u32, ModelRequest>::new();
