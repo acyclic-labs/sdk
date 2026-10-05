@@ -6952,18 +6952,29 @@ mod tests {
             operation_id: OperationId,
             dispatch_id: &IdempotencyKey,
         ) -> Result<SwarmUsage> {
-            Ok(self
+            self
                 .usage
                 .lock()
                 .map_err(|_| Error::Conflict("mock usage lock poisoned".into()))?
                 .get(&(operation_id, dispatch_id.0.clone()))
                 .copied()
-                .unwrap_or_default())
+                .ok_or_else(|| Error::Indeterminate(operation_id))
         }
     }
 
     fn mock_usage_source() -> Arc<MockUsageSource> {
         Arc::new(MockUsageSource::default())
+    }
+
+    #[test]
+    fn missing_mock_usage_is_indeterminate() {
+        let source = MockUsageSource::default();
+        let operation = OperationId::new();
+        let dispatch = IdempotencyKey::new("missing-measurement").expect("dispatch key");
+        assert!(matches!(
+            source.cumulative_usage(operation, &dispatch),
+            Err(Error::Indeterminate(observed)) if observed == operation
+        ));
     }
 
     struct DepthDeniedResolver;
