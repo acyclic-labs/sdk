@@ -146,6 +146,9 @@ fn local_operator_issuer(root: &Path) -> Result<AuthorityIssuer> {
                     output
                         .write_all(&generated)
                         .map_err(|error| Error::Storage(error.to_string()))?;
+                    output
+                        .sync_all()
+                        .map_err(|error| Error::Storage(error.to_string()))?;
                     generated
                 }
                 Err(race) if race.kind() == std::io::ErrorKind::AlreadyExists => {
