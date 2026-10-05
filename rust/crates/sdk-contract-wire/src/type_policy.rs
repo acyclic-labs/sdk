@@ -2447,6 +2447,12 @@ pub fn audit_generated_public_surfaces(
                 "python" if python_public_raw_stub(line) => {
                     Some("public Python client attribute exposes a raw gRPC stub")
                 }
+                "python"
+                    if line.contains("IdempotencyKeyValue: TypeAlias = object")
+                        || line.contains("ImageValue: TypeAlias = Annotated[object") =>
+                {
+                    Some("Python semantic identity is erased to object")
+                }
                 "python" if python_raw_public_return(&source, line_number, line) => {
                     Some("public Python route returns the raw transport response")
                 }
@@ -2836,7 +2842,7 @@ mod tests {
         .expect("typescript fixture");
         fs::write(
             root.join("python").join("remote.py"),
-            "        self.actors = actors_pb2_grpc.ActorsServiceStub(self._channel)\n    async def invoke_actor(self):\n        return await self.actors.InvokeActor(request)\n",
+            "IdempotencyKeyValue: TypeAlias = object\n        self.actors = actors_pb2_grpc.ActorsServiceStub(self._channel)\n    async def invoke_actor(self):\n        return await self.actors.InvokeActor(request)\n",
         )
         .expect("python fixture");
         fs::write(
@@ -2871,7 +2877,7 @@ mod tests {
         assert!(findings.iter().any(|finding| finding.language == "go"));
         assert!(findings.iter().any(|finding| finding.language == "jvm"));
         assert!(findings.iter().any(|finding| finding.language == "csharp"));
-        assert!(findings.iter().all(|finding| finding.line <= 3));
+        assert!(findings.iter().all(|finding| finding.line <= 4));
         let _ = fs::remove_dir_all(root);
     }
 
