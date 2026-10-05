@@ -36,6 +36,8 @@ use std::{
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 use acyclic_fs::{CaptureOptions, HostCheckout, SourceMode, SourceOptions};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+use acyclic_fs::LocalOptions;
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
@@ -2557,6 +2559,52 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
+    /// Reads the immutable generation published by an exact workspace operation.
+    pub(crate) async fn operation_generation(
+        &self,
+        reference: &WorkspaceRef,
+        key: &IdempotencyKey,
+    ) -> Result<Option<GenerationRef>> {
+        let generation = self
+            .open(reference)
+            .await?
+            .operation_generation(filesystem_key(key))
+            .await
+            .map_err(map_error)?;
+        generation
+            .as_ref()
+            .map(|generation| self.generation_ref(generation))
+            .transpose()
+    }
+
+    /// Resolves an operation's output only when its durable generation records
+    /// the supplied generation as its sole parent.
+    ///
+    /// Operation output alone is insufficient for edit recovery: a retry may
+    /// have the same resulting bytes while carrying a different compare-and-
+    /// swap input. Checking the authenticated immutable parent binds the
+    /// recovered receipt to the original input generation after reopen.
+    pub(crate) async fn operation_generation_with_parent(
+        &self,
+        reference: &WorkspaceRef,
+        key: &IdempotencyKey,
+        expected: &GenerationRef,
+    ) -> Result<Option<GenerationRef>> {
+        let Some(output) = self.operation_generation(reference, key).await? else {
+            return Ok(None);
+        };
+        let workspace = self.open(reference).await?;
+        let expected_generation = self.generation(&workspace, expected).await?;
+        let output_generation = self.generation(&workspace, &output).await?;
+        let parents = output_generation.parents().await.map_err(map_error)?;
+        if parents.as_slice() != [expected_generation.id()] {
+            return Err(Error::Conflict(
+                "filesystem receipt input generation differs from the admitted edit".into(),
+            ));
+        }
+        Ok(Some(output))
+    }
+
     async fn open(&self, reference: &WorkspaceRef) -> Result<Workspace<A, O>> {
         reference.validate()?;
         self.validate_provider(reference.as_resource().provider())?;
@@ -2758,6 +2806,66 @@ mod tests {
                 &IdempotencyKey::new("stale-write")?,
             )
             .await,
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn operation_recovery_requires_exact_cas_parent_after_cold_reopen() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let path = root.path().to_path_buf();
+        let filesystem = Fs::local(LocalOptions::new(&path))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = ProviderRef::new("local", "filesystem", "receipt-parent-test")?;
+        let workspace = workspace_ref(provider.clone(), "receipt-parent")?;
+        filesystem
+            .create_workspace("receipt-parent")
+            .await
+            .map_err(map_error)?;
+        let host = FilesystemHost::new(filesystem.clone(), provider.clone())?;
+        let initial = host.resolve(&workspace).await?.generation;
+        let first_key = IdempotencyKey::new("receipt-parent-first")?;
+        let first = host
+            .apply(
+                &workspace,
+                Some(&initial),
+                &[WorkspaceMutation::PutFile {
+                    path: "/receipt.txt".into(),
+                    bytes: b"same output bytes".to_vec(),
+                }],
+                &first_key,
+            )
+            .await?;
+        let second_key = IdempotencyKey::new("receipt-parent-second")?;
+        let second = host
+            .apply(
+                &workspace,
+                Some(&first),
+                &[WorkspaceMutation::PutFile {
+                    path: "/other.txt".into(),
+                    bytes: b"later publication".to_vec(),
+                }],
+                &second_key,
+            )
+            .await?;
+        drop(host);
+        drop(filesystem);
+
+        let reopened_filesystem = Fs::local(LocalOptions::new(&path))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let reopened = FilesystemHost::new(reopened_filesystem, provider)?;
+        let recovered = reopened
+            .operation_generation_with_parent(&workspace, &first_key, &initial)
+            .await?;
+        assert_eq!(recovered, Some(first.clone()));
+        assert!(matches!(
+            reopened
+                .operation_generation_with_parent(&workspace, &first_key, &second)
+                .await,
             Err(Error::Conflict(_))
         ));
         Ok(())
