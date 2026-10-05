@@ -191,7 +191,7 @@ function prepare(language, packageArtifact, directory) {
     const packageVersion = packageToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
     if (!packageVersion) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package version" };
     const packageTarget = join(directory, "cargo-package-target");
-    const packaged = command(cargo, ["package", "--locked", "--offline", "--allow-dirty", "--no-verify", "--manifest-path", packageArtifact, "--target-dir", packageTarget], packageRoot, environment);
+    const packaged = command(cargo, ["package", "--locked", "--offline", "--allow-dirty", "--no-verify", "--manifest-path", packageArtifact, "--target-dir", packageTarget], packageRoot);
     if (packaged.exitCode !== 0) return { status: "install-failed", install: packaged, environment: {} };
     const crate = allFiles(packageTarget).find((path) => path.endsWith(`${packageName}-${packageVersion}.crate`));
     if (!crate) return { status: "install-failed", install: { ...packaged, stderr: `${packaged.stderr}\nCargo package produced no .crate artifact` }, environment: {} };
@@ -201,7 +201,7 @@ function prepare(language, packageArtifact, directory) {
     if (extracted.exitCode !== 0) return { status: "install-failed", install: extracted, environment: {} };
     const installedRoot = join(packageInstall, `${packageName}-${packageVersion}`);
     writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
-    return { status: "installed", install: { ...extracted, command: `${packaged.command} && ${extracted.command}`, stdout: `${packaged.stdout}${extracted.stdout}`, stderr: `${packaged.stderr}${extracted.stderr}` }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
+    return { status: "installed", packageArtifact: crate, install: { ...extracted, command: `${packaged.command} && ${extracted.command}`, stdout: `${packaged.stdout}${extracted.stdout}`, stderr: `${packaged.stderr}${extracted.stderr}` }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
   }
 
   if (language === "python" && packageArtifact.endsWith(".whl")) {
@@ -404,6 +404,10 @@ for (const projection of projections) {
     receipt.status = "artifact-missing";
   } else {
     const prepared = prepare(projection.language, packageArtifact, directory);
+    if (prepared.packageArtifact && existsSync(prepared.packageArtifact)) {
+      receipt.package_artifact = relative(repo, prepared.packageArtifact).replaceAll("\\", "/");
+      receipt.package_sha256 = createHash("sha256").update(readFileSync(prepared.packageArtifact)).digest("hex");
+    }
     receipt.install = prepared.install;
     receipt.install_status = prepared.status;
     if (prepared.status !== "installed") {
