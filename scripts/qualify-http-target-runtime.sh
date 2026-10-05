@@ -457,6 +457,7 @@ esac
 python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" "$archive_sha256" "${client_transport:-not-run}" <<'PY'
 import json, pathlib, sys
 path, target, runtime, revision, archive, archive_sha256, client_transport = sys.argv[1:]
+fixture_roundtrip = client_transport.endswith("fixture-roundtrip")
 payload = {
     "schema": "acyclic.sdk.http-target-runtime-qualification.v1",
     "target": target,
@@ -468,6 +469,9 @@ payload = {
     "archive_sha256": archive_sha256 or None,
     "installed_from_archive": bool(archive),
     "client_transport": client_transport,
+    "semantic_qualification": "fixture-roundtrip" if fixture_roundtrip else "compile-only",
+    "qualified_operations": ["actors.create_actor"] if fixture_roundtrip else [],
+    "coverage_note": "This receipt proves only the listed generated operation; it does not imply full service or family coverage.",
     "streaming": "not-applicable-to-http-projection",
     "native_grpc": "unqualified",
 }

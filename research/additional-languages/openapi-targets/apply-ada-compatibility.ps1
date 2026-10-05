@@ -245,7 +245,15 @@ package body $rootUnit.Streams is
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString_Vectors.Vector) is begin Into.Start_Array (Name); Into.End_Array (Name); end;
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString) is begin Into.Write_Entity (Name, Value); end;
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer) is begin Into.Write_Entity (Name, $rootUnit.To_UString (String (Value))); end;
-   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString) is begin Value := $rootUnit.To_UString (""); end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString) is
+      Item : constant JSON_Value := Pick (From, Name);
+   begin
+      if Item.Kind = JSON_String_Type then
+         Value := $rootUnit.To_UString (Item.Get);
+      else
+         Value := $rootUnit.To_UString ("");
+      end if;
+   end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.One_Of_String_Integer) is begin null; end;
 end $rootUnit.Streams;
 "@
