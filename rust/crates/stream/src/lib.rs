@@ -681,7 +681,8 @@ impl<P: StreamProvider> StreamClient<P> {
 #[cfg(feature = "local")]
 impl StreamClient<LocalStream> {
     /// Waits for deferred local mutations retained after caller cancellation.
-    /// Owners should await this before releasing an exclusive local root.
+    /// Call after closing mutation admission and before releasing an exclusive
+    /// local root; a later mutation can make the provider active again.
     pub async fn drain(&self) {
         self.provider.drain().await;
     }
@@ -825,7 +826,8 @@ impl<P: StreamProvider> Stream<P> {
 
 #[cfg(feature = "local")]
 impl Stream<LocalStream> {
-    /// Waits for deferred local mutations on this exact provider handle.
+    /// Waits for deferred local mutations on this exact provider handle after
+    /// the owner has closed mutation admission.
     pub async fn drain(&self) {
         self.client.provider.drain().await;
     }
