@@ -66,3 +66,5 @@ loss. That index does not prove the lost files remain available. Earlier passing
 receipts do not qualify the current source or the full matrix.
 
 Source 62cead7bb passes all nine native model-input conformance and rejection tests, with raw logs, pinned source archive and executables retained in this worktree. This does not qualify WASM parity, installed artifacts or the full matrix. Source 584ecaf75 recursive execution fails remaining session resource allocation. Source 60a7b04b9 process-tree Cargo execution passes three tests, but replay of its copied executable fails one cleanup readiness case; the intermittent cleanup gate remains open.
+
+Source 482e9d5cf resolves the nested process readiness deadline in the focused suite: three native cases pass, followed by five copied-executable replay runs (15 cases, zero failures). Each cleanup assertion still waits for the actual descendant readiness marker and checks the exact PID alive before cleanup and absent afterward. This supersedes the focused source60 flake, while full process/terminal cancellation qualification remains open.
