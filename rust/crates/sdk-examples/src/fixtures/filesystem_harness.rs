@@ -675,14 +675,10 @@ where
     type Error = std::convert::Infallible;
     type Future = BoxFuture<Self::Response, Self::Error>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let source = self.source.poll_ready(cx);
-        let destination = self.destination.poll_ready(cx);
-        match (source, destination) {
-            (Poll::Ready(Ok(())), Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
-            (Poll::Ready(Err(error)), _) | (_, Poll::Ready(Err(error))) => match error {},
-            _ => Poll::Pending,
-        }
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // Generated tonic servers are always ready and perform their own
+        // bounded request admission in `call`.
+        Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, request: http::Request<B>) -> Self::Future {
