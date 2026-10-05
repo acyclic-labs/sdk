@@ -907,7 +907,8 @@ fn event_root_dispatch_id(event: &SwarmBudgetEvent) -> Result<Option<Idempotency
 mod tests {
     use super::*;
     use crate::swarm_budget::{
-        SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptIssuer, SwarmUsageSource,
+        SwarmReservationState, SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptIssuer,
+        SwarmUsageSource,
     };
     use acyclic_stream::{MemoryStream, StreamClient};
     use std::sync::Arc;
@@ -937,6 +938,338 @@ mod tests {
         ) -> Result<SwarmUsage> {
             Ok(SwarmUsage::default())
         }
+    }
+
+    struct FixedSource(SwarmUsage);
+
+    impl SwarmUsageSource for FixedSource {
+        fn provider_identity(&self) -> &str {
+            "journal-fixed-provider"
+        }
+
+        fn cumulative_usage(
+            &self,
+            _operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+        ) -> Result<SwarmUsage> {
+            Ok(self.0)
+        }
+    }
+
+    fn child_request(
+        operation_id: OperationId,
+        key: &str,
+        depth: u32,
+        resources: SwarmResourceRequest,
+    ) -> SwarmForkRequest {
+        SwarmForkRequest {
+            operation_id,
+            idempotency_key: IdempotencyKey::new(key).expect("key"),
+            parent_operation_id: None,
+            depth,
+            resources,
+            admission_digest: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_admission_fences_remaining_dimensions_without_leaks() -> Result<()> {
+        let base_limits = SwarmBudgetLimits {
+            max_active_agents: 8,
+            max_total_agents: 8,
+            max_recursion_depth: 1,
+            max_model_steps: 100,
+            max_output_bytes: 100,
+            max_execution_time_ms: 100,
+        };
+        let resources = SwarmResourceRequest {
+            model_steps: 3,
+            output_bytes: 3,
+            execution_time_ms: 3,
+        };
+        let cases = [
+            (
+                "active",
+                SwarmBudgetLimits {
+                    max_active_agents: 2,
+                    ..base_limits
+                },
+                1,
+                resources,
+            ),
+            (
+                "total",
+                SwarmBudgetLimits {
+                    max_total_agents: 2,
+                    ..base_limits
+                },
+                1,
+                resources,
+            ),
+            (
+                "depth",
+                base_limits,
+                2,
+                resources,
+            ),
+            (
+                "steps",
+                SwarmBudgetLimits {
+                    max_model_steps: 5,
+                    ..base_limits
+                },
+                1,
+                resources,
+            ),
+            (
+                "output",
+                SwarmBudgetLimits {
+                    max_output_bytes: 5,
+                    ..base_limits
+                },
+                1,
+                resources,
+            ),
+            (
+                "time",
+                SwarmBudgetLimits {
+                    max_execution_time_ms: 5,
+                    ..base_limits
+                },
+                1,
+                resources,
+            ),
+        ];
+
+        for (index, (dimension, limits, depth, resources)) in cases.into_iter().enumerate() {
+            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let session_id = OperationId::new();
+            let owner = SwarmOwnerFence::new(format!("worker-{dimension}"), 0)?;
+            SwarmBudgetJournal::start(&client, session_id, owner, limits).await?;
+            let mut first = SwarmBudgetJournal::open(&client, session_id).await?;
+            let mut second = SwarmBudgetJournal::open(&client, session_id).await?;
+            let parent = if dimension == "depth" {
+                let parent_id = OperationId::from_bytes([200 + index as u8; 16]);
+                let parent_resources = SwarmResourceRequest {
+                    model_steps: 20,
+                    output_bytes: 20,
+                    execution_time_ms: 20,
+                };
+                let parent = first
+                    .reserve_child(child_request(
+                        parent_id,
+                        "depth-parent",
+                        1,
+                        parent_resources,
+                    ))
+                    .await?;
+                drop(second);
+                second = SwarmBudgetJournal::open(&client, session_id).await?;
+                Some((
+                    parent_id,
+                    parent.reservation.owner.clone(),
+                    parent_resources,
+                ))
+            } else {
+                None
+            };
+            let mut first_request = child_request(
+                OperationId::from_bytes([index as u8 + 1; 16]),
+                &format!("{dimension}-first"),
+                depth,
+                resources,
+            );
+            let mut second_request = child_request(
+                OperationId::from_bytes([index as u8 + 17; 16]),
+                &format!("{dimension}-second"),
+                depth,
+                resources,
+            );
+            first_request.parent_operation_id = parent.as_ref().map(|parent| parent.0);
+            second_request.parent_operation_id = parent.as_ref().map(|parent| parent.0);
+            let (first, second) = tokio::join!(
+                first.reserve_child(first_request),
+                second.reserve_child(second_request),
+            );
+            let admitted = [first, second]
+                .into_iter()
+                .filter_map(|result| result.ok())
+                .collect::<Vec<_>>();
+            if dimension == "depth" {
+                assert!(
+                    admitted.is_empty(),
+                    "depth admission unexpectedly succeeded"
+                );
+            } else {
+                assert_eq!(
+                    admitted.len(),
+                    1,
+                    "{dimension} race admitted too many children"
+                );
+            }
+
+            let mut journal = SwarmBudgetJournal::open(&client, session_id).await?;
+            let usage = journal.usage()?;
+            let baseline_agents = if parent.is_some() { 2 } else { 1 };
+            let baseline_reserved = parent
+                .as_ref()
+                .map(|parent| SwarmUsage {
+                    model_steps: parent.2.model_steps,
+                    output_bytes: parent.2.output_bytes,
+                    execution_time_ms: parent.2.execution_time_ms,
+                })
+                .unwrap_or_default();
+            assert_eq!(
+                usage.active_agents,
+                baseline_agents + admitted.len() as u64,
+                "{dimension}"
+            );
+            assert_eq!(
+                usage.total_agents,
+                baseline_agents + admitted.len() as u64,
+                "{dimension}"
+            );
+            assert_eq!(
+                usage.reserved,
+                if admitted.is_empty() {
+                    baseline_reserved
+                } else {
+                    SwarmUsage {
+                        model_steps: baseline_reserved.model_steps + resources.model_steps,
+                        output_bytes: baseline_reserved.output_bytes + resources.output_bytes,
+                        execution_time_ms: baseline_reserved.execution_time_ms
+                            + resources.execution_time_ms,
+                    }
+                },
+                "{dimension} reservation projection"
+            );
+            if let Some(receipt) = admitted.first() {
+                journal
+                    .cancel(receipt.reservation.operation_id, &receipt.reservation.owner)
+                    .await?;
+                let usage = journal.usage()?;
+                assert_eq!(usage.active_agents, 1, "{dimension} cancellation leak");
+                assert_eq!(
+                    usage.reserved,
+                    baseline_reserved,
+                    "{dimension} resource leak"
+                );
+            }
+            if let Some((parent_id, parent_owner, _)) = parent {
+                journal.cancel(parent_id, &parent_owner).await?;
+                let usage = journal.usage()?;
+                assert_eq!(usage.active_agents, 1, "{dimension} parent leak");
+                assert_eq!(usage.reserved, SwarmUsage::default(), "{dimension} parent budget");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn admitted_child_shares_measured_usage_context_through_settlement() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let limits = limits();
+        let root_dispatch = IdempotencyKey::new("settle-root-dispatch")?;
+        SwarmBudgetJournal::start_with_root_dispatch(
+            &client,
+            session_id,
+            owner.clone(),
+            limits,
+            root_dispatch,
+        )
+        .await?;
+        let child = OperationId::new();
+        let resources = SwarmResourceRequest {
+            model_steps: 4,
+            output_bytes: 64,
+            execution_time_ms: 100,
+        };
+        let request = child_request(child, "settle-child", 1, resources);
+        let mut journal = SwarmBudgetJournal::open(&client, session_id).await?;
+        let root_usage = SwarmUsage {
+            model_steps: 1,
+            output_bytes: 8,
+            execution_time_ms: 10,
+        };
+        let mut root_context = journal.root_usage_context(FixedSource(root_usage))?;
+        let root_receipt = root_context.issue_usage_receipt()?;
+        journal
+            .report_root_usage_with_receipt(&owner, root_receipt)
+            .await?;
+        let admission = journal.reserve_child(request.clone()).await?;
+        let retry = journal.reserve_child(request).await?;
+        assert!(retry.replayed);
+        assert_eq!(retry.reservation, admission.reservation);
+
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: child,
+            parent_operation_id: None,
+            completed_boundary_digest: [11; 32],
+            workspace_generation_digest: [12; 32],
+        })?;
+        let dispatch_id = IdempotencyKey::new("settle-dispatch")?;
+        let token = journal
+            .activate_verified_with_dispatch(child, owner.clone(), dispatch_id, publication)
+            .await?;
+        assert_eq!(journal.usage()?.active_agents, 2);
+
+        let measured = SwarmUsage {
+            model_steps: 2,
+            output_bytes: 20,
+            execution_time_ms: 30,
+        };
+        let mut report_context = journal.usage_context(&token, FixedSource(measured))?;
+        let report_receipt = report_context.issue_usage_receipt()?;
+        let reported = journal
+            .report_usage_with_receipt(child, &owner, report_receipt.clone())
+            .await?;
+        assert_eq!(reported.usage, measured);
+        let reported_retry = journal
+            .report_usage_with_receipt(child, &owner, report_receipt)
+            .await?;
+        assert_eq!(reported_retry.usage, measured);
+        assert_eq!(
+            journal.usage()?.consumed,
+            SwarmUsage {
+                model_steps: 3,
+                output_bytes: 28,
+                execution_time_ms: 40,
+            }
+        );
+        assert_eq!(
+            journal.usage()?.reserved,
+            SwarmUsage {
+                model_steps: 2,
+                output_bytes: 44,
+                execution_time_ms: 70,
+            }
+        );
+
+        let mut completion_context = journal.usage_context(&token, FixedSource(measured))?;
+        let completion_receipt = completion_context.issue_usage_receipt()?;
+        let completed = journal
+            .complete_with_receipt(child, &owner, completion_receipt.clone())
+            .await?;
+        assert_eq!(completed.state, SwarmReservationState::Completed);
+        let usage = journal.usage()?;
+        assert_eq!(usage.active_agents, 1);
+        assert_eq!(
+            usage.consumed,
+            SwarmUsage {
+                model_steps: 3,
+                output_bytes: 28,
+                execution_time_ms: 40,
+            }
+        );
+        assert_eq!(usage.reserved, SwarmUsage::default());
+        let settled_retry = journal
+            .complete_with_receipt(child, &owner, completion_receipt)
+            .await?;
+        assert_eq!(settled_retry.state, SwarmReservationState::Completed);
+        assert_eq!(journal.usage()?, usage);
+        Ok(())
     }
 
     #[tokio::test]
