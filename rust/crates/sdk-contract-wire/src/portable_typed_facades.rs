@@ -70,6 +70,7 @@ fn semantic_names() -> &'static [&'static str] {
 fn semantic_value_type(name: &str) -> &'static str {
     match name {
         "PageLimit" | "StreamPageLimit" | "MachinePageLimit" | "MachineEventPageLimit" | "OpenEnumValue" | "OneofArm" => "Integer",
+        name if name.ends_with("PageLimit") || name.ends_with("OpenEnumValue") || name.ends_with("OneofArm") => "Integer",
         "IdempotencyKeyBytes" | "Sha256Digest" | "VersionSha256" | "RevisionDigest" => "String",
         _ => "String",
     }
@@ -188,9 +189,14 @@ fn php_scalar_default(field: &ResolvedRequestField) -> &'static str {
 }
 
 fn php_decode_single(field: &ResolvedRequestField, value: &str) -> String {
+    if let Some(semantic) = field.semantic_type.as_deref() {
+        let class = semantic_class(semantic);
+        let scalar = if semantic_value_type(semantic) == "Integer" { "int" } else { "string" };
+        return format!("new {class}(({scalar})({value}))");
+    }
     if message_field(field) {
         let class = field.type_name.as_deref().map(message_class).unwrap_or_else(|| "RustWireMessage".into());
-        return format!("is_array({value}) ? {class}::fromWire({value}) : throw new \\InvalidArgumentException('expected nested message')");
+        return format!("{class}::fromWire(self::wireMap({value}))");
     }
     match semantic_or_wire(field).as_str() {
         "bool" => format!("(bool)({value})"),
@@ -203,10 +209,10 @@ fn php_decode_single(field: &ResolvedRequestField, value: &str) -> String {
 }
 
 fn php_decode_value(field: &ResolvedRequestField) -> String {
-    let raw = format!("$value['{}'] ?? {}", field.json_name, if optional(field) { "null" } else if repeated(field) { "[]" } else { php_scalar_default(field) });
+    let raw = format!("($value['{}'] ?? {})", field.json_name, if optional(field) { "null" } else if repeated(field) { "[]" } else { php_scalar_default(field) });
     if repeated(field) {
         let item = php_decode_single(field, "$item");
-        return format!("array_map(static fn(mixed $item) => {item}, is_array({raw}) ? {raw} : [])");
+        return format!("array_map(static fn(mixed $item) => {item}, self::wireArray({raw}))");
     }
     let decoded = php_decode_single(field, &raw);
     if optional(field) { format!("({raw} === null ? null : ({decoded}))") } else { decoded }
@@ -330,12 +336,15 @@ fn sorbet_type(field: &ResolvedRequestField) -> String {
 
 fn php_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     let mut out = format!("final readonly class {name}\n{{\n    public function __construct(\n");
-    for field in fields {
+    for field in fields.iter().filter(|field| required(field)) {
         out.push_str(&format!("        /** @var {} */\n        public {} ${}{},\n", php_doc_type(field), php_type(field), php_field(field), php_default(field)));
     }
-    out.push_str("    ) {}\n    private static function wireValue(mixed $value): mixed\n    {\n        if (is_object($value) && method_exists($value, 'toWire')) { return $value->toWire(); }\n        if (is_array($value)) { return array_map(static fn(mixed $item): mixed => self::wireValue($item), $value); }\n        return $value;\n    }\n    /** @return array<string, mixed> */\n    public function toWire(): array\n    {\n        return [\n");
+    for field in fields.iter().filter(|field| !required(field)) {
+        out.push_str(&format!("        /** @var {} */\n        public {} ${}{},\n", php_doc_type(field), php_type(field), php_field(field), php_default(field)));
+    }
+    out.push_str("    ) {}\n    /** @return array<array-key, mixed> */\n    private static function wireMap(mixed $value): array\n    {\n        if (!is_array($value)) { throw new \\InvalidArgumentException('expected nested message'); }\n        return $value;\n    }\n\n    /** @return array<int, mixed> */\n    private static function wireArray(mixed $value): array\n    {\n        return is_array($value) ? array_values($value) : [];\n    }\n    private static function wireValue(mixed $value): mixed\n    {\n        if (is_object($value) && method_exists($value, 'toWire')) { return $value->toWire(); }\n        if (is_array($value)) { return array_map(static fn(mixed $item): mixed => self::wireValue($item), $value); }\n        return $value;\n    }\n    /** @return array<string, mixed> */\n    public function toWire(): array\n    {\n        return [\n");
     for field in fields { out.push_str(&format!("            '{0}' => self::wireValue($this->{0}),\n", php_field(field))); }
-    out.push_str("        ];\n    }\n    /** @param array<mixed, mixed> $value */\n    public static function fromWire(array $value): self\n    {\n        return new self(\n");
+    out.push_str("        ];\n    }\n    /** @param array<array-key, mixed> $value */\n    public static function fromWire(array $value): self\n    {\n        return new self(\n");
     for field in fields { out.push_str(&format!("            {0}: {1},\n", php_field(field), php_decode_value(field))); }
     out.push_str("        );\n    }\n}\n");
     out
