@@ -1,0 +1,45 @@
+{
+  "source": "75e6fe0b74907804da9a3bb36fef2945bcc59e63",
+  "retained_evidence_root": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\75e6fe0b7",
+  "native": {
+    "test": "default_local_composition_runs_recursive_models_and_reopens_without_dispatch",
+    "exit_code": -1073741571,
+    "outcome": "STATUS_STACK_OVERFLOW",
+    "last_phase": "fork-resolve-before-physical-resolve",
+    "no_child_dispatch_proved_by_trace": true,
+    "artifacts": [
+      {
+        "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\75e6fe0b7\\publication-diagnostics\\exit-code.txt",
+        "bytes": 13,
+        "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"
+      },
+      {
+        "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\75e6fe0b7\\publication-diagnostics\\local_model_swarm-d3511dedf296d78f.exe",
+        "bytes": 32361472,
+        "sha256": "c49a2cadc3a5a0a59580593c09e97e6f468c93119a8c773c53bada45ddcdda83"
+      },
+      {
+        "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\75e6fe0b7\\publication-diagnostics\\native.log",
+        "bytes": 12547,
+        "sha256": "a4b7a19840caec653ff13f53d838309c38a26658cec5a90043ea426a55725a98"
+      },
+      {
+        "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\75e6fe0b7\\publication-diagnostics\\source.zip",
+        "bytes": 7628332,
+        "sha256": "6b8b6a86d1cdd9770066da16a5b0712018bc2b1f41ee72a6ec637d35b41ee946"
+      }
+    ]
+  },
+  "formal": {
+    "models": 7,
+    "cases": 23,
+    "safe_cases": 7,
+    "expected_negative_controls": 16,
+    "valid_fixtures": 2,
+    "rejected_invalid_fixtures": 13,
+    "results_sha256": "7a57be3aaed589bb9bde3cf7482afbafc216cbf7b833d8cdc923b9db7d65078c",
+    "artifact_index_sha256": "bb78c2558973efab1b8193d6b08f59016233e74c0bcc12bf3b6bfda8d0ad6275",
+    "scope": "bounded models and fixtures only; actual runtime trace gate remains unexecuted"
+  },
+  "qualification_complete": false
+}
