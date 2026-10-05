@@ -28,7 +28,7 @@ use crate::{
 use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
+use std::{collections::{BTreeMap, BTreeSet}, sync::Arc, time::Instant};
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1000,6 +1000,7 @@ impl StockExecutor {
         prior_messages: &[ModelMessage],
         rejection_evidence: &[crate::tool::ToolRejectionFeedback],
         prior_output_bytes: u64,
+        budget: &mut Option<&mut dyn SwarmProviderAdmission>,
     ) -> Result<Vec<ModelEvent>> {
         let records = journal.replay(input.operation_id).await?;
         validate_prior_step_barrier(journal, &records, input.operation_id, step).await?;
@@ -2240,7 +2241,26 @@ impl Executor for StockExecutor {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
-        Box::pin(async move {
+        Box::pin(self.execute_inner(input, journal, None))
+    }
+
+    fn execute_with_provider_budget<'a>(
+        &'a self,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+        budget: &'a mut dyn SwarmProviderAdmission,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        Box::pin(self.execute_inner(input, journal, Some(budget)))
+    }
+}
+
+impl StockExecutor {
+    async fn execute_inner(
+        &self,
+        input: TurnInput,
+        journal: &dyn ExecutionJournal,
+        budget: Option<&mut dyn SwarmProviderAdmission>,
+    ) -> Result<TurnOutput> {
             self.validate_turn_input(journal, &input).await?;
             self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
@@ -2266,6 +2286,7 @@ impl Executor for StockExecutor {
                     &prior_messages,
                     &rejection_evidence,
                     text.len() as u64,
+                    &mut budget,
                 );
                 crate::stack_diagnostics::future_size("run-model-step", &model_step);
                 let model_events = model_step.await?;
@@ -2348,9 +2369,8 @@ impl Executor for StockExecutor {
                 visible_text.clear();
             }
             Err(Error::Conflict("executor step limit reached".into()))
-        })
+        }
     }
-}
 
 fn prepared_model_input(
     records: &[ExecutionRecord],

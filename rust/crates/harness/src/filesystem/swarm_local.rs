@@ -592,6 +592,13 @@ fn validate_recursive_depth(parent_depth: usize, maximum_depth: usize) -> Result
     Ok(())
 }
 
+fn checked_child_depth(parent_depth: usize) -> Result<u32> {
+    parent_depth
+        .checked_add(1)
+        .and_then(|depth| u32::try_from(depth).ok())
+        .ok_or_else(|| Error::Invalid("recursive depth exceeds the durable budget bound".into()))
+}
+
 fn is_depth_limit_denial(error: &Error) -> bool {
     matches!(error, Error::Unauthorized(message) if message == LOCAL_DEPTH_LIMIT_ERROR)
 }
@@ -4796,7 +4803,7 @@ impl PersistentLocalSwarm {
         let parent_storage = self.open_session(request.parent).await?;
         let parent_session = self.session(request.parent).await?;
         let parent_admission = self.authenticated_admission(request.parent).await?;
-        if request.parent_operation != Some(parent_admission.operation_id) {
+        if request.parent_operation != parent_admission.operation_id {
             return Err(Error::Conflict(
                 "fork request parent operation is not the admitted parent turn".into(),
             ));
@@ -4909,7 +4916,7 @@ impl PersistentLocalSwarm {
                         fork_operation,
                         request.child_operation,
                     )?,
-                    parent_session.depth.saturating_add(1),
+                    checked_child_depth(parent_session.depth)?,
                     child_resources,
                 )
                 .await?;
@@ -4975,7 +4982,7 @@ impl PersistentLocalSwarm {
                 &request.prompt,
                 request.parent,
                 Self::child_budget_idempotency(fork_operation, request.child_operation)?,
-                parent_session.depth.saturating_add(1),
+                checked_child_depth(parent_session.depth)?,
                 child_resources,
             )
             .await?;

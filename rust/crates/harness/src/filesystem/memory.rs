@@ -1367,12 +1367,18 @@ where
             .await?;
         crate::stack_diagnostics::marker("run-with-admission-enter");
         let input = TurnInput::from_selected_context(operation_id, selected, max_steps)?;
-        let run = match budget.as_deref_mut() {
-            Some(budget) => bundle.run_with_provider_budget(input, budget),
-            None => bundle.run(input),
+        let output = match budget.as_deref_mut() {
+            Some(budget) => {
+                let run = bundle.run_with_provider_budget(input, budget);
+                crate::stack_diagnostics::future_size("run-with-admission", &run);
+                run.await?
+            }
+            None => {
+                let run = bundle.run(input);
+                crate::stack_diagnostics::future_size("run-with-admission", &run);
+                run.await?
+            }
         };
-        crate::stack_diagnostics::future_size("run-with-admission", &run);
-        let output = run.await?;
         crate::stack_diagnostics::marker("run-with-admission-complete");
         self.append_assistant(operation_id, user_id, &output, limits)
             .await?;
