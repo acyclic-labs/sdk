@@ -4435,6 +4435,8 @@ fn apply_record(
                             "persisted fork report is not bound to its typed seed".into(),
                         ));
                     }
+                }
+            }
             let parent_session = sessions
                 .get(&parent)
                 .ok_or_else(|| Error::Storage("fork parent session is missing".into()))?;
