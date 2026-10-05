@@ -33,6 +33,7 @@ use crate::{
     resources::{GenerationRef, ProviderRef, StreamRef},
     runtime::TaskRunLimits,
     store::StreamAggregate,
+    swarm_budget::{SwarmBudgetLimits, SwarmOwnerFence, SwarmUsageSource},
     tool::{
         ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
         ToolRegistry, ToolResult,
@@ -239,6 +240,35 @@ async fn shared_local_filesystem(
     Ok(host)
 }
 
+/// Durable session budget configuration for one local swarm.
+#[derive(Clone, Debug)]
+pub struct LocalSwarmBudgetConfig {
+    /// Session-wide ceilings shared by root and recursive children.
+    pub limits: SwarmBudgetLimits,
+    /// Owner fence used for durable journal mutations and recovery takeover.
+    pub owner: SwarmOwnerFence,
+}
+
+impl Default for LocalSwarmBudgetConfig {
+    fn default() -> Self {
+        Self {
+            limits: SwarmBudgetLimits::default(),
+            owner: SwarmOwnerFence {
+                owner: "local-swarm".into(),
+                generation: 0,
+            },
+        }
+    }
+}
+
+impl LocalSwarmBudgetConfig {
+    /// Validates session ceilings and owner identity before opening.
+    pub fn validate(&self) -> Result<()> {
+        self.limits.validate()?;
+        self.owner.validate()
+    }
+}
+
 /// Configuration for one persistent local swarm.
 #[derive(Clone, Debug)]
 pub struct LocalSwarmConfig {
@@ -257,6 +287,9 @@ pub struct LocalSwarmConfig {
     /// this field during swarm open, but a persisted session still pins the
     /// resulting identity before any model work starts.
     pub project: Option<VolumeRef>,
+    /// Durable session budget configuration. The journal remains the sole
+    /// source of reservation and usage state.
+    pub budget: LocalSwarmBudgetConfig,
 }
 
 /// Host-side observations for lazy local swarm qualification.
@@ -314,6 +347,9 @@ pub struct LocalSwarmBindings {
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
     /// Optional host-only observation sink for lazy qualification metrics.
     pub observer: Option<Arc<dyn LocalSwarmObserver>>,
+    /// Authenticated provider measurement source used for durable receipt
+    /// issuance. The source must expose actual provider counters.
+    pub budget_usage_source: Option<Arc<dyn SwarmUsageSource>>,
 }
 
 impl LocalSwarmBindings {
@@ -332,6 +368,7 @@ impl LocalSwarmBindings {
             model_fork_plans: None,
             filesystem_fork_resolver: None,
             observer: None,
+            budget_usage_source: None,
         }
     }
 
@@ -369,6 +406,30 @@ impl LocalSwarmBindings {
     pub fn with_observer(mut self, observer: Arc<dyn LocalSwarmObserver>) -> Self {
         self.observer = Some(observer);
         self
+    }
+
+    /// Binds the authenticated provider measurement source used for durable
+    /// receipt issuance. Caller-supplied usage totals are not accepted.
+    #[must_use]
+    pub fn with_budget_usage_source(mut self, source: Arc<dyn SwarmUsageSource>) -> Self {
+        self.budget_usage_source = Some(source);
+        self
+    }
+
+    /// Reads the exact owner-retained admission for a task. Budget admission
+    /// callers must use this record rather than reconstructing limits from a
+    /// local fork request.
+    pub async fn authenticated_admission(
+        &self,
+        task: TaskId,
+    ) -> Result<crate::runtime::TaskAdmissionRecord> {
+        self.communication_host
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Unauthorized("durable task admission host is not configured".into())
+            })?
+            .observe_admission(task)
+            .await
     }
 
     fn tools_for(&self, parent: TaskId) -> Result<LocalHarnessTools> {
@@ -2042,6 +2103,7 @@ impl LocalSwarmConfig {
             maximum_depth: 8,
             run_limits: TaskRunLimits::default(),
             project: None,
+            budget: LocalSwarmBudgetConfig::default(),
         };
         config.validate()?;
         Ok(config)
@@ -2062,9 +2124,27 @@ impl LocalSwarmConfig {
         Ok(self)
     }
 
+    /// Applies explicit session-wide resource ceilings to the local
+    /// composition.
+    pub fn with_budget_limits(mut self, limits: SwarmBudgetLimits) -> Result<Self> {
+        limits.validate()?;
+        self.budget.limits = limits;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Applies an authenticated owner fence to the local budget journal.
+    pub fn with_budget_owner(mut self, owner: SwarmOwnerFence) -> Result<Self> {
+        owner.validate()?;
+        self.budget.owner = owner;
+        self.validate()?;
+        Ok(self)
+    }
+
     /// Validates application bounds before opening any provider.
     pub fn validate(&self) -> Result<()> {
         self.limits.validate()?;
+        self.budget.validate()?;
         self.run_limits.validate()?;
         if self.maximum_children == 0 || self.maximum_depth == 0 {
             return Err(Error::Invalid("local swarm bounds must be positive".into()));

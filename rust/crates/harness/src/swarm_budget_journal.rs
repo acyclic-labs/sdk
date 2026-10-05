@@ -221,6 +221,12 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.budget.root_usage_context(source)
     }
 
+    /// Returns the host-issued lease identity bound to root usage receipts.
+    /// A missing value means root model work has no verified scheduler lease.
+    pub fn root_dispatch_id(&self) -> Result<Option<IdempotencyKey>> {
+        self.budget.root_dispatch_id()
+    }
+
     /// Reloads all committed records from the provider's current tail.
     pub async fn refresh(&mut self) -> Result<()> {
         let events = read_events(&self.stream).await?;
@@ -474,6 +480,20 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Ok(reservation)
     }
 
+    /// Reads authenticated provider counters and persists an intermediate
+    /// receipt-backed usage report.
+    pub async fn report_usage_from_source<S: crate::swarm_budget::SwarmUsageSource>(
+        &mut self,
+        token: &SwarmDispatchToken,
+        source: S,
+    ) -> Result<SwarmForkReservation> {
+        let owner = token.owner().clone();
+        let mut context = self.usage_context(token, source)?;
+        let receipt = context.issue_usage_receipt()?;
+        self.report_usage_with_receipt(token.operation_id(), &owner, receipt)
+            .await
+    }
+
     /// Persists cumulative root usage before admitting further descendants.
     pub async fn report_root_usage(
         &mut self,
@@ -556,6 +576,37 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
             .ok_or_else(|| Error::Storage("projected swarm reservation is missing".into()))?;
         self.commit(event, operation_id).await?;
         Ok(reservation)
+    }
+
+    /// Reads authenticated provider counters and completes the child with one
+    /// durable receipt-backed settlement.
+    pub async fn complete_from_source<S: crate::swarm_budget::SwarmUsageSource>(
+        &mut self,
+        token: &SwarmDispatchToken,
+        source: S,
+    ) -> Result<SwarmForkReservation> {
+        let owner = token.owner().clone();
+        let mut context = self.usage_context(token, source)?;
+        let receipt = context.issue_usage_receipt()?;
+        self.complete_with_receipt(token.operation_id(), &owner, receipt)
+            .await
+    }
+
+    /// Reads authenticated root counters and persists one root usage receipt.
+    pub async fn report_root_usage_from_source<S: crate::swarm_budget::SwarmUsageSource>(
+        &mut self,
+        owner: &SwarmOwnerFence,
+        source: S,
+    ) -> Result<SwarmUsage> {
+        let cursor = self.budget.root_usage_cursor()?;
+        let mut context = self.budget.root_usage_context(source)?;
+        if context.receipt_cursor() != cursor {
+            return Err(Error::Conflict(
+                "root usage cursor changed while binding provider source".into(),
+            ));
+        }
+        let receipt = context.issue_usage_receipt()?;
+        self.report_root_usage_with_receipt(owner, receipt).await
     }
 
     fn receipt_replayed(
