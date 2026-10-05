@@ -197,11 +197,12 @@ operation/agent mismatches, orphan and duplicate delivery, stale publication,
 and session overspend. The communication relation is bidirectional only for
 messages and waits; fork and publication remain parent-to-child operations.
 
-`check-trace-fixtures.ps1` accepts two valid traces and rejects nine negative
+`check-trace-fixtures.ps1` accepts two valid traces and rejects thirteen negative
 fixtures covering swapped parent, missing identity, wrong agent, forged
-capture, orphan delivery, double delivery, invalid boolean, overspend and
-stale publication. These fixtures prove the adapter's own behavior; no
-production Harness event trace is claimed as evidence. To claim implementation
+capture, orphan delivery, double delivery, invalid boolean, overspend, stale
+publication, and missing fork, publication, model-start, or completion
+observations. These fixtures prove the adapter's own behavior; no production
+Harness event trace is claimed as evidence. To claim implementation
 conformance, a production test must export the same event fields from the real
 journal and run this adapter against that trace.
 
