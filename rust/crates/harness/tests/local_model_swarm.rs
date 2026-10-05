@@ -122,6 +122,7 @@ struct DeterministicProvider {
 struct CancellationProvider {
     dispatches: AtomicUsize,
     child_dispatches: AtomicUsize,
+    root_fork_sent: AtomicBool,
     child_started: Arc<tokio::sync::Notify>,
     reconciliations: AtomicUsize,
     child_stream_dropped: Arc<AtomicBool>,
@@ -401,6 +402,7 @@ impl CancellationProvider {
         Arc::new(Self {
             dispatches: AtomicUsize::new(0),
             child_dispatches: AtomicUsize::new(0),
+            root_fork_sent: AtomicBool::new(false),
             child_started: Arc::new(tokio::sync::Notify::new()),
             reconciliations: AtomicUsize::new(0),
             child_stream_dropped: Arc::new(AtomicBool::new(false)),
@@ -428,6 +430,16 @@ impl ModelProvider for CancellationProvider {
                 let _guard = guard;
                 futures::future::pending::<Result<ModelEvent>>().await
             }));
+        }
+        if self.root_fork_sent.swap(true, Ordering::SeqCst) {
+            return Box::pin(stream::iter(vec![
+                Ok(ModelEvent::Content {
+                    delta: "ordinary completion".into(),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]));
         }
         Box::pin(stream::iter(vec![
             Ok(ModelEvent::ToolCall {
@@ -930,46 +942,75 @@ async fn model_selected_child_rejects_grandchild_at_configured_depth() -> Result
     let result = swarm
         .run_root(id(0xE0), "start depth-limited local swarm")
         .await;
-    assert!(matches!(
-        result,
-        Err(Error::Unauthorized(message)) if message.contains("depth limit")
-    ));
+    let output = result?;
+    assert_eq!(output.text, "ordinary completion");
     assert!(!provider.grandchild_inherited_read.load(Ordering::SeqCst));
     let sessions = swarm.sessions().await?;
     assert_eq!(sessions.len(), 3, "root and exactly two depth-one children");
-    assert!(matches!(
+    for operation in [child_a, child_b] {
+        assert_eq!(
+            swarm
+                .session(acyclic_harness::TaskId::from_bytes(operation.into_bytes()))
+                .await?
+                .phase,
+            LocalSessionPhase::Completed
+        );
+    }
+    assert!(
         swarm
-            .session(acyclic_harness::TaskId::from_bytes(child_a.into_bytes()))
-            .await?
-            .phase,
-        // The child's model attempt was admitted before its invalid fork.
-        // Retain that activation claim for executor reconciliation; marking
-        // it failed would permit a fresh dispatch of an admitted attempt.
-        LocalSessionPhase::Activating
-    ));
-    assert!(matches!(
-        swarm
-            .session(acyclic_harness::TaskId::from_bytes(child_b.into_bytes()))
-            .await?
-            .phase,
-        LocalSessionPhase::Activating | LocalSessionPhase::Completed
-    ));
-    assert!(swarm
-        .session(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
-        .await
-        .is_err());
+            .session(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
+            .await
+            .is_err()
+    );
     let requests = provider.decoded_requests();
-    assert_eq!(requests.iter().filter(|request|
-        latest_declared_child_task(request) == Some("child-a")).count(), 1);
-    assert!(!requests.iter().any(|request|
-        latest_declared_child_task(request) == Some("grandchild")),
-        "depth denial dispatched a grandchild model request");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| latest_declared_child_task(request) == Some("child-a"))
+            .count(),
+        2,
+        "child resumes after receiving the denied fork result"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| latest_declared_child_task(request) == Some("child-b"))
+            .count(),
+        1
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| latest_declared_child_task(request) == Some("grandchild")),
+        "depth denial dispatched a grandchild model request"
+    );
+    let denied_fork_result = requests
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .find_map(|message| match &message.content {
+            ModelContent::Part(ModelContentPart::ToolResult {
+                call_id,
+                name,
+                value,
+            }) if call_id == "fork-grandchild" && name == "acyclic.fork_child" => Some(value),
+            _ => None,
+        });
+    assert!(
+        denied_fork_result.is_some_and(|value| value.to_string().contains("depth limit")),
+        "depth denial must be delivered as the fork tool's paired result"
+    );
+    assert!(
+        swarm
+            .published_seed(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
+            .await
+            .is_err(),
+        "depth-denied fork must not publish a child seed"
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
--> Result<()> {
+async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (host, stream, project) = local_project(directory.path()).await?;
     let provider = CancellationProvider::new();
@@ -1000,7 +1041,7 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
         tokio::spawn(async move {
             swarm
                 .run_root(root_operation, "start cancellable recursive swarm")
-            .await
+                .await
         })
     };
     let _abort_running = AbortTask(running.abort_handle());
@@ -1026,7 +1067,7 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
             provider.child_dispatches.load(Ordering::SeqCst)
         );
     }
-    if provider.dispatches.load(Ordering::SeqCst) != 2
+    if provider.dispatches.load(Ordering::SeqCst) < 2
         || provider.child_stream_dropped.load(Ordering::SeqCst)
     {
         abort_and_shutdown(&swarm, running).await;
@@ -1079,10 +1120,13 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
 
     let child_task = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
-    assert_eq!(swarm.session(child_task).await?.phase, LocalSessionPhase::Activating);
+    assert_eq!(
+        swarm.session(child_task).await?.phase,
+        LocalSessionPhase::Activating
+    );
     // Dropping the running stream does not publish successful completion or
     // redispatch. Cold recovery of its admitted model attempt is a separate gate.
-    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 3);
     assert_eq!(provider.child_dispatches.load(Ordering::SeqCst), 1);
     assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
     Ok(())
