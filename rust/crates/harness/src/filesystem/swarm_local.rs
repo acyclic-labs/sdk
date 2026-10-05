@@ -3581,6 +3581,27 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
     ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_with_bindings(
+            root,
+            model,
+            provider,
+            limits,
+            LocalSwarmBindings::default(),
+        )
+        .await
+    }
+
+    /// Opens the default recursive filesystem composition with additional
+    /// owner bindings. The bindings are retained when the composition installs
+    /// its authenticated communication and fork services, so host-only
+    /// qualification observers can cover the same production path.
+    pub async fn open_shared_with_model_and_recursive_filesystem_with_bindings(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let root = root.as_ref().to_path_buf();
@@ -3598,11 +3619,12 @@ impl PersistentLocalSwarm {
         host.create_volume(&project).await?;
         let mut config = LocalSwarmConfig::new(model.clone(), limits)?;
         config.project = Some(project.clone());
+        let retained_observer = bindings.observer.clone();
         let mut swarm = Self::open_with_bindings(
             root.clone(),
             config,
             provider.clone(),
-            LocalSwarmBindings::default(),
+            bindings,
         )
         .await?;
         swarm.git_store = Some(Arc::new(
@@ -3636,6 +3658,9 @@ impl PersistentLocalSwarm {
             .with_model_batch_publisher(publisher.clone());
         if let Some(source) = budget_usage_source {
             swarm.bindings = swarm.bindings.with_budget_usage_source(source);
+        }
+        if let Some(observer) = retained_observer {
+            swarm.bindings = swarm.bindings.with_observer(observer);
         }
         let mut root_tools = swarm.bindings.tools_for(root_task)?;
         if let Some(project) = swarm.config.project.clone()

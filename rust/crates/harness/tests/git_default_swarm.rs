@@ -14,9 +14,11 @@ use acyclic_harness::conversation::{
 use acyclic_harness::core::{
     Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry,
 };
-use acyclic_harness::filesystem::PersistentLocalSwarm;
 use acyclic_harness::filesystem::{
     FilesystemGitFacade, FilesystemHost, ProjectWorkspaceTree, WorkspaceMutation, workspace_ref,
+};
+use acyclic_harness::filesystem::{
+    LocalSwarmBindings, LocalSwarmObservation, LocalSwarmObserver, PersistentLocalSwarm,
 };
 use acyclic_harness::fork::{CapturedResource, ForkSeed, ResourceRevision};
 use acyclic_harness::model::{
@@ -38,6 +40,20 @@ use tempfile::tempdir;
 use uuid::Uuid;
 
 type TestHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
+
+#[derive(Default)]
+struct RuntimeObservation {
+    events: Mutex<Vec<LocalSwarmObservation>>,
+}
+
+impl LocalSwarmObserver for RuntimeObservation {
+    fn observe(&self, observation: LocalSwarmObservation) {
+        self.events
+            .lock()
+            .expect("runtime observation lock")
+            .push(observation);
+    }
+}
 
 struct LifecycleExecutor {
     workspace_id: WorkspaceId,
@@ -1212,13 +1228,38 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
     resumed_provider.continue_root.store(true, Ordering::SeqCst);
     drop(swarm);
     let provider = resumed_provider;
-    let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-        directory.path(),
-        model.clone(),
-        provider.clone(),
-        Limits::default(),
-    )
-    .await?;
+    let resume_observer = Arc::new(RuntimeObservation::default());
+    let swarm =
+        PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_with_bindings(
+            directory.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+            LocalSwarmBindings::default().with_observer(resume_observer.clone()),
+        )
+        .await?;
+
+    // Reopening and metadata listing must not hydrate any parent conversation
+    // or project-child bindings. The first aggregate read is admitted only by
+    // the direct-parent Git join path below, after this cold listing boundary.
+    let _ = swarm.sessions().await?;
+    let _ = swarm.sessions_page(None, 64).await?;
+    {
+        let observations = resume_observer
+            .events
+            .lock()
+            .expect("runtime observation lock")
+            .iter()
+            .collect::<Vec<_>>();
+        assert!(!observations.iter().any(|observation| matches!(
+            observation,
+            LocalSwarmObservation::ParentAggregateHydrated { .. }
+        )));
+        assert!(!observations.iter().any(|observation| matches!(
+            observation,
+            LocalSwarmObservation::HistoryPage { .. } | LocalSwarmObservation::HarnessOpened { .. }
+        )));
+    }
 
     let root_head = host.resolve(&root_workspace).await?;
     host.apply(
@@ -1333,6 +1374,26 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
             )
             .await
             .is_err()
+    );
+    let root_task = swarm.root_task().await?;
+    let observations = resume_observer
+        .events
+        .lock()
+        .expect("runtime observation lock");
+    let parent_hydrations = observations
+        .iter()
+        .filter_map(|observation| match observation {
+            LocalSwarmObservation::ParentAggregateHydrated { task, .. } => Some(*task),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !parent_hydrations.is_empty(),
+        "a model-facing parent Git integration must hydrate its direct parent"
+    );
+    assert!(
+        parent_hydrations.iter().all(|task| *task == root_task),
+        "child and grandchild aggregates must not be hydrated by root integration"
     );
     Ok(())
 }
