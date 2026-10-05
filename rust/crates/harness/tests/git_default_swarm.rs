@@ -976,7 +976,7 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
     );
 
     // Make the direct child/root merge genuinely conflicted. Both workspaces
-    // still descend from the same empty generation, so the existing
+    // share the original project base for this path, so the existing
     // Filesystem three-way join must leave a durable pending transition.
     let child_head = host.resolve(&child_workspace).await?;
     host.apply(
