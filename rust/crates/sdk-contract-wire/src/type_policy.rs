@@ -71,8 +71,32 @@ pub struct ResolvedRpcMethod {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ResolvedValidationConstraint {
     Rule(SemanticRule),
+    /// A structured operation rule whose meaning is owned by the Rust
+    /// validator and must be projected as an operation-aware constructor or
+    /// runtime check.  It is deliberately distinct from a generic
+    /// cross-field string so generators cannot silently drop the rule.
+    Operation(OperationRule),
     CrossField(String),
     Unresolved(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationRule {
+    /// The request scope must advertise the capability for this operation.
+    Capability(&'static str),
+    /// Bucket deletion is admitted only when the Rust provider observes no
+    /// remaining objects in the named bucket.
+    BucketMustBeEmpty,
+    /// Multipart completion requires strictly increasing part numbers within
+    /// the native Rust provider's hard bound.
+    OrderedParts { max_items: u32, max_part_number: u32 },
+    /// Optional preconditions are an atomic oneof with validated payloads.
+    AtomicPrecondition,
+    /// Every stream record is bounded by the canonical Rust wire limit.
+    MaxRecordBytes(u32),
+    /// Every stream mutation command is bounded by the canonical Rust wire
+    /// envelope limit.
+    MaxCommandBytes(u32),
 }
 
 /// Resolve every reachable request field from the single Rust contract model.
@@ -334,12 +358,33 @@ fn is_known_external_message(name: &str) -> bool {
 
 fn semantic_binding_for_field(family: &str, message_path: &str, field: &str) -> Option<String> {
     let message = message_path.rsplit('.').next().unwrap_or(message_path);
-    PUBLIC_FIELD_BINDINGS
+    if let Some(semantic_type) = PUBLIC_FIELD_BINDINGS
         .iter()
         .find(|binding| {
             binding.family == family && binding.message == message && binding.wire_field == field
         })
         .map(|binding| binding.semantic_type.to_owned())
+    {
+        return Some(semantic_type);
+    }
+
+    // A semantic field mapping is reusable across every protobuf message in a
+    // family when the wire field identity is unambiguous.  This is necessary
+    // for wrapper values such as Machines.IdempotencyKey: the native Rust
+    // validator owns the UUID/non-empty invariant, while the same message
+    // appears in create, checkpoint, fork, recovery, and mutation requests.
+    // Do not guess when a family has multiple meanings for the same wire name
+    // (for example `limit` has distinct machine and event bounds).
+    let candidates = PUBLIC_FIELD_BINDINGS
+        .iter()
+        .filter(|binding| binding.family == family && binding.wire_field == field)
+        .map(|binding| binding.semantic_type)
+        .collect::<std::collections::BTreeSet<_>>();
+    if candidates.len() == 1 {
+        candidates.into_iter().next().map(str::to_owned)
+    } else {
+        None
+    }
 }
 
 fn canonical_rpc_identity(rpc: &str) -> &str {
@@ -436,6 +481,9 @@ fn validation_constraint(
     wire_type: Option<i32>,
     semantic_type_id: Option<&str>,
 ) -> Vec<ResolvedValidationConstraint> {
+    if let Some(rule) = operation_rule(validation) {
+        return vec![ResolvedValidationConstraint::Operation(rule)];
+    }
     let suffix = validation.rsplit('.').next().unwrap_or(validation);
     if suffix == "nonzero"
         && matches!(
@@ -500,6 +548,32 @@ fn validation_constraint(
                 vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())]
             }
         })
+}
+
+/// Resolve operation-level validations from the same Rust-native constants
+/// and provider semantics used by runtime admission.  These rules often
+/// mention a message or repeated field, but cannot be reduced to a scalar
+/// wrapper without losing state, oneof, ordering, or capability meaning.
+fn operation_rule(validation: &str) -> Option<OperationRule> {
+    match validation {
+        "scope.capability.operation_cancel" => {
+            Some(OperationRule::Capability("operation:cancel"))
+        }
+        "scope.capability.operation_observe" => {
+            Some(OperationRule::Capability("operation:observe"))
+        }
+        "bucket.empty" => Some(OperationRule::BucketMustBeEmpty),
+        "parts.ordered_exact" => Some(OperationRule::OrderedParts {
+            max_items: OBJECTS_MAX_MULTIPART_ITEMS,
+            max_part_number: OBJECTS_MAX_MULTIPART_ITEMS,
+        }),
+        "preconditions.atomic" => Some(OperationRule::AtomicPrecondition),
+        "records.max_bytes" => Some(OperationRule::MaxRecordBytes(STREAM_MAX_RECORD_BYTES)),
+        "mutations.max_command_bytes" => {
+            Some(OperationRule::MaxCommandBytes(STREAM_MAX_COMMAND_BYTES))
+        }
+        _ => None,
+    }
 }
 
 /// Every language target currently inventoried by the generation pipeline.
@@ -664,6 +738,11 @@ pub enum SemanticRule {
 /// repeating literals so generated clients and runtime validation cannot drift.
 pub const MACHINE_PAGE_LIMIT_MAX: u32 = 256;
 pub const MACHINE_EVENT_PAGE_LIMIT_MAX: u32 = 1_024;
+/// Stream operation limits shared with the native validator.
+pub const STREAM_MAX_RECORD_BYTES: u32 = 65_536;
+pub const STREAM_MAX_COMMAND_BYTES: u32 = 1_056_768;
+/// Objects multipart ordering and cardinality bound.
+pub const OBJECTS_MAX_MULTIPART_ITEMS: u32 = 10_000;
 
 /// One Rust-owned semantic type.  `rust_name` is documentation and generator
 /// provenance; the wire kind remains explicit so a projection cannot change
@@ -2198,6 +2277,51 @@ mod tests {
         assert!(!identity.validation_constraints.iter().any(|constraint| {
             matches!(constraint, ResolvedValidationConstraint::Rule(SemanticRule::StrictlyPositive))
         }));
+    }
+
+    #[test]
+    fn resolver_reuses_unambiguous_machine_wrapper_semantics_across_requests() {
+        let requests = resolved_request_fields().expect("all request graphs resolve");
+        for request in ["CheckpointMachineRequest", "MachineMutationRequest", "RecoverRequest"] {
+            let field = requests
+                .iter()
+                .find(|field| {
+                    field.family == "machines"
+                        && field.root_message.ends_with(request)
+                        && field.field == "idempotency_key"
+                })
+                .unwrap_or_else(|| panic!("{request}.idempotency_key is present"));
+            assert_eq!(field.semantic_type.as_deref(), Some("idempotency_key_message"));
+            assert!(field.validation_constraints.iter().any(|constraint| {
+                matches!(constraint, ResolvedValidationConstraint::Rule(SemanticRule::FixedLength(16)))
+            }));
+        }
+    }
+
+    #[test]
+    fn operation_rules_are_structured_and_fail_closed_for_current_contracts() {
+        let requests = resolved_request_fields().expect("all request graphs resolve");
+        let mut rules = std::collections::BTreeSet::new();
+        for field in requests {
+            for constraint in field.validation_constraints {
+                match constraint {
+                    ResolvedValidationConstraint::Operation(rule) => {
+                        rules.insert(format!("{rule:?}"));
+                    }
+                    ResolvedValidationConstraint::Unresolved(rule) => {
+                        panic!("current Rust operation policy is unresolved: {rule}");
+                    }
+                    ResolvedValidationConstraint::Rule(_)
+                    | ResolvedValidationConstraint::CrossField(_) => {}
+                }
+            }
+        }
+        assert!(rules.iter().any(|rule| rule.contains("Capability")));
+        assert!(rules.iter().any(|rule| rule.contains("BucketMustBeEmpty")));
+        assert!(rules.iter().any(|rule| rule.contains("OrderedParts")));
+        assert!(rules.iter().any(|rule| rule.contains("AtomicPrecondition")));
+        assert!(rules.iter().any(|rule| rule.contains("MaxRecordBytes(65536)")));
+        assert!(rules.iter().any(|rule| rule.contains("MaxCommandBytes(1056768)")));
     }
 
     #[test]
