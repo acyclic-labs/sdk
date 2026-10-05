@@ -47,6 +47,74 @@ use std::collections::BTreeSet;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
+/// Rust-owned authenticated browser remote client re-exported by the Harness
+/// WASM package. The wrapper keeps protobuf bytes opaque to JavaScript while
+/// preserving the generated Rust service types and handshake rules.
+#[wasm_bindgen]
+pub struct BrowserHarnessRemoteClient {
+    inner: acyclic_sdk_remote_web::BrowserHarnessClient,
+}
+
+#[wasm_bindgen]
+impl BrowserHarnessRemoteClient {
+    /// Connect with the Rust-owned browser transport and safe bounds.
+    #[wasm_bindgen(js_name = connect)]
+    pub async fn connect_js(endpoint: String, bearer_token: String) -> Result<Self, JsValue> {
+        let inner =
+            acyclic_sdk_remote_web::BrowserHarnessClient::connect_js(endpoint, bearer_token)
+                .await?;
+        Ok(Self { inner })
+    }
+
+    /// Connect with explicit bounds for advanced consumers.
+    #[wasm_bindgen(js_name = connectWithLimits)]
+    pub async fn connect_with_limits_js(
+        endpoint: String,
+        bearer_token: String,
+        maximum_request_bytes: u64,
+        maximum_response_bytes: u64,
+    ) -> Result<Self, JsValue> {
+        let inner = acyclic_sdk_remote_web::BrowserHarnessClient::connect_with_limits_js(
+            endpoint,
+            bearer_token,
+            maximum_request_bytes,
+            maximum_response_bytes,
+        )
+        .await?;
+        Ok(Self { inner })
+    }
+
+    /// Return the negotiated Rust protocol identity.
+    #[wasm_bindgen(js_name = capabilities)]
+    pub fn capabilities_js(&self) -> Result<JsValue, JsValue> {
+        self.inner.capabilities_js()
+    }
+
+    /// Submit one encoded command envelope.
+    #[wasm_bindgen(js_name = submit)]
+    pub async fn submit_js(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        self.inner.submit_js(request).await
+    }
+
+    /// Replay encoded deliveries from the requested cursor.
+    #[wasm_bindgen(js_name = replay)]
+    pub async fn replay_js(&self, request: Vec<u8>) -> Result<js_sys::Array, JsValue> {
+        self.inner.replay_js(request).await
+    }
+
+    /// Observe one encoded operation status.
+    #[wasm_bindgen(js_name = observe)]
+    pub async fn observe_js(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        self.inner.observe_js(request).await
+    }
+
+    /// Cancel one encoded operation.
+    #[wasm_bindgen(js_name = cancel)]
+    pub async fn cancel_js(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        self.inner.cancel_js(request).await
+    }
+}
+
 #[derive(Deserialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
@@ -779,17 +847,14 @@ impl AttachmentListResolver for WasmProjectionResolver {
         &'a self,
         manifest: &'a FileRef,
         item_count: u32,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
+    ) -> crate::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
         Box::pin(async move {
             let bytes = self.bytes(manifest)?;
             decode_attachment_manifest(manifest, &bytes, item_count)
         })
     }
 
-    fn read<'a>(
-        &'a self,
-        file: &'a FileRef,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> crate::BoxFuture<'a, crate::Result<Vec<u8>>> {
         Box::pin(async move { self.bytes(file) })
     }
 }
