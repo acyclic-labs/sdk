@@ -23,6 +23,9 @@
   ],
   "trace_adapter": {
     "runner": "check-trace-fixtures.ps1",
+    "runner_sha256": "97D770E1BAF3C9AB2D00037B3BE91E072AC9E1B4537A3D8243BAA4CDCA16E656",
+    "checker": "check-trace.ps1",
+    "checker_sha256": "EF16F2D323B552D44DE8839B5F676990BF1C40712CC50B7433C0965DA7BAB386",
     "valid_fixture": "trace-valid.json",
     "valid_result": "accepted seven-event trace",
     "invalid_fixtures": [
