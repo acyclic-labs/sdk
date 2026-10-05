@@ -3476,60 +3476,66 @@ impl PersistentLocalSwarm {
         self.run_existing(task, operation, prompt).await
     }
 
-    async fn run_existing(
-        &self,
+    fn run_existing<'a>(
+        &'a self,
         task: TaskId,
         operation: OperationId,
-        prompt: &str,
-    ) -> Result<TurnOutput> {
-        self.live.cancellation.register(task)?;
-        let mut cancelled = self.live.cancellation.receiver(task).ok_or_else(|| {
-            Error::Storage("registered task cancellation scope disappeared".into())
-        })?;
-        let gate = self.task_gate(task)?;
-        let _completion_guard = gate.lock().await;
-        self.refresh_registry_state().await?;
-        let session = self.session(task).await?;
-        if session.phase == LocalSessionPhase::Cancelled {
-            return Err(Error::Conflict(
-                "cancelled local swarm task cannot run again".into(),
-            ));
-        }
-        let parent = session.parent;
-        self.verify_admitted_task(task, parent).await?;
-        let harness = self.open_session(task).await?;
-        let max_steps = u32::try_from(
-            self.config
-                .run_limits
-                .max_steps
-                .unwrap_or(self.config.limits.model_steps),
-        )
-        .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
-        self.observe(LocalSwarmObservation::ModelWorkerStarted { task });
-        let declaration = self.declarations.lock().await.get(&task).cloned();
-        let run = async {
-            if let Some(declaration) = declaration {
-                let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
-                harness.run_with_bundle(&bundle, operation, prompt, max_steps).await
-            } else {
-                harness.run_with_max_steps(operation, prompt, max_steps).await
+        prompt: &'a str,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        // Keep the complete local turn on the heap. The root caller and
+        // recursive child workers share this path; embedding the large
+        // cancellation, storage, and executor state in every caller future
+        // can exhaust the native test thread stack before provider dispatch.
+        Box::pin(async move {
+            self.live.cancellation.register(task)?;
+            let mut cancelled = self.live.cancellation.receiver(task).ok_or_else(|| {
+                Error::Storage("registered task cancellation scope disappeared".into())
+            })?;
+            let gate = self.task_gate(task)?;
+            let _completion_guard = gate.lock().await;
+            self.refresh_registry_state().await?;
+            let session = self.session(task).await?;
+            if session.phase == LocalSessionPhase::Cancelled {
+                return Err(Error::Conflict(
+                    "cancelled local swarm task cannot run again".into(),
+                ));
             }
-        };
-        let output = tokio::select! {
-            biased;
-            result = cancellation_requested(&mut cancelled) => {
-                result?;
-                return Err(Error::Conflict("local swarm task was cancelled while running".into()));
-            }
-            output = run => output?,
-        };
-        // The per-task mutex only fences handles in this process.  A second
-        // process can cancel the task while the model is running, so the
-        // registry must be refreshed before the terminal Session event is
-        // appended.  `complete_session` also makes same-operation recovery
-        // idempotent while rejecting a different operation key.
-        self.complete_session(task, operation).await?;
-        Ok(output)
+            let parent = session.parent;
+            self.verify_admitted_task(task, parent).await?;
+            let harness = self.open_session(task).await?;
+            let max_steps = u32::try_from(
+                self.config
+                    .run_limits
+                    .max_steps
+                    .unwrap_or(self.config.limits.model_steps),
+            )
+            .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
+            self.observe(LocalSwarmObservation::ModelWorkerStarted { task });
+            let declaration = self.declarations.lock().await.get(&task).cloned();
+            let run = async {
+                if let Some(declaration) = declaration {
+                    let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
+                    harness.run_with_bundle(&bundle, operation, prompt, max_steps).await
+                } else {
+                    harness.run_with_max_steps(operation, prompt, max_steps).await
+                }
+            };
+            let output = tokio::select! {
+                biased;
+                result = cancellation_requested(&mut cancelled) => {
+                    result?;
+                    return Err(Error::Conflict("local swarm task was cancelled while running".into()));
+                }
+                output = run => output?,
+            };
+            // The per-task mutex only fences handles in this process.  A second
+            // process can cancel the task while the model is running, so the
+            // registry must be refreshed before the terminal Session event is
+            // appended.  `complete_session` also makes same-operation recovery
+            // idempotent while rejecting a different operation key.
+            self.complete_session(task, operation).await?;
+            Ok(output)
+        })
     }
 
     /// Rejects the legacy boundary-only fork entry point.
