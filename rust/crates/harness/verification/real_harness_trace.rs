@@ -777,6 +777,60 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         ));
     }
 
+    // Exercise the real durable communication path after completion. The
+    // registry admission and recipient mailbox are separate authoritative
+    // streams; retain both and bind them by identity and payload.
+    let message_id = OperationId::from_bytes([3; 16]);
+    let message_body = b"formal runtime message";
+    let sent_message = swarm
+        .send_message(root_task, child_task, message_id, message_body)
+        .await?;
+    let inbox = swarm.read_inbox(child_task, 0, 8).await?;
+    let delivered_message = inbox
+        .iter()
+        .find(|item| item.message_id == message_id.to_string())
+        .ok_or_else(|| Error::Storage("real child inbox has no sent message".into()))?;
+    if delivered_message.sender != root_task
+        || delivered_message.task_id != child_task
+        || delivered_message.payload != sent_message.payload
+    {
+        return Err(Error::Conflict(
+            "real mailbox delivery is not bound to the admitted message".into(),
+        ));
+    }
+    let post_message_events = registry_events(&registry).await?;
+    let (
+        message_admission_sequence,
+        message_admission_record_bytes,
+        message_admission_payload,
+    ) = post_message_events
+        .iter()
+        .find_map(|(sequence, event, record_bytes)| match event {
+            StoredEvent::MessageAdmitted {
+                sender,
+                recipient,
+                message_id: recorded_id,
+                payload,
+            } if *sender == root_task
+                && *recipient == child_task
+                && *recorded_id == message_id =>
+            {
+                Some((*sequence, record_bytes.clone(), payload.clone()))
+            }
+            _ => None,
+        })
+        .ok_or_else(|| Error::Storage("real registry has no MessageAdmitted record".into()))?;
+    if message_admission_sequence <= completion_sequence {
+        return Err(Error::Conflict(
+            "message admission did not follow the durable child completion".into(),
+        ));
+    }
+    if message_admission_payload != sent_message.payload {
+        return Err(Error::Conflict(
+            "message admission payload differs from the send result".into(),
+        ));
+    }
+
     let trace = vec![
         json!({
             "kind": "fork_admitted",
@@ -809,6 +863,18 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "child_operation_id": child_operation.to_string(),
             "agent": 2,
             "outcome_durable": true
+        }),
+        json!({
+            "kind": "message_admitted",
+            "message_id": message_id.to_string(),
+            "sender": 1,
+            "recipient": 2,
+            "admission_sequence": message_admission_sequence
+        }),
+        json!({
+            "kind": "message_delivered",
+            "message_id": message_id.to_string(),
+            "delivery_index": delivered_message.sequence
         }),
     ];
     let bytes = serde_json::to_vec_pretty(&trace)
@@ -853,7 +919,17 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "child_model_event_canonical_bytes_hex": hex_bytes(&model_record_bytes),
             "child_model_event_sha256": sha256_hex(&model_record_bytes),
             "completion_record_bytes_hex": completion_record_bytes,
-            "completion_record_sha256": sha256_hex(&hex_decode(&completion_record_bytes)?)
+            "completion_record_sha256": sha256_hex(&hex_decode(&completion_record_bytes)?),
+            "message_admission_sequence": message_admission_sequence,
+            "message_admission_record_bytes_hex": message_admission_record_bytes,
+            "message_admission_record_sha256": sha256_hex(&hex_decode(&message_admission_record_bytes)?),
+            "message_id": message_id,
+            "message_sender": root_task,
+            "message_recipient": child_task,
+            "message_admission_payload": message_admission_payload,
+            "message_delivery_sequence": delivered_message.sequence,
+            "message_delivery_message_id": delivered_message.message_id,
+            "message_delivery_payload": delivered_message.payload
         }),
         json!({
             "root_task": root_task,
@@ -906,7 +982,8 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     });
     let ordering = json!({
         "basis": "causal projection across independently ordered durable streams",
-        "registry": "registry sequence orders ForkPrepared, ForkPublicationCompleted, and ForkCompleted",
+        "registry": "registry sequence orders ForkPrepared, ForkPublicationCompleted, ForkCompleted, and MessageAdmitted",
+        "mailbox": "mailbox sequence identifies the delivered MessageAdmitted payload",
         "parent_conversation": "conversation revision identifies ForkPublished",
         "child_execution": "child journal sequence identifies ModelStarted",
         "cross_stream_sequences_compared": false,
@@ -926,7 +1003,7 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         "The publication completion receipt was reopened by operation identity and replayed with the same digest; the replay must not append a second receipt, and a substituted digest is rejected.",
         "Task and opaque generation identities are normalized only at the adapter boundary.",
         "Current project generation is not independently observed by this trace, so publication freshness is not claimed.",
-        "This trace does not prove approval handling, aggregate budget exhaustion, Rust refinement, liveness, OS confinement, or a total order across streams."
+        "This trace does not prove approval handling, aggregate budget exhaustion, Rust refinement, liveness, OS confinement, project integration, or a total order across streams."
     ]);
     let manifest = json!({
         "kind": "real_harness_trace_manifest",

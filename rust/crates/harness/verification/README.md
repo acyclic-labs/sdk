@@ -227,8 +227,9 @@ deterministic mock provider, then projects the current durable records:
 `ForkPrepared` (with `ForkAdmitted` retained only for legacy read
 compatibility), the parent conversation's `ForkPublished`, the registry's
 `ForkPublicationCompleted` receipt and same-digest replay, the child's
-authenticated execution-journal `ModelStarted`, and `ForkCompleted`. It
-writes a normalized four-event trace and a provenance manifest containing
+authenticated execution-journal `ModelStarted`, `ForkCompleted`, and one
+real parent-to-child durable message through both `MessageAdmitted` and the
+recipient mailbox. It writes a normalized six-event trace and a provenance manifest containing
 source stream sequences, distinct fork/publication/child operation identities,
 canonical source bytes and SHA-256 digests, and the raw opaque project
 generation. Registry sequence, parent conversation revision, and child journal
@@ -250,10 +251,12 @@ the checker parses these bytes for structure without reserializing or
 discarding whitespace, and their SHA-256 is retained as artifact evidence. It also requires the
 normalized trace's captured generation to equal the source generation ordinal
 before passing the finite event reducer.
-The registry admission and completion retain raw envelope bytes; the current
-conversation and execution-journal APIs expose typed events, so those two
-source witnesses are recorded as canonical typed event bytes rather than
-claimed raw storage envelopes.
+The registry admission, completion, and message-admission records retain raw
+envelope bytes; the current conversation, execution-journal, and inbox APIs
+expose typed events, so those source witnesses are recorded as canonical typed
+event bytes rather than claimed raw storage envelopes. The message assertion
+binds the registry `MessageAdmitted` payload to the typed mailbox item and
+requires the first mailbox delivery sequence.
 
 The ignored exporter requires an explicit output path so ordinary test runs do
 not write artifacts. Use the named qualification gate, which runs the
@@ -271,8 +274,8 @@ checker to the current source, scripts, and test binary, but those hashes are
 self-reported by the same test process. Until a separately trusted journal
 reader or signed artifact supplies the source witness, this is self-reported
 integrity evidence rather than external provenance. The export does not claim
-Rust refinement, unbounded recursion, liveness, approval handling, aggregate
-budget exhaustion, process-tree cleanup, or OS confinement. The finite
+Rust refinement, unbounded recursion, liveness, approval handling, project
+integration, aggregate budget exhaustion, process-tree cleanup, or OS confinement. The finite
 `SwarmBudget` model checks only admission count, depth, and per-agent steps;
 it does not model the production reservation dimensions, retry settlement,
 remaining-budget propagation, or recursive release fences. Process-tree
@@ -313,9 +316,10 @@ export authoritative journal witnesses for each applicable row and reject
 missing, reordered, or identity-mutated witnesses. The current real-trace
 exporter covers a bounded fork admission, parent-conversation publication,
 `ForkPublicationCompleted` registry receipt, same-digest reopen/replay, model
-start, and completion path. The replay reuses the authenticated publication
-operation and digest, proves that no second receipt is appended, and checks
-that a substituted digest is rejected. Cancellation races, message delivery,
+start, completion, and one real durable message admission plus mailbox
+delivery. The replay reuses the authenticated publication operation and
+digest, proves that no second receipt is appended, and checks that a
+substituted digest is rejected. Cancellation races, project integration,
 approval/writeback, and aggregate budget exhaustion remain separate gates.
 The registry sequence only proves that the receipt follows its admission; the
 child completion may race with receipt publication after scheduling and is not

@@ -57,6 +57,16 @@ foreach ($name in @(
     'completion_record_bytes_hex',
     'parent_event_canonical_bytes_hex',
     'child_model_event_canonical_bytes_hex',
+    'message_admission_sequence',
+    'message_admission_record_bytes_hex',
+    'message_admission_record_sha256',
+    'message_id',
+    'message_sender',
+    'message_recipient',
+    'message_admission_payload',
+    'message_delivery_sequence',
+    'message_delivery_message_id',
+    'message_delivery_payload',
     'fork_operation',
     'publication_operation',
     'completion_operation'
@@ -354,6 +364,32 @@ if ([int64]$manifest.source.publication_completion_replay_count -ne 1 -or
     throw 'publication completion replay did not prove same-digest idempotence and substitution rejection.'
 }
 
+$messageAdmissionRecord = ParseCanonicalJson ([string]$manifest.source.message_admission_record_bytes_hex) 'message admission record'
+$messageAdmissionEvent = $messageAdmissionRecord.event
+if ($null -eq $messageAdmissionEvent -or [string]$messageAdmissionEvent.kind -ne 'message_admitted') {
+    throw 'message admission record is not a MessageAdmitted envelope.'
+}
+$messageAdmissionMessage = if ($null -ne $messageAdmissionEvent.message) {
+    $messageAdmissionEvent.message
+} else {
+    $messageAdmissionEvent
+}
+if ($null -eq $messageAdmissionMessage -or
+    [string]$messageAdmissionMessage.sender -ne [string]$manifest.source.message_sender -or
+    [string]$messageAdmissionMessage.recipient -ne [string]$manifest.source.message_recipient -or
+    [string]$messageAdmissionMessage.message_id -ne [string]$manifest.source.message_id) {
+    throw 'message admission endpoints or identity do not match the source binding.'
+}
+RequireJsonEqual $messageAdmissionMessage.payload $manifest.source.message_admission_payload 'message admission payload'
+RequireJsonEqual $manifest.source.message_delivery_payload $manifest.source.message_admission_payload 'message delivery payload'
+if ([string]$manifest.source.message_delivery_message_id -ne [string]$manifest.source.message_id) {
+    throw 'message delivery identity does not match the admitted message.'
+}
+if ([int64]$manifest.source.message_delivery_sequence -ne 1 -or
+    [int64]$manifest.source.message_admission_sequence -le [int64]$manifest.source.fork_completed_sequence) {
+    throw 'message delivery or registry admission sequence is invalid.'
+}
+
 $parentEvent = ParseCanonicalJson ([string]$manifest.source.parent_event_canonical_bytes_hex) 'parent event'
 if ($null -eq $parentEvent.payload -or
     [string]$parentEvent.payload.kind -ne 'fork_published' -or
@@ -434,6 +470,7 @@ foreach ($record in @(
     @{ Bytes = $manifest.source.admission_record_bytes_hex; Digest = $manifest.source.admission_record_sha256; Name = 'admission record' },
     @{ Bytes = $manifest.source.publication_completion_record_bytes_hex; Digest = $manifest.source.publication_completion_record_sha256; Name = 'publication completion record' },
     @{ Bytes = $manifest.source.completion_record_bytes_hex; Digest = $manifest.source.completion_record_sha256; Name = 'completion record' },
+    @{ Bytes = $manifest.source.message_admission_record_bytes_hex; Digest = $manifest.source.message_admission_record_sha256; Name = 'message admission record' },
     @{ Bytes = $manifest.source.parent_event_canonical_bytes_hex; Digest = $manifest.source.parent_event_sha256; Name = 'parent event' },
     @{ Bytes = $manifest.source.child_model_event_canonical_bytes_hex; Digest = $manifest.source.child_model_event_sha256; Name = 'child model event' }
 )) {
@@ -459,8 +496,11 @@ $admission = @($trace | Where-Object kind -eq 'fork_admitted')
 $publication = @($trace | Where-Object kind -eq 'workspace_published')
 $started = @($trace | Where-Object kind -eq 'model_started')
 $completed = @($trace | Where-Object kind -eq 'agent_completed')
-if ($admission.Count -ne 1 -or $publication.Count -ne 1 -or $started.Count -ne 1 -or $completed.Count -ne 1) {
-    throw 'real trace must contain exactly one fork, publication, model start, and completion witness.'
+$messageAdmission = @($trace | Where-Object kind -eq 'message_admitted')
+$messageDelivery = @($trace | Where-Object kind -eq 'message_delivered')
+if ($admission.Count -ne 1 -or $publication.Count -ne 1 -or $started.Count -ne 1 -or $completed.Count -ne 1 -or
+    $messageAdmission.Count -ne 1 -or $messageDelivery.Count -ne 1) {
+    throw 'real trace must contain exactly one fork, publication, model start, completion, message admission, and message delivery witness.'
 }
 if ($admission[0].fork_operation_id -ne $manifest.identity_binding.fork_operation_id -or
     $admission[0].child_operation_id -ne $manifest.identity_binding.child_operation_id -or
@@ -470,7 +510,13 @@ if ($admission[0].fork_operation_id -ne $manifest.identity_binding.fork_operatio
     [string]$publication[0].publication_completion_digest -ne
         (JsonByteArrayHex $manifest.source.publication_completion_digest 'manifest publication completion digest') -or
     $started[0].child_operation_id -ne $manifest.identity_binding.child_operation_id -or
-    $completed[0].child_operation_id -ne $manifest.identity_binding.child_operation_id) {
+    $completed[0].child_operation_id -ne $manifest.identity_binding.child_operation_id -or
+    [string]$messageAdmission[0].message_id -ne [string]$manifest.source.message_id -or
+    [int]$messageAdmission[0].sender -ne 1 -or
+    [int]$messageAdmission[0].recipient -ne 2 -or
+    [int64]$messageAdmission[0].admission_sequence -ne [int64]$manifest.source.message_admission_sequence -or
+    [string]$messageDelivery[0].message_id -ne [string]$manifest.source.message_id -or
+    [int64]$messageDelivery[0].delivery_index -ne [int64]$manifest.source.message_delivery_sequence) {
     throw 'real trace event identities do not match the authenticated source binding.'
 }
 if ($completed[0].outcome_durable -ne $true) {

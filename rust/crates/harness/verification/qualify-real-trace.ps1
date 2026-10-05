@@ -53,9 +53,12 @@ $traceMutations = @(
     @{ Name = 'trace-missing-publication'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'workspace_published' }) } },
     @{ Name = 'trace-missing-model-start'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'model_started' }) } },
     @{ Name = 'trace-missing-completion'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'agent_completed' }) } },
+    @{ Name = 'trace-missing-message-admission'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'message_admitted' }) } },
+    @{ Name = 'trace-missing-message-delivery'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'message_delivered' }) } },
     @{ Name = 'trace-corrupt-agent'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'model_started') { $event.agent = 3 } }; @($events) } },
     @{ Name = 'trace-corrupt-capture'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'fork_admitted') { $event.captured_generation = 1 } }; @($events) } },
     @{ Name = 'trace-corrupt-publication-completion'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'workspace_published') { $event.publication_completion_digest = ('0' * 64) } }; @($events) } },
+    @{ Name = 'trace-corrupt-message'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'message_admitted') { $event.recipient = 3 } }; @($events) } },
     @{ Name = 'trace-duplicate-model-start'; Apply = {
         param($events)
         $copy = @($events)
@@ -130,6 +133,9 @@ $mutations = @(
     @{ Name = 'parent-revision'; Apply = { param($m) $m.source.parent_conversation_revision = [int64]$m.source.parent_conversation_revision + 1 } },
     @{ Name = 'model-start'; Apply = { param($m) $m.source.child_execution_model_started_step = [int64]$m.source.child_execution_model_started_step + 1 } },
     @{ Name = 'completion-digest'; Apply = { param($m) $m.source.completion_output_digest = @(0..31) } },
+    @{ Name = 'message-id'; Apply = { param($m) $m.source.message_id = '00000000-0000-0000-0000-000000000000' } },
+    @{ Name = 'message-admission-record'; Apply = { param($m) $m.source.message_admission_record_bytes_hex = "20$($m.source.message_admission_record_bytes_hex)" } },
+    @{ Name = 'message-delivery-payload'; Apply = { param($m) $m.source.message_delivery_payload = $null } },
     @{ Name = 'request-bytes-corrupt'; Apply = { param($m) $m.source.child_execution_model_started_request_bytes_hex = "20$($m.source.child_execution_model_started_request_bytes_hex)" } },
     @{ Name = 'request-bytes-missing'; Apply = { param($m) $m.source.child_execution_model_started_request_bytes_hex = $null } },
     @{ Name = 'provenance-commit'; Apply = { param($m) $m.provenance.source_commit = ('0' * 40) } },
