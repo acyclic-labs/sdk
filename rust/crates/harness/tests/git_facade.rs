@@ -29,6 +29,7 @@ use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -614,6 +615,85 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
     .err()
     .ok_or_else(|| Error::Invalid("writeback approval omitted explicit capability".into()))?;
     assert!(matches!(error, Error::Unsupported(value) if value == "project:writeback"));
+    Ok(())
+}
+
+#[test]
+fn root_writeback_approval_binds_operation_generations_scope_and_paths() -> Result<()> {
+    let provider = ProviderRef::new("git-facade-approval-digest", "filesystem", "2")?;
+    let volume = VolumeRef::new(
+        provider.clone(),
+        "root-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("root".into()),
+    )?;
+    let authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "root".into(),
+    };
+    let issuer = AuthorityIssuer::new("git-facade-approval-digest", [21; 32], authority);
+    let scope = issuer.root_for_agent(
+        AgentId::from_bytes([22; 16]),
+        "root-approval",
+        Capabilities::new([
+            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Write)?,
+            "project:writeback".into(),
+        ]),
+    );
+    let source = GenerationRef::new(provider.clone(), [31; 32], Some("source".into()))?;
+    let target = GenerationRef::new(provider.clone(), [32; 32], Some("target".into()))?;
+    let operation = acyclic_harness::OperationId::from_bytes([23; 16]);
+    let approved = RootWritebackApproval::issue_with_paths(
+        &issuer.verifier(),
+        &scope,
+        volume.clone(),
+        operation,
+        source.clone(),
+        target.clone(),
+        &[PathBuf::from(r"src\main.rs"), PathBuf::from("src/main.rs")],
+    )?;
+    let canonical = RootWritebackApproval::issue_with_paths(
+        &issuer.verifier(),
+        &scope,
+        volume.clone(),
+        operation,
+        source.clone(),
+        target.clone(),
+        &[PathBuf::from("src/main.rs")],
+    )?;
+    assert_eq!(approved.path_digest(), canonical.path_digest());
+    assert_eq!(approved.action_digest(), canonical.action_digest());
+
+    let changed_path = approved.clone().with_path_set(&[PathBuf::from("src/lib.rs")])?;
+    assert_ne!(approved.path_digest(), changed_path.path_digest());
+    assert_ne!(approved.action_digest(), changed_path.action_digest());
+    assert!(matches!(
+        approved.clone().with_path_set(&[]),
+        Err(Error::Invalid(message)) if message.contains("path set is empty")
+    ));
+
+    let changed_operation = RootWritebackApproval::issue_with_paths(
+        &issuer.verifier(),
+        &scope,
+        volume.clone(),
+        acyclic_harness::OperationId::from_bytes([24; 16]),
+        source.clone(),
+        target.clone(),
+        &[PathBuf::from("src/main.rs")],
+    )?;
+    assert_ne!(approved.action_digest(), changed_operation.action_digest());
+
+    let changed_generation = RootWritebackApproval::issue_with_paths(
+        &issuer.verifier(),
+        &scope,
+        volume,
+        operation,
+        GenerationRef::new(provider.clone(), [33; 32], Some("source".into()))?,
+        target,
+        &[PathBuf::from("src/main.rs")],
+    )?;
+    assert_ne!(approved.action_digest(), changed_generation.action_digest());
     Ok(())
 }
 
