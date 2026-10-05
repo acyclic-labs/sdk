@@ -2,7 +2,7 @@
 mod source_closure;
 
 use acyclic_sdk_contract_wire::{BindingTransport, transport_control};
-use std::{env, path::PathBuf, process::Command};
+use std::{env, path::PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
@@ -19,23 +19,6 @@ fn main() {
         );
     }
     println!("cargo:rustc-env=SDK_EXAMPLES_SOURCE_SHA256={digest}");
-    // Capture the revision while compiling the producer so a cached binary
-    // cannot report a later checkout's HEAD when it is executed.
-    let source_git_revision = env::var("SDK_EXAMPLES_SOURCE_GIT_REVISION")
-        .ok()
-        .or_else(|| {
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(&workspace_root)
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        })
-        .filter(|revision| !revision.is_empty());
-    if let Some(revision) = source_git_revision {
-        println!("cargo:rustc-env=SDK_EXAMPLES_SOURCE_GIT_REVISION={revision}");
-    }
     if let Some(target) = target {
         println!("cargo:rustc-env=SDK_EXAMPLES_BUILD_TARGET={target}");
     }

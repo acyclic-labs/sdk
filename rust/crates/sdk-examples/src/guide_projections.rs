@@ -358,12 +358,12 @@ fn package_spec(family: &str, language: Language) -> Option<GuidePackageSpec> {
         Language::Java => GuidePackageSpec {
             package_manager: "maven",
             package_name: "dev.acyclic:acyclic-sdk-jvm-transport",
-            artifact_path: ".tmp-jvm-producer-smoke/acyclic-sdk-jvm-transport-*.jar",
+            artifact_path: "jvm/target/acyclic-sdk-jvm-transport-*.jar",
         },
         Language::CSharp => GuidePackageSpec {
             package_manager: "nuget",
             package_name: "Acyclic.Sdk.Transport",
-            artifact_path: ".tmp-dotnet-producer-smoke/Acyclic.Sdk.Transport.*.nupkg",
+            artifact_path: "dotnet/bin/**/Acyclic.Sdk.Transport.dll",
         },
         Language::Ruby => GuidePackageSpec {
             package_manager: "bundler",

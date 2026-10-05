@@ -544,6 +544,10 @@ if fixture_roundtrip and not operations:
     operations = ["actors.create_actor"]
 plan = json.loads(pathlib.Path(operation_plan_path).read_text(encoding="utf-8"))
 applicable_operations = plan["operations"]
+applicable_ids = {item["qualification_id"] for item in applicable_operations}
+unknown_operations = sorted(set(operations) - applicable_ids)
+if unknown_operations:
+    raise SystemExit("qualified operation is absent from the Rust operation plan: " + ", ".join(unknown_operations))
 payload = {
     "schema": "acyclic.sdk.http-target-runtime-qualification.v1",
     "target": target,

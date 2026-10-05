@@ -302,6 +302,7 @@ foreach ($familySpec in Get-ChildItem -LiteralPath $openApiStage -Filter '*.json
                 method = $methodProperty.Name.ToUpperInvariant()
                 path = $pathProperty.Name
                 operation_id = [string]$operation.operationId
+                qualification_id = "$family.$($operation.operationId)"
                 rpc = [string]$operation.'x-protobuf-rpc'
                 request_schema = $requestRef
                 response_schema = $responseRef
