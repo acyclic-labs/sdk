@@ -8,7 +8,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use acyclic_actors::wire as actors_wire;
-use acyclic_workers::wire as workers_wire;
+use acyclic_workers::{validate_publish, validate_select, validate_submit, wire as workers_wire};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
@@ -148,7 +148,8 @@ struct WorkerState {
     version: Option<workers_wire::CodeVersion>,
     deployment: Option<workers_wire::Deployment>,
     jobs: BTreeMap<String, workers_wire::JobObservation>,
-    next_job: u64,
+    idempotency: BTreeMap<String, String>,
+    publish_idempotency: BTreeMap<String, Vec<u8>>,
 }
 
 /// Shared stateful Workers implementation used by remote qualification.
@@ -169,18 +170,23 @@ fn job_observation(id: String, version: Vec<u8>, body: Vec<u8>, state: workers_w
 impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
     async fn publish_version(&self, request: Request<workers_wire::PublishVersionRequest>) -> Result<Response<workers_wire::PublishVersionResponse>, Status> {
         let request = request.into_inner();
-        let bytes = if request.javascript_module.is_empty() { default_module() } else { request.javascript_module };
-        let version = worker_version(&bytes);
-        if !request.expected_sha256.is_empty() && request.expected_sha256 != version.sha256 { return Err(Status::invalid_argument("module digest mismatch")); }
-        self.state.lock().await.version = Some(version.clone());
+        validate_publish(&request).map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let version = worker_version(&request.javascript_module);
+        let mut state = self.state.lock().await;
+        if let Some(existing) = state.publish_idempotency.get(&request.idempotency_key) {
+            if existing != &version.sha256 { return Err(Status::already_exists("publish idempotency key is rebound")); }
+        }
+        state.version = Some(version.clone());
+        state.publish_idempotency.insert(request.idempotency_key, version.sha256.clone());
         Ok(Response::new(workers_wire::PublishVersionResponse { version: Some(version) }))
     }
 
     async fn select_deployment(&self, request: Request<workers_wire::SelectDeploymentRequest>) -> Result<Response<workers_wire::SelectDeploymentResponse>, Status> {
         let request = request.into_inner();
+        validate_select(&request).map_err(|error| Status::invalid_argument(error.to_string()))?;
         let mut state = self.state.lock().await;
-        let version = state.version.clone().unwrap_or_else(|| worker_version(&default_module()));
-        if !request.version_sha256.is_empty() && request.version_sha256 != version.sha256 { return Err(Status::not_found("version not found")); }
+        let version = state.version.clone().ok_or_else(|| Status::not_found("version not found"))?;
+        if request.version_sha256 != version.sha256 { return Err(Status::not_found("version not found")); }
         let current_revision = state.deployment.as_ref().map_or(0, |deployment| deployment.revision);
         if request.expected_revision.is_some_and(|revision| revision != current_revision) { return Err(Status::aborted("deployment revision conflict")); }
         let deployment = workers_wire::Deployment { alias: if request.alias.is_empty() { "production".into() } else { request.alias }, version: Some(version), revision: current_revision + 1 };
@@ -190,31 +196,40 @@ impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
 
     async fn submit_job(&self, request: Request<workers_wire::SubmitJobRequest>) -> Result<Response<workers_wire::SubmitJobResponse>, Status> {
         let request = request.into_inner();
+        validate_submit(&request).map_err(|error| Status::invalid_argument(error.to_string()))?;
         let mut state = self.state.lock().await;
-        let version = state.version.clone().unwrap_or_else(|| worker_version(&default_module()));
+        if let Some(existing) = state.idempotency.get(&request.idempotency_key) {
+            if let Some(job) = state.jobs.get(existing).cloned() {
+                return Ok(Response::new(workers_wire::SubmitJobResponse { job: Some(job) }));
+            }
+        }
+        let version = state.version.clone().ok_or_else(|| Status::not_found("version not found"))?;
+        let target = request.target.as_ref().and_then(|target| target.target.as_ref());
+        match target {
+            Some(workers_wire::job_target::Target::VersionSha256(value)) if value == &version.sha256 => {}
+            Some(workers_wire::job_target::Target::DeploymentAlias(alias))
+                if state.deployment.as_ref().is_some_and(|deployment| deployment.alias == *alias) => {}
+            _ => return Err(Status::not_found("Workers target is unknown")),
+        }
         let body = match request.input.and_then(|input| input.source) { Some(workers_wire::payload::Source::InlineBytes(bytes)) => bytes, Some(workers_wire::payload::Source::Object(object)) => object.key.into_bytes(), None => b"fixture-job".to_vec() };
-        state.next_job += 1;
-        let id = format!("fixture-job-{}", state.next_job);
+        let id = format!("fixture-job-{}", hex::encode(Sha256::digest(request.idempotency_key.as_bytes())));
         let job = job_observation(id.clone(), version.sha256, body, workers_wire::JobState::Succeeded);
         state.jobs.insert(id, job.clone());
+        state.idempotency.insert(request.idempotency_key, job.job_id.clone());
         Ok(Response::new(workers_wire::SubmitJobResponse { job: Some(job) }))
     }
 
     async fn inspect_job(&self, request: Request<workers_wire::InspectJobRequest>) -> Result<Response<workers_wire::InspectJobResponse>, Status> {
         let request = request.into_inner();
-        let mut state = self.state.lock().await;
-        let id = if request.job_id.is_empty() { "fixture-job-1".into() } else { request.job_id };
-        let version = state.version.clone().unwrap_or_else(|| worker_version(&default_module()));
-        let job = state.jobs.entry(id.clone()).or_insert_with(|| job_observation(id, version.sha256, b"fixture-job".to_vec(), workers_wire::JobState::Succeeded)).clone();
+        let state = self.state.lock().await;
+        let job = state.jobs.get(&request.job_id).cloned().ok_or_else(|| Status::not_found("Workers job is unknown"))?;
         Ok(Response::new(workers_wire::InspectJobResponse { job: Some(job) }))
     }
 
     async fn cancel_job(&self, request: Request<workers_wire::CancelJobRequest>) -> Result<Response<workers_wire::CancelJobResponse>, Status> {
         let request = request.into_inner();
         let mut state = self.state.lock().await;
-        let id = if request.job_id.is_empty() { "fixture-job-1".into() } else { request.job_id };
-        let version = state.version.clone().unwrap_or_else(|| worker_version(&default_module()));
-        let job = state.jobs.entry(id.clone()).or_insert_with(|| job_observation(id, version.sha256, b"fixture-job".to_vec(), workers_wire::JobState::Accepted));
+        let job = state.jobs.get_mut(&request.job_id).ok_or_else(|| Status::not_found("Workers job is unknown"))?;
         job.state = workers_wire::JobState::Cancelled as i32;
         job.cancellation_requested = true;
         Ok(Response::new(workers_wire::CancelJobResponse { job: Some(job.clone()) }))
@@ -223,16 +238,16 @@ impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
     async fn invoke_version(&self, request: Request<workers_wire::InvokeVersionRequest>) -> Result<Response<workers_wire::InvokeResponse>, Status> {
         let request = request.into_inner();
         let state = self.state.lock().await;
-        let version = state.version.clone().unwrap_or_else(|| worker_version(&default_module()));
-        if !request.version_sha256.is_empty() && request.version_sha256 != version.sha256 { return Err(Status::not_found("version not found")); }
+        let version = state.version.clone().ok_or_else(|| Status::not_found("version not found"))?;
+        if request.version_sha256 != version.sha256 { return Err(Status::not_found("version not found")); }
         Ok(Response::new(workers_wire::InvokeResponse { status: 200, headers: vec![workers_wire::Header { name: "content-type".into(), value: "application/octet-stream".into() }], body: if request.body.is_empty() { b"fixture-response".to_vec() } else { request.body }, resolved_sha256: version.sha256, resolved_revision: None }))
     }
 
     async fn invoke_deployment(&self, request: Request<workers_wire::InvokeDeploymentRequest>) -> Result<Response<workers_wire::InvokeResponse>, Status> {
         let request = request.into_inner();
         let state = self.state.lock().await;
-        let deployment = state.deployment.clone().unwrap_or_else(|| workers_wire::Deployment { alias: "production".into(), version: Some(worker_version(&default_module())), revision: 1 });
-        if !request.alias.is_empty() && request.alias != deployment.alias { return Err(Status::not_found("deployment not found")); }
+        let deployment = state.deployment.clone().ok_or_else(|| Status::not_found("deployment not found"))?;
+        if request.alias != deployment.alias { return Err(Status::not_found("deployment not found")); }
         let version = deployment.version.unwrap_or_else(|| worker_version(&default_module()));
         Ok(Response::new(workers_wire::InvokeResponse { status: 200, headers: vec![workers_wire::Header { name: "content-type".into(), value: "application/octet-stream".into() }], body: if request.body.is_empty() { b"fixture-response".to_vec() } else { request.body }, resolved_sha256: version.sha256, resolved_revision: Some(deployment.revision) }))
     }
@@ -322,16 +337,22 @@ mod tests {
         assert_eq!(selected.alias, "production");
         assert_eq!(selected.revision, 1);
         assert_eq!(selected.version.as_ref().unwrap().sha256, published.sha256);
-        let submitted = fixture.submit_job(Request::new(workers_wire::SubmitJobRequest { target: None, input: Some(workers_wire::Payload { source: Some(workers_wire::payload::Source::InlineBytes(b"job-input".to_vec())) }), limits: None, retry: None, idempotency_key: "job-1".into() })).await.unwrap().into_inner().job.unwrap();
+        let submitted = fixture.submit_job(Request::new(workers_wire::SubmitJobRequest {
+            target: Some(workers_wire::JobTarget { target: Some(workers_wire::job_target::Target::VersionSha256(published.sha256.clone())) }),
+            input: Some(workers_wire::Payload { source: Some(workers_wire::payload::Source::InlineBytes(b"job-input".to_vec())) }),
+            limits: Some(workers_wire::JobLimits { timeout_millis: 10_000, memory_bytes: 64 * 1024 * 1024, output_bytes: 1024 }),
+            retry: Some(workers_wire::RetryPolicy { max_attempts: 3, backoff_millis: 10 }),
+            idempotency_key: "job-1".into(),
+        })).await.unwrap().into_inner().job.unwrap();
         assert_eq!(submitted.state, workers_wire::JobState::Succeeded as i32);
-        assert_eq!(submitted.job_id, "fixture-job-1");
+        assert_eq!(submitted.job_id, format!("fixture-job-{}", hex::encode(Sha256::digest(b"job-1"))));
         assert_eq!(submitted.resolved_sha256, published.sha256);
         let inspected = fixture.inspect_job(Request::new(workers_wire::InspectJobRequest { job_id: submitted.job_id.clone() })).await.unwrap().into_inner().job.unwrap();
-        assert_eq!(inspected.job_id, "fixture-job-1");
+        assert_eq!(inspected.job_id, submitted.job_id);
         assert_eq!(inspected.state, workers_wire::JobState::Succeeded as i32);
         assert_eq!(inspected.result.unwrap().body, b"job-input");
-        let cancelled = fixture.cancel_job(Request::new(workers_wire::CancelJobRequest { job_id: submitted.job_id, idempotency_key: "cancel-1".into() })).await.unwrap().into_inner().job.unwrap();
-        assert_eq!(cancelled.job_id, "fixture-job-1");
+        let cancelled = fixture.cancel_job(Request::new(workers_wire::CancelJobRequest { job_id: submitted.job_id.clone(), idempotency_key: "cancel-1".into() })).await.unwrap().into_inner().job.unwrap();
+        assert_eq!(cancelled.job_id, submitted.job_id);
         assert_eq!(cancelled.state, workers_wire::JobState::Cancelled as i32);
         assert!(cancelled.cancellation_requested);
         let invoked = fixture.invoke_version(Request::new(workers_wire::InvokeVersionRequest { version_sha256: published.sha256.clone(), method: "POST".into(), url: "/run".into(), headers: Vec::new(), body: b"invoke-input".to_vec() })).await.unwrap().into_inner();
