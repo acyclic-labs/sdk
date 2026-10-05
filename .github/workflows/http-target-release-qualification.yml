@@ -134,7 +134,7 @@ jobs:
             -Request "$RUNNER_TEMP/http-target-request.json"
 
       - name: Start the Rust-owned HTTP fixture for generated-client transport
-        if: matrix.target == 'nim' || matrix.target == 'crystal'
+        if: matrix.target == 'nim' || matrix.target == 'crystal' || matrix.target == 'r'
         shell: bash
         run: |
           cargo run --locked \
@@ -156,7 +156,7 @@ jobs:
         shell: bash
         env:
           ACYCLIC_RUST_SOURCE_REVISION: ${{ inputs.ref || github.sha }}
-          ACYCLIC_FIXTURE_HTTP_ENDPOINT: ${{ matrix.target == 'nim' && 'http://127.0.0.1:18080' || matrix.target == 'crystal' && 'http://127.0.0.1:18080' || '' }}
+          ACYCLIC_FIXTURE_HTTP_ENDPOINT: ${{ matrix.target == 'nim' && 'http://127.0.0.1:18080' || matrix.target == 'crystal' && 'http://127.0.0.1:18080' || matrix.target == 'r' && 'http://127.0.0.1:18080' || '' }}
         run: |
           archive="$(find "$RUNNER_TEMP/http-target/${{ matrix.target }}" -maxdepth 1 -type f -name '*.zip' -print -quit)"
           test -n "$archive"
@@ -167,7 +167,7 @@ jobs:
             "$archive"
 
       - name: Stop the Rust-owned HTTP fixture
-        if: always() && (matrix.target == 'nim' || matrix.target == 'crystal')
+        if: always() && (matrix.target == 'nim' || matrix.target == 'crystal' || matrix.target == 'r')
         shell: bash
         run: |
           curl --fail --silent --request POST http://127.0.0.1:18080/shutdown >/dev/null || true

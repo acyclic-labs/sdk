@@ -211,6 +211,37 @@ EOF
       dir=$(dirname "$description")
       run_logged "r-$(basename "$dir")" bash -c "cd \"$dir\" && R CMD build --no-build-vignettes . && R CMD check --no-manual --no-vignettes --as-cran --no-tests --no-install \"\$(ls -1t *.tar.gz | head -n 1)\""
     done
+    if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
+      # Install the generated package and call its generated R6 client. This
+      # verifies model serialization, the Rust-owned route, and response
+      # deserialization against the Rust fixture.
+      transport_dir="$output_root/r-transport"
+      library_dir="$transport_dir/library"
+      mkdir -p "$library_dir"
+      package_dir="$(dirname "${projects[0]}")"
+      run_logged r-install R CMD INSTALL --no-multiarch --library="$library_dir" "$package_dir"
+      cat >"$transport_dir/qualification.R" <<'EOF'
+library(acyclic.actors.r, lib.loc = Sys.getenv("ACYCLIC_R_LIBRARY"))
+client <- ApiClient$new(base_path = Sys.getenv("ACYCLIC_FIXTURE_HTTP_ENDPOINT"))
+api <- DefaultApi$new(client)
+limits <- AcyclicActorsV1ActorLimits$new(
+  checkpointBytes = "1048576",
+  handlerTimeoutMillis = "1000",
+  memoryBytes = "1048576")
+request <- AcyclicActorsV1CreateActorRequest$new(
+  codeSha256 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  homeRegion = "qualification",
+  idempotencyKey = "http-target-r-qualification",
+  limits = limits)
+response <- api$CreateActorWithHttpInfo(request)
+stopifnot(response$status_code >= 200, response$status_code < 300)
+stopifnot(!is.null(response$content))
+EOF
+      run_logged r-transport env ACYCLIC_R_LIBRARY="$library_dir" ACYCLIC_FIXTURE_HTTP_ENDPOINT="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" Rscript "$transport_dir/qualification.R"
+      client_transport='r-generated-client-fixture-roundtrip'
+    else
+      client_transport='not-run-fixture-endpoint-unset'
+    fi
     runtime='R/R CMD check'
     ;;
   *) echo "unsupported HTTP target: $target" >&2; exit 2 ;;
