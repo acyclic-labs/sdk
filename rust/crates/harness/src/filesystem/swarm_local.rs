@@ -31,7 +31,9 @@ use crate::{
         InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse,
         InteractionTicket,
     },
-    model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
+    model::{
+        Model, ModelContent, ModelMessage, ModelProvider, ModelRole, ProviderDispatchContext,
+    },
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
@@ -7646,9 +7648,20 @@ mod tests {
     struct ShellModel {
         calls: AtomicUsize,
         arguments: Value,
+        usage: Arc<MockUsageSource>,
     }
 
     impl ModelProvider for ShellModel {
+        fn supports_dispatch_context(&self) -> bool {
+            true
+        }
+
+        fn swarm_usage_source(
+            &self,
+        ) -> Option<Arc<dyn crate::swarm_budget::SwarmUsageSource>> {
+            Some(self.usage.clone())
+        }
+
         fn generate<'a>(
             &'a self,
             _prepared: crate::model_input::PreparedModelInput,
@@ -7684,6 +7697,40 @@ mod tests {
             // replay that stream and resolve its admitted tool batch without
             // issuing a second model request.
             Box::pin(async { Ok(Some(Vec::new())) })
+        }
+
+        fn generate_with_dispatch<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+            dispatch: ProviderDispatchContext,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            let source = self.usage.clone();
+            if let Ok(mut usage) = source.usage.lock() {
+                usage
+                    .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                    .or_default()
+                    .model_steps = 1;
+            }
+            let started = std::time::Instant::now();
+            let stream = self.generate(prepared);
+            Box::pin(stream.map(move |event| {
+                if let Ok(event) = &event {
+                    if let Ok(mut usage) = source.usage.lock() {
+                        let entry = usage
+                            .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                            .or_default();
+                        entry.output_bytes = entry.output_bytes.saturating_add(
+                            crate::contract::canonical_json_bytes(event)
+                                .map(|bytes| bytes.len() as u64)
+                                .unwrap_or_default(),
+                        );
+                        entry.execution_time_ms = entry
+                            .execution_time_ms
+                            .max(started.elapsed().as_millis() as u64);
+                    }
+                }
+                event
+            }))
         }
     }
 
@@ -9414,6 +9461,7 @@ mod tests {
         let provider = Arc::new(ShellModel {
             calls: AtomicUsize::new(0),
             arguments: shell_arguments(root.path()),
+            usage: mock_usage_source(),
         });
         let model = Model::new("mock", "shell-approval", "1", json!({}))?;
         let swarm = PersistentLocalSwarm::open_with_model(
@@ -9451,6 +9499,7 @@ mod tests {
         let provider = Arc::new(ShellModel {
             calls: AtomicUsize::new(0),
             arguments: shell_arguments(root.path()),
+            usage: mock_usage_source(),
         });
         let model = Model::new("mock", "shell-denial", "1", json!({}))?;
         let swarm = PersistentLocalSwarm::open_with_model(
@@ -9486,6 +9535,7 @@ mod tests {
             let provider = Arc::new(ShellModel {
                 calls: AtomicUsize::new(0),
                 arguments: shell_arguments_with_output_overflow(root.path()),
+                usage: mock_usage_source(),
             });
             let swarm = PersistentLocalSwarm::open_with_model(
                 root.path(),
@@ -9525,6 +9575,7 @@ mod tests {
         let reopened_provider = Arc::new(ShellModel {
             calls: AtomicUsize::new(0),
             arguments: shell_arguments_with_output_overflow(root.path()),
+            usage: mock_usage_source(),
         });
         let reopened = PersistentLocalSwarm::open_with_model(
             root.path(),
