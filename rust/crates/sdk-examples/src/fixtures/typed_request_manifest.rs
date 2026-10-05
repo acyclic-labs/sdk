@@ -557,14 +557,20 @@ async fn actor_worker_records() -> Result<Vec<TypedRequestRecord>, String> {
 
     let actors = ActorsFixture::new();
     let create = actors_wire::CreateActorRequest {
-        code_sha256: vec![7, 8],
+        code_sha256: vec![7; 32],
         home_region: "eu-west".into(),
         bindings: Vec::new(),
-        limits: None,
+        limits: Some(actors_wire::ActorLimits {
+            handler_timeout_millis: 1_000,
+            memory_bytes: 1_024,
+            checkpoint_bytes: 4_096,
+        }),
         subscriptions: vec![actors_wire::SubscriptionSpec {
             subscription_id: "events".into(),
             stream_path: "/events".into(),
-            start: None,
+            start: Some(actors_wire::SubscriptionStart {
+                start: Some(actors_wire::subscription_start::Start::CurrentHead(true)),
+            }),
             placement_anchor: true,
         }],
         idempotency_key: "create-1".into(),
@@ -579,9 +585,13 @@ async fn actor_worker_records() -> Result<Vec<TypedRequestRecord>, String> {
         .clone();
     let update = actors_wire::UpdateActorRequest {
         actor_id: created.actor_id.clone(),
-        code_sha256: vec![9],
+        code_sha256: vec![9; 32],
         bindings: Vec::new(),
-        limits: None,
+        limits: Some(actors_wire::ActorLimits {
+            handler_timeout_millis: 2_000,
+            memory_bytes: 2_048,
+            checkpoint_bytes: 8_192,
+        }),
         expected_configuration_revision: created.configuration_revision,
         idempotency_key: "update-1".into(),
     };
@@ -629,7 +639,26 @@ async fn actor_worker_records() -> Result<Vec<TypedRequestRecord>, String> {
     let select = workers_wire::SelectDeploymentRequest { alias: "production".into(), version_sha256: version.sha256.clone(), expected_revision: None, idempotency_key: "select-1".into() };
     let select_response = workers.select_deployment(Request::new(select.clone())).await.map_err(|error| format!("Workers SelectDeployment: {error}"))?.into_inner();
     let deployment = select_response.deployment.clone().ok_or_else(|| "Workers SelectDeployment omitted deployment".to_owned())?;
-    let submit = workers_wire::SubmitJobRequest { target: None, input: Some(workers_wire::Payload { source: Some(workers_wire::payload::Source::InlineBytes(b"job-input".to_vec())) }), limits: None, retry: None, idempotency_key: "job-1".into() };
+    let submit = workers_wire::SubmitJobRequest {
+        target: Some(workers_wire::JobTarget {
+            target: Some(workers_wire::job_target::Target::DeploymentAlias(
+                "production".into(),
+            )),
+        }),
+        input: Some(workers_wire::Payload {
+            source: Some(workers_wire::payload::Source::InlineBytes(b"job-input".to_vec())),
+        }),
+        limits: Some(workers_wire::JobLimits {
+            timeout_millis: 1_000,
+            memory_bytes: 1_024,
+            output_bytes: 1_024,
+        }),
+        retry: Some(workers_wire::RetryPolicy {
+            max_attempts: 1,
+            backoff_millis: 0,
+        }),
+        idempotency_key: "job-1".into(),
+    };
     let submit_response = workers.submit_job(Request::new(submit.clone())).await.map_err(|error| format!("Workers SubmitJob: {error}"))?.into_inner();
     let job = submit_response.job.clone().ok_or_else(|| "Workers SubmitJob omitted job".to_owned())?;
     let inspect_job = workers_wire::InspectJobRequest { job_id: job.job_id.clone() };
