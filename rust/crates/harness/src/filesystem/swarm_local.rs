@@ -4258,9 +4258,10 @@ impl PersistentLocalSwarm {
         child_result: Result<TurnOutput>,
     ) -> Result<LocalForkOutcome> {
         // A cancelled caller may have left a LocalStream mutation owned by
-        // the provider. Reconcile it before reading or publishing the child
-        // journal, so completion cannot race its deferred writer.
-        self.conversation_stream.drain().await;
+        // the provider. Drain the exact child execution provider before
+        // reading or publishing its journal; sibling/root providers may be
+        // different authenticated handles.
+        harness.storage().stream().drain().await;
         let output = match child_result {
             Ok(output) => output,
             Err(error) => {

@@ -182,10 +182,14 @@ struct LocalInner {
 
 struct MutationGuard {
     inner: Arc<LocalInner>,
+    stream: Option<LocalStream>,
 }
 
 impl Drop for MutationGuard {
     fn drop(&mut self) {
+        // Release the provider clone before publishing the zero count. This
+        // ordering also holds when the owned mutation task is aborted.
+        self.stream.take();
         if self.inner.active_mutations.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.inner.mutations_drained.notify_waiters();
         }
@@ -609,14 +613,25 @@ impl LocalStream {
         self.inner.active_mutations.fetch_add(1, Ordering::AcqRel);
         let mutation_guard = MutationGuard {
             inner: Arc::clone(&self.inner),
+            stream: Some(stream),
         };
         tokio::spawn(DEFERRED.scope(deferred, async move {
-            let _mutation_guard = mutation_guard;
-            let _visibility = stream.inner.visibility.write().await;
-            stream.check_available()?;
-            let result = mutation(stream.clone()).await;
-            stream.inner.clock.unpin();
-            stream.inner.commit_clock.unpin();
+            let result = {
+                let Some(stream) = mutation_guard.stream.as_ref() else {
+                    return Err(StreamError::Unavailable);
+                };
+                let _visibility = stream.inner.visibility.write().await;
+                stream.check_available()?;
+                let result = mutation(stream.clone()).await;
+                stream.inner.clock.unpin();
+                stream.inner.commit_clock.unpin();
+                result
+            };
+            // The active count reaches zero only after the provider clone and
+            // its visibility guard have been released. This makes drain a
+            // true root-ownership boundary rather than merely a journal-task
+            // completion signal.
+            drop(mutation_guard);
             result
         }))
         .await
@@ -1575,6 +1590,10 @@ mod tests {
 
             release_tx.send(())?;
             tokio::time::timeout(std::time::Duration::from_secs(1), draining).await??;
+            // The drain completion is the provider-owned root lifecycle
+            // boundary: reopening must work immediately once every caller
+            // handle and the drain observer have been released.
+            LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 Arc::clone(&lifecycle).lock_owned(),
