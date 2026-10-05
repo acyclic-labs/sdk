@@ -1762,6 +1762,17 @@ impl NativeExecutionProvider {
         }
     }
 
+    fn observation(request: &EffectDispatch, status: EffectStatus) -> EffectObservation {
+        EffectObservation {
+            provider: request.provider.clone(),
+            effect_id: request.effect_id,
+            attempt_id: request.attempt_id,
+            request_digest: request.request_digest,
+            guarantee: request.guarantee,
+            status,
+        }
+    }
+
     fn bounded_unknown(reason: impl Into<String>) -> ExecutionReceipt {
         let mut reason = reason.into();
         if reason.is_empty() {
@@ -1897,24 +1908,13 @@ impl NativeExecutionProvider {
                         && record.key.effect_id == request.effect_id
                         && matches!(record.receipt, ExecutionReceipt::Unknown { .. })
                     {
-                        return Ok(EffectObservation {
-                            provider: request.provider,
-                            effect_id: request.effect_id,
-                            attempt_id: request.attempt_id,
-                            request_digest: request.request_digest,
-                            guarantee: request.guarantee,
-                            status: EffectStatus::Indeterminate,
-                        });
+                        return Ok(Self::observation(&request, EffectStatus::Indeterminate));
                     }
                     record.validate_for(&request)?;
-                    return Ok(EffectObservation {
-                        provider: request.provider,
-                        effect_id: request.effect_id,
-                        attempt_id: request.attempt_id,
-                        request_digest: request.request_digest,
-                        guarantee: request.guarantee,
-                        status: Self::status_for_receipt(record.receipt, record.result),
-                    });
+                    return Ok(Self::observation(
+                        &request,
+                        Self::status_for_receipt(record.receipt, record.result),
+                    ));
                 }
                 Err(error) => {
                     self.release_attempt(approval.operation_id, request.attempt_id)?;
@@ -1928,14 +1928,10 @@ impl NativeExecutionProvider {
             {
                 Ok(Some((result, receipt))) => {
                     self.release_attempt(approval.operation_id, request.attempt_id)?;
-                    return Ok(EffectObservation {
-                        provider: request.provider,
-                        effect_id: request.effect_id,
-                        attempt_id: request.attempt_id,
-                        request_digest: request.request_digest,
-                        guarantee: request.guarantee,
-                        status: Self::status_for_receipt(receipt, result),
-                    });
+                    return Ok(Self::observation(
+                        &request,
+                        Self::status_for_receipt(receipt, result),
+                    ));
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -2033,14 +2029,7 @@ impl NativeExecutionProvider {
                 ownership.finish();
             }
             self.release_attempt(approval.operation_id, request.attempt_id)?;
-            return Ok(EffectObservation {
-                provider: request.provider,
-                effect_id: request.effect_id,
-                attempt_id: request.attempt_id,
-                request_digest: request.request_digest,
-                guarantee: request.guarantee,
-                status: EffectStatus::Indeterminate,
-            });
+            return Ok(Self::observation(&request, EffectStatus::Indeterminate));
         }
         let receipt_bytes = match serde_json::to_vec(&receipt) {
             Ok(bytes) => bytes,
@@ -2099,14 +2088,7 @@ impl NativeExecutionProvider {
         }
         self.release_attempt(approval.operation_id, request.attempt_id)?;
         let status = Self::status_for_receipt(receipt, result);
-        Ok(EffectObservation {
-            provider: request.provider,
-            effect_id: request.effect_id,
-            attempt_id: request.attempt_id,
-            request_digest: request.request_digest,
-            guarantee: request.guarantee,
-            status,
-        })
+        Ok(Self::observation(&request, status))
     }
 }
 
