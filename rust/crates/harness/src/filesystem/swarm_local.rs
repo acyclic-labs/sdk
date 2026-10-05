@@ -3973,11 +3973,12 @@ impl PersistentLocalSwarm {
 
     fn verified_child_publication(
         boundary: &crate::model_input::CompletedModelBoundary,
+        child_operation: OperationId,
         seed: &ForkSeed,
         parent_operation: Option<OperationId>,
     ) -> Result<VerifiedForkPublication> {
         VerifiedForkPublication::from_verified(crate::swarm_budget::ForkPublication {
-            operation_id: seed.operation_id,
+            operation_id: child_operation,
             parent_operation_id: parent_operation,
             completed_boundary_digest: crate::contract::canonical_json_digest(boundary)?,
             workspace_generation_digest: fork_seed_digest(seed)?,
@@ -5574,6 +5575,7 @@ impl PersistentLocalSwarm {
         self.sessions.lock().await.insert(child, harness.clone());
         let budget_publication = match Self::verified_child_publication(
             &boundary,
+            request.child_operation,
             seed,
             budget_parent_operation,
         ) {
