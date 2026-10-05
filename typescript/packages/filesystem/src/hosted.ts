@@ -101,6 +101,7 @@ export class HostedFsError extends Error {
 interface HostedClient {
   readonly rpc: Client<typeof FilesystemService>;
   readonly maximumResponseBytes: number;
+  readonly maximumPageItems: number;
   readonly s3Credentials: boolean;
   readonly sourceReconciliation: boolean;
   closed: boolean;
@@ -171,6 +172,7 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   const client: HostedClient = {
     rpc: rpcClient,
     maximumResponseBytes: Number(negotiatedResponseBytes),
+    maximumPageItems: advertised.maximumPageItems,
     s3Credentials: advertised.s3Credentials,
     sourceReconciliation: advertised.sourceReconciliation,
     closed: false,
@@ -640,7 +642,7 @@ function transaction(
         mutations,
         operation: operationOptions,
         // Generated from Rust's DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS.
-        maximumConflicts: DEFAULT_HOSTED_OPTIONS.maximumPageItems,
+        maximumConflicts: client.maximumPageItems,
       }));
       return commit(response.status, response.generation);
     },
