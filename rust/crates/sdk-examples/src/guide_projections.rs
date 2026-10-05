@@ -446,7 +446,7 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
                 )
             } else if family == "machines" {
                 format!(
-                    "request = {module}_pb2.{request}(protocol={module}_pb2.ProtocolVersion(major=1, minor=1))\nresponse = client.{method}(request)",
+                    "request = {module}_pb2.{request}(protocol={module}_pb2.ProtocolVersion(major=1, minor=1), idempotency_key={module}_pb2.IdempotencyKey(value=bytes([1] * 16)))\nresponse = client.{method}(request)",
                     module = module,
                     request = request,
                     method = method,
@@ -483,6 +483,11 @@ print(response)"#,
             } else {
                 ""
             };
+            let machines_import = if family == "machines" {
+                "import { IdempotencyKeySchema } from \"@acyclic-labs/machines/proto\";\n"
+            } else {
+                ""
+            };
             let harness_request = if family == "harness" {
                 format!(
                     "create({request}Schema, {{ protocol: create(ProtocolIdentitySchema, {{ version: {version:?}, descriptorDigest: {digest:?} }}), authority: {{ kind: 5, id: \"fixture\" }}, operation: {{ operationId: \"fixture-op\", idempotencyKey: \"guide-harness\" }}, actionType: \"guide.submit\" }})",
@@ -497,7 +502,7 @@ print(response)"#,
                 format!("const response = await client.{method}({harness_request});", method = method_camel, harness_request = harness_request)
             } else if family == "machines" {
                 format!(
-                    "const response = await client.{method}(create({request}Schema, {{ protocol: {{ major: 1, minor: 1 }} }}));",
+                    "const response = await client.{method}(create({request}Schema, {{ protocol: {{ major: 1, minor: 1 }}, idempotencyKey: create(IdempotencyKeySchema, {{ value: new Uint8Array(16).fill(1) }}) }}));",
                     method = method_camel,
                     request = request,
                 )
@@ -512,6 +517,7 @@ import {{ createGrpcTransport }} from "@connectrpc/connect-node";
 import {{ Buffer }} from "node:buffer";
 import {{ {service}, {request}Schema }} from "@acyclic-labs/{ts_package}/proto";
 {harness_import}
+{machines_import}
 
 const transport = createGrpcTransport({{ baseUrl: process.env.FIXTURE_GRPC_ADDRESS! }});
 const client = createClient({service}, transport);
@@ -522,6 +528,7 @@ console.log(response);"#,
             request = request,
             ts_package = ts_package,
             harness_import = harness_import,
+            machines_import = machines_import,
             ts_call = ts_call,
             )
         }
@@ -555,6 +562,12 @@ console.log(response);"#,
                     request = request,
                     version = harness_protocol_version,
                     digest = harness_protocol_digest,
+                )
+            } else if family == "machines" {
+                format!(
+                    "response, err := client.{method}(ctx, &generated.{request}{{Protocol: &generated.ProtocolVersion{{Major: 1, Minor: 1}}, IdempotencyKey: &generated.IdempotencyKey{{Value: []byte{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}}}}}})",
+                    method = method,
+                    request = request,
                 )
             } else {
                 format!(
@@ -650,6 +663,14 @@ func main() {{
                     java_service_type = java_service_type,
                     method_camel = method_camel,
                 )
+            } else if family == "machines" {
+                format!(
+                    "      var key = new byte[16];\n      java.util.Arrays.fill(key, (byte) 1);\n      var request = {package_type}.{request}.newBuilder().setProtocol({package_type}.ProtocolVersion.newBuilder().setMajor(1).setMinor(1)).setIdempotencyKey({package_type}.IdempotencyKey.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(key))).build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
+                    package_type = package_type,
+                    request = request,
+                    java_service_type = java_service_type,
+                    method_camel = method_camel,
+                )
             } else {
                 format!(
                     "      var request = {package_type}.{request}.newBuilder().build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
@@ -666,7 +687,7 @@ import {java_namespace}.{package_type};
 import {java_namespace}.{java_service_type}ServiceGrpc;
 
 public final class GuideSnippet {{
-  public static void main(String[] args) {{
+public static void main(String[] args) throws Exception {{
     var endpoint = System.getenv("FIXTURE_GRPC_ADDRESS");
     var channel = ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build();
     try {{
@@ -714,6 +735,12 @@ public final class GuideSnippet {{
                     request = request,
                     version = harness_protocol_version,
                     digest = harness_protocol_digest,
+                )
+            } else if family == "machines" {
+                format!(
+                    "var response = client.{method}(new {request} {{ Protocol = new ProtocolVersion {{ Major = 1, Minor = 1 }}, IdempotencyKey = new IdempotencyKey {{ Value = ByteString.CopyFrom(Enumerable.Repeat((byte)1, 16).ToArray()) }} }});",
+                    method = method,
+                    request = request,
                 )
             } else {
                 format!(
@@ -781,6 +808,14 @@ Console.WriteLine(response);"#,
                     digest = harness_protocol_digest,
                     method_snake = method_snake,
                 )
+            } else if family == "machines" {
+                format!(
+                    "request = Acyclic::{package_type}::{version_type}::{request}.new(protocol: Acyclic::{package_type}::{version_type}::ProtocolVersion.new(major: 1, minor: 1), idempotency_key: Acyclic::{package_type}::{version_type}::IdempotencyKey.new(value: ([1] * 16).pack(\"C*\")))\nresponse = client.{method_snake}(request)",
+                    package_type = package_type,
+                    version_type = version_type,
+                    request = request,
+                    method_snake = method_snake,
+                )
             } else {
                 format!(
                     "request = Acyclic::{package_type}::{version_type}::{request}.new\nresponse = client.{method_snake}(request)",
@@ -807,6 +842,24 @@ puts response"#,
             )
         }
         Language::Dart => {
+            let dart_imports = format!(
+                "import 'dart:io';\n{}{}{}import 'package:grpc/grpc.dart';",
+                if matches!(family, "workers" | "objects") {
+                    "import 'dart:convert';\n"
+                } else {
+                    ""
+                },
+                if matches!(family, "workers" | "inference" | "machines") {
+                    "import 'dart:typed_data';\n"
+                } else {
+                    ""
+                },
+                if family == "workers" {
+                    "import 'package:crypto/crypto.dart';\n"
+                } else {
+                    ""
+                },
+            );
             let call = if family == "workers" {
                 format!(
                     "final moduleBytes = Uint8List.fromList(utf8.encode({module:?}));\nfinal expectedSha256 = Uint8List.fromList(sha256.convert(moduleBytes).bytes);\nfinal response = await client.{method_camel}(generated.{request}()..javascriptModule = moduleBytes..expectedSha256 = expectedSha256..idempotencyKey = 'publish-example-v1');",
@@ -838,6 +891,12 @@ puts response"#,
                     version = harness_protocol_version,
                     digest = harness_protocol_digest,
                 )
+            } else if family == "machines" {
+                format!(
+                    "final response = await client.{method_camel}(generated.{request}()..protocol = (generated.ProtocolVersion()..major = 1..minor = 1)..idempotencyKey = (generated.IdempotencyKey()..value = (Uint8List(16)..fillRange(0, 16, 1))));",
+                    method_camel = method_camel,
+                    request = request,
+                )
             } else {
                 format!(
                     "final response = await client.{method_camel}(generated.{request}());",
@@ -847,11 +906,7 @@ puts response"#,
             };
             format!(
                 r#"// Rust scenario: {scenario_id}
-import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
-import 'package:crypto/crypto.dart';
-import 'package:grpc/grpc.dart';
+{dart_imports}
 import 'package:acyclic_sdk/src/generated/{module}/{version}/{module}.pb.dart' as generated;
 import 'package:acyclic_sdk/src/generated/{module}/{version}/{module}.pbgrpc.dart' as rpc;
 {dart_protocol_import}
@@ -873,6 +928,7 @@ Future<void> main() async {{
                 module = module,
                 version = version,
                 service = service,
+                dart_imports = dart_imports,
                 dart_protocol_import = if family == "harness" {
                     "import 'package:acyclic_sdk/src/generated/protocol/v1/protocol.pb.dart' as protocol;"
                 } else {
@@ -927,6 +983,18 @@ $call->writesDone();
                     request = request,
                     protocol_version = harness_protocol_version,
                     protocol_digest = harness_protocol_digest,
+                    method = method,
+                )
+            } else if family == "machines" {
+                format!(
+                    r#"$request = new \\Acyclic\{package_type}\{version}\{request}([
+    'protocol' => new \\Acyclic\{package_type}\{version}\ProtocolVersion(['major' => 1, 'minor' => 1]),
+    'idempotency_key' => new \\Acyclic\{package_type}\{version}\IdempotencyKey(['value' => str_repeat(chr(1), 16)]),
+]);
+[$response, $status] = $client->{method}($request)->wait();"#,
+                    package_type = package_type,
+                    version = version,
+                    request = request,
                     method = method,
                 )
             } else {
