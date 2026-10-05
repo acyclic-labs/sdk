@@ -218,7 +218,7 @@ impl ModelProvider for LiveHandshakeProvider {
         let is_child_a = declared_task == Some("live-child-a");
         let is_child_b = declared_task == Some("live-child-b");
         let is_grandchild = declared_task == Some("live-grandchild");
-    if is_child_a {
+        if is_child_a {
             if !self.child_a_fork_sent.swap(true, Ordering::SeqCst) {
                 let started = self.child_a_started.clone();
                 let active = self.child_a_active.clone();
@@ -375,6 +375,24 @@ struct AbortTask(tokio::task::AbortHandle);
 impl Drop for AbortTask {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+async fn abort_and_shutdown<T>(swarm: &PersistentLocalSwarm, running: tokio::task::JoinHandle<T>) {
+    running.abort();
+    let _ = running.await;
+    swarm.shutdown_workers().await;
+}
+
+async fn wait_for_flag(flag: &AtomicBool, notification: &tokio::sync::Notify) {
+    loop {
+        let notified = notification.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if flag.load(Ordering::SeqCst) {
+            return;
+        }
+        notified.await;
     }
 }
 
@@ -999,47 +1017,65 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
     })
     .await;
     if started.is_err() {
-        if running.is_finished() {
-            panic!("root ended before child dispatch: {:?}", running.await);
-        }
         // A failed fixture must not detach its owning swarm task. Preserve
         // dispatch counters in the failure instead of leaking the run.
-        running.abort();
-        let _ = running.await;
-        panic!("child dispatch notification timed out: total={}, child={}",
+        abort_and_shutdown(&swarm, running).await;
+        panic!(
+            "child dispatch notification timed out: total={}, child={}",
             provider.dispatches.load(Ordering::SeqCst),
-            provider.child_dispatches.load(Ordering::SeqCst));
+            provider.child_dispatches.load(Ordering::SeqCst)
+        );
     }
-    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
-    assert!(!provider.child_stream_dropped.load(Ordering::SeqCst));
+    if provider.dispatches.load(Ordering::SeqCst) != 2
+        || provider.child_stream_dropped.load(Ordering::SeqCst)
+    {
+        abort_and_shutdown(&swarm, running).await;
+        return Err(Error::Conflict(
+            "cancellable child dispatch state was invalid".into(),
+        ));
+    }
 
     // The root turn now returns after durable child admission and worker
     // scheduling.  The pending child is owned by the swarm worker group, so
     // exercise the explicit owner shutdown path instead of treating parent
     // cancellation as implicit worker cancellation.
-    let root_join = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        &mut running,
-    )
-    .await
-    {
-        Ok(join) => join,
-        Err(_) => {
-            running.abort();
-            let _ = running.await;
-            return Err(Error::Conflict(
-                "root did not finish after child admission".into(),
-            ));
+    let root_join =
+        match tokio::time::timeout(std::time::Duration::from_secs(5), &mut running).await {
+            Ok(join) => join,
+            Err(_) => {
+                abort_and_shutdown(&swarm, running).await;
+                return Err(Error::Conflict(
+                    "root did not finish after child admission".into(),
+                ));
+            }
+        };
+    let root_result = match root_join {
+        Ok(result) => result,
+        Err(error) => {
+            swarm.shutdown_workers().await;
+            return Err(Error::Storage(format!("root task failed: {error}")));
         }
     };
-    let root_result = root_join
-        .map_err(|error| Error::Storage(format!("root task failed: {error}")))?;
-    let root_output = root_result?;
-    assert_eq!(root_output.text, "ordinary completion");
+    let root_output = match root_result {
+        Ok(output) => output,
+        Err(error) => {
+            swarm.shutdown_workers().await;
+            return Err(error);
+        }
+    };
+    if root_output.text != "ordinary completion" {
+        swarm.shutdown_workers().await;
+        return Err(Error::Conflict(
+            "cancellable root returned an unexpected result".into(),
+        ));
+    }
     swarm.shutdown_workers().await;
-    tokio::time::timeout(std::time::Duration::from_secs(5), provider.child_stopped.notified())
-        .await
-        .expect("shutting down the swarm left the child provider stream running");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.child_stopped.notified(),
+    )
+    .await
+    .expect("shutting down the swarm left the child provider stream running");
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
 
     let child_task = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
@@ -1079,117 +1115,187 @@ async fn nonblocking_recursive_runtime_preserves_live_handshake_and_prefixes() -
         }
     });
     let _abort_running = AbortTask(running.abort_handle());
-    let child_a_started = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !provider.child_a_active.load(Ordering::SeqCst) {
-            provider.child_a_started.notified().await;
-        }
-    })
+    let child_a_started = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        wait_for_flag(&provider.child_a_active, &provider.child_a_started),
+    )
     .await;
     if child_a_started.is_err() {
-        running.abort();
-        let _ = running.await;
+        abort_and_shutdown(&swarm, running).await;
         return Err(Error::Conflict("live child A did not dispatch".into()));
     }
-    let child_b_started = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !provider.child_b_active.load(Ordering::SeqCst) {
-            provider.child_b_started.notified().await;
-        }
-    })
+    let child_b_started = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        wait_for_flag(&provider.child_b_active, &provider.child_b_started),
+    )
     .await;
     if child_b_started.is_err() {
-        running.abort();
-        let _ = running.await;
+        abort_and_shutdown(&swarm, running).await;
         return Err(Error::Conflict("live child B did not dispatch".into()));
     }
-    let root_continuation = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !provider.root_continuation_sent.load(Ordering::SeqCst) {
-            provider.root_continuation_started.notified().await;
-        }
-    })
+    let root_continuation = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        wait_for_flag(
+            &provider.root_continuation_sent,
+            &provider.root_continuation_started,
+        ),
+    )
     .await;
     if root_continuation.is_err() {
-        running.abort();
-        let _ = running.await;
+        abort_and_shutdown(&swarm, running).await;
         return Err(Error::Conflict(
             "parent did not continue while children were pending".into(),
         ));
     }
-    assert!(provider.child_a_active.load(Ordering::SeqCst));
-    assert!(provider.child_b_active.load(Ordering::SeqCst));
+    if !provider.child_a_active.load(Ordering::SeqCst)
+        || !provider.child_b_active.load(Ordering::SeqCst)
+    {
+        abort_and_shutdown(&swarm, running).await;
+        return Err(Error::Conflict(
+            "sibling providers did not remain concurrently active".into(),
+        ));
+    }
 
     // The parent continuation must have delivered its message before child A
     // is released.  Read the real mailbox rather than signalling a fixture
     // hook so the assertion covers communication admission and persistence.
     let child_a_task = acyclic_harness::TaskId::from_bytes(child_a.into_bytes());
-    let inbox = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let inbox = swarm.read_inbox(child_a_task, 0, 8).await?;
-            if !inbox.is_empty() {
-                return Ok::<_, Error>(inbox);
-            }
-            tokio::task::yield_now().await;
-        }
-    })
+    let inbox_wait = acyclic_harness::communication::WaitRequest {
+        operation_id: id(0x95),
+        waiter: child_a_task,
+        target: acyclic_harness::communication::WaitTarget::Messages {
+            task_id: child_a_task,
+            after: 0,
+            limit: 8,
+        },
+        timeout_epoch_ms: None,
+        cancellation_id: None,
+    };
+    let inbox_completion = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        swarm.wait(inbox_wait),
+    )
     .await
-    .map_err(|_| Error::Conflict("parent message was not durably delivered".into()))??;
-    assert_eq!(inbox.len(), 1);
-    assert_eq!(inbox[0].sender, swarm.root_task().await?);
-    provider.child_a_release.notify_one();
-    provider.child_b_release.notify_one();
-
-    let root_join = match tokio::time::timeout(std::time::Duration::from_secs(30), &mut running)
-        .await
     {
-        Ok(join) => join,
+        Ok(Ok(completion)) => completion,
+        Ok(Err(error)) => {
+            abort_and_shutdown(&swarm, running).await;
+            return Err(error);
+        }
         Err(_) => {
-            running.abort();
-            let _ = running.await;
+            abort_and_shutdown(&swarm, running).await;
             return Err(Error::Conflict(
-                "live parent wait did not observe child completion".into(),
+                "parent message was not durably delivered".into(),
             ));
         }
     };
-    let root_result = root_join
-        .map_err(|error| Error::Storage(format!("live root task failed: {error}")))?;
-    let root_output = root_result?;
-    assert_eq!(root_output.text, "live handshake complete");
-
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            if provider.grandchild_dispatched.load(Ordering::SeqCst)
-                && swarm
-                    .session(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
-                    .await
-                    .is_ok_and(|session| session.phase == LocalSessionPhase::Completed)
-            {
-                return Ok::<_, Error>(());
-            }
-            tokio::task::yield_now().await;
+    let inbox = match inbox_completion {
+        acyclic_harness::communication::WaitCompletion::Messages { items } => items,
+        _ => {
+            abort_and_shutdown(&swarm, running).await;
+            return Err(Error::Conflict(
+                "parent message wait returned the wrong result".into(),
+            ));
         }
-    })
-    .await
-    .map_err(|_| Error::Conflict("grandchild did not complete".into()))??;
-    assert_eq!(
-        swarm
-            .session(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
-            .await?
-            .phase,
-        LocalSessionPhase::Completed
+    };
+    if inbox.len() != 1 || inbox[0].sender != root_task {
+        abort_and_shutdown(&swarm, running).await;
+        return Err(Error::Conflict(
+            "parent message receipt was malformed".into(),
+        ));
+    }
+    provider.child_a_release.notify_one();
+    provider.child_b_release.notify_one();
+
+    let root_join =
+        match tokio::time::timeout(std::time::Duration::from_secs(30), &mut running).await {
+            Ok(join) => join,
+            Err(_) => {
+                abort_and_shutdown(&swarm, running).await;
+                return Err(Error::Conflict(
+                    "live parent wait did not observe child completion".into(),
+                ));
+            }
+        };
+    let root_result = match root_join {
+        Ok(result) => result,
+        Err(error) => {
+            swarm.shutdown_workers().await;
+            return Err(Error::Storage(format!("live root task failed: {error}")));
+        }
+    };
+    let root_output = match root_result {
+        Ok(output) => output,
+        Err(error) => {
+            swarm.shutdown_workers().await;
+            return Err(error);
+        }
+    };
+    if root_output.text != "live handshake complete" {
+        swarm.shutdown_workers().await;
+        return Err(Error::Conflict(
+            "live handshake returned an unexpected result".into(),
+        ));
+    }
+
+    let grandchild_task = acyclic_harness::TaskId::from_bytes(grandchild.into_bytes());
+    let grandchild_wait = acyclic_harness::communication::WaitRequest {
+        operation_id: id(0x94),
+        waiter: child_a_task,
+        target: acyclic_harness::communication::WaitTarget::Tasks {
+            task_ids: vec![grandchild_task],
+        },
+        timeout_epoch_ms: None,
+        cancellation_id: None,
+    };
+    let grandchild_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        swarm.wait(grandchild_wait),
+    )
+    .await;
+    let grandchild_completion = match grandchild_result {
+        Ok(Ok(completion)) => completion,
+        Ok(Err(error)) => {
+            swarm.shutdown_workers().await;
+            return Err(error);
+        }
+        Err(_) => {
+            swarm.shutdown_workers().await;
+            return Err(Error::Conflict("grandchild did not complete".into()));
+        }
+    };
+    let grandchild_succeeded = matches!(
+        grandchild_completion,
+        acyclic_harness::communication::WaitCompletion::Tasks { ref outcomes }
+            if outcomes.len() == 1
+                && matches!(&outcomes[0].1, acyclic_harness::Outcome::Succeeded(_))
     );
+    if !grandchild_succeeded || !provider.grandchild_dispatched.load(Ordering::SeqCst) {
+        swarm.shutdown_workers().await;
+        return Err(Error::Conflict(
+            "grandchild completion was not durable".into(),
+        ));
+    }
     swarm.shutdown_workers().await;
 
     let decoded = provider.decoded_requests();
     let serialized = provider.serialized_requests();
     assert_eq!(serialized.len(), decoded.len());
-    assert!(decoded.iter().any(|request| {
-        latest_declared_child_task(request) == Some("live-child-a")
-    }));
-    assert!(decoded.iter().any(|request| {
-        latest_declared_child_task(request) == Some("live-child-b")
-    }));
-    assert!(decoded.iter().any(|request| {
-        latest_declared_child_task(request) == Some("live-grandchild")
-    }));
+    assert!(
+        decoded
+            .iter()
+            .any(|request| { latest_declared_child_task(request) == Some("live-child-a") })
+    );
+    assert!(
+        decoded
+            .iter()
+            .any(|request| { latest_declared_child_task(request) == Some("live-child-b") })
+    );
+    assert!(
+        decoded
+            .iter()
+            .any(|request| { latest_declared_child_task(request) == Some("live-grandchild") })
+    );
 
     let child_a_request = decoded
         .iter()
@@ -1207,22 +1313,23 @@ async fn nonblocking_recursive_runtime_preserves_live_handshake_and_prefixes() -
         .messages
         .iter()
         .position(|message| {
-            message.content == ModelContent::Text(format!(
-                "child task: live-child-a; parent: {}; identity: {}; fresh scratch: true",
-                root_task,
-                child_a_task
-            ))
+            message.content
+                == ModelContent::Text(format!(
+                    "child task: live-child-a; parent: {}; identity: {}; fresh scratch: true",
+                    root_task, child_a_task
+                ))
         })
         .expect("child A declaration suffix");
     let child_b_suffix = child_b_request
         .messages
         .iter()
         .position(|message| {
-            message.content == ModelContent::Text(format!(
-                "child task: live-child-b; parent: {}; identity: {}; fresh scratch: true",
-                root_task,
-                acyclic_harness::TaskId::from_bytes(child_b.into_bytes())
-            ))
+            message.content
+                == ModelContent::Text(format!(
+                    "child task: live-child-b; parent: {}; identity: {}; fresh scratch: true",
+                    root_task,
+                    acyclic_harness::TaskId::from_bytes(child_b.into_bytes())
+                ))
         })
         .expect("child B declaration suffix");
     let shared_prefix = child_a_suffix.min(child_b_suffix);
