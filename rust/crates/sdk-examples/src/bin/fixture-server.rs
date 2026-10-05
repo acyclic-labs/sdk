@@ -49,6 +49,7 @@ use tokio::sync::Notify;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
+use acyclic_workers::wire::workers_service_server::WorkersService;
 
 #[allow(
     missing_docs,
@@ -111,6 +112,7 @@ struct HttpError {
 struct App {
     stream: MemoryStream,
     actors: CanonicalActorsFixture,
+    workers: CanonicalWorkersFixture,
     requests: Arc<Mutex<usize>>,
     max_requests: usize,
     shutdown: Arc<Notify>,
@@ -1238,9 +1240,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let actors_fixture = CanonicalActorsFixture::new();
     let http_actors = actors_fixture.clone();
     let grpc_actors = actors_fixture;
+    let workers_fixture = CanonicalWorkersFixture::new();
+    let http_workers = workers_fixture.clone();
+    let grpc_workers = workers_fixture;
     let app = App {
         stream: (*stream).clone(),
         actors: http_actors,
+        workers: http_workers,
         requests: Arc::new(Mutex::new(0)),
         max_requests: options.max_requests,
         shutdown: Arc::clone(&shutdown),
@@ -1262,7 +1268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interceptor.clone(),
         );
         let workers = tonic::service::interceptor::InterceptedService::new(
-            workers_wire::workers_service_server::WorkersServiceServer::new(CanonicalWorkersFixture::new())
+            workers_wire::workers_service_server::WorkersServiceServer::new(grpc_workers)
                 .max_decoding_message_size(MAX_BODY_BYTES)
                 .max_encoding_message_size(MAX_BODY_BYTES),
             interceptor.clone(),
@@ -1511,11 +1517,6 @@ async fn handle_connection(mut stream: TcpStream, app: App) -> Result<bool, io::
                 "sha256": source_sha256(),
             },
         }))
-    } else if request.method != "POST" && !is_shutdown {
-        Err(HttpError {
-            status: 405,
-            message: "fixture endpoints require POST".to_owned(),
-        })
     } else if is_shutdown {
         Ok(json!({
             "schema": "acyclic.sdk.fixture-response.v1",
@@ -1523,6 +1524,11 @@ async fn handle_connection(mut stream: TcpStream, app: App) -> Result<bool, io::
         }))
     } else if is_control_handshake {
         control_handshake_http(&request.path, request.authorization.as_deref())
+    } else if request.method != "POST" {
+        Err(HttpError {
+            status: 405,
+            message: "fixture endpoints require POST".to_owned(),
+        })
     } else {
         dispatch(&app, &request).await
     };
@@ -1587,11 +1593,21 @@ async fn dispatch(app: &App, request: &HttpRequest) -> Result<Value, HttpError> 
         "/v1/actors/invoke" => {
             actors_http_invoke(&app.actors, &request.content_type, &request.body).await
         }
-        "/v1/workers/versions/publish" => workers_publish(&request.content_type, &request.body),
-        "/v1/workers/deployments/select" => workers_select(&request.content_type, &request.body),
-        "/v1/workers/jobs/submit" => workers_submit(&request.content_type, &request.body),
-        "/v1/workers/jobs/inspect" => workers_inspect(&request.content_type, &request.body),
-        "/v1/workers/jobs/cancel" => workers_cancel(&request.content_type, &request.body),
+        "/v1/workers/versions/publish" => {
+            workers_http_publish(&app.workers, &request.content_type, &request.body).await
+        }
+        "/v1/workers/deployments/select" => {
+            workers_http_select(&app.workers, &request.content_type, &request.body).await
+        }
+        "/v1/workers/jobs/submit" => {
+            workers_http_submit(&app.workers, &request.content_type, &request.body).await
+        }
+        "/v1/workers/jobs/inspect" => {
+            workers_http_inspect(&app.workers, &request.content_type, &request.body).await
+        }
+        "/v1/workers/jobs/cancel" => {
+            workers_http_cancel(&app.workers, &request.content_type, &request.body).await
+        }
         "/v1/stream/append" => stream_append(app, &request.body).await,
         "/v1/stream/tail" => stream_tail(app, &request.body).await,
         "/v1/stream/read" => stream_read(app, &request.body).await,
@@ -1601,10 +1617,10 @@ async fn dispatch(app: &App, request: &HttpRequest) -> Result<Value, HttpError> 
             "service_availability": "not_claimed",
         })),
         path if path.starts_with("/v1/workers/versions/") && path.ends_with("/invoke") => {
-            workers_invoke_version(&request.content_type, &request.body)
+            workers_http_invoke_version(&app.workers, &request.content_type, &request.body).await
         }
         path if path.starts_with("/v1/workers/deployments/") && path.ends_with("/invoke") => {
-            workers_invoke_deployment(&request.content_type, &request.body)
+            workers_http_invoke_deployment(&app.workers, &request.content_type, &request.body).await
         }
         path => Err(HttpError {
             status: 404,
@@ -1887,6 +1903,152 @@ fn encode_actor_response(response: &actors_wire::CreateActorResponse) -> Result<
     let message = DynamicMessage::decode(descriptor, response.encode_to_vec().as_slice())
         .map_err(|error| format!("encode CreateActorResponse: {error}"))?;
     serde_json::to_value(message).map_err(|error| format!("serialize CreateActorResponse: {error}"))
+}
+
+fn workers_http_error(error: Status) -> HttpError {
+    let status = match error.code() {
+        tonic::Code::InvalidArgument => 400,
+        tonic::Code::NotFound => 404,
+        tonic::Code::AlreadyExists | tonic::Code::Aborted | tonic::Code::FailedPrecondition => 409,
+        tonic::Code::Unauthenticated => 401,
+        tonic::Code::PermissionDenied => 403,
+        tonic::Code::DeadlineExceeded => 504,
+        _ => 500,
+    };
+    HttpError { status, message: error.message().to_owned() }
+}
+
+async fn workers_http_publish(
+    fixture: &CanonicalWorkersFixture,
+    content_type: &str,
+    body: &[u8],
+) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::PublishVersionRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.PublishVersionRequest",
+    )?;
+    let response = fixture
+        .publish_version(Request::new(request))
+        .await
+        .map_err(workers_http_error)?
+        .into_inner();
+    encode_workers_response(&response, "acyclic.workers.v1.PublishVersionResponse")
+        .map_err(|message| HttpError { status: 500, message })
+}
+
+async fn workers_http_select(
+    fixture: &CanonicalWorkersFixture,
+    content_type: &str,
+    body: &[u8],
+) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::SelectDeploymentRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.SelectDeploymentRequest",
+    )?;
+    let response = fixture
+        .select_deployment(Request::new(request))
+        .await
+        .map_err(workers_http_error)?
+        .into_inner();
+    encode_workers_response(&response, "acyclic.workers.v1.SelectDeploymentResponse")
+        .map_err(|message| HttpError { status: 500, message })
+}
+
+async fn workers_http_submit(
+    fixture: &CanonicalWorkersFixture,
+    content_type: &str,
+    body: &[u8],
+) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::SubmitJobRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.SubmitJobRequest",
+    )?;
+    let response = fixture
+        .submit_job(Request::new(request))
+        .await
+        .map_err(workers_http_error)?
+        .into_inner();
+    encode_workers_response(&response, "acyclic.workers.v1.SubmitJobResponse")
+        .map_err(|message| HttpError { status: 500, message })
+}
+
+async fn workers_http_inspect(
+    fixture: &CanonicalWorkersFixture,
+    content_type: &str,
+    body: &[u8],
+) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::InspectJobRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.InspectJobRequest",
+    )?;
+    let response = fixture
+        .inspect_job(Request::new(request))
+        .await
+        .map_err(workers_http_error)?
+        .into_inner();
+    encode_workers_response(&response, "acyclic.workers.v1.InspectJobResponse")
+        .map_err(|message| HttpError { status: 500, message })
+}
+
+async fn workers_http_cancel(
+    fixture: &CanonicalWorkersFixture,
+    content_type: &str,
+    body: &[u8],
+) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::CancelJobRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.CancelJobRequest",
+    )?;
+    let response = fixture
+        .cancel_job(Request::new(request))
+        .await
+        .map_err(workers_http_error)?
+        .into_inner();
+    encode_workers_response(&response, "acyclic.workers.v1.CancelJobResponse")
+        .map_err(|message| HttpError { status: 500, message })
+}
+
+async fn workers_http_invoke_version(
+    fixture: &CanonicalWorkersFixture,
+    content_type: &str,
+    body: &[u8],
+) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::InvokeVersionRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.InvokeVersionRequest",
+    )?;
+    let response = fixture
+        .invoke_version(Request::new(request))
+        .await
+        .map_err(workers_http_error)?
+        .into_inner();
+    encode_workers_response(&response, "acyclic.workers.v1.InvokeResponse")
+        .map_err(|message| HttpError { status: 500, message })
+}
+
+async fn workers_http_invoke_deployment(
+    fixture: &CanonicalWorkersFixture,
+    content_type: &str,
+    body: &[u8],
+) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::InvokeDeploymentRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.InvokeDeploymentRequest",
+    )?;
+    let response = fixture
+        .invoke_deployment(Request::new(request))
+        .await
+        .map_err(workers_http_error)?
+        .into_inner();
+    encode_workers_response(&response, "acyclic.workers.v1.InvokeResponse")
+        .map_err(|message| HttpError { status: 500, message })
 }
 
 fn workers_publish(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
