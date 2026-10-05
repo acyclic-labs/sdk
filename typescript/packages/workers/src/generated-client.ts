@@ -43,6 +43,44 @@ export type RustOwnedWireChoice =
   { readonly kind: "known"; readonly value: object } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
+import type * as RustWire from "../generated/proto/workers/v1/workers_pb.js";
+
+// Rust-owned public facade types. Generated from type_policy.rs; do not edit.
+
+export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
+
+export type RustOwnedPublicCancelJobRequest = RustWire.CancelJobRequest;
+export type RustOwnedPublicCancelJobResponse = RustWire.CancelJobResponse;
+export type RustOwnedPublicInspectJobRequest = Omit<RustWire.InspectJobRequest, "jobId"> & {
+  readonly jobId: RustOwnedJobId;
+};
+export type RustOwnedPublicInspectJobResponse = RustWire.InspectJobResponse;
+export type RustOwnedPublicInvokeDeploymentRequest = RustWire.InvokeDeploymentRequest;
+export type RustOwnedPublicInvokeResponse = RustWire.InvokeResponse;
+export type RustOwnedPublicInvokeVersionRequest = Omit<RustWire.InvokeVersionRequest, "method"> & {
+  readonly method: RustOwnedMethod;
+};
+export type RustOwnedPublicPublishVersionRequest = RustWire.PublishVersionRequest;
+export type RustOwnedPublicPublishVersionResponse = RustWire.PublishVersionResponse;
+export type RustOwnedPublicSelectDeploymentRequest = Omit<RustWire.SelectDeploymentRequest, "alias" | "idempotencyKey" | "versionSha256"> & {
+  readonly alias: RustOwnedAlias;
+  readonly idempotencyKey: RustOwnedIdempotencyKeyText;
+  readonly versionSha256: RustOwnedVersionSha256;
+};
+export type RustOwnedPublicSelectDeploymentResponse = RustWire.SelectDeploymentResponse;
+export type RustOwnedPublicSubmitJobRequest = RustWire.SubmitJobRequest;
+export type RustOwnedPublicSubmitJobResponse = RustWire.SubmitJobResponse;
+
+export interface RustOwnedWorkersPublicClient {
+  readonly publishVersion: (request: RustOwnedPublicPublishVersionRequest, signal?: AbortSignal) => Promise<RustOwnedPublicPublishVersionResponse>;
+  readonly selectDeployment: (request: RustOwnedPublicSelectDeploymentRequest, signal?: AbortSignal) => Promise<RustOwnedPublicSelectDeploymentResponse>;
+  readonly submitJob: (request: RustOwnedPublicSubmitJobRequest, signal?: AbortSignal) => Promise<RustOwnedPublicSubmitJobResponse>;
+  readonly inspectJob: (request: RustOwnedPublicInspectJobRequest, signal?: AbortSignal) => Promise<RustOwnedPublicInspectJobResponse>;
+  readonly cancelJob: (request: RustOwnedPublicCancelJobRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCancelJobResponse>;
+  readonly invokeVersion: (request: RustOwnedPublicInvokeVersionRequest, signal?: AbortSignal) => Promise<RustOwnedPublicInvokeResponse>;
+  readonly invokeDeployment: (request: RustOwnedPublicInvokeDeploymentRequest, signal?: AbortSignal) => Promise<RustOwnedPublicInvokeResponse>;
+}
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {

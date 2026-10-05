@@ -42,6 +42,78 @@ export type RustOwnedWireChoice =
   { readonly kind: "known"; readonly value: object } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
+import type * as RustWire from "../generated/proto/inference/v1/inference_pb.js";
+
+// Rust-owned public facade types. Generated from type_policy.rs; do not edit.
+
+export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
+
+export type RustOwnedPublicContextView = RustWire.ContextView;
+export type RustOwnedPublicCreateContextRequest = RustWire.CreateContextRequest;
+export type RustOwnedPublicCreateEvaluationRequest = Omit<RustWire.CreateEvaluationRequest, "spec"> & {
+  readonly spec: RustOwnedPublicEvaluationSpec;
+};
+export type RustOwnedPublicEvaluationSpec = Omit<RustWire.EvaluationSpec, "specDigest"> & {
+  readonly specDigest: RustOwnedSha256Digest;
+};
+export type RustOwnedPublicEvaluationView = RustWire.EvaluationView;
+export type RustOwnedPublicGenerateRunRequest = RustWire.GenerateRunRequest;
+export type RustOwnedPublicGenerateRunResponse = RustWire.GenerateRunResponse;
+export type RustOwnedPublicInspectContextRequest = Omit<RustWire.InspectContextRequest, "revision"> & {
+  readonly revision: RustOwnedRevisionDigest;
+};
+export type RustOwnedPublicInspectEvaluationRequest = Omit<RustWire.InspectEvaluationRequest, "evaluationId"> & {
+  readonly evaluationId: RustOwnedEvaluationId;
+};
+export type RustOwnedPublicInspectRunRequest = Omit<RustWire.InspectRunRequest, "runId"> & {
+  readonly runId: RustOwnedRunId;
+};
+export type RustOwnedPublicInspectWarmRequest = Omit<RustWire.InspectWarmRequest, "commitment"> & {
+  readonly commitment: RustOwnedSha256Digest;
+};
+export type RustOwnedPublicListModelsRequest = RustWire.ListModelsRequest;
+export type RustOwnedPublicListModelsResponse = RustWire.ListModelsResponse;
+export type RustOwnedPublicMutateContextRequest = RustWire.MutateContextRequest;
+export type RustOwnedPublicMutationReceipt = RustWire.MutationReceipt;
+export type RustOwnedPublicReleaseWarmRequest = RustWire.ReleaseWarmRequest;
+export type RustOwnedPublicRenewWarmRequest = RustWire.RenewWarmRequest;
+export type RustOwnedPublicRetainWarmRequest = RustWire.RetainWarmRequest;
+export type RustOwnedPublicRunEvent = RustWire.RunEvent;
+export type RustOwnedPublicRunView = RustWire.RunView;
+export type RustOwnedPublicWarmView = RustWire.WarmView;
+export type RustOwnedPublicWatchRunRequest = RustWire.WatchRunRequest;
+
+export interface RustOwnedInferencePublicClient {
+  readonly modelsList: (request: RustOwnedPublicListModelsRequest, signal?: AbortSignal) => Promise<RustOwnedPublicListModelsResponse>;
+  readonly contextsCreate: (request: RustOwnedPublicCreateContextRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationReceipt>;
+  readonly contextsInspect: (request: RustOwnedPublicInspectContextRequest, signal?: AbortSignal) => Promise<RustOwnedPublicContextView>;
+  readonly contextsMutate: (request: RustOwnedPublicMutateContextRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationReceipt>;
+  readonly warmContextsRetain: (request: RustOwnedPublicRetainWarmRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWarmView>;
+  readonly warmContextsInspect: (request: RustOwnedPublicInspectWarmRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWarmView>;
+  readonly warmContextsRenew: (request: RustOwnedPublicRenewWarmRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWarmView>;
+  readonly warmContextsRelease: (request: RustOwnedPublicReleaseWarmRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWarmView>;
+  readonly runsGenerate: (request: RustOwnedPublicGenerateRunRequest, signal?: AbortSignal) => Promise<RustOwnedPublicGenerateRunResponse>;
+  readonly runsInspect: (request: RustOwnedPublicInspectRunRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRunView>;
+  readonly runsWatch: (request: RustOwnedPublicWatchRunRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicRunEvent>;
+  readonly runsCancel: (request: RustOwnedPublicInspectRunRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRunView>;
+  readonly evaluationsCreate: (request: RustOwnedPublicCreateEvaluationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicEvaluationView>;
+  readonly evaluationsInspect: (request: RustOwnedPublicInspectEvaluationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicEvaluationView>;
+  readonly list: (request: RustOwnedPublicListModelsRequest, signal?: AbortSignal) => Promise<RustOwnedPublicListModelsResponse>;
+  readonly contextscreate: (request: RustOwnedPublicCreateContextRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationReceipt>;
+  readonly contextsinspect: (request: RustOwnedPublicInspectContextRequest, signal?: AbortSignal) => Promise<RustOwnedPublicContextView>;
+  readonly mutate: (request: RustOwnedPublicMutateContextRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationReceipt>;
+  readonly retain: (request: RustOwnedPublicRetainWarmRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWarmView>;
+  readonly warmContextsinspect: (request: RustOwnedPublicInspectWarmRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWarmView>;
+  readonly renew: (request: RustOwnedPublicRenewWarmRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWarmView>;
+  readonly release: (request: RustOwnedPublicReleaseWarmRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWarmView>;
+  readonly generate: (request: RustOwnedPublicGenerateRunRequest, signal?: AbortSignal) => Promise<RustOwnedPublicGenerateRunResponse>;
+  readonly runsinspect: (request: RustOwnedPublicInspectRunRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRunView>;
+  readonly watch: (request: RustOwnedPublicWatchRunRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicRunEvent>;
+  readonly cancel: (request: RustOwnedPublicInspectRunRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRunView>;
+  readonly evaluationscreate: (request: RustOwnedPublicCreateEvaluationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicEvaluationView>;
+  readonly evaluationsinspect: (request: RustOwnedPublicInspectEvaluationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicEvaluationView>;
+}
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {

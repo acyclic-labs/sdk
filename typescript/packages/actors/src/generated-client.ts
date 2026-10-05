@@ -34,6 +34,43 @@ export type RustOwnedWireChoice =
   { readonly kind: "known"; readonly value: object } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
+import type * as RustWire from "../generated/proto/actors/v1/actors_pb.js";
+
+// Rust-owned public facade types. Generated from type_policy.rs; do not edit.
+
+export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
+
+export type RustOwnedPublicAddSubscriptionRequest = RustWire.AddSubscriptionRequest;
+export type RustOwnedPublicAddSubscriptionResponse = RustWire.AddSubscriptionResponse;
+export type RustOwnedPublicCheckpointActorRequest = RustWire.CheckpointActorRequest;
+export type RustOwnedPublicCheckpointActorResponse = RustWire.CheckpointActorResponse;
+export type RustOwnedPublicCreateActorRequest = RustWire.CreateActorRequest;
+export type RustOwnedPublicCreateActorResponse = RustWire.CreateActorResponse;
+export type RustOwnedPublicInspectActorRequest = RustWire.InspectActorRequest;
+export type RustOwnedPublicInspectActorResponse = RustWire.InspectActorResponse;
+export type RustOwnedPublicInvokeActorRequest = Omit<RustWire.InvokeActorRequest, "actorId" | "method"> & {
+  readonly actorId: RustOwnedActorId;
+  readonly method: RustOwnedMethod;
+};
+export type RustOwnedPublicInvokeActorResponse = RustWire.InvokeActorResponse;
+export type RustOwnedPublicRemoveSubscriptionRequest = RustWire.RemoveSubscriptionRequest;
+export type RustOwnedPublicRemoveSubscriptionResponse = RustWire.RemoveSubscriptionResponse;
+export type RustOwnedPublicResumeSubscriptionRequest = RustWire.ResumeSubscriptionRequest;
+export type RustOwnedPublicResumeSubscriptionResponse = RustWire.ResumeSubscriptionResponse;
+export type RustOwnedPublicUpdateActorRequest = RustWire.UpdateActorRequest;
+export type RustOwnedPublicUpdateActorResponse = RustWire.UpdateActorResponse;
+
+export interface RustOwnedActorsPublicClient {
+  readonly createActor: (request: RustOwnedPublicCreateActorRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCreateActorResponse>;
+  readonly updateActor: (request: RustOwnedPublicUpdateActorRequest, signal?: AbortSignal) => Promise<RustOwnedPublicUpdateActorResponse>;
+  readonly inspectActor: (request: RustOwnedPublicInspectActorRequest, signal?: AbortSignal) => Promise<RustOwnedPublicInspectActorResponse>;
+  readonly addSubscription: (request: RustOwnedPublicAddSubscriptionRequest, signal?: AbortSignal) => Promise<RustOwnedPublicAddSubscriptionResponse>;
+  readonly removeSubscription: (request: RustOwnedPublicRemoveSubscriptionRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRemoveSubscriptionResponse>;
+  readonly resumeSubscription: (request: RustOwnedPublicResumeSubscriptionRequest, signal?: AbortSignal) => Promise<RustOwnedPublicResumeSubscriptionResponse>;
+  readonly checkpointActor: (request: RustOwnedPublicCheckpointActorRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCheckpointActorResponse>;
+  readonly invokeActor: (request: RustOwnedPublicInvokeActorRequest, signal?: AbortSignal) => Promise<RustOwnedPublicInvokeActorResponse>;
+}
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {

@@ -31,6 +31,91 @@ export type RustOwnedWireChoice =
   { readonly kind: "known"; readonly value: object } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
+import type * as RustWire from "../generated/proto/filesystem/v2/filesystem_pb.js";
+
+// Rust-owned public facade types. Generated from type_policy.rs; do not edit.
+
+export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
+
+export type RustOwnedPublicApplyJoinRequest = RustWire.ApplyJoinRequest;
+export type RustOwnedPublicApplyTransactionRequest = RustWire.ApplyTransactionRequest;
+export type RustOwnedPublicCancelRequest = RustWire.CancelRequest;
+export type RustOwnedPublicCancelResponse = RustWire.CancelResponse;
+export type RustOwnedPublicCreateWorkspaceRequest = RustWire.CreateWorkspaceRequest;
+export type RustOwnedPublicCredentialRequest = RustWire.CredentialRequest;
+export type RustOwnedPublicCredentialResponse = RustWire.CredentialResponse;
+export type RustOwnedPublicDeleteWorkspaceRequest = RustWire.DeleteWorkspaceRequest;
+export type RustOwnedPublicDiffRequest = RustWire.DiffRequest;
+export type RustOwnedPublicDiffResponse = RustWire.DiffResponse;
+export type RustOwnedPublicExportChunk = RustWire.ExportChunk;
+export type RustOwnedPublicExportRequest = RustWire.ExportRequest;
+export type RustOwnedPublicForkWorkspaceRequest = RustWire.ForkWorkspaceRequest;
+export type RustOwnedPublicGenerationResponse = RustWire.GenerationResponse;
+export type RustOwnedPublicGetGenerationRequest = RustWire.GetGenerationRequest;
+export type RustOwnedPublicGetHeadRequest = RustWire.GetHeadRequest;
+export type RustOwnedPublicImportChunk = RustWire.ImportChunk;
+export type RustOwnedPublicImportResponse = RustWire.ImportResponse;
+export type RustOwnedPublicJoinPlan = RustWire.JoinPlan;
+export type RustOwnedPublicJoinResponse = RustWire.JoinResponse;
+export type RustOwnedPublicListDirectoryRequest = RustWire.ListDirectoryRequest;
+export type RustOwnedPublicListDirectoryResponse = RustWire.ListDirectoryResponse;
+export type RustOwnedPublicMutationResponse = RustWire.MutationResponse;
+export type RustOwnedPublicObserveRequest = RustWire.ObserveRequest;
+export type RustOwnedPublicObserveResponse = RustWire.ObserveResponse;
+export type RustOwnedPublicOpenWorkspaceRequest = RustWire.OpenWorkspaceRequest;
+export type RustOwnedPublicPlanExtentsRequest = RustWire.PlanExtentsRequest;
+export type RustOwnedPublicPlanExtentsResponse = RustWire.PlanExtentsResponse;
+export type RustOwnedPublicPlanJoinRequest = RustWire.PlanJoinRequest;
+export type RustOwnedPublicReadLinkRequest = RustWire.ReadLinkRequest;
+export type RustOwnedPublicReadRequest = Omit<RustWire.ReadRequest, "path"> & {
+  readonly path: RustOwnedPath;
+};
+export type RustOwnedPublicReadResponse = RustWire.ReadResponse;
+export type RustOwnedPublicRebaseRequest = RustWire.RebaseRequest;
+export type RustOwnedPublicRebaseResponse = RustWire.RebaseResponse;
+export type RustOwnedPublicRebaseTransactionRequest = RustWire.RebaseTransactionRequest;
+export type RustOwnedPublicRebaseTransactionResponse = RustWire.RebaseTransactionResponse;
+export type RustOwnedPublicRetainGenerationRequest = RustWire.RetainGenerationRequest;
+export type RustOwnedPublicRetainGenerationResponse = RustWire.RetainGenerationResponse;
+export type RustOwnedPublicSourceOperationRequest = RustWire.SourceOperationRequest;
+export type RustOwnedPublicSourceResponse = RustWire.SourceResponse;
+export type RustOwnedPublicSourceStateRequest = RustWire.SourceStateRequest;
+export type RustOwnedPublicStatRequest = RustWire.StatRequest;
+export type RustOwnedPublicStatResponse = RustWire.StatResponse;
+export type RustOwnedPublicWorkspaceResponse = RustWire.WorkspaceResponse;
+
+export interface RustOwnedFilesystemPublicClient {
+  readonly createWorkspace: (request: RustOwnedPublicCreateWorkspaceRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWorkspaceResponse>;
+  readonly openWorkspace: (request: RustOwnedPublicOpenWorkspaceRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWorkspaceResponse>;
+  readonly deleteWorkspace: (request: RustOwnedPublicDeleteWorkspaceRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationResponse>;
+  readonly getHead: (request: RustOwnedPublicGetHeadRequest, signal?: AbortSignal) => Promise<RustOwnedPublicGenerationResponse>;
+  readonly getGeneration: (request: RustOwnedPublicGetGenerationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicGenerationResponse>;
+  readonly read: (request: RustOwnedPublicReadRequest, signal?: AbortSignal) => Promise<RustOwnedPublicReadResponse>;
+  readonly stat: (request: RustOwnedPublicStatRequest, signal?: AbortSignal) => Promise<RustOwnedPublicStatResponse>;
+  readonly listDirectory: (request: RustOwnedPublicListDirectoryRequest, signal?: AbortSignal) => Promise<RustOwnedPublicListDirectoryResponse>;
+  readonly readLink: (request: RustOwnedPublicReadLinkRequest, signal?: AbortSignal) => Promise<RustOwnedPublicReadResponse>;
+  readonly planExtents: (request: RustOwnedPublicPlanExtentsRequest, signal?: AbortSignal) => Promise<RustOwnedPublicPlanExtentsResponse>;
+  readonly applyTransaction: (request: RustOwnedPublicApplyTransactionRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationResponse>;
+  readonly rebaseTransaction: (request: RustOwnedPublicRebaseTransactionRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRebaseTransactionResponse>;
+  readonly forkWorkspace: (request: RustOwnedPublicForkWorkspaceRequest, signal?: AbortSignal) => Promise<RustOwnedPublicWorkspaceResponse>;
+  readonly diff: (request: RustOwnedPublicDiffRequest, signal?: AbortSignal) => Promise<RustOwnedPublicDiffResponse>;
+  readonly rebase: (request: RustOwnedPublicRebaseRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRebaseResponse>;
+  readonly planJoin: (request: RustOwnedPublicPlanJoinRequest, signal?: AbortSignal) => Promise<RustOwnedPublicJoinPlan>;
+  readonly applyJoin: (request: RustOwnedPublicApplyJoinRequest, signal?: AbortSignal) => Promise<RustOwnedPublicJoinResponse>;
+  readonly checkpoint: (request: RustOwnedPublicRetainGenerationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRetainGenerationResponse>;
+  readonly pin: (request: RustOwnedPublicRetainGenerationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRetainGenerationResponse>;
+  readonly export: (request: RustOwnedPublicExportRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicExportChunk>;
+  readonly import: (request: AsyncIterable<RustOwnedPublicImportChunk>, signal?: AbortSignal) => Promise<RustOwnedPublicImportResponse>;
+  readonly issueMountCredential: (request: RustOwnedPublicCredentialRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCredentialResponse>;
+  readonly issueS3Credential: (request: RustOwnedPublicCredentialRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCredentialResponse>;
+  readonly getSourceState: (request: RustOwnedPublicSourceStateRequest, signal?: AbortSignal) => Promise<RustOwnedPublicSourceResponse>;
+  readonly reconcileSource: (request: RustOwnedPublicSourceOperationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicSourceResponse>;
+  readonly rescanSource: (request: RustOwnedPublicSourceOperationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicSourceResponse>;
+  readonly sealSource: (request: RustOwnedPublicSourceOperationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicSourceResponse>;
+  readonly observe: (request: RustOwnedPublicObserveRequest, signal?: AbortSignal) => Promise<RustOwnedPublicObserveResponse>;
+  readonly cancel: (request: RustOwnedPublicCancelRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCancelResponse>;
+}
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {

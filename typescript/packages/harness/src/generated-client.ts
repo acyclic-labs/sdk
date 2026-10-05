@@ -30,6 +30,28 @@ export type RustOwnedWireChoice =
   { readonly kind: "known"; readonly value: object } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
+import type * as RustWire from "../generated/proto/harness/v2/harness_pb.js";
+
+// Rust-owned public facade types. Generated from type_policy.rs; do not edit.
+
+export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
+
+export type RustOwnedPublicAdmission = RustWire.Admission;
+export type RustOwnedPublicCancelRequest = RustWire.CancelRequest;
+export type RustOwnedPublicCancelResponse = RustWire.CancelResponse;
+export type RustOwnedPublicCommandEnvelope = RustWire.CommandEnvelope;
+export type RustOwnedPublicDelivery = RustWire.Delivery;
+export type RustOwnedPublicObserveRequest = RustWire.ObserveRequest;
+export type RustOwnedPublicOperationStatus = RustWire.OperationStatus;
+export type RustOwnedPublicResumeRequest = RustWire.ResumeRequest;
+
+export interface RustOwnedHarnessPublicClient {
+  readonly submit: (request: RustOwnedPublicCommandEnvelope, signal?: AbortSignal) => Promise<RustOwnedPublicAdmission>;
+  readonly replay: (request: RustOwnedPublicResumeRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicDelivery>;
+  readonly observe: (request: RustOwnedPublicObserveRequest, signal?: AbortSignal) => Promise<RustOwnedPublicOperationStatus>;
+  readonly cancel: (request: RustOwnedPublicCancelRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCancelResponse>;
+}
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {

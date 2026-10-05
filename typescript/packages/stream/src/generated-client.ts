@@ -48,6 +48,55 @@ export type RustOwnedWireChoice =
   { readonly kind: "known"; readonly value: object } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
+import type * as RustWire from "../generated/proto/stream/v2/stream_pb.js";
+
+// Rust-owned public facade types. Generated from type_policy.rs; do not edit.
+
+export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
+
+export type RustOwnedPublicAppendRequest = Omit<RustWire.AppendRequest, "idempotencyKey" | "path"> & {
+  readonly idempotencyKey: RustOwnedIdempotencyKeyBytes;
+  readonly path: RustOwnedPath;
+};
+export type RustOwnedPublicAppendResponse = RustWire.AppendResponse;
+export type RustOwnedPublicChildrenPageRequest = RustWire.ChildrenPageRequest;
+export type RustOwnedPublicChildrenPageResponse = RustWire.ChildrenPageResponse;
+export type RustOwnedPublicChildrenRequest = RustWire.ChildrenRequest;
+export type RustOwnedPublicChildrenResponse = RustWire.ChildrenResponse;
+export type RustOwnedPublicCommitRequest = RustWire.CommitRequest;
+export type RustOwnedPublicCommitResponse = RustWire.CommitResponse;
+export type RustOwnedPublicCommittedEnvelope = RustWire.CommittedEnvelope;
+export type RustOwnedPublicFollowRequest = RustWire.FollowRequest;
+export type RustOwnedPublicForkReceipt = RustWire.ForkReceipt;
+export type RustOwnedPublicForkRequest = Omit<RustWire.ForkRequest, "destination" | "source"> & {
+  readonly destination: RustOwnedDestination;
+  readonly source: RustOwnedSource;
+};
+export type RustOwnedPublicInspectIdempotencyRequest = RustWire.InspectIdempotencyRequest;
+export type RustOwnedPublicInspectIdempotencyResponse = RustWire.InspectIdempotencyResponse;
+export type RustOwnedPublicReadCommitRequest = Omit<RustWire.ReadCommitRequest, "commitId"> & {
+  readonly commitId: RustOwnedCommitId;
+};
+export type RustOwnedPublicReadRequest = Omit<RustWire.ReadRequest, "limit"> & {
+  readonly limit: RustOwnedStreamPageLimit;
+};
+export type RustOwnedPublicReadResponse = RustWire.ReadResponse;
+export type RustOwnedPublicTailRequest = RustWire.TailRequest;
+export type RustOwnedPublicTailResponse = RustWire.TailResponse;
+
+export interface RustOwnedStreamPublicClient {
+  readonly inspectIdempotency: (request: RustOwnedPublicInspectIdempotencyRequest, signal?: AbortSignal) => Promise<RustOwnedPublicInspectIdempotencyResponse>;
+  readonly append: (request: RustOwnedPublicAppendRequest, signal?: AbortSignal) => Promise<RustOwnedPublicAppendResponse>;
+  readonly tail: (request: RustOwnedPublicTailRequest, signal?: AbortSignal) => Promise<RustOwnedPublicTailResponse>;
+  readonly fork: (request: RustOwnedPublicForkRequest, signal?: AbortSignal) => Promise<RustOwnedPublicForkReceipt>;
+  readonly read: (request: RustOwnedPublicReadRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicReadResponse>;
+  readonly follow: (request: RustOwnedPublicFollowRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicReadResponse>;
+  readonly children: (request: RustOwnedPublicChildrenRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicChildrenResponse>;
+  readonly childrenPage: (request: RustOwnedPublicChildrenPageRequest, signal?: AbortSignal) => Promise<RustOwnedPublicChildrenPageResponse>;
+  readonly commit: (request: RustOwnedPublicCommitRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCommitResponse>;
+  readonly readCommit: (request: RustOwnedPublicReadCommitRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCommittedEnvelope>;
+}
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {
