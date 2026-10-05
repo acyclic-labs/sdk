@@ -287,20 +287,25 @@ pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequ
 
 fn observation_outcome(object: &serde_json::Map<String, Value>) -> ExpectedOutcome {
     let response = object.get("response").and_then(Value::as_object);
-    if response
-        .and_then(|response| response.get("status"))
-        .and_then(Value::as_str)
-        == Some("error")
-    {
-        return ExpectedOutcome::error(
-            response
-                .and_then(|response| response.get("code"))
-                .and_then(Value::as_str),
-            response
-                .and_then(|response| response.get("details"))
-                .and_then(Value::as_str),
-            Some("error"),
-        );
+    if let Some(response) = response {
+        let status = response.get("status").and_then(Value::as_str);
+        let raw_code = response
+            .get("code")
+            .and_then(Value::as_str)
+            .or(status);
+        let code = raw_code.and_then(observation_grpc_code);
+        if code.as_deref() != Some("OK")
+            && (code.is_some() || status.is_some_and(|status| status != "ok"))
+        {
+            return ExpectedOutcome::error(
+                code.as_deref(),
+                response
+                    .get("details")
+                    .or_else(|| response.get("message"))
+                    .and_then(Value::as_str),
+                Some("error"),
+            );
+        }
     }
     if object
         .get("response_frames")
@@ -310,6 +315,35 @@ fn observation_outcome(object: &serde_json::Map<String, Value>) -> ExpectedOutco
         return ExpectedOutcome::stream_terminal("eof", None);
     }
     ExpectedOutcome::success()
+}
+
+fn observation_grpc_code(value: &str) -> Option<String> {
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_uppercase)
+        .collect::<String>();
+    let code = match normalized.as_str() {
+        "OK" => "OK",
+        "CANCELLED" => "CANCELLED",
+        "UNKNOWN" => "UNKNOWN",
+        "INVALIDARGUMENT" => "INVALID_ARGUMENT",
+        "DEADLINEEXCEEDED" => "DEADLINE_EXCEEDED",
+        "NOTFOUND" => "NOT_FOUND",
+        "ALREADYEXISTS" => "ALREADY_EXISTS",
+        "PERMISSIONDENIED" => "PERMISSION_DENIED",
+        "RESOURCEEXHAUSTED" => "RESOURCE_EXHAUSTED",
+        "FAILEDPRECONDITION" => "FAILED_PRECONDITION",
+        "ABORTED" => "ABORTED",
+        "OUTOFRANGE" => "OUT_OF_RANGE",
+        "UNIMPLEMENTED" => "UNIMPLEMENTED",
+        "INTERNAL" => "INTERNAL",
+        "UNAVAILABLE" => "UNAVAILABLE",
+        "DATALOSS" => "DATA_LOSS",
+        "UNAUTHENTICATED" => "UNAUTHENTICATED",
+        _ => return None,
+    };
+    Some(code.to_owned())
 }
 
 fn canonical_rpc(raw_rpc: &str) -> (String, Option<String>) {
