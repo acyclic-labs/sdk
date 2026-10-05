@@ -6,7 +6,8 @@
 
 use base64::Engine as _;
 use serde_json::{Map, Value};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -100,6 +101,7 @@ fn execution_records(path: &Path) -> Result<Vec<ExecutionRecord>, String> {
     let Some(records) = document.get("execution_plan").and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
+    let mut seen_steps = BTreeSet::new();
     records
         .iter()
         .enumerate()
@@ -115,6 +117,9 @@ fn execution_records(path: &Path) -> Result<Vec<ExecutionRecord>, String> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("typed execution record {rpc} is missing request_base64"))?
                 .to_owned();
+            if !seen_steps.insert(execution_step) {
+                return Err(format!("typed execution plan contains duplicate execution_step {execution_step}"));
+            }
             Ok(ExecutionRecord {
                 execution_step,
                 rpc: rpc.clone(),
@@ -317,6 +322,39 @@ fn request_hex(observation: &Value, label: &str) -> Result<(String, Vec<u8>), St
     Ok((value.to_ascii_lowercase(), hex_bytes(value, &format!("{label}.request_bytes_hex"))?))
 }
 
+fn request_frames(value: &Value, label: &str) -> Result<Vec<String>, String> {
+    let frames = value.as_array().ok_or_else(|| format!("{label} must be an array"))?;
+    frames.iter().enumerate().map(|(index, frame)| {
+        if let Some(text) = frame.as_str() {
+            return Ok(text.to_ascii_lowercase());
+        }
+        let object = frame.as_object().ok_or_else(|| format!("{label}[{index}] must be an object or base64 text"))?;
+        if let Some(hex) = object.get("serialized_hex").or_else(|| object.get("bytes_hex")).and_then(Value::as_str) {
+            hex_bytes(hex, &format!("{label}[{index}]"))?;
+            return Ok(hex.to_ascii_lowercase());
+        }
+        let encoded = object.get("request_base64").or_else(|| object.get("bytes_base64")).or_else(|| object.get("base64"))
+            .ok_or_else(|| format!("{label}[{index}] is missing serialized bytes"))?;
+        Ok(bytes_from_base64(encoded, &format!("{label}[{index}]"))?.0)
+    }).collect()
+}
+
+fn observed_request_frames(observation: &Value, label: &str) -> Result<Option<Vec<String>>, String> {
+    if let Some(value) = observation.get("request_frames_base64").or_else(|| observation.get("request_frame_base64")) {
+        let values = value.as_array().ok_or_else(|| format!("{label}.request_frames_base64 must be an array"))?;
+        return Ok(Some(values.iter().enumerate().map(|(index, frame)| bytes_from_base64(frame, &format!("{label}.request_frames_base64[{index}]" )).map(|(hex, _)| hex)).collect::<Result<Vec<_>, _>>()?));
+    }
+    if let Some(value) = observation.get("request_frames_hex") {
+        let values = value.as_array().ok_or_else(|| format!("{label}.request_frames_hex must be an array"))?;
+        return Ok(Some(values.iter().enumerate().map(|(index, frame)| {
+            let text = frame.as_str().ok_or_else(|| format!("{label}.request_frames_hex[{index}] must be hexadecimal text"))?;
+            hex_bytes(text, &format!("{label}.request_frames_hex[{index}]"))?;
+            Ok(text.to_ascii_lowercase())
+        }).collect::<Result<Vec<_>, String>>()?));
+    }
+    Ok(None)
+}
+
 fn normalize_receipt(
     inventory_path: &Path,
     receipt_path: &Path,
@@ -389,23 +427,42 @@ fn normalize_receipt(
         let typed = method.get("typed_request").or_else(|| raw_plan.get("typed_request"))
             .and_then(Value::as_object)
             .ok_or_else(|| format!("{rpc}: inventory lacks canonical typed_request"))?;
+        let canonical_frames = raw_plan.get("request_frames").or_else(|| typed.get("serialized_frames"))
+            .map(|value| request_frames(value, &format!("{rpc}.request_frames")))
+            .transpose()?;
         let canonical_hex = typed.get("serialized_hex")
             .or_else(|| typed.get("empty_serialized_hex"))
             .and_then(Value::as_str)
-            .ok_or_else(|| format!("{rpc}: inventory lacks canonical typed request bytes"))?
-            .to_ascii_lowercase();
-        let (request_hex_value, request_bytes) = request_hex(observation, &rpc)?;
-        if request_hex_value != canonical_hex {
-            return Err(format!("{rpc}: request bytes do not match the Rust canonical typed request"));
+            .map(str::to_ascii_lowercase);
+        let has_canonical_frames = canonical_frames.is_some();
+        if let Some(canonical_frames) = canonical_frames {
+            if let Some(actual_frames) = observed_request_frames(observation, &rpc)? {
+                if actual_frames != canonical_frames {
+                    return Err(format!("{rpc}: request frames do not match the Rust canonical typed request frames"));
+                }
+            } else {
+                return Err(format!("{rpc}: canonical request frames are missing from the runtime receipt"));
+            }
         }
-        if let Some(expected_request) = raw_plan.get("request_base64") {
+        let (request_hex_value, request_bytes) = request_hex(observation, &rpc)?;
+        if !has_canonical_frames {
+            let canonical_hex = canonical_hex.ok_or_else(|| format!("{rpc}: inventory lacks canonical typed request bytes"))?;
+            if request_hex_value != canonical_hex {
+                return Err(format!("{rpc}: request bytes do not match the Rust canonical typed request"));
+            }
+        }
+        if !has_canonical_frames {
+            if let Some(expected_request) = raw_plan.get("request_base64") {
             let (expected_hex, _) = bytes_from_base64(expected_request, &format!("{rpc}.request_base64"))?;
             if expected_hex != request_hex_value {
                 return Err(format!("{rpc}: request bytes do not match the ordered Rust execution plan"));
             }
+            }
         }
-        let request_digest = observation.get("request_sha256").and_then(Value::as_str)
-            .map(str::to_owned).unwrap_or_else(|| sha256_bytes(&request_bytes));
+        let request_digest = match observation.get("request_sha256") {
+            Some(value) => value.as_str().ok_or_else(|| format!("{rpc}.request_sha256 must be a SHA-256 digest"))?.to_owned(),
+            None => sha256_bytes(&request_bytes),
+        };
         let actual_request_digest = sha256_bytes(&request_bytes);
         if request_digest.strip_prefix("sha256:").unwrap_or(&request_digest).to_ascii_lowercase()
             != actual_request_digest.strip_prefix("sha256:").unwrap_or(&actual_request_digest).to_ascii_lowercase()
@@ -417,8 +474,8 @@ fn normalize_receipt(
         if frames.is_empty() {
             return Err(format!("{rpc}: response frame list is empty"));
         }
-        let response_digests = observation.get("response_sha256").and_then(Value::as_array);
-        if let Some(digests) = response_digests {
+        if let Some(value) = observation.get("response_sha256") {
+            let digests = value.as_array().ok_or_else(|| format!("{rpc}.response_sha256 must be an array"))?;
             if digests.len() != frames.len() {
                 return Err(format!("{rpc}: response digest count does not match response frame count"));
             }
@@ -446,7 +503,7 @@ fn normalize_receipt(
         }
         let frame_hexes: Vec<Value> = frames.iter().map(|(hex, _)| Value::String(hex.clone())).collect();
         let frame_digests: Vec<Value> = frames.iter().map(|(_, bytes)| Value::String(sha256_bytes(bytes))).collect();
-        object.insert("response_frames_sha256".into(), Value::Array(frame_digests));
+        object.insert("response_frames_sha256".into(), Value::Array(frame_digests.clone()));
         if is_server_streaming(method) {
             let semantic = observation.get("response_frames").or_else(|| observation.get("decoded_response"))
                 .and_then(Value::as_array)
@@ -483,7 +540,9 @@ fn normalize_receipt(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
-    fs::write(output_path, serde_json::to_vec_pretty(&output).map_err(|error| format!("encode receipt: {error}"))? + b"\n")
+    let mut bytes = serde_json::to_vec_pretty(&output).map_err(|error| format!("encode receipt: {error}"))?;
+    bytes.push(b'\n');
+    fs::write(output_path, bytes)
         .map_err(|error| format!("write {}: {error}", output_path.display()))
 }
 
@@ -882,6 +941,63 @@ fn identifier_boundary(source: &str, candidate: &str) -> bool {
     })
 }
 
+fn callable_identifier(source: &str, extension: &str, candidate: &str) -> bool {
+    let patterns = match extension {
+        "ex" => vec![
+            format!("def {candidate}"),
+            format!("defp {candidate}"),
+            format!("defmacro {candidate}"),
+        ],
+        "erl" => vec![format!("{candidate}(")],
+        "lisp" | "lsp" => vec![
+            format!("(defun {candidate}"),
+            format!("(defmethod {candidate}"),
+            format!("(defgeneric {candidate}"),
+        ],
+        "ml" => vec![format!("let {candidate}"), format!("val {candidate}")],
+        _ => vec![format!("{candidate}(")],
+    };
+    patterns.iter().any(|pattern| source.match_indices(pattern).any(|(index, _)| {
+        let after = source[index + pattern.len()..].chars().next();
+        after.is_none_or(|character| character.is_whitespace() || matches!(character, '(' | ')' | ',' | ':'))
+    }))
+}
+
+fn service_candidates(rpc: &str) -> Vec<String> {
+    let service = rpc
+        .split_once('/')
+        .map(|(service, _)| service.rsplit_once('.').map(|(_, value)| value).unwrap_or(service))
+        .unwrap_or(rpc);
+    let snake_name = snake(service);
+    vec![service.to_string(), snake_name.clone(), snake_name.replace('_', "-"), lisp_name(service)]
+}
+
+fn method_candidates(rpc: &str) -> Vec<String> {
+    let method = rpc.rsplit_once('/').map(|(_, value)| value).unwrap_or(rpc);
+    let snake_name = snake(method);
+    vec![method.to_string(), snake_name.clone(), snake_name.replace('_', "-"), lisp_name(method)]
+}
+
+fn callable_service_method(source: &str, extension: &str, rpc: &str) -> bool {
+    let code = source
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with('#')
+                && !trimmed.starts_with('%')
+                && !trimmed.starts_with(';')
+                && !trimmed.starts_with("//")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let service_present = service_candidates(rpc)
+        .iter()
+        .any(|candidate| identifier_boundary(&code, candidate));
+    service_present && method_candidates(rpc)
+        .iter()
+        .any(|candidate| callable_identifier(&code, extension, candidate))
+}
+
 pub fn verify_generated_rpc_coverage(authority_path: &Path, generated_root: &Path) -> Result<usize, String> {
     let authority: Value = serde_json::from_slice(
         &fs::read(authority_path).map_err(|error| format!("read {}: {error}", authority_path.display()))?,
@@ -891,17 +1007,19 @@ pub fn verify_generated_rpc_coverage(authority_path: &Path, generated_root: &Pat
     generated_source_files(generated_root, &mut files)?;
     files.sort();
     let generated = files.iter().map(|path| {
-        fs::read_to_string(path).unwrap_or_else(|_| String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).into_owned())
+        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_string();
+        let source = fs::read_to_string(path).unwrap_or_else(|_| String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).into_owned());
+        (extension, source)
     }).collect::<Vec<_>>();
     let mut missing = Vec::new();
+    let mut seen = BTreeSet::new();
     for rpc in &methods {
-        let method = rpc.rsplit_once('/').map(|(_, value)| value).unwrap_or(rpc);
-        let snake_name = snake(method);
-        let kebab_name = snake_name.replace('_', "-");
-        let present = [method, snake_name.as_str(), kebab_name.as_str()].iter()
-            .any(|candidate| generated.iter().any(|source| identifier_boundary(source, candidate)));
+        if !seen.insert(rpc) {
+            return Err(format!("Rust authority contains duplicate RPC {rpc}"));
+        }
+        let present = generated.iter().any(|(extension, source)| callable_service_method(source, extension, rpc));
         if !present {
-            missing.push(method.to_string());
+            missing.push(rpc.to_string());
         }
     }
     if !missing.is_empty() {
@@ -991,18 +1109,50 @@ pub fn collect_runtime_observation_receipt(project: &Path, output: &Path, source
         let prefix = name.strip_suffix(".request.bin")?;
         prefix.chars().all(|character| character.is_ascii_digit()).then(|| (prefix.to_string(), path.clone()))
     }).collect::<Vec<_>>();
-    requests.sort_by(|left, right| left.0.cmp(&right.0));
+    requests.sort_by_key(|(prefix, _)| prefix.parse::<u64>().unwrap_or(u64::MAX));
+    for pair in requests.windows(2) {
+        if pair[0].0.parse::<u64>().ok() == pair[1].0.parse::<u64>().ok() {
+            return Err(format!("duplicate numeric runtime observation index: {} and {}", pair[0].0, pair[1].0));
+        }
+    }
     let request_count = requests.len();
     let mut observations = Vec::new();
     for (prefix, request) in requests {
         let request_name = request.file_name().and_then(|value| value.to_str()).ok_or_else(|| "request has no filename".to_string())?.to_string();
         let mut request_frames = vec![request.clone()];
-        request_frames.extend(files.iter().filter(|path| {
-            path.file_name().and_then(|value| value.to_str()).is_some_and(|name| name.starts_with(&format!("{prefix}.request.")) && name.ends_with(".bin"))
-        }).cloned());
-        let response_files = files.iter().filter(|path| {
-            path.file_name().and_then(|value| value.to_str()).is_some_and(|name| name.starts_with(&format!("{prefix}.response.")) && name.ends_with(".bin"))
-        }).cloned().collect::<Vec<_>>();
+        let request_marker = format!("{prefix}.request.");
+        let mut extra_requests = Vec::new();
+        for path in &files {
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else { continue };
+            if let Some(raw_sequence) = name.strip_prefix(&request_marker).and_then(|value| value.strip_suffix(".bin")) {
+                let sequence = raw_sequence.parse::<u64>().map_err(|_| format!("request frame for {prefix} has non-numeric sequence {raw_sequence}"))?;
+                extra_requests.push((sequence, path.clone()));
+            }
+        }
+        extra_requests.sort_by_key(|(sequence, _)| *sequence);
+        for (expected, (sequence, _)) in extra_requests.iter().enumerate() {
+            let expected = expected as u64 + 1;
+            if *sequence != expected {
+                return Err(format!("request frame sequence for {prefix} is not contiguous at {sequence}, expected {expected}"));
+            }
+        }
+        request_frames.extend(extra_requests.into_iter().map(|(_, path)| path));
+        let response_marker = format!("{prefix}.response.");
+        let mut response_files = Vec::new();
+        for path in &files {
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else { continue };
+            if let Some(raw_sequence) = name.strip_prefix(&response_marker).and_then(|value| value.strip_suffix(".bin")) {
+                let sequence = raw_sequence.parse::<u64>().map_err(|_| format!("response frame for {prefix} has non-numeric sequence {raw_sequence}"))?;
+                response_files.push((sequence, path.clone()));
+            }
+        }
+        response_files.sort_by_key(|(sequence, _)| *sequence);
+        for (expected, (sequence, _)) in response_files.iter().enumerate() {
+            if *sequence != expected as u64 {
+                return Err(format!("response frame sequence for {prefix} is not contiguous at {sequence}, expected {expected}"));
+            }
+        }
+        let response_files = response_files.into_iter().map(|(_, path)| path).collect::<Vec<_>>();
         let mut item = Map::new();
         item.insert("request_file".into(), Value::from(request_name));
         item.insert("request_files".into(), Value::from(request_frames.iter().map(|path| path.file_name().and_then(|value| value.to_str()).unwrap_or_default()).collect::<Vec<_>>()));
@@ -1018,7 +1168,7 @@ pub fn collect_runtime_observation_receipt(project: &Path, output: &Path, source
             item.extend(observation_metadata(&metadata)?);
         }
         if let Some(rpc) = item.get("rpc").and_then(Value::as_str).map(str::to_owned) {
-            item.insert("family".into(), Value::from(rpc.split('.').next().unwrap_or(rpc.as_str())));
+            item.insert("family".into(), Value::from(rpc.split_once('/').map(|(service, _)| service).unwrap_or(rpc.as_str())));
         }
         observations.push(Value::Object(item));
     }
@@ -1053,7 +1203,7 @@ pub fn parse_language(value: &str) -> Result<Language, String> {
 }
 
 pub fn run_from_args(args: &[String]) -> Result<(), String> {
-    let mut language = None;
+    let mut language: Option<String> = None;
     let mut authority = None;
     let mut output = None;
     let mut typed = None;
@@ -1068,7 +1218,7 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--language" => { index += 1; language = args.get(index).map(|value| parse_language(value)).transpose()?; }
+            "--language" => { index += 1; language = args.get(index).cloned(); }
             "--authority" => { index += 1; authority = args.get(index).map(PathBuf::from); }
             "--output" => { index += 1; output = args.get(index).map(PathBuf::from); }
             "--typed-request-manifest" => { index += 1; typed = args.get(index).map(PathBuf::from); }
@@ -1100,7 +1250,10 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
         println!("collected {count} runtime observations from {}", project.display());
         return Ok(());
     }
-    if let (Some(inventory), Some(receipt), Some(output)) = (inventory, receipt, normalize_output) {
+    if inventory.is_some() || receipt.is_some() || normalize_output.is_some() {
+        let inventory = inventory.ok_or_else(|| "--inventory, --receipt, and --normalize-output must be supplied together".to_string())?;
+        let receipt = receipt.ok_or_else(|| "--inventory, --receipt, and --normalize-output must be supplied together".to_string())?;
+        let output = normalize_output.ok_or_else(|| "--inventory, --receipt, and --normalize-output must be supplied together".to_string())?;
         return normalize_receipt(
             &inventory,
             &receipt,
@@ -1108,16 +1261,13 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
             &output,
         );
     }
-    if inventory.is_some() || receipt.is_some() || normalize_output.is_some() {
-        return Err("--inventory, --receipt, and --normalize-output must be supplied together".into());
-    }
     let authority = authority.ok_or_else(|| "--authority is required".to_string())?;
     let typed = typed.ok_or_else(|| "--typed-request-manifest is required".to_string())?;
     if let Some(output) = stream_scenarios {
         return write_stream_scenarios(&authority, &typed, &output);
     }
     render(
-        language.ok_or_else(|| "--language is required".to_string())?,
+        parse_language(language.as_deref().ok_or_else(|| "--language is required".to_string())?)?,
         &authority,
         &typed,
         &output.ok_or_else(|| "--output is required".to_string())?,
