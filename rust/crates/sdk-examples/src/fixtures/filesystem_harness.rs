@@ -1238,4 +1238,30 @@ mod tests {
         assert!(!first.1.is_empty());
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_fixture_keeps_export_source_and_import_destination_separate() {
+        let source = filesystem_service().expect("seeded filesystem service");
+        let workspace = ensure_transfer_source(&source)
+            .await
+            .expect("deterministic transfer source");
+        assert_eq!(workspace.name, "scenario-export");
+
+        let destination = empty_filesystem_service().expect("fresh import service");
+        let missing = destination
+            .open_workspace(Request::new(
+                acyclic_fs::wire::filesystem::v2::OpenWorkspaceRequest {
+                    selector: Some(
+                        acyclic_fs::wire::filesystem::v2::open_workspace_request::Selector::Name(
+                            "scenario-export".to_owned(),
+                        ),
+                    ),
+                },
+            ))
+            .await;
+        assert!(
+            missing.is_err(),
+            "fresh import destination must not reuse export authority"
+        );
+    }
+
 }
