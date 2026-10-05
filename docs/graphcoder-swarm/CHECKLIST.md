@@ -8,9 +8,9 @@ do not substitute for full acceptance gates.
 - [x] Shared exact request and manifest admission matches frozen native/WASM vectors.
 - [ ] Immutable completed prefixes through production recursive forks and cold restart on current source.
 - [x] Durable single-agent local storage composition and replay.
-- [ ] Complete batch publication admission and safe reconciliation (fresh local swarm faults fail 4/5).
+- [ ] Complete batch publication admission and safe reconciliation (nonblocking source ebd74c762 faults pass 2/6; four failures remain under repair).
 - [ ] Exact authoritative exchange publication and child inherited binding on current source.
-- [ ] Native sibling fork/provider-prefix scenario and stale-boundary refusal on current source (positive fork attestation remains failed).
+- [ ] Native sibling fork/provider-prefix scenario and stale-boundary refusal on current source (focused recursive/default communication scenarios pass at ebd74c762; full concurrent and fault qualification remains open).
 - [ ] Runtime model-tool provenance and disjoint completed-batch publication identity qualified through current recursive execution.
 - [ ] Production fork intent tools and durable child task activation.
 - [ ] Session-wide active/total/depth/step/output/time budget admission.
@@ -28,3 +28,9 @@ do not substitute for full acceptance gates.
 - [ ] Final source/suite/descriptor/artifact evidence audit, zero missing/ignored/flaky required gates.
 - [ ] All intended changes committed, source checkout preserved, no merge.
 - [ ] Mark goal complete only after the full audit passes.
+
+Latest retained checkpoints: source 822294d51 passes 408 native regression cases;
+source a473a63dd passes 376 Harness and 45 native-runtime cases, with one existing
+native-runtime benchmark ignored. The nonblocking scheduler at ebd74c762 passes
+380 Harness cases and two of four model-swarm scenarios, but fails two model-swarm
+and four of six fault scenarios. These receipts do not qualify the full matrix.
