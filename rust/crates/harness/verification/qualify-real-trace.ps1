@@ -49,6 +49,52 @@ if ($LASTEXITCODE -ne 0) {
 # by the gate. Each copy keeps the original trace and provenance but changes one
 # source field; every mutation must be rejected before the finite adapter runs.
 $checker = Join-Path $PSScriptRoot 'check-real-trace.ps1'
+$traceMutations = @(
+    @{ Name = 'trace-missing-publication'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'workspace_published' }) } },
+    @{ Name = 'trace-missing-model-start'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'model_started' }) } },
+    @{ Name = 'trace-missing-completion'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'agent_completed' }) } },
+    @{ Name = 'trace-corrupt-agent'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'model_started') { $event.agent = 3 } }; @($events) } },
+    @{ Name = 'trace-corrupt-capture'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'fork_admitted') { $event.captured_generation = 1 } }; @($events) } }
+)
+function Sha256Hex([byte[]]$Bytes) {
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return (-join ($algorithm.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }))
+    } finally {
+        $algorithm.Dispose()
+    }
+}
+
+$traceMutationEvidence = Join-Path $evidence 'trace-mutations'
+New-Item -ItemType Directory -Force -Path $traceMutationEvidence | Out-Null
+$originalTrace = @(Get-Content -LiteralPath $tracePath -Raw | ConvertFrom-Json)
+foreach ($mutation in $traceMutations) {
+    $mutantTracePath = Join-Path $traceMutationEvidence "$($mutation.Name).json"
+    $mutantManifestPath = Join-Path $traceMutationEvidence "$($mutation.Name).manifest.json"
+    $eventsCopy = @($originalTrace | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
+    $mutantEvents = & $mutation.Apply $eventsCopy
+    $mutantBytes = [System.Text.Encoding]::UTF8.GetBytes(($mutantEvents | ConvertTo-Json -Depth 100))
+    [System.IO.File]::WriteAllBytes($mutantTracePath, $mutantBytes)
+    $mutantManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $mutantManifest.trace_binding.trace_path = $mutantTracePath
+    $mutantManifest.trace_binding.trace_sha256 = Sha256Hex $mutantBytes
+    $mutantManifest | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $mutantManifestPath -Encoding utf8
+    $mutationLog = Join-Path $traceMutationEvidence "$($mutation.Name).log"
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & powershell -NoProfile -NonInteractive -File $checker `
+            -TracePath $mutantTracePath -ManifestPath $mutantManifestPath *> $mutationLog
+        $mutationExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($mutationExit -eq 0) {
+        throw "trace mutation '$($mutation.Name)' was accepted."
+    }
+}
+$traceMutationCount = $traceMutations.Count
+
 $mutations = @(
     @{ Name = 'task'; Apply = { param($m) $m.source.task = "$($m.source.task)-mutated" } },
     @{ Name = 'parent-step'; Apply = { param($m) $m.source.parent_step = [int64]$m.source.parent_step + 1 } },
@@ -87,5 +133,6 @@ foreach ($mutation in $mutations) {
     }
 }
 Write-Output "real source semantic mutations: $($mutations.Count) rejected."
+Write-Output "real trace corruption and missing-observation mutations: $traceMutationCount rejected."
 Write-Output 'causal publication negative gate: not run; no independent cross-stream causal witness is available.'
 Write-Output "real Harness trace qualification passed: $evidence"
