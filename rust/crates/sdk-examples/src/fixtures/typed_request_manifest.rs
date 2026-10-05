@@ -1594,6 +1594,17 @@ fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String>
             if record.expected_outcome.kind == "error" && record.response_frames.is_empty() {
                 continue;
             }
+            if record.expected_outcome.kind == "stream"
+                && record.response_frames.is_empty()
+                && matches!(
+                    record.expected_outcome.terminal.as_deref(),
+                    Some("eof" | "timeout" | "deadline" | "cancelled")
+                )
+            {
+                // A server stream can terminate without a protobuf frame. The
+                // structured outcome carries the exact terminal observation.
+                continue;
+            }
             return Err(format!("{} has a response type but no response bytes", record.rpc));
         };
         let response_sha256 = record.response_sha256.as_deref().ok_or_else(|| {
@@ -1953,7 +1964,7 @@ type HaskellMethod = (String, String, String, String, String, bool, bool);
 fn descriptor_method(rpc: &str) -> Result<HaskellMethod, String> {
     let (service_name, method_name) = rpc.rsplit_once('/').ok_or_else(|| format!("RPC has no method separator: {rpc}"))?;
     for (_, descriptor_bytes) in descriptor_sets() {
-        let pool = DescriptorPool::decode(descriptor_bytes).map_err(|error| format!("decode descriptor set: {error}"))?;
+        let pool = DescriptorPool::decode(descriptor_bytes.as_slice()).map_err(|error| format!("decode descriptor set: {error}"))?;
         for service in pool.services() {
             if service.full_name() == service_name {
                 if let Some(method) = service.methods().find(|candidate| candidate.name() == method_name) {
@@ -2278,3 +2289,4 @@ mod tests {
         }));
     }
 }
+
