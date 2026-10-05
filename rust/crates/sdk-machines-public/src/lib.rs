@@ -28,6 +28,42 @@ use wasm_bindgen::prelude::*;
 
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
 
+/// Deserialize a Rust `u64` from either a JSON number or the decimal string
+/// emitted by the native TypeScript adapter for a JavaScript `bigint`.
+fn deserialize_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct U64Visitor;
+    impl<'de> Visitor<'de> for U64Visitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a non-negative u64 JSON number or decimal string")
+        }
+
+        fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+            Ok(value)
+        }
+
+        fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+            u64::try_from(value).map_err(|_| E::custom("number must be non-negative"))
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            value
+                .parse::<u64>()
+                .map_err(|_| E::custom("string must contain a valid u64"))
+        }
+
+        fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
+            self.visit_str(&value)
+        }
+    }
+
+    deserializer.deserialize_any(U64Visitor)
+}
+
 /// A public JavaScript number accepted only when it is an exact safe integer.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct SafeInput(u64);
@@ -462,6 +498,7 @@ fn expiration_out(value: &ExpirationPolicy) -> TimedOut {
 #[serde(rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
 pub struct BudgetsIn {
+    #[serde(deserialize_with = "deserialize_u64")]
     spend_micros: u64,
     concurrency: u32,
 }

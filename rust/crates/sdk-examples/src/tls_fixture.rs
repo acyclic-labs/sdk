@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use acyclic_machines::{Service as MachinesService, SimulatedMachines, wire};
+use acyclic_sdk_contract_wire::{BindingFamily, transport_control};
 use futures::{Stream, StreamExt, stream};
 use prost::Message;
 use rcgen::{
@@ -21,6 +22,27 @@ use tokio::sync::oneshot;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
+
+#[allow(missing_docs, clippy::pedantic, clippy::large_enum_variant)]
+mod generated_control {
+    pub mod acyclic {
+        pub mod protocol {
+            pub mod v1 {
+                include!(concat!(env!("OUT_DIR"), "/control/acyclic.protocol.v1.rs"));
+            }
+        }
+        pub mod transport {
+            pub mod v1 {
+                include!(concat!(env!("OUT_DIR"), "/control/acyclic.transport.v1.rs"));
+            }
+        }
+    }
+}
+
+use generated_control::acyclic::{
+    protocol::v1 as control_protocol,
+    transport::v1::protocol_service_server::{ProtocolService, ProtocolServiceServer},
+};
 
 /// Ephemeral RSA certificate material for an authenticated local fixture.
 #[derive(Clone, Debug)]
@@ -485,7 +507,15 @@ impl wire::machines_service_server::MachinesService for AllRoutesMachinesFixture
     ) -> Result<Response<wire::UsageReceipt>, Status> {
         let value = request.into_inner();
         let response = self.service.usage(Request::new(value.clone())).await?;
-        Ok(traced_response(&self.transcript, MACHINES_RPC_METHODS[15], &value, response.into_inner()))
+        let mut receipt = response.into_inner();
+        // The in-memory provider intentionally emits an empty local-simulation
+        // receipt. This TLS fixture exercises the remote boundary, so carry a
+        // deterministic authenticated receipt payload through the wire route.
+        if receipt.receipt.is_empty() {
+            receipt.receipt = b"acyclic-machines-rsa-fixture-usage-v1".to_vec();
+            receipt.lineage_receipt_sha256 = Sha256::digest(&receipt.receipt).to_vec();
+        }
+        Ok(traced_response(&self.transcript, MACHINES_RPC_METHODS[15], &value, receipt))
     }
     async fn cancel(
         &self,
@@ -542,6 +572,66 @@ pub async fn serve_machines_rsa(
         .await
 }
 
+/// Rust-owned control-plane handshake for the installed Machines fixture.
+///
+/// mTLS authenticates the installed client, so this control route intentionally
+/// does not require a bearer credential. The protocol family, version, archived
+/// descriptor digest, and required capability are still checked before the
+/// generated Machines service is admitted.
+#[derive(Clone, Copy, Debug, Default)]
+struct MachinesProtocolFixture;
+
+#[tonic::async_trait]
+impl ProtocolService for MachinesProtocolFixture {
+    async fn handshake(
+        &self,
+        request: Request<control_protocol::HandshakeRequest>,
+    ) -> Result<Response<control_protocol::HandshakeResponse>, Status> {
+        let family = BindingFamily::Machines;
+        let expected_version = transport_control::control_protocol_version(family);
+        let expected_digest = transport_control::archived_descriptor_digest(family);
+        let metadata_family = request
+            .metadata()
+            .get(transport_control::FAMILY_METADATA_KEY)
+            .and_then(|value| value.to_str().ok());
+        if metadata_family != Some(family.name()) {
+            return Err(Status::invalid_argument("wrong SDK family"));
+        }
+        let protocol = request
+            .get_ref()
+            .protocol
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("protocol identity is required"))?;
+        if protocol.version != expected_version || protocol.descriptor_digest != expected_digest {
+            return Err(Status::failed_precondition("wrong Machines protocol identity"));
+        }
+        if request
+            .get_ref()
+            .required
+            .as_ref()
+            .is_some_and(|required| {
+                required.capabilities.iter().any(|capability| {
+                    capability.name != family.name() || capability.version != expected_version
+                })
+            })
+        {
+            return Err(Status::failed_precondition("required capability is unsupported"));
+        }
+        Ok(Response::new(control_protocol::HandshakeResponse {
+            protocol: Some(control_protocol::ProtocolIdentity {
+                version: expected_version.to_owned(),
+                descriptor_digest: expected_digest,
+            }),
+            supported: Some(control_protocol::CapabilitySet {
+                capabilities: vec![control_protocol::Capability {
+                    name: family.name().to_owned(),
+                    version: expected_version.to_owned(),
+                }],
+            }),
+        }))
+    }
+}
+
 /// Starts the fixture while appending each observed method to `transcript`.
 pub async fn serve_machines_rsa_with_transcript(
     listener: TcpListener,
@@ -558,6 +648,7 @@ pub async fn serve_machines_rsa_with_transcript(
                 ))
                 .client_ca_root(Certificate::from_pem(&material.ca_certificate)),
         )?
+        .add_service(ProtocolServiceServer::new(MachinesProtocolFixture))
         .add_service(wire::machines_service_server::MachinesServiceServer::new(
             AllRoutesMachinesFixture::with_transcript(transcript),
         ))

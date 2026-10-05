@@ -92,7 +92,9 @@ function decode<T>(value: string): T {
   }
 }
 
-function encode(value: unknown): string { return JSON.stringify(value); }
+function encode(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) => typeof nested === "bigint" ? nested.toString() : nested);
+}
 
 /** Machines provider backed by the Rust N-API domain and transport boundary. */
 export class NativeMachinesProvider implements MachinesProvider {
@@ -134,4 +136,3 @@ export class NativeMachinesProvider implements MachinesProvider {
     for (const observation of decode<readonly OperationObservation[]>(await this.#client.watchOperation(encode(operationId)))) yield observation;
   }
 }
-
