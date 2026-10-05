@@ -7785,6 +7785,55 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    #[test]
+    fn local_operator_issuer_is_persistent_create_once_and_fail_closed() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let first = local_operator_issuer(root.path())?;
+        let second = local_operator_issuer(root.path())?;
+        assert_eq!(first.verifier(), second.verifier());
+        let secret = root.path().join(".local-operator-issuer");
+        assert_eq!(
+            std::fs::metadata(&secret)
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .len(),
+            32
+        );
+
+        std::fs::write(&secret, [1_u8; 31])
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            local_operator_issuer(root.path()),
+            Err(Error::Conflict(message)) if message.contains("invalid length")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn local_operator_issuer_reopen_race_keeps_one_identity() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let root = Arc::new(root);
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let root = root.clone();
+            workers.push(std::thread::spawn(move || local_operator_issuer(root.path())));
+        }
+        let issuers = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("issuer opener must not panic"))
+            .collect::<Result<Vec<_>>>()?;
+        assert!(!issuers.is_empty());
+        for issuer in &issuers[1..] {
+            assert_eq!(issuers[0].verifier(), issuer.verifier());
+        }
+        assert_eq!(
+            std::fs::metadata(root.path().join(".local-operator-issuer"))
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .len(),
+            32
+        );
+        Ok(())
+    }
+
     /// Provider used by the activation recovery test. The underlying
     /// provider commits the append normally, while this adapter loses the
     /// acknowledgement exactly once. This models a transport/disconnect
