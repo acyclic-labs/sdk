@@ -147,14 +147,6 @@ impl DurableTaskHost for SwarmCommunicationHost {
     fn outcome<'a>(&'a self, task: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
         Box::pin(async move {
             let swarm = self.swarm()?;
-            // The completion event is the durable source of truth. A parent
-            // wait can observe a child's terminal session immediately after
-            // another worker appended ForkCompleted, before this handle's
-            // in-memory registry projection has consumed that suffix. Refresh
-            // before projecting the output so a committed completion cannot
-            // be reported as a missing outcome (and then mapped to the
-            // parent's indeterminate model turn).
-            swarm.refresh_registry_state().await?;
             match swarm.session(task).await?.phase {
                 LocalSessionPhase::Ready | LocalSessionPhase::Activating => Ok(None),
                 LocalSessionPhase::Cancelled => Ok(Some(Outcome::Cancelled)),
