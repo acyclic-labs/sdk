@@ -125,7 +125,7 @@ fn native_filesystem_key(label: impl AsRef<str>) -> acyclic_fs::IdempotencyKey {
 /// Derives the local operator issuer from the durable session descriptor's
 /// host-only signing key. The derived domain is separate from conversation
 /// signatures and never enters model-visible bindings or filesystem grants.
-fn local_operator_issuer(secret: [u8; 32]) -> Result<AuthorityIssuer> {
+fn local_operator_issuer_from_descriptor_key(secret: [u8; 32]) -> Result<AuthorityIssuer> {
     if secret == [0; 32] {
         return Err(Error::Conflict(
             "local operator issuer secret cannot be zero".into(),
@@ -3790,7 +3790,7 @@ impl PersistentLocalSwarm {
                     stream_provider.clone(),
                 )
                 .await?;
-            bindings = bindings.with_operator_issuer(local_operator_issuer(
+            bindings = bindings.with_operator_issuer(local_operator_issuer_from_descriptor_key(
                 descriptor_harness.signing_key(),
             )?);
         }
@@ -7779,11 +7779,11 @@ mod tests {
 
     #[test]
     fn local_operator_issuer_reuses_descriptor_key_and_fail_closes_zero() -> Result<()> {
-        let first = local_operator_issuer([7; 32])?;
-        let second = local_operator_issuer([7; 32])?;
+        let first = local_operator_issuer_from_descriptor_key([7; 32])?;
+        let second = local_operator_issuer_from_descriptor_key([7; 32])?;
         assert_eq!(first.verifier(), second.verifier());
         assert!(matches!(
-            local_operator_issuer([0; 32]),
+            local_operator_issuer_from_descriptor_key([0; 32]),
             Err(Error::Conflict(message)) if message.contains("zero")
         ));
         Ok(())
