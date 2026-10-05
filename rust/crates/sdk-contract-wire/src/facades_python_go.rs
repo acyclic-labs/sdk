@@ -651,6 +651,50 @@ fn python_type_projection() -> String {
     output.push_str("        return values\n\n\n");
     output.push_str(&python_public_field_models());
     output.push_str(
+        r#"@dataclass(frozen=True)
+class ObjectsGetObjectResponse:
+    """Typed oneof projection for one object download frame."""
+
+    frame: Literal["header", "body", "error", "empty"]
+    object: ObjectsObjectInfoEtag | None = None
+    body: bytes | None = None
+    error: objects_pb2.ErrorDetail | None = None
+
+    @classmethod
+    def from_wire(cls, message: objects_pb2.GetObjectResponse) -> "ObjectsGetObjectResponse":
+        frame = message.WhichOneof("frame")
+        if frame == "header":
+            header = message.header
+            object_value = (
+                ObjectsObjectInfoEtag.from_wire(header.object)
+                if header.HasField("object")
+                else None
+            )
+            return cls(frame="header", object=object_value)
+        if frame == "body":
+            return cls(frame="body", body=bytes(message.body))
+        if frame == "error":
+            return cls(frame="error", error=message.error)
+        return cls(frame="empty")
+
+
+class ObjectsGetObjectStream:
+    """Async stream that decodes every wire frame into a typed value."""
+
+    def __init__(self, call: object):
+        self._call = call
+
+    def __aiter__(self) -> AsyncIterator[ObjectsGetObjectResponse]:
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[ObjectsGetObjectResponse]:
+        async for message in self._call:
+            yield ObjectsGetObjectResponse.from_wire(message)
+
+
+"#,
+    );
+    output.push_str(
         r#"def _require_text(value: object, name: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{name} must be a string")
@@ -876,6 +920,8 @@ from acyclic_sdk.remote import (
     KnownOneof,
     ObjectsMutationIdentityIdempotencyKey,
     ObjectsObjectInfoEtag,
+    ObjectsGetObjectRequestKey,
+    ObjectsGetObjectResponse,
     SemanticFieldValues,
     UnknownOneof,
     WorkersSelectDeploymentRequestAlias,
@@ -939,6 +985,40 @@ def test_rust_owned_response_and_nested_bindings_are_typed():
     assert nested.idempotency_key == "retry"
     spec = InferenceEvaluationSpecSpecDigest(spec_digest=b"d" * 32).to_wire()
     assert spec.spec_digest == b"d" * 32
+
+
+def test_rust_owned_production_object_stream_decodes_typed_frames():
+    class Frames:
+        def __init__(self, values):
+            self.values = values
+
+        def __aiter__(self):
+            async def iterate():
+                for value in self.values:
+                    yield value
+            return iterate()
+
+    class ObjectsStub:
+        def GetObject(self, request, timeout=None):
+            assert request.object_key == "artifact"
+            return Frames([
+                objects_pb2.GetObjectResponse(
+                    header=objects_pb2.GetObjectHeader(
+                        object=objects_pb2.ObjectInfo(etag="etag")
+                    )
+                ),
+                objects_pb2.GetObjectResponse(body=b"payload"),
+            ])
+
+    async def run():
+        client = object.__new__(Client)
+        client.objects = ObjectsStub()
+        stream = await client.get_object_key(ObjectsGetObjectRequestKey(key="artifact"))
+        frames = [frame async for frame in stream]
+        assert isinstance(frames[0], ObjectsGetObjectResponse)
+        assert frames[0].frame == "header" and frames[0].object.etag == "etag"
+        assert frames[1].frame == "body" and frames[1].body == b"payload"
+    asyncio.run(run())
 
 
 def test_rust_owned_production_client_routes_reject_invalid_requests():
@@ -1025,6 +1105,66 @@ fn go_type_projection() -> String {
     }
     output.push_str("\treturn result\n}\n\n");
     output.push_str(&go_public_field_models());
+    output.push_str(
+        r#"type ObjectsGetObjectFrame string
+
+const (
+	ObjectsGetObjectFrameHeader ObjectsGetObjectFrame = "header"
+	ObjectsGetObjectFrameBody   ObjectsGetObjectFrame = "body"
+	ObjectsGetObjectFrameError  ObjectsGetObjectFrame = "error"
+	ObjectsGetObjectFrameEmpty  ObjectsGetObjectFrame = "empty"
+)
+
+// ObjectsGetObjectResponse preserves the Rust-owned oneof discriminant and
+// decodes the header's object metadata through the public semantic wrapper.
+type ObjectsGetObjectResponse struct {
+	Frame  ObjectsGetObjectFrame
+	Object *ObjectsObjectInfoEtag
+	Body   []byte
+	Error  *objectsv2.ErrorDetail
+}
+
+func ObjectsGetObjectResponseFromWire(message *objectsv2.GetObjectResponse) (*ObjectsGetObjectResponse, error) {
+	if message == nil {
+		return nil, fmt.Errorf("object response must be present")
+	}
+	result := &ObjectsGetObjectResponse{Frame: ObjectsGetObjectFrameEmpty}
+	switch frame := message.GetFrame().(type) {
+	case *objectsv2.GetObjectResponse_Header:
+		result.Frame = ObjectsGetObjectFrameHeader
+		if frame.Header != nil && frame.Header.GetObject() != nil {
+			objectValue, err := ObjectsObjectInfoEtagFromWire(frame.Header.GetObject())
+			if err != nil {
+				return nil, err
+			}
+			result.Object = &objectValue
+		}
+	case *objectsv2.GetObjectResponse_Body:
+		result.Frame = ObjectsGetObjectFrameBody
+		result.Body = append([]byte(nil), frame.Body...)
+	case *objectsv2.GetObjectResponse_Error:
+		result.Frame = ObjectsGetObjectFrameError
+		result.Error = frame.Error
+	}
+	return result, nil
+}
+
+// ObjectsGetObjectStream converts the generated gRPC stream at the facade
+// boundary, so callers never handle raw transport response messages.
+type ObjectsGetObjectStream struct {
+	inner grpc.ServerStreamingClient[objectsv2.GetObjectResponse]
+}
+
+func (stream *ObjectsGetObjectStream) Recv() (*ObjectsGetObjectResponse, error) {
+	message, err := stream.inner.Recv()
+	if err != nil {
+		return nil, err
+	}
+	return ObjectsGetObjectResponseFromWire(message)
+}
+
+"#,
+    );
     output.push_str(
         r#"func requireGoText(value, name string) error {
     if value == "" { return fmt.Errorf("%s must not be empty", name) }
@@ -1278,6 +1418,19 @@ fn go_public_client_methods() -> String {
         let method = pascal_case(&format!("{}_{}", rpc, binding.field));
         let model = go_public_binding_name(binding);
         let client = go_client_expression(service);
+        if binding.module == "objects"
+            && binding.message == "GetObjectRequest"
+            && rpc == "GetObject"
+        {
+            output.push_str(&format!(
+                "func (client *Client) {method}(ctx context.Context, request {model}, opts ...grpc.CallOption) (*ObjectsGetObjectStream, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\tstream, err := {client}.{rpc}(ctx, wireRequest, opts...)\n\tif err != nil {{ return nil, err }}\n\treturn &ObjectsGetObjectStream{{inner: stream}}, nil\n}}\n\n",
+                method = method,
+                model = model,
+                client = client,
+                rpc = rpc,
+            ));
+            continue;
+        }
         if binding.module == "actors" {
             output.push_str(&format!(
                 "func (client *Client) {method}(ctx context.Context, request {model}, opts ...grpc.CallOption) (ActorInvokeResponse, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return ActorInvokeResponse{{}}, err }}\n\tresponse, err := client.Actors.InvokeActor(ctx, wireRequest, opts...)\n\tif err != nil {{ return ActorInvokeResponse{{}}, err }}\n\treturn actorInvokeResponseFromWire(response), nil\n}}\n\n",
@@ -1391,6 +1544,23 @@ func TestRustOwnedResponseAndNestedBindingsUseTypedValues(t *testing.T) {
 	if err != nil || nested.GetIdempotencyKey() != "retry" { t.Fatalf("typed object nested field failed: %v", err) }
 	spec, err := (InferenceEvaluationSpecSpecDigest{SpecDigest: Sha256Digest([32]byte{1})}).ToWire()
 	if err != nil || len(spec.GetSpecDigest()) != 32 { t.Fatalf("typed inference nested field failed: %v", err) }
+}
+
+func TestRustOwnedProductionObjectFramesUseTypedResponses(t *testing.T) {
+	header, err := ObjectsGetObjectResponseFromWire(&objectsv2.GetObjectResponse{
+		Frame: &objectsv2.GetObjectResponse_Header{Header: &objectsv2.GetObjectHeader{
+			Object: &objectsv2.ObjectInfo{Etag: "etag"},
+		}},
+	})
+	if err != nil || header.Frame != ObjectsGetObjectFrameHeader || header.Object == nil || string(header.Object.Etag) != "etag" {
+		t.Fatalf("typed object header response failed: %v", err)
+	}
+	body, err := ObjectsGetObjectResponseFromWire(&objectsv2.GetObjectResponse{
+		Frame: &objectsv2.GetObjectResponse_Body{Body: []byte("payload")},
+	})
+	if err != nil || body.Frame != ObjectsGetObjectFrameBody || string(body.Body) != "payload" {
+		t.Fatalf("typed object body response failed: %v", err)
+	}
 }
 "#
     .to_owned()
