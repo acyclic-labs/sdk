@@ -58,6 +58,8 @@ use tokio::sync::Mutex;
 mod read_projection;
 #[path = "swarm_communication.rs"]
 mod communication_host;
+#[path = "swarm_workers.rs"]
+mod child_workers;
 pub use read_projection::{LocalSwarmAgent, LocalSwarmPage};
 use read_projection::{
     page_by_cursor, page_from_sorted, recursive_agent_tree as project_recursive_agent_tree,
@@ -1503,6 +1505,31 @@ pub struct LocalModelForkPublisher {
 }
 
 impl LocalModelForkPublisher {
+    async fn run_scheduled_child(
+        owner: Weak<PersistentLocalSwarm>,
+        turn: Box<LocalChildTurn>,
+    ) -> Result<LocalForkOutcome> {
+        let LocalChildTurn {
+            request, stream, harness, bundle, max_steps, cancelled, _activation_guard,
+        } = *turn;
+        let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        {
+            let swarm = owner.upgrade().ok_or_else(|| {
+                Error::Conflict("local child owner was dropped before dispatch".into())
+            })?;
+            swarm.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
+        }
+        // The registry owns this future; it must not own the composition
+        // strongly across model/tool awaits.
+        let output = PersistentLocalSwarm::run_owned_child_turn(
+            harness.clone(), bundle, request.clone(), max_steps, cancelled,
+        ).await;
+        let swarm = owner.upgrade().ok_or_else(|| {
+            Error::Conflict("local child owner was dropped before outcome publication".into())
+        })?;
+        swarm.finish_child_turn(&stream, child, request.child_operation, &harness, output).await
+    }
+
     fn new(plans: Arc<LocalModelForkPlans>) -> Self {
         Self {
             plans,
@@ -1564,6 +1591,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             let swarm = self.target()?.ok_or_else(|| {
                 Error::Conflict("local recursive fork publisher is not bound to a swarm".into())
             })?;
+            swarm.workers.ensure_open().await?;
             let first_parent = plans
                 .first()
                 .map(|plan| plan.parent)
@@ -1641,16 +1669,17 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             // Every child is now durably admitted and bound to the parent
             // aggregate. Only after that barrier may a child model dispatch.
             for (plan, seed) in prepared {
-                swarm
-                    .activate_published_child(
-                        plan.request,
-                        plan.host,
-                        plan.stream,
-                        plan.issuer,
-                        &parent,
-                        &seed,
-                    )
-                    .await?;
+                let child = TaskId::from_bytes(plan.request.child_operation.into_bytes());
+                if swarm.workers.contains(child).await {
+                    continue;
+                }
+                let activation = Box::pin(swarm.prepare_published_child(
+                    plan.request, plan.host, plan.stream, plan.issuer, &parent, &seed,
+                )).await?;
+                if let LocalChildActivation::Ready(turn) = activation {
+                    let owner = Arc::downgrade(&swarm);
+                    swarm.workers.enqueue(child, Self::run_scheduled_child(owner, turn)).await?;
+                }
             }
             self.plans
                 .mark_completed(
@@ -2273,6 +2302,7 @@ impl From<LocalSwarmSession> for StoredSession {
 /// Durable local recursive application composition.
 pub struct PersistentLocalSwarm {
     root: PathBuf,
+    workers: child_workers::LocalChildWorkers,
     live: Arc<LocalSwarmLiveState>,
     config: LocalSwarmConfig,
     provider: Arc<dyn ModelProvider>,
@@ -2308,6 +2338,12 @@ pub struct PersistentLocalSwarm {
 }
 
 impl PersistentLocalSwarm {
+    /// Stops accepting child workers and joins their cancelled futures.
+    /// Admitted external effects retain their durable recovery fences.
+    pub async fn shutdown_workers(&self) {
+        self.workers.shutdown().await;
+    }
+
     fn observe(&self, observation: LocalSwarmObservation) {
         if let Some(observer) = &self.bindings.observer {
             observer.observe(observation);
@@ -2514,6 +2550,7 @@ impl PersistentLocalSwarm {
             }
         }
         let swarm = Self {
+            workers: child_workers::LocalChildWorkers::default(),
             live,
             root,
             config,
@@ -4203,16 +4240,27 @@ impl PersistentLocalSwarm {
         let child_result = Self::run_owned_child_turn(
             harness.clone(), bundle, request.clone(), max_steps, cancelled,
         ).await;
+        self.finish_child_turn(&stream, child, request.child_operation, &harness, child_result).await
+    }
+
+    async fn finish_child_turn(
+        &self,
+        stream: &acyclic_stream::Stream<LocalStream>,
+        child: TaskId,
+        operation: OperationId,
+        harness: &PersistentLocalHarness,
+        child_result: Result<TurnOutput>,
+    ) -> Result<LocalForkOutcome> {
         let output = match child_result {
             Ok(output) => output,
             Err(error) => {
                 self.mark_activation_failed_if_safe(
-                    child, request.child_operation, Some(&harness), &error,
+                    child, operation, Some(harness), &error,
                 ).await?;
                 return Err(error);
             }
         };
-        self.persist_child_completion(&stream, child, request.child_operation, &harness, output)
+        self.persist_child_completion(stream, child, operation, harness, output)
             .await
     }
 
