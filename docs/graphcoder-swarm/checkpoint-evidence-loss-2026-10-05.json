@@ -11,7 +11,7 @@
   "source_commits_retained": true,
   "cause": "Unknown; no deletion was performed by this root task",
   "effect": "Historical receipts referencing the missing directory no longer establish available retained artifacts. Rebuild and rerun required final gates; do not mark them qualified from missing archives.",
-  "replacement_root": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\qualification-evidence",
+  "replacement_root": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification",
   "formal_observations": {
     "total_cases": 23,
     "models": 7,
