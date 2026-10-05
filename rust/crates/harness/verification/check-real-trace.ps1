@@ -42,8 +42,6 @@ foreach ($name in @(
     'declaration_sha256',
     'parent_seed_authority',
     'parent_seed_revision',
-    'completion_output',
-    'completion_output_ref',
     'completion_output_digest',
     'admission_record_bytes_hex',
     'completion_record_bytes_hex',
@@ -279,6 +277,10 @@ if ($null -eq $completionMessage -or
     [string]$completionMessage.child -ne [string]$manifest.source.child_task -or
     [string]$completionMessage.operation -ne [string]$manifest.identity_binding.child_operation_id) {
     throw 'completion record operation does not match the child operation binding.'
+}
+if ($null -eq $manifest.source.completion_output -and
+    $null -eq $manifest.source.completion_output_ref) {
+    throw 'completion source has neither inline output nor durable output reference.'
 }
 RequireJsonEqual $completionMessage.output $manifest.source.completion_output 'completion output'
 RequireJsonEqual $completionMessage.output_ref $manifest.source.completion_output_ref 'completion output reference'
