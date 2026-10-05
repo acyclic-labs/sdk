@@ -57,6 +57,59 @@ pub struct ResolvedRequestField {
     pub validation_constraints: Vec<ResolvedValidationConstraint>,
 }
 
+/// A descriptor-resolved enum value.  The numeric value is part of the wire
+/// contract; generators must expose the named cases while retaining an open
+/// numeric escape hatch for values introduced by a newer Rust service.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedEnumValue {
+    pub name: String,
+    pub number: i32,
+}
+
+/// A reachable enum field with its complete Rust descriptor value set.
+///
+/// This is deliberately derived from `ResolvedRequestField` rather than a
+/// second semantic table, so request/response locations and their wire
+/// identities remain authoritative in the descriptor closure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedEnumField {
+    pub field: ResolvedRequestField,
+    pub enum_type: String,
+    pub values: Vec<ResolvedEnumValue>,
+    pub preserves_unknown_numeric: bool,
+}
+
+/// A reachable oneof member with its descriptor payload identity.  Message
+/// members carry their fully qualified Rust descriptor type; scalar and enum
+/// members retain the protobuf wire kind.  Unknown tags remain preserved at
+/// the wire boundary for every member.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedOneofMember {
+    pub field: ResolvedRequestField,
+    pub payload_kind: FieldType,
+    pub payload_type: Option<String>,
+    pub preserves_unknown_members: bool,
+}
+
+/// Presence semantics for a reachable field.  `Message` means protobuf
+/// message presence, `Oneof` means an explicit named union member, and
+/// `ExplicitOptional` is proto3 optional presence (including its synthetic
+/// descriptor oneof).  These categories let target emitters preserve absent
+/// versus default values instead of collapsing them into scalars.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResolvedPresenceKind {
+    Message,
+    Oneof,
+    ExplicitOptional,
+}
+
+/// A reachable field whose descriptor carries presence semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedPresenceField {
+    pub field: ResolvedRequestField,
+    pub kind: ResolvedPresenceKind,
+}
+
 /// Rust-owned operation identity retained alongside the field inventory.
 ///
 /// Empty request messages are valid operations, so consumers must enumerate
@@ -168,6 +221,195 @@ pub fn resolved_request_fields() -> Result<Vec<ResolvedRequestField>, String> {
 /// share one renderer while selecting the direction they are projecting.
 pub fn resolved_response_fields() -> Result<Vec<ResolvedRequestField>, String> {
     resolve_rpc_fields(false)
+}
+
+/// Resolve every reachable enum field, including the complete descriptor
+/// value set.  The returned locations are per-RPC occurrences, so a target
+/// generator can project the same enum with the correct request/response
+/// surface while preserving numeric unknown values.
+pub fn resolved_enum_fields() -> Result<Vec<ResolvedEnumField>, String> {
+    let files = rust_descriptor_files()?;
+    let mut enums = std::collections::BTreeMap::new();
+    for file in &files {
+        let package = file.package.as_deref().unwrap_or_default();
+        for descriptor in &file.enum_type {
+            if let Some(name) = descriptor.name.as_deref() {
+                let full_name = if package.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{package}.{name}")
+                };
+                enums.insert(full_name, descriptor.clone());
+            }
+        }
+        for message in &file.message_type {
+            collect_enums(package, None, message, &mut enums);
+        }
+    }
+
+    let mut output = Vec::new();
+    for field in resolved_request_fields()?
+        .into_iter()
+        .chain(resolved_response_fields()?)
+    {
+        if field.wire_type != Some(FieldType::Enum as i32) {
+            continue;
+        }
+        let enum_type = field
+            .type_name
+            .as_deref()
+            .map(|name| name.trim_start_matches('.').to_owned())
+            .ok_or_else(|| {
+                format!(
+                    "{} {} enum field {}.{} has no enum type identity",
+                    field.family, field.rpc, field.message_path, field.field
+                )
+            })?;
+        let descriptor = enums.get(&enum_type).ok_or_else(|| {
+            format!(
+                "{} {} enum field {}.{} references missing enum {enum_type}",
+                field.family, field.rpc, field.message_path, field.field
+            )
+        })?;
+        let mut values = Vec::new();
+        for value in &descriptor.value {
+            values.push(ResolvedEnumValue {
+                name: value.name.clone().ok_or_else(|| {
+                    format!("enum {enum_type} contains an unnamed value")
+                })?,
+                number: value.number.ok_or_else(|| {
+                    format!("enum {enum_type} contains a value without a number")
+                })?,
+            });
+        }
+        output.push(ResolvedEnumField {
+            field,
+            enum_type,
+            values,
+            preserves_unknown_numeric: true,
+        });
+    }
+    output.sort_by(|left, right| {
+        (
+            left.field.family.as_str(),
+            left.field.rpc.as_str(),
+            left.field.message_path.as_str(),
+            left.field.number,
+        )
+            .cmp(&(
+                right.field.family.as_str(),
+                right.field.rpc.as_str(),
+                right.field.message_path.as_str(),
+                right.field.number,
+            ))
+    });
+    Ok(output)
+}
+
+/// Resolve every reachable oneof member, including message-specific payload
+/// identities.  This inventory is intentionally separate from the two
+/// generic `WIRE_UNION_VARIANTS`: those variants describe the policy's open
+/// compatibility union, while this function describes every actual Rust
+/// protobuf oneof reached by an RPC.
+pub fn resolved_oneof_members() -> Result<Vec<ResolvedOneofMember>, String> {
+    let mut output = Vec::new();
+    for field in resolved_request_fields()?
+        .into_iter()
+        .chain(resolved_response_fields()?)
+    {
+        if field.oneof_name.is_none() {
+            continue;
+        }
+        let wire_type = field
+            .wire_type
+            .and_then(|value| FieldType::try_from(value).ok())
+            .ok_or_else(|| {
+                format!(
+                    "{} {} oneof member {}.{} has no valid protobuf type",
+                    field.family, field.rpc, field.message_path, field.field
+                )
+            })?;
+        let payload_type = match wire_type {
+            FieldType::Message | FieldType::Group | FieldType::Enum => field
+                .type_name
+                .as_deref()
+                .map(|name| name.trim_start_matches('.').to_owned()),
+            _ => None,
+        };
+        if matches!(wire_type, FieldType::Message | FieldType::Group | FieldType::Enum)
+            && payload_type.is_none()
+        {
+            return Err(format!(
+                "{} {} oneof member {}.{} has no payload type identity",
+                field.family, field.rpc, field.message_path, field.field
+            ));
+        }
+        output.push(ResolvedOneofMember {
+            field,
+            payload_kind: wire_type,
+            payload_type,
+            preserves_unknown_members: true,
+        });
+    }
+    output.sort_by(|left, right| {
+        (
+            left.field.family.as_str(),
+            left.field.rpc.as_str(),
+            left.field.message_path.as_str(),
+            left.field.number,
+        )
+            .cmp(&(
+                right.field.family.as_str(),
+                right.field.rpc.as_str(),
+                right.field.message_path.as_str(),
+                right.field.number,
+            ))
+    });
+    Ok(output)
+}
+
+/// Resolve every reachable field whose protobuf representation carries
+/// presence.  Message fields are present when set, named oneof members are
+/// discriminated, and proto3 optional scalars retain an explicit absent
+/// state.  Repeated/map fields are intentionally omitted because protobuf
+/// defines their empty value as the absence-equivalent wire state.
+pub fn resolved_presence_fields() -> Result<Vec<ResolvedPresenceField>, String> {
+    let mut output = Vec::new();
+    for field in resolved_request_fields()?
+        .into_iter()
+        .chain(resolved_response_fields()?)
+    {
+        let wire_type = field.wire_type.and_then(|value| FieldType::try_from(value).ok());
+        let kind = if field.proto3_optional {
+            Some(ResolvedPresenceKind::ExplicitOptional)
+        } else if field.oneof_name.is_some() {
+            Some(ResolvedPresenceKind::Oneof)
+        } else if matches!(wire_type, Some(FieldType::Message | FieldType::Group))
+            && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32)
+        {
+            Some(ResolvedPresenceKind::Message)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            output.push(ResolvedPresenceField { field, kind });
+        }
+    }
+    output.sort_by(|left, right| {
+        (
+            left.field.family.as_str(),
+            left.field.rpc.as_str(),
+            left.field.message_path.as_str(),
+            left.field.number,
+        )
+            .cmp(&(
+                right.field.family.as_str(),
+                right.field.rpc.as_str(),
+                right.field.message_path.as_str(),
+                right.field.number,
+            ))
+    });
+    Ok(output)
 }
 
 /// Resolve every RPC identity, including methods with empty request messages.
@@ -364,6 +606,30 @@ fn collect_messages(
     output.insert(full_name.clone(), message.clone());
     for nested in &message.nested_type {
         collect_messages(package, Some(&full_name), nested, output);
+    }
+}
+
+fn collect_enums(
+    package: &str,
+    parent: Option<&str>,
+    message: &DescriptorProto,
+    output: &mut std::collections::BTreeMap<String, prost_types::EnumDescriptorProto>,
+) {
+    let Some(name) = message.name.as_deref() else {
+        return;
+    };
+    let full_name = match parent {
+        Some(parent) => format!("{parent}.{name}"),
+        None if package.is_empty() => name.to_owned(),
+        None => format!("{package}.{name}"),
+    };
+    for descriptor in &message.enum_type {
+        if let Some(enum_name) = descriptor.name.as_deref() {
+            output.insert(format!("{full_name}.{enum_name}"), descriptor.clone());
+        }
+    }
+    for nested in &message.nested_type {
+        collect_enums(package, Some(&full_name), nested, output);
     }
 }
 
@@ -2929,12 +3195,20 @@ fn jvm_erased_semantic_identity(line: &str) -> bool {
 }
 
 fn jvm_erased_known_oneof(line: &str) -> bool {
-    (line.contains("record Known(")
-        || line.contains("data class Known")
-        || line.contains("case class Known"))
-        // A generated `WireBytes` wrapper still erases the known arm's
-        // payload identity.  It is a valid representation for an unknown
-        // arm, but every known arm must name its Rust-owned DTO/nominal type.
+    // `Known` is the generic Rust-owned message-arm projection.  Do not
+    // match `KnownBody`/`KnownRaw`: those are descriptor-bound variants of
+    // the Objects response union, where BODY is actually bytes and Raw is a
+    // compatibility-preserving unknown arm.  The Rust descriptor and the
+    // union table, rather than a `Known*` prefix, determine the payload kind.
+    let generic_message_arm = WIRE_UNION_VARIANTS.iter().any(|variant| {
+        variant.union == "wire_choice"
+            && variant.variant == "KnownOneof"
+            && variant.payload_wire_kind == WireValueKind::Message
+    });
+    generic_message_arm
+        && (line.contains("record Known(")
+            || line.contains("data class Known(")
+            || line.contains("case class Known("))
         && (line.contains("ByteString") || line.contains("WireBytes"))
 }
 
@@ -3323,6 +3597,11 @@ mod tests {
             "public sealed record KnownOneof(string Tag, ByteString Payload);\n",
         )
         .expect("csharp fixture");
+        fs::write(
+            root.join("RustSemanticTypes.kt"),
+            "data class KnownBody(val payload: WireBytes) : WireChoice\ndata class KnownRaw(val tag: String, val payload: WireBytes) : WireChoice\ndata class Known(val payload: WireBytes) : WireChoice\n",
+        )
+        .expect("JVM union fixture");
 
         let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
         assert!(findings.iter().any(|finding| {
@@ -3344,6 +3623,15 @@ mod tests {
             finding.language == "csharp"
                 && finding.reason == "C# known oneof payload is erased to an opaque wire payload"
         }));
+        assert!(findings.iter().any(|finding| {
+            finding.path.ends_with("RustSemanticTypes.kt")
+                && finding.line == 3
+                && finding.reason == "JVM known oneof payload is erased to ByteString"
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding.path.ends_with("RustSemanticTypes.kt")
+                && (finding.line == 1 || finding.line == 2)
+        }), "descriptor-bound bytes and compatibility arms must remain accepted");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3762,6 +4050,62 @@ mod tests {
                 || field.wire_type == Some(FieldType::Group as i32)
             {
                 assert!(field.type_name.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn descriptor_shape_inventory_carries_enum_union_and_presence_metadata() {
+        let enums = resolved_enum_fields().expect("all reachable enum fields resolve");
+        assert!(!enums.is_empty(), "RPC descriptor closure must contain enums");
+        for entry in &enums {
+            assert_eq!(entry.field.wire_type, Some(FieldType::Enum as i32));
+            assert!(!entry.enum_type.is_empty());
+            assert!(!entry.values.is_empty());
+            assert!(entry.preserves_unknown_numeric);
+            for value in &entry.values {
+                assert!(!value.name.is_empty());
+            }
+        }
+
+        let oneofs = resolved_oneof_members().expect("all reachable oneof members resolve");
+        assert!(!oneofs.is_empty(), "RPC descriptor closure must contain oneofs");
+        assert!(
+            oneofs.iter().any(|entry| {
+                matches!(
+                    entry.payload_kind,
+                    FieldType::Message | FieldType::Group
+                ) && entry.payload_type.is_some()
+            }),
+            "message-valued oneof arms must retain their Rust descriptor identity"
+        );
+        for entry in &oneofs {
+            assert!(entry.field.oneof_name.is_some());
+            assert!(entry.preserves_unknown_members);
+            if matches!(entry.payload_kind, FieldType::Message | FieldType::Group | FieldType::Enum)
+            {
+                assert!(entry.payload_type.is_some());
+            }
+        }
+
+        let presence = resolved_presence_fields().expect("all reachable presence fields resolve");
+        assert!(!presence.is_empty(), "RPC descriptor closure must contain presence");
+        assert!(
+            presence
+                .iter()
+                .any(|entry| entry.kind == ResolvedPresenceKind::ExplicitOptional),
+            "proto3 optional fields must retain explicit presence"
+        );
+        for entry in &presence {
+            match entry.kind {
+                ResolvedPresenceKind::ExplicitOptional => {
+                    assert!(entry.field.proto3_optional)
+                }
+                ResolvedPresenceKind::Oneof => assert!(entry.field.oneof_name.is_some()),
+                ResolvedPresenceKind::Message => assert_eq!(
+                    entry.field.wire_type,
+                    Some(FieldType::Message as i32)
+                ),
             }
         }
     }
