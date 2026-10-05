@@ -3514,6 +3514,57 @@ mod tests {
         }
     }
 
+    struct ForeignReplayJournal {
+        records: Vec<ExecutionRecord>,
+    }
+
+    impl ExecutionJournal for ForeignReplayJournal {
+        fn replay<'a>(
+            &'a self,
+            _: OperationId,
+        ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
+            async move { Ok(self.records.clone()) }.boxed()
+        }
+
+        fn append<'a>(
+            &'a self,
+            _: OperationId,
+            _: String,
+            _: ExecutionEvent,
+        ) -> BoxFuture<'a, Result<()>> {
+            async { Err(Error::Unsupported("foreign replay fixture".into())) }.boxed()
+        }
+
+        fn stage<'a>(
+            &'a self,
+            _: OperationId,
+            _: String,
+            _: Vec<u8>,
+            _: &'static str,
+        ) -> BoxFuture<'a, Result<FileRef>> {
+            async { Err(Error::Unsupported("foreign replay fixture".into())) }.boxed()
+        }
+
+        fn load<'a>(&'a self, _: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            async { Err(Error::Unsupported("foreign replay fixture".into())) }.boxed()
+        }
+
+        fn open_interaction<'a>(
+            &'a self,
+            _: InteractionId,
+            _: Interaction,
+        ) -> BoxFuture<'a, Result<()>> {
+            async { Err(Error::Unsupported("foreign replay fixture".into())) }.boxed()
+        }
+
+        fn interaction_outcome<'a>(
+            &'a self,
+            _: InteractionId,
+        ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
+            async { Err(Error::Unsupported("foreign replay fixture".into())) }.boxed()
+        }
+    }
+
     #[derive(Clone, Copy)]
     enum ToolTerminalEvidence {
         Failure,
@@ -3864,6 +3915,23 @@ mod tests {
             )
             .await,
             Err(Error::Conflict(message)) if message.contains("another invocation")
+        ));
+
+        let foreign_operation = OperationId::from_bytes([49; 16]);
+        let requested_operation = OperationId::from_bytes([50; 16]);
+        let foreign = ForeignReplayJournal {
+            records: vec![ExecutionRecord {
+                operation_id: foreign_operation,
+                sequence: 1,
+                idempotency_key: "execution:started".into(),
+                event: ExecutionEvent::Started {
+                    request_digest: [1; 32],
+                },
+            }],
+        };
+        assert!(matches!(
+            classify_terminal_failure(&foreign, requested_operation, Limits::default()).await,
+            Err(Error::Conflict(message)) if message.contains("belongs to another turn")
         ));
         Ok(())
     }
