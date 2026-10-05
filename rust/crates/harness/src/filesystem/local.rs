@@ -1548,6 +1548,32 @@ impl PersistentLocalHarness {
             .run_conversation(bundle, operation, content, vec![], max_steps)
             .await
     }
+
+    /// Runs a turn only under the exact owner admission that was persisted for
+    /// this operation. The local runtime remains the execution engine, while
+    /// this check prevents a reopened handle from substituting prompt, limits,
+    /// or operation identity after budget admission.
+    pub(crate) async fn run_with_admission(
+        &self,
+        bundle: &crate::Harness,
+        admission: &crate::runtime::TaskAdmissionRecord,
+        prompt: &str,
+        max_steps: u32,
+    ) -> Result<TurnOutput> {
+        if admission.input != serde_json::Value::String(prompt.to_owned())
+            || bundle.limits() != admission.limits
+            || admission
+                .run_limits
+                .max_steps
+                .is_some_and(|limit| usize::from(max_steps) > limit)
+        {
+            return Err(Error::Conflict(
+                "local execution no longer matches its owner task admission".into(),
+            ));
+        }
+        self.run_with_bundle(bundle, admission.operation_id, prompt, max_steps)
+            .await
+    }
     /// Provider-bound storage for tools and recovery.
     #[must_use]
     pub fn storage(&self) -> &DurableHarnessStorage {

@@ -38,30 +38,25 @@ impl SwarmCommunicationHost {
 }
 
 impl DurableTaskHost for SwarmCommunicationHost {
+    fn observe_admission<'a>(
+        &'a self,
+        task: TaskId,
+    ) -> BoxFuture<'a, Result<crate::runtime::TaskAdmissionRecord>> {
+        Box::pin(async move { self.swarm()?.authenticated_admission(task).await })
+    }
+
     fn communication_scope<'a>(
         &'a self,
         task: TaskId,
     ) -> BoxFuture<'a, Result<TaskCommunicationScope>> {
         Box::pin(async move {
             let swarm = self.swarm()?;
-            let session = swarm.session(task).await?;
-            let harness = swarm.open_session(task).await?;
-            // Communication is an explicit default composition capability.
-            // Content authority remains the task's signed storage scope.
-            let grants = Capabilities::new(
-                harness
-                    .storage()
-                    .owner_scope()
-                    .capabilities()
-                    .iter()
-                    .map(str::to_owned)
-                    .chain(["mail:send".into(), "mail:read".into(), "timer:wait".into()]),
-            );
+            let admission = swarm.authenticated_admission(task).await?;
             Ok(TaskCommunicationScope {
-                parent: session.parent,
-                grants,
-                limits: harness.bundle().limits(),
-                run_limits: swarm.config.run_limits,
+                parent: admission.parent,
+                grants: admission.grants,
+                limits: admission.limits,
+                run_limits: admission.run_limits,
             })
         })
     }
