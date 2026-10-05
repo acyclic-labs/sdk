@@ -72,6 +72,7 @@ pub struct ResolvedRpcMethod {
 pub enum ResolvedValidationConstraint {
     Rule(SemanticRule),
     CrossField(String),
+    Unresolved(String),
 }
 
 /// Resolve every reachable request field from the single Rust contract model.
@@ -266,6 +267,7 @@ fn collect_reachable_fields(
         let Some(field_name) = field.name.as_deref() else {
             continue;
         };
+        let semantic_type_id = semantic_binding_for_field(family, message_path, field_name);
         output.push(ResolvedRequestField {
             family: family.to_owned(),
             rpc: rpc.to_owned(),
@@ -282,13 +284,15 @@ fn collect_reachable_fields(
             label: field.label,
             oneof_index: field.oneof_index,
             proto3_optional: field.proto3_optional.unwrap_or(false),
-            semantic_type: semantic_binding_for_field(family, message_path, field_name),
-            validation_rules: validation_rules_for_field(family, rpc, field_name),
+            semantic_type: semantic_type_id.clone(),
+            validation_rules: validation_rules_for_field(family, rpc, message_path, field_name),
             validation_constraints: validation_constraints_for_field(
                 family,
                 rpc,
+                message_path,
                 field_name,
                 field.r#type,
+                semantic_type_id.as_deref(),
             ),
         });
         if field.r#type == Some(FieldType::Message as i32)
@@ -333,28 +337,65 @@ fn semantic_binding_for_field(family: &str, message_path: &str, field: &str) -> 
     PUBLIC_FIELD_BINDINGS
         .iter()
         .find(|binding| {
-            binding.family == family && binding.message == message && binding.field == field
+            binding.family == family && binding.message == message && binding.wire_field == field
         })
         .map(|binding| binding.semantic_type.to_owned())
 }
 
-fn validation_rules_for_field(family: &str, rpc: &str, field: &str) -> Vec<String> {
+fn canonical_rpc_identity(rpc: &str) -> &str {
+    rpc.trim_start_matches('/')
+}
+
+fn operation_policy_for_rpc(
+    view: &crate::family_registry::FamilyView,
+    rpc: &str,
+) -> Option<&'static crate::OperationPolicy> {
+    let rpc = canonical_rpc_identity(rpc);
+    view.operation_policies
+        .iter()
+        .find(|policy| canonical_rpc_identity(policy.rpc) == rpc)
+}
+
+fn validation_targets_field(family: &str, message: &str, field: &str, validation: &str) -> bool {
+    let Some(head) = validation.split('.').next() else {
+        return false;
+    };
+    if head == field {
+        return true;
+    }
+    PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
+        binding.family == family
+            && binding.message == message
+            && binding.wire_field == field
+            && policy_field_name_matches(binding.field, head)
+    })
+}
+
+fn policy_field_name_matches(binding_field: &str, policy_field: &str) -> bool {
+    binding_field == policy_field
+        // The Machines operation policies use the historical `page_limit`
+        // name for both list and event pagination.  The wire model exposes
+        // the same `limit` field, while the Rust semantic model keeps the
+        // stronger event-specific bound explicit.
+        || (binding_field == "event_page_limit" && policy_field == "page_limit")
+}
+
+fn validation_rules_for_field(
+    family: &str,
+    rpc: &str,
+    message_path: &str,
+    field: &str,
+) -> Vec<String> {
     let Some(view) = crate::family_registry::family_view(family) else {
         return Vec::new();
     };
-    view.operation_policies
-        .iter()
-        .find(|policy| policy.rpc == rpc)
+    let message = message_path.rsplit('.').next().unwrap_or(message_path);
+    operation_policy_for_rpc(view, rpc)
         .map(|policy| {
             policy
                 .validations
                 .iter()
-                .filter(|validation| {
-                    validation
-                        .split('.')
-                        .next()
-                        .is_some_and(|head| head == field)
-                })
+                .filter(|validation| validation_targets_field(family, message, field, validation))
                 .map(|validation| (*validation).to_owned())
                 .collect()
         })
@@ -364,33 +405,60 @@ fn validation_rules_for_field(family: &str, rpc: &str, field: &str) -> Vec<Strin
 fn validation_constraints_for_field(
     family: &str,
     rpc: &str,
+    message_path: &str,
     field: &str,
     wire_type: Option<i32>,
+    semantic_type_id: Option<&str>,
 ) -> Vec<ResolvedValidationConstraint> {
     let Some(view) = crate::family_registry::family_view(family) else {
         return Vec::new();
     };
-    let Some(policy) = view.operation_policies.iter().find(|policy| policy.rpc == rpc) else {
+    let Some(policy) = operation_policy_for_rpc(view, rpc) else {
         return Vec::new();
     };
     policy
         .validations
         .iter()
         .filter(|validation| {
-            validation
-                .split('.')
-                .next()
-                .is_some_and(|head| head == field)
+            validation_targets_field(
+                family,
+                message_path.rsplit('.').next().unwrap_or(message_path),
+                field,
+                validation,
+            )
         })
-        .flat_map(|validation| validation_constraint(validation, wire_type))
+        .flat_map(|validation| validation_constraint(validation, wire_type, semantic_type_id))
         .collect()
 }
 
 fn validation_constraint(
     validation: &str,
     wire_type: Option<i32>,
+    semantic_type_id: Option<&str>,
 ) -> Vec<ResolvedValidationConstraint> {
     let suffix = validation.rsplit('.').next().unwrap_or(validation);
+    if suffix == "nonzero"
+        && matches!(
+            wire_type,
+            Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32
+        )
+    {
+        let Some(semantic_id) = semantic_type_id else {
+            return vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())];
+        };
+        let Some(semantic) = semantic_type(semantic_id) else {
+            return vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())];
+        };
+        if semantic.rules.is_empty() {
+            return vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())];
+        }
+        return semantic
+            .rules
+            .iter()
+            .copied()
+            .map(ResolvedValidationConstraint::Rule)
+            .collect();
+    }
     let rules = match suffix {
         "non_empty_utf8" => Some(vec![SemanticRule::NonEmpty, SemanticRule::Utf8]),
         "non_empty_bytes" | "non_empty" => Some(vec![SemanticRule::NonEmpty]),
@@ -420,7 +488,15 @@ fn validation_constraint(
                 .collect()
         })
         .unwrap_or_else(|| {
-            vec![ResolvedValidationConstraint::CrossField(validation.to_owned())]
+            let cross_field_suffixes = [
+                "bounded", "exact", "identity", "matches", "required", "valid", "supported",
+                "proven", "declared", "preserving", "contiguous", "monotonic", "capability",
+            ];
+            if cross_field_suffixes.contains(&suffix) {
+                vec![ResolvedValidationConstraint::CrossField(validation.to_owned())]
+            } else {
+                vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())]
+            }
         })
 }
 
@@ -2049,5 +2125,80 @@ mod tests {
                 assert!(field.type_name.is_some());
             }
         }
+    }
+
+    #[test]
+    fn resolver_attaches_logical_alias_bindings_and_policy_constraints() {
+        let requests = resolved_request_fields().expect("all request graphs resolve");
+        let machines = requests
+            .iter()
+            .find(|field| {
+                field.family == "machines"
+                    && field.root_message.ends_with("ListMachinesRequest")
+                    && field.field == "limit"
+            })
+            .expect("ListMachinesRequest.limit is present");
+        assert_eq!(machines.semantic_type.as_deref(), Some("machine_page_limit"));
+        assert!(machines
+            .validation_rules
+            .iter()
+            .any(|rule| rule == "page_limit.bounded"));
+        assert!(machines.validation_constraints.iter().any(|constraint| {
+            matches!(constraint, ResolvedValidationConstraint::CrossField(rule) if rule == "page_limit.bounded")
+        }));
+
+        let events = requests
+            .iter()
+            .find(|field| {
+                field.family == "machines"
+                    && field.root_message.ends_with("EventsRequest")
+                    && field.field == "limit"
+            })
+            .expect("EventsRequest.limit is present");
+        assert_eq!(events.semantic_type.as_deref(), Some("machine_event_page_limit"));
+        assert!(events
+            .validation_rules
+            .iter()
+            .any(|rule| rule == "page_limit.bounded"));
+
+        let identity = requests
+            .iter()
+            .find(|field| {
+                field.family == "machines"
+                    && field.root_message.ends_with("InspectMachineRequest")
+                    && field.field == "machine"
+            })
+            .expect("InspectMachineRequest.machine is present");
+        assert_eq!(identity.semantic_type.as_deref(), Some("machine_id"));
+        assert!(identity.validation_constraints.iter().any(|constraint| {
+            matches!(constraint, ResolvedValidationConstraint::Rule(SemanticRule::FixedLength(16)))
+        }));
+        assert!(!identity.validation_constraints.iter().any(|constraint| {
+            matches!(constraint, ResolvedValidationConstraint::Rule(SemanticRule::StrictlyPositive))
+        }));
+    }
+
+    #[test]
+    fn rpc_matching_accepts_descriptor_leading_slash_without_erasing_rules() {
+        assert_eq!(canonical_rpc_identity("/acyclic.machines.v1.MachinesService/Events"), "acyclic.machines.v1.MachinesService/Events");
+        let view = crate::family_registry::family_view("machines").expect("Machines family");
+        assert!(operation_policy_for_rpc(
+            view,
+            "/acyclic.machines.v1.MachinesService/Events"
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn unknown_validation_suffix_is_explicitly_unresolved() {
+        let constraints = validation_constraint(
+            "request.future_rule",
+            Some(FieldType::String as i32),
+            None,
+        );
+        assert!(matches!(
+            constraints.as_slice(),
+            [ResolvedValidationConstraint::Unresolved(rule)] if rule == "request.future_rule"
+        ));
     }
 }
