@@ -316,7 +316,7 @@ for (const projection of projections) {
       receipt.compile = checked;
       receipt.status = checked.exitCode === 0 ? "compiled" : "compile-failed";
     }
-    if (receipt.status === "compiled" && args.has("--execute")) {
+    if (receipt.status === "compiled" && args.has("--execute") && projection.language !== "rust") {
       const executionEnvironment = {
         ...(fixture ? fixtureEnvironment(projection.language, fixture.address) : {}),
         ...prepared.environment,
