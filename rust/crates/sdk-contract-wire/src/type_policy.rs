@@ -461,7 +461,9 @@ fn validation_constraint(
     }
     let rules = match suffix {
         "non_empty_utf8" => Some(vec![SemanticRule::NonEmpty, SemanticRule::Utf8]),
-        "non_empty_bytes" | "non_empty" => Some(vec![SemanticRule::NonEmpty]),
+        "non_empty_bytes" | "non_empty" | "nonempty" => Some(vec![SemanticRule::NonEmpty]),
+        "present" => Some(vec![SemanticRule::ExplicitPresence]),
+        "positive" => Some(vec![SemanticRule::StrictlyPositive]),
         "nonzero" => Some(vec![if wire_type == Some(FieldType::Bytes as i32) {
             SemanticRule::NonEmpty
         } else {
@@ -914,7 +916,7 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
         id: "idempotency_key_message",
         rust_name: "IdempotencyKey",
         wire_kind: WireValueKind::Message,
-        rules: &[],
+        rules: UUID_BYTES,
     },
     SemanticType {
         id: "opaque_text",
