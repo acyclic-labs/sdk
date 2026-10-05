@@ -108,11 +108,27 @@ type MessageAdmissionPause = (Arc<tokio::sync::Barrier>, Arc<tokio::sync::Notify
 static MESSAGE_ADMISSION_PAUSE: OnceLock<StdMutex<Option<MessageAdmissionPause>>> = OnceLock::new();
 
 #[cfg(test)]
+static TIMER_ADMISSION_PAUSE: OnceLock<StdMutex<Option<MessageAdmissionPause>>> = OnceLock::new();
+
+#[cfg(test)]
 async fn pause_after_message_admission_append() {
     let pause = MESSAGE_ADMISSION_PAUSE
         .get_or_init(|| StdMutex::new(None))
         .lock()
         .expect("message admission pause lock")
+        .take();
+    if let Some((entered, release)) = pause {
+        entered.wait().await;
+        release.notified().await;
+    }
+}
+
+#[cfg(test)]
+async fn pause_after_timer_admission_append() {
+    let pause = TIMER_ADMISSION_PAUSE
+        .get_or_init(|| StdMutex::new(None))
+        .lock()
+        .expect("timer admission pause lock")
         .take();
     if let Some((entered, release)) = pause {
         entered.wait().await;
@@ -5446,6 +5462,8 @@ impl PersistentLocalSwarm {
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
                 self.retain_registry_tail(committed_tail).await;
+                #[cfg(test)]
+                pause_after_timer_admission_append().await;
                 Ok(())
             }
             Err(error) => {
@@ -10717,15 +10735,14 @@ mod tests {
                 "message.txt",
             )
             .await?;
-        // The admission owner must enforce the direct parent/child
-        // relationship itself; callers cannot turn an invalid target into a
-        // durable admission by bypassing the host preflight.
+        // The admission owner enforces the direct parent/child relationship
+        // itself; callers cannot bypass it through a host preflight.
         assert!(matches!(
             swarm
                 .admit_message(
                     child,
                     child,
-                    OperationId::from_bytes([0xDE; 16]),
+                    OperationId::from_bytes([0xD0; 16]),
                     payload.clone(),
                 )
                 .await,
@@ -10749,13 +10766,45 @@ mod tests {
         );
         first_admission?;
         second_admission?;
+        // The same message identity cannot be replayed for a sibling target.
         assert!(matches!(
             swarm
                 .admit_message(parent, sibling, message, payload.clone())
                 .await,
             Err(Error::Conflict(_))
         ));
-        let uncertain_message = OperationId::from_bytes([0xE0; 16]);
+        let timer = OperationId::from_bytes([0xE2; 16]);
+        swarm.admit_timer(child, timer, 10_000).await?;
+        assert!(matches!(
+            swarm.admit_timer(child, timer, 20_000).await,
+            Err(Error::Conflict(_))
+        ));
+
+        // Repeat the lost-ack recovery at the timer publication boundary.
+        let timer_entered = Arc::new(tokio::sync::Barrier::new(2));
+        let timer_release = Arc::new(tokio::sync::Notify::new());
+        *TIMER_ADMISSION_PAUSE
+            .get_or_init(|| StdMutex::new(None))
+            .lock()
+            .expect("timer admission pause lock") = Some((timer_entered.clone(), timer_release.clone()));
+        let third = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            Model::new("mock", "message-admission", "1", json!({}))?,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let uncertain_timer = OperationId::from_bytes([0xE3; 16]);
+        let pending_timer = tokio::spawn(async move {
+            third.admit_timer(child, uncertain_timer, 30_000).await
+        });
+        timer_entered.wait().await;
+        pending_timer.abort();
+        timer_release.notify_waiters();
+        assert!(pending_timer.await.is_err());
+
+        // Abort after the LocalStream append but before the caller receives its
+        // result. Reopen must recover the committed admission exactly once.
         let uncertain_entered = Arc::new(tokio::sync::Barrier::new(2));
         let uncertain_release = Arc::new(tokio::sync::Notify::new());
         *MESSAGE_ADMISSION_PAUSE
@@ -10765,6 +10814,7 @@ mod tests {
             uncertain_entered.clone(),
             uncertain_release.clone(),
         ));
+        let uncertain_message = OperationId::from_bytes([0xE4; 16]);
         let uncertain_payload = payload.clone();
         let pending = tokio::spawn(async move {
             second
@@ -10778,8 +10828,8 @@ mod tests {
 
         // A cancellation that commits first closes the owner admission CAS;
         // no mailbox publication may be inferred from the rejected attempt.
-        let cancelled_child = TaskId::from_bytes([0xDC; 16]);
-        let cancelled_child_operation = OperationId::from_bytes([0xDD; 16]);
+        let cancelled_child = TaskId::from_bytes([0xE5; 16]);
+        let cancelled_child_operation = OperationId::from_bytes([0xE6; 16]);
         let cancelled_tail = registry
             .tail()
             .await
@@ -10806,7 +10856,7 @@ mod tests {
             .await?;
         swarm.refresh_registry_state().await?;
         swarm.cancel(cancelled_child).await?;
-        let cancelled_message = OperationId::from_bytes([0xDE; 16]);
+        let cancelled_message = OperationId::from_bytes([0xE7; 16]);
         assert!(matches!(
             swarm
                 .admit_message(
@@ -10822,7 +10872,7 @@ mod tests {
         let changed_payload = source
             .storage()
             .stage(
-                OperationId::from_bytes([0xDF; 16]),
+                OperationId::from_bytes([0xE8; 16]),
                 "system/changed-message.txt",
                 b"changed message",
                 "text/plain",
@@ -10839,90 +10889,8 @@ mod tests {
         swarm
             .admit_message(parent, child, message, payload.clone())
             .await?;
-        let uncertain_entered = Arc::new(tokio::sync::Barrier::new(2));
-        let uncertain_release = Arc::new(tokio::sync::Notify::new());
-        *MESSAGE_ADMISSION_PAUSE
-            .get_or_init(|| StdMutex::new(None))
-            .lock()
-            .expect("message admission pause lock") = Some((
-            uncertain_entered.clone(),
-            uncertain_release.clone(),
-        ));
-        let uncertain_message = OperationId::from_bytes([0xE0; 16]);
-        let uncertain_payload = payload.clone();
-        let pending = tokio::spawn(async move {
-            second
-                .admit_message(parent, child, uncertain_message, uncertain_payload)
-                .await
-        });
-        uncertain_entered.wait().await;
-        pending.abort();
-        uncertain_release.notify_waiters();
-        assert!(pending.await.is_err());
-
-        // A cancellation that commits first closes the owner admission CAS;
-        // no mailbox publication may be inferred from the rejected attempt.
-        let cancelled_child = TaskId::from_bytes([0xDC; 16]);
-        let cancelled_child_operation = OperationId::from_bytes([0xDD; 16]);
-        let cancelled_tail = registry
-            .tail()
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        append_record_at(
-            &registry,
-            StoredEvent::Session(StoredSession {
-                version: REGISTRY_VERSION,
-                task: cancelled_child,
-                parent: Some(parent),
-                depth: 1,
-                task_description: "cancelled message child".into(),
-                operation: Some(cancelled_child_operation),
-                phase: StoredPhase::Ready,
-            }),
-            cancelled_tail,
-        )
-        .await?;
-        let mut cancelled_admission = swarm.authenticated_admission(parent).await?;
-        cancelled_admission.operation_id = cancelled_child_operation;
-        cancelled_admission.parent = Some(parent);
-        swarm
-            .persist_local_admission(cancelled_child, cancelled_admission)
-            .await?;
-        swarm.refresh_registry_state().await?;
-        swarm.cancel(cancelled_child).await?;
-        let cancelled_message = OperationId::from_bytes([0xDE; 16]);
-        assert!(matches!(
-            swarm
-                .admit_message(
-                    parent,
-                    cancelled_child,
-                    cancelled_message,
-                    payload.clone(),
-                )
-                .await,
-            Err(Error::Conflict(_))
-        ));
-
-        let changed_payload = source
-            .storage()
-            .stage(
-                OperationId::from_bytes([0xDF; 16]),
-                "system/changed-message.txt",
-                b"changed message",
-                "text/plain",
-                "changed-message.txt",
-            )
-            .await?;
-        assert!(matches!(
-            swarm
-                .admit_message(parent, child, message, changed_payload)
-                .await,
-            Err(Error::Conflict(_))
-        ));
-        swarm.cancel(child).await?;
-        swarm
-            .admit_message(parent, child, message, payload.clone())
-            .await?;
+        swarm.admit_timer(child, timer, 10_000).await?;
+        swarm.admit_timer(child, uncertain_timer, 30_000).await?;
         let records = load_records(&registry).await?;
         assert_eq!(
             records
@@ -10939,13 +10907,7 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(
-                    record.event,
-                    StoredEvent::TimerAdmitted { task, operation, deadline }
-                        if task == child && operation == timer && deadline == 10_000
+
         // Reopening must recover the exact owner admission and avoid appending
         // a second record for the same endpoint identity.
         drop(source);
@@ -10958,11 +10920,15 @@ mod tests {
         )
         .await?;
         reopened
-            .admit_message(parent, child, message, payload)
+            .admit_message(parent, child, message, payload.clone())
             .await?;
-        assert!(reopened
+        reopened
             .admit_message(parent, child, uncertain_message, payload.clone())
-            .await?);
+            .await?;
+        reopened.admit_timer(child, timer, 10_000).await?;
+        reopened
+            .admit_timer(child, uncertain_timer, 30_000)
+            .await?;
         let reopened_registry = reopened
             .registry
             .stream(REGISTRY_STREAM)
@@ -10979,6 +10945,28 @@ mod tests {
                         message_id,
                         ..
                     } if sender == parent && recipient == child && message_id == message
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            reopened_records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::TimerAdmitted { task, operation, deadline }
+                        if task == child && operation == timer && deadline == 10_000
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            reopened_records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::TimerAdmitted { task, operation, deadline }
+                        if task == child && operation == uncertain_timer && deadline == 30_000
                 ))
                 .count(),
             1
