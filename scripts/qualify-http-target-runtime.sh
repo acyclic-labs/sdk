@@ -52,6 +52,40 @@ case "$target" in
     for project in "${projects[@]}"; do
       run_logged "clojure-$(basename "$(dirname "$project")")" lein -f "$project" check
     done
+    if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
+      # Keep the call in the generated Clojure namespace: the request shape,
+      # route, JSON serialization, and response decoding are all supplied by
+      # the Rust-derived OpenAPI package.
+      transport_dir="$output_root/clojure-transport"
+      mkdir -p "$transport_dir"
+      project_root="$(dirname "${projects[0]}")"
+      mkdir -p "$project_root/src"
+      cat >"$project_root/src/acyclic_actors_qualification.clj" <<'EOF'
+(ns acyclic-actors-qualification
+  (:require [acyclic-actors-api.core :refer [with-api-context]]
+            [acyclic-actors-api.api.default :refer [create-actor-with-http-info]]))
+
+(defn -main [& _]
+  (let [endpoint (System/getenv "ACYCLIC_FIXTURE_HTTP_ENDPOINT")
+        request {:codeSha256 "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+                 :homeRegion "qualification"
+                 :idempotencyKey "http-target-clojure-qualification"
+                 :limits {:checkpointBytes "1048576"
+                          :handlerTimeoutMillis "1000"
+                          :memoryBytes "1048576"}}
+        response (with-api-context {:base-url endpoint}
+                   (create-actor-with-http-info request))]
+    (when-not (<= 200 (:status response) 299)
+      (throw (ex-info "Rust fixture rejected generated Clojure request" {:status (:status response)})))
+    (when-not (map? (:data response))
+      (throw (ex-info "generated Clojure client did not decode the Rust fixture response" {})))))
+EOF
+      cp "$project_root/src/acyclic_actors_qualification.clj" "$transport_dir/acyclic_actors_qualification.clj"
+      run_logged clojure-transport env ACYCLIC_FIXTURE_HTTP_ENDPOINT="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" lein -f "${projects[0]}" run -m acyclic-actors-qualification
+      client_transport='clojure-generated-client-fixture-roundtrip'
+    else
+      client_transport='not-run-fixture-endpoint-unset'
+    fi
     runtime='clojure/leiningen'
     ;;
   crystal)

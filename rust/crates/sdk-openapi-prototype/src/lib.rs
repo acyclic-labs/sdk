@@ -853,6 +853,14 @@ pub fn document_from_contract_with_projection(
         "openapi": "3.0.3",
         "info": {"title": format!("Acyclic {title_name} API"), "version": "v1", "description": format!("{} OpenAPI is a generated HTTP/JSON projection.", contract.services.iter().map(|service| ContractDocs::required(&docs.services, service.name)).collect::<Result<Vec<_>, _>>()?.join(" "))},
         "x-acyclic-source": {"contract_digest": contract_digest(contract), "contract": contract.package, "routes": "acyclic_sdk_contract_wire::ContractSpec.routes", "wire_authority": "acyclic_sdk_contract_wire::ContractSpec", "documentation": if contract.package == "inference.customer.v1" { "ContractSpec structural labels; wire comment table pending" } else { "ContractSpec::render_proto Rust comments" }, "http_projection": match projection { HttpProjection::Unary => "unary", HttpProjection::Polling => "polling" }},
+        "x-acyclic-generator-mappings": {
+            "openapi-generator": {
+                "ByteArray": "String"
+            },
+            "wire": {
+                "bytes": "protobuf-json-base64"
+            }
+        },
         "security": [{"bearerAuth": []}],
         "paths": paths,
         "components": {"securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer"}}, "schemas": schemas}
@@ -2143,6 +2151,19 @@ mod tests {
         assert_ne!(
             original["x-acyclic-source"]["contract_digest"],
             mutated["x-acyclic-source"]["contract_digest"]
+        );
+    }
+
+    #[test]
+    fn publishes_rust_owned_generator_mapping_for_protobuf_bytes() {
+        let doc = document().expect("Actors model projects");
+        assert_eq!(
+            doc["x-acyclic-generator-mappings"]["openapi-generator"]["ByteArray"],
+            "String"
+        );
+        assert_eq!(
+            doc["x-acyclic-generator-mappings"]["wire"]["bytes"],
+            "protobuf-json-base64"
         );
     }
 

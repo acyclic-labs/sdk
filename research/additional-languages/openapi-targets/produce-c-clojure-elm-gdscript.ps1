@@ -19,6 +19,15 @@ $requestDocument = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
 if (-not [string]::IsNullOrWhiteSpace([string]$requestDocument.source.revision) -and [string]$requestDocument.source.revision -ne [string]$authority.source_revision) { throw 'Rust source authority revision does not match producer request' }
 $stage = Join-Path $OutputRoot 'openapi'
 foreach ($family in $families) { if (-not (Test-Path -LiteralPath (Join-Path $stage "$family.json") -PathType Leaf)) { throw "Rust OpenAPI projection is missing: $family" } }
+$mappingDocument = Get-Content -LiteralPath (Join-Path $stage 'actors.json') -Raw | ConvertFrom-Json
+$mappingProperties = $mappingDocument.'x-acyclic-generator-mappings'.'openapi-generator'.PSObject.Properties
+if ($null -eq $mappingProperties -or $mappingProperties.Count -eq 0) { throw 'Rust OpenAPI projection has no generator type mappings' }
+$typeMappings = @($mappingProperties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ','
+foreach ($family in $families | Select-Object -Skip 1) {
+    $familyDocument = Get-Content -LiteralPath (Join-Path $stage "$family.json") -Raw | ConvertFrom-Json
+    $familyMappings = $familyDocument.'x-acyclic-generator-mappings'.'openapi-generator'.PSObject.Properties
+    if ((@($familyMappings | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ',') -ne $typeMappings) { throw "Rust OpenAPI generator mappings differ for $family" }
+}
 $jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/ensure-openapi-generator.ps1') '-SourceRoot' $SourceRoot)
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
 $jarSha256 = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -28,7 +37,7 @@ foreach ($family in $families) {
     $destination = Join-Path $packageRoot $family
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
     $name = "acyclic_${family}_${TargetId}"
-    & java '-Xmx768m' '-jar' $jar generate '-i' (Join-Path $stage "$family.json") '-g' $TargetId '-o' $destination '--package-name' $name '--additional-properties=packageVersion=0.1.0'
+    & java '-Xmx768m' '-jar' $jar generate '-i' (Join-Path $stage "$family.json") '-g' $TargetId '-o' $destination '--package-name' $name "--type-mappings=$typeMappings" '--additional-properties=packageVersion=0.1.0'
     if ($LASTEXITCODE -ne 0) { throw "OpenAPI Generator failed for $TargetId/$family" }
 }
 $zip = Join-Path $TargetOutput "acyclic-http-$TargetId-0.1.0.zip"
