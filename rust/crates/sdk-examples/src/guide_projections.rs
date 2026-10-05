@@ -58,22 +58,22 @@ pub const fn qualification_recipe(language: Language) -> GuideQualificationRecip
             execute: "bun-installed-package",
         },
         Language::Go => GuideQualificationRecipe {
-            install: "go-module-replace",
+            install: "go-module-download",
             compile: "go-test-consumer",
             execute: "go-installed-package",
         },
         Language::Java => GuideQualificationRecipe {
-            install: "maven-system-package",
+            install: "maven-build-classpath",
             compile: "maven-package-consumer",
             execute: "java-installed-package",
         },
         Language::CSharp => GuideQualificationRecipe {
-            install: "dotnet-package-reference",
+            install: "dotnet-restore",
             compile: "dotnet-build-consumer",
             execute: "dotnet-installed-package",
         },
         Language::Ruby => GuideQualificationRecipe {
-            install: "gem-local-package",
+            install: "gem-install-local",
             compile: "ruby-package-check",
             execute: "ruby-installed-package",
         },

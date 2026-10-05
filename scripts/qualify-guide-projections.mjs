@@ -205,7 +205,8 @@ function prepare(language, packageArtifact, directory) {
     writeFileSync(join(directory, "go.mod"), `module guide-snippet\n\n${packageGoMod}\nrequire ${module} v0.0.0\n\nreplace ${module} => ${moduleRoot.replaceAll("\\", "/")}\n`);
     const packageGoSum = join(moduleRoot, "go.sum");
     if (existsSync(packageGoSum)) writeFileSync(join(directory, "go.sum"), readFileSync(packageGoSum));
-    return { status: "installed", install: { command: "go mod replace", exitCode: 0, stdout: "", stderr: "" }, environment: { GOPROXY: "off", GOTOOLCHAIN: "local" } };
+    const install = command(binaries.go, ["mod", "download", "all"], directory, { GOPROXY: "off", GOTOOLCHAIN: "local" });
+    return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: { GOPROXY: "off", GOTOOLCHAIN: "local" } };
   }
 
   if (language === "java") {
@@ -217,7 +218,7 @@ function prepare(language, packageArtifact, directory) {
     if (process.env.SDK_MAVEN_REPO) mavenArgs.push(`-Dmaven.repo.local=${process.env.SDK_MAVEN_REPO}`);
     const classpath = command(binaries.maven, mavenArgs, directory);
     if (classpath.exitCode !== 0) return { status: "install-failed", install: classpath, environment: {} };
-    return { status: "installed", install: { command: "Maven consumer project", exitCode: 0, stdout: "", stderr: "" }, environment: {} };
+    return { status: "installed", install: classpath, environment: {} };
   }
 
   if (language === "typescript") {
@@ -246,8 +247,10 @@ function prepare(language, packageArtifact, directory) {
       .filter((path) => existsSync(path))
       .map((path) => `<Reference Include="${path.split(/[\\/]/).at(-1).replace(/\.dll$/i, "")}"><HintPath>${path.replaceAll("\\", "/")}</HintPath></Reference>`)
       .join("");
-    writeFileSync(join(directory, "GuideSnippet.csproj"), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><Reference Include="Acyclic.Sdk.Transport"><HintPath>${hint}</HintPath></Reference>${dependencyReferences}</ItemGroup></Project>\n`);
-    return { status: "installed", install: { command: "local assembly reference", exitCode: 0, stdout: "", stderr: "" }, environment: {} };
+    const project = join(directory, "GuideSnippet.csproj");
+    writeFileSync(project, `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><Reference Include="Acyclic.Sdk.Transport"><HintPath>${hint}</HintPath></Reference>${dependencyReferences}</ItemGroup></Project>\n`);
+    const install = command(binaries.dotnet, ["restore", project, "--nologo", "--force-evaluate"], directory);
+    return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: {} };
   }
 
   if (language === "dart") {
@@ -280,7 +283,6 @@ function prepare(language, packageArtifact, directory) {
   }
 
   if (language === "ruby" && packageArtifact.endsWith(".gemspec")) {
-    const packageRoot = resolve(packageArtifact, "..");
     const gemPath = join(directory, "acyclic-sdk.gem");
     const gemHome = join(directory, "vendor", "bundle");
     const built = command(binaries.gem, ["build", packageArtifact, "--output", gemPath], directory);
@@ -303,7 +305,7 @@ function prepare(language, packageArtifact, directory) {
     return {
       status: install.exitCode === 0 ? "installed" : "install-failed",
       install: { ...install, command: [built.command, ...dependencyInstalls.map((dependency) => dependency.command), install.command].join(" && ") },
-      environment: { ...rubyEnv, RUBYLIB: join(packageRoot, "lib") },
+      environment: { ...rubyEnv },
     };
   }
 
