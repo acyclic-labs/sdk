@@ -20,13 +20,13 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
     io::Read,
     path::Path,
     process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError},
     },
     thread,
     time::{Duration, Instant},
@@ -1061,6 +1061,11 @@ impl ExecutionRunner for NativeExecutionRunner {
                 stderr: Vec::new(),
             });
         }
+        #[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
+        return Err(Error::Unsupported(
+            "native host execution requires the interruptible native-process-tree provider"
+                .into(),
+        ));
         // Compute the deadline before spawning. An admitted timeout must not
         // discover an unrepresentable clock instant after a child exists.
         let deadline = request
@@ -1341,6 +1346,7 @@ enum Termination {
     Overflow,
 }
 
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
 fn consume_output(
     chunk: &[u8],
     remaining: &std::sync::atomic::AtomicUsize,
@@ -1413,56 +1419,12 @@ fn spawn_reader<R: Read + Send + 'static>(
         .map_err(|error| Error::Storage(format!("failed to start process output reader: {error}")))
 }
 
-#[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
-type ReaderTask = Receiver<Result<Vec<u8>>>;
-
-#[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
-fn spawn_reader<R: Read + Send + 'static>(
-    mut reader: R,
-    remaining: Arc<std::sync::atomic::AtomicUsize>,
-    overflow: Arc<AtomicBool>,
-) -> Result<ReaderTask> {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let result = (|| {
-            let mut bytes = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                let read = reader.read(&mut buffer).map_err(|error| {
-                    Error::Storage(format!("failed reading process output: {error}"))
-                })?;
-                if read == 0 {
-                    break;
-                }
-                if !consume_output(&buffer[..read], &remaining, &overflow) {
-                    break;
-                }
-                bytes.extend_from_slice(&buffer[..read]);
-            }
-            Ok(bytes)
-        })();
-        let _ = sender.send(result);
-    });
-    Ok(receiver)
-}
-
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
 fn receive_reader(reader: &mut ReaderTask) -> Result<Option<Vec<u8>>> {
     reader
         .0
         .receive(READER_GRACE)
         .map_err(|error| Error::Storage(format!("failed reading process output: {error}")))
-}
-
-#[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
-fn receive_reader(receiver: &Receiver<Result<Vec<u8>>>) -> Result<Option<Vec<u8>>> {
-    match receiver.recv_timeout(READER_GRACE) {
-        Ok(result) => result.map(Some),
-        Err(RecvTimeoutError::Timeout) => Ok(None),
-        Err(RecvTimeoutError::Disconnected) => Err(Error::Storage(
-            "process output reader disconnected without a result".into(),
-        )),
-    }
 }
 
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
@@ -1479,11 +1441,6 @@ fn finish_reader(reader: &mut ReaderTask, output: Option<Vec<u8>>) -> Result<Opt
             .cancel_and_join()
             .map_err(|error| Error::Storage(format!("process output reader failed: {error}")))
     }
-}
-
-#[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
-fn finish_reader(_reader: &mut ReaderTask, output: Option<Vec<u8>>) -> Result<Option<Vec<u8>>> {
-    Ok(output)
 }
 
 /// Immutable dispatch identity presented to the approval authority.
