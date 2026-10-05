@@ -37,10 +37,12 @@ const snippets = join(output, "snippets");
 mkdirSync(snippets, { recursive: true });
 
 function command(name, commandArgs, cwd = repo, extraEnv = {}) {
+  const shell = /\.(?:cmd|bat)$/i.test(name);
   const result = spawnSync(name, commandArgs, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
+    shell,
     env: { ...process.env, ...extraEnv },
     timeout: Number(process.env.QUALIFY_COMMAND_TIMEOUT_MS ?? 120000),
     killSignal: "SIGTERM",
@@ -235,7 +237,10 @@ function prepare(language, packageArtifact, directory) {
       require: { "acyclic/sdk": "*" },
       repositories: [{ type: "path", url: packageRoot.replaceAll("\\", "/"), options: { symlink: false } }],
     }, null, 2));
-    const install = command(binaries.composer, ["install", "--no-interaction", "--no-progress"], directory);
+    const composerArgs = process.env.SDK_COMPOSER_PHAR
+      ? [process.env.SDK_COMPOSER_PHAR, "install", "--no-interaction", "--no-progress"]
+      : ["install", "--no-interaction", "--no-progress"];
+    const install = command(binaries.composer, composerArgs, directory);
     return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: {} };
   }
 
