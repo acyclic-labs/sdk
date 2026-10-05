@@ -835,7 +835,8 @@ pub fn operation_target(validation: &'static str) -> OperationTarget {
         "parts.ordered_exact" => ("parts", OperationEnforcement::ClientLocal),
         "records.max_bytes" => ("records", OperationEnforcement::ClientLocal),
         "mutations.max_command_bytes" => ("mutations", OperationEnforcement::ClientLocal),
-        _ if validation.ends_with(".valid")
+        _ if is_current_policy_validation(validation)
+            && (validation.ends_with(".valid")
             || validation.ends_with(".bounded")
             || validation.ends_with(".supported")
             || validation.ends_with(".proven")
@@ -853,7 +854,7 @@ pub fn operation_target(validation: &'static str) -> OperationTarget {
             || validation.ends_with(".exact")
             || validation.ends_with(".preserving")
             || validation.ends_with(".contiguous")
-            || validation.ends_with(".monotonic") =>
+            || validation.ends_with(".monotonic")) =>
         {
             (validation, OperationEnforcement::ClientLocal)
         }
@@ -911,7 +912,8 @@ pub fn operation_enforcement(validation: &str) -> OperationEnforcement {
         | "parts.ordered_exact"
         | "records.max_bytes"
         | "mutations.max_command_bytes" => OperationEnforcement::ClientLocal,
-        _ if validation.ends_with(".valid")
+        _ if is_current_policy_validation(validation)
+            && (validation.ends_with(".valid")
             || validation.ends_with(".bounded")
             || validation.ends_with(".supported")
             || validation.ends_with(".proven")
@@ -929,12 +931,28 @@ pub fn operation_enforcement(validation: &str) -> OperationEnforcement {
             || validation.ends_with(".exact")
             || validation.ends_with(".preserving")
             || validation.ends_with(".contiguous")
-            || validation.ends_with(".monotonic") =>
+            || validation.ends_with(".monotonic")) =>
         {
             OperationEnforcement::ClientLocal
         }
         _ => OperationEnforcement::Unsupported,
     }
+}
+
+/// Suffix classification is only a convenience for identities already
+/// authored by the Rust operation policy tables.  A newly introduced or
+/// caller-supplied identity must remain unsupported until it receives an
+/// explicit Rust target and enforcement boundary; otherwise a name such as
+/// `future.aggregate.valid` could be emitted as a local check without any
+/// qualified semantics behind it.
+fn is_current_policy_validation(validation: &str) -> bool {
+    FAMILY_VIEWS.iter().any(|family| {
+        family
+            .operation_policies
+            .iter()
+            .flat_map(|policy| policy.validations.iter().copied())
+            .any(|candidate| candidate == validation)
+    })
 }
 
 /// Every language target currently inventoried by the generation pipeline.
@@ -2815,9 +2833,17 @@ mod tests {
     fn operation_target_classification_does_not_hide_unknown_policy_names() {
         let target = operation_target("future.aggregate.valid");
         assert_eq!(target.path, "future.aggregate.valid");
-        assert_eq!(target.enforcement, OperationEnforcement::ClientLocal);
+        assert_eq!(target.enforcement, OperationEnforcement::Unsupported);
         let provider = operation_target("provider.unknown_rule");
         assert_eq!(provider.enforcement, OperationEnforcement::Unsupported);
+        assert_eq!(
+            operation_enforcement("future.aggregate.valid"),
+            OperationEnforcement::Unsupported
+        );
+        assert_eq!(
+            operation_enforcement("model_capabilities.bounded"),
+            OperationEnforcement::ClientLocal
+        );
     }
 
     #[test]
