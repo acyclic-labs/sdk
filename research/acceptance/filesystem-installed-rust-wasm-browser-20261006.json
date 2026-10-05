@@ -1,0 +1,30 @@
+{
+  "schema": "acyclic.acceptance.v2",
+  "kind": "filesystem-installed-rust-wasm-browser",
+  "status": "passed",
+  "captured_at": "2026-10-05T23:50:28Z",
+  "source_revision": "3354c87d",
+  "source_worktree": "Q:/sdk/worktrees/rust-sdk-docs-source",
+  "artifact": {
+    "package": "typescript/packages/filesystem/generated/wasm",
+    "wasm_bg_sha256": "041829655F9B8F74AEBE2FB032CE15CCA9245D3B645E3BFAAED456BE188E16BB",
+    "js_sha256": "CA64E1B88A7682640F2DBBBED3C33ABAD26E699D82A6AEF43098D26EC7E3B49E",
+    "dts_sha256": "9FE95058E65C9CF8F2CD9C161A41C0C30D17024B5EE92B3AD58958B35938B47F"
+  },
+  "build": {
+    "command": "cargo build --locked -p acyclic-fs-wasm --target wasm32-unknown-unknown --profile wasm-release",
+    "linker": "C:/Program Files/LLVM/bin/wasm-ld.exe",
+    "packager": "wasm-bindgen --target web"
+  },
+  "checks": {
+    "rust_hosted_policy": "9 passed, 0 failed",
+    "hosted_s3_and_handshake": "12 passed, 0 failed, 39 expect calls",
+    "browser_smoke": "passed: memory workspace, IndexedDB authority, OPFS objects, 18 exported objects",
+    "browser_multitab": "passed: authority committed/conflict, fresh context, reload, abrupt-tab recovery, IndexedDB and OPFS, 12 targeted cases"
+  },
+  "runner": {
+    "command": "bun test/browser-qualify.mjs browser-smoke.html; bun test/browser-qualify.mjs browser-multitab.html",
+    "runner": "typescript/packages/filesystem/test/browser-qualify.mjs",
+    "browser": "Chrome headless"
+  }
+}
