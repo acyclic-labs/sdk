@@ -1,0 +1,10 @@
+{
+  "source_commit": "7815f833f",
+  "status": "compile_failed_before_test_execution",
+  "exit_code": 101,
+  "cause": "The mandatory persisted child suffix was passed to a legacy optional parameter.",
+  "archive": "D:/graphcoder-builds/root-qualification-artifacts/7815f833f/compile-failure",
+  "source_archive_sha256": "b5c99a553310cdbdd42a29e8d765e26ae75f043cdaf5747f1bf0bea94a24b5dc",
+  "log_sha256": "805b20edbf97ee6e22e6ea1607206bbd1fbcf9eb4c7212503870d26e56d911af",
+  "claims": "Session 61512 terminated 101. Archive session 74775 terminated 0 before source changes. No runtime pass is claimed."
+}

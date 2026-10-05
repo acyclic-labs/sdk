@@ -4299,7 +4299,7 @@ impl PersistentLocalSwarm {
         stream: acyclic_stream::Stream<LocalStream>,
         boundary: crate::model_input::CompletedModelBoundary,
         harness: Arc<PersistentLocalHarness>,
-        declared_suffix: Option<Vec<ModelMessage>>,
+        declared_suffix: Vec<ModelMessage>,
         activation_guard: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<LocalChildActivation> {
         // Subscribe before the durable check so cancellation cannot fall
@@ -4363,16 +4363,10 @@ impl PersistentLocalSwarm {
                 return Err(Error::Indeterminate(request.child_operation));
             }
         }
-        let suffix = declared_suffix.unwrap_or_else(|| {
-            vec![ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(format!(
-                    "child task: {}; parent: {}; identity: {}; fresh scratch: true",
-                    request.task, request.parent, child
-                )),
-            }]
-        });
-        let declaration = LocalInheritedModelDeclaration { boundary, suffix };
+        let declaration = LocalInheritedModelDeclaration {
+            boundary,
+            suffix: declared_suffix,
+        };
         let bundle = match self.inherited_task_bundle(child, &harness, &declaration) {
             Ok(bundle) => bundle,
             Err(error) => {
