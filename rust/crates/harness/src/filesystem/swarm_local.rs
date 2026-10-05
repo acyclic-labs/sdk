@@ -893,6 +893,7 @@ pub struct LocalModelForkPlans {
     completed: Mutex<BTreeMap<OperationId, [u8; 32]>>,
     resolver: Option<Arc<dyn LocalModelForkResolver>>,
     journal: Mutex<Option<StreamClient<LocalStream>>>,
+    journal_tail: Mutex<u64>,
 }
 
 impl Default for LocalModelForkPlans {
@@ -904,6 +905,7 @@ impl Default for LocalModelForkPlans {
             completed: Mutex::new(BTreeMap::new()),
             resolver: None,
             journal: Mutex::new(None),
+            journal_tail: Mutex::new(0),
         }
     }
 }
@@ -937,7 +939,8 @@ impl LocalModelForkPlans {
         let stream = registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        for record in load_records(&stream).await? {
+        let journal_tail = stream_tail(&stream).await?;
+        for record in load_records_at(&stream, journal_tail).await? {
             match record.event {
                 StoredEvent::ForkIntent { intent } => {
                     let key = (intent.fork_operation, intent.child_operation);
@@ -997,6 +1000,7 @@ impl LocalModelForkPlans {
             }
         }
         *self.journal.lock().await = Some(registry);
+        *self.journal_tail.lock().await = journal_tail;
         Ok(())
     }
 
@@ -1031,9 +1035,16 @@ impl LocalModelForkPlans {
         let stream = registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let records = load_records(&stream).await?;
+        let journal_tail = stream_tail(&stream).await?;
         let mut intents = self.intents.lock().await;
         let mut issuer_bindings = self.issuer_bindings.lock().await;
+        let known_tail = *self.journal_tail.lock().await;
+        if journal_tail < known_tail {
+            return Err(Error::Conflict(
+                "local model fork journal tail moved backwards during refresh".into(),
+            ));
+        }
+        let records = load_records_range(&stream, known_tail, journal_tail).await?;
         for record in records {
             match record.event {
                 StoredEvent::ForkIntent { intent } => {
@@ -1100,6 +1111,7 @@ impl LocalModelForkPlans {
                 _ => {}
             }
         }
+        *self.journal_tail.lock().await = journal_tail;
         Ok(())
     }
 
@@ -1144,7 +1156,7 @@ impl LocalModelForkPlans {
             let stream = registry
                 .stream(REGISTRY_STREAM)
                 .map_err(|error| Error::Storage(error.to_string()))?;
-            append_record(
+            let journal_tail = append_record(
                 &stream,
                 StoredEvent::ForkIntentSelected {
                     intent: intent.clone(),
@@ -1152,6 +1164,8 @@ impl LocalModelForkPlans {
                 },
             )
             .await?;
+            let mut known_tail = self.journal_tail.lock().await;
+            *known_tail = (*known_tail).max(journal_tail);
         }
         intents.insert(key, intent);
         if let Some(digest) = issuer_digest {
@@ -4470,12 +4484,16 @@ fn fork_seed_digest(seed: &ForkSeed) -> Result<[u8; 32]> {
 }
 
 async fn load_records(stream: &acyclic_stream::Stream<LocalStream>) -> Result<Vec<StoredRecord>> {
-    let tail = match stream.tail().await {
-        Ok(tail) => tail,
-        Err(StreamError::NotFound) => 0,
-        Err(error) => return Err(Error::Storage(error.to_string())),
-    };
+    let tail = stream_tail(stream).await?;
     load_records_at(stream, tail).await
+}
+
+async fn stream_tail(stream: &acyclic_stream::Stream<LocalStream>) -> Result<u64> {
+    match stream.tail().await {
+        Ok(tail) => Ok(tail),
+        Err(StreamError::NotFound) => Ok(0),
+        Err(error) => Err(Error::Storage(error.to_string())),
+    }
 }
 
 async fn load_records_at(
@@ -4534,12 +4552,8 @@ async fn load_records_range(
 async fn append_record(
     stream: &acyclic_stream::Stream<LocalStream>,
     event: StoredEvent,
-) -> Result<()> {
-    let tail = match stream.tail().await {
-        Ok(tail) => tail,
-        Err(StreamError::NotFound) => 0,
-        Err(error) => return Err(Error::Storage(error.to_string())),
-    };
+) -> Result<u64> {
+    let tail = stream_tail(stream).await?;
     append_record_at(stream, event, tail).await
 }
 
@@ -4562,7 +4576,7 @@ async fn append_record_at(
         .await
         .map_err(|error| Error::Storage(error.to_string()))?
     {
-        AppendOutcome::Committed(_) => Ok(()),
+        AppendOutcome::Committed(receipt) => Ok(receipt.tail),
         AppendOutcome::TailConflict { .. } => Err(Error::Conflict(
             "local swarm registry changed during append".into(),
         )),
