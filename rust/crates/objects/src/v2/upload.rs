@@ -74,12 +74,28 @@ pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>, oneshot::Rece
             let chunk = pending.split_to(pending.len().min(super::HTTP_BODY_FRAME_BYTES));
             Ok(Some((chunk, (body, pending, length, state, error))))
         },
-    )
-    .boxed();
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let chunks = chunks.boxed();
+    #[cfg(target_arch = "wasm32")]
+    let chunks = chunks.boxed_local();
     (chunks, state, failure)
 }
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn run<T: Send>(
     request: impl Future<Output = Result<T, Error>> + Send,
+    failure: oneshot::Receiver<Error>,
+) -> Result<T, Error> {
+    futures::pin_mut!(request, failure);
+    match select(failure, request).await {
+        Either::Left((Ok(error), _)) => Err(error),
+        Either::Left((Err(_), request)) => request.await,
+        Either::Right((result, _)) => result,
+    }
+}
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn run<T>(
+    request: impl Future<Output = Result<T, Error>>,
     failure: oneshot::Receiver<Error>,
 ) -> Result<T, Error> {
     futures::pin_mut!(request, failure);
