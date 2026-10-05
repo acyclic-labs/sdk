@@ -171,13 +171,18 @@ eventual completion, deadlock freedom, storage correctness, or Rust refinement.
 
 ### Qualified property inventory
 
-The current source-bound run was executed at commit `b147fc89a` in the
+The current source-bound run was executed at commit `24ed1706b` in the
 isolated qualification worktree. Its TLC logs are under
-`target/formal-rebase-evidence/b147fc89a` and use the pinned
+`target/formal-evidence/24ed1706b` and use the pinned
 `tla2tools-1.7.4.jar`, one worker, fingerprint index `0`, seed `1`, and a
 512 MB heap. The run contains 25 cases across the seven model families below;
 the evidence directory is generated output and must be retained with the
 source checkout that produced it. The qualified finite cases are:
+
+`qualification-receipt.json` in that directory records the source commit,
+pinned tool URL and SHA-256, checker inputs, resource limits, and SHA-256
+digests for every model and fixture log. The receipt is qualification evidence
+for this bounded run, not a proof of the production implementation.
 
 | Property family | Finite bound | Safe evidence | Required negative controls |
 | --- | --- | --- | --- |
