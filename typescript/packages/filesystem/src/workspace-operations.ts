@@ -4,7 +4,7 @@ import type {
   WasmRawJoinResult, WasmRawWorkspace, WorkspaceRebaseResult,
 } from "./contracts.js";
 import { copyWorkspaceExtentPlan, copyWorkspaceStat } from "./workspace-copies.js";
-import { parseWorkspaceCommit, parseWorkspaceDelete, validateWorkspaceRebaseOptions } from "./workspace-results.js";
+import { parseWorkspaceCommit, parseWorkspaceDelete } from "./workspace-results.js";
 
 function nativeBoundary<T>(value: unknown): T {
   return value as T;
@@ -30,19 +30,15 @@ export function workspaceOperations(
     async head() { return Uint8Array.from(await raw.head()); },
     async sync() { return adaptGeneration(await raw.sync()); },
     async checkpoint(label) {
-      requireName(label);
       return adaptGeneration(await raw.checkpoint(label));
     },
     async pin(identity) {
-      requireName(identity);
       return adaptGeneration(await raw.pin(identity));
     },
     async delete(idempotencyKey) {
-      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey);
       return parseWorkspaceDelete(await raw.delete(idempotencyKey));
     },
     async read(path, maximumBytes) {
-      if (maximumBytes <= 0n) throw new RangeError("maximum read bytes must be positive");
       return Uint8Array.from(await raw.read(path, maximumBytes));
     },
     async readRange(path, offset, length) { return Uint8Array.from(await raw.readRange(path, offset, length)); },
@@ -54,21 +50,11 @@ export function workspaceOperations(
     async write(path, bytes) { return parseWorkspaceCommit(await raw.write(path, bytes)); },
     async remove(path) { return parseWorkspaceCommit(await raw.remove(path)); },
     async liveRebase(options, idempotencyKey) {
-      validateWorkspaceRebaseOptions(options);
-      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey);
       return parseRebase(await raw.liveRebase(
         idempotencyKey, options.maximumGenerations, options.maximumChanges, options.maximumConflicts,
       ));
     },
   };
-}
-
-function requireName(value: string): void {
-  if (value.length === 0) throw new RangeError("workspace name must be non-empty");
-}
-
-function requireIdentity(value: Uint8Array): void {
-  if (value.byteLength !== 16) throw new RangeError("idempotency key must be exactly 16 bytes");
 }
 
 export function adaptJoinPlanBase(
@@ -79,8 +65,6 @@ export function adaptJoinPlanBase(
     get targetHead() { return Uint8Array.from(raw.targetHead); },
     get commonAncestor() { return Uint8Array.from(raw.commonAncestor); },
     async apply(ifTarget, idempotencyKey) {
-      requireGenerationIdentity(ifTarget);
-      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey);
       return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.apply(ifTarget, idempotencyKey)));
     },
     async close() {},
@@ -97,8 +81,6 @@ export function adaptResolvableJoinPlan(
       selections: readonly MergeConflictSelection[],
       idempotencyKey?: Uint8Array,
     ): Promise<JoinResult> {
-      requireGenerationIdentity(ifTarget);
-      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey);
       return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.applySides(ifTarget, idempotencyKey, selections.map((selection) =>
         selection.kind === "file"
           ? { kind: "file", fileId: Uint8Array.from(selection.fileId), side: selection.side }
@@ -111,10 +93,4 @@ export function adaptResolvableJoinPlan(
       ))));
     },
   });
-}
-
-function requireGenerationIdentity(value: Uint8Array): void {
-  if (value.byteLength !== 32) {
-    throw new RangeError("target generation generation identity must be exactly 32 bytes");
-  }
 }
