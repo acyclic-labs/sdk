@@ -77,7 +77,6 @@ pub use project_merge_recovery::{
     ProjectMergeIntent, ProjectMergeRecovery, ProjectMergeRecoveryEntry, ProjectMergeTerminal,
     ProjectMergeTerminalConflict,
 };
-pub(crate) mod workspace_tools;
 mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

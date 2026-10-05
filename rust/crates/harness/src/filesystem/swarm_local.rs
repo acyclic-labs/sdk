@@ -11,7 +11,7 @@ use super::{
     FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
     LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
     ProjectWorkspaceTree,
-    PersistentLocalHarness, workspace_ref,
+    PersistentLocalHarness, workspace_ref, workspace_tools,
 };
 use crate::{
     AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
@@ -3425,7 +3425,7 @@ impl PersistentLocalSwarm {
         })?;
         let host_secret = root_harness.signing_key();
         let resolver = Arc::new(
-            LocalFilesystemForkResolver::new(host, stream.clone(), stream_provider, project)?
+            LocalFilesystemForkResolver::new(host.clone(), stream.clone(), stream_provider, project.clone())?
                 .with_host_secret(host_secret)?,
         );
         let plans = Arc::new(LocalModelForkPlans::new().with_resolver(resolver.clone()));
