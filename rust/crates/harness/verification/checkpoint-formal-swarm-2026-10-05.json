@@ -1,6 +1,6 @@
 {
-  "source_commit": "25fac2e99d2884836f9e3d85bcd0c2e10c3b72da",
-  "source_tree": "9f488b4870aecf808d0f5a119603c8713837cf74",
+  "source_commit": "56516e9186395895c7f8193ffe977cacd4024aa2",
+  "source_tree": "28a74658de869919e44efed3dede6e5b9f0bfe91",
   "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
   "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
   "tools_jar": {
@@ -291,9 +291,9 @@
   },
   "real_trace_checker": {
     "checker": "rust/crates/harness/verification/check-real-trace.ps1",
-    "checker_sha256": "1d0f20a9d9d97a13e3995b3d7e2821b8a1fee464639c8902cdcd9e58729cec1b",
+    "checker_sha256": "801e02a111ef2b3901664174b5cf2bc9db63e60f71988e372cb60763cd4afb1d",
     "qualification": "rust/crates/harness/verification/qualify-real-trace.ps1",
-    "qualification_sha256": "a788fbd86c45a120dd5784ff5d84d6b89d9e3cba3fd0ae1ea3b034fcf0d0196b",
-    "mutation_count": 12
+    "qualification_sha256": "bc6d92b02389e3c4b5e370e1ec1a8bffeb96311a4e6dd56a8645ccda0aa94805",
+    "mutation_count": 14
   }
 }
