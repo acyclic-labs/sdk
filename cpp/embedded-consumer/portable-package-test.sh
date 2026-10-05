@@ -30,15 +30,24 @@ CC="${CC:-cc}"
 MUSL_DYNAMIC=0
 if [[ "$RUST_TARGET" == *-unknown-linux-musl ]]; then
   MUSL_DYNAMIC=1
+  musl_compiler_for_target() {
+    local candidate machine
+    for candidate in "$@"; do
+      [[ -n "$candidate" ]] || continue
+      command -v "$candidate" >/dev/null 2>&1 || continue
+      machine="$($candidate -dumpmachine 2>/dev/null || true)"
+      [[ "$machine" == *musl* ]] || continue
+      printf '%s' "$(command -v "$candidate")"
+      return 0
+    done
+    return 1
+  }
   case "$RUST_TARGET" in
     x86_64-unknown-linux-musl)
-      MUSL_CC="${MUSL_CC:-$(command -v x86_64-linux-musl-gcc || command -v musl-gcc || true)}"
+      MUSL_CC="${MUSL_CC:-$(musl_compiler_for_target x86_64-linux-musl-gcc musl-gcc gcc || true)}"
       ;;
     aarch64-unknown-linux-musl)
-      MUSL_CC="${MUSL_CC:-$(command -v aarch64-linux-musl-gcc || true)}"
-      if [[ -z "$MUSL_CC" && "$(uname -m)" == "aarch64" ]]; then
-        MUSL_CC="$(command -v musl-gcc || true)"
-      fi
+      MUSL_CC="${MUSL_CC:-$(musl_compiler_for_target aarch64-linux-musl-gcc musl-gcc gcc || true)}"
       ;;
     *)
       echo "unsupported musl target: $RUST_TARGET" >&2
