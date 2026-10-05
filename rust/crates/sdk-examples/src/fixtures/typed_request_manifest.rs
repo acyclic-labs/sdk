@@ -200,7 +200,7 @@ pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequ
             request_type: request_type.to_owned(),
             request_base64: request_base64.to_owned(),
             request_sha256: request_sha256.to_owned(),
-            request_frames: Vec::new(),
+            request_frames: parse_request_frames(observation, rpc)?,
             expected_wire: format!("{EXPECTED_WIRE};sha256={request_sha256}"),
             response_type: None,
             response_base64: None,
@@ -226,6 +226,45 @@ pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequ
         }
     }
     Ok(output)
+}
+
+fn parse_request_frames(
+    observation: &Value,
+    rpc: &str,
+) -> Result<Vec<RequestFrameRecord>, String> {
+    let Some(frames) = observation.get("request_frames").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    frames
+        .iter()
+        .enumerate()
+        .map(|(sequence, frame)| {
+            let frame = frame
+                .as_object()
+                .ok_or_else(|| format!("{rpc} request frame is not an object"))?;
+            Ok(RequestFrameRecord {
+                sequence: frame
+                    .get("sequence")
+                    .and_then(Value::as_u64)
+                    .map_or(sequence, |value| value as usize),
+                request_type: frame
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{rpc} request frame type is missing"))?
+                    .to_owned(),
+                request_base64: frame
+                    .get("bytes_base64")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{rpc} request frame bytes are missing"))?
+                    .to_owned(),
+                request_sha256: frame
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{rpc} request frame digest is missing"))?
+                    .to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// Serialize a strict manifest from actual Rust fixture observations.
@@ -1211,6 +1250,34 @@ fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String>
                 "{} has an unrecognized observed status {}",
                 record.rpc, record.expected_status
             ));
+        }
+        for (index, frame) in record.request_frames.iter().enumerate() {
+            if frame.sequence != index {
+                return Err(format!(
+                    "{} request frame order is invalid at index {} (sequence {})",
+                    record.rpc, index, frame.sequence
+                ));
+            }
+            let bytes = decode_base64(&frame.request_base64)
+                .map_err(|error| format!("{} request frame {index}: {error}", record.rpc))?;
+            let digest = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+            if frame.request_sha256 != digest || frame.request_type.is_empty() {
+                return Err(format!(
+                    "{} request frame {index} has invalid type or digest",
+                    record.rpc
+                ));
+            }
+        }
+        if let Some(first) = record.request_frames.first() {
+            if first.sequence != 0
+                || first.request_base64 != record.request_base64
+                || first.request_sha256 != record.request_sha256
+            {
+                return Err(format!(
+                    "{} request frame 0 does not match the top-level request",
+                    record.rpc
+                ));
+            }
         }
         let Some(response_type) = record.response_type.as_deref() else {
             if !record.response_frames.is_empty() {
