@@ -759,7 +759,8 @@ impl PublicFieldBinding {
             | ("machines", "InspectCheckpointRequest")
             | ("machines", "OperationRequest")
             | ("machines", "ListMachinesRequest")
-            | ("machines", "EventsRequest") => Some("machines"),
+            | ("machines", "EventsRequest")
+            | ("machines", "QualifyImageRequest") => Some("machines"),
             ("filesystem", "ReadRequest") => Some("filesystem"),
             _ => None,
         }
@@ -789,6 +790,7 @@ impl PublicFieldBinding {
             (_, "OperationRequest") => Some("InspectOperation"),
             (_, "ListMachinesRequest") => Some("ListMachines"),
             (_, "EventsRequest") => Some("Events"),
+            (_, "QualifyImageRequest") => Some("QualifyImage"),
             _ => None,
         }
     }
@@ -1409,6 +1411,15 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
     },
     PublicFieldBinding {
         family: "machines",
+        field: "image",
+        semantic_type: "immutable_image",
+        module: "machines",
+        message: "QualifyImageRequest",
+        wire_field: "image",
+        direction: PublicFieldDirection::Request,
+    },
+    PublicFieldBinding {
+        family: "machines",
         field: "idempotency_key",
         semantic_type: "idempotency_key_message",
         module: "machines",
@@ -2006,7 +2017,7 @@ mod tests {
 
     #[test]
     fn every_field_mapping_has_a_concrete_public_wire_location() {
-        assert_eq!(PUBLIC_FIELD_BINDINGS.len(), FIELD_SEMANTIC_TYPES.len());
+        assert!(PUBLIC_FIELD_BINDINGS.len() >= FIELD_SEMANTIC_TYPES.len());
         for mapping in FIELD_SEMANTIC_TYPES {
             let binding = PUBLIC_FIELD_BINDINGS
                 .iter()
@@ -2018,6 +2029,15 @@ mod tests {
             assert!(!binding.module.is_empty());
             assert!(!binding.message.is_empty());
             assert!(!binding.wire_field.is_empty());
+        }
+        for binding in PUBLIC_FIELD_BINDINGS {
+            assert!(
+                semantic_type(binding.semantic_type).is_some(),
+                "public binding {}.{} maps to missing semantic type {}",
+                binding.family,
+                binding.field,
+                binding.semantic_type
+            );
         }
     }
 

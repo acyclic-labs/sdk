@@ -231,17 +231,6 @@ public readonly record struct RevisionDigest
     internal ByteString ToWire() => ByteString.CopyFrom(Value);
 }
 
-public readonly record struct Image
-{
-    public Image(string value)
-    {
-        if (string.IsNullOrEmpty(value)) throw new ArgumentException("Image must be non-empty", nameof(value));
-        Value = value;
-    }
-    public string Value { get; }
-    internal string ToWire() => Value;
-}
-
 public readonly record struct Revision
 {
     public Revision(ulong value)
@@ -313,6 +302,18 @@ public readonly record struct MachinePageLimit
     internal ulong ToWire() => Value;
 }
 
+public readonly record struct MachineEventPageLimit
+{
+    public MachineEventPageLimit(ulong value)
+    {
+        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));
+        if (value > 1024) throw new ArgumentOutOfRangeException(nameof(value));
+        Value = value;
+    }
+    public ulong Value { get; }
+    internal ulong ToWire() => Value;
+}
+
 public readonly record struct CommitId
 {
     public CommitId(ReadOnlyMemory<byte> value)
@@ -323,6 +324,21 @@ public readonly record struct CommitId
     }
     public byte[] Value { get; }
     internal ByteString ToWire() => ByteString.CopyFrom(Value);
+}
+
+public abstract record ImmutableImage
+{
+    public sealed record Managed(Sha256Digest Digest) : ImmutableImage;
+    public sealed record Custom(Sha256Digest Digest) : ImmutableImage;
+    public sealed record Checkpoint(CheckpointId Id) : ImmutableImage;
+
+    internal Acyclic.Machines.V1.Image ToWire() => this switch
+    {
+        Managed value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Managed, ManagedDigest = value.Digest.ToWire() },
+        Custom value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Custom, CustomDigest = value.Digest.ToWire() },
+        Checkpoint value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Checkpoint, Checkpoint = new Acyclic.Machines.V1.CheckpointId { Value = value.Id.ToWire() } },
+        _ => throw new ArgumentOutOfRangeException(nameof(this)),
+    };
 }
 
 public abstract record wire_choice
@@ -406,14 +422,27 @@ public sealed record InferenceInspectWarmRequest(
 }
 
 public sealed record MachinesCreateMachineRequest(
-    Image Image,
+    ImmutableImage Image,
     IdempotencyKey IdempotencyKey
 )
 {
     internal Acyclic.Machines.V1.CreateMachineRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.CreateMachineRequest();
+        wire.Image = Image.ToWire();
         wire.IdempotencyKey = new Acyclic.Machines.V1.IdempotencyKey { Value = IdempotencyKey.ToWire() };
+        return wire;
+    }
+}
+
+public sealed record MachinesEventsRequest(
+    MachineEventPageLimit EventPageLimit
+)
+{
+    internal Acyclic.Machines.V1.EventsRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.EventsRequest();
+        wire.Limit = checked((uint)EventPageLimit.ToWire());
         return wire;
     }
 }
@@ -462,6 +491,18 @@ public sealed record MachinesOperationRequest(
     {
         var wire = new Acyclic.Machines.V1.OperationRequest();
         wire.Operation = new Acyclic.Machines.V1.OperationId { Value = OperationId.ToWire() };
+        return wire;
+    }
+}
+
+public sealed record MachinesQualifyImageRequest(
+    ImmutableImage Image
+)
+{
+    internal Acyclic.Machines.V1.QualifyImageRequest ToWire()
+    {
+        var wire = new Acyclic.Machines.V1.QualifyImageRequest();
+        wire.Image = Image.ToWire();
         return wire;
     }
 }
@@ -619,6 +660,8 @@ public abstract record ObjectsGetObjectFrame
     public sealed record Header(ObjectsGetObjectHeader Value) : ObjectsGetObjectFrame;
     public sealed record Body(ByteString Value) : ObjectsGetObjectFrame;
     public sealed record Error(Acyclic.Objects.V2.ErrorDetail Value) : ObjectsGetObjectFrame;
+    // Retain the original protobuf message when a newer sender adds an unknown oneof arm.
+    public sealed record Unknown(Acyclic.Objects.V2.GetObjectResponse Wire) : ObjectsGetObjectFrame;
     public sealed record Empty : ObjectsGetObjectFrame;
 }
 
@@ -629,7 +672,7 @@ public sealed record ObjectsGetObjectResponse(ObjectsGetObjectFrame Frame)
         Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Header => new(new ObjectsGetObjectFrame.Header(ObjectsGetObjectHeader.FromWire(message.Header))),
         Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Body => new(new ObjectsGetObjectFrame.Body(message.Body)),
         Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Error => new(new ObjectsGetObjectFrame.Error(message.Error)),
-        _ => new(new ObjectsGetObjectFrame.Empty()),
+        _ => new(new ObjectsGetObjectFrame.Unknown(message)),
     };
 }
 
@@ -657,5 +700,13 @@ public sealed class InferenceClient
     private readonly Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient _evaluations;
     public InferenceClient(Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient evaluations) => _evaluations = evaluations;
     public Inference.Customer.V1.EvaluationView CreateEvaluation(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Create(request.ToWire(), headers, deadline, cancellationToken);
+}
+
+public sealed class MachinesClient
+{
+    private readonly Acyclic.Machines.V1.MachinesService.MachinesServiceClient _machines;
+    public MachinesClient(Acyclic.Machines.V1.MachinesService.MachinesServiceClient machines) => _machines = machines;
+    public Acyclic.Machines.V1.ImageQualification QualifyImage(MachinesQualifyImageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.QualifyImage(request.ToWire(), headers, deadline, cancellationToken);
+    public Acyclic.Machines.V1.MachineAdmission Create(MachinesCreateMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Create(request.ToWire(), headers, deadline, cancellationToken);
 }
 

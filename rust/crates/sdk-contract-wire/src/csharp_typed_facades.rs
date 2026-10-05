@@ -294,6 +294,7 @@ fn render_object_stream(out: &mut String) {
 fn render_clients(out: &mut String) {
     out.push_str("public sealed class ObjectsClient\n{\n    private readonly Acyclic.Objects.V2.BucketsService.BucketsServiceClient _buckets;\n    private readonly Acyclic.Objects.V2.ObjectsService.ObjectsServiceClient _objects;\n    public ObjectsClient(Acyclic.Objects.V2.BucketsService.BucketsServiceClient buckets, Acyclic.Objects.V2.ObjectsService.ObjectsServiceClient objects) => (_buckets, _objects) = (buckets, objects);\n    public Acyclic.Objects.V2.Bucket CreateBucket(ObjectsCreateBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.CreateBucket(request.ToWire(), headers, deadline, cancellationToken);\n    public ObjectsGetObjectStream GetObject(ObjectsGetObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_objects.GetObject(request.ToWire(), headers, deadline, cancellationToken));\n}\n\n");
     out.push_str("public sealed class InferenceClient\n{\n    private readonly Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient _evaluations;\n    public InferenceClient(Inference.Customer.V1.EvaluationsService.EvaluationsServiceClient evaluations) => _evaluations = evaluations;\n    public Inference.Customer.V1.EvaluationView CreateEvaluation(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Create(request.ToWire(), headers, deadline, cancellationToken);\n}\n\n");
+    out.push_str("public sealed class MachinesClient\n{\n    private readonly Acyclic.Machines.V1.MachinesService.MachinesServiceClient _machines;\n    public MachinesClient(Acyclic.Machines.V1.MachinesService.MachinesServiceClient machines) => _machines = machines;\n    public Acyclic.Machines.V1.ImageQualification QualifyImage(MachinesQualifyImageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.QualifyImage(request.ToWire(), headers, deadline, cancellationToken);\n    public Acyclic.Machines.V1.MachineAdmission Create(MachinesCreateMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Create(request.ToWire(), headers, deadline, cancellationToken);\n}\n\n");
 }
 
 fn csharp_type(kind: WireValueKind, rust_name: &str) -> String {
@@ -435,5 +436,14 @@ mod tests {
         assert!(source.contains("record Custom(Sha256Digest Digest)"));
         assert!(source.contains("record Checkpoint(CheckpointId Id)"));
         assert!(source.contains("wire.Image = Image.ToWire();"));
+    }
+
+    #[test]
+    fn csharp_machines_image_requests_reach_a_typed_client() {
+        let (_, source) = generate_csharp_typed_facade();
+        assert!(source.contains("public sealed record MachinesQualifyImageRequest("));
+        assert!(source.contains("public sealed class MachinesClient"));
+        assert!(source.contains("_machines.QualifyImage(request.ToWire()"));
+        assert!(source.contains("_machines.Create(request.ToWire()"));
     }
 }
