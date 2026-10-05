@@ -45,6 +45,7 @@ pub struct ResolvedRequestField {
     pub proto3_optional: bool,
     pub semantic_type: Option<String>,
     pub validation_rules: Vec<String>,
+    pub validation_constraints: Vec<ResolvedValidationConstraint>,
 }
 
 /// Rust-owned operation identity retained alongside the field inventory.
@@ -61,6 +62,16 @@ pub struct ResolvedRpcMethod {
     pub output_message: String,
     pub client_streaming: bool,
     pub server_streaming: bool,
+}
+
+/// Validation evidence attached to a descriptor field. Rule entries are safe
+/// for target generators to project into constructors or refinements. A
+/// cross-field entry remains visible to runtime validation and cannot be
+/// reduced to a scalar wrapper without losing contract meaning.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResolvedValidationConstraint {
+    Rule(SemanticRule),
+    CrossField(String),
 }
 
 /// Resolve every reachable request field from the single Rust contract model.
@@ -273,6 +284,12 @@ fn collect_reachable_fields(
             proto3_optional: field.proto3_optional.unwrap_or(false),
             semantic_type: semantic_binding_for_field(family, message_path, field_name),
             validation_rules: validation_rules_for_field(family, rpc, field_name),
+            validation_constraints: validation_constraints_for_field(
+                family,
+                rpc,
+                field_name,
+                field.r#type,
+            ),
         });
         if field.r#type == Some(FieldType::Message as i32)
             || field.r#type == Some(FieldType::Group as i32)
@@ -342,6 +359,69 @@ fn validation_rules_for_field(family: &str, rpc: &str, field: &str) -> Vec<Strin
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn validation_constraints_for_field(
+    family: &str,
+    rpc: &str,
+    field: &str,
+    wire_type: Option<i32>,
+) -> Vec<ResolvedValidationConstraint> {
+    let Some(view) = crate::family_registry::family_view(family) else {
+        return Vec::new();
+    };
+    let Some(policy) = view.operation_policies.iter().find(|policy| policy.rpc == rpc) else {
+        return Vec::new();
+    };
+    policy
+        .validations
+        .iter()
+        .filter(|validation| {
+            validation
+                .split('.')
+                .next()
+                .is_some_and(|head| head == field)
+        })
+        .flat_map(|validation| validation_constraint(validation, wire_type))
+        .collect()
+}
+
+fn validation_constraint(
+    validation: &str,
+    wire_type: Option<i32>,
+) -> Vec<ResolvedValidationConstraint> {
+    let suffix = validation.rsplit('.').next().unwrap_or(validation);
+    let rules = match suffix {
+        "non_empty_utf8" => Some(vec![SemanticRule::NonEmpty, SemanticRule::Utf8]),
+        "non_empty_bytes" | "non_empty" => Some(vec![SemanticRule::NonEmpty]),
+        "nonzero" => Some(vec![if wire_type == Some(FieldType::Bytes as i32) {
+            SemanticRule::NonEmpty
+        } else {
+            SemanticRule::StrictlyPositive
+        }]),
+        "non_negative" => Some(vec![SemanticRule::NonNegative]),
+        "length_16" | "16_bytes" => Some(vec![SemanticRule::FixedLength(16)]),
+        "length_32" | "32_bytes" => Some(vec![SemanticRule::FixedLength(32)]),
+        "immutable_digest" => Some(vec![
+            SemanticRule::FixedLength(32),
+            SemanticRule::Sha256Digest,
+        ]),
+        "max_stream_items" => Some(vec![
+            SemanticRule::StrictlyPositive,
+            SemanticRule::MaxItems(1024),
+        ]),
+        _ => None,
+    };
+    rules
+        .map(|rules| {
+            rules
+                .into_iter()
+                .map(ResolvedValidationConstraint::Rule)
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            vec![ResolvedValidationConstraint::CrossField(validation.to_owned())]
+        })
 }
 
 /// Every language target currently inventoried by the generation pipeline.
