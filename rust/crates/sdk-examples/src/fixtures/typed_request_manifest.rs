@@ -1504,10 +1504,28 @@ fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String>
                     return Err(format!("{} has an invalid success outcome", record.rpc));
                 }
             }
-            "stream" => {
-                if record.expected_outcome.grpc_code.is_none()
-                    || record.expected_outcome.terminal.is_none()
+            "descriptor-only" => {
+                if record.expected_outcome.grpc_code.is_some()
+                    || record.expected_outcome.detail.is_some()
+                    || record.expected_outcome.terminal.is_some()
                 {
+                    return Err(format!("{} has an invalid descriptor outcome", record.rpc));
+                }
+            }
+            "stream" => {
+                let Some(code) = record.expected_outcome.grpc_code.as_deref() else {
+                    return Err(format!("{} has an incomplete stream outcome", record.rpc));
+                };
+                let Some(terminal) = record.expected_outcome.terminal.as_deref() else {
+                    return Err(format!("{} has an incomplete stream outcome", record.rpc));
+                };
+                let code_matches_terminal = match terminal {
+                    "frame" | "eof" => code == "OK",
+                    "timeout" | "deadline" => code == "DEADLINE_EXCEEDED",
+                    "cancelled" => code == "CANCELLED",
+                    _ => false,
+                };
+                if !code_matches_terminal {
                     return Err(format!("{} has an incomplete stream outcome", record.rpc));
                 }
             }
@@ -1736,6 +1754,7 @@ fn record_json(record: &TypedRequestRecord) -> Value {
             "grpc_code": record.expected_outcome.grpc_code,
             "detail": record.expected_outcome.detail,
             "terminal": record.expected_outcome.terminal,
+            "terminal_kind": record.expected_outcome.terminal,
         },
     })
 }
@@ -1792,6 +1811,7 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
         "import qualified Data.ByteString as BS".to_owned(),
         "import Control.Exception (SomeException, try)".to_owned(),
         "import Control.Monad (when)".to_owned(),
+        "import Data.List (isInfixOf)".to_owned(),
         "import Data.ProtoLens.Encoding (decodeMessage, encodeMessage)".to_owned(),
         "import Network.GRPC.Client qualified as Client".to_owned(),
         "import Network.GRPC.Client.StreamType.IO qualified as Typed".to_owned(),
@@ -1822,6 +1842,15 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
         "  case result of".to_owned(),
         "    Left (errorValue :: SomeException) -> fail (name ++ \" unexpected RPC failure: \" ++ show errorValue)".to_owned(),
         "    Right value -> pure value".to_owned(),
+        String::new(),
+        "expectError :: String -> String -> String -> IO a -> IO ()".to_owned(),
+        "expectError name code terminal action = do".to_owned(),
+        "  result <- try action".to_owned(),
+        "  case result of".to_owned(),
+        "    Left (errorValue :: SomeException) -> do".to_owned(),
+        "      let detail = show errorValue".to_owned(),
+        "      when (not (code `isInfixOf` detail) || (not (null terminal) && not (terminal `isInfixOf` detail))) (fail (name ++ \" unexpected RPC error: \" ++ detail))".to_owned(),
+        "    Right _ -> fail (name ++ \" unexpectedly succeeded\")".to_owned(),
         String::new(),
         "expect :: String -> BS.ByteString -> BS.ByteString -> IO ()".to_owned(),
         "expect name wanted actual = when (wanted /= actual) (fail (name ++ \" response bytes differ\"))".to_owned(),
@@ -1863,6 +1892,10 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
         let response_type = step.get("response_type").and_then(Value::as_str).unwrap_or(method.2.as_str());
         let response_alias = if response_type.starts_with("acyclic.protocol.v1.") { "Protocol" } else { haskell_module_alias(&haskell_module_for_service(method.0.as_str())?) };
         let expected_frames = step.get("response_frames").and_then(Value::as_array).cloned().unwrap_or_default();
+        let outcome = step.get("expected_outcome").and_then(Value::as_object);
+        let outcome_kind = outcome.and_then(|value| value.get("kind")).and_then(Value::as_str).unwrap_or("success");
+        let outcome_code = outcome.and_then(|value| value.get("grpc_code")).and_then(Value::as_str).unwrap_or("UNKNOWN");
+        let outcome_terminal = outcome.and_then(|value| value.get("terminal")).and_then(Value::as_str).unwrap_or("");
         if is_client {
             let frames = step.get("request_frames").and_then(Value::as_array).cloned().unwrap_or_default();
             let mut sends = Vec::new();
@@ -1882,16 +1915,28 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
                 }
             }
             sends.push("send NoNextElem".to_owned());
+            if outcome_kind == "error" {
+                lines.push(format!("    expectError \"{rpc}\" \"{outcome_code}\" \"{outcome_terminal}\" (Typed.clientStreaming conn (Client.rpc @Rpc{index}) (\\send -> {} >> pure ()))", sends.join(" >> ")));
+                continue;
+            }
             lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.clientStreaming conn (Client.rpc @Rpc{index}) (\\send -> {} >> pure ()))", sends.join(" >> "))); 
             let expected = expected_frames.first().and_then(|frame| frame.get("response_base64")).and_then(Value::as_str).or_else(|| step.get("response_base64").and_then(Value::as_str)).unwrap_or("");
             lines.push(format!("    let actual{index} = case response{index} of (Proto value, _) -> encodeMessage value"));
             lines.push(format!("    expect \"{rpc}\" {} actual{index}", haskell_bytes(expected)?));
         } else if is_server {
             let expected = expected_frames.iter().map(|frame| frame.get("response_base64").and_then(Value::as_str).unwrap_or("")).map(haskell_bytes).collect::<Result<Vec<_>, _>>()?;
+            if outcome_kind == "error" {
+                lines.push(format!("    expectError \"{rpc}\" \"{outcome_code}\" \"{outcome_terminal}\" (Typed.serverStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}) (\\next -> collect next []))"));
+                continue;
+            }
             lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.serverStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}) (\\next -> collect next []))"));
             lines.push(format!("    let actual{index} = map (\\(Proto value) -> encodeMessage value) response{index}"));
             lines.push(format!("    expectFrames \"{rpc}\" [{}] actual{index}", expected.join(", ")));
         } else {
+            if outcome_kind == "error" {
+                lines.push(format!("    expectError \"{rpc}\" \"{outcome_code}\" \"{outcome_terminal}\" (Typed.nonStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}))"));
+                continue;
+            }
             lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.nonStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}))"));
             lines.push(format!("    let actual{index} = case response{index} of Proto value -> encodeMessage value"));
             let expected = expected_frames.first().and_then(|frame| frame.get("response_base64")).and_then(Value::as_str).or_else(|| step.get("response_base64").and_then(Value::as_str)).unwrap_or("");
@@ -1908,7 +1953,7 @@ type HaskellMethod = (String, String, String, String, String, bool, bool);
 fn descriptor_method(rpc: &str) -> Result<HaskellMethod, String> {
     let (service_name, method_name) = rpc.rsplit_once('/').ok_or_else(|| format!("RPC has no method separator: {rpc}"))?;
     for (_, descriptor_bytes) in descriptor_sets() {
-        let pool = DescriptorPool::decode(descriptor_bytes.as_slice()).map_err(|error| format!("decode descriptor set: {error}"))?;
+        let pool = DescriptorPool::decode(descriptor_bytes).map_err(|error| format!("decode descriptor set: {error}"))?;
         for service in pool.services() {
             if service.full_name() == service_name {
                 if let Some(method) = service.methods().find(|candidate| candidate.name() == method_name) {
@@ -2122,6 +2167,30 @@ mod tests {
         assert!(error.contains("unrecognized observed status"));
     }
 
+    #[test]
+    fn outcomes_reject_missing_codes_and_wrong_stream_terminals() {
+        let mut missing_error_code = observed_record();
+        missing_error_code.expected_outcome = ExpectedOutcome::error(None, Some("missing"), Some("error"));
+        let error = validate_actual_records(&[missing_error_code])
+            .expect_err("an error without a gRPC code must fail");
+        assert!(error.contains("incomplete error outcome"));
+
+        let mut timeout_marked_eof = observed_record();
+        timeout_marked_eof.expected_outcome = ExpectedOutcome::stream_terminal(
+            "eof",
+            Some("DEADLINE_EXCEEDED"),
+        );
+        let error = validate_actual_records(&[timeout_marked_eof])
+            .expect_err("a deadline code cannot be reported as EOF");
+        assert!(error.contains("incomplete stream outcome"));
+
+        let mut eof_marked_timeout = observed_record();
+        eof_marked_timeout.expected_outcome = ExpectedOutcome::stream_terminal("timeout", None);
+        let error = validate_actual_records(&[eof_marked_timeout])
+            .expect_err("a timeout terminal cannot carry an OK code");
+        assert!(error.contains("incomplete stream outcome"));
+    }
+
     #[tokio::test]
     async fn actual_collector_is_complete_and_uses_put_object_envelope() {
         let execution = actual_execution_records()
@@ -2209,5 +2278,3 @@ mod tests {
         }));
     }
 }
-
-
