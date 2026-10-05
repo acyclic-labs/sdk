@@ -11,9 +11,7 @@ use crate::runtime::{RuntimeScope, ToolContext};
 use crate::tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
 use crate::{Error, IdempotencyKey, Result, TaskId};
 use acyclic_fs::kernel::FileKind;
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
-};
+use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -47,20 +45,25 @@ impl WorkspaceToolsBinding {
         if task == self.root_task {
             return Ok(self.root_project.clone());
         }
-        VolumeRef::new(
-            self.root_project.provider().clone(),
-            format!("local-project-{task}"),
-            VolumeClass::Project,
-            match self.root_project.owner() {
-                VolumeOwner::Project(owner) => VolumeOwner::Project(owner.clone()),
-                _ => {
-                    return Err(Error::Invalid(
-                        "root project has a non-project owner".into(),
-                    ));
-                }
-            },
-        )
+        child_project_volume(&self.root_project, task)
     }
+}
+
+/// Canonical local child-project identity shared by fork allocation and tool routing.
+pub(crate) fn child_project_volume(root_project: &VolumeRef, task: TaskId) -> Result<VolumeRef> {
+    VolumeRef::new(
+        root_project.provider().clone(),
+        format!("local-project-{task}"),
+        VolumeClass::Project,
+        match root_project.owner() {
+            VolumeOwner::Project(owner) => VolumeOwner::Project(owner.clone()),
+            _ => {
+                return Err(Error::Invalid(
+                    "root project has a non-project owner".into(),
+                ));
+            }
+        },
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,15 +198,14 @@ impl ToolExecutor for EditExecutor {
                 ));
             }
             let workspace = project_workspace(&self.project)?;
-            let expected = match input.expected_generation {
-                Some(generation) => Some(generation),
-                None => Some(self.host.resolve(&workspace).await?.generation),
-            };
+            let expected = input.expected_generation.ok_or_else(|| {
+                Error::Invalid("workspace edit requires an expected generation".into())
+            })?;
             let generation = self
                 .host
                 .apply(
                     &workspace,
-                    expected.as_ref(),
+                    Some(&expected),
                     &[WorkspaceMutation::PutFile {
                         path: input.path.clone(),
                         bytes,
@@ -264,11 +266,15 @@ impl ToolExecutor for ReadExecutor {
             let input: ReadInput = parse(&invocation)?;
             validate_path(&input.path, false)?;
             let workspace = project_workspace(&self.project)?;
+            let generation = match input.expected_generation {
+                Some(generation) => generation,
+                None => self.host.resolve(&workspace).await?.generation,
+            };
             let bytes = self
                 .host
                 .read(
                     &workspace,
-                    input.expected_generation.as_ref(),
+                    Some(&generation),
                     &input.path,
                     self.maximum_bytes,
                 )
@@ -276,7 +282,12 @@ impl ToolExecutor for ReadExecutor {
             let text = String::from_utf8(bytes.to_vec())
                 .map_err(|_| Error::Invalid("workspace read is not UTF-8".into()))?;
             Ok(ToolResult {
-                value: json!({"path": input.path, "content": text}),
+                value: json!({
+                    "path": input.path,
+                    "content": text,
+                    "generation": serde_json::to_value(generation)
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                }),
             })
         })
     }
@@ -293,6 +304,8 @@ struct SearchExecutor {
     host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
     project: VolumeRef,
     maximum_bytes: u64,
+    maximum_files: usize,
+    maximum_search_bytes: u64,
 }
 
 impl ToolExecutor for SearchExecutor {
@@ -332,6 +345,8 @@ impl ToolExecutor for SearchExecutor {
             let generation = self.host.resolve(&workspace).await?.generation;
             let mut directories = vec![input.path.clone()];
             let mut matches = Vec::new();
+            let mut files_seen = 0usize;
+            let mut bytes_seen = 0u64;
             let needle = if input.case_sensitive {
                 input.query.clone()
             } else {
@@ -353,10 +368,22 @@ impl ToolExecutor for SearchExecutor {
                     match entry.kind {
                         FileKind::Directory => directories.push(child),
                         FileKind::Regular => {
+                            files_seen = files_seen.saturating_add(1);
+                            if files_seen > self.maximum_files {
+                                return Err(Error::Invalid(
+                                    "workspace search file budget exceeded".into(),
+                                ));
+                            }
                             let bytes = self
                                 .host
                                 .read(&workspace, Some(&generation), &child, self.maximum_bytes)
                                 .await?;
+                            bytes_seen = bytes_seen.saturating_add(bytes.len() as u64);
+                            if bytes_seen > self.maximum_search_bytes {
+                                return Err(Error::Invalid(
+                                    "workspace search byte budget exceeded".into(),
+                                ));
+                            }
                             let Ok(text) = String::from_utf8(bytes.to_vec()) else {
                                 continue;
                             };
@@ -418,7 +445,7 @@ fn edit_tool(
         definition: definition(
             WORKSPACE_EDIT,
             "Write one complete UTF-8 file in the authenticated project workspace",
-            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_generation":{"type":["object","null"]}},"required":["path","content"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_generation":{"type":"object"}},"required":["path","content","expected_generation"],"additionalProperties":false}),
             json!({"type":"object","properties":{"path":{"type":"string"},"generation":{"type":"object"},"operation_id":{"type":"string"}},"required":["path","generation","operation_id"],"additionalProperties":false}),
         ),
         executor: implementation,
@@ -441,7 +468,7 @@ fn read_tool(
             WORKSPACE_READ,
             "Read one bounded UTF-8 file from the authenticated project workspace",
             json!({"type":"object","properties":{"path":{"type":"string"},"expected_generation":{"type":["object","null"]}},"required":["path"],"additionalProperties":false}),
-            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"generation":{"type":"object"}},"required":["path","content","generation"],"additionalProperties":false}),
         ),
         executor: implementation,
         projection: Arc::new(IdentityProjection),
@@ -457,13 +484,15 @@ fn search_tool(
         host,
         project,
         maximum_bytes: limits.file_bytes,
+        maximum_files: 256,
+        maximum_search_bytes: limits.file_bytes.saturating_mul(256),
     });
     Tool {
         definition: definition(
             WORKSPACE_SEARCH,
             "Search bounded UTF-8 files in the authenticated project workspace",
             json!({"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"case_sensitive":{"type":"boolean"},"max_matches":{"type":"integer","minimum":1,"maximum":256}},"required":["query"],"additionalProperties":false}),
-            json!({"type":"object","properties":{"generation":{"type":"object"},"matches":{"type":"array","items":{"type":"object"}},"bounded":{"type":"boolean"}},"required":["generation","matches","bounded"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"generation":{"type":"object"},"matches":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},"bounded":{"type":"boolean"}},"required":["generation","matches","bounded"],"additionalProperties":false}),
         ),
         executor: implementation,
         projection: Arc::new(IdentityProjection),

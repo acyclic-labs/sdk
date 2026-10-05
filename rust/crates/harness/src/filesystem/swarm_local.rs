@@ -1029,19 +1029,9 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             )?;
             let project_head = self.host.resolve(&project_ref).await?;
             let source_generation = project_head.generation;
-            let project_owner = match source_project.owner() {
-                VolumeOwner::Project(owner) => VolumeOwner::Project(owner.clone()),
-                _ => {
-                    return Err(Error::Invalid(
-                        "local fork resolver source project has an invalid owner".into(),
-                    ));
-                }
-            };
-            let child_project = VolumeRef::new(
-                self.host.provider.clone(),
-                format!("local-project-{}", intent.child_operation),
-                VolumeClass::Project,
-                project_owner,
+            let child_project = workspace_tools::child_project_volume(
+                &source_project,
+                TaskId::from_bytes(intent.child_operation.into_bytes()),
             )?;
             let history = ResourceRevision::History(StreamRef::new(
                 self.stream_provider.clone(),
