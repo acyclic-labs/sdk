@@ -3824,17 +3824,33 @@ impl PersistentLocalSwarm {
         SwarmAdmissionReceipt,
     )> {
         let admission = self.admit_child_turn(task, operation, prompt, parent).await?;
-        let parent_admission = self.authenticated_admission(parent).await?;
+        // The root turn's operation is a model-attempt identity, not a swarm
+        // reservation identity. Root children draw from the session-wide
+        // root lease and therefore have no budget parent. Descendants use the
+        // operation retained on their parent child session, which is the
+        // operation originally reserved in the swarm journal.
+        let parent_operation_id = self.budget_parent_operation(parent).await?;
         let receipt = self
             .reserve_child_budget(
                 task,
                 idempotency_key,
-                Some(parent_admission.operation_id),
+                parent_operation_id,
                 depth,
                 resources,
             )
             .await?;
         Ok((admission, receipt))
+    }
+
+    async fn budget_parent_operation(&self, parent: TaskId) -> Result<Option<OperationId>> {
+        let session = self.session(parent).await?;
+        if session.parent.is_none() {
+            return Ok(None);
+        }
+        session
+            .operation
+            .ok_or_else(|| Error::Conflict("child budget parent has no retained operation".into()))
+            .map(Some)
     }
 
     async fn persist_local_admission(
