@@ -22,6 +22,7 @@
     <protobuf.version>4.31.1</protobuf.version>
     <grpc.version>1.75.0</grpc.version>
     <grpc.kotlin.version>1.4.3</grpc.kotlin.version>
+    <scala.version>2.12.17</scala.version>
     <grpc.kotlin.plugin.executable></grpc.kotlin.plugin.executable>
     <protobuf.maven.version>0.6.1</protobuf.maven.version>
     <os.maven.version>1.7.1</os.maven.version>
@@ -32,6 +33,7 @@
     <acyclic.schema.root>${project.basedir}/../target/sdk-contract</acyclic.schema.root>
   </properties>
   <dependencies>
+    <dependency><groupId>org.scala-lang</groupId><artifactId>scala-library</artifactId><version>${scala.version}</version></dependency>
     <dependency><groupId>io.grpc</groupId><artifactId>grpc-protobuf</artifactId><version>${grpc.version}</version></dependency>
     <dependency><groupId>io.grpc</groupId><artifactId>grpc-stub</artifactId><version>${grpc.version}</version></dependency>
     <dependency><groupId>io.grpc</groupId><artifactId>grpc-netty-shaded</artifactId><version>${grpc.version}</version><scope>runtime</scope></dependency>
@@ -131,6 +133,20 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId><artifactId>maven-jar-plugin</artifactId><version>3.4.2</version>
         <configuration><outputTimestamp>${project.build.outputTimestamp}</outputTimestamp></configuration>
+      </plugin>
+      <!-- Compile Rust-owned Scala facades after generated Java protobuf classes
+           exist, so the same installable JVM artifact serves Scala consumers. -->
+      <plugin>
+        <groupId>net.alchim31.maven</groupId><artifactId>scala-maven-plugin</artifactId><version>4.9.0</version>
+        <configuration>
+          <scalaVersion>${scala.version}</scalaVersion>
+          <sourceDir>${project.basedir}/src/main/scala</sourceDir>
+          <sendJavaToScalac>false</sendJavaToScalac>
+          <args><arg>-target:jvm-17</arg></args>
+        </configuration>
+        <executions>
+          <execution><id>compile-rust-owned-scala</id><phase>process-classes</phase><goals><goal>compile</goal></goals></execution>
+        </executions>
       </plugin>
     </plugins>
   </build>
