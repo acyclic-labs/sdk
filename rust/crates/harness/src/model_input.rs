@@ -1902,6 +1902,17 @@ mod tests {
         boundary
             .prefix
             .verify(&PreparedModelInput::prepare(child, Limits::default())?)?;
+
+        // A later registry revision must not be re-injected into a completed
+        // fork batch. The captured boundary remains bound to the exact tool
+        // definitions that produced its serialized provider request.
+        let mut later_tools = boundary.request.clone();
+        later_tools.tools[0].revision.push_str("-later");
+        let later_tools = PreparedModelInput::prepare(later_tools, Limits::default())?;
+        assert!(matches!(
+            boundary.prefix.verify(&later_tools),
+            Err(Error::Conflict(message)) if message == "fork changed model or tool definitions"
+        ));
         drop(requests);
         // Recursive publication is exercised through the real typed
         // filesystem/stream fork path in `model_fork_boundary`. Keeping this
