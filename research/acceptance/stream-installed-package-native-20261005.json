@@ -1,0 +1,50 @@
+{
+  "schema": "acyclic.sdk.stream.native-installed-package-qualification.v1",
+  "source_revision": "21e43293e2746f5f0c4b72bae1c0a43e20a2c2bd",
+  "status": "qualified",
+  "platform": "win32-x64",
+  "package": {
+    "name": "@acyclic-labs/stream-win32-x64",
+    "version": "0.2.0",
+    "transport": "grpc",
+    "consumer_feature_flags_required": false,
+    "environment_transport_override": false,
+    "binary_sha256": "sha256:b923899d12e0c2487a80c8d011999622737989dce788cb6b9ddbc21e1d08addf",
+    "manifest_sha256": "sha256:4218636603c59c07c52f16712f8cae4fd185806e6e2a5c309686ffccc08ae3fa",
+    "loader_sha256": "sha256:64faf24a2e0ca88edb6276ddb47a39027dde5350acf397f1e6c518a6dfdcbb03"
+  },
+  "checks": [
+    "package-install",
+    "napi-loader",
+    "tls",
+    "serialization",
+    "cancellation",
+    "recovery"
+  ],
+  "operations": [
+    "acyclic.stream.v2.StreamService/Append",
+    "acyclic.stream.v2.StreamService/Read",
+    "acyclic.stream.v2.StreamService/InspectIdempotency",
+    "acyclic.stream.v2.StreamService/Commit",
+    "acyclic.stream.v2.StreamService/ReadCommit",
+    "acyclic.stream.v2.StreamService/ChildrenPage",
+    "acyclic.stream.v2.StreamService/Fork",
+    "acyclic.stream.v2.StreamService/Children",
+    "acyclic.stream.v2.StreamService/Follow",
+    "acyclic.stream.v2.StreamService/Tail"
+  ],
+  "evidence": {
+    "installed_consumer": "node_modules package resolution loaded the packed companion package",
+    "default_transport": "native Rust gRPC client",
+    "cancellation": "Rust follow cancellation handle woke and ended the canonical stream",
+    "recovery": "endpoint pool recovered from an unavailable first endpoint",
+    "rust_receipt_verifier": "sdk-stream-native-receipt verify passed",
+    "source_files": {
+      "rust/crates/sdk-stream-native/Cargo.toml": "sha256:c6a81d30f47d3f5df93c4842e6080f3c62ad6b9a328e7eeedd6f3512fba00449",
+      "rust/crates/sdk-stream-native/src/lib.rs": "sha256:0cb559a1eb77a1c0e35b7c2ee525f5e0bb973261714b084acb599e922b461e65",
+      "rust/crates/sdk-stream-native/tests/runtime_fixture.rs": "sha256:8ced15157f8d04edeb2a3516c98089e508103abf80e6f87fe4951d24946d0f97",
+      "rust/crates/sdk-stream-native/tests/runtime_client.mjs": "sha256:190993b2f65e4926abcf1c837c6cc9ccd76a0c1ccbecfc1a4ba869fbb52d0515",
+      "scripts/build-stream-native-package.mjs": "sha256:dca9c2641e749371ff9c580bfe95f1a8955bfcaf18a36d9ed5c6d93e6d5ebe7d"
+    }
+  }
+}
