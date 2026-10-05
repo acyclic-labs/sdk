@@ -15,6 +15,12 @@ pub use indexed_db::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpe
 #[cfg(target_arch = "wasm32")]
 pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
 
+/// Rust-owned authenticated remote Filesystem client. The browser transport
+/// is selected inside the generated Rust binding, so consumers do not carry
+/// transport feature flags.
+#[cfg(target_arch = "wasm32")]
+pub use acyclic_sdk_remote_web::BrowserFilesystemClient as BrowserRemoteFilesystemClient;
+
 #[cfg(target_arch = "wasm32")]
 mod bindings {
     use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
@@ -64,6 +70,15 @@ mod bindings {
 
     fn wire_error(error: impl std::fmt::Display) -> JsValue {
         browser_error("AcyclicCompatibilityWireError", &error.to_string())
+    }
+
+    /// Validate one remote bearer credential using the shared Rust policy.
+    #[wasm_bindgen]
+    pub fn validate_remote_web_credential(token: &str) -> Result<(), JsValue> {
+        use acyclic_sdk_contract_wire::{credential, BEARER_NO_CRLF};
+        credential::validate(BEARER_NO_CRLF, token)
+            .then_some(())
+            .ok_or_else(|| JsValue::from_str("invalid bearer credential"))
     }
 
     fn browser_work(value: acyclic_fs::WorkCounters) -> BrowserWorkCounters {
