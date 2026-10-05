@@ -10,7 +10,10 @@ pub const DEFAULT_TRANSPORT: &str = "grpc";
 #[cfg(target_arch = "wasm32")]
 pub const DEFAULT_TRANSPORT: &str = "http";
 /// Default response bound for the HTTP provider.
-pub const DEFAULT_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+///
+/// This alias intentionally resolves to the crate-level Rust contract so the
+/// native facade and WASM/generated adapters cannot drift to separate limits.
+pub const DEFAULT_HTTP_RESPONSE_BYTES: usize = crate::DEFAULT_HTTP_RESPONSE_BYTES;
 
 /// Configuration or authenticated transport negotiation failure.
 #[derive(Debug, thiserror::Error)]
