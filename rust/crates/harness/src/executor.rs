@@ -2268,43 +2268,100 @@ pub(crate) enum TerminalFailureState {
 pub(crate) async fn classify_terminal_failure(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
+    limits: Limits,
 ) -> Result<TerminalFailureState> {
     let records = journal.replay(operation).await?;
+    let mut prepared_steps = BTreeSet::new();
     let mut started_steps = BTreeSet::new();
     let mut completed_steps = BTreeSet::new();
-    let mut declared_tools = BTreeSet::new();
+    let mut model_admissions = BTreeMap::<u32, ModelEventAdmission>::new();
+    let mut declared_tools = BTreeMap::<(u32, String), (String, Value)>::new();
     let mut started_tools = BTreeSet::new();
     let mut resolved_tools = BTreeSet::new();
     let mut failed_tool = false;
-    let mut publications = BTreeMap::<u32, bool>::new();
-    for record in records {
-        let failed_event = matches!(&record.event, ExecutionEvent::ToolFailed { .. });
-        match record.event {
+    let mut publications = BTreeMap::<u32, ([u8; 32], bool)>::new();
+    for (index, record) in records.iter().enumerate() {
+        record.event.validate_schema_version()?;
+        if record.operation_id != operation || record.sequence != index as u64 + 1 {
+            return Err(Error::Conflict(
+                "execution journal is not gapless or belongs to another turn".into(),
+            ));
+        }
+        if index == 0 && !matches!(record.event, ExecutionEvent::Started { .. }) {
+            return Err(Error::Storage(
+                "terminal-failure evidence is missing its execution start".into(),
+            ));
+        }
+        if index > 0 && matches!(record.event, ExecutionEvent::Started { .. }) {
+            return Err(Error::Storage(
+                "execution start is duplicated while classifying terminal failure".into(),
+            ));
+        }
+        match &record.event {
+            ExecutionEvent::ModelInputPrepared {
+                step,
+                manifest,
+                request,
+            } => {
+                if started_steps.contains(step) || !prepared_steps.insert(*step) {
+                    return Err(Error::Storage(
+                        "model input preparation is duplicated or out of order while classifying terminal failure".into(),
+                    ));
+                }
+                let manifest = load_json::<crate::model_input::ModelInputManifest>(
+                    journal, manifest,
+                )
+                .await?;
+                let request = load_json::<ModelRequest>(journal, request).await?;
+                if manifest.version != crate::model_input::MODEL_INPUT_VERSION
+                    || manifest.request_digest
+                        != crate::contract::canonical_json_digest(&request)?
+                {
+                    return Err(Error::Conflict(
+                        "prepared model input does not match its pinned request".into(),
+                    ));
+                }
+            }
             ExecutionEvent::ModelStarted { step, .. } => {
-                if !started_steps.insert(step) {
+                if !prepared_steps.contains(step) {
+                    return Err(Error::Storage(
+                        "model start is missing preparation while classifying terminal failure"
+                            .into(),
+                    ));
+                }
+                if !started_steps.insert(*step) {
                     return Err(Error::Storage(
                         "duplicate model start while classifying terminal failure".into(),
                     ));
                 }
             }
             ExecutionEvent::Model { step, event } => {
-                if !started_steps.contains(&step) {
+                if !started_steps.contains(step) {
                     return Err(Error::Storage(
                         "model observation has no admitted start while classifying terminal failure"
                             .into(),
                     ));
                 }
-                let event = load_json::<ModelEvent>(journal, &event).await?;
+                let event = load_json::<ModelEvent>(journal, event).await?;
+                let admission = model_admissions.entry(*step).or_default();
+                admission.observe(&event, limits)?;
                 match event {
-                    ModelEvent::ToolCall { call_id, .. } => {
-                        if !declared_tools.insert((step, call_id)) {
+                    ModelEvent::ToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                    } => {
+                        if declared_tools
+                            .insert((*step, call_id), (name, arguments))
+                            .is_some()
+                        {
                             return Err(Error::Storage(
                                 "model declared a tool call more than once while classifying terminal failure".into(),
                             ));
                         }
                     }
                     ModelEvent::Completed { .. } => {
-                        if !completed_steps.insert(step) {
+                        if !completed_steps.insert(*step) {
                             return Err(Error::Storage(
                                 "model completed more than once while classifying terminal failure".into(),
                             ));
@@ -2317,32 +2374,52 @@ pub(crate) async fn classify_terminal_failure(
                 step,
                 invocation,
                 reason,
-                ..
+                feedback,
             } => {
-                if !started_steps.contains(&step) {
+                if !started_steps.contains(step) {
                     return Err(Error::Storage(
                         "tool rejection has no admitted model start while classifying terminal failure".into(),
                     ));
                 }
-                let invocation = load_json::<ToolInvocation>(journal, &invocation).await?;
-                let key = (step, invocation.call_id.clone());
+                let invocation = load_json::<ToolInvocation>(journal, invocation).await?;
+                let key = (*step, invocation.call_id.clone());
+                let Some((name, arguments)) = declared_tools.get(&key) else {
+                    return Err(Error::Storage(
+                        "tool rejection has no matching model call while classifying terminal failure".into(),
+                    ));
+                };
                 let expected = ToolInvocation::for_model_call(
                     operation,
-                    step,
+                    *step,
                     invocation.call_id.clone(),
                     invocation.name.clone(),
                     invocation.arguments.clone(),
                 );
                 if invocation.operation_id != expected.operation_id
-                    || !declared_tools.contains(&key)
+                    || invocation.name != *name
+                    || invocation.arguments != *arguments
                     || !resolved_tools.insert(key)
                 {
                     return Err(Error::Storage(
-                        "tool rejection is invalid while classifying terminal failure".into(),
+                        "tool rejection is not bound to its declared invocation".into(),
                     ));
                 }
-                if !matches!(reason, ToolRejectionKind::InvalidArguments) {
-                    failed_tool = true;
+                match (*reason, feedback) {
+                    (ToolRejectionKind::InvalidArguments, Some(feedback)) => {
+                        let feedback = load_json::<ToolRejectionFeedback>(journal, feedback).await?;
+                        if feedback.call_id != invocation.call_id || feedback.name != invocation.name {
+                            return Err(Error::Conflict(
+                                "tool rejection feedback is bound to another invocation".into(),
+                            ));
+                        }
+                    }
+                    (ToolRejectionKind::InvalidArguments, None)
+                    | (_, Some(_)) => {
+                        return Err(Error::Storage(
+                            "tool rejection feedback shape is invalid".into(),
+                        ));
+                    }
+                    (_, None) => failed_tool = true,
                 }
             }
             ExecutionEvent::ToolStarted {
@@ -2350,52 +2427,107 @@ pub(crate) async fn classify_terminal_failure(
                 call_id,
                 invocation,
             } => {
-                if !started_steps.contains(&step)
-                    || !declared_tools.contains(&(step, call_id.clone()))
-                {
+                if !started_steps.contains(step) {
                     return Err(Error::Storage(
-                        "tool admission is invalid while classifying terminal failure".into(),
+                        "tool admission has no admitted model start while classifying terminal failure".into(),
                     ));
                 }
-                let invocation = load_json::<ToolInvocation>(journal, &invocation).await?;
+                let key = (*step, call_id.clone());
+                let Some((name, arguments)) = declared_tools.get(&key) else {
+                    return Err(Error::Storage(
+                        "tool admission has no matching model call while classifying terminal failure".into(),
+                    ));
+                };
+                let invocation = load_json::<ToolInvocation>(journal, invocation).await?;
                 let expected = ToolInvocation::for_model_call(
                     operation,
-                    step,
+                    *step,
                     call_id.clone(),
                     invocation.name.clone(),
                     invocation.arguments.clone(),
                 );
-                if invocation.call_id != call_id || invocation.operation_id != expected.operation_id
-                    || !started_tools.insert((step, call_id))
+                if invocation.call_id != *call_id
+                    || invocation.operation_id != expected.operation_id
+                    || invocation.name != *name
+                    || invocation.arguments != *arguments
+                    || !started_tools.insert(key)
                 {
                     return Err(Error::Storage(
-                        "tool admission is invalid while classifying terminal failure".into(),
+                        "tool admission is not bound to its declared invocation".into(),
                     ));
                 }
             }
-            ExecutionEvent::ToolCompleted { step, call_id, .. }
-            | ExecutionEvent::ToolFailed { step, call_id, .. } => {
-                let key = (step, call_id);
+            ExecutionEvent::ToolCompleted {
+                step,
+                call_id,
+                invocation_digest,
+                result,
+                projection,
+                ..
+            } => {
+                let key = (*step, call_id.clone());
                 if !started_tools.contains(&key) || !resolved_tools.insert(key) {
                     return Err(Error::Storage(
-                        "tool terminal record is invalid while classifying terminal failure"
-                            .into(),
+                        "tool completion is invalid while classifying terminal failure".into(),
                     ));
                 }
-                if failed_event {
-                    failed_tool = true;
-                }
-            }
-            ExecutionEvent::BatchPublicationStarted { step, .. } => {
-                if publications.insert(step, false).is_some() {
+                let Some((name, arguments)) = declared_tools.get(&key) else {
                     return Err(Error::Storage(
-                        "batch publication started more than once while classifying terminal failure"
-                            .into(),
+                        "tool completion has no matching model call while classifying terminal failure".into(),
+                    ));
+                };
+                let invocation = ToolInvocation::for_model_call(
+                    operation,
+                    *step,
+                    call_id.clone(),
+                    name.clone(),
+                    arguments.clone(),
+                );
+                if *invocation_digest != crate::contract::canonical_json_digest(&invocation)? {
+                    return Err(Error::Conflict(
+                        "tool completion is bound to another invocation".into(),
+                    ));
+                }
+                let _: ToolResult = load_json(journal, result).await?;
+                let _: Value = load_json(journal, projection).await?;
+            }
+            ExecutionEvent::ToolFailed { step, call_id, .. } => {
+                let key = (*step, call_id.clone());
+                if !started_tools.contains(&key) || !resolved_tools.insert(key) {
+                    return Err(Error::Storage(
+                        "tool failure is invalid while classifying terminal failure".into(),
+                    ));
+                }
+                failed_tool = true;
+            }
+            ExecutionEvent::BatchPublicationStarted { step, publication } => {
+                let publication = load_json::<ModelBatchPublication>(journal, publication).await?;
+                if publication.parent_operation != operation
+                    || publication.step != *step
+                    || publication.operation_id
+                        != (ModelToolContext {
+                            parent_operation: operation,
+                            step: *step,
+                            task_id: None,
+                        })
+                        .publication_operation()
+                {
+                    return Err(Error::Conflict(
+                        "batch publication is bound to another operation".into(),
+                    ));
+                }
+                let digest = crate::contract::canonical_json_digest(&publication)?;
+                if publications.insert(*step, (digest, false)).is_some() {
+                    return Err(Error::Storage(
+                        "batch publication started more than once while classifying terminal failure".into(),
                     ));
                 }
             }
-            ExecutionEvent::BatchPublicationCompleted { step, .. } => {
-                let Some(completed) = publications.get_mut(&step) else {
+            ExecutionEvent::BatchPublicationCompleted {
+                step,
+                publication_digest,
+            } => {
+                let Some((expected, completed)) = publications.get_mut(step) else {
                     return Err(Error::Storage(
                         "batch publication completed without admission while classifying terminal failure"
                             .into(),
@@ -2407,9 +2539,15 @@ pub(crate) async fn classify_terminal_failure(
                             .into(),
                     ));
                 }
+                if expected != publication_digest {
+                    return Err(Error::Conflict(
+                        "batch publication completion is bound to another admission".into(),
+                    ));
+                }
                 *completed = true;
             }
-            _ => {}
+            ExecutionEvent::Started { .. }
+            | ExecutionEvent::ToolBatchCompleted { .. } => {}
         }
     }
     if started_steps.is_empty() {
@@ -3388,6 +3526,41 @@ mod tests {
         operation: OperationId,
         terminal: ToolTerminalEvidence,
     ) -> Result<()> {
+        let request = ModelRequest {
+            model: Model::new("example", "terminal-failure", "1", Value::Null)?,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("terminal failure".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: None,
+        };
+        let prepared = crate::model_input::PreparedModelInput::prepare(
+            request.clone(),
+            Limits::default(),
+        )?;
+        let manifest = stage_json(journal, operation, "model:0:manifest", prepared.manifest()).await?;
+        let request_ref = stage_json(journal, operation, "model:0:request", &request).await?;
+        journal
+            .append(
+                operation,
+                "execution:started".into(),
+                ExecutionEvent::Started {
+                    request_digest: prepared.manifest().request_digest,
+                },
+            )
+            .await?;
+        journal
+            .append(
+                operation,
+                "model:0:input".into(),
+                ExecutionEvent::ModelInputPrepared {
+                    step: 0,
+                    manifest,
+                    request: request_ref,
+                },
+            )
+            .await?;
         journal
             .append(
                 operation,
@@ -3495,7 +3668,7 @@ mod tests {
         let journal = Journal::default();
         let operation = OperationId::from_bytes([41; 16]);
         assert_eq!(
-            classify_terminal_failure(&journal, operation).await?,
+            classify_terminal_failure(&journal, operation, Limits::default()).await?,
             TerminalFailureState::NotStarted
         );
 
@@ -3506,7 +3679,7 @@ mod tests {
         )
         .await?;
         assert_eq!(
-            classify_terminal_failure(&journal, operation).await?,
+            classify_terminal_failure(&journal, operation, Limits::default()).await?,
             TerminalFailureState::TerminalFailure
         );
 
@@ -3519,7 +3692,7 @@ mod tests {
         )
         .await?;
         assert_eq!(
-            classify_terminal_failure(&unresolved, operation).await?,
+            classify_terminal_failure(&unresolved, operation, Limits::default()).await?,
             TerminalFailureState::Unresolved
         );
 
@@ -3532,7 +3705,7 @@ mod tests {
         )
         .await?;
         assert_eq!(
-            classify_terminal_failure(&rejected, operation).await?,
+            classify_terminal_failure(&rejected, operation, Limits::default()).await?,
             TerminalFailureState::TerminalFailure
         );
 
@@ -3563,9 +3736,135 @@ mod tests {
             )
             .await?;
         assert_eq!(
-            classify_terminal_failure(&open_publication, operation).await?,
+            classify_terminal_failure(&open_publication, operation, Limits::default()).await?,
             TerminalFailureState::Unresolved
         );
+
+        let after_completed = Journal::default();
+        let operation = OperationId::from_bytes([45; 16]);
+        append_model_tool_evidence(
+            &after_completed,
+            operation,
+            ToolTerminalEvidence::Failure,
+        )
+        .await?;
+        let event = ModelEvent::Content {
+            delta: "after completion".into(),
+        };
+        let event_ref = stage_json(
+            &after_completed,
+            operation,
+            "model:0:after-completed",
+            &event,
+        )
+        .await?;
+        after_completed
+            .append(
+                operation,
+                "model:0:after-completed:observed".into(),
+                ExecutionEvent::Model {
+                    step: 0,
+                    event: event_ref,
+                },
+            )
+            .await?;
+        assert!(matches!(
+            classify_terminal_failure(&after_completed, operation, Limits::default()).await,
+            Err(Error::Invalid(message)) if message.contains("after completion")
+        ));
+
+        let corrupt = Journal::default();
+        let operation = OperationId::from_bytes([46; 16]);
+        append_model_tool_evidence(
+            &corrupt,
+            operation,
+            ToolTerminalEvidence::Failure,
+        )
+        .await?;
+        let model_event = corrupt
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::Model { event, .. } => Some(event.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("model event fixture is missing".into()))?;
+        let mut stored = corrupt
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+        let (_, bytes) = stored
+            .values_mut()
+            .find(|(reference, _)| reference == &model_event)
+            .ok_or_else(|| Error::Storage("model event content is missing".into()))?;
+        *bytes = b"corrupt".to_vec();
+        drop(stored);
+        assert!(matches!(
+            classify_terminal_failure(&corrupt, operation, Limits::default()).await,
+            Err(Error::Storage(_))
+        ));
+
+        let gap = Journal::default();
+        let operation = OperationId::from_bytes([47; 16]);
+        append_model_tool_evidence(&gap, operation, ToolTerminalEvidence::Failure).await?;
+        gap.0
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .get_mut(1)
+            .ok_or_else(|| Error::Storage("prepared input fixture is missing".into()))?
+            .sequence = 99;
+        assert!(matches!(
+            classify_terminal_failure(&gap, operation, Limits::default()).await,
+            Err(Error::Conflict(message)) if message.contains("gapless")
+        ));
+
+        let mismatched_completion = Journal::default();
+        let operation = OperationId::from_bytes([48; 16]);
+        append_model_tool_evidence(
+            &mismatched_completion,
+            operation,
+            ToolTerminalEvidence::Missing,
+        )
+        .await?;
+        let result = stage_json(
+            &mismatched_completion,
+            operation,
+            "tool:0:call-1:result",
+            &ToolResult { value: json!({}) },
+        )
+        .await?;
+        let projection = stage_json(
+            &mismatched_completion,
+            operation,
+            "tool:0:call-1:projection",
+            &json!({}),
+        )
+        .await?;
+        mismatched_completion
+            .append(
+                operation,
+                "tool:0:call-1:completed".into(),
+                ExecutionEvent::ToolCompleted {
+                    schema_version: TOOL_COMPLETED_EVENT_VERSION,
+                    step: 0,
+                    call_id: "call-1".into(),
+                    invocation_digest: [9; 32],
+                    result,
+                    projection,
+                },
+            )
+            .await?;
+        assert!(matches!(
+            classify_terminal_failure(
+                &mismatched_completion,
+                operation,
+                Limits::default()
+            )
+            .await,
+            Err(Error::Conflict(message)) if message.contains("another invocation")
+        ));
         Ok(())
     }
 

@@ -4966,6 +4966,7 @@ impl PersistentLocalSwarm {
         match crate::executor::classify_terminal_failure(
             harness.storage().journal().as_ref(),
             operation,
+            self.config.limits,
         )
         .await?
         {
