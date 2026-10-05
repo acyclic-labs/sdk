@@ -1,6 +1,6 @@
 {
-  "source_commit": "d3eb2f289eb77c3cb784a79cb24f7dec1b6e5651",
-  "source_tree": "2e561c800b85344c1cbc897947348d9ef0a35f4c",
+  "source_commit": "974f8775ad34ea7a065855b4033f775c3c60b19e",
+  "source_tree": "b822f87d765b51cb3d4b3d0f507e49ee47f2ff45",
   "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
   "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
   "tools_jar": {
@@ -17,7 +17,7 @@
   },
   "model_results": [
     {"model":"SwarmAuthority","safe":"pass:81 distinct states","negative":"pass:DirectMessageAuthority counterexample; 4 distinct states"},
-    {"model":"SwarmBudget","safe":"pass:6852 distinct states","negative":"pass:TotalBudgetConserved, StepBudgetConserved, and DepthBounded counterexamples"},
+    {"model":"SwarmBudget","safe":"pass:636 distinct states","negative":"pass:TotalBudgetConserved (40 distinct states), StepBudgetConserved (33 distinct states), and DepthBounded (4 distinct states) counterexamples"},
     {"model":"SwarmPublication","safe":"pass:14 distinct states","negative":"pass:PublicationAtCapturedGeneration counterexample"},
     {"model":"SwarmMessage","safe":"pass:3 distinct states","negative":"pass:AtMostOnce and DeliveredRequiresAdmission counterexamples"}
   ],
@@ -25,24 +25,43 @@
     "runner": "check-trace-fixtures.ps1",
     "valid_fixture": "trace-valid.json",
     "valid_result": "accepted seven-event trace",
-    "invalid_fixture": "trace-invalid-stale.json",
-    "invalid_result": "rejected stale workspace publication",
-    "scope": "fixture adapter evidence only; no production Harness trace was exported"
+    "invalid_fixtures": [
+      "trace-invalid-stale.json",
+      "trace-invalid-swapped-parent.json",
+      "trace-invalid-missing-id.json",
+      "trace-invalid-wrong-agent.json",
+      "trace-invalid-forged-capture.json",
+      "trace-invalid-orphan-delivery.json",
+      "trace-invalid-double-delivery.json",
+      "trace-invalid-bool.json",
+      "trace-invalid-overspend.json"
+    ],
+    "invalid_result": "rejected all nine malformed, stale, unauthorized, duplicate, and overspend fixtures",
+    "scope": "strict fixture adapter evidence only; no production Harness trace was exported or claimed"
   },
   "log_sha256": {
     "swarm-authority-safe.log": "746E45BFF38021260150DCAF921B1C327E3A3B1DE15714D4915F0169F4C51AF1",
     "swarm-authority-unsafe-authority.log": "02286DA1DB56CBAD336468CB7BF7DF2E97D9D225361701DFC82D28E5E3FDB9B7",
-    "swarm-budget-safe.log": "D0EA33DF36786E4278613007214B8706E2AE2F443CB235B3CBC50AA117BCA5DA",
-    "swarm-budget-unsafe-allocation.log": "326DF02ADABFC56B3A5356ADC5BB62A7D691A02710AA73DA38EF3754E37DC40D",
-    "swarm-budget-unsafe-depth.log": "332336156C39F197A0D2D5004A91E00E98C2A2FD7EB4CBA2726355B43933CA1C",
-    "swarm-budget-unsafe-step.log": "031F12CABDDAE211A908417A3DEF854C358BE38EA5048441CEAE9382D4C74F36",
+    "swarm-budget-safe.log": "B27E54434C3B89AE846AF5A4E99AB12A49B30A357197BB9276B2982EDD8424ED",
+    "swarm-budget-unsafe-allocation.log": "CFEE3BC24F2852EED300086124BEA783D1B06F700BD93EED48F90AD56A282B55",
+    "swarm-budget-unsafe-depth.log": "7A061103C6A4E3408AD76C6253D4B65C1178CD48DB582EABBA4DC185ACA89A92",
+    "swarm-budget-unsafe-step.log": "EEA705C9D1628663CE96E7A9AC29974448B3E4FFF4E1C8AE7C4F6AEE87F05CE8",
     "swarm-publication-safe.log": "768B9A4CA6BEFC10629C888932CE36BEB0EDE68D56060B14F08DFF81C6EBF9DB",
     "swarm-publication-unsafe-stale.log": "390CA3606E2A4089278E50B1C925DCF4C880AF40FDB7A24F841BB381EBE7E8BF",
     "swarm-message-safe.log": "37FDF00C0B8D07A1EA6BC00D3B0B353F8AFCD4C67BF12F96CF7EA147621D5A44",
     "swarm-message-unsafe-duplicate.log": "ADB8FF48C8BDB457730CE67DBCCC90CB7928EF324D8580BAE5FACB558964E57F",
     "swarm-message-unsafe-orphan.log": "62AE3ADEFA4004FB63D55F5CE4A20B8E6F50D1F5E51201E59E900B7974CE3EA6",
     "trace-valid.log": "6336840F0292754DB035572CB7CC181923139C1FDBFE79394A71C1EB8AE8D27E",
-    "trace-invalid.log": "6D67C9910399E466DDB9C70C60E4BD889F5C0A6026ABE5D4F0BFDAB5598694DF"
+    "trace-invalid-stale.log": "68689FE3A323686851DC817A9E85C1B6A2E9EE07DF04667B855DBC47A05DACEE",
+    "trace-invalid-swapped-parent.log": "4F075BF7CCAFAF3B91CB4C02BE6372B2119121BCD62EF1D8614D71ED3F66CAAE",
+    "trace-invalid-missing-id.log": "47EC5501E3E08C41445A5E7A6A9954CB43AC6A48BB7F8430D8A4DDA69D254E25",
+    "trace-invalid-wrong-agent.log": "0368C552DAE4F86751F7F022272A2F1FAFC032F4E1C99DAE32A93ACDB9D63BFB",
+    "trace-invalid-forged-capture.log": "FA4DCEEAB61F6E09AFF6E9490A8360BA2B1DB6DC154E421D7839F0EC9D95236F",
+    "trace-invalid-orphan-delivery.log": "6D85FABB6D41D2627A093CA9EF962D18290A28CBA5423690741ACCF25A5497CB",
+    "trace-invalid-double-delivery.log": "78DC90F809F9D15F480C63643913A4841F5B68983F2BC7AC6A01B933C81764EA",
+    "trace-invalid-bool.log": "6EFD88177A7B4C9C63CF8E4085AC677E9B5C996CAB92AF3011C8DF2345911906",
+    "trace-invalid-overspend.log": "EB67E92010DFA3E90CB052A38F08851D4C3B04E24C684A64C276A0F2B8345B51",
+    "trace-valid.log": "6336840F0292754DB035572CB7CC181923139C1FDBFE79394A71C1EB8AE8D27E"
   },
   "qualification_boundary": "bounded design-level safety only; no Rust refinement, liveness, production event-trace conformance, or whole-swarm proof"
 }
