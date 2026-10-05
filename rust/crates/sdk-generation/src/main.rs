@@ -3288,7 +3288,6 @@ fn run_tools(
                 output,
                 &spec,
                 relative_request,
-                source,
                 operation,
             )?);
             continue;
