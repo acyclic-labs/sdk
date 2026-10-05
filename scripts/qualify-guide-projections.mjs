@@ -265,10 +265,22 @@ function prepare(language, packageArtifact, directory) {
     if (built.exitCode !== 0) return { status: "install-failed", install: built, environment: {} };
     const rubyGemPath = [process.env.SDK_RUBY_GEM_PATH, gemHome, process.env.GEM_PATH].filter(Boolean).join(";");
     const rubyEnv = { GEM_HOME: gemHome, ...(rubyGemPath ? { GEM_PATH: rubyGemPath } : {}) };
-    const install = command(binaries.gem, ["install", "--local", gemPath, "--install-dir", gemHome, "--no-document"], directory, rubyEnv);
+    const dependencyCache = process.env.SDK_RUBY_GEM_PATH ? join(process.env.SDK_RUBY_GEM_PATH, "cache") : null;
+    const dependencyNames = ["google-protobuf-4.33.0", "grpc-1.82.0", "googleapis-common-protos-types-1.23.0"];
+    const dependencyInstalls = [];
+    if (dependencyCache && existsSync(dependencyCache)) {
+      for (const dependencyName of dependencyNames) {
+        const dependencyGem = readdirSync(dependencyCache).find((entry) => entry.startsWith(dependencyName) && entry.endsWith(".gem"));
+        if (!dependencyGem) continue;
+        const dependencyInstall = command(binaries.gem, ["install", "--local", join(dependencyCache, dependencyGem), "--install-dir", gemHome, "--no-document", "--ignore-dependencies"], directory, rubyEnv);
+        dependencyInstalls.push(dependencyInstall);
+        if (dependencyInstall.exitCode !== 0) return { status: "install-failed", install: dependencyInstall, environment: {} };
+      }
+    }
+    const install = command(binaries.gem, ["install", "--local", gemPath, "--install-dir", gemHome, "--no-document", "--ignore-dependencies"], directory, rubyEnv);
     return {
       status: install.exitCode === 0 ? "installed" : "install-failed",
-      install: { ...install, command: `${built.command} && ${install.command}` },
+      install: { ...install, command: [built.command, ...dependencyInstalls.map((dependency) => dependency.command), install.command].join(" && ") },
       environment: { ...rubyEnv, RUBYLIB: join(packageRoot, "lib") },
     };
   }
