@@ -1,0 +1,308 @@
+{
+  "source_commit": "21f44e7d8fcfd0e984b16f8d7854d85b73efde10",
+  "source_tree": "ff3fff9b9303ff0563f8cc2f267eab714d5c6dab",
+  "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
+  "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
+  "tools_jar": {
+    "path": "C:/graphcoder-builds/formal-tools/tla2tools-1.7.4.jar",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+  },
+  "runner": {
+    "path": "rust/crates/harness/verification/check-models.ps1",
+    "sha256": "f97fcbde7673591891e80bc221353ec5569acff8f6996526945e0683dd11ba96",
+    "workers": 1,
+    "fingerprint_index": 0,
+    "seed": 1,
+    "heap": "512MB"
+  },
+  "model_files": {
+    "SwarmBudgetUnsafeAllocation.cfg": "67db97ee437b43185af7298d744785ec3d907a2b412990855d486f63cc9d9ae7",
+    "SwarmPublication.cfg": "2fe8f0164bac6a25b873aff918965bb0fef358d09a3452046eaf6df4641c758b",
+    "SwarmBudgetUnsafeDepth.cfg": "714f4b3a597e0fbf0f4a170068a2807ab5a470aa80f93ea970b26d3c0791e6c9",
+    "SwarmAuthorityUnsafe.cfg": "152b6f614342f661f077343edbab911d3e1c043f6d8720275c056135a68aa9ef",
+    "SwarmMessage.cfg": "ff4b99093a2170b3a37280169be427042652473f2d0242f317dc7180c8e0fe6e",
+    "SwarmAuthorityUnsafeSelf.cfg": "3bd1a6c8a8b3b530d6de6de526ddde4ae1756281335b4ad48d0f7472c93069d9",
+    "ForkBoundaryEarlyDispatch.cfg": "9e6fefcd4dfa530cdf1a367bf78fa028a3b413689a070a8e637c41d98eb3f876",
+    "SwarmBudget.tla": "51a5bbbd9b2b45422eb17bb124b1863761aca5c1fe839ab787d34653cac2d1e8",
+    "SwarmMessageUnsafeOrphan.cfg": "123c926138346bac6c944373686083c8466ab40cf1e4acb106823b97c72c84a9",
+    "ActivationRecoveryUnsafe.cfg": "8d930e9df53a0615f24fb0327fda9221aba5faac95c4e901210700a161c82f05",
+    "ForkBoundary.tla": "b297a088b7e4790f2d02bd367d7dc9131c9cc5e5095d460dec82c9e4400958b4",
+    "SwarmAuthority.cfg": "86d02687edb6a3afdd7d0f4204b5b030c438d612cb83483a14b7c86bea8f3f80",
+    "SwarmBudget.cfg": "6b4fa5831de9a669a7b183921253c7f46c58a961f91f64cf5b8d72a57db3365c",
+    "ActivationRecovery.cfg": "a56b44e47da21fc574d29463143aa660aa75f5c4625ba5ff7de30a0fcae3cbf5",
+    "ActivationRecovery.tla": "091f4b82a77d5a3578eccb9f971ffcb69752e284b0f2ce510ef17b1668d684ac",
+    "SwarmPublicationUnsafeStale.cfg": "69277ed13cee23ee3f21a781f6efbb982d395b078b1a4a3d70affc31a5725952",
+    "SwarmMessage.tla": "be87e8f9e9f746ea8b85fdf22b61d1e39222a80a2e8bf192e82a9b04296639ac",
+    "SwarmBudgetUnsafeStep.cfg": "b20aac4287e9368476046d1a132f1585c8d6f7aed251dcc70d00485655a06b09",
+    "SwarmAuthority.tla": "d637f254536148c94d6cca8c4e686a6a2e9077fb78e32df40a6568d87e838c58",
+    "ForkBoundaryMutableCapture.cfg": "af39bbda42f28ba9af9a9d4f745651b525cfd36eec68945489e0f8dca4319576",
+    "SwarmMessageUnsafeDuplicate.cfg": "fc74a0bead027721e880455c23a12973a92dc5aa1e69090d2f35b35f5097882f",
+    "ForkBoundary.cfg": "4c2e7dafbcf318af102f0d2eab186443964ee918a1fab26bbe54fd10ddd143bd",
+    "SwarmPublication.tla": "94bcffcfcbcdbc8382d0e9dbd95dceb05153cc470e98c580de9c2b627486c5e5",
+    "SwarmIntegration.tla": "4a7bef6727f1fc5a900604c2ef0ffd192e3bbd8198c23aaef3465fda815bde9e",
+    "SwarmIntegration.cfg": "b9fe1d59170cd2c525f9183982c3b8dfc8de1bad5d459b97f7e796a59df90d5f",
+    "SwarmIntegrationUnsafeSibling.cfg": "2e60cfb195af58ca99f65ce67aebcd92efb1f1e6986d93908f4af941e4db9692",
+    "SwarmIntegrationUnsafeGrandchild.cfg": "cfe3ee3e25a88491bf6af652e9ad39c9484c6d4ca92afdd23e7fa8e8b057346b",
+    "SwarmIntegrationUnsafeStaleApproval.cfg": "c221b68c73a7dc268862222102f97b97a7b2dcbbb3295db3a15c7984eecba4f6",
+    "SwarmIntegrationUnsafeMismatchedApproval.cfg": "f3788655449c4afc312f88a01fcae7e11a3ab911ef71099dcc5bd6fec460bfbc",
+    "SwarmAuthorityUnsafeTranscript.cfg": "6cdb086550edf4940a4af4aaa010d807411e53806da5ad1bfbf6dc9b3c4636a7"
+  },
+  "model_results": [
+    {
+      "model": "SwarmAuthority",
+      "cases": [
+        {
+          "name": "safe",
+          "result": "pass",
+          "generated": 2701,
+          "distinct": 648
+        },
+        {
+          "name": "unsafe-authority",
+          "result": "expected counterexample",
+          "generated": 9,
+          "distinct": 7,
+          "invariant": "DirectMessageAuthority"
+        },
+        {
+          "name": "unsafe-self",
+          "result": "expected counterexample",
+          "generated": 9,
+          "distinct": 7,
+          "invariant": "SelfMessageAuthority"
+        },
+        {
+          "name": "unsafe-transcript",
+          "result": "expected counterexample",
+          "generated": 20,
+          "distinct": 18,
+          "invariant": "TranscriptInheritanceDoesNotGrantAuthority"
+        }
+      ]
+    },
+    {
+      "model": "SwarmBudget",
+      "cases": [
+        {
+          "name": "safe",
+          "result": "pass",
+          "generated": 1599,
+          "distinct": 636
+        },
+        {
+          "name": "unsafe-allocation",
+          "result": "expected counterexample",
+          "generated": 70,
+          "distinct": 40,
+          "invariant": "TotalBudgetConserved"
+        },
+        {
+          "name": "unsafe-step",
+          "result": "expected counterexample",
+          "generated": 46,
+          "distinct": 33,
+          "invariant": "StepBudgetConserved"
+        },
+        {
+          "name": "unsafe-depth",
+          "result": "expected counterexample",
+          "generated": 5,
+          "distinct": 4,
+          "invariant": "DepthBounded"
+        }
+      ]
+    },
+    {
+      "model": "SwarmPublication",
+      "cases": [
+        {
+          "name": "safe",
+          "result": "pass",
+          "generated": 16,
+          "distinct": 14
+        },
+        {
+          "name": "unsafe-stale",
+          "result": "expected counterexample",
+          "generated": 16,
+          "distinct": 13,
+          "invariant": "PublicationAtCapturedGeneration"
+        }
+      ]
+    },
+    {
+      "model": "SwarmMessage",
+      "cases": [
+        {
+          "name": "safe",
+          "result": "pass",
+          "generated": 3,
+          "distinct": 3
+        },
+        {
+          "name": "unsafe-duplicate",
+          "result": "expected counterexample",
+          "generated": 4,
+          "distinct": 4,
+          "invariant": "AtMostOnce"
+        },
+        {
+          "name": "unsafe-orphan",
+          "result": "expected counterexample",
+          "generated": 3,
+          "distinct": 3,
+          "invariant": "DeliveredRequiresAdmission"
+        }
+      ]
+    },
+    {
+      "model": "ActivationRecovery",
+      "cases": [
+        {
+          "name": "safe",
+          "result": "pass",
+          "generated": 88,
+          "distinct": 37
+        },
+        {
+          "name": "unsafe",
+          "result": "expected counterexample",
+          "generated": 16,
+          "distinct": 11,
+          "invariant": "AdmittedClaimRetained"
+        }
+      ]
+    },
+    {
+      "model": "ForkBoundary",
+      "cases": [
+        {
+          "name": "safe",
+          "result": "pass",
+          "generated": 84,
+          "distinct": 51
+        },
+        {
+          "name": "early-dispatch",
+          "result": "expected counterexample",
+          "generated": 20,
+          "distinct": 18,
+          "invariant": "DispatchRequiresCompleteBatch"
+        },
+        {
+          "name": "mutable-capture",
+          "result": "expected counterexample",
+          "generated": 13,
+          "distinct": 12,
+          "invariant": "InheritedCaptureRemainsPinned"
+        }
+      ]
+    },
+    {
+      "model": "SwarmIntegration",
+      "cases": [
+        {
+          "name": "safe",
+          "result": "pass",
+          "generated": 5120,
+          "distinct": 2069
+        },
+        {
+          "name": "unsafe-sibling",
+          "result": "expected counterexample",
+          "generated": 23,
+          "distinct": 20,
+          "invariant": "DirectIntegrationAuthority"
+        },
+        {
+          "name": "unsafe-grandchild",
+          "result": "expected counterexample",
+          "generated": 203,
+          "distinct": 133,
+          "invariant": "RootWritebackScope"
+        },
+        {
+          "name": "unsafe-stale-approval",
+          "result": "expected counterexample",
+          "generated": 261,
+          "distinct": 166,
+          "invariant": "ApprovalBinding"
+        },
+        {
+          "name": "unsafe-mismatched-approval",
+          "result": "expected counterexample",
+          "generated": 71,
+          "distinct": 56,
+          "invariant": "ApprovalBinding"
+        }
+      ]
+    }
+  ],
+  "log_sha256": {
+    "SwarmBudget/7123179288bd430da27fd5062d547fc0-unsafe-allocation.log": "d9e1cb70cfee0ddac512f3017c9ae856fbcd0e223478cc3eba9978961b214394",
+    "ForkBoundary/da492c9237a747ba8989ee371d14aaae-safe.log": "463d1a143d4d466a36270cc511e1c70e33f82659ef83eb73eff8665fed4531e6",
+    "ForkBoundary/da492c9237a747ba8989ee371d14aaae-early-dispatch.log": "1b74bd8daa7cc2c74ed5a2e42d066dea53bdd4b937897ddade566b64fc74b805",
+    "ForkBoundary/da492c9237a747ba8989ee371d14aaae-mutable-capture.log": "b648faf5bf80dfcf8354fa55c33184f0df9321b4bf14375d21a16c8fbaeed848",
+    "SwarmMessage/14ea45efbac44598870f40f3270d5730-unsafe-orphan.log": "27eb7b71e0fa01d2367263755153b994f30e8876697c02dfe913a7596ac559ef",
+    "SwarmMessage/14ea45efbac44598870f40f3270d5730-unsafe-duplicate.log": "6438dd47fc057fe9137c561b0f631258a54514e90fa78134390a8a5e2a8295ab",
+    "SwarmBudget/7123179288bd430da27fd5062d547fc0-unsafe-step.log": "4422b1860ec94e5608efb813aee1bc0f445387403639d2981c8d7dbc85ff1594",
+    "SwarmPublication/500aa2267df649ada134a298b50ce2af-safe.log": "f1a46bd1bb2ba2395c56f8f72a42eeb56dcc63357809968a7d682625903b1668",
+    "SwarmBudget/7123179288bd430da27fd5062d547fc0-unsafe-depth.log": "389bed066c66b2f60104c62e487aeea93437552d4f557c92c637df42dc23acc5",
+    "SwarmBudget/7123179288bd430da27fd5062d547fc0-safe.log": "78e510ffdac476c54f730dd80aeb65bcbdcd26b01c405054446be1a2c61309f9",
+    "SwarmMessage/14ea45efbac44598870f40f3270d5730-safe.log": "5f804534fd8ed8045e6e5886500f19c210a8f5218bdcc9118b1f8e7d1a1c5b8a",
+    "SwarmPublication/500aa2267df649ada134a298b50ce2af-unsafe-stale.log": "c99fce609b6a132177e93e64275792668ecf749ba9cfe954d6a91a9ed339a56a",
+    "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-unsafe-sibling.log": "3c14311f4e824394c12979f5f9c29f34b853ff824aa81e95c8589feb214d167f",
+    "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-unsafe-grandchild.log": "53eda5858a04e1b611dff7d97f4108031161fea1567145b0da698aa802a19dc9",
+    "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-unsafe-mismatched-approval.log": "642e3f3c273010f81f29ac04bb35629b1ef161a9aa4658ebcfd9bb0b55bcbe5e",
+    "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-unsafe-stale-approval.log": "821cf623961e630c9bbbb251c40064c2c3ac588fea8b9ebe84c40813b338ddf1",
+    "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-safe.log": "d18fcb461d5b40417f18f3d63de936a8057ec5f2a943391ec2621f9d7c861d32",
+    "SwarmAuthority/41317ebaa67e430d98bd01f802a174bb-unsafe-authority.log": "aae8e6ae73a19135513b783e98925955aab75d280749c9d03c67eb07d1985269",
+    "SwarmAuthority/41317ebaa67e430d98bd01f802a174bb-unsafe-transcript.log": "16e32a764fdc7fd98f64677448c33e5e46e00ae1c082f829665542a4985cb03a",
+    "SwarmAuthority/41317ebaa67e430d98bd01f802a174bb-safe.log": "e664275d2678d93e025f99dad476840581ebab20056965f5bcc2f49f0214c231",
+    "SwarmAuthority/41317ebaa67e430d98bd01f802a174bb-unsafe-self.log": "18b5e5676dae0594e3fd8b488a178342de11985433e685d70f31fa06a1e1f3a1",
+    "ActivationRecovery/32c14bf2c1ed4e58a45db37cf3ee2767-unsafe.log": "13d8cf641ec85244e68851e9f6d1a19dbafd83c00fffddbb303f2149fe995970",
+    "ActivationRecovery/32c14bf2c1ed4e58a45db37cf3ee2767-safe.log": "ead0a166b59b63dce8981b0b95b37a03cc392f8d504fa46ddf178fa5ef111890"
+  },
+  "trace_adapter": {
+    "runner": "rust/crates/harness/verification/check-trace-fixtures.ps1",
+    "runner_sha256": "0b906d0a42fb7d429f1175a527c615f0b143aaa26f8df2dce7719b8f4441453d",
+    "checker": "rust/crates/harness/verification/check-trace.ps1",
+    "checker_sha256": "133397e1fc2db9bfe96c1ed02dd3cea6edfbcc85f8aeb1cd1dea84752e1494a0",
+    "valid_count": 2,
+    "invalid_count": 9,
+    "fixture_log_sha256": {
+      "double-delivery.log": "6e8bd4421ed57e1c61686fc61039a7a82cc3537a26918a27b3abb1e5bf350e0e",
+      "forged-capture.log": "27c28af446aa72169f9b30222db53304c3b38544e9057170a9990c89f46681de",
+      "invalid-bool.log": "b6b3ad5c0efcdc055d1bbfdf4c9f27c3c2ab0af3ea2ba548e6273348afb92470",
+      "missing-id.log": "808ca0a4bbbee150b69c6609520231f95c13ea93e5e518875a83d883d04e7bf7",
+      "orphan-delivery.log": "603a50e0c79fc480bbdffb8931eecb4186cba483ec776a6a120ed40bf24783f1",
+      "overspend.log": "60d0deff5bd82018a2363ee560f3b64489321f5df5ae05a62fbd6a780af5cbcd",
+      "stale-publication.log": "f9ce3293004e533a23a49ada32ce46cccceb62e66af170d69d51347b31fab1cc",
+      "swapped-parent.log": "e788f1ad05b552b3bf77fc0f44069892db958949dc4bf71395e890ae5dfd0834",
+      "valid-publication-first.log": "0fdec18e0f6184a97b3730edb616e916d30ca70400d9665d9caa13607163dc39",
+      "valid.log": "72bbb71d27e436462c235bfe3f8e9912bce9991960900e7b85cb61993da1eeeb",
+      "wrong-agent.log": "9b9322f16f4c2034d33b05dda3f73abc9c3b380187005ecb66417dd2dd9d2a6e"
+    },
+    "scope": "fixture adapter evidence only; no production trace qualification"
+  },
+  "runtime_conformance": {
+    "status": "open",
+    "qualification": "rust/crates/harness/verification/qualify-real-trace.ps1",
+    "reason": "No Cargo/native real-trace gate was run in this slot; finite integration/approval evidence and strict canonical seed validation are qualified, but actual runtime evidence remains open."
+  },
+  "scope": "bounded finite safety design evidence only; no Rust refinement, liveness, OS confinement, approval/budget trace proof, causal total order, or whole-swarm theorem",
+  "model_evidence": {
+    "evidence_directory": "D:/graphcoder-builds/formal-evidence/formal-swarm-qualified-20261005",
+    "run_scope": "All finite model families, including recovery unknown-effect/fatal closure and transcript-inheritance authority, were run with explicit safe cases and reachable negative controls. TLC logs are bound by log_sha256.",
+    "model_files_unchanged_since_run": true,
+    "model_run_source_commit": "21f44e7d8fcfd0e984b16f8d7854d85b73efde10",
+    "model_run_source_tree": "ff3fff9b9303ff0563f8cc2f267eab714d5c6dab"
+  },
+  "real_trace_checker": {
+    "checker": "rust/crates/harness/verification/check-real-trace.ps1",
+    "checker_sha256": "801e02a111ef2b3901664174b5cf2bc9db63e60f71988e372cb60763cd4afb1d",
+    "qualification": "rust/crates/harness/verification/qualify-real-trace.ps1",
+    "qualification_sha256": "bc6d92b02389e3c4b5e370e1ec1a8bffeb96311a4e6dd56a8645ccda0aa94805",
+    "mutation_count": 14
+  }
+}

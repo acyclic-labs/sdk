@@ -1,0 +1,38 @@
+[
+  {
+    "kind": "fork_admitted",
+    "parent": 1,
+    "child": 2,
+    "depth": 1,
+    "captured_generation": 0,
+    "fork_operation_id": "fork-op",
+    "child_operation_id": "child-a-child"
+  },
+  {
+    "kind": "fork_admitted",
+    "parent": 1,
+    "child": 3,
+    "depth": 1,
+    "captured_generation": 0,
+    "fork_operation_id": "child-b-fork",
+    "child_operation_id": "child-b-child"
+  },
+  {
+    "kind": "fork_admitted",
+    "parent": 1,
+    "child": 5,
+    "depth": 1,
+    "captured_generation": 0,
+    "fork_operation_id": "child-c-fork",
+    "child_operation_id": "child-c-child"
+  },
+  {
+    "kind": "fork_admitted",
+    "parent": 2,
+    "child": 4,
+    "depth": 2,
+    "captured_generation": 0,
+    "fork_operation_id": "grandchild-fork",
+    "child_operation_id": "grandchild-child"
+  }
+]

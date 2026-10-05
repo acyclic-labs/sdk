@@ -1,0 +1,11 @@
+[
+  {
+    "kind": "fork_admitted",
+    "parent": 1,
+    "child": 2,
+    "depth": 1,
+    "captured_generation": 1,
+    "fork_operation_id": "fork-op",
+    "child_operation_id": "child-turn-op"
+  }
+]

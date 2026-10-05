@@ -1,0 +1,27 @@
+[
+  {
+    "kind": "fork_admitted",
+    "parent": 1,
+    "child": 2,
+    "depth": 1,
+    "captured_generation": 0,
+    "fork_operation_id": "fork-op",
+    "child_operation_id": "child-turn-op"
+  },
+  {
+    "kind": "message_admitted",
+    "message_id": "msg",
+    "sender": 2,
+    "recipient": 1
+  },
+  {
+    "kind": "message_delivered",
+    "message_id": "msg",
+    "delivery_index": 1
+  },
+  {
+    "kind": "message_delivered",
+    "message_id": "msg",
+    "delivery_index": 1
+  }
+]
