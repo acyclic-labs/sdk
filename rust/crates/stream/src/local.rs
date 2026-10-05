@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
@@ -16,7 +16,7 @@ use futures::{StreamExt as _, stream};
 use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::{Notify, RwLock, mpsc, watch};
 
 use crate::wire_codec::{condition_from_wire, mutation_from_wire, optional_key};
 use crate::{
@@ -176,6 +176,20 @@ struct LocalInner {
     visibility: RwLock<()>,
     changed: watch::Sender<u64>,
     poisoned: AtomicBool,
+    active_mutations: AtomicUsize,
+    mutations_drained: Notify,
+}
+
+struct MutationGuard {
+    inner: Arc<LocalInner>,
+}
+
+impl Drop for MutationGuard {
+    fn drop(&mut self) {
+        if self.inner.active_mutations.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.inner.mutations_drained.notify_waiters();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -453,6 +467,8 @@ impl LocalStream {
                 visibility: RwLock::new(()),
                 changed,
                 poisoned: AtomicBool::new(false),
+                active_mutations: AtomicUsize::new(0),
+                mutations_drained: Notify::new(),
             }),
         })
     }
@@ -503,6 +519,19 @@ impl LocalStream {
             self.inner.poisoned.store(true, Ordering::Release);
             StreamError::Unavailable
         })
+    }
+
+    /// Waits for every deferred mutation spawned by a cancelled caller to
+    /// finish. The provider retains these mutations to preserve durability;
+    /// owners must await this boundary before releasing the local root.
+    pub async fn drain(&self) {
+        loop {
+            let notified = self.inner.mutations_drained.notified();
+            if self.inner.active_mutations.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
     }
 
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
@@ -577,7 +606,12 @@ impl LocalStream {
         // The mutation runs on a task of its own, which takes its caller's
         // durability scope with it.
         let deferred = deferred();
+        self.inner.active_mutations.fetch_add(1, Ordering::AcqRel);
+        let mutation_guard = MutationGuard {
+            inner: Arc::clone(&self.inner),
+        };
         tokio::spawn(DEFERRED.scope(deferred, async move {
+            let _mutation_guard = mutation_guard;
             let _visibility = stream.inner.visibility.write().await;
             stream.check_available()?;
             let result = mutation(stream.clone()).await;
@@ -1524,6 +1558,15 @@ mod tests {
             started_rx.recv()?;
             appending.abort();
             assert!(appending.await.is_err_and(|error| error.is_cancelled()));
+            let draining = tokio::spawn({
+                let provider = provider.clone();
+                async move { provider.drain().await }
+            });
+            tokio::task::yield_now().await;
+            assert!(
+                !draining.is_finished(),
+                "drain returned while cancelled persistence was still blocked"
+            );
             drop(provider);
             assert!(
                 Arc::clone(&lifecycle).try_lock_owned().is_err(),
@@ -1531,6 +1574,7 @@ mod tests {
             );
 
             release_tx.send(())?;
+            tokio::time::timeout(std::time::Duration::from_secs(1), draining).await??;
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 Arc::clone(&lifecycle).lock_owned(),

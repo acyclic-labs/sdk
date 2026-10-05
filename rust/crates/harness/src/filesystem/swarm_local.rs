@@ -2693,6 +2693,12 @@ impl PersistentLocalSwarm {
     /// Admitted external effects retain their durable recovery fences.
     pub async fn shutdown_workers(&self) {
         self.workers.shutdown().await;
+        // LocalStream keeps a cancelled caller's mutation alive until its
+        // durability boundary finishes. Do not report composition shutdown
+        // while one of those provider-owned tasks can still hold a journal
+        // root open.
+        self.conversation_stream.drain().await;
+        self.registry.drain().await;
     }
 
     fn observe(&self, observation: LocalSwarmObservation) {
@@ -4984,6 +4990,10 @@ impl PersistentLocalSwarm {
         harness: &PersistentLocalHarness,
         child_result: Result<TurnOutput>,
     ) -> Result<LocalForkOutcome> {
+        // A cancelled caller may have left a LocalStream mutation owned by
+        // the provider. Reconcile it before reading or publishing the child
+        // journal, so completion cannot race its deferred writer.
+        self.conversation_stream.drain().await;
         let output = match child_result {
             Ok(output) => output,
             Err(error) => {
