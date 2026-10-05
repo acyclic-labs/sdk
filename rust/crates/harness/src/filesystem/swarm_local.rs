@@ -8163,6 +8163,85 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn child_publication_binds_execution_operation_not_fork_preparation() -> Result<()> {
+        let limits = Limits::default();
+        let boundary = CompletedModelBoundary::capture(
+            ModelRequest {
+                model: Model::new(
+                    "mock",
+                    "fork-publication-identity",
+                    "1",
+                    Value::Null,
+                )?,
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("completed parent exchange".into()),
+                }],
+                tools: Vec::new(),
+                max_output_tokens: Some(64),
+            },
+            limits,
+        )?;
+        let filesystem = ProviderRef::new("local", "filesystem", "2")?;
+        let parent = Authority {
+            kind: AggregateKind::Conversation,
+            id: "publication-parent".into(),
+        };
+        let child = Authority {
+            kind: AggregateKind::Conversation,
+            id: "publication-child".into(),
+        };
+        let child_agent = AgentId::from_bytes([0x31; 16]);
+        let private = VolumeRef::new(
+            filesystem.clone(),
+            "publication-private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(child_agent),
+        )?;
+        let seed = ForkSeed {
+            operation_id: OperationId::from_bytes([0x41; 16]),
+            parent,
+            parent_revision: 7,
+            child,
+            child_agent,
+            attached_agents: Vec::new(),
+            resources: Vec::new(),
+            omissions: Vec::new(),
+            child_private_volume: private,
+            child_private_generation: GenerationRef::new(
+                filesystem,
+                [0x42; 32],
+                Some("1".into()),
+            )?,
+            inherited_context: Vec::new(),
+            inherited_through_sequence: 1,
+            shared_grants: Vec::new(),
+            reference_grants: Vec::new(),
+            model_boundary: None,
+            attachment_manifests: Vec::new(),
+            boundary: None,
+        };
+        let fork_preparation = seed.operation_id;
+        let child_execution = OperationId::from_bytes([0x43; 16]);
+        let parent_execution = Some(OperationId::from_bytes([0x44; 16]));
+        let evidence = PersistentLocalSwarm::verified_child_publication(
+            &boundary,
+            child_execution,
+            &seed,
+            parent_execution,
+        )?;
+        let publication = evidence.into_publication();
+        assert_eq!(publication.operation_id, child_execution);
+        assert_ne!(publication.operation_id, fork_preparation);
+        assert_eq!(publication.parent_operation_id, parent_execution);
+        assert_eq!(
+            publication.workspace_generation_digest,
+            fork_seed_digest(&seed)?
+        );
+        Ok(())
+    }
+
     fn test_fork_intent(child: u8) -> LocalForkIntent {
         LocalForkIntent {
             parent: TaskId::from_bytes([1; 16]),
