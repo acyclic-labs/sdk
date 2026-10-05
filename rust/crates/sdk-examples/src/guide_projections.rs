@@ -243,8 +243,24 @@ fn package_spec(family: &str, language: Language) -> Option<GuidePackageSpec> {
     let package = match language {
         Language::Rust => GuidePackageSpec {
             package_manager: "cargo",
-            package_name: "acyclic-sdk-bundle",
-            artifact_path: "qualification/packages/*-sdk-package.tgz",
+            package_name: match family {
+                "filesystem" => "acyclic-fs",
+                "harness" => "acyclic-harness",
+                "inference" => "acyclic-inference",
+                "machines" => "acyclic-machines",
+                "objects" => "acyclic-objects",
+                "workers" => "acyclic-workers",
+                _ => return None,
+            },
+            artifact_path: match family {
+                "filesystem" => "rust/crates/filesystem/Cargo.toml",
+                "harness" => "rust/crates/harness/Cargo.toml",
+                "inference" => "rust/crates/inference/Cargo.toml",
+                "machines" => "rust/crates/machines/Cargo.toml",
+                "objects" => "rust/crates/objects/Cargo.toml",
+                "workers" => "rust/crates/workers/Cargo.toml",
+                _ => return None,
+            },
         },
         Language::Python => GuidePackageSpec {
             package_manager: "pip",
@@ -363,6 +379,9 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
     let csharp_namespace = csharp_namespace(module, version);
     let version_type = version_type(version)?;
     let package = package_spec(family, language)?;
+    let harness_protocol = acyclic_harness::wire_api::current_protocol();
+    let harness_protocol_version = harness_protocol.version.as_str();
+    let harness_protocol_digest = harness_protocol.descriptor_digest.as_str();
     let method_camel = lower_camel(method);
     let method_snake = snake_case(method);
     let ts_package = if family == "filesystem" { "fs" } else { module };
@@ -416,6 +435,15 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
                     request = request,
                     method = method,
                 )
+            } else if family == "harness" {
+                format!(
+                    "from acyclic_sdk.generated.protocol.v1 import protocol_pb2\nrequest = {module}_pb2.{request}(protocol=protocol_pb2.ProtocolIdentity(version={version:?}, descriptor_digest={digest:?}), authority={module}_pb2.Authority(kind=5, id=\"fixture\"), operation={module}_pb2.OperationIdentity(operation_id=\"fixture-op\", idempotency_key=\"guide-harness\"), action_type=\"guide.submit\")\nresponse = client.{method}(request)",
+                    module = module,
+                    request = request,
+                    version = harness_protocol_version,
+                    digest = harness_protocol_digest,
+                    method = method,
+                )
             } else {
                 format!(
                     "request = {module}_pb2.{request}()\nresponse = client.{method}(request)",
@@ -442,13 +470,35 @@ print(response)"#,
                 call = call,
             )
         }
-        Language::TypeScript => format!(
+        Language::TypeScript => {
+            let harness_import = if family == "harness" {
+                "import { ProtocolIdentitySchema } from \"@acyclic-labs/harness/protocol\";\n"
+            } else {
+                ""
+            };
+            let harness_request = if family == "harness" {
+                format!(
+                    "create({request}Schema, {{ protocol: create(ProtocolIdentitySchema, {{ version: {version:?}, descriptorDigest: {digest:?} }}), authority: {{ kind: 5, id: \"fixture\" }}, operation: {{ operationId: \"fixture-op\", idempotencyKey: \"guide-harness\" }}, actionType: \"guide.submit\" }})",
+                    request = request,
+                    version = harness_protocol_version,
+                    digest = harness_protocol_digest,
+                )
+            } else {
+                format!("create({request}Schema, {{}})", request = request)
+            };
+            let ts_call = if family == "harness" {
+                format!("const response = await client.{method}({harness_request});", method = method_camel, harness_request = harness_request)
+            } else {
+                ts_call
+            };
+            format!(
             r#"// Rust scenario: {scenario_id}
 import {{ create }} from "@bufbuild/protobuf";
 import {{ createClient }} from "@connectrpc/connect";
 import {{ createGrpcTransport }} from "@connectrpc/connect-node";
 import {{ Buffer }} from "node:buffer";
 import {{ {service}, {request}Schema }} from "@acyclic-labs/{ts_package}/proto";
+{harness_import}
 
 const transport = createGrpcTransport({{ baseUrl: process.env.FIXTURE_GRPC_ADDRESS! }});
 const client = createClient({service}, transport);
@@ -458,8 +508,10 @@ console.log(response);"#,
             service = service,
             request = request,
             ts_package = ts_package,
+            harness_import = harness_import,
             ts_call = ts_call,
-        ),
+            )
+        }
         Language::Go => {
             let call = if family == "workers" {
                 format!(
@@ -483,6 +535,14 @@ console.log(response);"#,
                     method = method,
                     request = request,
                 )
+            } else if family == "harness" {
+                format!(
+                    "response, err := client.{method}(ctx, &generated.{request}{{Protocol: &protocol.ProtocolIdentity{{Version: {version:?}, DescriptorDigest: {digest:?}}}, Authority: &generated.Authority{{Kind: generated.AggregateKind_AGGREGATE_KIND_TASK, Id: \"fixture\"}}, Operation: &generated.OperationIdentity{{OperationId: \"fixture-op\", IdempotencyKey: \"guide-harness\"}}, ActionType: \"guide.submit\"}})",
+                    method = method,
+                    request = request,
+                    version = harness_protocol_version,
+                    digest = harness_protocol_digest,
+                )
             } else {
                 format!(
                     "response, err := client.{method}(ctx, &generated.{request}{{}})",
@@ -500,6 +560,7 @@ import (
     "fmt"
     "os"
     generated "github.com/acyclic-labs/sdk/go/gen/{module}/{version}"
+{go_protocol_import}
     "google.golang.org/grpc"
     "google.golang.org/grpc/credentials/insecure"
 )
@@ -519,6 +580,11 @@ func main() {{
                 module = module,
                 version = version,
                 service = service,
+                go_protocol_import = if family == "harness" {
+                    "    protocol \"github.com/acyclic-labs/sdk/go/gen/protocol/v1\""
+                } else {
+                    ""
+                },
                 call = call,
             )
         }
@@ -553,6 +619,16 @@ func main() {{
                     "      var runId = new byte[16];\n      java.util.Arrays.fill(runId, (byte) 2);\n      var request = {package_type}.{request}.newBuilder().setRunId(com.google.protobuf.ByteString.copyFrom(runId)).setFromSequence(0L).build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
                     package_type = package_type,
                     request = request,
+                    java_service_type = java_service_type,
+                    method_camel = method_camel,
+                )
+            } else if family == "harness" {
+                format!(
+                    "      var request = {package_type}.{request}.newBuilder().setProtocol(acyclic.protocol.v1.Protocol.ProtocolIdentity.newBuilder().setVersion({version:?}).setDescriptorDigest({digest:?})).setAuthority({package_type}.Authority.newBuilder().setKind({package_type}.AggregateKind.AGGREGATE_KIND_TASK).setId(\"fixture\")).setOperation({package_type}.OperationIdentity.newBuilder().setOperationId(\"fixture-op\").setIdempotencyKey(\"guide-harness\")).setActionType(\"guide.submit\").build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
+                    package_type = package_type,
+                    request = request,
+                    version = harness_protocol_version,
+                    digest = harness_protocol_digest,
                     java_service_type = java_service_type,
                     method_camel = method_camel,
                 )
@@ -613,6 +689,14 @@ public final class GuideSnippet {{
                     method = method,
                     request = request,
                 )
+            } else if family == "harness" {
+                format!(
+                    "var response = client.{method}(new {request} {{ Protocol = new Acyclic.Protocol.V1.ProtocolIdentity {{ Version = {version:?}, DescriptorDigest = {digest:?} }}, Authority = new Authority {{ Kind = AggregateKind.Task, Id = \"fixture\" }}, Operation = new OperationIdentity {{ OperationId = \"fixture-op\", IdempotencyKey = \"guide-harness\" }}, ActionType = \"guide.submit\" }});",
+                    method = method,
+                    request = request,
+                    version = harness_protocol_version,
+                    digest = harness_protocol_digest,
+                )
             } else {
                 format!(
                     "var response = client.{method}(new {request}());",
@@ -669,6 +753,16 @@ Console.WriteLine(response);"#,
                     request = request,
                     method_snake = method_snake,
                 )
+            } else if family == "harness" {
+                format!(
+                    "request = Acyclic::{package_type}::{version_type}::{request}.new(protocol: Acyclic::Protocol::V1::ProtocolIdentity.new(version: {version:?}, descriptor_digest: {digest:?}), authority: Acyclic::{package_type}::{version_type}::Authority.new(kind: Acyclic::{package_type}::{version_type}::AggregateKind::AGGREGATE_KIND_TASK, id: \"fixture\"), operation: Acyclic::{package_type}::{version_type}::OperationIdentity.new(operation_id: \"fixture-op\", idempotency_key: \"guide-harness\"), action_type: \"guide.submit\")\nresponse = client.{method_snake}(request)",
+                    package_type = package_type,
+                    version_type = version_type,
+                    request = request,
+                    version = harness_protocol_version,
+                    digest = harness_protocol_digest,
+                    method_snake = method_snake,
+                )
             } else {
                 format!(
                     "request = Acyclic::{package_type}::{version_type}::{request}.new\nresponse = client.{method_snake}(request)",
@@ -718,6 +812,14 @@ puts response"#,
                     method_camel = method_camel,
                     request = request,
                 )
+            } else if family == "harness" {
+                format!(
+                    "final response = await client.{method_camel}(generated.{request}()..protocol = (protocol.ProtocolIdentity()..version = {version:?}..descriptorDigest = {digest:?})..authority = (generated.Authority()..kind = generated.AggregateKind.AGGREGATE_KIND_TASK..id = 'fixture')..operation = (generated.OperationIdentity()..operationId = 'fixture-op'..idempotencyKey = 'guide-harness')..actionType = 'guide.submit');",
+                    method_camel = method_camel,
+                    request = request,
+                    version = harness_protocol_version,
+                    digest = harness_protocol_digest,
+                )
             } else {
                 format!(
                     "final response = await client.{method_camel}(generated.{request}());",
@@ -734,6 +836,7 @@ import 'package:crypto/crypto.dart';
 import 'package:grpc/grpc.dart';
 import 'package:acyclic_sdk/src/generated/{module}/{version}/{module}.pb.dart' as generated;
 import 'package:acyclic_sdk/src/generated/{module}/{version}/{module}.pbgrpc.dart' as rpc;
+{dart_protocol_import}
 
 Future<void> main() async {{
   final endpoint = Platform.environment['FIXTURE_GRPC_ADDRESS']!;
@@ -752,6 +855,11 @@ Future<void> main() async {{
                 module = module,
                 version = version,
                 service = service,
+                dart_protocol_import = if family == "harness" {
+                    "import 'package:acyclic_sdk/src/generated/protocol/v1/protocol.pb.dart' as protocol;"
+                } else {
+                    ""
+                },
                 call = call,
             )
         }

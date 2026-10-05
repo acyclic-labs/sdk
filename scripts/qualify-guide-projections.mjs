@@ -9,6 +9,22 @@ import { fileURLToPath } from "node:url";
 // Resolve from the script directory so this remains correct when invoked from a docs checkout, a release archive, or a clean worktree.
 const repo = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const cargo = process.env.CARGO_BIN ?? (process.platform === "win32" ? join(process.env.USERPROFILE ?? "C:\\Users\\varun", ".cargo", "bin", "cargo.exe") : "cargo");
+// Release qualification supplies pinned toolchain paths. Keep every local
+// fallback overridable so a clean checkout can use the same resolver without
+// depending on a machine's PATH layout.
+const binaries = {
+  rustfmt: process.env.SDK_RUSTFMT_BIN ?? process.env.RUSTFMT_BIN ?? "rustfmt",
+  python: process.env.SDK_PYTHON_BIN ?? process.env.PYTHON_BIN ?? "python",
+  bun: process.env.SDK_BUN_BIN ?? process.env.BUN_BIN ?? "bun",
+  go: process.env.SDK_GO_BIN ?? process.env.GO_BIN ?? "go",
+  maven: process.env.SDK_MAVEN_BIN ?? process.env.MAVEN_BIN ?? "mvn",
+  dotnet: process.env.SDK_DOTNET_BIN ?? process.env.DOTNET_BIN ?? "dotnet",
+  ruby: process.env.SDK_RUBY_BIN ?? process.env.RUBY_BIN ?? "ruby",
+  gem: process.env.SDK_GEM_BIN ?? process.env.GEM_BIN ?? "gem",
+  dart: process.env.SDK_DART_BIN ?? process.env.DART_BIN ?? "dart",
+  php: process.env.SDK_PHP_BIN ?? process.env.PHP_BIN ?? "php",
+  composer: process.env.SDK_COMPOSER_BIN ?? process.env.COMPOSER_BIN ?? "composer",
+};
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 1) {
   const value = process.argv[i];
@@ -101,29 +117,29 @@ function extension(language) {
 
 function compile(language, file, cwd, packageArtifact, environment = {}) {
   switch (language) {
-    case "rust": return command("rustfmt", ["--check", file], cwd);
-    case "python": return command(environment.PYTHON_BIN ?? "python", ["-m", "py_compile", file], cwd, environment);
-    case "typescript": return command("bun", ["build", file, "--no-bundle", "--target=node"], cwd);
-    case "go": return command("go", ["test", "."], cwd);
-    case "java": return command("mvn", ["--offline", "--batch-mode", "-q", "-DskipTests", "package"], cwd);
-    case "csharp": return command("dotnet", ["build", join(cwd, "GuideSnippet.csproj"), "--nologo", "--verbosity", "quiet"], cwd);
-    case "ruby": return command("ruby", ["-c", file], cwd, environment);
-    case "dart": return command("dart", ["analyze", file], cwd, environment);
-    case "php": return command("php", ["-l", file], cwd, environment);
+    case "rust": return command(binaries.rustfmt, ["--check", file], cwd, environment);
+    case "python": return command(environment.PYTHON_BIN ?? binaries.python, ["-m", "py_compile", file], cwd, environment);
+    case "typescript": return command(binaries.bun, ["build", file, "--no-bundle", "--target=node"], cwd, environment);
+    case "go": return command(binaries.go, ["test", "."], cwd, environment);
+    case "java": return command(binaries.maven, ["--offline", "--batch-mode", "-q", "-DskipTests", "package"], cwd, environment);
+    case "csharp": return command(binaries.dotnet, ["build", join(cwd, "GuideSnippet.csproj"), "--nologo", "--verbosity", "quiet"], cwd, environment);
+    case "ruby": return command(binaries.ruby, ["-c", file], cwd, environment);
+    case "dart": return command(binaries.dart, ["analyze", file], cwd, environment);
+    case "php": return command(binaries.php, ["-l", file], cwd, environment);
     default: return { command: "", exitCode: 127, stdout: "", stderr: `unsupported language ${language}` };
   }
 }
 
 function execute(language, file, cwd, environment = {}) {
   switch (language) {
-    case "python": return command(environment.PYTHON_BIN ?? "python", [file], cwd, environment);
-    case "typescript": return command("bun", [file], cwd, environment);
-    case "go": return command("go", ["run", "."], cwd);
-    case "ruby": return command("ruby", [file], cwd, environment);
-    case "dart": return command("dart", ["run", file], cwd, environment);
-    case "php": return command("php", [file], cwd, environment);
-    case "java": return command("mvn", ["--offline", "--batch-mode", "-q", "exec:java", "-Dexec.mainClass=GuideSnippet"], cwd, environment);
-    case "csharp": return command("dotnet", ["run", "--project", join(cwd, "GuideSnippet.csproj"), "--no-build"], cwd, environment);
+    case "python": return command(environment.PYTHON_BIN ?? binaries.python, [file], cwd, environment);
+    case "typescript": return command(binaries.bun, [file], cwd, environment);
+    case "go": return command(binaries.go, ["run", "."], cwd, environment);
+    case "ruby": return command(binaries.ruby, [file], cwd, environment);
+    case "dart": return command(binaries.dart, ["run", file], cwd, environment);
+    case "php": return command(binaries.php, [file], cwd, environment);
+    case "java": return command(binaries.maven, ["--offline", "--batch-mode", "-q", "exec:java", "-Dexec.mainClass=GuideSnippet"], cwd, environment);
+    case "csharp": return command(binaries.dotnet, ["run", "--project", join(cwd, "GuideSnippet.csproj"), "--no-build"], cwd, environment);
     default: return { command: "", exitCode: 125, stdout: "", stderr: `execution is release-only for ${language}` };
   }
 }
@@ -134,7 +150,7 @@ function prepare(language, packageArtifact, directory) {
   if (language === "python" && packageArtifact.endsWith(".whl")) {
     const venv = join(directory, ".venv");
     const venvPython = join(venv, "Scripts", "python.exe");
-    const created = command("python", ["-m", "venv", venv], directory);
+    const created = command(binaries.python, ["-m", "venv", venv], directory);
     if (created.exitCode !== 0) return { status: "install-failed", install: created, environment: {} };
     const site = join(directory, "site");
     mkdirSync(site, { recursive: true });
@@ -183,7 +199,7 @@ function prepare(language, packageArtifact, directory) {
     if (!existsSync(packageDirectory)) {
       cpSync(packageRoot, packageDirectory, { recursive: true });
     }
-    const install = command("bun", ["install", "--offline", "--no-progress"], directory);
+    const install = command(binaries.bun, ["install", "--offline", "--no-progress"], directory);
     const nodePath = [join(directory, "node_modules"), join(repo, "typescript", "node_modules"), join(packageRoot, "node_modules")].join(";");
     return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: { NODE_PATH: nodePath } };
   }
@@ -197,7 +213,7 @@ function prepare(language, packageArtifact, directory) {
   if (language === "dart") {
     const packageRoot = resolve(packageArtifact, "..");
     writeFileSync(join(directory, "pubspec.yaml"), `name: guide_snippet\nenvironment:\n  sdk: ">=3.8.0 <4.0.0"\ndependencies:\n  acyclic_sdk:\n    path: ${packageRoot.replaceAll("\\", "/")}\n`);
-    const install = command("dart", ["pub", "get", "--offline"], directory);
+    const install = command(binaries.dart, ["pub", "get", "--offline"], directory);
     return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: {} };
   }
 
@@ -207,7 +223,7 @@ function prepare(language, packageArtifact, directory) {
       require: { "acyclic/sdk": "*" },
       repositories: [{ type: "path", url: packageRoot.replaceAll("\\", "/"), options: { symlink: false } }],
     }, null, 2));
-    const install = command("composer", ["install", "--no-interaction", "--no-progress"], directory);
+    const install = command(binaries.composer, ["install", "--no-interaction", "--no-progress"], directory);
     return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: {} };
   }
 
@@ -215,9 +231,9 @@ function prepare(language, packageArtifact, directory) {
     const packageRoot = resolve(packageArtifact, "..");
     const gemPath = join(directory, "acyclic-sdk.gem");
     const gemHome = join(directory, "vendor", "bundle");
-    const built = command("gem", ["build", packageArtifact, "--output", gemPath], directory);
+    const built = command(binaries.gem, ["build", packageArtifact, "--output", gemPath], directory);
     if (built.exitCode !== 0) return { status: "install-failed", install: built, environment: {} };
-    const install = command("gem", ["install", "--local", gemPath, "--install-dir", gemHome, "--no-document"], directory, { GEM_HOME: gemHome });
+    const install = command(binaries.gem, ["install", "--local", gemPath, "--install-dir", gemHome, "--no-document"], directory, { GEM_HOME: gemHome });
     return {
       status: install.exitCode === 0 ? "installed" : "install-failed",
       install: { ...install, command: `${built.command} && ${install.command}` },
