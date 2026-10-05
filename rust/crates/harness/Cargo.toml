@@ -18,7 +18,13 @@ crate-type = ["rlib", "cdylib"]
 wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify-next", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
+filesystem-local = [
+    "filesystem",
+    "acyclic-fs/local",
+    "acyclic-fs/native-watch",
+    "acyclic-fs/native-mount",
+    "acyclic-stream/local",
+]
 test-support = ["filesystem-local", "acyclic-fs/test-support"]
 native-process-tree = ["dep:acyclic-native-runtime"]
 objects = ["dep:acyclic-objects"]

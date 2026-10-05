@@ -34,6 +34,9 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+use acyclic_fs::{CaptureOptions, HostCheckout, SourceMode, SourceOptions};
+
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
 pub(crate) fn is_host_owned_internal_path(path: &str) -> bool {
@@ -74,6 +77,7 @@ pub use project_merge_recovery::{
     ProjectMergeIntent, ProjectMergeRecovery, ProjectMergeRecoveryEntry, ProjectMergeTerminal,
     ProjectMergeTerminalConflict,
 };
+pub(crate) mod workspace_tools;
 mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -1419,6 +1423,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             .await
     }
 
+    /// Captures the current authenticated host checkout into a direct child,
+    /// then returns the ordinary parent-owned merge plan. The child is first
+    /// forked from `source_generation`, so the provider retains the exact
+    /// three-way baseline while the physical checkout is being observed.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn prepare_native_project_merge(
+        &self,
+        source_generation: &GenerationRef,
+        child: &VolumeRef,
+        capture: &CaptureOptions,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<ParentMergePlan<A, O>> {
+        self.require("fork:publish", VolumeOperation::Read)?;
+        self.require("project:merge", VolumeOperation::Write)?;
+        self.host
+            .fork_project(&self.project, source_generation, child, idempotency_key)
+            .await?;
+        let capture_key = IdempotencyKey::new(format!(
+            "native-project-capture:{}",
+            idempotency_key.as_str()
+        ))?;
+        self.host
+            .capture_native_project_authorized(child, capture, &capture_key)
+            .await?;
+        Ok(ParentMergePlan {
+            plan: self
+                .host
+                .prepare_project_merge(child, &self.project)
+                .await?,
+            child_project: child.clone(),
+            parent_project: self.project.clone(),
+            parent_scope: self.scope.clone(),
+        })
+    }
+
     /// Inspects a child's changes for an explicit parent-authorized promotion.
     pub async fn prepare_project_merge(&self, child: &VolumeRef) -> Result<ParentMergePlan<A, O>> {
         self.require("project:merge", VolumeOperation::Write)?;
@@ -1846,6 +1885,76 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(map_error)?;
         self.resolve(&workspace_ref(self.provider.clone(), &name)?)
             .await
+    }
+
+    /// Captures a caller-authenticated native checkout into a project volume.
+    /// The source root identity and all capture bounds are supplied by the
+    /// caller; the resulting generation is retained and can be used as an
+    /// immutable merge baseline.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn capture_native_project(
+        &self,
+        project: &VolumeRef,
+        grant: &ContentGrant,
+        capture: &CaptureOptions,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<GenerationRef> {
+        project.validate()?;
+        if project.class() != VolumeClass::Project || project.provider() != &self.provider {
+            return Err(Error::Invalid(
+                "native capture requires a project volume on this provider".into(),
+            ));
+        }
+        grant.require(project, VolumeOperation::Write)?;
+        self.capture_native_project_authorized(project, capture, idempotency_key)
+            .await
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    async fn capture_native_project_authorized(
+        &self,
+        project: &VolumeRef,
+        capture: &CaptureOptions,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<GenerationRef> {
+        project.validate()?;
+        if project.class() != VolumeClass::Project || project.provider() != &self.provider {
+            return Err(Error::Invalid(
+                "native capture requires a project volume on this provider".into(),
+            ));
+        }
+        let observed = acyclic_fs::capture_root_identity(&capture.source_root)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if observed != capture.expected_root_identity {
+            return Err(Error::Conflict(
+                "native capture root identity changed before attachment".into(),
+            ));
+        }
+        let source_options = SourceOptions {
+            mode: SourceMode::Pinned,
+            maximum_paths: capture.maximum_paths,
+            maximum_extent_spans: capture.maximum_extent_spans,
+            ..SourceOptions::default()
+        };
+        let checkout = HostCheckout::attach(
+            &self.filesystem,
+            project.storage_name()?,
+            &capture.source_root,
+            source_options,
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        let binding = checkout
+            .revalidate_with_key(filesystem_key(idempotency_key))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let generation = self.generation_ref_id(binding.generation_id)?;
+        self.retain_generation(
+            &workspace_ref(self.provider.clone(), &project.storage_name()?)?,
+            &generation,
+        )
+        .await?;
+        Ok(generation)
     }
 
     /// Stages an immutable version of one volume file before conversation admission.
