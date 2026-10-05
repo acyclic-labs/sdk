@@ -2980,6 +2980,7 @@ impl PersistentLocalSwarm {
         };
         let workspace_id = self
             .filesystem_host
+            .filesystem
             .workspace_id(project.storage_name()?)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         self.project_children
@@ -3022,8 +3023,12 @@ impl PersistentLocalSwarm {
             let Some(parent_task) = parent_task else {
                 continue;
             };
-            let parent = self.open_session(parent_task).await?;
-            self.register_project_child(&seed, parent.storage().reducer())
+            let parent = self
+                .open_session(parent_task)
+                .await?
+                .conversation_aggregate(self.config.limits)
+                .await?;
+            self.register_project_child(&seed, parent.reducer())
                 .await?;
         }
         Ok(())
