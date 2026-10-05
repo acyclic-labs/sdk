@@ -1205,11 +1205,30 @@ pub async fn actual_manifest_json() -> Result<Value, String> {
         .filter(|record| !observed.contains(record.rpc.as_str()))
         .map(|record| record.rpc.clone())
         .collect::<Vec<_>>();
+    let record_values = observations.iter().map(record_json).collect::<Vec<_>>();
+    let source_revision = env::var("ACYCLIC_RUST_SOURCE_REVISION")
+        .map_err(|_| "ACYCLIC_RUST_SOURCE_REVISION is required for the Rust typed request producer".to_owned())?;
+    if source_revision.len() != 40 || !source_revision.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err("ACYCLIC_RUST_SOURCE_REVISION must be a 40-character git revision".to_owned());
+    }
+    let execution_plan = execution_plan_json(&execution);
+    let execution_plan_bytes = serde_json::to_vec(&execution_plan)
+        .map_err(|error| format!("encode Rust execution plan: {error}"))?;
+    let execution_plan_sha256 = format!("sha256:{:x}", Sha256::digest(&execution_plan_bytes));
+    let authority_bytes = serde_json::to_vec(&json!({
+        "records": record_values,
+        "execution_plan": execution_plan,
+    })).map_err(|error| format!("encode Rust manifest authority: {error}"))?;
+    let authority_sha256 = format!("sha256:{:x}", Sha256::digest(&authority_bytes));
     Ok(json!({
         "schema_version": 2,
         "source": "rust-executable-fixtures",
+        "producer": "acyclic-sdk-examples::typed-request-manifest",
+        "source_revision": source_revision,
+        "authority_sha256": authority_sha256,
+        "execution_plan_sha256": execution_plan_sha256,
         "record_count": observations.len(),
-        "complete": missing.is_empty() && observations.len() == 106,
+        "complete": missing.is_empty() && observations.len() == expected.len(),
         "missing_rpcs": missing,
         "records": observations.iter().map(record_json).collect::<Vec<_>>(),
         "execution_plan_count": execution.len(),
@@ -1220,7 +1239,7 @@ pub async fn actual_manifest_json() -> Result<Value, String> {
 fn unique_inventory(
     execution: &[TypedRequestRecord],
 ) -> Result<Vec<TypedRequestRecord>, String> {
-    let mut output = Vec::with_capacity(106);
+    let mut output = Vec::with_capacity(execution.len());
     let mut identities = std::collections::BTreeSet::new();
     for record in execution {
         if record.rpc.ends_with("/after-completion") {
@@ -1917,6 +1936,15 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
         "      when (not (code `isInfixOf` detail) || (not (null terminal) && not (terminal `isInfixOf` detail))) (fail (name ++ \" unexpected RPC error: \" ++ detail))".to_owned(),
         "    Right _ -> fail (name ++ \" unexpectedly succeeded\")".to_owned(),
         String::new(),
+        "expectDeadline :: String -> IO a -> IO ()".to_owned(),
+        "expectDeadline name action = do".to_owned(),
+        "  result <- try action".to_owned(),
+        "  case result of".to_owned(),
+        "    Left (errorValue :: SomeException) -> do".to_owned(),
+        "      let detail = show errorValue".to_owned(),
+        "      when (not (\"DEADLINE_EXCEEDED\" `isInfixOf` detail) && not (\"GrpcDeadlineExceeded\" `isInfixOf` detail)) (fail (name ++ \" unexpected deadline error: \" ++ detail))".to_owned(),
+        "    Right _ -> fail (name ++ \" unexpectedly completed before deadline\")".to_owned(),
+        String::new(),
         "expect :: String -> BS.ByteString -> BS.ByteString -> IO ()".to_owned(),
         "expect name wanted actual = when (wanted /= actual) (fail (name ++ \" response bytes differ\"))".to_owned(),
         String::new(),
@@ -1950,7 +1978,7 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
         let request_name = haskell_last(request_type);
         let bytes = step.get("request_base64").and_then(Value::as_str).unwrap_or("");
         lines.push(format!("    putStrLn \"CALL:{rpc}\""));
-        lines.push(format!("    request{index} <- either (fail . (\"{rpc} request decode: \" ++)) pure (decodeMessage {} :: Either String {request_alias}.{request_name})", haskell_bytes(bytes)?));
+        lines.push(format!("    request{index} <- either (fail . (\"{rpc} request decode: \" ++)) pure (decodeMessage ({}) :: Either String {request_alias}.{request_name})", haskell_bytes(bytes)?));
 
         let is_client = method.5;
         let is_server = method.6;
@@ -1974,7 +2002,7 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
                         sends.push(format!("send (NextElem (Proto request{index}))"));
                     } else {
                         let frame_name = format!("request{index}f{frame_index}");
-                        lines.push(format!("    {frame_name} <- either (fail . (\"{rpc} frame decode: \" ++)) pure (decodeMessage {} :: Either String {request_alias}.{})", haskell_bytes(frame_bytes)?, haskell_last(frame_type)));
+                        lines.push(format!("    {frame_name} <- either (fail . (\"{rpc} frame decode: \" ++)) pure (decodeMessage ({}) :: Either String {request_alias}.{})", haskell_bytes(frame_bytes)?, haskell_last(frame_type)));
                         sends.push(format!("send (NextElem (Proto {frame_name}))"));
                     }
                 }
@@ -1987,11 +2015,15 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
             lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.clientStreaming conn (Client.rpc @Rpc{index}) (\\send -> {} >> pure ()))", sends.join(" >> "))); 
             let expected = expected_frames.first().and_then(|frame| frame.get("response_base64")).and_then(Value::as_str).or_else(|| step.get("response_base64").and_then(Value::as_str)).unwrap_or("");
             lines.push(format!("    let actual{index} = case response{index} of (Proto value, _) -> encodeMessage value"));
-            lines.push(format!("    expect \"{rpc}\" {} actual{index}", haskell_bytes(expected)?));
+            lines.push(format!("    expect \"{rpc}\" ({}) actual{index}", haskell_bytes(expected)?));
         } else if is_server {
             let expected = expected_frames.iter().map(|frame| frame.get("response_base64").and_then(Value::as_str).unwrap_or("")).map(haskell_bytes).collect::<Result<Vec<_>, _>>()?;
             if outcome_kind == "error" {
                 lines.push(format!("    expectError \"{rpc}\" \"{outcome_code}\" \"{outcome_terminal}\" (Typed.serverStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}) (\\next -> collect next []))"));
+                continue;
+            }
+            if outcome_kind == "stream" && outcome_terminal == "timeout" {
+                lines.push(format!("    expectDeadline \"{rpc}\" (Typed.serverStreaming conn (Client.rpcWith @Rpc{index} (def {{ Client.callTimeout = Just (Client.Timeout Client.Millisecond (Client.TimeoutValue 10)) }})) (Proto request{index}) (\\next -> collect next []))"));
                 continue;
             }
             lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.serverStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}) (\\next -> collect next []))"));
@@ -2005,7 +2037,7 @@ pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
             lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.nonStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}))"));
             lines.push(format!("    let actual{index} = case response{index} of Proto value -> encodeMessage value"));
             let expected = expected_frames.first().and_then(|frame| frame.get("response_base64")).and_then(Value::as_str).or_else(|| step.get("response_base64").and_then(Value::as_str)).unwrap_or("");
-            lines.push(format!("    expect \"{rpc}\" {} actual{index}", haskell_bytes(expected)?));
+            lines.push(format!("    expect \"{rpc}\" ({}) actual{index}", haskell_bytes(expected)?));
         }
     }
     lines.push(format!("    putStrLn \"PASS:rust-canonical-runtime={}\"", steps.len()));
