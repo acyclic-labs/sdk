@@ -16,6 +16,17 @@ pub(super) struct SwarmCommunicationHost {
     stream: StreamClient<LocalStream>,
 }
 
+fn budget_allows_new_mutations(
+    reservation_state: Option<SwarmReservationState>,
+    phase: &LocalSessionPhase,
+) -> bool {
+    match reservation_state {
+        None | Some(SwarmReservationState::Active) => true,
+        Some(SwarmReservationState::Reserved | SwarmReservationState::Cancelled) => false,
+        Some(SwarmReservationState::Completed) => matches!(phase, LocalSessionPhase::Completed),
+    }
+}
+
 impl SwarmCommunicationHost {
     pub(super) fn new(stream: StreamClient<LocalStream>) -> Self {
         Self {
@@ -114,13 +125,7 @@ impl DurableTaskHost for SwarmCommunicationHost {
                     | LocalSessionPhase::Activating
                     | LocalSessionPhase::Completed
             );
-            let budget_allows = match reservation_state {
-                None | Some(SwarmReservationState::Active) => true,
-                Some(SwarmReservationState::Reserved | SwarmReservationState::Cancelled) => false,
-                Some(SwarmReservationState::Completed) => {
-                    matches!(session.phase, LocalSessionPhase::Completed)
-                }
-            };
+            let budget_allows = budget_allows_new_mutations(reservation_state, &session.phase);
             Ok(TaskCommunicationScope {
                 parent: admission.parent,
                 grants: admission.grants,
@@ -332,5 +337,47 @@ impl DurableTaskHost for SwarmCommunicationHost {
             .await;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserved_and_cancelled_budget_states_fence_new_mutations() {
+        assert!(!budget_allows_new_mutations(
+            Some(SwarmReservationState::Reserved),
+            &LocalSessionPhase::Activating,
+        ));
+        assert!(!budget_allows_new_mutations(
+            Some(SwarmReservationState::Cancelled),
+            &LocalSessionPhase::Ready,
+        ));
+    }
+
+    #[test]
+    fn active_or_root_budget_states_allow_new_mutations() {
+        assert!(budget_allows_new_mutations(
+            Some(SwarmReservationState::Active),
+            &LocalSessionPhase::Activating,
+        ));
+        assert!(budget_allows_new_mutations(None, &LocalSessionPhase::Ready));
+    }
+
+    #[test]
+    fn completed_budget_state_only_allows_an_explicit_completed_turn() {
+        assert!(budget_allows_new_mutations(
+            Some(SwarmReservationState::Completed),
+            &LocalSessionPhase::Completed,
+        ));
+        assert!(!budget_allows_new_mutations(
+            Some(SwarmReservationState::Completed),
+            &LocalSessionPhase::Ready,
+        ));
+        assert!(!budget_allows_new_mutations(
+            Some(SwarmReservationState::Completed),
+            &LocalSessionPhase::Activating,
+        ));
     }
 }
