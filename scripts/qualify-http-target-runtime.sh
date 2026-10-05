@@ -80,6 +80,9 @@ begin
    Request.Limits.Memory_Bytes.Present := True;
    Request.Limits.Memory_Bytes.Value := AcyclicActors.To_UString ("1048576");
    AcyclicActors.Clients.Create_Actor (Client, Request, Result);
+   if not Result.Actor.Actor_Id.Present then
+      raise Program_Error with "generated Ada response did not decode actor_id";
+   end if;
 end Qualification;
 EOF
       cat >"$actor_project/qualification.gpr" <<EOF
