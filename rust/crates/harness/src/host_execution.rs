@@ -12,19 +12,19 @@ use crate::{
     effects::{EffectDispatch, EffectObservation, EffectProvider},
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use acyclic_native_runtime::{OutputReader, ProcessTree, spawn_output_reader, spawn_process_tree};
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+use std::io::Read;
 use std::{
     collections::BTreeMap,
-    io::Read,
     path::Path,
     process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError},
     },
     thread,
     time::{Duration, Instant},
@@ -1059,6 +1059,10 @@ impl ExecutionRunner for NativeExecutionRunner {
                 stderr: Vec::new(),
             });
         }
+        #[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
+        return Err(Error::Unsupported(
+            "native host execution requires the interruptible native-process-tree provider".into(),
+        ));
         // Compute the deadline before spawning. An admitted timeout must not
         // discover an unrepresentable clock instant after a child exists.
         let deadline = request
@@ -1099,8 +1103,23 @@ impl ExecutionRunner for NativeExecutionRunner {
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(
             request.max_output_bytes as usize,
         ));
-        let stdout_thread = spawn_reader(stdout, Arc::clone(&remaining), Arc::clone(&overflow));
-        let stderr_thread = spawn_reader(stderr, Arc::clone(&remaining), Arc::clone(&overflow));
+        let mut stdout_thread =
+            match spawn_reader(stdout, Arc::clone(&remaining), Arc::clone(&overflow)) {
+                Ok(reader) => reader,
+                Err(error) => {
+                    let _ = child.terminate();
+                    return Err(error);
+                }
+            };
+        let mut stderr_thread =
+            match spawn_reader(stderr, Arc::clone(&remaining), Arc::clone(&overflow)) {
+                Ok(reader) => reader,
+                Err(error) => {
+                    let _ = child.terminate();
+                    let _ = finish_reader(&mut stdout_thread, None);
+                    return Err(error);
+                }
+            };
         let termination;
         let mut termination_error = None;
         loop {
@@ -1121,8 +1140,46 @@ impl ExecutionRunner for NativeExecutionRunner {
             if let Some(status) = child.try_wait().map_err(|error| {
                 Error::Storage(format!("failed waiting for approved process: {error}"))
             })? {
-                let stdout = receive_reader(&stdout_thread)?;
-                let stderr = receive_reader(&stderr_thread)?;
+                let stdout = match receive_reader(&mut stdout_thread) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        let _ = child.terminate();
+                        let _ = finish_reader(&mut stdout_thread, None);
+                        let _ = finish_reader(&mut stderr_thread, None);
+                        return Err(error);
+                    }
+                };
+                let stderr = match receive_reader(&mut stderr_thread) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        let _ = child.terminate();
+                        let _ = finish_reader(&mut stdout_thread, stdout);
+                        let _ = finish_reader(&mut stderr_thread, None);
+                        return Err(error);
+                    }
+                };
+                if stdout.is_none() || stderr.is_none() {
+                    let _ = child.terminate();
+                    let stdout = finish_reader(&mut stdout_thread, stdout)?;
+                    let stderr = finish_reader(&mut stderr_thread, stderr)?;
+                    if overflow.load(Ordering::Acquire) {
+                        return Err(Error::Invalid(
+                            "approved process output exceeded its limit".into(),
+                        ));
+                    }
+                    let (Some(stdout), Some(stderr)) = (stdout, stderr) else {
+                        return Ok(RunnerOutcome::Unknown {
+                            reason: "process descendants retained output handles".into(),
+                        });
+                    };
+                    return Ok(RunnerOutcome::Exited {
+                        status_code: status.code(),
+                        stdout,
+                        stderr,
+                    });
+                }
+                finish_reader(&mut stdout_thread, stdout)?;
+                finish_reader(&mut stderr_thread, stderr)?;
                 if overflow.load(Ordering::Acquire) {
                     return Err(Error::Invalid(
                         "approved process output exceeded its limit".into(),
@@ -1148,16 +1205,31 @@ impl ExecutionRunner for NativeExecutionRunner {
             }
             thread::sleep(Duration::from_millis(5));
         }
-        let stdout = receive_reader(&stdout_thread);
-        let stderr = receive_reader(&stderr_thread);
+        let stdout_observed = receive_reader(&mut stdout_thread);
+        let stderr_observed = receive_reader(&mut stderr_thread);
         if let Some(reason) = termination_error {
             // A failed tree signal leaves the external effect uncertain even
             // when both output pipes have closed. Never publish timeout,
             // cancellation, or overflow as a terminal result in that case.
+            let _ = finish_reader(&mut stdout_thread, stdout_observed.ok().flatten());
+            let _ = finish_reader(&mut stderr_thread, stderr_observed.ok().flatten());
             return Ok(RunnerOutcome::Unknown { reason });
         }
-        let stdout = stdout?;
-        let stderr = stderr?;
+        let stdout = match stdout_observed {
+            Ok(output) => finish_reader(&mut stdout_thread, output)?,
+            Err(error) => {
+                let _ = finish_reader(&mut stdout_thread, None);
+                let _ = finish_reader(&mut stderr_thread, stderr_observed.ok().flatten());
+                return Err(error);
+            }
+        };
+        let stderr = match stderr_observed {
+            Ok(output) => finish_reader(&mut stderr_thread, output)?,
+            Err(error) => {
+                let _ = finish_reader(&mut stderr_thread, None);
+                return Err(error);
+            }
+        };
         if overflow.load(Ordering::Acquire) {
             return Err(Error::Invalid(
                 "approved process output exceeded its limit".into(),
@@ -1259,49 +1331,96 @@ enum Termination {
     Overflow,
 }
 
-fn spawn_reader<R: Read + Send + 'static>(
-    mut reader: R,
-    remaining: Arc<std::sync::atomic::AtomicUsize>,
-    overflow: Arc<AtomicBool>,
-) -> Receiver<Result<Vec<u8>>> {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let result = (|| {
-            let mut bytes = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                let read = reader.read(&mut buffer).map_err(|error| {
-                    Error::Storage(format!("failed reading process output: {error}"))
-                })?;
-                if read == 0 {
-                    break;
-                }
-                let consumed =
-                    remaining.fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
-                        available.checked_sub(read)
-                    });
-                if consumed.is_err() {
-                    overflow.store(true, Ordering::Release);
-                    break;
-                }
-                bytes.extend_from_slice(buffer.get(..read).ok_or_else(|| {
-                    Error::Storage("process reader returned an invalid length".into())
-                })?);
-            }
-            Ok(bytes)
-        })();
-        let _ = sender.send(result);
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn consume_output(
+    chunk: &[u8],
+    remaining: &std::sync::atomic::AtomicUsize,
+    overflow: &AtomicBool,
+) -> bool {
+    let consumed = remaining.fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
+        available.checked_sub(chunk.len())
     });
-    receiver
+    if consumed.is_err() {
+        overflow.store(true, Ordering::Release);
+        false
+    } else {
+        true
+    }
 }
 
-fn receive_reader(receiver: &Receiver<Result<Vec<u8>>>) -> Result<Option<Vec<u8>>> {
-    match receiver.recv_timeout(READER_GRACE) {
-        Ok(result) => result.map(Some),
-        Err(RecvTimeoutError::Timeout) => Ok(None),
-        Err(RecvTimeoutError::Disconnected) => Err(Error::Storage(
-            "process output reader disconnected without a result".into(),
-        )),
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+struct ReaderTask(OutputReader);
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn reader_consumer(
+    remaining: Arc<std::sync::atomic::AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> impl FnMut(&[u8]) -> bool + Send + 'static {
+    move |chunk| consume_output(chunk, &remaining, &overflow)
+}
+
+#[cfg(all(
+    feature = "native-process-tree",
+    not(target_arch = "wasm32"),
+    any(target_os = "linux", target_vendor = "apple")
+))]
+fn spawn_reader<R: Read + std::os::fd::AsRawFd + Send + 'static>(
+    reader: R,
+    remaining: Arc<std::sync::atomic::AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> Result<ReaderTask> {
+    spawn_output_reader(reader, reader_consumer(remaining, overflow))
+        .map(ReaderTask)
+        .map_err(|error| Error::Storage(format!("failed to start process output reader: {error}")))
+}
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32"), windows))]
+fn spawn_reader<R: std::os::windows::io::AsRawHandle + Send + 'static>(
+    reader: R,
+    remaining: Arc<std::sync::atomic::AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> Result<ReaderTask> {
+    spawn_output_reader(reader, reader_consumer(remaining, overflow))
+        .map(ReaderTask)
+        .map_err(|error| Error::Storage(format!("failed to start process output reader: {error}")))
+}
+
+#[cfg(all(
+    feature = "native-process-tree",
+    not(target_arch = "wasm32"),
+    not(any(target_os = "linux", target_vendor = "apple", windows))
+))]
+fn spawn_reader<R: Read + Send + 'static>(
+    reader: R,
+    remaining: Arc<std::sync::atomic::AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> Result<ReaderTask> {
+    spawn_output_reader(reader, reader_consumer(remaining, overflow))
+        .map(ReaderTask)
+        .map_err(|error| Error::Storage(format!("failed to start process output reader: {error}")))
+}
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn receive_reader(reader: &mut ReaderTask) -> Result<Option<Vec<u8>>> {
+    reader
+        .0
+        .receive(READER_GRACE)
+        .map_err(|error| Error::Storage(format!("failed reading process output: {error}")))
+}
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn finish_reader(reader: &mut ReaderTask, output: Option<Vec<u8>>) -> Result<Option<Vec<u8>>> {
+    if let Some(output) = output {
+        reader
+            .0
+            .join()
+            .map_err(|error| Error::Storage(format!("process output reader failed: {error}")))?;
+        Ok(Some(output))
+    } else {
+        reader
+            .0
+            .cancel_and_join()
+            .map_err(|error| Error::Storage(format!("process output reader failed: {error}")))
     }
 }
 
@@ -2159,6 +2278,7 @@ mod tests {
         core::{AggregateKind, Authority, AuthorityIssuer},
         resources::ProviderRef,
     };
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
     async fn wait_for_flag(flag: &AtomicBool, label: &str) -> Result<()> {
@@ -2179,6 +2299,26 @@ mod tests {
         })
         .await
         .map_err(|_| Error::Storage(format!("{label} did not start within 5 seconds")))
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    async fn wait_for_native_active_empty(provider: &NativeExecutionProvider) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let empty = provider
+                    .active
+                    .lock()
+                    .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
+                    .is_empty();
+                if empty {
+                    break Ok::<(), Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Storage("native dispatch left an active attempt".into()))??;
+        Ok(())
     }
 
     struct MemoryContent {
@@ -2743,6 +2883,185 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    fn native_cancellation_fixture(
+        root: &Path,
+    ) -> Result<(ExecutionSpec, PathBuf, PathBuf, PathBuf)> {
+        let started = root.join("started.marker");
+        let pid = root.join("child.pid");
+        let late = root.join("late.marker");
+        let release = root.join("release.marker");
+        let executable = std::env::current_exe()
+            .map_err(|error| Error::Storage(format!("failed locating test executable: {error}")))?;
+        let mut request = spec();
+        request.executable = executable.to_string_lossy().into_owned();
+        request.working_directory = root.to_string_lossy().into_owned();
+        request.arguments = vec![
+            "--exact".into(),
+            "host_execution::tests::native_process_fixture_helper".into(),
+            "--nocapture".into(),
+            "--".into(),
+            "--graphcoder-process-fixture".into(),
+            started.to_string_lossy().into_owned(),
+            pid.to_string_lossy().into_owned(),
+            late.to_string_lossy().into_owned(),
+            release.to_string_lossy().into_owned(),
+        ];
+        Ok((request, started, pid, late))
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FixtureProcessState {
+        Alive,
+        Exited,
+        Unknown,
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    fn fixture_process_state(pid: u32) -> FixtureProcessState {
+        #[cfg(windows)]
+        {
+            let system_root =
+                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            let tasklist = Path::new(&system_root)
+                .join("System32")
+                .join("tasklist.exe");
+            let mut command = Command::new(tasklist);
+            command
+                .arg("/FI")
+                .arg(format!("PID eq {pid}"))
+                .args(["/FO", "CSV", "/NH"]);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let Ok(output) = command.output() else {
+                return FixtureProcessState::Unknown;
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains(&format!("\"{pid}\"")) {
+                return FixtureProcessState::Alive;
+            }
+            if output.status.success() && stdout.trim_start().starts_with("INFO:") {
+                return FixtureProcessState::Exited;
+            }
+            return FixtureProcessState::Unknown;
+        }
+        #[cfg(unix)]
+        {
+            let Ok(output) = Command::new("ps")
+                .arg("-p")
+                .arg(pid.to_string())
+                .args(["-o", "pid="])
+                .output()
+            else {
+                return FixtureProcessState::Unknown;
+            };
+            if !output.status.success() {
+                return FixtureProcessState::Unknown;
+            }
+            let pid_text = pid.to_string();
+            if String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .any(|value| value == pid_text)
+            {
+                FixtureProcessState::Alive
+            } else {
+                FixtureProcessState::Exited
+            }
+        }
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    fn wait_for_fixture_exit(pid: u32) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match fixture_process_state(pid) {
+                FixtureProcessState::Exited => return Ok(()),
+                FixtureProcessState::Unknown => {
+                    return Err(Error::Storage(format!(
+                        "native process fixture {pid} could not be inspected"
+                    )));
+                }
+                FixtureProcessState::Alive if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                FixtureProcessState::Alive => break,
+            }
+        }
+        if fixture_process_state(pid) != FixtureProcessState::Alive {
+            return Err(Error::Storage(format!(
+                "native process fixture {pid} changed state during cleanup"
+            )));
+        }
+        #[cfg(windows)]
+        {
+            let system_root =
+                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            let taskkill = Path::new(&system_root)
+                .join("System32")
+                .join("taskkill.exe");
+            let mut command = Command::new(taskkill);
+            command.arg("/PID").arg(pid.to_string()).args(["/T", "/F"]);
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+            let _ = command.status();
+        }
+        #[cfg(unix)]
+        {
+            let _ = Command::new("/bin/kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status();
+        }
+        let forced_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match fixture_process_state(pid) {
+                FixtureProcessState::Exited => {
+                    return Err(Error::Storage(format!(
+                        "native process fixture {pid} required forced cleanup"
+                    )));
+                }
+                FixtureProcessState::Unknown => {
+                    return Err(Error::Storage(format!(
+                        "native process fixture {pid} became uninspectable during cleanup"
+                    )));
+                }
+                FixtureProcessState::Alive if Instant::now() < forced_deadline => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                FixtureProcessState::Alive => {
+                    return Err(Error::Storage(format!(
+                        "native process fixture {pid} survived forced cleanup"
+                    )));
+                }
+            }
+        }
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_process_fixture_helper() {
+        let arguments: Vec<_> = std::env::args().collect();
+        let Some(index) = arguments
+            .iter()
+            .position(|argument| argument == "--graphcoder-process-fixture")
+        else {
+            return;
+        };
+        let started = Path::new(&arguments[index + 1]);
+        let pid = Path::new(&arguments[index + 2]);
+        let late = Path::new(&arguments[index + 3]);
+        let release = Path::new(&arguments[index + 4]);
+        std::fs::write(pid, std::process::id().to_string()).expect("fixture pid marker");
+        std::fs::write(started, b"started").expect("fixture started marker");
+        while !release.exists() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::write(late, b"late").expect("fixture late marker");
+    }
+
     #[test]
     fn approval_digest_binds_every_process_field() -> Result<()> {
         let operation = OperationId::from_bytes([1; 16]);
@@ -2780,6 +3099,13 @@ mod tests {
             changed_directory.validate(),
             Err(Error::Conflict(_))
         ));
+        let mut changed_executable = approval.clone();
+        changed_executable.request.executable =
+            std::env::current_exe()?.to_string_lossy().into_owned();
+        assert!(matches!(
+            changed_executable.validate(),
+            Err(Error::Conflict(_))
+        ));
         let mut relative = request;
         relative.executable = "cmd.exe".into();
         assert!(relative.digest().is_err());
@@ -2815,6 +3141,68 @@ mod tests {
             .map(|index| (format!("KEY_{index}"), "value".into()))
             .collect();
         assert!(ExecutionEnvironment::explicit(too_many).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn execution_spec_rejects_process_bounds_and_non_absolute_paths() -> Result<()> {
+        let mut empty_executable = spec();
+        empty_executable.executable.clear();
+        assert!(matches!(
+            empty_executable.validate(),
+            Err(Error::Invalid(message)) if message.contains("executable")
+        ));
+
+        let mut nul_executable = spec();
+        nul_executable.executable.push('\0');
+        assert!(nul_executable.validate().is_err());
+
+        let mut too_many_arguments = spec();
+        too_many_arguments.arguments = (0..=MAX_ARGUMENTS)
+            .map(|index| format!("argument-{index}"))
+            .collect();
+        assert!(matches!(
+            too_many_arguments.validate(),
+            Err(Error::Invalid(message)) if message.contains("arguments")
+        ));
+
+        let mut oversized_arguments = spec();
+        oversized_arguments.arguments = vec!["x".repeat(MAX_ARGUMENT_BYTES)];
+        assert!(oversized_arguments.validate().is_err());
+
+        let mut nul_argument = spec();
+        nul_argument.arguments = vec!["has\0nul".into()];
+        assert!(nul_argument.validate().is_err());
+
+        let mut empty_working_directory = spec();
+        empty_working_directory.working_directory.clear();
+        assert!(matches!(
+            empty_working_directory.validate(),
+            Err(Error::Invalid(message)) if message.contains("working directory")
+        ));
+
+        let mut relative_working_directory = spec();
+        relative_working_directory.working_directory = ".".into();
+        assert!(relative_working_directory.validate().is_err());
+
+        let mut nul_working_directory = spec();
+        nul_working_directory.working_directory.push('\0');
+        assert!(nul_working_directory.validate().is_err());
+
+        let mut zero_timeout = spec();
+        zero_timeout.timeout_ms = Some(0);
+        assert!(matches!(
+            zero_timeout.validate(),
+            Err(Error::Invalid(message)) if message.contains("timeout")
+        ));
+
+        let mut zero_output = spec();
+        zero_output.max_output_bytes = 0;
+        assert!(zero_output.validate().is_err());
+
+        let mut oversized_output = spec();
+        oversized_output.max_output_bytes = (MAX_OUTPUT_BYTES as u32).saturating_add(1);
+        assert!(oversized_output.validate().is_err());
         Ok(())
     }
 
@@ -2988,8 +3376,9 @@ mod tests {
     #[cfg(all(windows, not(feature = "native-process-tree")))]
     #[test]
     fn native_runner_reports_unknown_for_hidden_descendant_held_pipe() -> Result<()> {
-        let temporary = tempfile::tempdir()
-            .map_err(|error| Error::Storage(format!("failed creating held-pipe fixture: {error}")))?;
+        let temporary = tempfile::tempdir().map_err(|error| {
+            Error::Storage(format!("failed creating held-pipe fixture: {error}"))
+        })?;
         let marker = temporary.path().join("parent-started.marker");
         let done = temporary.path().join("descendant-finished.marker");
         let parent_script = temporary.path().join("parent.cmd");
@@ -3040,7 +3429,10 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(marker.exists(), "parent marker was not written");
-        assert!(done.exists(), "descendant did not reach its terminal marker");
+        assert!(
+            done.exists(),
+            "descendant did not reach its terminal marker"
+        );
         let markers = std::fs::read_to_string(&marker).map_err(|error| {
             Error::Storage(format!("held-pipe marker was not written: {error}"))
         })?;
@@ -3072,6 +3464,146 @@ mod tests {
             matches!(outcome, RunnerOutcome::Cancelled { .. })
                 || (!cfg!(feature = "native-process-tree")
                     && matches!(outcome, RunnerOutcome::Unknown { ref reason } if reason.contains("process-tree support")))
+        );
+        Ok(())
+    }
+
+    /// The process-tree adapter must own descendants when cancellation races
+    /// with a shell command.  The late marker is the external effect that a
+    /// leaked descendant would publish after the runner had returned.
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_runner_cancellation_terminates_descendants_before_late_effect() -> Result<()> {
+        let temporary = tempfile::tempdir().map_err(|error| {
+            Error::Storage(format!("failed creating cancellation fixture: {error}"))
+        })?;
+        let (request, started, pid_path, late) = native_cancellation_fixture(temporary.path())?;
+
+        let cancellation = ExecutionCancellation::new();
+        let signal = cancellation.clone();
+        let handle =
+            thread::spawn(move || NativeExecutionRunner.run_with_cancellation(&request, &signal));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !started.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !started.exists() {
+            cancellation.cancel();
+            let _ = handle.join();
+            if let Ok(pid) = std::fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|pid| pid.trim().parse::<u32>().ok())
+            {
+                let _ = wait_for_fixture_exit(pid);
+            }
+            return Err(Error::Storage(
+                "fixture did not reach its running phase".into(),
+            ));
+        }
+        let pid = match std::fs::read_to_string(&pid_path)
+            .map_err(|error| Error::Storage(format!("fixture pid marker was not written: {error}")))
+            .and_then(|pid| {
+                pid.trim().parse::<u32>().map_err(|error| {
+                    Error::Storage(format!("fixture pid marker was invalid: {error}"))
+                })
+            }) {
+            Ok(pid) => pid,
+            Err(error) => {
+                cancellation.cancel();
+                let _ = handle.join();
+                return Err(error);
+            }
+        };
+        cancellation.cancel();
+        let joined = handle
+            .join()
+            .map_err(|_| Error::Storage("native cancellation runner panicked".into()));
+        wait_for_fixture_exit(pid)?;
+        let outcome = joined??;
+        assert!(matches!(outcome, RunnerOutcome::Cancelled { .. }));
+        assert!(
+            !late.exists(),
+            "descendant published its late effect after cancellation"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn dropping_real_native_dispatch_stops_descendants_before_late_effect() -> Result<()> {
+        let temporary = tempfile::tempdir().map_err(|error| {
+            Error::Storage(format!("failed creating dropped dispatch fixture: {error}"))
+        })?;
+        let (request, started, pid_path, late) = native_cancellation_fixture(temporary.path())?;
+        let operation = OperationId::from_bytes([133; 16]);
+        let approval = ExecutionApproval::approve(operation, request)?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let provider = Arc::new(NativeExecutionProvider::new(
+            content.clone(),
+            content,
+            Arc::new(NativeExecutionRunner),
+            approval_verifier(),
+        )?);
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([134; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file,
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.dispatch(dispatch).await }
+        });
+        let started_result = tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        if started_result.is_err() {
+            task.abort();
+            let _ = task.await;
+            let _ = wait_for_native_active_empty(&provider).await;
+            return Err(Error::Storage(
+                "dropped dispatch fixture did not start".into(),
+            ));
+        }
+        let pid = match std::fs::read_to_string(&pid_path)
+            .map_err(|error| Error::Storage(format!("fixture pid marker was not written: {error}")))
+            .and_then(|pid| {
+                pid.trim().parse::<u32>().map_err(|error| {
+                    Error::Storage(format!("fixture pid marker was invalid: {error}"))
+                })
+            }) {
+            Ok(pid) => pid,
+            Err(error) => {
+                task.abort();
+                let _ = task.await;
+                let _ = wait_for_native_active_empty(&provider).await;
+                return Err(error);
+            }
+        };
+        task.abort();
+        assert!(
+            task.await
+                .expect_err("dropped dispatch unexpectedly completed")
+                .is_cancelled()
+        );
+        wait_for_native_active_empty(&provider).await?;
+        drop(provider);
+        wait_for_fixture_exit(pid)?;
+        assert!(
+            !late.exists(),
+            "dropped dispatch leaked a late process effect"
         );
         Ok(())
     }
@@ -3635,7 +4167,11 @@ mod tests {
         });
         wait_for_calls(&calls, "dropped dispatch runner").await?;
         task.abort();
-        assert!(task.await.expect_err("aborted dispatch unexpectedly completed").is_cancelled());
+        assert!(
+            task.await
+                .expect_err("aborted dispatch unexpectedly completed")
+                .is_cancelled()
+        );
 
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
