@@ -453,6 +453,13 @@ mod tests {
         assert_eq!(std::fs::read(root.path().join("user.txt"))?, b"user-change");
         assert_eq!(std::fs::read(root.path().join("approved.txt"))?, b"before");
 
+        // A lost acknowledgement of the post-mutation reconciliation must be
+        // replayable by its derived identity without another host mutation.
+        let acknowledged = checkout
+            .revalidate_with_key(post_reconciliation_key(IdempotencyKey::from_bytes([9; 16])))
+            .await?;
+        assert_eq!(acknowledged, checkout.binding().await);
+
         // A lost acknowledgement replays the same provider operation identity
         // and must keep the unrelated user edit intact.
         let replay = checkout
@@ -487,6 +494,55 @@ mod tests {
             .await?;
         assert_eq!(deletion_retry.outcomes.len(), 1);
         assert!(!root.path().join("user-delete.txt").exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn post_restore_reconciliation_observes_an_edit_before_acknowledgement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        std::fs::write(root.path().join("approved.txt"), b"before")?;
+        std::fs::write(root.path().join("user.txt"), b"before")?;
+        let fs = Fs::memory();
+        let checkout = HostCheckout::attach(
+            &fs,
+            "host-checkout-post-reconcile",
+            root.path(),
+            SourceOptions::default(),
+        )
+        .await?;
+        let approved = checkout.binding().await;
+        checkout
+            .workspace()
+            .write_text("/approved.txt", "agent")
+            .await?;
+        let generation = checkout.workspace().head().await?;
+        let key = IdempotencyKey::from_bytes([11; 16]);
+
+        checkout
+            .restore_paths(
+                &generation,
+                &approved,
+                &[PathBuf::from("approved.txt")],
+                HostPathReplacement::Atomic,
+                &MaterializeOptions::native(root.path()),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
+        // This is the crash cut between physical publication and durable
+        // acknowledgement. The post-reconcile operation must observe the
+        // user edit and retain it rather than replaying the publication.
+        std::fs::write(root.path().join("user.txt"), b"user-during-ack")?;
+        let observed = checkout
+            .revalidate_with_key(post_reconciliation_key(key))
+            .await?;
+        assert_ne!(observed.generation_id, approved.generation_id);
+        assert_eq!(
+            std::fs::read(root.path().join("user.txt"))?,
+            b"user-during-ack"
+        );
+        assert_eq!(std::fs::read(root.path().join("approved.txt"))?, b"agent");
         Ok(())
     }
 }

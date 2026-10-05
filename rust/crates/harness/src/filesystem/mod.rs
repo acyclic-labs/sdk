@@ -1844,7 +1844,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         options: SourceOptions,
     ) -> Result<HostCheckout<A, O>> {
         let name = name.as_ref().to_owned();
-        let path = path.as_ref().to_owned();
+        let path = std::fs::canonicalize(path.as_ref())
+            .map_err(|error| Error::Storage(format!("native checkout root: {error}")))?;
         let reference = workspace_ref(self.provider.clone(), &name)?;
         // Reopen only an existing provider workspace that explicitly resolves
         // to this host path. Other open failures must remain visible; treating
@@ -1856,7 +1857,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 let binding = checkout.binding().await;
-                if binding.source_root != path {
+                // Persisted bindings may come from a lower-level attach that
+                // retained an equivalent relative or symlinked spelling.
+                // Compare stable roots, not path syntax, while still failing
+                // closed if the bound root disappeared or was replaced.
+                let bound_path = std::fs::canonicalize(&binding.source_root)
+                    .map_err(|error| Error::Storage(format!("native checkout root: {error}")))?;
+                if bound_path != path {
                     return Err(Error::Conflict(
                         "native checkout name is bound to another host path".into(),
                     ));
@@ -2900,6 +2907,87 @@ mod tests {
         let project_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         assert!(boundary.validate_source_root(project_root.path()).is_ok());
         assert!(NativeCaptureBoundary::new(std::iter::empty::<&std::path::Path>()).is_err());
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn native_checkout_reopen_fails_closed_for_a_corrupt_workspace() -> Result<()> {
+        let filesystem = Fs::memory();
+        let provider = ProviderRef::new("example", "filesystem", "2")?;
+        let host = FilesystemHost::new(filesystem.clone(), provider)?;
+        filesystem
+            .create_workspace("corrupt-native-checkout")
+            .await
+            .map_err(map_error)?;
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+
+        let error = match host
+            .attach_native_checkout(
+                "corrupt-native-checkout",
+                root.path(),
+                SourceOptions::default(),
+            )
+            .await
+        {
+            Ok(_) => return Err(Error::Invalid("corrupt checkout unexpectedly opened".into())),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::Storage(_)));
+        assert!(filesystem
+            .open_workspace("corrupt-native-checkout")
+            .await
+            .map_err(map_error)?
+            .source()
+            .is_none());
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn native_checkout_reopen_accepts_a_canonical_path_alias_and_rejects_another_root(
+    ) -> Result<()> {
+        let filesystem = Fs::memory();
+        let provider = ProviderRef::new("example", "filesystem", "2")?;
+        let host = FilesystemHost::new(filesystem, provider)?;
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let alias = root
+            .path()
+            .join("..")
+            .join(
+                root.path()
+                    .file_name()
+                    .ok_or_else(|| Error::Invalid("temporary root has no name".into()))?,
+            );
+        HostCheckout::attach(
+            &host.filesystem,
+            "canonical-native-checkout",
+            &alias,
+            SourceOptions::default(),
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        host.attach_native_checkout(
+            "canonical-native-checkout",
+            root.path(),
+            SourceOptions::default(),
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+
+        let other = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let error = match host
+            .attach_native_checkout(
+                "canonical-native-checkout",
+                other.path(),
+                SourceOptions::default(),
+            )
+            .await
+        {
+            Ok(_) => return Err(Error::Invalid("checkout crossed host roots".into())),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::Conflict(_)));
         Ok(())
     }
 
