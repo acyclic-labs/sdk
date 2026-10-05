@@ -38,6 +38,10 @@ name = "verify-rpc-observations"
 path = "src/bin/verify-rpc-observations.rs"
 
 [[bin]]
+name = "verify-observations"
+path = "src/bin/verify-observations.rs"
+
+[[bin]]
 name = "sdk-runtime-consumer"
 path = "src/bin/sdk-runtime-consumer.rs"
 
