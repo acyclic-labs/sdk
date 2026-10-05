@@ -22,16 +22,21 @@ foreach ($required in @($AuthorityManifest, $Request)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required source-bound input is missing: $required" }
 }
 $authority = Get-Content -LiteralPath $AuthorityManifest -Raw | ConvertFrom-Json
-if ($authority.schema -ne 'acyclic.sdk.examples.source-authority.v1' -or
+if ($authority.schema -ne 'acyclic.sdk.rust-authority.v1' -or
+    $authority.authority -ne 'rust' -or
+    [string]::IsNullOrWhiteSpace([string]$authority.source_git_sha) -or
+    [string]$authority.source_git_sha -notmatch '^[0-9a-fA-F]{40}$' -or
     [string]::IsNullOrWhiteSpace([string]$authority.source_revision) -or
-    [string]::IsNullOrWhiteSpace([string]$authority.source_sha256) -or
-    $authority.source_files.Count -eq 0) {
+    [string]$authority.source_revision -notmatch '^[0-9a-fA-F]{64}$' -or
+    @($authority.source_files).Count -eq 0) {
     throw 'Rust source authority manifest is incomplete or has an unexpected schema'
 }
+$sourceGitSha = ([string]$authority.source_git_sha).ToLowerInvariant()
+$sourceModelDigest = ([string]$authority.source_revision).ToLowerInvariant()
 $requestDocument = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
 $requestedRevision = [string]$requestDocument.source.revision
-if (-not [string]::IsNullOrWhiteSpace($requestedRevision) -and $requestedRevision -ne [string]$authority.source_revision) {
-    throw "Rust source authority revision does not match producer request: expected $requestedRevision, got $($authority.source_revision)"
+if (-not [string]::IsNullOrWhiteSpace($requestedRevision) -and $requestedRevision -ne $sourceGitSha) {
+    throw "Rust source authority Git revision does not match producer request: expected $requestedRevision, got $sourceGitSha"
 }
 $stage = Join-Path $OutputRoot 'openapi'
 $stageReceipt = Join-Path $stage 'stage-receipt.json'
