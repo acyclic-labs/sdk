@@ -897,6 +897,33 @@ fn validate_descriptor(
     limits: Limits,
     project: Option<&VolumeRef>,
 ) -> Result<()> {
+    if descriptor.agent.into_bytes() == [0; 16]
+        || descriptor.signing_key == [0; 32]
+        || descriptor.conversation.kind != AggregateKind::Conversation
+    {
+        return Err(Error::Conflict(
+            "local session descriptor has an invalid owner identity".into(),
+        ));
+    }
+    descriptor.conversation.stream_path()?;
+    descriptor.private_volume.validate()?;
+    if descriptor.private_volume.class() != VolumeClass::AgentPrivate
+        || descriptor.private_volume.owner() != &VolumeOwner::Agent(descriptor.agent)
+    {
+        return Err(Error::Conflict(
+            "local session descriptor private volume is not owned by its agent".into(),
+        ));
+    }
+    if let Some(descriptor_project) = &descriptor.project {
+        descriptor_project.validate()?;
+        if descriptor_project.class() != VolumeClass::Project
+            || descriptor_project.provider() != descriptor.private_volume.provider()
+        {
+            return Err(Error::Conflict(
+                "local session descriptor project binding is inconsistent".into(),
+            ));
+        }
+    }
     if descriptor.version != 1
         || &descriptor.model != model
         || crate::contract::canonical_json_digest(&descriptor.limits)?
@@ -1844,11 +1871,9 @@ impl PersistentLocalHarness {
                 .map_err(|error| Error::Storage(error.to_string()))?
             {
                 AppendOutcome::Committed(_) => {}
-                AppendOutcome::TailConflict { .. } => {
-                    return Err(Error::Conflict(
-                        "local initialization lost ownership".into(),
-                    ));
-                }
+                // Another opener published the descriptor. Read its durable
+                // winner below and validate it against this request.
+                AppendOutcome::TailConflict { .. } => {}
             }
         }
         let mut records = metadata
@@ -1965,11 +1990,9 @@ impl PersistentLocalHarness {
                 .map_err(|error| Error::Storage(error.to_string()))?
             {
                 AppendOutcome::Committed(_) => {}
-                AppendOutcome::TailConflict { .. } => {
-                    return Err(Error::Conflict(
-                        "local initialization lost ownership".into(),
-                    ));
-                }
+                // Another opener published the descriptor. Read its durable
+                // winner below and validate it against this request.
+                AppendOutcome::TailConflict { .. } => {}
             }
         }
         let mut records = descriptor_stream
@@ -2454,6 +2477,70 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    #[test]
+    fn session_descriptor_rejects_inconsistent_owner_bindings() -> Result<()> {
+        let model = Model::new("mock", "descriptor", "1", json!({}))?;
+        let limits = Limits::default();
+        let provider = ProviderRef::new("descriptor", "filesystem", "1")?;
+        let project = VolumeRef::new(
+            provider.clone(),
+            "project",
+            VolumeClass::Project,
+            VolumeOwner::Project("owner".into()),
+        )?;
+        let mut descriptor = SessionDescriptor::fresh_with_provider(
+            model.clone(),
+            limits,
+            Some(project.clone()),
+            provider.clone(),
+        )?;
+        validate_descriptor(&descriptor, &model, limits, Some(&project))?;
+
+        descriptor.signing_key = [0; 32];
+        assert!(matches!(
+            validate_descriptor(&descriptor, &model, limits, Some(&project)),
+            Err(Error::Conflict(message)) if message.contains("invalid owner identity")
+        ));
+        descriptor.signing_key = [7; 32];
+
+        descriptor.private_volume = VolumeRef::new(
+            provider.clone(),
+            "private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::new()),
+        )?;
+        assert!(matches!(
+            validate_descriptor(&descriptor, &model, limits, Some(&project)),
+            Err(Error::Conflict(message)) if message.contains("private volume")
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_local_openers_reopen_the_descriptor_winner() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "descriptor-race", "1", json!({}))?;
+        let (first, second) = tokio::join!(
+            PersistentLocalHarness::open_with_tools(
+                root.path(),
+                model.clone(),
+                Arc::new(Mock(AtomicUsize::new(0))),
+                Limits::default(),
+            ),
+            PersistentLocalHarness::open_with_tools(
+                root.path(),
+                model,
+                Arc::new(Mock(AtomicUsize::new(0))),
+                Limits::default(),
+            ),
+        );
+        let first = first?;
+        let second = second?;
+        assert_eq!(first.storage.session_id(), second.storage.session_id());
+        assert_eq!(first.signing_key(), second.signing_key());
+        Ok(())
     }
 
     struct RecordingMock {
