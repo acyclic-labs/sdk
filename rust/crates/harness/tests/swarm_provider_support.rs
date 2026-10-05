@@ -22,6 +22,7 @@ use std::{
 pub struct FixtureUsage {
     provider: String,
     usage: Mutex<BTreeMap<(OperationId, String), SwarmUsage>>,
+    elapsed_samples_ms: Mutex<BTreeMap<(OperationId, String), u64>>,
 }
 
 impl FixtureUsage {
@@ -29,31 +30,51 @@ impl FixtureUsage {
         Arc::new(Self {
             provider: provider.into(),
             usage: Mutex::new(BTreeMap::new()),
+            elapsed_samples_ms: Mutex::new(BTreeMap::new()),
         })
     }
 
-    pub fn begin(&self, dispatch: &ProviderDispatchContext) {
-        if let Ok(mut usage) = self.usage.lock() {
-            usage
-                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                .or_default()
-                .model_steps = 1;
-        }
+    pub fn begin(&self, dispatch: &ProviderDispatchContext) -> acyclic_harness::Result<()> {
+        let key = (dispatch.operation_id, dispatch.dispatch_id.0.clone());
+        let mut usage = self
+            .usage
+            .lock()
+            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
+        let entry = usage.entry(key.clone()).or_default();
+        entry.model_steps = entry.model_steps.saturating_add(1);
+        self.elapsed_samples_ms
+            .lock()
+            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?
+            .insert(key, 0);
+        Ok(())
     }
 
-    pub fn record(&self, dispatch: &ProviderDispatchContext, started: Instant, event: &ModelEvent) {
-        let bytes = canonical_json_bytes(event)
-            .map(|bytes| bytes.len() as u64)
-            .unwrap_or_default();
-        if let Ok(mut usage) = self.usage.lock() {
-            let entry = usage
-                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                .or_default();
-            entry.output_bytes = entry.output_bytes.saturating_add(bytes);
-            entry.execution_time_ms = entry
-                .execution_time_ms
-                .max(started.elapsed().as_millis() as u64);
-        }
+    pub fn record(
+        &self,
+        dispatch: &ProviderDispatchContext,
+        started: Instant,
+        event: &ModelEvent,
+    ) -> acyclic_harness::Result<()> {
+        let bytes = canonical_json_bytes(event)?.len() as u64;
+        let key = (dispatch.operation_id, dispatch.dispatch_id.0.clone());
+        let elapsed = started.elapsed().as_millis() as u64;
+        let mut samples = self
+            .elapsed_samples_ms
+            .lock()
+            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
+        let previous = samples.get(&key).copied().unwrap_or(0);
+        samples.insert(key.clone(), elapsed);
+        drop(samples);
+        let mut usage = self
+            .usage
+            .lock()
+            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
+        let entry = usage.entry(key).or_default();
+        entry.output_bytes = entry.output_bytes.saturating_add(bytes);
+        entry.execution_time_ms = entry
+            .execution_time_ms
+            .saturating_add(elapsed.saturating_sub(previous));
+        Ok(())
     }
 
     pub fn record_events(
@@ -61,10 +82,11 @@ impl FixtureUsage {
         dispatch: &ProviderDispatchContext,
         started: Instant,
         events: &[ModelEvent],
-    ) {
+    ) -> acyclic_harness::Result<()> {
         for event in events {
-            self.record(dispatch, started, event);
+            self.record(dispatch, started, event)?;
         }
+        Ok(())
     }
 }
 
@@ -78,15 +100,14 @@ impl SwarmUsageSource for FixtureUsage {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
     ) -> acyclic_harness::Result<SwarmUsage> {
-        self.usage
+        let usage = self
+            .usage
             .lock()
-            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))
-            .map(|usage| {
-                usage
-                    .get(&(operation_id, dispatch_id.0.clone()))
-                    .copied()
-                    .unwrap_or_default()
-            })
+            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
+        usage
+            .get(&(operation_id, dispatch_id.0.clone()))
+            .copied()
+            .ok_or_else(|| Error::NotFound("fixture usage receipt".into()))
     }
 }
 
@@ -95,10 +116,11 @@ pub fn record_result(
     dispatch: &ProviderDispatchContext,
     started: Instant,
     event: &acyclic_harness::Result<ModelEvent>,
-) {
+) -> acyclic_harness::Result<()> {
     if let Ok(event) = event {
-        usage.record(dispatch, started, event);
+        usage.record(dispatch, started, event)?;
     }
+    Ok(())
 }
 
 /// Adds the provider boundary methods required by a budgeted fixture whose
@@ -121,13 +143,15 @@ macro_rules! fixture_budget_methods {
             prepared: acyclic_harness::model_input::PreparedModelInput,
             dispatch: ProviderDispatchContext,
         ) -> BoxStream<'a, Result<ModelEvent>> {
-            self.usage.begin(&dispatch);
+            if let Err(error) = self.usage.begin(&dispatch) {
+                return Box::pin(futures::stream::once(async move { Err(error) }));
+            }
             let started = std::time::Instant::now();
             let stream = self.generate(prepared);
             let usage = self.usage.clone();
             Box::pin(stream.map(move |event| {
-                swarm_provider_support::record_result(&usage, &dispatch, started, &event);
-                event
+                swarm_provider_support::record_result(&usage, &dispatch, started, &event)?;
+                Ok(event)
             }))
         }
 
@@ -147,9 +171,10 @@ macro_rules! fixture_budget_methods {
                     ));
                 }
                 let started = std::time::Instant::now();
+                self.usage.begin(&dispatch)?;
                 let events = self.reconcile_admitted(prepared, attempt).await?;
                 if let Some(events) = &events {
-                    usage.record_events(&dispatch, started, events);
+                    usage.record_events(&dispatch, started, events)?;
                 }
                 Ok(events)
             })
@@ -176,24 +201,34 @@ mod tests {
             request_digest: [3; 32],
             dispatch_id: IdempotencyKey::new("dispatch-b").expect("dispatch id"),
         };
-        source.begin(&first);
-        source.record(
-            &first,
-            Instant::now(),
-            &ModelEvent::Content {
-                delta: "measured".into(),
-            },
-        );
+        source.begin(&first).expect("begin measurement");
+        source
+            .record(
+                &first,
+                Instant::now(),
+                &ModelEvent::Content {
+                    delta: "measured".into(),
+                },
+            )
+            .expect("record measurement");
+        source.begin(&first).expect("begin retry measurement");
+        source
+            .record(
+                &first,
+                Instant::now(),
+                &ModelEvent::Content {
+                    delta: "again".into(),
+                },
+            )
+            .expect("record retry measurement");
         let observed = source
             .cumulative_usage(first.operation_id, &first.dispatch_id)
             .expect("first receipt");
-        assert_eq!(observed.model_steps, 1);
+        assert_eq!(observed.model_steps, 2);
         assert!(observed.output_bytes > 0);
-        assert_eq!(
-            source
-                .cumulative_usage(second.operation_id, &second.dispatch_id)
-                .expect("unseen dispatch receipt"),
-            SwarmUsage::default()
-        );
+        assert!(matches!(
+            source.cumulative_usage(second.operation_id, &second.dispatch_id),
+            Err(Error::NotFound(_))
+        ));
     }
 }

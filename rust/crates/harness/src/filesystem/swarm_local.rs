@@ -559,6 +559,10 @@ pub struct LocalForkIntent {
     pub task: String,
     /// Fresh child user input.
     pub prompt: String,
+    /// Optional model-selected upper bound. The owner still clamps this to
+    /// the authoritative remaining session budget before preparing a plan.
+    #[serde(default)]
+    pub requested_resources: Option<SwarmResourceRequest>,
 }
 
 impl LocalForkIntent {
@@ -577,6 +581,9 @@ impl LocalForkIntent {
             || self.task.trim().is_empty()
             || self.task.len() > 4 * 1024
             || self.prompt.len() > 64 * 1024
+            || self
+                .requested_resources
+                .is_some_and(|resources| resources.validate().is_err())
         {
             return Err(Error::Invalid(
                 "model-selected fork intent is invalid".into(),
@@ -692,6 +699,25 @@ fn bounded_child_resources(
     };
     resources.validate()?;
     Ok(resources)
+}
+
+fn apply_requested_resource_bound(
+    bounded: SwarmResourceRequest,
+    requested: Option<SwarmResourceRequest>,
+) -> Result<SwarmResourceRequest> {
+    let Some(requested) = requested else {
+        return Ok(bounded);
+    };
+    requested.validate()?;
+    if requested.model_steps > bounded.model_steps
+        || requested.output_bytes > bounded.output_bytes
+        || requested.execution_time_ms > bounded.execution_time_ms
+    {
+        return Err(Error::Conflict(
+            "model-selected child resources exceed the remaining session budget".into(),
+        ));
+    }
+    Ok(requested)
 }
 
 fn checked_child_depth(parent_depth: usize) -> Result<u32> {
@@ -1202,13 +1228,16 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     task: intent.task,
                     prompt: intent.prompt,
                 },
-                resources: swarm
-                    .child_budget_resources(
-                        intent.parent,
-                        parent_harness.bundle().limits(),
-                        swarm.config.run_limits,
-                    )
-                    .await?,
+                resources: apply_requested_resource_bound(
+                    swarm
+                        .child_budget_resources(
+                            intent.parent,
+                            parent_harness.bundle().limits(),
+                            swarm.config.run_limits,
+                        )
+                        .await?,
+                    intent.requested_resources,
+                )?,
                 report,
                 rebind_proof: Some(preparer.authenticate_rebind(&request).await?),
                 declaration,
@@ -2145,6 +2174,8 @@ struct LocalForkToolInput {
     child_operation: OperationId,
     task: String,
     prompt: String,
+    #[serde(default)]
+    requested_resources: Option<SwarmResourceRequest>,
 }
 
 fn bind_local_fork_input(
@@ -2273,6 +2304,7 @@ impl ToolExecutor for LocalForkToolExecutor {
                 call_id: Some(invocation.call_id),
                 task: input.task,
                 prompt: input.prompt,
+                requested_resources: input.requested_resources,
             };
             self.plans.record_intent(intent).await?;
             Ok(selected_fork_tool_result(fork_operation, input.child_operation))
@@ -2341,7 +2373,7 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
     Tool {
         definition: ToolDefinition {
             name: "acyclic.fork_child".into(),
-            revision: "2".into(),
+            revision: "3".into(),
             description:
                 "Request an owner-prepared recursive child after this model batch completes".into(),
             input_schema: json!({
@@ -2351,7 +2383,17 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
                     "fork_operation": {"type": "string"},
                     "child_operation": {"type": "string"},
                     "task": {"type": "string", "minLength": 1, "maxLength": 4096},
-                    "prompt": {"type": "string", "maxLength": 65536}
+                    "prompt": {"type": "string", "maxLength": 65536},
+                    "requested_resources": {
+                        "type": "object",
+                        "required": ["model_steps", "output_bytes", "execution_time_ms"],
+                        "properties": {
+                            "model_steps": {"type": "integer", "minimum": 1},
+                            "output_bytes": {"type": "integer", "minimum": 1},
+                            "execution_time_ms": {"type": "integer", "minimum": 1}
+                        },
+                        "additionalProperties": false
+                    }
                 },
                 "additionalProperties": false
             }),
@@ -5630,14 +5672,17 @@ impl PersistentLocalSwarm {
         // Reserve before appending ForkPrepared. This is the resolver's
         // workspace boundary: a failed reservation publishes no child and
         // cannot consume active/total capacity after a restart.
-        let child_resources = planned_resources.unwrap_or(
-            self.child_budget_resources(
-                request.parent,
-                parent_storage.bundle().limits(),
-                self.config.run_limits,
-            )
-            .await?,
-        );
+        let child_resources = match planned_resources {
+            Some(resources) => resources,
+            None => {
+                self.child_budget_resources(
+                    request.parent,
+                    parent_storage.bundle().limits(),
+                    self.config.run_limits,
+                )
+                .await?
+            }
+        };
         let _ = self
             .admit_and_reserve_child(
                 child,
@@ -8004,6 +8049,7 @@ mod tests {
             call_id: Some(format!("fork-{child}")),
             task: format!("child-{child}"),
             prompt: "preserve this exact prompt".into(),
+            requested_resources: None,
         }
     }
 
@@ -8061,6 +8107,27 @@ mod tests {
         .expect("final child allocation");
         assert!(final_child.model_steps >= 2);
         assert!(final_child.model_steps <= grandchild.model_steps);
+
+        let selected = apply_requested_resource_bound(
+            final_child,
+            Some(SwarmResourceRequest {
+                model_steps: 2,
+                output_bytes: 1,
+                execution_time_ms: 1,
+            }),
+        )
+        .expect("bounded model selection");
+        assert_eq!(selected.model_steps, 2);
+        assert!(matches!(
+            apply_requested_resource_bound(
+                final_child,
+                Some(SwarmResourceRequest {
+                    model_steps: final_child.model_steps + 1,
+                    ..final_child
+                }),
+            ),
+            Err(Error::Conflict(message)) if message.contains("model-selected child resources")
+        ));
     }
 
     #[test]
