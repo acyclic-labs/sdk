@@ -2816,6 +2816,59 @@ mod tests {
     }
 
     #[test]
+    fn generated_surface_audit_distinguishes_nominal_and_transport_signatures() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-surface-audit-signatures-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("python")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("go")).expect("audit fixture directory");
+        fs::write(
+            root.join("workers-metadata.ts"),
+            "import { WireRequest, WireResponse } from \"./generated/proto/workers_pb\";\ninterface Client {\n  raw(\n    request: WireRequest,\n  ): Promise<WireResponse>;\n  typed(request: TypedRequest): Promise<TypedResponse>;\n}\n",
+        )
+        .expect("typescript fixture");
+        fs::write(
+            root.join("python").join("remote.py"),
+            "    async def private(self):\n        return await self._channel(request)\n    async def public(self):\n        return await self.actors(request)\n",
+        )
+        .expect("python fixture");
+        fs::write(
+            root.join("go").join("client.go"),
+            "func (client *Client) Typed(ctx context.Context) (TypedResponse, error) { }\nfunc (client *Client) Raw(ctx context.Context) (*workersv1.Response, error) { }\n",
+        )
+        .expect("go fixture");
+
+        let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|finding| finding.language == "typescript")
+                .count(),
+            1,
+            "only the imported protobuf TypeScript signature should fail"
+        );
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|finding| finding.language == "python")
+                .count(),
+            1,
+            "private Python transport helpers should be allowed"
+        );
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|finding| finding.language == "go")
+                .count(),
+            1,
+            "nominal Go response pointers should be allowed"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn generated_surface_audit_allows_private_wire_boundaries() {
         let root = std::env::temp_dir().join(format!(
             "acyclic-generated-surface-audit-private-{}",
