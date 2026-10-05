@@ -140,10 +140,13 @@ jobs:
         env:
           ACYCLIC_RUST_SOURCE_REVISION: ${{ inputs.ref || github.sha }}
         run: |
+          archive="$(find "$RUNNER_TEMP/http-target/${{ matrix.target }}" -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          test -n "$archive"
           bash scripts/qualify-http-target-runtime.sh \
             '${{ matrix.target }}' \
             "$RUNNER_TEMP/http-target/${{ matrix.target }}/generated" \
-            "$RUNNER_TEMP/http-target/${{ matrix.target }}/runtime"
+            "$RUNNER_TEMP/http-target/${{ matrix.target }}/runtime" \
+            "$archive"
 
       - name: Upload runtime qualification receipt
         if: always()

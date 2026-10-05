@@ -6,7 +6,19 @@ set -euo pipefail
 target=${1:?target is required}
 package_root=${2:?generated package root is required}
 output_root=${3:?receipt directory is required}
+archive=${4:-}
 mkdir -p "$output_root"
+
+if [[ -n "$archive" ]]; then
+  [[ -s "$archive" ]] || { echo "generated archive is missing: $archive" >&2; exit 1; }
+  command -v unzip >/dev/null 2>&1 || { echo 'unzip is required to qualify the installable artifact' >&2; exit 2; }
+  installed_root="$output_root/unpacked"
+  rm -rf "$installed_root"
+  mkdir -p "$installed_root"
+  unzip -q "$archive" -d "$installed_root"
+  [[ -d "$installed_root/actors" ]] || { echo 'archive did not contain the Rust-generated actors package' >&2; exit 1; }
+  package_root="$installed_root"
+fi
 
 run_logged() {
   local name=$1
@@ -128,9 +140,9 @@ EOF
   *) echo "unsupported HTTP target: $target" >&2; exit 2 ;;
 esac
 
-python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" <<'PY'
+python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" <<'PY'
 import json, pathlib, sys
-path, target, runtime, revision = sys.argv[1:]
+path, target, runtime, revision, archive = sys.argv[1:]
 payload = {
     "schema": "acyclic.sdk.http-target-runtime-qualification.v1",
     "target": target,
@@ -138,6 +150,8 @@ payload = {
     "scope": "generated-rust-openapi-http-projection",
     "runtime": {"name": runtime},
     "source_revision": revision,
+    "archive": archive or None,
+    "installed_from_archive": bool(archive),
     "streaming": "not-applicable-to-http-projection",
     "native_grpc": "unqualified",
 }
