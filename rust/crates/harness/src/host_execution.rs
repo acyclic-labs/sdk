@@ -2780,6 +2780,13 @@ mod tests {
             changed_directory.validate(),
             Err(Error::Conflict(_))
         ));
+        let mut changed_executable = approval.clone();
+        changed_executable.request.executable =
+            std::env::current_exe()?.to_string_lossy().into_owned();
+        assert!(matches!(
+            changed_executable.validate(),
+            Err(Error::Conflict(_))
+        ));
         let mut relative = request;
         relative.executable = "cmd.exe".into();
         assert!(relative.digest().is_err());
@@ -2815,6 +2822,68 @@ mod tests {
             .map(|index| (format!("KEY_{index}"), "value".into()))
             .collect();
         assert!(ExecutionEnvironment::explicit(too_many).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn execution_spec_rejects_process_bounds_and_non_absolute_paths() -> Result<()> {
+        let mut empty_executable = spec();
+        empty_executable.executable.clear();
+        assert!(matches!(
+            empty_executable.validate(),
+            Err(Error::Invalid(message)) if message.contains("executable")
+        ));
+
+        let mut nul_executable = spec();
+        nul_executable.executable.push('\0');
+        assert!(nul_executable.validate().is_err());
+
+        let mut too_many_arguments = spec();
+        too_many_arguments.arguments = (0..=MAX_ARGUMENTS)
+            .map(|index| format!("argument-{index}"))
+            .collect();
+        assert!(matches!(
+            too_many_arguments.validate(),
+            Err(Error::Invalid(message)) if message.contains("arguments")
+        ));
+
+        let mut oversized_arguments = spec();
+        oversized_arguments.arguments = vec!["x".repeat(MAX_ARGUMENT_BYTES)];
+        assert!(oversized_arguments.validate().is_err());
+
+        let mut nul_argument = spec();
+        nul_argument.arguments = vec!["has\0nul".into()];
+        assert!(nul_argument.validate().is_err());
+
+        let mut empty_working_directory = spec();
+        empty_working_directory.working_directory.clear();
+        assert!(matches!(
+            empty_working_directory.validate(),
+            Err(Error::Invalid(message)) if message.contains("working directory")
+        ));
+
+        let mut relative_working_directory = spec();
+        relative_working_directory.working_directory = ".".into();
+        assert!(relative_working_directory.validate().is_err());
+
+        let mut nul_working_directory = spec();
+        nul_working_directory.working_directory.push('\0');
+        assert!(nul_working_directory.validate().is_err());
+
+        let mut zero_timeout = spec();
+        zero_timeout.timeout_ms = Some(0);
+        assert!(matches!(
+            zero_timeout.validate(),
+            Err(Error::Invalid(message)) if message.contains("timeout")
+        ));
+
+        let mut zero_output = spec();
+        zero_output.max_output_bytes = 0;
+        assert!(zero_output.validate().is_err());
+
+        let mut oversized_output = spec();
+        oversized_output.max_output_bytes = (MAX_OUTPUT_BYTES as u32).saturating_add(1);
+        assert!(oversized_output.validate().is_err());
         Ok(())
     }
 
