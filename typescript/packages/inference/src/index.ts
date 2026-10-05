@@ -252,44 +252,45 @@ export class RustInferenceTransport implements InferenceTransport {
 
   async #unary<T>(
     request: object,
-    schema: { typeName: string },
+    requestSchema: { typeName: string },
+    responseSchema: { typeName: string },
     method: (client: RustInferenceClient, bytes: Uint8Array) => Promise<Uint8Array>,
     signal?: AbortSignal,
   ): Promise<T> {
     const client = await abortable(this.#client, signal);
-    const result = await abortable(method(client, toBinary(schema as never, request as never)), signal);
-    return fromBinary(schema as never, result) as T;
+    const result = await abortable(method(client, toBinary(requestSchema as never, request as never)), signal);
+    return fromBinary(responseSchema as never, result) as T;
   }
 
   listModels(): Promise<ListModelsResponse> {
-    return this.#unary(create(ListModelsRequestSchema), ListModelsResponseSchema, (client, bytes) => client.listModels(bytes));
+    return this.#unary(create(ListModelsRequestSchema), ListModelsRequestSchema, ListModelsResponseSchema, (client, bytes) => client.listModels(bytes));
   }
   createContext(request: CreateContextRequest): Promise<MutationReceipt> {
-    return this.#unary(request, MutationReceiptSchema, (client, bytes) => client.createContext(bytes));
+    return this.#unary(request, CreateContextRequestSchema, MutationReceiptSchema, (client, bytes) => client.createContext(bytes));
   }
   inspectContext(request: InspectContextRequest): Promise<ContextView> {
-    return this.#unary(request, ContextViewSchema, (client, bytes) => client.inspectContext(bytes));
+    return this.#unary(request, InspectContextRequestSchema, ContextViewSchema, (client, bytes) => client.inspectContext(bytes));
   }
   mutateContext(request: MutateContextRequest): Promise<MutationReceipt> {
-    return this.#unary(request, MutationReceiptSchema, (client, bytes) => client.mutateContext(bytes));
+    return this.#unary(request, MutateContextRequestSchema, MutationReceiptSchema, (client, bytes) => client.mutateContext(bytes));
   }
   retainWarm(request: RetainWarmRequest): Promise<WarmView> {
-    return this.#unary(request, WarmViewSchema, (client, bytes) => client.retainWarm(bytes));
+    return this.#unary(request, RetainWarmRequestSchema, WarmViewSchema, (client, bytes) => client.retainWarm(bytes));
   }
   inspectWarm(request: InspectWarmRequest): Promise<WarmView> {
-    return this.#unary(request, WarmViewSchema, (client, bytes) => client.inspectWarm(bytes));
+    return this.#unary(request, InspectWarmRequestSchema, WarmViewSchema, (client, bytes) => client.inspectWarm(bytes));
   }
   renewWarm(request: RenewWarmRequest): Promise<WarmView> {
-    return this.#unary(request, WarmViewSchema, (client, bytes) => client.renewWarm(bytes));
+    return this.#unary(request, RenewWarmRequestSchema, WarmViewSchema, (client, bytes) => client.renewWarm(bytes));
   }
   releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {
-    return this.#unary(request, WarmViewSchema, (client, bytes) => client.releaseWarm(bytes));
+    return this.#unary(request, ReleaseWarmRequestSchema, WarmViewSchema, (client, bytes) => client.releaseWarm(bytes));
   }
   generateRun(request: GenerateRunRequest): Promise<GenerateRunResponse> {
-    return this.#unary(request, GenerateRunResponseSchema, (client, bytes) => client.generateRun(bytes));
+    return this.#unary(request, GenerateRunRequestSchema, GenerateRunResponseSchema, (client, bytes) => client.generateRun(bytes));
   }
   inspectRun(request: InspectRunRequest, signal?: AbortSignal): Promise<RunView> {
-    return this.#unary(request, RunViewSchema, (client, bytes) => client.inspectRun(bytes), signal);
+    return this.#unary(request, InspectRunRequestSchema, RunViewSchema, (client, bytes) => client.inspectRun(bytes), signal);
   }
   async *watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent> {
     const client = await abortable(this.#client, signal);
@@ -300,13 +301,13 @@ export class RustInferenceTransport implements InferenceTransport {
     }
   }
   cancelRun(request: InspectRunRequest): Promise<RunView> {
-    return this.#unary(request, RunViewSchema, (client, bytes) => client.cancelRun(bytes));
+    return this.#unary(request, InspectRunRequestSchema, RunViewSchema, (client, bytes) => client.cancelRun(bytes));
   }
   createEvaluation(request: CreateEvaluationRequest): Promise<EvaluationView> {
-    return this.#unary(request, EvaluationViewSchema, (client, bytes) => client.createEvaluation(bytes));
+    return this.#unary(request, CreateEvaluationRequestSchema, EvaluationViewSchema, (client, bytes) => client.createEvaluation(bytes));
   }
   inspectEvaluation(request: InspectEvaluationRequest): Promise<EvaluationView> {
-    return this.#unary(request, EvaluationViewSchema, (client, bytes) => client.inspectEvaluation(bytes));
+    return this.#unary(request, InspectEvaluationRequestSchema, EvaluationViewSchema, (client, bytes) => client.inspectEvaluation(bytes));
   }
 }
 
