@@ -642,7 +642,7 @@ async fn actor_worker_records() -> Result<Vec<TypedRequestRecord>, String> {
     let submit = workers_wire::SubmitJobRequest {
         target: Some(workers_wire::JobTarget {
             target: Some(workers_wire::job_target::Target::DeploymentAlias(
-                "production".into(),
+                deployment.alias.clone(),
             )),
         }),
         input: Some(workers_wire::Payload {
