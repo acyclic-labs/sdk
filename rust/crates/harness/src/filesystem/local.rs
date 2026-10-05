@@ -26,7 +26,10 @@ use acyclic_stream::{
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// Persistent providers own durability; storage semantics are shared with memory.
 pub type DurableHarnessStorage =
@@ -212,10 +215,14 @@ where
                     let receipt: ExecutionReceipt = serde_json::from_slice(&bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     receipt.validate()?;
+                    let explicitly_resolved_unknown = *operator_resolution
+                        && *operator_authenticated
+                        && matches!(receipt, ExecutionReceipt::Unknown { .. });
                     if cancellation_requested
                         .iter()
                         .any(|candidate| candidate == key)
                         && !matches!(receipt, ExecutionReceipt::Cancelled { .. })
+                        && !explicitly_resolved_unknown
                     {
                         return Err(Error::Conflict(
                             "execution receipt completed after cancellation was requested".into(),
@@ -547,11 +554,13 @@ where
                     .collect();
                 for candidate in fenced_keys {
                     if let Some(record) = self.terminal_for(&events, &candidate).await? {
-                        return Ok(if matches!(record.receipt, ExecutionReceipt::Unknown { .. }) {
-                            ExecutionClaim::Completed(record)
-                        } else {
-                            ExecutionClaim::Pending
-                        });
+                        return Ok(
+                            if matches!(record.receipt, ExecutionReceipt::Unknown { .. }) {
+                                ExecutionClaim::Completed(record)
+                            } else {
+                                ExecutionClaim::Pending
+                            },
+                        );
                     }
                     if events.iter().any(|event| {
                         matches!(
@@ -730,6 +739,9 @@ where
                             if candidate == key
                     )
                 }) && !matches!(receipt, ExecutionReceipt::Cancelled { .. })
+                    && !(handle.is_operator()
+                        && handle.operator_authenticated()
+                        && matches!(receipt, ExecutionReceipt::Unknown { .. }))
                 {
                     return Err(Error::Conflict(
                         "execution receipt publication lost a cancellation race".into(),
@@ -1511,7 +1523,8 @@ impl PersistentLocalHarness {
         prompt: &str,
         max_steps: u32,
     ) -> Result<TurnOutput> {
-        self.run_with_bundle(&self.bundle, operation, prompt, max_steps).await
+        self.run_with_bundle(&self.bundle, operation, prompt, max_steps)
+            .await
     }
 
     pub(crate) async fn run_with_bundle(
@@ -1826,10 +1839,16 @@ mod tests {
     use crate::registry::ComponentIdentity;
     use crate::{EffectAttemptId, EffectId, core::EffectGuarantee};
     use futures::{future::BoxFuture, stream::BoxStream};
-    use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     struct Mock(AtomicUsize);
     impl ModelProvider for Mock {
-        fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content {
@@ -1900,8 +1919,7 @@ mod tests {
                 serde_json::json!({"type": "object", "additionalProperties": false}),
             )?,
         });
-        let providers: [Arc<dyn ModelProvider>; 2] =
-            [unregistered.clone(), registered.clone()];
+        let providers: [Arc<dyn ModelProvider>; 2] = [unregistered.clone(), registered.clone()];
         for (index, provider) in providers.into_iter().enumerate() {
             let session_root = root.path().join(format!("denied-{index}"));
             let model = Model::new(
@@ -1911,16 +1929,14 @@ mod tests {
                 serde_json::json!({"api_key": "private-provider-state"}),
             )?;
             assert!(matches!(
-                PersistentLocalHarness::open(
-                    &session_root,
-                    model,
-                    provider,
-                    Limits::default(),
-                )
-                .await,
+                PersistentLocalHarness::open(&session_root, model, provider, Limits::default(),)
+                    .await,
                 Err(Error::Invalid(_))
             ));
-            assert!(!session_root.exists(), "denied model created durable storage");
+            assert!(
+                !session_root.exists(),
+                "denied model created durable storage"
+            );
         }
         assert_eq!(unregistered.0.load(Ordering::SeqCst), 0);
         assert_eq!(registered.calls.load(Ordering::SeqCst), 0);
@@ -2037,7 +2053,9 @@ mod tests {
                 .into_iter()
                 .find_map(|record| match record.event {
                     crate::executor::ExecutionEvent::ModelInputPrepared {
-                        manifest, request, ..
+                        manifest,
+                        request,
+                        ..
                     } => Some((manifest, request)),
                     _ => None,
                 })
@@ -2257,6 +2275,70 @@ mod tests {
         );
         assert_eq!(store.claim(&key).await?, ExecutionClaim::Pending);
         drop(session);
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operator_can_close_cancelled_unknown_without_permitting_retry() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "harness-receipt-cancel-unknown-resolution-{}",
+            OperationId::new()
+        ));
+        let model = Model::new("mock", "durable", "1", serde_json::json!({}))?;
+        let key = ExecutionReceiptKey {
+            operation_id: OperationId::from_bytes([146; 16]),
+            effect_id: EffectId::from_bytes([147; 16]),
+            attempt_id: EffectAttemptId::from_bytes([148; 16]),
+            provider: "harness.native-execution.v1".into(),
+            effect_kind: "host.process".into(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest: [149; 32],
+        };
+        let session = PersistentLocalHarness::open(
+            &root,
+            model,
+            Arc::new(Mock(AtomicUsize::new(0))),
+            Limits::default(),
+        )
+        .await?;
+        let store = session.execution_receipt_store()?;
+        let ExecutionClaim::Acquired { .. } = store.claim(&key).await? else {
+            return Err(Error::Storage(
+                "cancelled unknown claim was not acquired".into(),
+            ));
+        };
+        store.request_cancel(&key).await?;
+
+        let operator = session.execution_operator_authorizer().authenticate(
+            "reviewer",
+            session.storage().session_id(),
+            session.storage().volume(),
+            key.operation_id,
+        )?;
+        let (_, _, _, resolver, _) = session.storage().execution_binding();
+        let handle = store
+            .pending_claim_for_operator(&key, &operator, &resolver)
+            .await?;
+        store
+            .resolve_unknown(
+                &key,
+                &operator,
+                &resolver,
+                &handle,
+                "process remained unresolved after cancellation",
+            )
+            .await?;
+
+        let ExecutionClaim::Completed(record) = store.claim(&key).await? else {
+            return Err(Error::Storage(
+                "operator resolution did not produce a terminal receipt".into(),
+            ));
+        };
+        assert!(matches!(record.receipt, ExecutionReceipt::Unknown { .. }));
+        assert_eq!(record.operator_principal.as_deref(), Some("reviewer"));
+        assert!(record.operator_authenticated);
+        assert_eq!(store.claim(&key).await?, ExecutionClaim::Completed(record));
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
