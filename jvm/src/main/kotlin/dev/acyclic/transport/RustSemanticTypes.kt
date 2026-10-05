@@ -13,6 +13,7 @@ object RustSemanticTypesKotlin {
   data class KnownError(val payload: RustTypedResponsesKotlin.ObjectsErrorDetailView) : WireChoice
   data class KnownRaw(val tag: String, val payload: WireBytes) : WireChoice
   data class Unknown(val tag: Int, val payload: WireBytes) : WireChoice
+  @JvmInline value class WireBytes private constructor(val value: ByteString) { fun toWire(): ByteString = value; companion object { fun of(value: ByteString) = WireBytes(value) } }
   fun <T: Any> present(value: T?, isPresent: Boolean): Optional<T> = if (isPresent && value != null) Optional.of(value) else Optional.empty()
 
   @JvmInline value class ActorId private constructor(val value: String) {

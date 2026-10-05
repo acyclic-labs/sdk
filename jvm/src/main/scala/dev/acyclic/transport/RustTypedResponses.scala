@@ -6,7 +6,7 @@ package dev.acyclic.transport
 object RustTypedResponsesScala {
   def mapIterator[W,T](wire: java.util.Iterator[W], mapper: W => T): java.util.Iterator[T] = new java.util.Iterator[T] { def hasNext: Boolean = wire.hasNext; def next(): T = mapper(wire.next()) }
 
-  final class ObjectsGetObjectHeaderView private (private val value: acyclic.objects.v2.Objects.GetObjectHeader) { def toWire: acyclic.objects.v2.Objects.GetObjectHeader = value; def object: acyclic.objects.v2.Objects.ObjectInfo = value.getObject; def hasObject: Boolean = value.hasObject; def contentRange: acyclic.objects.v2.Objects.ContentRange = value.getContentRange; def hasContentRange: Boolean = value.hasContentRange }
+  final class ObjectsGetObjectHeaderView private (private val value: acyclic.objects.v2.Objects.GetObjectHeader) { def toWire: acyclic.objects.v2.Objects.GetObjectHeader = value; def `object`: acyclic.objects.v2.Objects.ObjectInfo = value.getObject; def hasObject: Boolean = value.hasObject; def contentRange: acyclic.objects.v2.Objects.ContentRange = value.getContentRange; def hasContentRange: Boolean = value.hasContentRange }
   object ObjectsGetObjectHeaderView { def fromWire(value: acyclic.objects.v2.Objects.GetObjectHeader): ObjectsGetObjectHeaderView = new ObjectsGetObjectHeaderView(value) }
   final class ObjectsErrorDetailView private (private val value: acyclic.objects.v2.Objects.ErrorDetail) { def toWire: acyclic.objects.v2.Objects.ErrorDetail = value; def code: Int = value.getCodeValue; def requestId: String = value.getRequestId }
   object ObjectsErrorDetailView { def fromWire(value: acyclic.objects.v2.Objects.ErrorDetail): ObjectsErrorDetailView = new ObjectsErrorDetailView(value) }
