@@ -509,6 +509,31 @@ async fn install_git_branch(
     Ok(())
 }
 
+async fn assert_git_branch_target(
+    root: &std::path::Path,
+    parent: WorkspaceId,
+    name: &str,
+    expected_source: WorkspaceId,
+) -> Result<()> {
+    let store = LocalCoreStateStore::new(root.join("git"));
+    let state = store
+        .load(parent)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .ok_or_else(|| Error::NotFound(format!("Git state for workspace {parent}")))?;
+    let branch = state
+        .branches
+        .get(name)
+        .ok_or_else(|| Error::NotFound(format!("Git branch {name}")))?;
+    if branch.workspace_id != expected_source {
+        return Err(Error::Conflict(format!(
+            "Git branch {name} resolved to {} instead of published workspace {expected_source}",
+            branch.workspace_id
+        )));
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn default_local_runtime_executes_two_children_grandchild_and_communication() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -642,6 +667,27 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
     )
     .await?;
     install_git_branch(
+        directory.path(),
+        root_workspace_id,
+        "child-b",
+        child_b_workspace_id,
+    )
+    .await?;
+    assert_git_branch_target(
+        directory.path(),
+        child_a_workspace_id,
+        "grandchild",
+        grandchild_workspace_id,
+    )
+    .await?;
+    assert_git_branch_target(
+        directory.path(),
+        root_workspace_id,
+        "child-a",
+        child_a_workspace_id,
+    )
+    .await?;
+    assert_git_branch_target(
         directory.path(),
         root_workspace_id,
         "child-b",
