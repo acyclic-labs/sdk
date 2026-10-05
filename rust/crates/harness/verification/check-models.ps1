@@ -23,7 +23,8 @@ $cases = if ($Model -eq 'ActivationRecovery') { @(
     @{ Name = 'mutable-capture'; Config = 'ForkBoundaryMutableCapture.cfg'; Exit = 12; Expected = 'Invariant InheritedCaptureRemainsPinned is violated.' }
 ) } elseif ($Model -eq 'SwarmAuthority') { @(
     @{ Name = 'safe'; Config = 'SwarmAuthority.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
-    @{ Name = 'unsafe-authority'; Config = 'SwarmAuthorityUnsafe.cfg'; Exit = 12; Expected = 'Invariant DirectMessageAuthority is violated.' }
+    @{ Name = 'unsafe-authority'; Config = 'SwarmAuthorityUnsafe.cfg'; Exit = 12; Expected = 'Invariant DirectMessageAuthority is violated.' },
+    @{ Name = 'unsafe-self'; Config = 'SwarmAuthorityUnsafeSelf.cfg'; Exit = 12; Expected = 'Invariant SelfMessageAuthority is violated.' }
 ) } elseif ($Model -eq 'SwarmBudget') { @(
     @{ Name = 'safe'; Config = 'SwarmBudget.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe-allocation'; Config = 'SwarmBudgetUnsafeAllocation.cfg'; Exit = 12; Expected = 'Invariant TotalBudgetConserved is violated.' },

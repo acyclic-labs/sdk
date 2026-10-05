@@ -1,3 +1,11 @@
 [
-  {"kind":"fork_admitted","operation_id":"swapped","parent":2,"child":1,"depth":0,"captured_generation":0}
+  {
+    "kind": "fork_admitted",
+    "parent": 2,
+    "child": 1,
+    "depth": 0,
+    "captured_generation": 0,
+    "fork_operation_id": "swapped-fork",
+    "child_operation_id": "swapped-child"
+  }
 ]

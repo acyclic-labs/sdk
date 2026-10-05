@@ -125,9 +125,12 @@ identities and fixed operators inside the TLA modules, so the configuration
 files do not depend on symbolic function expressions:
 
 * `SwarmAuthority.tla` has four agents, three message identities and three wait
-  identities. It checks that message and wait admission is restricted to direct
-  parent/child pairs. `SwarmAuthorityUnsafe.cfg` enables one sibling admission
-  path and must violate `DirectMessageAuthority`.
+  identities. It checks that message and wait admission is restricted to
+  distinct direct parent/child pairs. The root's `Parent(1) = 1` mapping is
+  therefore harmless. `SwarmAuthorityUnsafe.cfg` enables an unauthorized
+  sibling/self admission path and must violate `DirectMessageAuthority`; the
+  separate `SwarmAuthorityUnsafeSelf.cfg` negative control must violate
+  `SelfMessageAuthority` for the explicit root self-target message.
 * `SwarmBudget.tla` has five finite agent identities, a depth bound of two, a
   session allocation budget of three, and a two-step per-agent budget. It
   separately checks aggregate allocation, per-agent steps, and recursive depth.
@@ -155,15 +158,13 @@ eventual completion, deadlock freedom, storage correctness, or Rust refinement.
 ## Trace conformance adapter
 
 `check-trace.ps1` is a strict finite event adapter for future Harness event
-traces. It retains the directed parent map, allocated agent set, operation to
-agent bindings, captured generations, current generations, durable completions,
-message deliveries and wait targets. It rejects swapped parent/child roles,
-missing or mistyped fields, forged generations, operation/agent mismatches,
-orphan and duplicate delivery, stale publication, and session overspend. A
-parent publication may arrive before its registry admission record; the
-checker retains that bounded witness and binds it when the matching admission
-arrives. The communication relation is bidirectional only for messages and
-waits; fork and publication remain parent-to-child operations.
+traces. It retains the directed parent map, allocated agent set, separately
+bound fork/publication/child operation identities, captured generations,
+durable completions, message deliveries and wait targets. It rejects swapped
+parent/child roles, missing or mistyped fields, forged generations,
+operation/agent mismatches, orphan and duplicate delivery, stale publication,
+and session overspend. The communication relation is bidirectional only for
+messages and waits; fork and publication remain parent-to-child operations.
 
 `check-trace-fixtures.ps1` accepts two valid traces and rejects nine negative
 fixtures covering swapped parent, missing identity, wrong agent, forged
@@ -182,12 +183,14 @@ deterministic mock provider, then projects the current durable records:
 compatibility), the parent conversation's `ForkPublished`, the child's
 authenticated execution-journal `ModelStarted`, and `ForkCompleted`. It
 writes a normalized four-event trace and a provenance manifest containing
-source stream sequences, operation identities, and the raw opaque project
+source stream sequences, distinct fork/publication/child operation identities,
+canonical source bytes and SHA-256 digests, and the raw opaque project
 generation. Registry sequence, parent conversation revision, and child journal
-sequence remain independent; the projection records causal prerequisites and
-does not manufacture a cross-stream total order. Task identities map to finite
+sequence remain independent; the projection records source witnesses and does
+not manufacture a cross-stream total order. Task identities map to finite
 agent labels and the first observed project generation maps to ordinal zero
-only at this adapter boundary.
+only at this adapter boundary. The trace omits current-generation claims when
+the source run does not expose an independent retained-current witness.
 
 The ignored exporter requires an explicit output path so ordinary test runs do
 not write artifacts. Use the named qualification gate, which runs the
@@ -201,4 +204,5 @@ checker:
 Running the ignored test directly is an export step only; it does not qualify
 the implementation. A passing named gate is runtime conformance evidence for
 this bounded trace only. The export does not claim Rust refinement, unbounded
-recursion, liveness, or OS confinement.
+recursion, liveness, approval handling, aggregate budget exhaustion, or OS
+confinement.

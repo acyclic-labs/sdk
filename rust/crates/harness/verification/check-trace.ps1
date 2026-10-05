@@ -15,6 +15,7 @@ $sessionBudget = 3
 $generationBound = 1
 
 $admitted = @{}
+$admittedByChild = @{}
 $started = @{}
 $completed = @{}
 $completedAgents = @{}
@@ -66,8 +67,11 @@ foreach ($event in $trace) {
     $kind = RequireString $event.kind 'event kind'
     switch ($kind) {
         'fork_admitted' {
-            $op = RequireString $event.operation_id 'fork operation_id'
-            Require (-not $admitted.ContainsKey($op)) 'fork operation identity was reused.'
+            $forkOp = RequireString $event.fork_operation_id 'fork fork_operation_id'
+            $childOp = RequireString $event.child_operation_id 'fork child_operation_id'
+            Require ($forkOp -ne $childOp) 'fork and child operation identities must be distinct.'
+            Require (-not $admitted.ContainsKey($forkOp)) 'fork operation identity was reused.'
+            Require (-not $admittedByChild.ContainsKey($childOp)) 'child operation identity was reused.'
             $parent = RequireInt $event.parent 'fork parent' 1 5
             $child = RequireInt $event.child 'fork child' 1 5
             $depth = RequireInt $event.depth 'fork depth' 0 2
@@ -79,19 +83,21 @@ foreach ($event in $trace) {
             Require ($depth -eq $depthOf[$child]) 'fork depth does not match the retained agent identity.'
             Require ($capture -eq $workspaceGeneration[$parent]) 'fork captured a forged workspace generation.'
             Require ($activeAgents.Count -lt $sessionBudget) 'fork exceeds the finite session allocation budget.'
-            $admitted[$op] = [ordered]@{
+            $admitted[$forkOp] = [ordered]@{
                 parent = $parent
                 child = $child
                 depth = $depth
                 captured_generation = $capture
+                child_operation_id = $childOp
             }
+            $admittedByChild[$childOp] = $forkOp
             $null = $activeAgents.Add($child)
-            if ($pendingPublications.ContainsKey($op)) {
-                $pending = $pendingPublications[$op]
+            if ($pendingPublications.ContainsKey($forkOp)) {
+                $pending = $pendingPublications[$forkOp]
                 Require ($pending.parent -eq $parent -and $pending.child -eq $child) 'publication identity does not match its fork admission.'
                 Require ($pending.captured_generation -eq $capture) 'publication supplied a forged captured generation.'
-                $published[$op] = $pending.current_generation
-                $pendingPublications.Remove($op)
+                $published[$forkOp] = $pending.current_generation
+                $pendingPublications.Remove($forkOp)
             }
         }
         'workspace_advanced' {
@@ -102,25 +108,27 @@ foreach ($event in $trace) {
             $workspaceGeneration[$agent] = $generation
         }
         'model_started' {
-            $op = RequireString $event.operation_id 'model_started operation_id'
+            $childOp = RequireString $event.child_operation_id 'model_started child_operation_id'
             $agent = RequireInt $event.agent 'model_started agent' 1 5
-            Require ($admitted.ContainsKey($op)) 'model started without a fork admission.'
-            Require ($published.ContainsKey($op)) 'model started before workspace publication.'
-            Require (-not $started.ContainsKey($op)) 'model operation was started twice.'
-            Require ($agent -eq $admitted[$op].child) 'model start agent does not match its fork admission.'
-            $started[$op] = $agent
+            Require ($admittedByChild.ContainsKey($childOp)) 'model started without a fork admission.'
+            $forkOp = $admittedByChild[$childOp]
+            Require ($published.ContainsKey($forkOp)) 'model started before workspace publication.'
+            Require (-not $started.ContainsKey($childOp)) 'model operation was started twice.'
+            Require ($agent -eq $admitted[$forkOp].child) 'model start agent does not match its fork admission.'
+            $started[$childOp] = $agent
         }
         'agent_completed' {
-            $op = RequireString $event.operation_id 'agent_completed operation_id'
+            $childOp = RequireString $event.child_operation_id 'agent_completed child_operation_id'
             $agent = RequireInt $event.agent 'agent_completed agent' 1 5
             $durable = RequireBool $event.outcome_durable 'agent_completed outcome_durable'
-            Require ($admitted.ContainsKey($op)) 'agent completed without a fork admission.'
-            Require ($started.ContainsKey($op)) 'agent completed without model start.'
-            Require (-not $completed.ContainsKey($op)) 'agent completion was published twice.'
-            Require ($agent -eq $admitted[$op].child) 'completion agent does not match its fork admission.'
+            Require ($admittedByChild.ContainsKey($childOp)) 'agent completed without a fork admission.'
+            $forkOp = $admittedByChild[$childOp]
+            Require ($started.ContainsKey($childOp)) 'agent completed without model start.'
+            Require (-not $completed.ContainsKey($childOp)) 'agent completion was published twice.'
+            Require ($agent -eq $admitted[$forkOp].child) 'completion agent does not match its fork admission.'
             Require $durable 'agent completion lacks a durable outcome.'
-            $completed[$op] = $agent
-            $completedAgents[$agent] = $op
+            $completed[$childOp] = $agent
+            $completedAgents[$agent] = $childOp
         }
         'message_admitted' {
             $id = RequireString $event.message_id 'message identity'
@@ -153,24 +161,31 @@ foreach ($event in $trace) {
             $waits[$id] = $targetOp
         }
         'workspace_published' {
-            $op = RequireString $event.operation_id 'workspace publication operation_id'
+            $forkOp = RequireString $event.fork_operation_id 'workspace fork_operation_id'
+            $publicationOp = RequireString $event.publication_operation_id 'workspace publication_operation_id'
+            Require ($forkOp -ne $publicationOp) 'fork and publication operation identities must be distinct.'
             $parent = RequireInt $event.parent 'publication parent' 1 5
             $child = RequireInt $event.child 'publication child' 1 5
             $capture = RequireInt $event.captured_generation 'publication captured_generation' 0 $generationBound
-            $current = RequireInt $event.current_generation 'publication current_generation' 0 $generationBound
             Require (IsChild $parent $child) 'publication target is not the directed direct parent.'
-            Require ($current -eq $workspaceGeneration[$parent]) 'publication supplied a forged current generation.'
-            Require ($capture -eq $current) 'publication crossed a stale workspace generation.'
-            Require (-not $published.ContainsKey($op) -and -not $pendingPublications.ContainsKey($op)) 'workspace publication was repeated.'
-            if ($admitted.ContainsKey($op)) {
-                Require ($admitted[$op].parent -eq $parent -and $admitted[$op].child -eq $child) 'publication identity does not match its fork admission.'
-                Require ($capture -eq $admitted[$op].captured_generation) 'publication supplied a forged captured generation.'
-                $published[$op] = $current
+            $hasCurrent = $null -ne $event.PSObject.Properties['current_generation']
+            if ($hasCurrent) {
+                $current = RequireInt $event.current_generation 'publication current_generation' 0 $generationBound
+                Require ($current -eq $workspaceGeneration[$parent]) 'publication supplied a forged current generation.'
+                Require ($capture -eq $current) 'publication crossed a stale workspace generation.'
+            } else {
+                $current = $null
+            }
+            Require (-not $published.ContainsKey($forkOp) -and -not $pendingPublications.ContainsKey($forkOp)) 'workspace publication was repeated.'
+            if ($admitted.ContainsKey($forkOp)) {
+                Require ($admitted[$forkOp].parent -eq $parent -and $admitted[$forkOp].child -eq $child) 'publication identity does not match its fork admission.'
+                Require ($capture -eq $admitted[$forkOp].captured_generation) 'publication supplied a forged captured generation.'
+                $published[$forkOp] = $current
             } else {
                 # A parent conversation can publish before the swarm registry
                 # persists its prepared admission. Retain the exact bounded
                 # witness and bind it when the admission record arrives.
-                $pendingPublications[$op] = [ordered]@{
+                $pendingPublications[$forkOp] = [ordered]@{
                     parent = $parent
                     child = $child
                     captured_generation = $capture

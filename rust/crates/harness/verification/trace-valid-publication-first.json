@@ -1,6 +1,31 @@
 [
-  {"kind":"workspace_published","operation_id":"child-op","parent":1,"child":2,"captured_generation":0,"current_generation":0},
-  {"kind":"fork_admitted","operation_id":"child-op","parent":1,"child":2,"depth":1,"captured_generation":0},
-  {"kind":"model_started","operation_id":"child-op","agent":2},
-  {"kind":"agent_completed","operation_id":"child-op","agent":2,"outcome_durable":true}
+  {
+    "kind": "workspace_published",
+    "parent": 1,
+    "child": 2,
+    "captured_generation": 0,
+    "current_generation": 0,
+    "fork_operation_id": "fork-op",
+    "publication_operation_id": "batch-op"
+  },
+  {
+    "kind": "fork_admitted",
+    "parent": 1,
+    "child": 2,
+    "depth": 1,
+    "captured_generation": 0,
+    "fork_operation_id": "fork-op",
+    "child_operation_id": "child-turn-op"
+  },
+  {
+    "kind": "model_started",
+    "agent": 2,
+    "child_operation_id": "child-turn-op"
+  },
+  {
+    "kind": "agent_completed",
+    "agent": 2,
+    "outcome_durable": true,
+    "child_operation_id": "child-turn-op"
+  }
 ]

@@ -8,9 +8,9 @@ Messages == 1..3
 Waits == 1..3
 
 Parent(a) == IF a = 1 THEN 1 ELSE IF a = 2 THEN 1 ELSE IF a = 3 THEN 1 ELSE 2
-Direct(a, b) == Parent(b) = a \/ Parent(a) = b
-MessageSender(m) == IF m = 1 THEN 2 ELSE IF m = 2 THEN 1 ELSE 2
-MessageRecipient(m) == IF m = 1 THEN 1 ELSE IF m = 2 THEN 2 ELSE 3
+Direct(a, b) == a # b /\ (Parent(b) = a \/ Parent(a) = b)
+MessageRecipient(m) == IF m = 1 THEN 1 ELSE IF m = 2 THEN 2 ELSE 1
+MessageSender(m) == IF m = 1 THEN 2 ELSE IF m = 2 THEN 1 ELSE 1
 Waiter(w) == IF w = 1 THEN 1 ELSE IF w = 2 THEN 2 ELSE 2
 WaitTarget(w) == IF w = 1 THEN 2 ELSE IF w = 2 THEN 4 ELSE 3
 
@@ -54,6 +54,9 @@ TypeOK == /\ messageState \in [Messages -> {"absent", "admitted", "delivered"}]
 DirectMessageAuthority ==
     \A m \in Messages: messageState[m] # "absent" =>
         Direct(MessageSender(m), MessageRecipient(m))
+
+SelfMessageAuthority ==
+    messageState[3] # "absent" => MessageSender(3) # MessageRecipient(3)
 
 DirectWaitAuthority ==
     \A w \in Waits: waitState[w] # "absent" =>
