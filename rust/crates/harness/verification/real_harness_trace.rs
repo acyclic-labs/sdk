@@ -8,11 +8,14 @@
 
 use super::super::*;
 use crate::{
-    Error, OperationId, Result,
+    Error, IdempotencyKey, OperationId, Result,
     executor::ExecutionEvent,
-    model::{Model, ModelAttempt, ModelEvent, ModelOptionPolicy, ModelProvider, ModelRequest},
+    model::{
+        Model, ModelAttempt, ModelEvent, ModelOptionPolicy, ModelProvider, ModelRequest,
+        ProviderDispatchContext,
+    },
     model_input::PreparedModelInput,
-    swarm_budget::SwarmUsageSource,
+    swarm_budget::{SwarmUsage, SwarmUsageSource},
 };
 use acyclic_stream::{LocalStream, StreamError};
 use futures::{StreamExt as _, future::BoxFuture, stream::BoxStream};
@@ -23,17 +26,82 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
+        Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    collections::BTreeMap,
+    time::Instant,
 };
 use tempfile::tempdir;
 
 struct TraceModel {
     child_operation: OperationId,
     calls: AtomicUsize,
+    usage: Arc<TraceUsage>,
+}
+
+#[derive(Default)]
+struct TraceUsage {
+    usage: Mutex<BTreeMap<(OperationId, String), SwarmUsage>>,
+}
+
+impl TraceUsage {
+    fn begin(&self, dispatch: &ProviderDispatchContext) {
+        if let Ok(mut usage) = self.usage.lock() {
+            usage
+                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                .or_default()
+                .model_steps = 1;
+        }
+    }
+
+    fn record(&self, dispatch: &ProviderDispatchContext, started: Instant, event: &ModelEvent) {
+        let bytes = crate::contract::canonical_json_bytes(event)
+            .map(|bytes| bytes.len() as u64)
+            .unwrap_or_default();
+        if let Ok(mut usage) = self.usage.lock() {
+            let entry = usage
+                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                .or_default();
+            entry.output_bytes = entry.output_bytes.saturating_add(bytes);
+            entry.execution_time_ms = entry
+                .execution_time_ms
+                .max(started.elapsed().as_millis() as u64);
+        }
+    }
+}
+
+impl SwarmUsageSource for TraceUsage {
+    fn provider_identity(&self) -> &str {
+        "harness.verification.real-trace"
+    }
+
+    fn cumulative_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+    ) -> Result<SwarmUsage> {
+        self.usage
+            .lock()
+            .map_err(|_| Error::Storage("trace usage lock poisoned".into()))
+            .and_then(|usage| {
+                usage
+                    .get(&(operation_id, dispatch_id.0.clone()))
+                    .copied()
+                    .ok_or_else(|| Error::Indeterminate(operation_id))
+            })
+    }
 }
 
 impl ModelProvider for TraceModel {
+    fn supports_dispatch_context(&self) -> bool {
+        true
+    }
+
+    fn swarm_usage_source(&self) -> Option<Arc<dyn SwarmUsageSource>> {
+        Some(self.usage.clone())
+    }
+
     fn generate<'a>(&'a self, _prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
@@ -62,11 +130,53 @@ impl ModelProvider for TraceModel {
         ]))
     }
 
+    fn generate_with_dispatch<'a>(
+        &'a self,
+        prepared: PreparedModelInput,
+        dispatch: ProviderDispatchContext,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
+        self.usage.begin(&dispatch);
+        let started = Instant::now();
+        let usage = self.usage.clone();
+        Box::pin(self.generate(prepared).map(move |event| {
+            if let Ok(event) = &event {
+                usage.record(&dispatch, started, event);
+            }
+            event
+        }))
+    }
+
     fn reconcile<'a>(
         &'a self,
         _attempt: ModelAttempt,
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async { Ok(None) })
+    }
+
+    fn reconcile_admitted_with_dispatch<'a>(
+        &'a self,
+        prepared: PreparedModelInput,
+        attempt: ModelAttempt,
+        dispatch: ProviderDispatchContext,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        let usage = self.usage.clone();
+        Box::pin(async move {
+            if dispatch.operation_id != attempt.operation_id
+                || dispatch.request_digest != attempt.request_digest
+            {
+                return Err(Error::Conflict(
+                    "trace dispatch context does not match admitted attempt".into(),
+                ));
+            }
+            let started = Instant::now();
+            let events = self.reconcile_admitted(prepared, attempt).await?;
+            if let Some(events) = &events {
+                for event in events {
+                    usage.record(&dispatch, started, event);
+                }
+            }
+            Ok(events)
+        })
     }
 }
 
@@ -88,6 +198,10 @@ impl ModelProvider for CaptureProvider {
         self.inner.swarm_usage_source()
     }
 
+    fn supports_dispatch_context(&self) -> bool {
+        self.inner.supports_dispatch_context()
+    }
+
     fn admit(&self, request: &ModelRequest) -> Result<()> {
         self.inner.admit(request)
     }
@@ -105,6 +219,27 @@ impl ModelProvider for CaptureProvider {
         attempt: ModelAttempt,
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         self.inner.reconcile_admitted(prepared, attempt)
+    }
+
+    fn generate_with_dispatch<'a>(
+        &'a self,
+        prepared: PreparedModelInput,
+        dispatch: ProviderDispatchContext,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
+        if let Ok(mut captured) = self.request_bytes.lock() {
+            captured.push(prepared.bytes().to_vec());
+        }
+        self.inner.generate_with_dispatch(prepared, dispatch)
+    }
+
+    fn reconcile_admitted_with_dispatch<'a>(
+        &'a self,
+        prepared: PreparedModelInput,
+        attempt: ModelAttempt,
+        dispatch: ProviderDispatchContext,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        self.inner
+            .reconcile_admitted_with_dispatch(prepared, attempt, dispatch)
     }
 
     fn reconcile<'a>(
@@ -278,6 +413,7 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         inner: Arc::new(TraceModel {
             child_operation,
             calls: AtomicUsize::new(0),
+            usage: Arc::new(TraceUsage::default()),
         }),
         request_bytes: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
