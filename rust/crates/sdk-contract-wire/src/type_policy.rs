@@ -2481,6 +2481,99 @@ pub fn audit_generated_public_surfaces(
     Ok(violations)
 }
 
+/// Check that each generated facade contains the Rust-owned type features
+/// needed to represent open values, presence, unions, and nominal identities.
+/// Marker checks are a fast acceptance gate; language compilers and runtime
+/// conformance tests remain the semantic proof for each target.
+pub fn audit_generated_type_features(
+    artifact_root: &Path,
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    if !artifact_root.is_dir() {
+        return Err(format!("generated artifact root does not exist: {}", artifact_root.display()));
+    }
+    let mut files = Vec::new();
+    collect_surface_files(artifact_root, &mut files);
+    let mut violations = Vec::new();
+    for path in files {
+        let Some(language) = surface_language(&path) else {
+            continue;
+        };
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("read generated facade {}: {error}", path.display()))?;
+        let relative = path
+            .strip_prefix(artifact_root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        for (marker, feature) in required_type_feature_markers(language) {
+            if !source.contains(marker) {
+                violations.push(GeneratedSurfaceViolation {
+                    language,
+                    path: relative.clone(),
+                    line: 0,
+                    reason: feature,
+                });
+            }
+        }
+    }
+    Ok(violations)
+}
+
+fn required_type_feature_markers(language: &str) -> &'static [(&'static str, &'static str)] {
+    match language {
+        "typescript" => &[
+            ("Unknown", "TypeScript facade lacks an open unknown-value projection"),
+            ("oneof", "TypeScript facade lacks a discriminated oneof projection"),
+            ("undefined", "TypeScript facade lacks explicit presence representation"),
+            ("IdempotencyKey", "TypeScript facade lacks a nominal semantic identity"),
+        ],
+        "python" => &[
+            ("UnknownOneof", "Python facade lacks an unknown-oneof projection"),
+            ("| None", "Python facade lacks explicit optional presence representation"),
+            ("NewType", "Python facade lacks nominal semantic identities"),
+        ],
+        "go" => &[
+            ("UnknownOneof", "Go facade lacks an unknown-oneof projection"),
+            ("IdempotencyKey", "Go facade lacks a nominal semantic identity"),
+        ],
+        "jvm" => &[
+            ("Unknown", "JVM facade lacks an open unknown-value projection"),
+            ("Optional", "JVM facade lacks explicit presence representation"),
+            ("Oneof", "JVM facade lacks a discriminated oneof projection"),
+        ],
+        "csharp" => &[
+            ("Unknown", "C# facade lacks an open unknown-value projection"),
+            ("Optional", "C# facade lacks explicit presence representation"),
+            ("oneof", "C# facade lacks a discriminated oneof projection"),
+            ("IdempotencyKey", "C# facade lacks a nominal semantic identity"),
+        ],
+        "swift" => &[
+            ("unknown", "Swift facade lacks an open unknown-value projection"),
+            ("Optional", "Swift facade lacks explicit presence representation"),
+            ("IdempotencyKey", "Swift facade lacks a nominal semantic identity"),
+        ],
+        "cpp" => &[
+            ("UnknownOneof", "C++ facade lacks an unknown-oneof projection"),
+            ("std::optional", "C++ facade lacks explicit presence representation"),
+            ("std::variant", "C++ facade lacks a discriminated union projection"),
+            ("IdempotencyKey", "C++ facade lacks a nominal semantic identity"),
+        ],
+        "ruby" => &[
+            ("Unknown", "Ruby facade lacks an open unknown-value projection"),
+            ("IdempotencyKey", "Ruby facade lacks a nominal semantic identity"),
+        ],
+        "php" => &[
+            ("Unknown", "PHP facade lacks an open unknown-value projection"),
+            ("IdempotencyKey", "PHP facade lacks a nominal semantic identity"),
+        ],
+        "dart" => &[
+            ("Unknown", "Dart facade lacks an open unknown-value projection"),
+            ("IdempotencyKey", "Dart facade lacks a nominal semantic identity"),
+        ],
+        _ => &[],
+    }
+}
+
 /// Run the public-surface audit while also requiring every expected facade
 /// family to be present.  A missing generated file is a generation failure,
 /// never an empty passing report.
@@ -2544,6 +2637,12 @@ fn surface_language(path: &Path) -> Option<&'static str> {
         Some("cpp")
     } else if name == "RustTypedClients.cs" {
         Some("csharp")
+    } else if name == "generated_typed.rb" {
+        Some("ruby")
+    } else if name == "RustTyped.php" {
+        Some("php")
+    } else if name == "generated_typed.dart" {
+        Some("dart")
     } else {
         None
     }
@@ -2662,6 +2761,42 @@ mod tests {
         assert!(error.contains("jvm"));
         assert!(error.contains("swift"));
         assert!(error.contains("cpp"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generated_feature_audit_rejects_missing_unknown_presence_and_identity_markers() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-feature-audit-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("audit fixture directory");
+        fs::write(root.join("RustTypedClients.swift"), "public struct Wire {}\n")
+            .expect("swift fixture");
+        let findings = audit_generated_type_features(&root).expect("feature audit fixture");
+        assert!(findings.iter().any(|finding| finding.language == "swift"));
+        assert!(findings.iter().any(|finding| finding.reason.contains("unknown")));
+        assert!(findings.iter().any(|finding| finding.reason.contains("identity")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generated_feature_audit_accepts_all_required_markers() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-feature-audit-valid-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("audit fixture directory");
+        fs::write(
+            root.join("RustTypedClients.swift"),
+            "unknown Optional IdempotencyKey\n",
+        )
+        .expect("swift fixture");
+        assert!(audit_generated_type_features(&root)
+            .expect("feature audit fixture")
+            .is_empty());
         let _ = fs::remove_dir_all(root);
     }
 
