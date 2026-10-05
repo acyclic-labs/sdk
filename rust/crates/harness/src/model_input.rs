@@ -1324,6 +1324,14 @@ mod tests {
             Limits::default(),
             std::slice::from_ref(&feedback),
         )?;
+        let persisted_boundary = serde_json::to_vec(&boundary)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let reopened_boundary: CompletedModelBoundary =
+            serde_json::from_slice(&persisted_boundary)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(reopened_boundary.request, boundary.request);
+        assert_eq!(reopened_boundary.rejection_evidence, vec![feedback.clone()]);
+        reopened_boundary.verify(Limits::default())?;
         let inherited = InheritedModelContext::new(
             boundary.clone(),
             vec![text("child task; fresh scratch")],
