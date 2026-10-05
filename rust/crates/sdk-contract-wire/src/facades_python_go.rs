@@ -10,9 +10,9 @@ use crate::{
     family_registry::FAMILY_VIEWS,
     transport::TransportKind,
     type_policy::{
-        resolved_response_fields, FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
+        resolved_request_fields, resolved_response_fields, resolved_rpc_methods, FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
         PublicFieldDirection, PublicNestedFieldKind, PublicNestedRoute, SEMANTIC_TYPES,
-        ResolvedRequestField, SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, semantic_type,
+        ResolvedRequestField, ResolvedRpcMethod, SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, semantic_type,
     },
 };
 use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
@@ -25,10 +25,11 @@ pub(super) fn render_python(binding: &str) -> String {
         r###"from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, AsyncIterator, Literal, NewType, TypeAlias
+from typing import Annotated, AsyncIterator, Literal, NewType, Protocol, TypeAlias
 from urllib.parse import urlsplit
 
 import grpc
+from google.protobuf import timestamp_pb2
 
 from .generated.actors.v1 import actors_pb2, actors_pb2_grpc
 from .generated.filesystem.v2 import filesystem_pb2, filesystem_pb2_grpc
@@ -36,6 +37,7 @@ from .generated.harness.v2 import harness_pb2, harness_pb2_grpc
 from .generated.inference.v1 import inference_pb2, inference_pb2_grpc
 from .generated.machines.v1 import machines_pb2, machines_pb2_grpc
 from .generated.objects.v2 import objects_pb2, objects_pb2_grpc
+from .generated.protocol.v1 import protocol_pb2
 from .generated.stream.v2 import stream_pb2, stream_pb2_grpc
 from .generated.workers.v1 import workers_pb2, workers_pb2_grpc
 
@@ -278,6 +280,13 @@ fn python_public_type_exports() -> String {
     for route in PUBLIC_NESTED_ROUTES {
         names.push(python_nested_route_name(route));
     }
+    for method in resolved_rpc_methods().expect("Rust RPC descriptors must resolve") {
+        names.push(python_rpc_request_name(&method));
+        names.push(python_rpc_response_name(&method));
+        if method.server_streaming {
+            names.push(python_rpc_stream_name(&method));
+        }
+    }
     names.push("ObjectsGetObjectResponse".to_owned());
     names.push("ObjectsGetObjectStream".to_owned());
     for binding in PUBLIC_FIELD_BINDINGS {
@@ -402,8 +411,8 @@ fn python_response_field_type(field: &ResolvedRequestField) -> String {
                 .type_name
                 .as_deref()
                 .map(|name| response_view_name(&field.family, name))
-                .unwrap_or_else(|| "object".to_owned()),
-            _ => "object".to_owned(),
+                .unwrap_or_else(|| "WirePayload".to_owned()),
+            _ => "WirePayload".to_owned(),
         }
     };
     let repeated = field.label == Some(FieldLabel::Repeated as i32) && !field.map_entry;
@@ -413,7 +422,7 @@ fn python_response_field_type(field: &ResolvedRequestField) -> String {
 }
 
 fn python_response_field_expression(field: &ResolvedRequestField, receiver: &str) -> String {
-    let wire = format!("{receiver}.{}", field.json_name);
+    let wire = python_proto_field_expression(receiver, &field.json_name);
     if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
         if matches!(item.wire_kind, WireValueKind::Message) {
             if matches!(item.rust_name, "MachineId" | "CheckpointId" | "OperationId") {
@@ -601,7 +610,63 @@ fn python_public_client_methods() -> String {
         ));
     }
     output.push_str(&python_public_nested_client_methods());
+    output.push_str(&python_all_rpc_client_methods());
     output
+}
+
+fn python_all_rpc_client_methods() -> String {
+    let methods = resolved_rpc_methods().expect("Rust RPC descriptors must resolve");
+    let mut output = String::new();
+    for method in &methods {
+        let request = python_rpc_request_name(method);
+        let response = python_rpc_response_name(method);
+        let method_name = python_rpc_operation_name(method);
+        let client = python_rpc_client_expression(method);
+        if method.server_streaming {
+            output.push_str(&format!(
+                "    async def {method_name}(\n        self,\n        request: {request},\n        timeout: float | None = None,\n    ) -> {stream}:\n        wire_request = request.to_wire()\n        return {stream}({client}.{rpc}(wire_request, timeout=timeout))\n\n",
+                method_name = method_name,
+                request = request,
+                stream = python_rpc_stream_name(method),
+                client = client,
+                rpc = method.method,
+            ));
+        } else {
+            output.push_str(&format!(
+                "    async def {method_name}(\n        self,\n        request: {request},\n        timeout: float | None = None,\n    ) -> {response}:\n        wire_request = request.to_wire()\n        value = await {client}.{rpc}(wire_request, timeout=timeout)\n        return {response}.from_wire(value)\n\n",
+                method_name = method_name,
+                request = request,
+                response = response,
+                client = client,
+                rpc = method.method,
+            ));
+        }
+    }
+    output
+}
+
+fn python_rpc_client_expression(method: &ResolvedRpcMethod) -> &'static str {
+    match method.family.as_str() {
+        "actors" => "self._actors",
+        "workers" => "self._workers",
+        "stream" => "self._stream",
+        "objects" => match method.service.as_str() {
+            "BucketsService" => "self._buckets",
+            "MultipartService" => "self._multipart",
+            _ => "self._objects",
+        },
+        "filesystem" => "self._filesystem",
+        "harness" => "self._harness",
+        "machines" => "self._machines",
+        "inference" => match method.service.as_str() {
+            "ModelsService" => "self._inference.models",
+            "ContextsService" => "self._inference.contexts",
+            "WarmContextsService" => "self._inference.warm_contexts",
+            "RunsService" => "self._inference.runs",
+            _ => "self._inference.evaluations",
+        },
+        _ => "self._actors",
+    }
 }
 
 fn python_public_nested_client_methods() -> String {
@@ -924,13 +989,13 @@ fn python_type_projection() -> String {
         .tag;
     output.push_str("@dataclass(frozen=True)\nclass UnknownEnumValue:\n    raw_value: int\n\n\n");
     output.push_str(&format!(
-        "@dataclass(frozen=True)\nclass KnownOneof:\n    tag: Literal[{known_tag:?}]\n    payload: object\n\n\n"
+        "class WirePayload(Protocol):\n    \"\"\"Named payload boundary for known Rust oneof arms.\"\"\"\n    pass\n\n\n@dataclass(frozen=True)\nclass KnownOneof:\n    tag: Literal[{known_tag:?}]\n    payload: WirePayload\n\n\n"
     ));
     output.push_str(&format!(
         "@dataclass(frozen=True)\nclass UnknownOneof:\n    raw_payload: bytes\n    tag: Literal[{unknown_tag:?}] = {unknown_tag:?}\n\n\n"
     ));
     output.push_str(
-        &format!("def known_oneof(payload: object) -> KnownOneof:\n    return KnownOneof(tag={known_tag:?}, payload=payload)\n\n\n")
+        &format!("def known_oneof(payload: WirePayload) -> KnownOneof:\n    return KnownOneof(tag={known_tag:?}, payload=payload)\n\n\n")
     );
     output.push_str(&format!(
         "def encode_wire_choice(value: WireChoice) -> dict[str, object]:\n    checked = oneof_arm(value)\n    if isinstance(checked, KnownOneof):\n        return {{\"tag\": {known_tag:?}, \"payload\": checked.payload}}\n    return {{\"tag\": {unknown_tag:?}, \"raw_payload\": checked.raw_payload}}\n\n\ndef decode_wire_choice(value: object) -> WireChoice:\n    if not isinstance(value, dict):\n        raise TypeError(\"wire_choice must decode from an object\")\n    tag = value.get(\"tag\")\n    if tag == {known_tag:?}:\n        return KnownOneof(tag={known_tag:?}, payload=value.get(\"payload\"))\n    if tag == {unknown_tag:?}:\n        raw_payload = value.get(\"raw_payload\")\n        if not isinstance(raw_payload, bytes):\n            raise TypeError(\"unknown oneof payload must be bytes\")\n        return UnknownOneof(raw_payload=raw_payload)\n    raise ValueError(\"wire_choice has an unknown discriminant\")\n\n\n"
@@ -990,6 +1055,7 @@ fn python_type_projection() -> String {
     output.push_str("        return values\n\n\n");
     output.push_str(&python_public_field_models());
     output.push_str(&python_public_nested_route_models());
+    output.push_str(&python_all_rpc_models());
     output.push_str(
         r#"@dataclass(frozen=True)
 class ObjectsGetObjectResponse:
@@ -1147,6 +1213,232 @@ def _require_message(value: object, expected: type, name: str) -> object:
         }
     }
     output
+}
+
+fn python_all_rpc_models() -> String {
+    let requests = resolved_request_fields().expect("Rust request descriptors must resolve");
+    let responses = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let methods = resolved_rpc_methods().expect("Rust RPC descriptors must resolve");
+    let mut output = String::from(
+        "# Complete Rust-owned request and response models for every resolved RPC.\n\n",
+    );
+    for method in &methods {
+        let request_name = python_rpc_request_name(method);
+        let root = method.input_message.as_str();
+        let mut fields = requests
+            .iter()
+            .filter(|field| field.family == method.family && field.root_message == root && field.message_path == root)
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| left.number.cmp(&right.number));
+        fields.dedup_by(|left, right| left.field == right.field);
+        output.push_str(&format!("@dataclass(frozen=True)\nclass {request_name}:\n"));
+        if fields.is_empty() {
+            output.push_str("    def to_wire(self):\n        return ");
+            output.push_str(&format!("{} .{}()\n\n", python_module_for_family(&method.family), python_message_name(root)));
+            continue;
+        }
+        for field in &fields {
+            output.push_str(&format!(
+                "    {}: {} = None\n",
+                python_safe_identifier(&field.field),
+                python_descriptor_field_type(field)
+            ));
+        }
+        output.push_str("\n    def to_wire(self):\n");
+        output.push_str(&format!(
+            "        wire = {}.{}()\n",
+            python_module_for_family(&method.family),
+            python_message_name(root)
+        ));
+        for field in &fields {
+            output.push_str(&python_request_assignment(field));
+        }
+        output.push_str("        return wire\n\n");
+    }
+    for method in &methods {
+        let response_name = python_rpc_response_name(method);
+        let root = method.output_message.as_str();
+        let mut fields = responses
+            .iter()
+            .filter(|field| field.family == method.family && field.root_message == root && field.message_path == root)
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| left.number.cmp(&right.number));
+        fields.dedup_by(|left, right| left.field == right.field);
+        output.push_str(&format!("@dataclass(frozen=True)\nclass {response_name}:\n"));
+        if fields.is_empty() {
+            output.push_str("    @classmethod\n    def from_wire(cls, message):\n        return cls()\n\n");
+            continue;
+        }
+        for field in &fields {
+            output.push_str(&format!(
+                "    {}: {} = None\n",
+                python_safe_identifier(&field.field),
+                python_response_field_type(field)
+            ));
+        }
+        output.push_str("\n    @classmethod\n    def from_wire(cls, message):\n        return cls(\n");
+        for field in &fields {
+            output.push_str(&format!(
+                "            {}={},\n",
+                python_safe_identifier(&field.field),
+                python_response_field_expression(field, "message")
+            ));
+        }
+        output.push_str("        )\n\n");
+        if method.server_streaming {
+            let stream_name = python_rpc_stream_name(method);
+            output.push_str(&format!(
+                "class {stream_name}:\n    def __init__(self, call):\n        self._call = call\n\n    def __aiter__(self):\n        return self._iterate()\n\n    async def _iterate(self):\n        async for message in self._call:\n            yield {response_name}.from_wire(message)\n\n\n"
+            ));
+        }
+    }
+    output
+}
+
+fn python_rpc_request_name(method: &ResolvedRpcMethod) -> String {
+    format!("Rust{}{}{}Request", pascal_case(&method.family), pascal_case(method.service.trim_end_matches("Service")), pascal_case(&method.method))
+}
+
+fn python_rpc_response_name(method: &ResolvedRpcMethod) -> String {
+    format!("Rust{}{}{}Response", pascal_case(&method.family), pascal_case(method.service.trim_end_matches("Service")), pascal_case(&method.method))
+}
+
+fn python_rpc_stream_name(method: &ResolvedRpcMethod) -> String {
+    format!("Rust{}{}{}Stream", pascal_case(&method.family), pascal_case(method.service.trim_end_matches("Service")), pascal_case(&method.method))
+}
+
+fn python_rpc_operation_name(method: &ResolvedRpcMethod) -> String {
+    format!("{}_{}_{}", snake_case(&method.family), snake_case(method.service.trim_end_matches("Service")), snake_case(&method.method))
+}
+
+fn python_module_for_family(family: &str) -> &'static str {
+    match family {
+        "actors" => "actors_pb2",
+        "filesystem" => "filesystem_pb2",
+        "harness" => "harness_pb2",
+        "inference" => "inference_pb2",
+        "machines" => "machines_pb2",
+        "objects" => "objects_pb2",
+        "protocol" => "protocol_pb2",
+        "stream" => "stream_pb2",
+        "workers" => "workers_pb2",
+        _ => "protocol_pb2",
+    }
+}
+
+fn python_module_for_type(type_name: &str, family: &str) -> &'static str {
+    for candidate in ["actors", "filesystem", "harness", "inference", "machines", "objects", "protocol", "stream", "workers"] {
+        if type_name.contains(&format!(".{candidate}.")) {
+            return python_module_for_family(candidate);
+        }
+    }
+    python_module_for_family(family)
+}
+
+fn python_message_name(type_name: &str) -> &str {
+    type_name.rsplit('.').next().unwrap_or(type_name)
+}
+
+fn python_descriptor_field_type(field: &ResolvedRequestField) -> String {
+    let base = if let Some(semantic) = field.semantic_type.as_deref().and_then(semantic_type) {
+        semantic.rust_name.to_owned()
+    } else {
+        match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+            Some(FieldType::String) => "str".to_owned(),
+            Some(FieldType::Bytes) => "bytes".to_owned(),
+            Some(FieldType::Bool) => "bool".to_owned(),
+            Some(FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 | FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 | FieldType::Uint32 | FieldType::Fixed32 | FieldType::Uint64 | FieldType::Fixed64) => "int".to_owned(),
+            Some(FieldType::Float | FieldType::Double) => "float".to_owned(),
+            Some(FieldType::Enum) => "int".to_owned(),
+            Some(FieldType::Message | FieldType::Group) => {
+                let type_name = field.type_name.as_deref().unwrap_or("google.protobuf.Timestamp");
+                if type_name == "google.protobuf.Timestamp" {
+                    "timestamp_pb2.Timestamp".to_owned()
+                } else {
+                    format!("{}.{}", python_module_for_type(type_name, &field.family), python_message_name(type_name))
+                }
+            }
+            _ => "bytes".to_owned(),
+        }
+    };
+    let value = if field.map_entry {
+        format!("dict[str, {base}]")
+    } else if field.label == Some(FieldLabel::Repeated as i32) {
+        format!("tuple[{base}, ...]")
+    } else {
+        base
+    };
+    if field.proto3_optional || field.oneof_index.is_some() {
+        format!("{value} | None")
+    } else {
+        value
+    }
+}
+
+fn python_safe_identifier(name: &str) -> String {
+    match name {
+        "and" | "as" | "assert" | "async" | "await" | "break" | "case" | "class"
+        | "continue" | "def" | "del" | "elif" | "else" | "except" | "False"
+        | "finally" | "for" | "from" | "global" | "if" | "import" | "in"
+        | "is" | "lambda" | "None" | "nonlocal" | "not" | "or" | "pass"
+        | "raise" | "return" | "True" | "try" | "while" | "with" | "yield" => {
+            format!("{name}_")
+        }
+        _ => name.to_owned(),
+    }
+}
+
+fn python_proto_field_expression(receiver: &str, field: &str) -> String {
+    if python_safe_identifier(field) != field {
+        format!("getattr({receiver}, {field:?})")
+    } else {
+        format!("{receiver}.{field}")
+    }
+}
+
+fn python_proto_scalar_assignment(receiver: &str, field: &str, expression: &str) -> String {
+    if python_safe_identifier(field) != field {
+        format!("setattr({receiver}, {field:?}, {expression})")
+    } else {
+        format!("{receiver}.{field} = {expression}")
+    }
+}
+
+fn python_request_assignment(field: &ResolvedRequestField) -> String {
+    let name = &field.field;
+    let identifier = python_safe_identifier(name);
+    let source = format!("self.{identifier}");
+    let wire_field = python_proto_field_expression("wire", name);
+    let Some(kind) = field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) else {
+        return String::new();
+    };
+    let semantic = field.semantic_type.as_deref().and_then(semantic_type);
+    let expression = semantic
+        .map(|item| format!("{}({source})", snake_case(item.id)))
+        .unwrap_or(source.clone());
+    if field.map_entry {
+        return format!("        if {source} is not None:\n            {wire_field}.update({source})\n");
+    }
+    if field.label == Some(FieldLabel::Repeated as i32) {
+        return format!("        if {source} is not None:\n            {wire_field}.extend({expression})\n");
+    }
+    if field.proto3_optional || field.oneof_index.is_some() {
+        if matches!(kind, FieldType::Message | FieldType::Group) {
+            return format!("        if {source} is not None:\n            {wire_field}.CopyFrom({expression})\n");
+        }
+        return format!(
+            "        if {source} is not None:\n            {}\n",
+            python_proto_scalar_assignment("wire", name, &expression)
+        );
+    }
+    if matches!(kind, FieldType::Message | FieldType::Group) {
+        format!("        if {source} is not None:\n            {wire_field}.CopyFrom({expression})\n")
+    } else {
+        format!(
+            "        if {source} is not None:\n            {}\n",
+            python_proto_scalar_assignment("wire", name, &expression)
+        )
+    }
 }
 
 fn python_public_nested_route_models() -> String {
@@ -1623,6 +1915,7 @@ fn go_type_projection() -> String {
     output.push_str("\treturn result\n}\n\n");
     output.push_str(&go_public_field_models());
     output.push_str(&go_public_nested_route_models());
+    output.push_str(&go_all_rpc_models());
     output.push_str(
         r#"type ObjectsGetObjectFrame string
 
@@ -1931,6 +2224,179 @@ fn go_public_nested_route_models() -> String {
     output
 }
 
+/// Emit the complete operation surface from the Rust-resolved descriptor
+/// inventory.  The older semantic convenience bindings remain useful, but
+/// they are a subset of the contract and must never define the public RPC
+/// surface by themselves.
+fn go_all_rpc_models() -> String {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before Go facade generation");
+    let requests = resolved_request_fields().expect("Rust request fields must resolve before Go facade generation");
+    let responses = resolved_response_fields().expect("Rust response fields must resolve before Go facade generation");
+    let mut output = String::from("// Complete Rust-resolved request, response, and client models.\n\n");
+    for method in &methods {
+        let request_name = go_rpc_request_name(method);
+        let response_name = go_rpc_response_name(method);
+        let input = go_message_wire_type(&method.family, &method.input_message);
+        let output_wire = go_message_wire_type(&method.family, &method.output_message);
+        let request_fields = go_root_fields(&requests, method, &method.input_message);
+        let response_fields = go_root_fields(&responses, method, &method.output_message);
+        output.push_str(&format!("type {request_name} struct {{\n", request_name = request_name));
+        if request_fields.is_empty() {
+            output.push_str("\twire ");
+            output.push_str(&input);
+            output.push_str("\n");
+        } else {
+            for field in &request_fields {
+                output.push_str(&format!("\t{} {}\n", go_rpc_field_identifier(field), go_rpc_field_type(field)));
+            }
+        }
+        output.push_str("}\n\n");
+        output.push_str(&format!("func (request {request_name}) ToWire() ({input}, error) {{\n", request_name = request_name, input = input));
+        if request_fields.is_empty() {
+            output.push_str("\tif request.wire == nil { return ");
+            output.push_str("nil");
+            output.push_str(", fmt.Errorf(\"request must be present\") }\n\treturn request.wire, nil\n");
+        } else {
+            output.push_str(&format!("\twire := &{input_trim}{{}}\n", input_trim = input.trim_start_matches('*')));
+            for field in &request_fields {
+                output.push_str(&go_rpc_assignment(field));
+            }
+            output.push_str("\treturn wire, nil\n");
+        }
+        output.push_str("}\n\n");
+        output.push_str(&format!("type {response_name} struct {{ wire {output_wire} }}\n\n", response_name = response_name, output_wire = output_wire));
+        output.push_str(&format!("func {response_name}FromWire(message {output_wire}) (*{response_name}, error) {{\n\tif message == nil {{ return nil, fmt.Errorf(\"response must be present\") }}\n\treturn &{response_name}{{wire: message}}, nil\n}}\n\n", response_name = response_name, output_wire = output_wire));
+        let mut emitted = std::collections::BTreeSet::new();
+        for field in response_fields {
+            if emitted.insert(field.field.clone()) {
+                output.push_str(&go_response_field_method(field).replace("{model}", &response_name));
+            }
+        }
+        if method.server_streaming {
+            let stream_name = format!("{response_name}Stream");
+            output.push_str(&format!("type {stream_name} struct {{ inner grpc.ServerStreamingClient[{wire}] }}\n\nfunc (stream *{stream_name}) Recv() (*{response_name}, error) {{\n\tmessage, err := stream.inner.Recv()\n\tif err != nil {{ return nil, err }}\n\treturn {response_name}FromWire(message)\n}}\n\n", stream_name = stream_name, wire = output_wire.trim_start_matches('*'), response_name = response_name));
+        }
+    }
+    for method in &methods {
+        if method.client_streaming { continue; }
+        let request_name = go_rpc_request_name(method);
+        let response_name = go_rpc_response_name(method);
+        let client = go_rpc_client_expression_for_method(method);
+        let method_name = format!("{}{}{}", pascal_case(&method.family), pascal_case(method.service.trim_end_matches("Service")), pascal_case(&method.method));
+        if method.server_streaming {
+            output.push_str(&format!("func (client *Client) {method_name}(ctx context.Context, request {request_name}, opts ...grpc.CallOption) (*{response_name}Stream, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\tstream, err := {client}.{rpc}(ctx, wireRequest, opts...)\n\tif err != nil {{ return nil, err }}\n\treturn &{response_name}Stream{{inner: stream}}, nil\n}}\n\n", method_name = method_name, request_name = request_name, response_name = response_name, client = client, rpc = method.method));
+        } else {
+            output.push_str(&format!("func (client *Client) {method_name}(ctx context.Context, request {request_name}, opts ...grpc.CallOption) (*{response_name}, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\twireResponse, err := {client}.{rpc}(ctx, wireRequest, opts...)\n\tif err != nil {{ return nil, err }}\n\treturn {response_name}FromWire(wireResponse)\n}}\n\n", method_name = method_name, request_name = request_name, response_name = response_name, client = client, rpc = method.method));
+        }
+    }
+    output
+}
+
+fn go_rpc_request_name(method: &ResolvedRpcMethod) -> String {
+    format!("Rust{}{}{}Request", pascal_case(&method.family), pascal_case(method.service.trim_end_matches("Service")), pascal_case(&method.method))
+}
+
+fn go_rpc_response_name(method: &ResolvedRpcMethod) -> String {
+    format!("Rust{}{}{}Response", pascal_case(&method.family), pascal_case(method.service.trim_end_matches("Service")), pascal_case(&method.method))
+}
+
+fn go_root_fields<'a>(fields: &'a [ResolvedRequestField], method: &ResolvedRpcMethod, root: &str) -> Vec<&'a ResolvedRequestField> {
+    let mut result = fields.iter().filter(|field| field.family == method.family && field.root_message == root && field.message_path == root).collect::<Vec<_>>();
+    result.sort_by(|left, right| left.number.cmp(&right.number));
+    result.dedup_by(|left, right| left.field == right.field);
+    result
+}
+
+fn go_module_for_family(family: &str) -> &'static str {
+    match family {
+        "actors" => "actorsv1", "filesystem" => "filesystemv2", "harness" => "harnessv2",
+        "inference" => "inferencev1", "machines" => "machinesv1", "objects" => "objectsv2",
+        "protocol" => "protocolv1", "stream" => "streamv2", "workers" => "workersv1", _ => "protocolv1",
+    }
+}
+
+fn go_message_wire_type(family: &str, message: &str) -> String {
+    let module = if message.contains(".protocol.") { "protocolv1" } else { go_module_for_family(family) };
+    format!("*{}.{}", module, message.rsplit('.').next().unwrap_or(message))
+}
+
+fn go_rpc_field_identifier(field: &ResolvedRequestField) -> String { go_proto_field_identifier(&field.json_name) }
+
+fn go_rpc_field_type(field: &ResolvedRequestField) -> String {
+    let mut base = if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
+        if matches!(item.id, "machine_id" | "checkpoint_id" | "operation_id") {
+            go_type_name(item.rust_name)
+        } else if item.wire_kind == WireValueKind::Message {
+            match item.id { "immutable_image" => "*machinesv1.Image".to_owned(), "idempotency_key_message" => "*machinesv1.IdempotencyKey".to_owned(), _ => go_type_name(item.rust_name) }
+        } else { go_type_name(item.rust_name) }
+    } else {
+        match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+            Some(FieldType::String) => "string".to_owned(), Some(FieldType::Bytes) => "[]byte".to_owned(), Some(FieldType::Bool) => "bool".to_owned(),
+            Some(FieldType::Double) => "float64".to_owned(), Some(FieldType::Float) => "float32".to_owned(),
+            Some(FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32) => "int32".to_owned(), Some(FieldType::Uint32 | FieldType::Fixed32) => "uint32".to_owned(),
+            Some(FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64) => "int64".to_owned(), Some(FieldType::Uint64 | FieldType::Fixed64) => "uint64".to_owned(),
+            Some(FieldType::Enum) => "OpenEnumValue".to_owned(), Some(FieldType::Message | FieldType::Group) => field.type_name.as_deref().map(|name| go_message_wire_type(&field.family, name)).unwrap_or_else(|| "proto.Message".to_owned()), _ => "[]byte".to_owned(),
+        }
+    };
+    if field.map_entry { base = "map[string]string".to_owned(); }
+    if field.label == Some(FieldLabel::Repeated as i32) && !field.map_entry { base = format!("[]{base}"); }
+    if (field.proto3_optional && !matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Bytes))) || (field.oneof_index.is_some() && !field.proto3_optional) { base = format!("*{base}"); }
+    base
+}
+
+fn go_rpc_assignment(field: &ResolvedRequestField) -> String {
+    let target = format!("wire.{}", go_rpc_field_identifier(field));
+    let source = format!("request.{}", go_rpc_field_identifier(field));
+    let Some(kind) = field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) else { return String::new() };
+    let expression = if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
+        match item.id {
+            "machine_id" => format!("&machinesv1.MachineId{{Value: {}[:]}}", source),
+            "checkpoint_id" => format!("&machinesv1.CheckpointId{{Value: {}[:]}}", source),
+            "operation_id" => format!("&machinesv1.OperationId{{Value: {}[:]}}", source),
+            _ if item.wire_kind == WireValueKind::String => format!("string({})", go_deref_if_pointer(field, &source)),
+            _ if item.wire_kind == WireValueKind::Bytes => {
+                if item.rules.iter().any(|rule| matches!(rule, SemanticRule::FixedLength(_))) { format!("{}[:]", go_deref_if_pointer(field, &source)) } else { go_deref_if_pointer(field, &source) }
+            },
+            _ if item.wire_kind == WireValueKind::UnsignedInteger && matches!(kind, FieldType::Uint32 | FieldType::Fixed32) => format!("uint32({})", go_deref_if_pointer(field, &source)),
+            _ => source.clone(),
+        }
+    } else if matches!(kind, FieldType::Enum) {
+        format!("{}({})", go_enum_wire_type(field), go_deref_if_pointer(field, &source))
+    } else { go_deref_if_pointer(field, &source) };
+    if field.oneof_index.is_some() && !field.proto3_optional {
+        let oneof = field.oneof_name.as_deref().map(pascal_case).unwrap_or_else(|| "Selector".to_owned());
+        let module = go_module_for_family(&field.family);
+        let root = field.root_message.rsplit('.').next().unwrap_or(&field.root_message);
+        let wrapper = format!("{module}.{root}_{}", go_rpc_field_identifier(field));
+        return format!("\twire.{oneof} = &{wrapper}{{{field}: {expression}}}\n", field = go_rpc_field_identifier(field));
+    }
+    if field.map_entry { return format!("\tif {source} != nil {{ wire.{name} = {source} }}\n", source = source, name = go_rpc_field_identifier(field)); }
+    let target_type = go_rpc_field_type(field);
+    if target_type.starts_with('*') || (field.semantic_type.is_none() && matches!(kind, FieldType::Message | FieldType::Group)) {
+        return format!("\tif {source} != nil {{ {target} = {expression} }}\n", source = source, target = target, expression = expression);
+    }
+    format!("\t{target} = {expression}\n", target = target, expression = expression)
+}
+
+fn go_deref_if_pointer(field: &ResolvedRequestField, source: &str) -> String {
+    if field.oneof_index.is_some() && !field.proto3_optional { format!("*{source}") } else { source.to_owned() }
+}
+
+fn go_enum_wire_type(field: &ResolvedRequestField) -> String {
+    let type_name = field.type_name.as_deref().unwrap_or("int32");
+    let module = if type_name.contains(".protocol.") { "protocolv1" } else { go_module_for_family(&field.family) };
+    format!("{}.{}", module, type_name.rsplit('.').next().unwrap_or(type_name))
+}
+
+fn go_rpc_client_expression_for_method(method: &ResolvedRpcMethod) -> &'static str {
+    match method.family.as_str() {
+        "actors" => "client.Actors", "workers" => "client.Workers", "stream" => "client.Stream", "filesystem" => "client.Filesystem", "harness" => "client.Harness", "machines" => "client.Machines",
+        "objects" => match method.service.as_str() { "BucketsService" => "client.Buckets", "MultipartService" => "client.Multipart", _ => "client.Objects" },
+        "inference" => match method.service.as_str() { "ModelsService" => "client.Inference.Models", "ContextsService" => "client.Inference.Contexts", "WarmContextsService" => "client.Inference.WarmContexts", "RunsService" => "client.Inference.Runs", _ => "client.Inference.Evaluations" },
+        _ => "client.Actors",
+    }
+}
+
 fn go_public_wire_assignment(
     item: &crate::type_policy::SemanticType,
     value: &str,
@@ -2222,6 +2688,9 @@ fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) ->
         return getter;
     }
     if field.label == Some(FieldLabel::Repeated as i32) {
+        if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Enum)) {
+            return format!("func() []OpenEnumValue {{ result := make([]OpenEnumValue, 0, len({getter})); for _, item := range {getter} {{ result = append(result, OpenEnumValue(item)) }}; return result }}()", getter = getter);
+        }
         if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group)) {
             if let Some(type_name) = field.type_name.as_deref() {
                 let view = response_view_name(&field.family, type_name);
