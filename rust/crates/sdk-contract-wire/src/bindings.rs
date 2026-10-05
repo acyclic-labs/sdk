@@ -354,8 +354,21 @@ pub fn generate_product_bindings(
             .out_dir(out_dir)
             .build_client(config.client)
             .build_server(config.server)
-            .compile_fds_with_config(descriptors, prost)
+            .compile_fds_with_config(descriptors.clone(), prost)
             .map_err(BindingGenerationError::Io)?;
+    }
+    if matches!(family, BindingFamily::Actors | BindingFamily::Workers) {
+        crate::transport_control::generate_control_bindings(
+            out_dir,
+            BindingTransport::Tonic {
+                client: true,
+                server: true,
+            },
+        )?;
+        fs::write(
+            out_dir.join("platform-client-methods.rs"),
+            platform_client_methods(&descriptors),
+        )?;
     }
     Ok(BindingOutput {
         family,
@@ -363,6 +376,49 @@ pub fn generate_product_bindings(
         model_descriptor,
         archived_runtime_descriptor: family.archived_runtime_descriptor(),
     })
+}
+
+fn platform_client_methods(descriptors: &FileDescriptorSet) -> String {
+    let mut source =
+        String::from("// Generated from the Rust-owned descriptor. Do not edit.\nimpl Client {\n");
+    for file in &descriptors.file {
+        for service in &file.service {
+            for method in &service.method {
+                assert!(
+                    !method.client_streaming.unwrap_or(false)
+                        && !method.server_streaming.unwrap_or(false),
+                    "platform unary facade requires an explicit streaming implementation"
+                );
+                let name = method.name.as_deref().expect("model method name");
+                let mut rust_name = String::new();
+                for (index, character) in name.chars().enumerate() {
+                    if character.is_ascii_uppercase() && index != 0 {
+                        rust_name.push('_');
+                    }
+                    rust_name.push(character.to_ascii_lowercase());
+                }
+                let input = method
+                    .input_type
+                    .as_deref()
+                    .expect("model input")
+                    .rsplit('.')
+                    .next()
+                    .expect("input name");
+                let output = method
+                    .output_type
+                    .as_deref()
+                    .expect("model output")
+                    .rsplit('.')
+                    .next()
+                    .expect("output name");
+                source.push_str(&format!(
+                    "    /// Execute the canonical `{name}` operation using the platform default transport.\n    ///\n    /// # Errors\n    /// Returns a transport or canonical service error.\n    pub async fn {rust_name}(&self, request: &crate::wire::{input}) -> Result<crate::wire::{output}, Error> {{\n        match &self.inner {{\n            #[cfg(not(target_arch = \"wasm32\"))]\n            Backend::Grpc(client) => client.clone().{rust_name}(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),\n            Backend::Http(client) => client.{rust_name}(request).await.map_err(Error::from_http),\n        }}\n    }}\n"
+                ));
+            }
+        }
+    }
+    source.push_str("}\n");
+    source
 }
 
 fn generate_plugin_files(
@@ -408,7 +464,7 @@ fn generate_plugin_files(
     );
     let prost_files = protoc_gen_prost::execute(&request)
         .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, prost_files, family == BindingFamily::Objects)?;
+    write_plugin_files(out_dir, prost_files, family)?;
 
     let mut tonic_params = Vec::new();
     if !config.client {
@@ -424,14 +480,19 @@ fn generate_plugin_files(
         &tonic_params.join(","),
     ))
     .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, tonic_files, family == BindingFamily::Objects)
+    write_plugin_files(out_dir, tonic_files, family)
 }
 
 fn write_plugin_files(
     out_dir: &Path,
     files: Vec<prost_types::compiler::code_generator_response::File>,
-    guard_grpc: bool,
+    family: BindingFamily,
 ) -> Result<(), BindingGenerationError> {
+    let guard_cfg = match family {
+        BindingFamily::Actors | BindingFamily::Workers => Some("not(target_arch = \"wasm32\")"),
+        BindingFamily::Objects => Some("feature = \"grpc\""),
+        _ => None,
+    };
     for file in files {
         let name = file.name.ok_or_else(|| {
             BindingGenerationError::Plugin("generator returned unnamed file".into())
@@ -449,8 +510,8 @@ fn write_plugin_files(
                 ))
             })?;
             let insertion = file.content.as_deref().unwrap_or_default();
-            let insertion = if guard_grpc {
-                guard_tonic_include(insertion)
+            let insertion = if let Some(cfg) = guard_cfg {
+                guard_tonic_include_with_cfg(insertion, cfg)
             } else {
                 insertion.to_owned()
             };
@@ -458,12 +519,12 @@ fn write_plugin_files(
             fs::write(path, current)?;
         } else {
             let content = file.content.unwrap_or_default();
-            let content = if guard_grpc && name.ends_with(".tonic.rs") {
-                guard_tonic_modules(&content)
-            } else if guard_grpc {
-                guard_tonic_include(&content)
-            } else {
-                content
+            let content = match guard_cfg {
+                Some(cfg) if name.ends_with(".tonic.rs") => {
+                    guard_tonic_modules_with_cfg(&content, cfg)
+                }
+                Some(cfg) => guard_tonic_include_with_cfg(&content, cfg),
+                None => content,
             };
             fs::write(path, content)?;
         }
@@ -471,11 +532,16 @@ fn write_plugin_files(
     Ok(())
 }
 
+#[cfg(test)]
 fn guard_tonic_modules(source: &str) -> String {
+    guard_tonic_modules_with_cfg(source, "feature = \"grpc\"")
+}
+
+fn guard_tonic_modules_with_cfg(source: &str, cfg: &str) -> String {
     let mut guarded = String::with_capacity(source.len() + 128);
     for line in source.lines() {
         if line.starts_with("pub mod ") {
-            guarded.push_str("#[cfg(feature = \"grpc\")]\n");
+            guarded.push_str(&format!("#[cfg({cfg})]\n"));
         }
         guarded.push_str(line);
         guarded.push('\n');
@@ -486,12 +552,17 @@ fn guard_tonic_modules(source: &str) -> String {
     guarded
 }
 
+#[cfg(test)]
 fn guard_tonic_include(source: &str) -> String {
+    guard_tonic_include_with_cfg(source, "feature = \"grpc\"")
+}
+
+fn guard_tonic_include_with_cfg(source: &str, cfg: &str) -> String {
     let mut guarded = String::with_capacity(source.len() + 64);
     for line in source.lines() {
         if line.trim_start().starts_with("include!(") && line.trim_end().ends_with(".tonic.rs\");")
         {
-            guarded.push_str("#[cfg(feature = \"grpc\")]\n");
+            guarded.push_str(&format!("#[cfg({cfg})]\n"));
         }
         guarded.push_str(line);
         guarded.push('\n');
@@ -645,11 +716,11 @@ pub fn descriptor_set_with_docs(
 
 fn model_source_locations(family: BindingFamily, file: &FileDescriptorProto) -> Vec<Location> {
     let package = file.package.as_deref().unwrap_or_default();
-    // Dependency descriptors are part of the generation closure, but their
-    // comments are owned by their upstream schema.  Only attach locations to
-    // the selected Rust model package; this also avoids asking a model doc
-    // table for WKT/protocol dependency messages.
-    if package != family.package() {
+    // Dependency descriptors are part of the generation closure. The shared
+    // protocol descriptor is itself Rust-owned, so carry its model comments
+    // into generated bindings as well. Other dependencies, including WKTs,
+    // remain owned by their upstream schema.
+    if package != family.package() && package != crate::protocol::PACKAGE {
         return Vec::new();
     }
     let mut locations = Vec::new();
@@ -787,6 +858,7 @@ fn model_message_docs(package: &str, name: &str) -> &'static str {
             .find(|doc| doc.name == name)
             .map(|doc| doc.text)
             .unwrap_or("A message in the Machines v1 wire contract."),
+        crate::protocol::PACKAGE => crate::protocol::protocol_message_docs(name),
         _ => crate::message_docs(package, name),
     }
 }
@@ -807,6 +879,7 @@ fn model_field_docs(package: &str, message: &str, name: &str) -> &'static str {
             .find(|doc| doc.message == message && doc.name == name)
             .map(|doc| doc.text)
             .unwrap_or("A field in the Machines v1 wire contract."),
+        crate::protocol::PACKAGE => crate::protocol::protocol_field_docs(message, name),
         _ => crate::field_docs(package, message, name),
     }
 }
@@ -1255,6 +1328,33 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_docs_overlay_covers_rust_owned_protocol_dependency() {
+        let model = crate::protocol::protocol_descriptor();
+        let overlaid = descriptor_set_with_docs(BindingFamily::Actors, &model)
+            .expect("protocol docs overlay");
+        let generated = FileDescriptorSet::decode(overlaid.as_slice()).expect("overlay");
+        let protocol = generated
+            .file
+            .iter()
+            .find(|file| file.package.as_deref() == Some(crate::protocol::PACKAGE))
+            .expect("protocol dependency");
+        let locations = protocol
+            .source_code_info
+            .as_ref()
+            .expect("protocol source info")
+            .location
+            .as_slice();
+        assert!(
+            !locations.is_empty()
+                && locations.iter().all(|location| location
+                    .leading_comments
+                    .as_deref()
+                    .is_some_and(|comments| !comments.trim().is_empty())),
+            "Rust-owned protocol declarations must carry source comments"
+        );
+    }
+
+    #[test]
     fn descriptor_docs_overlay_documents_nested_declarations_and_choices() {
         for &family in BindingFamily::ALL {
             let model = family.model_descriptor();
@@ -1319,7 +1419,8 @@ mod tests {
                 .zip(overlay_files.iter())
                 .zip(decoded.file.iter())
             {
-                let has_docs = descriptor.package.as_deref() == Some(family.package());
+                let has_docs = descriptor.package.as_deref() == Some(family.package())
+                    || descriptor.package.as_deref() == Some(crate::protocol::PACKAGE);
                 if has_docs {
                     assert!(
                         overlay_file.starts_with(model_file),

@@ -1,15 +1,40 @@
-//! Rust-owned metadata for the Actors v1 wire contract.
+//! Rust-owned contract metadata and generators for the public SDK families.
 //!
-//! This is deliberately a structured model rather than generated Rust or an
-//! embedded `.proto` document. The model emits both a canonical descriptor set
-//! and source text; the checked-in protobuf is retained only as a compatibility
-//! fixture for tests.
+//! The [`family_registry`] models, the family modules, and the semantic and
+//! transport policies in this crate are the source of truth for the public
+//! contract. They describe operations, routes, request and response types,
+//! field numbers, JSON names, presence, oneofs, reserved ranges, capabilities,
+//! service availability, and error semantics. The model is intentionally
+//! structured rather than an embedded `.proto` document or generated Rust, so
+//! compatibility checks can inspect the same declarations that emit the wire
+//! artifacts.
+//!
+//! [`wire_semantics`] and [`semantic_oracle`] validate the compatibility rules
+//! that are observable on the wire, while [`transport`] and
+//! [`transport_control`] apply the platform and runtime policy used to choose a
+//! suitable remote transport. Consumers receive that choice through generated
+//! clients and facades; they do not need to reproduce platform feature flags.
+//! [`type_policy`], [`bindings`], [`facades`], and [`embedded_facades`] project
+//! the Rust-owned semantic types and operation behavior into language SDKs and
+//! native or WebAssembly boundaries. These projections preserve explicit wire
+//! identities instead of maintaining separately authored language contracts.
+//!
+//! Descriptor sets, protobuf text, SDK packages, binding metadata, and website
+//! documentation inputs are generated outputs of this model. Rust comments,
+//! crate-owned Markdown guides, and executable Rust examples remain the source
+//! for explanatory documentation. A website or framework layer may render the
+//! generated bundle, navigation, and language presentation, but it does not
+//! author a second copy of the contract, type definitions, API reference, or
+//! package instructions. The checked-in protobuf and other fixtures are kept
+//! for compatibility tests and are not independent contract sources.
 
 use acyclic_sdk_contract_options::RawOptions;
 use prost::Message;
 
 pub mod bindings;
 pub mod credential;
+pub mod csharp_typed_facades;
+pub mod embedded_facades;
 pub mod facades;
 pub mod family_registry;
 pub mod filesystem;
@@ -18,8 +43,13 @@ pub mod inference;
 pub mod machines;
 pub mod objects;
 pub mod protocol;
+pub mod semantic_oracle;
 pub mod stream;
+pub mod swift_cpp_typed_facades;
+pub mod type_policy;
 pub mod transport;
+pub mod transport_control;
+pub mod wire_semantics;
 pub mod workers;
 
 pub use bindings::{
@@ -28,12 +58,16 @@ pub use bindings::{
     generate_rust_bindings, native_binding_boundary,
 };
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
+pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 
 pub use facades::{
     CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,
-    FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_remote_facade,
-    generate_remote_facades,
+    FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_jvm_semantic_types,
+    generate_jvm_typed_clients, generate_jvm_typed_requests, generate_jvm_typed_responses,
+    generate_remote_facade, generate_remote_facades, generate_type_policy_qualification_tests,
 };
+pub use csharp_typed_facades::{generate_csharp_type_policy_tests, generate_csharp_typed_facade, CSHARP_TYPED_PATH};
+pub use swift_cpp_typed_facades::{generate_swift_cpp_typed_facades, CPP_TYPED_PATH, SWIFT_TYPED_PATH};
 pub use family_registry::{
     FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,
     explicit_http_family_views, family_view, native_method_boundaries_for_family,
@@ -50,10 +84,26 @@ pub use inference::{INFERENCE, inference_descriptor, inference_proto};
 pub use machines::{MACHINES, machines_descriptor, machines_proto};
 pub use objects::{OBJECTS_V2, objects_descriptor, objects_proto};
 pub use stream::{STREAM, STREAM_ROUTES, STREAM_SERVICE, stream_descriptor, stream_proto};
+pub use type_policy::{
+    FIELD_SEMANTIC_TYPES, MACHINE_EVENT_PAGE_LIMIT_MAX, MACHINE_PAGE_LIMIT_MAX,
+    OBJECTS_MAX_MULTIPART_ITEMS, STREAM_MAX_COMMAND_BYTES, STREAM_MAX_RECORD_BYTES,
+    PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES,
+    FieldSemanticType, PublicFieldBinding, PublicFieldDirection,
+    OperationRule, ResolvedRequestField, ResolvedRpcMethod, ResolvedValidationConstraint,
+    SemanticRule, SemanticType, TypePolicyLanguage, TypeProjectionProfile,
+    WIRE_UNION_VARIANTS, WireUnionVariant, WireValueKind, field_semantic_type, semantic_type,
+    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, type_projection_profile,
+};
 pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
     TransportKind, TransportOption, TransportRequirements, TransportSelection,
     TransportSelectionError, TransportSelectionRequest, select_transport, select_transport_by_name,
+};
+pub use wire_semantics::{
+    compare_family_rpc_message, compare_message, compare_message_with_options, family_rpc_streaming,
+    compare_rpc_message, compare_rpc_message_with_options, CompareOptions, FloatPolicy,
+    rpc_streaming, RpcDirection, RpcSemanticError, RpcStreaming, SemanticMismatch,
+    UnknownFieldPolicy,
 };
 pub use workers::{WORKERS, WORKERS_ROUTES, WORKERS_SERVICE, workers_descriptor, workers_proto};
 
