@@ -3,7 +3,15 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Harness, NativeContracts, TaskDefinition, type AgentId } from "../src/index.js";
 import { create } from "@bufbuild/protobuf";
-import { MemoryObjectsV2, CreateBucketRequestSchema, DeleteObjectRequestSchema, GetObjectRequestSchema } from "@acyclic-labs/objects/v2";
+import {
+  MemoryObjectsV2,
+  CreateBucketRequestSchema,
+  MutationIdentitySchema,
+  DeleteObjectRequestSchema,
+  GetObjectRequestSchema,
+  makeRustOwnedIdempotencyKeyText,
+  makeRustOwnedObjectKey,
+} from "@acyclic-labs/objects/v2";
 import { ObjectContentStore, type ObjectVolumeRef } from "../src/objects.js";
 
 const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
@@ -13,7 +21,13 @@ const reader = "11111111-1111-1111-1111-111111111111" as AgentId;
 
 test("Objects content is content-addressed, owner-written, and delegably read", async () => {
   const objects = await MemoryObjectsV2.create();
-  const bucket = await objects.createBucket(create(CreateBucketRequestSchema, { name: "harness-objects-test" }));
+  const bucket = await objects.createBucket({
+    ...create(CreateBucketRequestSchema, { name: "harness-objects-test" }),
+    mutation: {
+      ...create(MutationIdentitySchema, { idempotencyKey: "harness-objects-create" }),
+      idempotencyKey: makeRustOwnedIdempotencyKeyText("harness-objects-create"),
+    },
+  });
   const volume: ObjectVolumeRef = {
     provider: { namespace: "local", family: "objects", version: "2" },
     id: bucket.bucket!.name, class: "agent_private", owner: { kind: "agent", id: owner },
@@ -49,9 +63,16 @@ test("Objects content is content-addressed, owner-written, and delegably read", 
 
   const deleted = await store.stage("upload-collected", "notes/collected.txt", new Uint8Array([2]), "text/plain", "collected.txt");
   const deletedKey = `${authority.volumeStorageName(volume)}/${deleted.path}/@content/${deleted.version}`;
-  await objects.delete(create(DeleteObjectRequestSchema, { bucket: bucket.bucket, objectKey: deletedKey, mutation: { idempotencyKey: "fixture-collect" } }));
+  await objects.delete(create(DeleteObjectRequestSchema, {
+    bucket: bucket.bucket,
+    objectKey: makeRustOwnedObjectKey(deletedKey),
+    mutation: { idempotencyKey: makeRustOwnedIdempotencyKeyText("fixture-collect") },
+  }));
   await expect(store.stage("upload-collected", "notes/collected.txt", new Uint8Array([2]), "text/plain", "collected.txt")).rejects.toThrow();
-  await expect(objects.get(create(GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: deletedKey }), 1n)).rejects.toThrow();
+  await expect(objects.get({
+    ...create(GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: deletedKey }),
+    objectKey: makeRustOwnedObjectKey(deletedKey),
+  }, 1n)).rejects.toThrow();
   const manifestBytes = new TextEncoder().encode(JSON.stringify([{ file, label: null }]));
   const manifest = await store.stage("manifest-1", "lists/one.json", manifestBytes,
     "application/vnd.acyclic.harness.attachments+json", "one.json");
