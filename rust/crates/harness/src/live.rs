@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 use tokio::{
-    sync::{Semaphore, oneshot},
+    sync::Semaphore,
     task::{AbortHandle, JoinHandle},
 };
 
@@ -118,10 +118,21 @@ impl TaskGroup {
             id,
             group: Arc::clone(&self.state),
         };
-        let (start, admitted) = oneshot::channel();
+        // Check and register while holding the same lock used by `cancel`.
+        // A closed group never creates a rejected worker, and cancellation
+        // cannot observe a spawned task before its abort handle is registered.
+        let mut admission = self
+            .state
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if admission.closed {
+            return Admission::Rejected {
+                reason: "task group is closed".into(),
+            };
+        }
         let join = tokio::spawn(async move {
             let _guard = guard;
-            let _ = admitted.await;
             match semaphore.acquire_owned().await {
                 Ok(_permit) => Outcome::Succeeded(future.await),
                 Err(_) => Outcome::Failed {
@@ -129,21 +140,7 @@ impl TaskGroup {
                 },
             }
         });
-        {
-            let mut admission = self
-                .state
-                .admission
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if admission.closed {
-                join.abort();
-                return Admission::Rejected {
-                    reason: "task group is closed".into(),
-                };
-            }
-            admission.active.insert(id, join.abort_handle());
-        }
-        let _ = start.send(());
+        admission.active.insert(id, join.abort_handle());
         Admission::Accepted(TaskHandle {
             id,
             join: Some(join),
@@ -425,6 +422,60 @@ mod tests {
         let handle = TaskGroup::new(1).spawn(std::future::pending::<u64>()).await;
         handle.cancel();
         assert_eq!(handle.result().await, Outcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn rejected_spawn_drops_future_before_returning() -> Result<(), Box<dyn std::error::Error>> {
+        let group = TaskGroup::new(1);
+        group.close();
+        let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
+        let guard = MarkDropped(Some(dropped));
+        let admission = group
+            .try_spawn(async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            })
+            .await;
+        assert!(matches!(admission, Admission::Rejected { .. }));
+        tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+            .await
+            .map_err(|_| "rejected spawn retained its future after returning")??;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_cancel_cannot_miss_a_registered_task()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for _ in 0..32 {
+            let group = TaskGroup::new(1);
+            let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
+            let guard = MarkDropped(Some(dropped));
+            let spawning = {
+                let group = group.clone();
+                tokio::spawn(async move {
+                    group
+                        .try_spawn(async move {
+                            let _guard = guard;
+                            std::future::pending::<()>().await;
+                        })
+                        .await
+                })
+            };
+            group.cancel();
+            match spawning.await? {
+                Admission::Accepted(handle) => {
+                    assert_eq!(handle.result().await, Outcome::Cancelled);
+                }
+                Admission::Rejected { .. } => {}
+                Admission::Indeterminate { operation_id } => {
+                    return Err(format!("unexpected indeterminate task {operation_id}").into());
+                }
+            }
+            tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+                .await
+                .map_err(|_| "concurrent cancellation missed the task future")??;
+        }
+        Ok(())
     }
 
     #[tokio::test]
