@@ -1,0 +1,31 @@
+{
+  "platform": "Windows native Rust",
+  "tests_executed": 1,
+  "source_commit": "733a118ef136ea9bace783c0a1b62eed06ea4f02",
+  "outcome": "Native recursive test executed past boundary verification and clone; failed missing swarm parent budget identity F0",
+  "suite": "recursive-default",
+  "exit": 101,
+  "artifacts": [
+    {
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95",
+      "path": "target/graphcoder-qualification/evidence/733a118ef/recursive-default/exit.txt",
+      "bytes": 5
+    },
+    {
+      "sha256": "cacf4880e39d64e3c903864ba4f5ab27eb2071ffe4197a778a28010bbe1ea88a",
+      "path": "target/graphcoder-qualification/evidence/733a118ef/recursive-default/local_model_swarm.exe",
+      "bytes": 36682240
+    },
+    {
+      "sha256": "1df52fbc64742684f23a0711d5e48c0e80f516fc327a25ede7f144b383bb31e8",
+      "path": "target/graphcoder-qualification/evidence/733a118ef/recursive-default/source.zip",
+      "bytes": 7720612
+    },
+    {
+      "sha256": "39da38caece69c6b519d6c6ee7ffd3dd0d8d3a98e0fe3f0382e6405fb8522004",
+      "path": "target/graphcoder-qualification/evidence/733a118ef/recursive-default/test.log",
+      "bytes": 13193
+    }
+  ],
+  "qualification_complete": false
+}

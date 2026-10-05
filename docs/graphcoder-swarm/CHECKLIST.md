@@ -37,7 +37,7 @@ fixtures; the real runtime trace gate remains open. Source a936347ee passes all
 test. Those focused passes do not qualify the entire matrix. Source 88b88436e
 still fails native recursive composition after boundary verification and explicit
 cleanup; the caller's boundary clone remains to be distinguished from return.
-Source 4cab6b5a1 integrates activation acknowledgement recovery, measured budgets,
+Latest source 733a118ef compiles the native recursive integration test and runs it past boundary verification and cloning without the previous stack overflow. It fails later with a missing parent budget identity, so recursive acceptance remains open. Source 06e2e597c passes all 39 qualification tooling tests with no failures or skips; this does not qualify runtime or installed artifacts. Source 4cab6b5a1 integrates activation acknowledgement recovery, measured budgets,
 and communication recovery, but fails compilation with fourteen errors and
 executes zero tests. Repair and qualification of that integration are open.
 Fresh source archives, logs, exit records, and binaries for suites that actually

@@ -1,0 +1,26 @@
+{
+  "platform": "Windows native Rust",
+  "tests_executed": 0,
+  "source_commit": "26411904b4957f82db37eec1b5d7c7bc0d9500d7",
+  "outcome": "Harness library compiled; cancellation fixture called absent bind_swarm method",
+  "suite": "integrated-check",
+  "exit": 101,
+  "artifacts": [
+    {
+      "sha256": "4079437365e4ad6774f7c554c73072af0f72843d1049e657b4e794334e871762",
+      "path": "target/graphcoder-qualification/evidence/26411904b/integrated-check/check.log",
+      "bytes": 5243
+    },
+    {
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95",
+      "path": "target/graphcoder-qualification/evidence/26411904b/integrated-check/exit.txt",
+      "bytes": 5
+    },
+    {
+      "sha256": "9956da319de9af6d97e859463094abe7ed06f1ba83d28ef8b64e0dbbb0e8fb32",
+      "path": "target/graphcoder-qualification/evidence/26411904b/integrated-check/source.zip",
+      "bytes": 7720605
+    }
+  ],
+  "qualification_complete": false
+}
