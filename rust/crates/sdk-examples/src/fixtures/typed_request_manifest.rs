@@ -13,7 +13,7 @@ use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{env, fs};
-use tonic::Request;
+use tonic::{Code, Request};
 use acyclic_sdk_contract_wire::bindings::BindingFamily;
 
 /// One encoded protobuf response frame observed from a Rust fixture stream.
@@ -49,6 +49,9 @@ pub struct TypedRequestRecord {
     pub family: String,
     /// Fully-qualified protobuf service method identity.
     pub rpc: String,
+    /// Rust scenario identity for qualification-only steps. This is omitted
+    /// for ordinary wire operations and never replaces `rpc`.
+    pub scenario_id: Option<String>,
     /// Fully-qualified protobuf input message identity.
     pub request_type: String,
     /// Canonically encoded protobuf request bytes as base64.
@@ -67,6 +70,57 @@ pub struct TypedRequestRecord {
     pub response_frames: Vec<ResponseFrameRecord>,
     /// Status of this manifest record. This describes encoding evidence only.
     pub expected_status: &'static str,
+    /// Structured Rust-owned outcome expected from the operation.
+    pub expected_outcome: ExpectedOutcome,
+}
+
+/// The semantic result a generated consumer must observe for one execution
+/// step.  The legacy `expected_status` field remains for compatibility, while
+/// this value distinguishes success, protocol errors, and stream termination.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpectedOutcome {
+    pub kind: String,
+    pub grpc_code: Option<String>,
+    pub detail: Option<String>,
+    pub terminal: Option<String>,
+}
+
+impl ExpectedOutcome {
+    fn descriptor() -> Self {
+        Self {
+            kind: "descriptor-only".to_owned(),
+            grpc_code: None,
+            detail: None,
+            terminal: None,
+        }
+    }
+
+    fn success() -> Self {
+        Self {
+            kind: "success".to_owned(),
+            grpc_code: Some("OK".to_owned()),
+            detail: None,
+            terminal: None,
+        }
+    }
+
+    fn stream_terminal(terminal: &str, grpc_code: Option<&str>) -> Self {
+        Self {
+            kind: "stream".to_owned(),
+            grpc_code: grpc_code.map(str::to_owned).or_else(|| Some("OK".to_owned())),
+            detail: None,
+            terminal: Some(terminal.to_owned()),
+        }
+    }
+
+    fn error(code: Option<&str>, detail: Option<&str>, terminal: Option<&str>) -> Self {
+        Self {
+            kind: "error".to_owned(),
+            grpc_code: code.map(str::to_owned),
+            detail: detail.map(str::to_owned),
+            terminal: terminal.map(str::to_owned),
+        }
+    }
 }
 
 const EXPECTED_STATUS: &str = "descriptor-only";
@@ -167,11 +221,12 @@ pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequ
             .get("family")
             .and_then(Value::as_str)
             .ok_or_else(|| "fixture observation family is missing".to_owned())?;
-        let rpc = object
+        let raw_rpc = object
             .get("rpc")
             .or_else(|| object.get("operation"))
             .and_then(Value::as_str)
             .ok_or_else(|| "fixture observation rpc is missing".to_owned())?;
+        let (rpc, scenario_id) = canonical_rpc(raw_rpc);
         let request = object
             .get("request")
             .and_then(Value::as_object)
@@ -197,12 +252,13 @@ pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequ
         output.push(TypedRequestRecord {
             family: family.to_owned(),
             rpc: rpc.to_owned(),
+            scenario_id,
             request_type: request_type.to_owned(),
             request_base64: request_base64.to_owned(),
             request_sha256: request_sha256.to_owned(),
-            request_frames: parse_request_frames(observation, rpc)?,
+            request_frames: parse_request_frames(observation, &rpc)?,
             expected_wire: format!("{EXPECTED_WIRE};sha256={request_sha256}"),
-            response_type: None,
+            response_type: descriptor_response_type(&rpc)?,
             response_base64: None,
             response_sha256: None,
             response_frames: Vec::new(),
@@ -211,6 +267,7 @@ pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequ
             } else {
                 "observed-status"
             },
+            expected_outcome: observation_outcome(object),
         });
     }
     if output.len() != 106 {
@@ -226,6 +283,41 @@ pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequ
         }
     }
     Ok(output)
+}
+
+fn observation_outcome(object: &serde_json::Map<String, Value>) -> ExpectedOutcome {
+    let response = object.get("response").and_then(Value::as_object);
+    if response
+        .and_then(|response| response.get("status"))
+        .and_then(Value::as_str)
+        == Some("error")
+    {
+        return ExpectedOutcome::error(
+            response
+                .and_then(|response| response.get("code"))
+                .and_then(Value::as_str),
+            response
+                .and_then(|response| response.get("details"))
+                .and_then(Value::as_str),
+            Some("error"),
+        );
+    }
+    if object
+        .get("response_frames")
+        .and_then(Value::as_array)
+        .is_some_and(|frames| frames.len() > 1)
+    {
+        return ExpectedOutcome::stream_terminal("eof", None);
+    }
+    ExpectedOutcome::success()
+}
+
+fn canonical_rpc(raw_rpc: &str) -> (String, Option<String>) {
+    const NEGATIVE_SUFFIX: &str = "/after-completion";
+    raw_rpc
+        .strip_suffix(NEGATIVE_SUFFIX)
+        .map(|rpc| (rpc.to_owned(), Some(raw_rpc.to_owned())))
+        .unwrap_or_else(|| (raw_rpc.to_owned(), None))
 }
 
 fn parse_request_frames(
@@ -475,11 +567,15 @@ fn machine_observation_record(
         "machines", observation.rpc, observation.request_type,
         &observation.request_bytes, "rust-fixture-executed",
     );
-    record.response_type = Some(observation.response_type.to_owned());
+    let response_type = descriptor_response_type(&record.rpc)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| observation.response_type.to_owned());
+    record.response_type = Some(response_type.clone());
     record.response_frames = observation.response_frames.into_iter().enumerate()
         .map(|(sequence, bytes)| ResponseFrameRecord {
             sequence,
-            response_type: observation.response_type.to_owned(),
+            response_type: response_type.clone(),
             response_base64: base64(&bytes),
             response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
         }).collect();
@@ -628,6 +724,11 @@ fn inference_records_from_transcript(
         record.response_sha256 = Some(response_sha256.to_owned());
         record.response_frames = response_frames;
         record.expected_status = "rust-fixture-executed";
+        record.expected_outcome = if record.response_frames.len() > 1 {
+            ExpectedOutcome::stream_terminal("eof", None)
+        } else {
+            ExpectedOutcome::success()
+        };
         output.push(record);
     }
     ensure_unique(&output)?;
@@ -862,13 +963,18 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         .await
         .map_err(|e| format!("Stream Follow: {e}"))?
         .into_inner();
-    let follow_status =
+    let follow_outcome =
         match tokio::time::timeout(std::time::Duration::from_millis(10), follow_stream.next())
             .await
         {
-            Ok(Some(Ok(_))) => "observed-frame",
-            Ok(Some(Err(_))) => "observed-status",
-            Ok(None) | Err(_) => "observed-status",
+            Ok(Some(Ok(_))) => ExpectedOutcome::stream_terminal("frame", None),
+            Ok(Some(Err(status))) => ExpectedOutcome::error(
+                Some(grpc_code_name(status.code())),
+                Some(status.message()),
+                Some("error"),
+            ),
+            Ok(None) => ExpectedOutcome::stream_terminal("eof", None),
+            Err(_) => ExpectedOutcome::stream_terminal("timeout", Some("DEADLINE_EXCEEDED")),
         };
 
     let children = wire::ChildrenRequest {
@@ -935,6 +1041,15 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         .map_err(|e| format!("Stream ReadCommit: {e}"))?
         .into_inner();
 
+    let mut follow_record = record_from_bytes(
+        "stream",
+        "acyclic.stream.v2.StreamService/Follow",
+        "acyclic.stream.v2.FollowRequest",
+        &follow.encode_to_vec(),
+        "rust-fixture-executed",
+    );
+    follow_record.expected_outcome = follow_outcome;
+
     let output = vec![
         with_response(
             record_from_bytes(
@@ -991,13 +1106,7 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
             "acyclic.stream.v2.ReadResponse",
             &read_frames,
         ),
-        record_from_bytes(
-            "stream",
-            "acyclic.stream.v2.StreamService/Follow",
-            "acyclic.stream.v2.FollowRequest",
-            &follow.encode_to_vec(),
-            follow_status,
-        ),
+        follow_record,
         with_frames(
             record_from_bytes(
                 "stream",
@@ -1118,27 +1227,28 @@ fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String>
         .get("family")
         .and_then(Value::as_str)
         .ok_or_else(|| "fixture observation family is missing".to_owned())?;
-    let rpc = object
+    let raw_rpc = object
         .get("rpc")
         .or_else(|| object.get("operation"))
         .and_then(Value::as_str)
         .ok_or_else(|| "fixture observation rpc is missing".to_owned())?;
+    let (rpc, scenario_id) = canonical_rpc(raw_rpc);
     let request = object
         .get("request")
         .and_then(Value::as_object)
-        .ok_or_else(|| format!("{rpc} request observation is missing"))?;
+            .ok_or_else(|| format!("{raw_rpc} request observation is missing"))?;
     let request_type = request
         .get("type")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("{rpc} request type is missing"))?;
+            .ok_or_else(|| format!("{raw_rpc} request type is missing"))?;
     let request_base64 = request
         .get("bytes_base64")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("{rpc} request bytes_base64 is missing"))?;
+            .ok_or_else(|| format!("{raw_rpc} request bytes_base64 is missing"))?;
     let request_sha256 = request
         .get("sha256")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("{rpc} request sha256 is missing"))?;
+            .ok_or_else(|| format!("{raw_rpc} request sha256 is missing"))?;
     let request_frames = object
         .get("request_frames")
         .and_then(Value::as_array)
@@ -1187,10 +1297,11 @@ fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String>
         "observed-ok"
     };
     let response_object = object.get("response").and_then(Value::as_object);
-    let response_type = response_object
+    let observed_response_type = response_object
         .and_then(|response| response.get("type"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let response_type = descriptor_response_type(&rpc)?.or(observed_response_type);
     let response_base64 = response_object
         .and_then(|response| response.get("bytes_base64"))
         .and_then(Value::as_str)
@@ -1210,16 +1321,18 @@ fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String>
                 let frame = frame
                     .as_object()
                     .ok_or_else(|| format!("{rpc} response frame is not an object"))?;
+                let frame_response_type = response_type.clone().or_else(|| {
+                    frame
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                }).ok_or_else(|| format!("{rpc} response frame type is missing"))?;
                 Ok(ResponseFrameRecord {
                     sequence: frame
                         .get("sequence")
                         .and_then(Value::as_u64)
                         .map_or(sequence, |value| value as usize),
-                    response_type: frame
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| format!("{rpc} response frame type is missing"))?
-                        .to_owned(),
+                    response_type: frame_response_type,
                     response_base64: frame
                         .get("bytes_base64")
                         .and_then(Value::as_str)
@@ -1247,8 +1360,9 @@ fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String>
         }
     };
     Ok(TypedRequestRecord {
-        family: family.to_owned(),
-        rpc: rpc.to_owned(),
+            family: family.to_owned(),
+            rpc: rpc.to_owned(),
+            scenario_id,
         request_type: request_type.to_owned(),
         request_base64: request_base64.to_owned(),
         request_sha256: request_sha256.to_owned(),
@@ -1259,6 +1373,7 @@ fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String>
         response_sha256,
         response_frames,
         expected_status,
+        expected_outcome: observation_outcome(object),
     })
 }
 
@@ -1273,16 +1388,73 @@ fn record_from_bytes(
     TypedRequestRecord {
         family: family.to_owned(),
         rpc: rpc.to_owned(),
+        scenario_id: None,
         request_type: request_type.to_owned(),
         request_base64: base64(bytes),
         request_sha256: request_sha256.clone(),
         request_frames: Vec::new(),
         expected_wire: format!("canonical-protobuf-v3;sha256={request_sha256}"),
-        response_type: None,
+        response_type: descriptor_response_type(rpc).ok().flatten(),
         response_base64: None,
         response_sha256: None,
         response_frames: Vec::new(),
         expected_status: status,
+        expected_outcome: outcome_for_status(status),
+    }
+}
+
+fn descriptor_response_type(rpc: &str) -> Result<Option<String>, String> {
+    let descriptors: Vec<Vec<u8>> = vec![
+        acyclic_actors::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_workers::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_objects::v2::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_stream::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_fs::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_harness::FILE_DESCRIPTOR_SET.to_vec(),
+        BindingFamily::Inference.model_descriptor(),
+        acyclic_machines::FILE_DESCRIPTOR_SET.to_vec(),
+    ];
+    for descriptor in &descriptors {
+        let pool = DescriptorPool::decode(descriptor.as_slice())
+            .map_err(|error| format!("decode descriptor set for {rpc}: {error}"))?;
+        for service in pool.services() {
+            for method in service.methods() {
+                if format!("{}/{}", service.full_name(), method.name()) == rpc {
+                    return Ok(Some(method.output().full_name().to_owned()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn outcome_for_status(status: &str) -> ExpectedOutcome {
+    match status {
+        "descriptor-only" => ExpectedOutcome::descriptor(),
+        "observed-status" => ExpectedOutcome::error(None, None, Some("error")),
+        _ => ExpectedOutcome::success(),
+    }
+}
+
+fn grpc_code_name(code: Code) -> &'static str {
+    match code {
+        Code::Ok => "OK",
+        Code::Cancelled => "CANCELLED",
+        Code::Unknown => "UNKNOWN",
+        Code::InvalidArgument => "INVALID_ARGUMENT",
+        Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        Code::NotFound => "NOT_FOUND",
+        Code::AlreadyExists => "ALREADY_EXISTS",
+        Code::PermissionDenied => "PERMISSION_DENIED",
+        Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+        Code::FailedPrecondition => "FAILED_PRECONDITION",
+        Code::Aborted => "ABORTED",
+        Code::OutOfRange => "OUT_OF_RANGE",
+        Code::Unimplemented => "UNIMPLEMENTED",
+        Code::Internal => "INTERNAL",
+        Code::Unavailable => "UNAVAILABLE",
+        Code::DataLoss => "DATA_LOSS",
+        Code::Unauthenticated => "UNAUTHENTICATED",
     }
 }
 
@@ -1292,15 +1464,20 @@ fn with_response<M: Message>(
     response: &M,
 ) -> TypedRequestRecord {
     let bytes = response.encode_to_vec();
-    record.response_type = Some(response_type.to_owned());
+    let resolved_response_type = descriptor_response_type(&record.rpc)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| response_type.to_owned());
+    record.response_type = Some(resolved_response_type.clone());
     record.response_base64 = Some(base64(&bytes));
     record.response_sha256 = Some(format!("sha256:{}", hex(&Sha256::digest(&bytes))));
     record.response_frames = vec![ResponseFrameRecord {
         sequence: 0,
-        response_type: response_type.to_owned(),
+        response_type: resolved_response_type,
         response_base64: base64(&bytes),
         response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
     }];
+    record.expected_outcome = ExpectedOutcome::success();
     record
 }
 
@@ -1317,6 +1494,33 @@ fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String>
                 "{} has an unrecognized observed status {}",
                 record.rpc, record.expected_status
             ));
+        }
+        match record.expected_outcome.kind.as_str() {
+            "success" => {
+                if record.expected_outcome.grpc_code.as_deref() != Some("OK")
+                    || record.expected_outcome.detail.is_some()
+                    || record.expected_outcome.terminal.is_some()
+                {
+                    return Err(format!("{} has an invalid success outcome", record.rpc));
+                }
+            }
+            "stream" => {
+                if record.expected_outcome.grpc_code.is_none()
+                    || record.expected_outcome.terminal.is_none()
+                {
+                    return Err(format!("{} has an incomplete stream outcome", record.rpc));
+                }
+            }
+            "error" => {
+                if record.expected_outcome.grpc_code.is_none()
+                    || record.expected_outcome.terminal.as_deref() != Some("error")
+                {
+                    return Err(format!("{} has an incomplete error outcome", record.rpc));
+                }
+            }
+            other => {
+                return Err(format!("{} has an unrecognized outcome {other}", record.rpc));
+            }
         }
         for (index, frame) in record.request_frames.iter().enumerate() {
             if frame.sequence != index {
@@ -1368,9 +1572,12 @@ fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String>
             }
             continue;
         };
-        let response_base64 = record.response_base64.as_deref().ok_or_else(|| {
-            format!("{} has a response type but no response bytes", record.rpc)
-        })?;
+        let Some(response_base64) = record.response_base64.as_deref() else {
+            if record.expected_outcome.kind == "error" && record.response_frames.is_empty() {
+                continue;
+            }
+            return Err(format!("{} has a response type but no response bytes", record.rpc));
+        };
         let response_sha256 = record.response_sha256.as_deref().ok_or_else(|| {
             format!("{} has response bytes but no response digest", record.rpc)
         })?;
@@ -1430,7 +1637,11 @@ fn with_frames<M: Message>(
     responses: &[M],
 ) -> TypedRequestRecord {
     let frames = responses.iter().map(Message::encode_to_vec).collect::<Vec<_>>();
-    record.response_type = Some(response_type.to_owned());
+    let resolved_response_type = descriptor_response_type(&record.rpc)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| response_type.to_owned());
+    record.response_type = Some(resolved_response_type.clone());
     record.response_base64 = frames.first().map(|bytes| base64(bytes));
     record.response_sha256 = frames
         .first()
@@ -1439,11 +1650,12 @@ fn with_frames<M: Message>(
         .into_iter()
         .enumerate().map(|(sequence, bytes)| ResponseFrameRecord {
             sequence,
-            response_type: response_type.to_owned(),
+            response_type: resolved_response_type.clone(),
             response_base64: base64(&bytes),
             response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
         })
         .collect();
+    record.expected_outcome = ExpectedOutcome::stream_terminal("eof", None);
     record
 }
 
@@ -1475,6 +1687,7 @@ fn append_pool(
                 output.push(TypedRequestRecord {
                     family: family.to_owned(),
                     rpc: format!("{}/{}", service.full_name(), method.name()),
+                    scenario_id: None,
                     request_type: input.full_name().to_owned(),
                     request_base64: base64(&bytes),
                     request_sha256: request_sha256.clone(),
@@ -1485,6 +1698,7 @@ fn append_pool(
                     response_sha256: None,
             response_frames: Vec::new(),
                     expected_status: EXPECTED_STATUS,
+                    expected_outcome: ExpectedOutcome::descriptor(),
                 });
             }
         }
@@ -1496,6 +1710,7 @@ fn record_json(record: &TypedRequestRecord) -> Value {
     json!({
         "family": record.family,
         "rpc": record.rpc,
+        "scenario_id": record.scenario_id,
         "request_type": record.request_type,
         "request_base64": record.request_base64,
         "request_sha256": record.request_sha256,
@@ -1516,7 +1731,249 @@ fn record_json(record: &TypedRequestRecord) -> Value {
             "response_sha256": frame.response_sha256,
         })).collect::<Vec<_>>(),
         "expected_status": record.expected_status,
+        "expected_outcome": {
+            "kind": record.expected_outcome.kind,
+            "grpc_code": record.expected_outcome.grpc_code,
+            "detail": record.expected_outcome.detail,
+            "terminal": record.expected_outcome.terminal,
+        },
     })
+}
+
+pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
+    let steps = manifest
+        .get("execution_plan")
+        .and_then(Value::as_array)
+        .or_else(|| manifest.get("records").and_then(Value::as_array))
+        .ok_or("Rust manifest has no execution plan or records")?;
+    if steps.is_empty() {
+        return Err("Rust manifest execution plan is empty".to_owned());
+    }
+
+    let mut methods = Vec::with_capacity(steps.len());
+    for step in steps {
+        let rpc = step
+            .get("rpc")
+            .and_then(Value::as_str)
+            .ok_or("Rust manifest step has no rpc")?;
+        methods.push((rpc.to_owned(), descriptor_method(rpc)?));
+    }
+
+    let mut imports = std::collections::BTreeMap::<String, String>::new();
+    let mut services = std::collections::BTreeSet::<String>::new();
+    for (_, method) in &methods {
+        let module = haskell_module_for_service(method.0.as_str())?;
+        let alias = haskell_module_alias(&module);
+        imports.insert(module, alias.to_owned());
+        services.insert(format!("{alias}.{}", haskell_last(method.0.as_str())));
+        for message in [method.1.as_str(), method.2.as_str()] {
+            if message.starts_with("acyclic.protocol.v1.") {
+                imports.insert(
+                    "Proto.Protocol.V1.Protocol".to_owned(),
+                    "Protocol".to_owned(),
+                );
+            }
+        }
+    }
+
+    let mut lines = vec![
+        "{-# LANGUAGE DataKinds #-}".to_owned(),
+        "{-# LANGUAGE ImportQualifiedPost #-}".to_owned(),
+        "{-# LANGUAGE OverloadedStrings #-}".to_owned(),
+        "{-# LANGUAGE ScopedTypeVariables #-}".to_owned(),
+        "{-# LANGUAGE TypeApplications #-}".to_owned(),
+        "{-# LANGUAGE TypeFamilies #-}".to_owned(),
+        "{-# LANGUAGE FlexibleInstances #-}".to_owned(),
+        "{-# LANGUAGE MultiParamTypeClasses #-}".to_owned(),
+        "module Main where".to_owned(),
+        String::new(),
+        "-- Generated by the Rust typed-request-manifest authority; do not edit.".to_owned(),
+        format!("-- Rust execution-plan steps: {}", steps.len()),
+        "import qualified Data.ByteString as BS".to_owned(),
+        "import Control.Exception (SomeException, try)".to_owned(),
+        "import Control.Monad (when)".to_owned(),
+        "import Data.ProtoLens.Encoding (decodeMessage, encodeMessage)".to_owned(),
+        "import Network.GRPC.Client qualified as Client".to_owned(),
+        "import Network.GRPC.Client.StreamType.IO qualified as Typed".to_owned(),
+        "import Network.GRPC.Common".to_owned(),
+        "import Network.GRPC.Common.Protobuf (Proto(..), Protobuf)".to_owned(),
+    ];
+    for (module, alias) in &imports {
+        lines.push(format!("import qualified {module} as {alias}"));
+    }
+    lines.push(String::new());
+    for service in &services {
+        lines.push(format!("type instance RequestMetadata (Protobuf {service} meth) = NoMetadata"));
+        lines.push(format!("type instance ResponseInitialMetadata (Protobuf {service} meth) = NoMetadata"));
+        lines.push(format!("type instance ResponseTrailingMetadata (Protobuf {service} meth) = NoMetadata"));
+    }
+    lines.extend([
+        String::new(),
+        "collect :: Monad m => m (NextElem a) -> [a] -> m [a]".to_owned(),
+        "collect next acc = do".to_owned(),
+        "  item <- next".to_owned(),
+        "  case item of".to_owned(),
+        "    NoNextElem -> pure (reverse acc)".to_owned(),
+        "    NextElem value -> collect next (value : acc)".to_owned(),
+        String::new(),
+        "requireCall :: String -> IO a -> IO a".to_owned(),
+        "requireCall name action = do".to_owned(),
+        "  result <- try action".to_owned(),
+        "  case result of".to_owned(),
+        "    Left (errorValue :: SomeException) -> fail (name ++ \" unexpected RPC failure: \" ++ show errorValue)".to_owned(),
+        "    Right value -> pure value".to_owned(),
+        String::new(),
+        "expect :: String -> BS.ByteString -> BS.ByteString -> IO ()".to_owned(),
+        "expect name wanted actual = when (wanted /= actual) (fail (name ++ \" response bytes differ\"))".to_owned(),
+        String::new(),
+        "expectFrames :: String -> [BS.ByteString] -> [BS.ByteString] -> IO ()".to_owned(),
+        "expectFrames name wanted actual = when (wanted /= actual) (fail (name ++ \" response frames differ\"))".to_owned(),
+        String::new(),
+        "reconnectWait :: Int -> IO ()".to_owned(),
+        "reconnectWait _ = pure ()".to_owned(),
+    ]);
+    for (index, (_, method)) in methods.iter().enumerate() {
+        let module = haskell_module_for_service(method.0.as_str())?;
+        let alias = haskell_module_alias(&module);
+        let service = format!("{alias}.{}", haskell_last(method.0.as_str()));
+        lines.push(format!("type Rpc{index} = Protobuf {service} \"{}\"", haskell_lower_first(haskell_last(method.3.as_str()))));
+    }
+    lines.extend([
+        String::new(),
+        "main :: IO ()".to_owned(),
+        "main = do".to_owned(),
+        "  let address = Client.Address \"127.0.0.1\" 50055 Nothing".to_owned(),
+        "      server = Client.ServerInsecure address".to_owned(),
+        "      params = def { Client.connReconnectPolicy = Client.exponentialBackoff reconnectWait 1.5 (0.05, 0.1) 3 }".to_owned(),
+        "  Client.withConnection params server $ \\conn -> do".to_owned(),
+    ]);
+
+    for (index, step) in steps.iter().enumerate() {
+        let rpc = step.get("rpc").and_then(Value::as_str).ok_or("Rust manifest step has no rpc")?;
+        let (_, method) = &methods[index];
+        let request_type = step.get("request_type").and_then(Value::as_str).unwrap_or(method.1.as_str());
+        let request_alias = if request_type.starts_with("acyclic.protocol.v1.") { "Protocol" } else { haskell_module_alias(&haskell_module_for_service(method.0.as_str())?) };
+        let request_name = haskell_last(request_type);
+        let bytes = step.get("request_base64").and_then(Value::as_str).unwrap_or("");
+        lines.push(format!("    putStrLn \"CALL:{rpc}\""));
+        lines.push(format!("    request{index} <- either (fail . (\"{rpc} request decode: \" ++)) pure (decodeMessage {} :: Either String {request_alias}.{request_name})", haskell_bytes(bytes)?));
+
+        let is_client = method.5;
+        let is_server = method.6;
+        let response_type = step.get("response_type").and_then(Value::as_str).unwrap_or(method.2.as_str());
+        let response_alias = if response_type.starts_with("acyclic.protocol.v1.") { "Protocol" } else { haskell_module_alias(&haskell_module_for_service(method.0.as_str())?) };
+        let expected_frames = step.get("response_frames").and_then(Value::as_array).cloned().unwrap_or_default();
+        if is_client {
+            let frames = step.get("request_frames").and_then(Value::as_array).cloned().unwrap_or_default();
+            let mut sends = Vec::new();
+            if frames.is_empty() {
+                sends.push(format!("send (NextElem (Proto request{index}))"));
+            } else {
+                for (frame_index, frame) in frames.iter().enumerate() {
+                    let frame_bytes = frame.get("bytes_base64").and_then(Value::as_str).unwrap_or("");
+                    let frame_type = frame.get("type").and_then(Value::as_str).unwrap_or(request_type);
+                    if frame_index == 0 {
+                        sends.push(format!("send (NextElem (Proto request{index}))"));
+                    } else {
+                        let frame_name = format!("request{index}f{frame_index}");
+                        lines.push(format!("    {frame_name} <- either (fail . (\"{rpc} frame decode: \" ++)) pure (decodeMessage {} :: Either String {request_alias}.{})", haskell_bytes(frame_bytes)?, haskell_last(frame_type)));
+                        sends.push(format!("send (NextElem (Proto {frame_name}))"));
+                    }
+                }
+            }
+            sends.push("send NoNextElem".to_owned());
+            lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.clientStreaming conn (Client.rpc @Rpc{index}) (\\send -> {} >> pure ()))", sends.join(" >> "))); 
+            let expected = expected_frames.first().and_then(|frame| frame.get("response_base64")).and_then(Value::as_str).or_else(|| step.get("response_base64").and_then(Value::as_str)).unwrap_or("");
+            lines.push(format!("    let actual{index} = case response{index} of (Proto value, _) -> encodeMessage value"));
+            lines.push(format!("    expect \"{rpc}\" {} actual{index}", haskell_bytes(expected)?));
+        } else if is_server {
+            let expected = expected_frames.iter().map(|frame| frame.get("response_base64").and_then(Value::as_str).unwrap_or("")).map(haskell_bytes).collect::<Result<Vec<_>, _>>()?;
+            lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.serverStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}) (\\next -> collect next []))"));
+            lines.push(format!("    let actual{index} = map (\\(Proto value) -> encodeMessage value) response{index}"));
+            lines.push(format!("    expectFrames \"{rpc}\" [{}] actual{index}", expected.join(", ")));
+        } else {
+            lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.nonStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}))"));
+            lines.push(format!("    let actual{index} = case response{index} of Proto value -> encodeMessage value"));
+            let expected = expected_frames.first().and_then(|frame| frame.get("response_base64")).and_then(Value::as_str).or_else(|| step.get("response_base64").and_then(Value::as_str)).unwrap_or("");
+            lines.push(format!("    expect \"{rpc}\" {} actual{index}", haskell_bytes(expected)?));
+        }
+    }
+    lines.push(format!("    putStrLn \"PASS:rust-canonical-runtime={}\"", steps.len()));
+    Ok(lines.join("\n") + "\n")
+}
+
+// (module, request, response, service method, lower-case method, client-streaming, server-streaming)
+type HaskellMethod = (String, String, String, String, String, bool, bool);
+
+fn descriptor_method(rpc: &str) -> Result<HaskellMethod, String> {
+    let (service_name, method_name) = rpc.rsplit_once('/').ok_or_else(|| format!("RPC has no method separator: {rpc}"))?;
+    for (_, descriptor_bytes) in descriptor_sets() {
+        let pool = DescriptorPool::decode(descriptor_bytes.as_slice()).map_err(|error| format!("decode descriptor set: {error}"))?;
+        for service in pool.services() {
+            if service.full_name() == service_name {
+                if let Some(method) = service.methods().find(|candidate| candidate.name() == method_name) {
+                    return Ok((service_name.to_owned(), method.input().full_name().to_owned(), method.output().full_name().to_owned(), method_name.to_owned(), haskell_lower_first(method_name), method.is_client_streaming(), method.is_server_streaming()));
+                }
+            }
+        }
+    }
+    Err(format!("Rust descriptors do not contain {rpc}"))
+}
+
+fn descriptor_sets() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("actors", acyclic_actors::FILE_DESCRIPTOR_SET.to_vec()),
+        ("workers", acyclic_workers::FILE_DESCRIPTOR_SET.to_vec()),
+        ("objects", acyclic_objects::v2::FILE_DESCRIPTOR_SET.to_vec()),
+        ("stream", acyclic_stream::FILE_DESCRIPTOR_SET.to_vec()),
+        ("filesystem", acyclic_fs::FILE_DESCRIPTOR_SET.to_vec()),
+        ("harness", acyclic_harness::FILE_DESCRIPTOR_SET.to_vec()),
+        ("inference", BindingFamily::Inference.model_descriptor()),
+        ("machines", acyclic_machines::FILE_DESCRIPTOR_SET.to_vec()),
+    ]
+}
+
+fn haskell_module_for_service(service: &str) -> Result<String, String> {
+    let module = if service.starts_with("acyclic.actors.") { "Proto.Actors.V1.Actors" }
+        else if service.starts_with("acyclic.filesystem.") { "Proto.Filesystem.V2.Filesystem" }
+        else if service.starts_with("acyclic.harness.") { "Proto.Harness.V2.Harness" }
+        else if service.starts_with("inference.customer.") { "Proto.Inference.V1.Inference" }
+        else if service.starts_with("acyclic.machines.") { "Proto.Machines.V1.Machines" }
+        else if service.starts_with("acyclic.objects.") { "Proto.Objects.V2.Objects" }
+        else if service.starts_with("acyclic.stream.") { "Proto.Stream.V2.Stream" }
+        else if service.starts_with("acyclic.workers.") { "Proto.Workers.V1.Workers" }
+        else { return Err(format!("no Rust-owned Haskell module mapping for {service}")); };
+    Ok(module.to_owned())
+}
+
+fn haskell_module_alias(module: &str) -> &'static str {
+    match module {
+        "Proto.Actors.V1.Actors" => "Actors",
+        "Proto.Filesystem.V2.Filesystem" => "Filesystem",
+        "Proto.Harness.V2.Harness" => "Harness",
+        "Proto.Inference.V1.Inference" => "Inference",
+        "Proto.Machines.V1.Machines" => "Machines",
+        "Proto.Objects.V2.Objects" => "ObjectsV2",
+        "Proto.Stream.V2.Stream" => "Stream",
+        "Proto.Workers.V1.Workers" => "Workers",
+        "Proto.Protocol.V1.Protocol" => "Protocol",
+        _ => "Generated",
+    }
+}
+
+fn haskell_last(value: &str) -> &str { value.rsplit('.').next().unwrap_or(value) }
+
+fn haskell_lower_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn haskell_bytes(encoded: &str) -> Result<String, String> {
+    let bytes = decode_base64(encoded)?;
+    Ok(format!("BS.pack [{}]", bytes.iter().map(|byte| byte.to_string()).collect::<Vec<_>>().join(",")))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1591,7 +2048,7 @@ fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::{
         actual_execution_records, base64, records, unique_inventory, validate_actual_records,
-        ResponseFrameRecord, TypedRequestRecord,
+        ExpectedOutcome, ResponseFrameRecord, TypedRequestRecord,
     };
 
     fn observed_record() -> TypedRequestRecord {
@@ -1600,6 +2057,7 @@ mod tests {
         TypedRequestRecord {
             family: "actors".to_owned(),
             rpc: "acyclic.actors.v1.ActorsService/CreateActor".to_owned(),
+            scenario_id: None,
             request_type: "acyclic.actors.v1.CreateActorRequest".to_owned(),
             request_base64: encoded.clone(),
             request_sha256: digest.to_owned(),
@@ -1615,6 +2073,7 @@ mod tests {
                 response_sha256: digest.to_owned(),
             }],
             expected_status: "rust-fixture-executed",
+            expected_outcome: ExpectedOutcome::success(),
         }
     }
 
@@ -1703,13 +2162,16 @@ mod tests {
                 .iter()
                 .map(|record| {
                     format!(
-                        "{}|{}|{}|{}|{}|{}",
+                        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
                         record.family,
                         record.rpc,
                         record.request_type,
                         record.request_frames.len(),
                         record.response_frames.len(),
                         record.expected_status,
+                        record.expected_outcome.kind,
+                        record.expected_outcome.grpc_code.as_deref().unwrap_or(""),
+                        record.expected_outcome.terminal.as_deref().unwrap_or(""),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1731,6 +2193,20 @@ mod tests {
                 .count(),
             3
         );
+        let negative_steps = first
+            .iter()
+            .filter(|record| record.scenario_id.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(negative_steps.len(), 2);
+        assert!(negative_steps.iter().all(|record| {
+            record.rpc == "acyclic.objects.v2.ObjectsService/PutObject"
+                || record.rpc == "acyclic.objects.v2.MultipartService/UploadPart"
+        }));
+        assert!(negative_steps.iter().all(|record| {
+            record.expected_outcome.kind == "error"
+                && record.expected_outcome.grpc_code.as_deref() == Some("INVALID_ARGUMENT")
+                && record.expected_outcome.terminal.as_deref() == Some("error")
+        }));
     }
 }
 
