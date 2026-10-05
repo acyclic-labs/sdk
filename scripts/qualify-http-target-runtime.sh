@@ -141,7 +141,7 @@ EOF
       transport_dir="$output_root/nim-transport"
       mkdir -p "$transport_dir"
       cat >"$transport_dir/qualification.nim" <<'EOF'
-import httpclient, options, os
+import httpclient, options
 import acyclic_actors_nim
 import acyclic_actors_nim/apis/api_default
 import acyclic_actors_nim/models/model_acyclic_actors_v1_create_actor_request
@@ -158,8 +158,8 @@ let request = AcyclicActorsV1CreateActorRequest(
     handlerTimeoutMillis: some("1000"),
     memoryBytes: some("1048576"))))
 let (decoded, response) = createActor(client, request)
-if response.code.int < 200 or response.code.int >= 300:
-  quit("Rust fixture rejected generated Nim request: " & $response.code, 1)
+if response.code != Http200:
+  quit("Rust fixture rejected generated Nim request: " & $response.status, 1)
 if decoded.isNone:
   quit("generated Nim client did not decode the Rust fixture response", 1)
 EOF
