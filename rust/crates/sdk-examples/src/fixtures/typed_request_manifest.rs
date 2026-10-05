@@ -278,16 +278,21 @@ pub fn manifest_json_from_observations(observations: &[Value]) -> Result<Value, 
     }))
 }
 
-/// Collect request bytes produced by the executable Rust scenario families.
-/// Missing RPCs are left missing; the result is never padded with defaults.
-pub async fn actual_records() -> Result<Vec<TypedRequestRecord>, String> {
+/// Collect the complete ordered execution plan produced by the executable Rust
+/// scenario families.
+///
+/// This intentionally retains repeated setup calls and protocol-negative
+/// steps.  A replay client needs those calls in order to obtain the runtime
+/// identities consumed by later requests; the 106-record inventory is only a
+/// projection of this plan.
+pub async fn actual_execution_records() -> Result<Vec<TypedRequestRecord>, String> {
     let mut output = Vec::new();
     let inference_transcript = env::var_os("ACYCLIC_INFERENCE_TRANSCRIPT_FILE");
     output.extend(actor_worker_records().await?);
     output.extend(stream_records().await?);
     crate::workers_scenarios::execute()
         .map_err(|error| format!("execute Workers Rust fixture: {error}"))?;
-    let objects_observations = crate::fixtures::objects_typed_scenarios::collect()
+    let objects_observations = crate::fixtures::objects_typed_scenarios::collect_network_qualification()
         .await
         .map_err(|error| format!("collect Objects Rust fixture: {error}"))?;
     output.extend(
@@ -341,7 +346,33 @@ pub async fn actual_records() -> Result<Vec<TypedRequestRecord>, String> {
     }
     let fs_harness = super::filesystem_harness_scenarios::export().await?;
     output.extend(fs_harness.iter().map(observation_record).collect::<Result<Vec<_>, _>>()?);
+    Ok(output)
+}
+
+/// Collect the unique 106-record inventory from the ordered Rust execution
+/// plan.  Repeated setup calls and protocol-negative steps remain available
+/// through [`actual_execution_records`].
+pub async fn actual_records() -> Result<Vec<TypedRequestRecord>, String> {
+    let execution = actual_execution_records().await?;
+    let mut output = Vec::with_capacity(106);
+    let mut identities = std::collections::BTreeSet::new();
+    for record in execution {
+        // These are executable protocol-validation steps, rather than
+        // descriptor RPC identities, so they belong only to the plan.
+        if record.rpc.ends_with("/after-completion") {
+            continue;
+        }
+        if identities.insert(record.rpc.clone()) {
+            output.push(record);
+        }
+    }
     ensure_unique(&output)?;
+    if output.len() != 106 {
+        return Err(format!(
+            "Rust executable fixture inventory produced {}; expected 106",
+            output.len()
+        ));
+    }
     Ok(output)
 }
 
@@ -1017,7 +1048,9 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
 
 /// Serialize executable evidence with an explicit completeness bit.
 pub async fn actual_manifest_json() -> Result<Value, String> {
-    let observations = actual_records().await?;
+    let execution = actual_execution_records().await?;
+    validate_actual_records(&execution)?;
+    let observations = unique_inventory(&execution)?;
     validate_actual_records(&observations)?;
     let expected = self::records()?;
     let observed = observations
@@ -1036,7 +1069,45 @@ pub async fn actual_manifest_json() -> Result<Value, String> {
         "complete": missing.is_empty() && observations.len() == 106,
         "missing_rpcs": missing,
         "records": observations.iter().map(record_json).collect::<Vec<_>>(),
+        "execution_plan_count": execution.len(),
+        "execution_plan": execution_plan_json(&execution),
     }))
+}
+
+fn unique_inventory(
+    execution: &[TypedRequestRecord],
+) -> Result<Vec<TypedRequestRecord>, String> {
+    let mut output = Vec::with_capacity(106);
+    let mut identities = std::collections::BTreeSet::new();
+    for record in execution {
+        if record.rpc.ends_with("/after-completion") {
+            continue;
+        }
+        if identities.insert(record.rpc.as_str()) {
+            output.push(record.clone());
+        }
+    }
+    ensure_unique(&output)?;
+    Ok(output)
+}
+
+fn execution_plan_json(execution: &[TypedRequestRecord]) -> Vec<Value> {
+    let mut occurrences = std::collections::BTreeMap::<String, usize>::new();
+    execution
+        .iter()
+        .enumerate()
+        .map(|(step, record)| {
+            let occurrence = occurrences.entry(record.rpc.clone()).or_insert(0);
+            let current_occurrence = *occurrence;
+            *occurrence += 1;
+            let mut value = record_json(record);
+            if let Value::Object(object) = &mut value {
+                object.insert("execution_step".to_owned(), json!(step));
+                object.insert("rpc_occurrence".to_owned(), json!(current_occurrence));
+            }
+            value
+        })
+        .collect()
 }
 
 fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String> {
@@ -1234,11 +1305,7 @@ fn with_response<M: Message>(
 }
 
 fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String> {
-    let mut identities = std::collections::BTreeSet::new();
     for record in records {
-        if !identities.insert(record.rpc.as_str()) {
-            return Err(format!("duplicate actual fixture RPC {}", record.rpc));
-        }
         if !matches!(
             record.expected_status,
             "rust-fixture-executed"
@@ -1280,11 +1347,24 @@ fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String>
             }
         }
         let Some(response_type) = record.response_type.as_deref() else {
-            if !record.response_frames.is_empty() {
-                return Err(format!(
-                    "{} has response frames but no top-level response type",
-                    record.rpc
-                ));
+            // A streaming response has no single top-level protobuf value;
+            // validate its ordered, typed frames directly.
+            for (index, frame) in record.response_frames.iter().enumerate() {
+                if frame.sequence != index {
+                    return Err(format!(
+                        "{} response frame order is invalid at index {} (sequence {})",
+                        record.rpc, index, frame.sequence
+                    ));
+                }
+                let bytes = decode_base64(&frame.response_base64)
+                    .map_err(|error| format!("{} response frame {index}: {error}", record.rpc))?;
+                let digest = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+                if frame.response_sha256 != digest || frame.response_type.is_empty() {
+                    return Err(format!(
+                        "{} response frame {index} has invalid type or digest",
+                        record.rpc
+                    ));
+                }
             }
             continue;
         };
@@ -1510,8 +1590,8 @@ fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        actual_records, base64, records, validate_actual_records, ResponseFrameRecord,
-        TypedRequestRecord,
+        actual_execution_records, base64, records, unique_inventory, validate_actual_records,
+        ResponseFrameRecord, TypedRequestRecord,
     };
 
     fn observed_record() -> TypedRequestRecord {
@@ -1585,9 +1665,23 @@ mod tests {
 
     #[tokio::test]
     async fn actual_collector_is_complete_and_uses_put_object_envelope() {
-        let records = actual_records().await.expect("Rust actual fixture collector");
+        let execution = actual_execution_records()
+            .await
+            .expect("Rust actual fixture execution plan");
+        assert!(execution.len() > 106);
+        let records = unique_inventory(&execution).expect("unique Rust fixture inventory");
         assert_eq!(records.len(), 106);
         validate_actual_records(&records).expect("actual fixture records are canonical");
+        let create_bucket_count = execution
+            .iter()
+            .filter(|record| record.rpc == "acyclic.objects.v2.BucketsService/CreateBucket")
+            .count();
+        let create_multipart_count = execution
+            .iter()
+            .filter(|record| record.rpc == "acyclic.objects.v2.MultipartService/CreateMultipart")
+            .count();
+        assert_eq!(create_bucket_count, 2);
+        assert_eq!(create_multipart_count, 3);
         let put = records
             .iter()
             .find(|record| record.rpc == "acyclic.objects.v2.ObjectsService/PutObject")
