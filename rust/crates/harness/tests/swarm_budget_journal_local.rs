@@ -277,6 +277,77 @@ async fn local_stream_budget_concurrent_reservations_are_tail_atomic() {
 }
 
 #[tokio::test]
+async fn local_stream_distinct_admissions_are_aggregate_atomic_under_contention() {
+    let root = tempdir().expect("temporary root");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(root.path().join("stream"), LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let limits = SwarmBudgetLimits {
+        max_active_agents: 8,
+        max_total_agents: 8,
+        max_recursion_depth: 1,
+        max_model_steps: 8,
+        max_output_bytes: 128,
+        max_execution_time_ms: 200,
+    };
+    SwarmBudgetJournal::start(&client, session, owner.clone(), limits)
+        .await
+        .expect("start budget");
+    let stream = client
+        .stream(format!("harness/v2/swarm-budget/{session}"))
+        .expect("budget stream");
+    let tail_before = stream.tail().await.expect("tail before contention");
+    let requests = (0..8).map(|index| {
+        let mut request = request(
+            OperationId::new(),
+            &format!("distinct-contention-{index}"),
+        );
+        request.resources = SwarmResourceRequest {
+            model_steps: 4,
+            output_bytes: 64,
+            execution_time_ms: 100,
+        };
+        request
+    });
+    let results = join_all(requests.map(|request| {
+        let client = client.clone();
+        async move {
+            let mut journal = SwarmBudgetJournal::open(&client, session)
+                .await
+                .expect("open racing budget");
+            journal.reserve_child(request).await
+        }
+    }))
+    .await;
+    let applied = results.iter().filter(|result| result.is_ok()).count();
+    assert_eq!(applied, 2, "only two four-unit admissions fit the budget");
+    assert_eq!(
+        stream.tail().await.expect("tail after contention"),
+        tail_before + 2,
+        "every successful distinct admission contributes exactly one durable event"
+    );
+
+    let reopened = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("reopen budget");
+    let usage = reopened.usage().expect("usage");
+    assert_eq!(usage.active_agents, 3, "root plus two admitted children");
+    assert_eq!(usage.total_agents, 3);
+    assert_eq!(
+        usage.reserved,
+        SwarmUsage {
+            model_steps: 8,
+            output_bytes: 128,
+            execution_time_ms: 200,
+        }
+    );
+}
+
+#[tokio::test]
 async fn local_stream_budget_same_operation_race_has_one_append_and_replays() {
     let root = tempdir().expect("temporary root");
     let client = StreamClient::new(Arc::new(
@@ -403,6 +474,56 @@ async fn local_stream_wrong_dispatch_receipt_is_rejected_before_append_and_reope
         .await
         .expect("reopen after forged receipt");
     assert_eq!(reopened.usage().expect("reopened usage").consumed, usage);
+}
+
+#[tokio::test]
+async fn local_stream_provider_usage_before_child_activation_is_rejected_durably() {
+    let root = tempdir().expect("temporary root");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(root.path().join("stream"), LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let child = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
+        .await
+        .expect("start budget");
+    journal
+        .reserve_child(request(child, "pre-dispatch-child"))
+        .await
+        .expect("reserve child");
+    let stream = client
+        .stream(format!("harness/v2/swarm-budget/{session}"))
+        .expect("budget stream");
+    let tail_before = stream.tail().await.expect("tail before pre-dispatch usage");
+    let dispatch_id = IdempotencyKey::new("pre-dispatch-provider").expect("dispatch");
+    let mut issuer = SwarmUsageReceiptIssuer::new(LocalMeasuredUsage, child, dispatch_id)
+        .expect("usage issuer");
+    let receipt = issuer.issue().expect("provider receipt");
+    assert!(
+        journal
+            .report_usage_with_receipt(child, &owner, receipt)
+            .await
+            .is_err(),
+        "reserved children cannot publish provider usage before dispatch activation"
+    );
+    assert_eq!(
+        stream.tail().await.expect("tail after rejected usage"),
+        tail_before,
+        "pre-dispatch usage rejection must not append a partial event"
+    );
+    drop(journal);
+    let reopened = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("reopen budget");
+    let reservation = reopened
+        .reservation(child)
+        .expect("reservation lookup")
+        .expect("reserved child");
+    assert_eq!(reservation.usage, SwarmUsage::default());
+    assert_eq!(reopened.usage().expect("usage").consumed, SwarmUsage::default());
 }
 
 #[tokio::test]
