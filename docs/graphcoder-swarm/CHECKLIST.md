@@ -29,7 +29,22 @@ do not substitute for full acceptance gates.
 - [ ] All intended changes committed, source checkout preserved, no merge.
 - [ ] Mark goal complete only after the full audit passes.
 
-Latest retained checkpoints: source 822294d51 passes 408 native regression cases;
+Current retained evidence is inside this checkout's ignored
+`target/graphcoder-qualification/evidence` directory. Source 75e6fe0b7 passes
+seven bounded formal models, sixteen expected negative controls, and trace
+fixtures; the real runtime trace gate remains open. Native recursive composition
+fails with stack overflow at both 75e6fe0b7 and f1981a6ee. The latter trace
+localizes the failure to parent session opening during physical fork resolution.
+Both failing executables, source archives, and logs are retained with digests in
+the corresponding worktree checkpoint receipts. These are diagnosis evidence,
+not completion of the recursive swarm gate.
+
+Historical checkpoints below describe observed results. Their external
+`D:\graphcoder-builds` artifacts were removed; consult
+`checkpoint-evidence-loss-2026-10-05.json`. They no longer establish retained
+artifact availability or qualify the current source.
+
+Historical source 822294d51 passes 408 native regression cases;
 source a473a63dd passes 376 Harness and 45 native-runtime cases, with one existing
 native-runtime benchmark ignored. The nonblocking scheduler at ebd74c762 passes
 380 Harness cases and two of four model-swarm scenarios, but fails two model-swarm
