@@ -19,6 +19,7 @@ use std::{
 use acyclic_stream::{AppendOutcome, MemoryLimits, MemoryStream, StreamClient, StreamError};
 use bytes::Bytes;
 use futures::StreamExt as _;
+use prost::Message;
 use tokio::{runtime::Runtime, sync::Notify, task::JoinHandle};
 
 #[cfg(feature = "uniffi")]
@@ -104,6 +105,21 @@ pub struct AcyclicNextResult {
     pub sequence: u64,
     /// Record payload on success.
     pub value: AcyclicBuffer,
+    /// UTF-8 diagnostic bytes, if any.
+    pub message: AcyclicBuffer,
+}
+
+/// Result of one unary canonical Stream protobuf operation.
+///
+/// Request and response bytes are the generated `acyclic.stream.v2` messages. This keeps the
+/// Rust provider authoritative while allowing .NET, JVM, and other native facades to use their
+/// generated protobuf models without translating Stream behavior into a second implementation.
+#[repr(C)]
+pub struct AcyclicWireResult {
+    /// Result category.
+    pub status: AcyclicStatus,
+    /// Encoded response bytes on success.
+    pub response: AcyclicBuffer,
     /// UTF-8 diagnostic bytes, if any.
     pub message: AcyclicBuffer,
 }
@@ -452,6 +468,33 @@ fn runtime_reentry_next() -> AcyclicNextResult {
     }
 }
 
+fn runtime_reentry_wire() -> AcyclicWireResult {
+    AcyclicWireResult {
+        status: AcyclicStatus::Panic,
+        response: empty_buffer(),
+        message: message("synchronous ABI call cannot run from a Tokio runtime"),
+    }
+}
+
+fn invalid_wire(text: &'static str) -> AcyclicWireResult {
+    AcyclicWireResult {
+        status: AcyclicStatus::InvalidArgument,
+        response: empty_buffer(),
+        message: message(text),
+    }
+}
+
+fn provider_wire(error: StreamError) -> AcyclicWireResult {
+    if error == StreamError::InvalidArgument {
+        return invalid_wire("invalid argument");
+    }
+    AcyclicWireResult {
+        status: AcyclicStatus::ProviderError,
+        response: empty_buffer(),
+        message: message(error.to_string()),
+    }
+}
+
 unsafe fn input_bytes<'a>(ptr: *const u8, len: usize) -> Result<&'a [u8], &'static str> {
     if len == 0 {
         return Ok(&[]);
@@ -638,6 +681,93 @@ pub extern "C" fn acyclic_embedded_engine_append(
         start: 0,
         end: 0,
         tail: 0,
+        message: message("panic contained at ABI boundary"),
+    })
+}
+
+/// Executes one unary canonical Stream protobuf operation against the Rust provider.
+///
+/// Supported operations are `inspect_idempotency`, `append`, `tail`, `fork`, `children_page`,
+/// `commit`, and `read_commit`. `read`, `follow`, and `children` retain their streaming ABI via
+/// reader handles because their response cardinality is unbounded and cancellation is explicit.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn acyclic_embedded_engine_wire_call(
+    engine: u64,
+    operation_ptr: *const u8,
+    operation_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+) -> AcyclicWireResult {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if runtime_reentry() {
+            return runtime_reentry_wire();
+        }
+        let Some(engine) = engine_lookup(engine) else {
+            return invalid_wire("engine handle is null");
+        };
+        let operation = match unsafe { input_path(operation_ptr, operation_len) } {
+            Ok(value) => value,
+            Err(error) => return invalid_wire(error),
+        };
+        let request = match unsafe { input_bytes(request_ptr, request_len) } {
+            Ok(value) => value,
+            Err(error) => return invalid_wire(error),
+        };
+        let result = engine.runtime.block_on(async {
+            let client = StreamClient::new(Arc::clone(&engine.provider));
+            let encoded = match operation {
+                "inspect_idempotency" => {
+                    let request = acyclic_stream::wire::InspectIdempotencyRequest::decode(request)
+                        .map_err(|_| StreamError::InvalidArgument)?;
+                    client.inspect_idempotency_wire(request).await?.encode_to_vec()
+                }
+                "append" => {
+                    let request = acyclic_stream::wire::AppendRequest::decode(request)
+                        .map_err(|_| StreamError::InvalidArgument)?;
+                    client.append_wire(request).await?.encode_to_vec()
+                }
+                "tail" => {
+                    let request = acyclic_stream::wire::TailRequest::decode(request)
+                        .map_err(|_| StreamError::InvalidArgument)?;
+                    client.tail_wire(request).await?.encode_to_vec()
+                }
+                "fork" => {
+                    let request = acyclic_stream::wire::ForkRequest::decode(request)
+                        .map_err(|_| StreamError::InvalidArgument)?;
+                    client.fork_wire(request).await?.encode_to_vec()
+                }
+                "children_page" => {
+                    let request = acyclic_stream::wire::ChildrenPageRequest::decode(request)
+                        .map_err(|_| StreamError::InvalidArgument)?;
+                    client.children_page_wire(request).await?.encode_to_vec()
+                }
+                "commit" => {
+                    let request = acyclic_stream::wire::CommitRequest::decode(request)
+                        .map_err(|_| StreamError::InvalidArgument)?;
+                    client.commit_wire(request).await?.encode_to_vec()
+                }
+                "read_commit" => {
+                    let request = acyclic_stream::wire::ReadCommitRequest::decode(request)
+                        .map_err(|_| StreamError::InvalidArgument)?;
+                    client.read_commit_wire(request).await?.encode_to_vec()
+                }
+                "read" | "follow" | "children" => return Err(StreamError::Unsupported),
+                _ => return Err(StreamError::InvalidArgument),
+            };
+            Ok::<_, StreamError>(encoded)
+        });
+        match result {
+            Ok(response) => AcyclicWireResult {
+                status: AcyclicStatus::Ok,
+                response: owned_buffer(response),
+                message: empty_buffer(),
+            },
+            Err(error) => provider_wire(error),
+        }
+    }));
+    result.unwrap_or_else(|_| AcyclicWireResult {
+        status: AcyclicStatus::Panic,
+        response: empty_buffer(),
         message: message("panic contained at ABI boundary"),
     })
 }
@@ -992,12 +1122,81 @@ pub extern "C" fn acyclic_next_result_release(result: AcyclicNextResult) {
     acyclic_buffer_release(result.message);
 }
 
+/// Releases both buffers in a unary wire result.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_wire_result_release(result: AcyclicWireResult) {
+    acyclic_buffer_release(result.response);
+    acyclic_buffer_release(result.message);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn bytes(value: &[u8]) -> (*const u8, usize) {
         (value.as_ptr(), value.len())
+    }
+
+    #[test]
+    fn abi_wire_call_preserves_generated_append_and_tail_contract() {
+        let engine = acyclic_embedded_engine_open();
+        assert_ne!(engine, 0);
+        let append = acyclic_stream::wire::AppendRequest {
+            path: "wire/test".to_owned(),
+            records: vec![b"value".to_vec().into()],
+            if_tail: None,
+            idempotency_key: Some(b"wire-append".to_vec().into()),
+        }
+        .encode_to_vec();
+        let operation = b"append";
+        let result = unsafe {
+            acyclic_embedded_engine_wire_call(
+                engine,
+                operation.as_ptr(),
+                operation.len(),
+                append.as_ptr(),
+                append.len(),
+            )
+        };
+        assert_eq!(result.status, AcyclicStatus::Ok);
+        let response = unsafe {
+            acyclic_stream::wire::AppendResponse::decode(std::slice::from_raw_parts(
+                result.response.ptr,
+                result.response.len,
+            ))
+        }
+        .expect("append response remains canonical protobuf");
+        assert!(matches!(
+            response.outcome,
+            Some(acyclic_stream::wire::append_response::Outcome::Committed(_))
+        ));
+        acyclic_wire_result_release(result);
+
+        let tail_request = acyclic_stream::wire::TailRequest {
+            path: "wire/test".to_owned(),
+        }
+        .encode_to_vec();
+        let operation = b"tail";
+        let result = unsafe {
+            acyclic_embedded_engine_wire_call(
+                engine,
+                operation.as_ptr(),
+                operation.len(),
+                tail_request.as_ptr(),
+                tail_request.len(),
+            )
+        };
+        assert_eq!(result.status, AcyclicStatus::Ok);
+        let response = unsafe {
+            acyclic_stream::wire::TailResponse::decode(std::slice::from_raw_parts(
+                result.response.ptr,
+                result.response.len,
+            ))
+        }
+        .expect("tail response remains canonical protobuf");
+        assert_eq!(response.tail, 1);
+        acyclic_wire_result_release(result);
+        acyclic_embedded_engine_close(engine);
     }
 
     fn install_message_hook(
