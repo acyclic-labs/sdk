@@ -1584,12 +1584,13 @@ impl NativeExecutionProvider {
                 // Never let an older persistence job fence the new receipt.
                 job.abort();
             }
+            let attempt_id = key.attempt_id;
             let job = runtime.spawn(async move {
                 if store.request_cancel(&key).await.is_ok() {
                     cancellation.mark_durable();
                 }
             });
-            jobs.insert(operation_id, (key.attempt_id, job));
+            jobs.insert(operation_id, (attempt_id, job));
         }
         true
     }
@@ -3578,7 +3579,7 @@ mod tests {
                     .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
                     .pending
                     .iter()
-                    .any(|key| key.operation_id == operation);
+                    .any(|(key, _)| key.operation_id == operation);
                 if active_empty && claim_pending {
                     break Ok::<(), Error>(());
                 }
