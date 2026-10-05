@@ -4537,7 +4537,7 @@ impl PersistentLocalSwarm {
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         if sender.into_bytes() == [0; 16]
             || recipient.into_bytes() == [0; 16]
             || message_id.into_bytes() == [0; 16]
@@ -4551,14 +4551,21 @@ impl PersistentLocalSwarm {
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let sender_session = self.session(sender).await?;
+        let recipient_session = self.session(recipient).await?;
+        if sender_session.parent != Some(recipient)
+            && recipient_session.parent != Some(sender)
+        {
+            return Err(Error::Unauthorized(
+                "message endpoints are not direct parent and child".into(),
+            ));
+        }
         if self
             .find_message_admission(sender, recipient, message_id, &payload)
             .await?
         {
-            return Ok(true);
+            return Ok(());
         }
-        let sender_session = self.session(sender).await?;
-        let recipient_session = self.session(recipient).await?;
         if !matches!(
             sender_session.phase,
             LocalSessionPhase::Ready
@@ -4586,7 +4593,7 @@ impl PersistentLocalSwarm {
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
                 self.retain_registry_tail(committed_tail).await;
-                Ok(true)
+                Ok(())
             }
             Err(error) => {
                 if self.refresh_registry_state().await.is_ok() {
@@ -4594,7 +4601,7 @@ impl PersistentLocalSwarm {
                         .find_message_admission(sender, recipient, message_id, &payload)
                         .await
                     {
-                        Ok(true) => return Ok(true),
+                        Ok(true) => return Ok(()),
                         Ok(false) => {}
                         Err(error) => return Err(error),
                     }
@@ -4650,7 +4657,7 @@ impl PersistentLocalSwarm {
         task: TaskId,
         operation: OperationId,
         deadline: u64,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         if task.into_bytes() == [0; 16]
             || operation.into_bytes() == [0; 16]
             || deadline == 0
@@ -4663,7 +4670,7 @@ impl PersistentLocalSwarm {
             .map_err(|error| Error::Storage(error.to_string()))?;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         if self.find_timer_admission(task, operation, deadline).await? {
-            return Ok(true);
+            return Ok(());
         }
         let session = self.session(task).await?;
         if !matches!(
@@ -4687,12 +4694,12 @@ impl PersistentLocalSwarm {
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
                 self.retain_registry_tail(committed_tail).await;
-                Ok(true)
+                Ok(())
             }
             Err(error) => {
                 if self.refresh_registry_state().await.is_ok() {
                     match self.find_timer_admission(task, operation, deadline).await {
-                        Ok(true) => return Ok(true),
+                        Ok(true) => return Ok(()),
                         Ok(false) => {}
                         Err(error) => return Err(error),
                     }
@@ -9487,13 +9494,27 @@ mod tests {
                 "message.txt",
             )
             .await?;
+        // The admission owner must enforce the direct parent/child
+        // relationship itself; callers cannot turn an invalid target into a
+        // durable admission by bypassing the host preflight.
+        assert!(matches!(
+            swarm
+                .admit_message(
+                    child,
+                    child,
+                    OperationId::from_bytes([0xDE; 16]),
+                    payload.clone(),
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         let message = OperationId::from_bytes([0xDB; 16]);
-        assert!(swarm.admit_message(parent, child, message, payload.clone()).await?);
+        swarm.admit_message(parent, child, message, payload.clone()).await?;
         let timer = OperationId::from_bytes([0xDC; 16]);
-        assert!(swarm.admit_timer(child, timer, 10_000).await?);
+        swarm.admit_timer(child, timer, 10_000).await?;
         swarm.cancel(child).await?;
-        assert!(swarm.admit_message(parent, child, message, payload).await?);
-        assert!(swarm.admit_timer(child, timer, 10_000).await?);
+        swarm.admit_message(parent, child, message, payload).await?;
+        swarm.admit_timer(child, timer, 10_000).await?;
         let records = load_records(&registry).await?;
         assert_eq!(
             records
