@@ -3172,6 +3172,16 @@ impl PersistentLocalSwarm {
         })
     }
 
+    fn root_owner_operation(task: TaskId) -> OperationId {
+        let digest = blake3::hash(
+            &[b"acyclic:local-swarm:root-owner:v1".as_slice(), task.into_bytes().as_slice()]
+                .concat(),
+        );
+        let mut operation = [0; 16];
+        operation.copy_from_slice(&digest.as_bytes()[..16]);
+        OperationId::from_bytes(operation)
+    }
+
     /// Persists the owner admission needed by communication controls before
     /// the first model turn. It binds the winning root identity and the final
     /// installed bundle, but never claims a model prompt or starts a worker.
@@ -3189,7 +3199,7 @@ impl PersistentLocalSwarm {
             "run_limits": self.config.run_limits,
         });
         let admission = crate::runtime::TaskAdmissionRecord::from_parts(
-            OperationId::from_bytes(task.into_bytes()),
+            Self::root_owner_operation(task),
             "acyclic.local-swarm.owner",
             "1",
             input,
@@ -3207,7 +3217,7 @@ impl PersistentLocalSwarm {
             None,
             None,
         )?;
-        self.persist_local_admission(task, admission).await?;
+        self.persist_local_admission_if_absent(task, admission).await?;
         Ok(())
     }
 
@@ -3424,11 +3434,35 @@ impl PersistentLocalSwarm {
         task: TaskId,
         admission: crate::runtime::TaskAdmissionRecord,
     ) -> Result<crate::runtime::TaskAdmissionRecord> {
+        self.persist_local_admission_inner(task, admission, false)
+            .await
+    }
+
+    async fn persist_local_admission_if_absent(
+        &self,
+        task: TaskId,
+        admission: crate::runtime::TaskAdmissionRecord,
+    ) -> Result<crate::runtime::TaskAdmissionRecord> {
+        self.persist_local_admission_inner(task, admission, true)
+            .await
+    }
+
+    async fn persist_local_admission_inner(
+        &self,
+        task: TaskId,
+        admission: crate::runtime::TaskAdmissionRecord,
+        preserve_existing: bool,
+    ) -> Result<crate::runtime::TaskAdmissionRecord> {
         let registry = self
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
+        if preserve_existing
+            && let Some(existing) = self.admissions.lock().await.get(&task).cloned()
+        {
+            return Ok(existing);
+        }
         let append = append_record_at(
             &registry,
             StoredEvent::TaskAdmitted {
@@ -3446,10 +3480,10 @@ impl PersistentLocalSwarm {
                 // new operation record or treating the lost CAS as a provider
                 // error.
                 self.refresh_registry_state().await?;
-                if let Some(existing) = self.admissions.lock().await.get(&task).cloned()
-                    && existing == admission
-                {
-                    return Ok(existing);
+                if let Some(existing) = self.admissions.lock().await.get(&task).cloned() {
+                    if preserve_existing || existing == admission {
+                        return Ok(existing);
+                    }
                 }
                 return Err(Error::Conflict(
                     "local task admission lost its durable registry race".into(),
@@ -7084,6 +7118,9 @@ mod tests {
         swarm
             .run_root(OperationId::from_bytes([82; 16]), "wait for the deadline")
             .await?;
+        let turn_admission = swarm.authenticated_admission(root_task).await?;
+        assert_ne!(turn_admission.operation_id, owner_admission.operation_id);
+        assert_eq!(turn_admission.input, Value::String("wait for the deadline".into()));
         let observed = host.observed.lock().expect("communication host lock");
         assert!(!observed.is_empty());
         assert!(observed.iter().all(|task| *task == root_task));
