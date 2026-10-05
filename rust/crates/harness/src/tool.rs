@@ -8,6 +8,7 @@ use crate::{
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::conversation::FileRef;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Version of the structured model-visible admission feedback envelope.
@@ -180,6 +181,116 @@ impl ToolDefinition {
         self.validate()?;
         crate::contract::canonical_json_digest(self)
     }
+
+    /// Extracts immutable content references declared by the model-output
+    /// schema. Tool output is model-visible JSON, so references must be
+    /// declared by the pinned schema rather than discovered by scanning
+    /// arbitrary objects. A schema marks a reference with
+    /// `x-acyclic-file-ref: true` at the exact value position.
+    pub(crate) fn model_output_file_refs(&self, value: &Value) -> Result<Vec<FileRef>> {
+        let validator = jsonschema::validator_for(&self.model_output_schema)
+            .map_err(|error| Error::Invalid(format!("invalid model output schema: {error}")))?;
+        if let Err(error) = validator.validate(value) {
+            return Err(Error::Invalid(format!("tool projection does not match schema: {error}")));
+        }
+        let mut refs = Vec::new();
+        collect_declared_file_refs(&self.model_output_schema, value, &mut refs, 0)?;
+        Ok(refs)
+    }
+}
+
+const MAX_DECLARED_FILE_REF_DEPTH: usize = 32;
+const MAX_DECLARED_FILE_REFS: usize = 256;
+
+fn collect_declared_file_refs(
+    schema: &Value,
+    value: &Value,
+    refs: &mut Vec<FileRef>,
+    depth: usize,
+) -> Result<()> {
+    if depth > MAX_DECLARED_FILE_REF_DEPTH {
+        return Err(Error::Invalid(
+            "tool output reference schema exceeds depth limit".into(),
+        ));
+    }
+    let schema_object = schema.as_object().ok_or_else(|| {
+        Error::Invalid("tool output reference schema must be an object".into())
+    })?;
+    for keyword in [
+        "$ref", "$dynamicRef", "allOf", "anyOf", "oneOf", "not", "if", "then", "else",
+        "dependentSchemas", "dependentRequired", "patternProperties", "prefixItems",
+        "contains", "propertyNames", "unevaluatedProperties", "unevaluatedItems",
+    ] {
+        if schema_object.contains_key(keyword) {
+            return Err(Error::Invalid(format!(
+                "unsupported model-output reference schema keyword {keyword}"
+            )));
+        }
+    }
+    if let Some(additional) = schema_object.get("additionalProperties") {
+        if additional != &Value::Bool(false) {
+            return Err(Error::Invalid(
+                "dynamic model-output properties cannot carry file references".into(),
+            ));
+        }
+    }
+    if let Some(properties) = schema_object.get("properties") {
+        if !properties.is_object() {
+            return Err(Error::Invalid(
+                "model-output properties must be an object".into(),
+            ));
+        }
+    }
+    if let Some(items) = schema_object.get("items") {
+        if !items.is_object() && !items.is_boolean() {
+            return Err(Error::Invalid(
+                "model-output items must be one homogeneous schema".into(),
+            ));
+        }
+    }
+    if schema
+        .get("x-acyclic-file-ref")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        let reference: FileRef = serde_json::from_value(value.clone()).map_err(|error| {
+            Error::Invalid(format!("declared tool output FileRef is invalid: {error}"))
+        })?;
+        reference.validate()?;
+        if refs.len() >= MAX_DECLARED_FILE_REFS {
+            return Err(Error::Invalid(
+                "tool output declares too many file references".into(),
+            ));
+        }
+        refs.push(reference);
+        return Ok(());
+    }
+    if let Some(properties) = schema_object.get("properties").and_then(Value::as_object) {
+        if let Some(object) = value.as_object() {
+            for (name, child_schema) in properties {
+                if let Some(child) = object.get(name) {
+                    collect_declared_file_refs(child_schema, child, refs, depth + 1)?;
+                }
+            }
+        }
+    }
+    if let Some(items) = schema_object.get("items") {
+        let Some(array) = value.as_array() else {
+            return Ok(());
+        };
+        if items.is_boolean() {
+            return Ok(());
+        }
+        if array.len() > MAX_DECLARED_FILE_REFS {
+            return Err(Error::Invalid(
+                "tool output reference array exceeds limit".into(),
+            ));
+        }
+        for child in array {
+            collect_declared_file_refs(items, child, refs, depth + 1)?;
+        }
+    }
+    Ok(())
 }
 
 /// One admitted invocation.

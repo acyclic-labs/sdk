@@ -53,6 +53,49 @@ pub struct ModelInputManifest {
     pub rejection_evidence: Vec<crate::tool::ToolRejectionFeedback>,
 }
 
+/// Returns every immutable reference carried by one model message. Direct
+/// content references are part of the content type; tool-result references
+/// are extracted only at schema-declared output positions.
+pub(crate) fn message_file_refs(
+    message: &ModelMessage,
+    tools: &[crate::tool::ToolDefinition],
+) -> Result<Vec<FileRef>> {
+    let mut refs = message
+        .content
+        .file_refs()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let parts = match &message.content {
+        ModelContent::Text(_) => &[][..],
+        ModelContent::Part(part) => std::slice::from_ref(part),
+        ModelContent::Parts(parts) => parts.as_slice(),
+    };
+    for part in parts {
+        let ModelContentPart::ToolResult { name, value, .. } = part else {
+            continue;
+        };
+        let definition = tools
+            .iter()
+            .find(|tool| tool.name == *name)
+            .ok_or_else(|| Error::Storage(format!("tool result names unknown tool {name}")))?;
+        let declared = definition.model_output_file_refs(value)?;
+        if declared.is_empty()
+            && name == "acyclic.stage_file"
+            && value
+                .get("file")
+                .and_then(|file| serde_json::from_value::<FileRef>(file.clone()).ok())
+                .is_some()
+        {
+            return Err(Error::Conflict(
+                "acyclic.stage_file result uses an unsupported historical schema revision".into(),
+            ));
+        }
+        refs.extend(declared);
+    }
+    Ok(refs)
+}
+
 /// Admitted input without retrieval, truncation, or compaction.
 #[derive(Clone, Debug)]
 pub struct PreparedModelInput {
@@ -97,7 +140,7 @@ impl PreparedModelInput {
                 position,
                 role: message.role,
                 digest: crate::contract::canonical_json_digest(message)?,
-                files: message.content.file_refs().into_iter().cloned().collect(),
+                files: message_file_refs(message, &request.tools)?,
             });
         }
         let bytes = crate::contract::canonical_json_bytes(&request)?;

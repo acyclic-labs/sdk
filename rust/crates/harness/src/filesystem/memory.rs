@@ -693,7 +693,7 @@ where
         Tool {
             definition: ToolDefinition {
                 name: "acyclic.stage_file".into(),
-                revision: "1".into(),
+                revision: "2".into(),
                 description: "Stage a bounded UTF-8 file in the agent-private volume and return its immutable FileRef".into(),
                 input_schema: json!({
                     "type": "object",
@@ -714,7 +714,10 @@ where
                 }),
                 model_output_schema: json!({
                     "type": "object",
-                    "properties": {"file": {"type": "object"}},
+                    "properties": {"file": {
+                        "type": "object",
+                        "x-acyclic-file-ref": true
+                    }},
                     "required": ["file"],
                     "additionalProperties": false
                 }),
