@@ -5903,51 +5903,29 @@ async fn claim_child_activation_on_stream(
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         let records = load_records_at(stream, observed_tail).await?;
-        let mut claimed = None;
-        for record in records {
-            match record.event {
-                StoredEvent::ForkActivationClaimed {
-                    child: recorded_child,
-                    operation: recorded_operation,
-                } if recorded_child == child => {
-                    claimed = Some(recorded_operation);
-                }
-                StoredEvent::ForkCompleted {
-                    child: recorded_child,
-                    operation: recorded_operation,
-                    ..
-                } if recorded_child == child => {
-                    if recorded_operation != operation {
-                        return Err(Error::Conflict(
-                            "terminal child activation belongs to another operation".into(),
-                        ));
-                    }
-                    return Ok(false);
-                }
-                StoredEvent::ForkCancelled {
-                    child: recorded_child,
-                } if recorded_child == child => {
+        match activation_claim_state(records, child) {
+            ActivationClaimState::Completed(recorded_operation) => {
+                if recorded_operation != operation {
                     return Err(Error::Conflict(
-                        "cancelled child activation cannot acquire a new claim".into(),
+                        "terminal child activation belongs to another operation".into(),
                     ));
                 }
-                StoredEvent::ForkFailed {
-                    child: recorded_child,
-                    ..
-                }
-                if recorded_child == child => {
-                    claimed = None;
-                }
-                _ => {}
+                return Ok(false);
             }
-        }
-        if let Some(existing) = claimed {
-            if existing != operation {
+            ActivationClaimState::Cancelled => {
                 return Err(Error::Conflict(
-                    "child activation is already bound to another operation".into(),
+                    "cancelled child activation cannot acquire a new claim".into(),
                 ));
             }
-            return Ok(false);
+            ActivationClaimState::Claimed(existing) => {
+                if existing != operation {
+                    return Err(Error::Conflict(
+                        "child activation is already bound to another operation".into(),
+                    ));
+                }
+                return Ok(false);
+            }
+            ActivationClaimState::Available => {}
         }
         match append_record_at(
             stream,
@@ -5958,10 +5936,98 @@ async fn claim_child_activation_on_stream(
         {
             Ok(()) => return Ok(true),
             Err(Error::Conflict(_)) => continue,
-            Err(error) => return Err(error),
+            Err(error) => {
+                // The provider may have committed the claim before its
+                // acknowledgement was lost. Reconcile the durable state
+                // once before surfacing uncertainty; never redispatch or
+                // append the claim again based only on that error.
+                return reconcile_activation_claim_after_error(
+                    stream, child, operation, error,
+                )
+                .await;
+            }
         }
     }
     Err(Error::Indeterminate(operation))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ActivationClaimState {
+    Available,
+    Claimed(OperationId),
+    Completed(OperationId),
+    Cancelled,
+}
+
+fn activation_claim_state(
+    records: impl IntoIterator<Item = StoredRecord>,
+    child: TaskId,
+) -> ActivationClaimState {
+    let mut state = ActivationClaimState::Available;
+    for record in records {
+        match record.event {
+            StoredEvent::ForkActivationClaimed {
+                child: recorded_child,
+                operation,
+            } if recorded_child == child => {
+                state = ActivationClaimState::Claimed(operation);
+            }
+            StoredEvent::ForkCompleted {
+                child: recorded_child,
+                operation,
+                ..
+            } if recorded_child == child => {
+                state = ActivationClaimState::Completed(operation);
+            }
+            StoredEvent::ForkCancelled {
+                child: recorded_child,
+            } if recorded_child == child => {
+                state = ActivationClaimState::Cancelled;
+            }
+            StoredEvent::ForkFailed {
+                child: recorded_child,
+                ..
+            } if recorded_child == child => {
+                state = ActivationClaimState::Available;
+            }
+            _ => {}
+        }
+    }
+    state
+}
+
+async fn reconcile_activation_claim_after_error(
+    stream: &acyclic_stream::Stream<LocalStream>,
+    child: TaskId,
+    operation: OperationId,
+    original: Error,
+) -> Result<bool> {
+    let observed_tail = match stream.tail().await {
+        Ok(tail) => tail,
+        Err(_) => return Err(original),
+    };
+    let records = match load_records_at(stream, observed_tail).await {
+        Ok(records) => records,
+        Err(_) => return Err(original),
+    };
+    match activation_claim_state(records, child) {
+        ActivationClaimState::Claimed(recorded_operation) if recorded_operation == operation => {
+            Ok(true)
+        }
+        ActivationClaimState::Claimed(_) => Err(Error::Conflict(
+            "child activation is already bound to another operation".into(),
+        )),
+        ActivationClaimState::Completed(recorded_operation) if recorded_operation == operation => {
+            Ok(false)
+        }
+        ActivationClaimState::Completed(_) => Err(Error::Conflict(
+            "terminal child activation belongs to another operation".into(),
+        )),
+        ActivationClaimState::Cancelled => Err(Error::Conflict(
+            "cancelled child activation cannot acquire a new claim".into(),
+        )),
+        ActivationClaimState::Available => Err(original),
+    }
 }
 
 fn open_session_path(root: &Path, task: TaskId) -> PathBuf {
@@ -7166,6 +7232,51 @@ mod tests {
         ));
         assert_eq!(stream.tail().await
             .map_err(|error| Error::Storage(error.to_string()))?, completed_tail);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn committed_activation_claim_is_recovered_after_lost_append_ack() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let client = StreamClient::new(Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        let stream = client
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let child = TaskId::from_bytes([0xC4; 16]);
+        let operation = OperationId::from_bytes([0xD4; 16]);
+        append_record(
+            &stream,
+            StoredEvent::ForkActivationClaimed { child, operation },
+        )
+        .await?;
+        let committed_tail = stream
+            .tail()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+
+        // Model an append that committed but whose acknowledgement was lost.
+        // Reconciliation must recover the stable claim and must not append a
+        // second activation event or report an avoidable unknown outcome.
+        assert!(
+            reconcile_activation_claim_after_error(
+                &stream,
+                child,
+                operation,
+                Error::Storage("claim acknowledgement lost".into()),
+            )
+            .await?
+        );
+        assert_eq!(
+            stream
+                .tail()
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            committed_tail
+        );
         Ok(())
     }
 
