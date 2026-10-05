@@ -1415,6 +1415,13 @@ fn collect_generation_input_paths(
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".tmp-"))
+        {
+            continue;
+        }
         let file_type = entry.file_type()?;
         if file_type.is_symlink() {
             // Language qualification trees may contain links into their
