@@ -12,9 +12,10 @@ use acyclic_harness::conversation::Attachment;
 use acyclic_harness::executor::{
     ExecutionEvent, ExecutionJournal, Executor, TurnInput, TurnOutput,
 };
+use acyclic_harness::filesystem::MemoryHarnessStorage;
 use acyclic_harness::model::{ModelContent, ModelEvent};
-use acyclic_harness::{Admission, HarnessBuilder, Outcome, TaskGroup};
-use futures::{future::BoxFuture, FutureExt as _};
+use acyclic_harness::{Admission, AgentId, HarnessBuilder, OperationId, Outcome, TaskGroup};
+use futures::{FutureExt as _, future::BoxFuture};
 use serde_json::json;
 
 /// Stable source identity consumed by the examples manifest.
@@ -24,7 +25,12 @@ pub const SCENARIO_ID: &str = "harness-admission-recovery-cancel";
 
 /// Rust source shown in the Harness custom executor projection.
 pub const QUICKSTART_SNIPPET: &str = r#"use std::sync::Arc;
-use acyclic_harness::{Admission, HarnessBuilder, Outcome, TaskGroup};
+use acyclic_harness::executor::{Executor, TurnInput};
+use acyclic_harness::filesystem::MemoryHarnessStorage;
+use acyclic_harness::model::ModelContent;
+use acyclic_harness::{
+    Admission, AgentId, HarnessBuilder, OperationId, Outcome, TaskGroup,
+};
 
 let group = TaskGroup::new(1);
 let completed = match group.try_spawn(async { 7_u8 }).await {
@@ -39,13 +45,27 @@ assert!(matches!(
     Admission::Rejected { .. }
 ));
 
-let recovered = match TaskGroup::new(1).try_spawn(async { 11_u8 }).await {
+let fresh_group_after_cancellation = match TaskGroup::new(1).try_spawn(async { 11_u8 }).await {
     Admission::Accepted(handle) => matches!(handle.result().await, Outcome::Succeeded(11)),
     Admission::Rejected { .. } | Admission::Indeterminate { .. } => false,
 };
-assert!(recovered);
+assert!(fresh_group_after_cancellation);
 
-// A durable custom executor must bind its journal explicitly.
+// A durable custom executor must bind its journal explicitly and replay it
+// after a process restart.
+let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+let journal = storage.journal();
+let input = TurnInput {
+    operation_id: OperationId::new(),
+    input: ModelContent::Text("durable recovery".into()),
+    selected_context: None,
+    max_steps: 1,
+};
+let _first = MyExecutor.execute(input.clone(), journal.as_ref()).await?;
+let resumed = MyExecutor.execute(input, journal.as_ref()).await?;
+assert_eq!(resumed.metadata["replayed"], true);
+
+// A custom executor without an owner journal is rejected.
 let result = HarnessBuilder::new()
     .name("example")
     .executor(Arc::new(MyExecutor))
@@ -62,6 +82,24 @@ impl Executor for CustomExecutor {
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, acyclic_harness::Result<TurnOutput>> {
         async move {
+            let text = match &input.input {
+                ModelContent::Text(text) => text.clone(),
+                ModelContent::Part(_) | ModelContent::Parts(_) => {
+                    "Custom executor accepted typed input".into()
+                }
+            };
+            let replayed = journal.replay(input.operation_id).await?;
+            if replayed
+                .iter()
+                .any(|record| matches!(record.event, ExecutionEvent::Model { .. }))
+            {
+                return Ok(TurnOutput {
+                    text,
+                    attachments: Vec::new(),
+                    metadata: json!({"replayed": true}),
+                    steps: 1,
+                });
+            }
             let event = ModelEvent::Completed {
                 metadata: json!({"executor": "sdk-examples"}),
             };
@@ -93,12 +131,7 @@ impl Executor for CustomExecutor {
                 .map(|file| Attachment { file, label: None })
                 .collect();
             Ok(TurnOutput {
-                text: match input.input {
-                    ModelContent::Text(text) => text,
-                    ModelContent::Part(_) | ModelContent::Parts(_) => {
-                        "Custom executor accepted typed input".into()
-                    }
-                },
+                text,
                 attachments,
                 metadata: json!({"owned_by": "application"}),
                 steps: 1,
@@ -116,8 +149,8 @@ pub struct HarnessScenarioReceipt {
     pub admitted_and_completed: bool,
     /// Admission was rejected after cancellation closed the group.
     pub cancellation_rejected_admission: bool,
-    /// A fresh group admitted work after the cancelled group was discarded.
-    pub recovered_with_fresh_group: bool,
+    /// A new executor instance replayed the retained journal after restart.
+    pub durable_replay_after_restart: bool,
     /// A custom executor without an owner journal was rejected by the builder.
     pub journal_boundary_enforced: bool,
 }
@@ -136,10 +169,31 @@ pub async fn execute_harness_scenario() -> HarnessScenarioReceipt {
         Admission::Rejected { .. }
     );
 
-    let recovered_with_fresh_group = match TaskGroup::new(1).try_spawn(async { 11_u8 }).await {
+    let fresh_group_after_cancellation = match TaskGroup::new(1).try_spawn(async { 11_u8 }).await {
         Admission::Accepted(handle) => matches!(handle.result().await, Outcome::Succeeded(11)),
         Admission::Rejected { .. } | Admission::Indeterminate { .. } => false,
     };
+
+    let durable_replay_after_restart =
+        if let Ok(storage) = MemoryHarnessStorage::new(AgentId::new(), 4_096).await {
+            let journal = storage.journal();
+            let input = TurnInput {
+                operation_id: OperationId::new(),
+                input: ModelContent::Text("durable recovery".into()),
+                selected_context: None,
+                max_steps: 1,
+            };
+            let first = CustomExecutor
+                .execute(input.clone(), journal.as_ref())
+                .await;
+            let second = CustomExecutor.execute(input, journal.as_ref()).await;
+            first.is_ok()
+                && second
+                    .as_ref()
+                    .is_ok_and(|output| output.metadata["replayed"] == true)
+        } else {
+            false
+        };
 
     let custom: Arc<dyn Executor> = Arc::new(CustomExecutor);
     let journal_boundary_enforced = HarnessBuilder::new()
@@ -151,7 +205,7 @@ pub async fn execute_harness_scenario() -> HarnessScenarioReceipt {
     HarnessScenarioReceipt {
         admitted_and_completed,
         cancellation_rejected_admission,
-        recovered_with_fresh_group,
+        durable_replay_after_restart,
         journal_boundary_enforced,
     }
 }
@@ -165,7 +219,7 @@ mod tests {
         let receipt = execute_harness_scenario().await;
         assert!(receipt.admitted_and_completed);
         assert!(receipt.cancellation_rejected_admission);
-        assert!(receipt.recovered_with_fresh_group);
+        assert!(receipt.durable_replay_after_restart);
         assert!(receipt.journal_boundary_enforced);
     }
 
@@ -174,5 +228,10 @@ mod tests {
         assert!(SOURCE.ends_with("harness_scenarios.rs"));
         assert!(QUICKSTART_SNIPPET.contains("HarnessBuilder::new"));
         assert!(QUICKSTART_SNIPPET.contains("TaskGroup::new"));
+        assert!(QUICKSTART_SNIPPET.contains("group.cancel()"));
+        assert!(QUICKSTART_SNIPPET.contains("MemoryHarnessStorage"));
+        assert!(QUICKSTART_SNIPPET.contains("durable recovery"));
+        assert!(QUICKSTART_SNIPPET.contains("metadata[\"replayed\"]"));
+        assert!(QUICKSTART_SNIPPET.contains("result.is_err()"));
     }
 }
