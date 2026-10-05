@@ -44,7 +44,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17.0.14'
-          cache: maven
 
       - name: Set up Ada
         if: matrix.target == 'ada'
