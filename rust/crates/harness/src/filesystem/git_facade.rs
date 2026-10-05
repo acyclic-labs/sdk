@@ -362,36 +362,6 @@ impl<S> FilesystemGitFacade<S> {
         controller.apply_project_merge(plan, operation_id).await
     }
 
-    /// Legacy notice-less direct-child publication entrypoint.
-    ///
-    /// This method is retained as a source-compatible guard for older callers,
-    /// but deliberately refuses to publish. Every successful merge must admit
-    /// its notice content before the provider effect, so callers must use
-    /// [`Self::apply_project_merge_for_child_with_notice`] or
-    /// [`Self::apply_project_merge_for_child_with_receipt`].
-    #[deprecated(note = "use a notice-bound direct-child merge method")]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "publication keeps parent, child, plan, and operation identities explicit"
-    )]
-    pub async fn apply_project_merge_for_child<A, O>(
-        &self,
-        _host: &super::FilesystemHost<A, O>,
-        _parent: &Reducer,
-        _child: &Authority,
-        _child_project: &VolumeRef,
-        _plan: &ParentMergePlan<A, O>,
-        _operation_id: OperationId,
-    ) -> Result<JoinOutcome<A, O>>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        Err(Error::Unauthorized(
-            "direct-child merge requires a validated merge notice; use apply_project_merge_for_child_with_notice or _with_receipt".into(),
-        ))
-    }
-
     /// Validates the merge notice and direct-child binding immediately before
     /// applying the inspected provider join. Callers that will publish a
     /// merge receipt should use this boundary so malformed notices cannot
@@ -699,37 +669,6 @@ impl<S> FilesystemGitFacade<S> {
                 .apply_project_merge_sides(plan, request.approval.operation_id, selections)
                 .await
         }
-    }
-
-    /// Legacy notice-less root writeback entrypoint.
-    ///
-    /// This method is retained as a source-compatible guard for older callers,
-    /// but deliberately refuses to publish. Every successful root writeback
-    /// must admit its notice content before the provider effect, so callers
-    /// must use a notice-bound or receipt-bound method.
-    #[deprecated(note = "use a notice-bound root writeback method")]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "approved writeback keeps all authority and generation inputs explicit"
-    )]
-    pub async fn apply_root_writeback_plan_for_child<A, O>(
-        &self,
-        _request: &RootWritebackRequest,
-        _host: &super::FilesystemHost<A, O>,
-        _parent: &Reducer,
-        _child: &Authority,
-        _child_project: &VolumeRef,
-        _plan: &ParentMergePlan<A, O>,
-        _selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
-    ) -> Result<JoinOutcome<A, O>>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        Err(Error::Unauthorized(
-            "root writeback requires a validated merge notice; use _with_notice or _with_receipt"
-                .into(),
-        ))
     }
 
     /// Approved native writeback whose child and merge notice are validated at
