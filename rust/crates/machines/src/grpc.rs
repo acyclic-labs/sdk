@@ -1,7 +1,79 @@
+#[path = "grpc_service.rs"]
+pub mod service;
 use super::*;
 use tonic::transport::{
     Certificate, Channel, ClientTlsConfig, Endpoint as TonicEndpoint, Identity,
 };
+
+mod control_wire {
+    pub mod protocol {
+        pub mod v1 {
+            include!(concat!(
+                env!("OUT_DIR"),
+                "/wire/control/acyclic.protocol.v1.rs"
+            ));
+        }
+    }
+    pub mod transport {
+        pub mod v1 {
+            include!(concat!(
+                env!("OUT_DIR"),
+                "/wire/control/acyclic.transport.v1.rs"
+            ));
+        }
+    }
+}
+
+/// Verify the Rust-owned protocol identity before sending any Machines operation.
+async fn verify_protocol(channel: Channel) -> Result<(), ProviderError> {
+    use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+    use control_wire::protocol::v1::{
+        Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity,
+    };
+    use prost::Message as _;
+    let family = BindingFamily::Machines;
+    let version = control::control_protocol_version(family);
+    let mut client =
+        control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(channel)
+            .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES)
+            .max_encoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+    let mut request = tonic::Request::new(HandshakeRequest {
+        protocol: Some(ProtocolIdentity {
+            version: version.into(),
+            descriptor_digest: control::archived_descriptor_digest(family),
+        }),
+        required: Some(CapabilitySet {
+            capabilities: vec![Capability {
+                name: family.name().into(),
+                version: version.into(),
+            }],
+        }),
+    });
+    request.metadata_mut().insert(
+        control::FAMILY_METADATA_KEY,
+        tonic::metadata::MetadataValue::from_static(family.name()),
+    );
+    request.set_timeout(RPC_TIMEOUT);
+    let response = client
+        .handshake(request)
+        .await
+        .map_err(|error| read_error(&error))?
+        .into_inner();
+    control::validate_handshake_response(
+        family,
+        version,
+        &[control::RequiredCapability {
+            name: family.name(),
+            version,
+        }],
+        &response.encode_to_vec(),
+        control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES,
+    )
+    .map_err(|error| {
+        ProviderError::Rejected(format!("Machines protocol negotiation failed: {error:?}"))
+    })?;
+    Ok(())
+}
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -74,7 +146,7 @@ impl Machines {
         .await
     }
 
-    /// Connects the remote Machines client over gRPC on an HTTPS endpoint with mandatory mutual TLS.
+    /// Connects over mutual TLS and verifies the Rust protocol identity before any operation.
     pub async fn connect(uri: &str, tls: Tls<'_>) -> Result<Self, ProviderError> {
         if !uri.starts_with("https://") {
             return Err(ProviderError::Invalid(
@@ -95,6 +167,7 @@ impl Machines {
             .connect()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
+        verify_protocol(channel.clone()).await?;
         Ok(Self::grpc(channel))
     }
 
@@ -1796,6 +1869,88 @@ mod tests {
         assert!(matches!(result, Err(ProviderError::Invalid(_))));
     }
 
+    #[derive(Clone, Copy)]
+    enum ControlMode {
+        Valid,
+        WrongIdentity,
+        Unauthorized,
+    }
+    struct MachineControl(ControlMode);
+    #[tonic::async_trait]
+    impl control_wire::transport::v1::protocol_service_server::ProtocolService for MachineControl {
+        async fn handshake(
+            &self,
+            request: tonic::Request<control_wire::protocol::v1::HandshakeRequest>,
+        ) -> Result<tonic::Response<control_wire::protocol::v1::HandshakeResponse>, tonic::Status>
+        {
+            use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+            use control_wire::protocol::v1 as model;
+            let family = BindingFamily::Machines;
+            let version = control::control_protocol_version(family);
+            assert_eq!(
+                request
+                    .metadata()
+                    .get(control::FAMILY_METADATA_KEY)
+                    .unwrap(),
+                family.name()
+            );
+            let presented = request.get_ref().protocol.as_ref().unwrap();
+            assert_eq!(presented.version, version);
+            assert_eq!(
+                presented.descriptor_digest,
+                control::archived_descriptor_digest(family)
+            );
+            let required = &request.get_ref().required.as_ref().unwrap().capabilities;
+            assert_eq!(required.len(), 1);
+            assert_eq!(required[0].name, family.name());
+            assert_eq!(required[0].version, version);
+            if matches!(self.0, ControlMode::Unauthorized) {
+                return Err(tonic::Status::unauthenticated("identity rejected"));
+            }
+            Ok(tonic::Response::new(model::HandshakeResponse {
+                protocol: Some(model::ProtocolIdentity {
+                    version: version.into(),
+                    descriptor_digest: if matches!(self.0, ControlMode::WrongIdentity) {
+                        "wrong-archive".into()
+                    } else {
+                        control::archived_descriptor_digest(family)
+                    },
+                }),
+                supported: Some(model::CapabilitySet {
+                    capabilities: vec![model::Capability {
+                        name: family.name().into(),
+                        version: version.into(),
+                    }],
+                }),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_control_rejects_auth_and_protocol_mismatch_before_client_admission()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for mode in [ControlMode::WrongIdentity, ControlMode::Unauthorized] {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                Server::builder().add_service(
+                    control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::new(MachineControl(mode)))
+                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async { let _ = stopped.await; }).await
+            });
+            let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
+                .connect()
+                .await?;
+            assert!(matches!(
+                verify_protocol(channel).await,
+                Err(ProviderError::Rejected(_))
+            ));
+            let _ = shutdown.send(());
+            server.await??;
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn default_remote_transport_completes_authenticated_mtls_grpc_handshake()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1828,6 +1983,8 @@ mod tests {
                         ))
                         .client_ca_root(Certificate::from_pem(server_certificate_pem)),
                 )?
+                .add_service(control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::new(
+                    MachineControl(ControlMode::Valid)))
                 .add_service(MachinesServiceServer::new(service))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     let _ = shutdown_rx.await;

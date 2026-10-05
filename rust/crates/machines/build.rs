@@ -1,27 +1,21 @@
-//! Generates Machines transport bindings from the Rust-model descriptor.
+//! Builds Machines messages and documentation directly from their Rust model.
 
 use prost::Message;
 
-const MODEL_DESCRIPTOR: &str = "src/generated/acyclic-machines-v1.model.bin";
-const MODEL_DESCRIPTOR_ENV: &str = "ACYCLIC_MACHINES_MODEL_DESCRIPTOR";
-const ARCHIVED_DESCRIPTOR: &str = "src/generated/acyclic-machines-v1.bin";
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model_path = std::env::var_os(MODEL_DESCRIPTOR_ENV)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(MODEL_DESCRIPTOR));
-    let descriptors =
-        prost_types::FileDescriptorSet::decode(std::fs::read(&model_path)?.as_slice())?;
+    use acyclic_sdk_contract_wire::{BindingFamily, descriptor_set_with_docs};
+    let model = acyclic_sdk_contract_wire::machines::machines_descriptor();
+    let documented = descriptor_set_with_docs(BindingFamily::Machines, &model)?;
+    let descriptors = prost_types::FileDescriptorSet::decode(documented.as_slice())?;
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("wire");
     let messages_dir = out_dir.join("messages");
     let tonic_dir = out_dir.join("tonic");
     std::fs::create_dir_all(&messages_dir)?;
-
     let mut messages = prost_build::Config::new();
     messages.out_dir(&messages_dir);
     messages.compile_fds(descriptors.clone())?;
 
-    if std::env::var_os("CARGO_FEATURE_GRPC").is_some() {
+    if std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32" {
         std::fs::create_dir_all(&tonic_dir)?;
         tonic_prost_build::configure()
             .out_dir(&tonic_dir)
@@ -30,10 +24,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .extern_path(".acyclic.machines.v1", "crate::wire")
             .compile_fds_with_config(descriptors, tonic_prost_build::Config::new())?;
     }
-
-    println!("cargo:rerun-if-changed={MODEL_DESCRIPTOR}");
-    println!("cargo:rerun-if-changed={}", model_path.display());
-    println!("cargo:rerun-if-changed={ARCHIVED_DESCRIPTOR}");
-    println!("cargo:rerun-if-env-changed={MODEL_DESCRIPTOR_ENV}");
+    acyclic_sdk_contract_wire::transport_control::generate_control_bindings(
+        &out_dir.join("control"),
+        acyclic_sdk_contract_wire::BindingTransport::Tonic {
+            client: std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32",
+            server: std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32",
+        },
+    )?;
+    for source in [
+        "build.rs",
+        "../sdk-contract-wire/src/machines.rs",
+        "../sdk-contract-wire/src/protocol.rs",
+        "../sdk-contract-wire/src/transport_control.rs",
+        "../sdk-contract-wire/src/lib.rs",
+        "../sdk-contract-wire/src/bindings.rs",
+        "../sdk-contract-options/src/lib.rs",
+    ] {
+        println!("cargo:rerun-if-changed={source}");
+    }
     Ok(())
 }
