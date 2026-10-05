@@ -52,5 +52,11 @@
     "package_command": "wasm-bindgen --target web --out-dir work/remote-browser-package-private work/remote-browser-target-private/wasm32-unknown-unknown/debug/acyclic_sdk_remote_web.wasm",
     "cargo_home": "work/cargo-home-private",
     "target_dir": "work/remote-browser-target-private"
+  },
+  "filesystem_wasm_check": {
+    "status": "passed",
+    "command": "cargo check --offline --manifest-path rust/crates/filesystem-wasm/Cargo.toml --target wasm32-unknown-unknown --target-dir work/fs-wasm-target-private",
+    "log": "work/fs-wasm-private.err",
+    "log_sha256": "1a5387bb084be8c848bc0642fa9a5422f6cba11dbdaf7714cb895e162d6f0f0b"
   }
 }
