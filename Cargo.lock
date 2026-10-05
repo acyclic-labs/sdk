@@ -20,7 +20,6 @@ version = "0.2.0"
 dependencies = [
  "acyclic-sdk-contract-wire",
  "acyclic-workers",
- "futures",
  "prost",
  "prost-reflect",
  "rcgen",
@@ -212,14 +211,11 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
- "acyclic-sdk-contract-wire",
- "futures",
  "prost",
  "prost-build",
  "prost-reflect",
  "prost-types",
  "rcgen",
- "reqwest",
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
@@ -250,7 +246,6 @@ version = "0.2.0"
 dependencies = [
  "acyclic-inference",
  "acyclic-inference-contract",
- "acyclic-sdk-contract-wire",
  "js-sys",
  "prost",
  "prost-reflect",
@@ -337,7 +332,6 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
- "acyclic-sdk-contract-wire",
  "async-trait",
  "axum",
  "blake3",
@@ -432,15 +426,11 @@ version = "0.1.0"
 dependencies = [
  "acyclic-sdk-contract-options",
  "acyclic-sdk-contract-validation",
- "base64 0.22.1",
- "hex",
  "prost",
  "prost-build",
- "prost-reflect",
  "prost-types",
  "protoc-gen-prost",
  "protoc-gen-tonic",
- "serde_json",
  "sha2 0.10.9",
  "tonic-prost-build",
 ]
@@ -499,7 +489,6 @@ dependencies = [
  "js-sys",
  "libc",
  "prost",
- "prost-reflect",
  "protoc-bin-vendored",
  "rcgen",
  "reqwest",
@@ -557,7 +546,6 @@ name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
  "acyclic-sdk-contract-wire",
- "futures",
  "prost",
  "prost-reflect",
  "reqwest",
