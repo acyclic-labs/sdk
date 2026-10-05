@@ -2555,6 +2555,7 @@ fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<T, JsValue>
 fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
         .serialize_large_number_types_as_bigints(true)
+        .serialize_maps_as_objects(true)
         .serialize_missing_as_null(true);
     value
         .serialize(&serializer)
