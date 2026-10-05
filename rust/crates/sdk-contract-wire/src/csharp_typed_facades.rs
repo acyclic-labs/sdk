@@ -152,7 +152,11 @@ fn render_semantic_types(out: &mut String) {
                     .rules
                     .iter()
                     .any(|rule| matches!(rule, SemanticRule::StrictlyPositive));
-                let check = positive.then(|| "        if (Value <= 0) throw new ArgumentOutOfRangeException(nameof(Value));\n").unwrap_or_default();
+                let check = if positive {
+                    "        if (Value <= 0) throw new ArgumentOutOfRangeException(nameof(Value));\n"
+                } else {
+                    ""
+                };
                 out.push_str(&format!("public readonly record struct {ty}(long Value)\n{{\n    internal long ToWire()\n    {{\n{check}        return Value;\n    }}\n}}\n\n"));
             }
             WireValueKind::Boolean => {
@@ -340,41 +344,25 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
             Some(kind) if kind == FieldType::String as i32 => "string".to_owned(),
             Some(kind) if kind == FieldType::Bytes as i32 => "ByteString".to_owned(),
             Some(kind) if kind == FieldType::Bool as i32 => "bool".to_owned(),
-            Some(kind)
-                if matches!(
-                    kind,
-                    x if x == FieldType::Uint32 as i32
-                        || x == FieldType::Fixed32 as i32
-                ) =>
+            Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 =>
             {
                 "uint".to_owned()
             }
-            Some(kind)
-                if matches!(
-                    kind,
-                    x if x == FieldType::Uint64 as i32
-                        || x == FieldType::Fixed64 as i32
-                ) =>
+            Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 =>
             {
                 "ulong".to_owned()
             }
             Some(kind)
-                if matches!(
-                    kind,
-                    x if x == FieldType::Int32 as i32
-                        || x == FieldType::Sint32 as i32
-                        || x == FieldType::Sfixed32 as i32
-                ) =>
+                if kind == FieldType::Int32 as i32
+                    || kind == FieldType::Sint32 as i32
+                    || kind == FieldType::Sfixed32 as i32 =>
             {
                 "int".to_owned()
             }
             Some(kind)
-                if matches!(
-                    kind,
-                    x if x == FieldType::Int64 as i32
-                        || x == FieldType::Sint64 as i32
-                        || x == FieldType::Sfixed64 as i32
-                ) =>
+                if kind == FieldType::Int64 as i32
+                    || kind == FieldType::Sint64 as i32
+                    || kind == FieldType::Sfixed64 as i32 =>
             {
                 "long".to_owned()
             }
@@ -417,12 +405,10 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
             && binding.message == field.root_message.rsplit('.').next().unwrap_or_default()
             && binding.wire_field == field.field
             && binding.direction == PublicFieldDirection::Request
-    }) {
-        if upper(binding.field) == property {
-            if let Some(assignment) = csharp_wire_assignment(family, binding) {
-                return assignment;
-            }
-        }
+    }) && upper(binding.field) == property
+        && let Some(assignment) = csharp_wire_assignment(family, binding)
+    {
+        return assignment;
     }
     if let Some(semantic_id) = field.semantic_type.as_deref() {
         let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
@@ -911,14 +897,13 @@ fn render_nested_response_models(out: &mut String) {
     let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
     let mut nested_messages = BTreeSet::<String>::new();
     for field in &fields {
-        if let Some(type_name) = field.type_name.as_deref() {
-            if !field.map_entry && matches!(
+        if let Some(type_name) = field.type_name.as_deref()
+            && !field.map_entry && matches!(
                 field.wire_type,
                 Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32
             ) && !type_name.trim_start_matches('.').starts_with("google.protobuf.")
-            {
-                nested_messages.insert(type_name.trim_start_matches('.').to_owned());
-            }
+        {
+            nested_messages.insert(type_name.trim_start_matches('.').to_owned());
         }
     }
 
@@ -1012,8 +997,7 @@ fn render_response_models(out: &mut String) {
             if field.wire_type == Some(FieldType::Enum as i32) && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
                 out.push_str(&format!("    public int {property}Number => (int)Wire.{property};\n"));
             }
-            if field.oneof_index.is_some() {
-                let oneof = field.oneof_index.unwrap();
+            if let Some(oneof) = field.oneof_index {
                 out.push_str(&format!("    public int {property}OneofIndex => {oneof};\n"));
             }
         }
