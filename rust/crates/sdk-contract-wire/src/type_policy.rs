@@ -2460,10 +2460,11 @@ pub fn audit_generated_public_surfaces(
                     Some("Go semantic identity is erased to any")
                 }
                 "jvm"
-                    if ((line.contains("public acyclic.") && line.contains("()"))
-                        || line.contains("public java.util.List<acyclic.")
-                        || line.contains("public com.google.protobuf.ByteString"))
-                        && !line.contains("toWire") =>
+                    if jvm_raw_public_wire_record(line)
+                        || (((line.contains("public acyclic.") && line.contains("()"))
+                            || line.contains("public java.util.List<acyclic.")
+                            || line.contains("public com.google.protobuf.ByteString"))
+                            && !line.contains("toWire")) =>
                     Some("public JVM response getter exposes a raw protobuf message"),
                 "swift" if line.contains("public let wire: RustWireMessage") => {
                     Some("public Swift wrapper exposes an opaque RustWireMessage")
@@ -2576,6 +2577,18 @@ fn csharp_raw_public_wire_record(line: &str) -> bool {
     trimmed.starts_with("public sealed record ")
         && trimmed.contains(" Wire)")
         && (trimmed.contains("Acyclic.") || trimmed.contains("Inference."))
+}
+
+fn jvm_raw_public_wire_record(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let record_declaration = trimmed.starts_with("public record ")
+        || trimmed.starts_with("data class ")
+        || trimmed.starts_with("final case class ");
+    record_declaration
+        && (trimmed.contains("(acyclic.")
+            || trimmed.contains("(inference.")
+            || trimmed.contains("value: acyclic.")
+            || trimmed.contains("value: inference."))
 }
 
 /// Check that each generated facade contains the Rust-owned type features
@@ -2737,7 +2750,10 @@ fn surface_language(path: &Path) -> Option<&'static str> {
         Some("python")
     } else if name == "client.go" {
         Some("go")
-    } else if name == "RustTypedResponses.java" {
+    } else if name == "RustTypedResponses.java"
+        || name == "RustTypedResponses.kt"
+        || name == "RustTypedResponses.scala"
+    {
         Some("jvm")
     } else if name == "RustTypedClients.swift" {
         Some("swift")
@@ -2822,6 +2838,16 @@ mod tests {
             "public acyclic.protocol.v1.Protocol.HandshakeResponse protocol() { }\n",
         )
         .expect("jvm fixture");
+        fs::write(
+            root.join("jvm").join("RustTypedResponses.kt"),
+            "data class RawKotlinResponse(val value: acyclic.protocol.v1.Protocol.HandshakeResponse) { fun toWire(): acyclic.protocol.v1.Protocol.HandshakeResponse = value }\n",
+        )
+        .expect("kotlin fixture");
+        fs::write(
+            root.join("jvm").join("RustTypedResponses.scala"),
+            "final case class RawScalaResponse(value: acyclic.protocol.v1.Protocol.HandshakeResponse) { def toWire: acyclic.protocol.v1.Protocol.HandshakeResponse = value }\n",
+        )
+        .expect("scala fixture");
         fs::write(
             root.join("csharp").join("RustTypedClients.cs"),
             "public sealed record RawResponse(Acyclic.Protocol.V1.HandshakeResponse Wire);\npublic sealed record TypedResponse(ProtocolHandshakeResponseValue Value);\n",
