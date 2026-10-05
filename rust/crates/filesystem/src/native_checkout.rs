@@ -362,4 +362,50 @@ mod tests {
         assert_eq!(std::fs::read(root.path().join("tracked.txt"))?, b"user-edit");
         Ok(())
     }
+
+    #[tokio::test]
+    async fn native_rescan_replay_returns_the_committed_output_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        std::fs::write(root.path().join("tracked.txt"), b"before")?;
+        let fs = Fs::memory();
+        let checkout = HostCheckout::attach(
+            &fs,
+            "native-receipt-generation",
+            root.path(),
+            SourceOptions {
+                mode: SourceMode::Pinned,
+                ..SourceOptions::default()
+            },
+        )
+        .await?;
+        let input = checkout.binding().await.generation_id;
+        std::fs::write(root.path().join("tracked.txt"), b"after")?;
+        let key = IdempotencyKey::from_bytes([0xaa; 16]);
+        let output = match checkout.source().rescan_with_key(key).await? {
+            crate::ReconcileOutcome::Clean(generation) => generation.id(),
+            crate::ReconcileOutcome::NeedsRescan(reason) => {
+                return Err(format!("native rescan remained invalid: {reason:?}").into());
+            }
+            crate::ReconcileOutcome::Conflict => {
+                return Err("native rescan unexpectedly conflicted".into());
+            }
+        };
+        assert_ne!(input, output);
+
+        // Reopening the same operation returns its durable output generation;
+        // it must never reinterpret the input binding as the committed result.
+        let replay = match checkout.source().rescan_with_key(key).await? {
+            crate::ReconcileOutcome::Clean(generation) => generation.id(),
+            crate::ReconcileOutcome::NeedsRescan(reason) => {
+                return Err(format!("native replay remained invalid: {reason:?}").into());
+            }
+            crate::ReconcileOutcome::Conflict => {
+                return Err("native replay unexpectedly conflicted".into());
+            }
+        };
+        assert_eq!(replay, output);
+        assert_eq!(checkout.binding().await.generation_id, output);
+        Ok(())
+    }
 }
