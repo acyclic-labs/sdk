@@ -3774,7 +3774,6 @@ impl PersistentLocalSwarm {
                 "child operation is already bound to another fork request".into(),
             ));
         }
-        let parent_harness = self.open_session(request.parent).await?;
         let publication = self.publications.lock().await.get(&child).cloned();
         let declaration = self.declarations.lock().await.get(&child).cloned();
         let stored_publication = publication.clone();
@@ -3785,35 +3784,6 @@ impl PersistentLocalSwarm {
                 "typed publication and recursive declaration are required; use publish_and_activate_child_with_publication".into(),
             ));
         }
-        let declared_suffix = declaration.as_ref().map(|value| value.suffix.clone());
-        let parent_declaration = self.declarations.lock().await.get(&request.parent).cloned();
-        let (boundary, verified_parent) = match (publication, declaration) {
-            (Some(publication), Some(_declaration)) => {
-                let verified = match parent_declaration {
-                    Some(parent_declaration) => {
-                        let inherited = parent_declaration.context(self.config.limits)?;
-                        parent_harness
-                            .storage()
-                            .verified_inherited_model_fork_boundary(
-                                &publication,
-                                self.config.limits,
-                                &inherited,
-                            )
-                            .await?
-                    }
-                    None => {
-                        parent_harness
-                            .storage()
-                            .verified_model_fork_boundary(&publication, self.config.limits)
-                            .await?
-                    }
-                };
-                let (boundary, parent) = verified.into_parts();
-                (boundary, Some(parent))
-            }
-            _ => unreachable!("typed publication and declaration were checked together"),
-        };
-        let storage_parent = verified_parent.as_ref().unwrap_or(parent);
         let publication = stored_publication.ok_or_else(|| {
             Error::Conflict("published model batch disappeared before admission".into())
         })?;
@@ -3823,6 +3793,12 @@ impl PersistentLocalSwarm {
         let report = stored_report.ok_or_else(|| {
             Error::Conflict("prepared fork report disappeared before admission".into())
         })?;
+        // The declaration was authenticated against the completed parent
+        // boundary during admission. Recovery must use those immutable bytes
+        // before consulting the parent's mutable current tail.
+        declaration.context(self.config.limits)?;
+        let boundary = declaration.boundary.clone();
+        let declared_suffix = declaration.suffix.clone();
         // Preparation is the only admission path. Its authoritative record
         // retains the request, seed, report and completed model declaration
         // together; activation must never create a second admission.
@@ -3860,6 +3836,7 @@ impl PersistentLocalSwarm {
                 }).await?;
             }
         }
+        let storage_parent = parent;
         let registry = self.registry.stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         // The durable claim permits cold recovery, but a live writer still
@@ -3985,19 +3962,6 @@ impl PersistentLocalSwarm {
         let _completion_guard = gate.lock().await;
         self.refresh_registry_state().await?;
         let parent = self.session(request.parent).await?;
-        validate_recursive_depth(parent.depth, self.config.maximum_depth)?;
-        let child_count = self
-            .records
-            .lock()
-            .await
-            .values()
-            .filter(|session| session.parent == Some(request.parent) && session.task != child)
-            .count();
-        if child_count >= self.config.maximum_children {
-            return Err(Error::Unauthorized(
-                "local swarm child limit exceeded".into(),
-            ));
-        }
         if let Some(existing) = self.records.lock().await.get(&child).cloned() {
             if self.requests.lock().await.get(&child) != Some(request)
                 || self.seeds.lock().await.get(&child) != Some(seed)
@@ -4026,6 +3990,48 @@ impl PersistentLocalSwarm {
                 return Ok(());
             }
             return Ok(());
+        }
+        validate_recursive_depth(parent.depth, self.config.maximum_depth)?;
+        let child_count = self
+            .records
+            .lock()
+            .await
+            .values()
+            .filter(|session| session.parent == Some(request.parent) && session.task != child)
+            .count();
+        if child_count >= self.config.maximum_children {
+            return Err(Error::Unauthorized(
+                "local swarm child limit exceeded".into(),
+            ));
+        }
+        // Authenticate the immutable declaration while the parent boundary
+        // is still current. Later activation may recover from a stale parent
+        // tail, but it can only trust a declaration that crossed this check
+        // before its durable admission record was written.
+        let parent_declaration = self.declarations.lock().await.get(&request.parent).cloned();
+        let verified = match parent_declaration {
+            Some(parent_declaration) => {
+                let inherited = parent_declaration.context(self.config.limits)?;
+                parent_storage
+                    .storage()
+                    .verified_inherited_model_fork_boundary(
+                        &publication,
+                        self.config.limits,
+                        &inherited,
+                    )
+                    .await?
+            }
+            None => {
+                parent_storage
+                    .storage()
+                    .verified_model_fork_boundary(&publication, self.config.limits)
+                    .await?
+            }
+        };
+        if verified.boundary() != &declaration.boundary {
+            return Err(Error::Conflict(
+                "published declaration differs from the authenticated model boundary".into(),
+            ));
         }
         let registry = self
             .registry
@@ -5615,6 +5621,7 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ContextStage;
     use crate::interaction::Interaction;
     use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
@@ -5658,6 +5665,56 @@ mod tests {
             validate_recursive_depth(1, 1),
             Err(Error::Unauthorized(message)) if message.contains("depth limit")
         ));
+    }
+
+    #[tokio::test]
+    async fn admitted_child_context_replays_persisted_boundary_before_live_tail() -> Result<()> {
+        let limits = Limits::default();
+        let boundary = CompletedModelBoundary::capture(
+            ModelRequest {
+                model: Model::new("mock", "fork-recovery", "1", Value::Null)?,
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("pinned parent exchange".into()),
+                }],
+                tools: Vec::new(),
+                max_output_tokens: Some(64),
+            },
+            limits,
+        )?;
+        let declaration = LocalInheritedModelDeclaration {
+            boundary: boundary.clone(),
+            suffix: vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("child task; fresh scratch".into()),
+            }],
+        };
+        let context = declaration.context(limits)?;
+
+        // A later parent tail is deliberately unrelated to the admitted
+        // declaration. Applying recovery must replay only its frozen bytes
+        // and explicit child suffix.
+        let live_parent_tail = ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("later parent mutation".into()),
+        };
+        let applied = context
+            .apply(
+                &crate::context::ContextInput {
+                    input: ModelContent::Text("child prompt".into()),
+                    selected_context: None,
+                    step: 0,
+                    prior_messages: Vec::new(),
+                },
+                crate::context::Context::default(),
+            )
+            .await?;
+        assert_eq!(
+            applied.messages,
+            [boundary.request.messages.clone(), declaration.suffix.clone()].concat()
+        );
+        assert!(!applied.messages.contains(&live_parent_tail));
+        Ok(())
     }
 
     fn test_fork_intent(child: u8) -> LocalForkIntent {
