@@ -2,19 +2,34 @@
 //!
 //! This module exercises the public Rust admission and cancellation surface,
 //! and keeps the custom executor implementation identical in shape to the
-//! canonical Harness example.  Durable model turns still require an
-//! application-owned journal, so the builder receipt records that admission
-//! boundary instead of inventing a journal implementation here.
+//! canonical Harness example.  The recovery scenario owns its journal and
+//! reopens it from the local filesystem across an actual process boundary.
 
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs::{Fs, LocalAuthorityBackend, LocalObjectBackend, LocalOptions};
 use acyclic_harness::conversation::Attachment;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
 use acyclic_harness::executor::{
     ExecutionEvent, ExecutionJournal, Executor, TurnInput, TurnOutput,
 };
-use acyclic_harness::filesystem::MemoryHarnessStorage;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::filesystem::{FilesystemExecutionJournal, FilesystemHost};
 use acyclic_harness::model::{ModelContent, ModelEvent};
-use acyclic_harness::{Admission, AgentId, HarnessBuilder, OperationId, Outcome, TaskGroup};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::resources::ProviderRef;
+use acyclic_harness::{
+    Admission, AgentId, Capabilities, HarnessBuilder, OperationId, Outcome, TaskGroup,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{FutureExt as _, future::BoxFuture};
 use serde_json::json;
 
@@ -23,10 +38,104 @@ pub const SOURCE: &str = "rust/crates/sdk-examples/src/harness_scenarios.rs";
 /// Stable scenario identity consumed by docs and fixture reports.
 pub const SCENARIO_ID: &str = "harness-admission-recovery-cancel";
 
+#[cfg(not(target_arch = "wasm32"))]
+type PersistentJournal =
+    FilesystemExecutionJournal<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+
+/// Reopenable local Harness journal used by the recovery scenario.
+///
+/// The Stream log and staged event payloads both live below `root`, so dropping
+/// this value and opening it again exercises the same on-disk recovery path a
+/// process restart uses.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct PersistentHarnessStorage {
+    journal: Arc<PersistentJournal>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PersistentHarnessStorage {
+    pub async fn open(root: &Path, agent: AgentId) -> acyclic_harness::Result<Self> {
+        let stream = LocalStream::open(root.join("stream"), LocalStreamLimits::default())
+            .await
+            .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+        let filesystem = Fs::local(LocalOptions::new(root.join("filesystem")))
+            .await
+            .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+        let provider = ProviderRef::new("persistent-local", "filesystem", "2")?;
+        let host = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "sdk-examples-harness",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        let workspace =
+            acyclic_harness::filesystem::workspace_ref(provider.clone(), &volume.storage_name()?)?;
+        if host.resolve(&workspace).await.is_err() {
+            host.create_volume(&volume).await?;
+        }
+        let issuer = AuthorityIssuer::new(
+            "persistent-sdk-examples",
+            [0x5a; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "sdk-examples-persistent-recovery".into(),
+            },
+        );
+        let scope = issuer.root_for_agent(
+            agent,
+            "owner",
+            Capabilities::new([
+                volume.capability(VolumeOperation::Read)?,
+                volume.capability(VolumeOperation::Write)?,
+            ]),
+        );
+        let journal = FilesystemExecutionJournal::new(
+            StreamClient::new(Arc::new(stream)),
+            host,
+            volume,
+            issuer.verifier(),
+            scope,
+            4_096,
+        )?;
+        Ok(Self {
+            journal: Arc::new(journal),
+        })
+    }
+
+    pub fn journal(&self) -> Arc<dyn ExecutionJournal> {
+        self.journal.clone()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Runs the first half of the persistent recovery scenario in a child process.
+pub async fn run_persistent_recovery_child(
+    root: &Path,
+    agent: AgentId,
+    operation_id: OperationId,
+) -> Result<(), String> {
+    let storage = PersistentHarnessStorage::open(root, agent)
+        .await
+        .map_err(|error| error.to_string())?;
+    let input = TurnInput {
+        operation_id,
+        input: ModelContent::Text("durable recovery".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    CustomExecutor
+        .execute(input, storage.journal().as_ref())
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 /// Rust source shown in the Harness custom executor projection.
 pub const QUICKSTART_SNIPPET: &str = r#"use std::sync::Arc;
+use std::path::PathBuf;
+use acyclic_sdk_examples::harness_scenarios::PersistentHarnessStorage;
 use acyclic_harness::executor::{Executor, TurnInput};
-use acyclic_harness::filesystem::MemoryHarnessStorage;
 use acyclic_harness::model::ModelContent;
 use acyclic_harness::{
     Admission, AgentId, HarnessBuilder, OperationId, Outcome, TaskGroup,
@@ -51,18 +160,22 @@ let fresh_group_after_cancellation = match TaskGroup::new(1).try_spawn(async { 1
 };
 assert!(fresh_group_after_cancellation);
 
-// A durable custom executor must bind its journal explicitly and replay it
-// after a process restart.
-let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
-let journal = storage.journal();
+// A durable custom executor binds an on-disk journal explicitly. The
+// executable scenario runs the first turn in a child process, then reopens
+// this same root in the parent process.
+let root = PathBuf::from("./.acyclic-harness-example");
+let agent = AgentId::new();
+let storage = PersistentHarnessStorage::open(&root, agent).await?;
 let input = TurnInput {
     operation_id: OperationId::new(),
     input: ModelContent::Text("durable recovery".into()),
     selected_context: None,
     max_steps: 1,
 };
-let _first = MyExecutor.execute(input.clone(), journal.as_ref()).await?;
-let resumed = MyExecutor.execute(input, journal.as_ref()).await?;
+let _first = MyExecutor.execute(input.clone(), storage.journal().as_ref()).await?;
+drop(storage);
+let storage = PersistentHarnessStorage::open(&root, agent).await?;
+let resumed = MyExecutor.execute(input, storage.journal().as_ref()).await?;
 assert_eq!(resumed.metadata["replayed"], true);
 
 // A custom executor without an owner journal is rejected.
@@ -169,31 +282,78 @@ pub async fn execute_harness_scenario() -> HarnessScenarioReceipt {
         Admission::Rejected { .. }
     );
 
-    let fresh_group_after_cancellation = match TaskGroup::new(1).try_spawn(async { 11_u8 }).await {
+    let _fresh_group_after_cancellation = match TaskGroup::new(1).try_spawn(async { 11_u8 }).await {
         Admission::Accepted(handle) => matches!(handle.result().await, Outcome::Succeeded(11)),
         Admission::Rejected { .. } | Admission::Indeterminate { .. } => false,
     };
 
-    let durable_replay_after_restart =
-        if let Ok(storage) = MemoryHarnessStorage::new(AgentId::new(), 4_096).await {
-            let journal = storage.journal();
-            let input = TurnInput {
-                operation_id: OperationId::new(),
-                input: ModelContent::Text("durable recovery".into()),
-                selected_context: None,
-                max_steps: 1,
-            };
-            let first = CustomExecutor
-                .execute(input.clone(), journal.as_ref())
-                .await;
-            let second = CustomExecutor.execute(input, journal.as_ref()).await;
-            first.is_ok()
-                && second
-                    .as_ref()
-                    .is_ok_and(|output| output.metadata["replayed"] == true)
-        } else {
-            false
+    #[cfg(not(target_arch = "wasm32"))]
+    let durable_replay_after_restart = {
+        let operation_id = OperationId::new();
+        let root =
+            std::env::temp_dir().join(format!("acyclic-sdk-examples-harness-{}", operation_id));
+        let agent = AgentId::new();
+        let input = TurnInput {
+            operation_id,
+            input: ModelContent::Text("durable recovery".into()),
+            selected_context: None,
+            max_steps: 1,
         };
+        let executable = std::env::current_exe().ok();
+        let child_process = executable.as_ref().filter(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.starts_with("sdk-examples"))
+        });
+        let first = if let Some(executable) = child_process {
+            let child = std::process::Command::new(executable)
+                .env("ACYCLIC_HARNESS_RECOVERY_CHILD", "first")
+                .env("ACYCLIC_HARNESS_RECOVERY_ROOT", &root)
+                .env(
+                    "ACYCLIC_HARNESS_RECOVERY_AGENT",
+                    hex::encode(agent.into_bytes()),
+                )
+                .env(
+                    "ACYCLIC_HARNESS_RECOVERY_OPERATION",
+                    hex::encode(operation_id.into_bytes()),
+                )
+                .status();
+            match child {
+                Ok(status) if status.success() => Ok(()),
+                Ok(status) => Err(acyclic_harness::Error::Storage(format!(
+                    "persistent recovery child exited with {status}"
+                ))),
+                Err(error) => Err(acyclic_harness::Error::Storage(format!(
+                    "start persistent recovery child: {error}"
+                ))),
+            }
+        } else if let Ok(storage) = PersistentHarnessStorage::open(&root, agent).await {
+            let journal = storage.journal();
+            CustomExecutor
+                .execute(input.clone(), journal.as_ref())
+                .await
+                .map(|_| ())
+        } else {
+            Err(acyclic_harness::Error::Storage(
+                "open persistent Harness storage".into(),
+            ))
+        };
+        let second = if let Ok(storage) = PersistentHarnessStorage::open(&root, agent).await {
+            let journal = storage.journal();
+            CustomExecutor.execute(input, journal.as_ref()).await
+        } else {
+            Err(acyclic_harness::Error::Storage(
+                "reopen persistent Harness storage".into(),
+            ))
+        };
+        let _ = std::fs::remove_dir_all(&root);
+        first.is_ok()
+            && second
+                .as_ref()
+                .is_ok_and(|output| output.metadata["replayed"] == true)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let durable_replay_after_restart = false;
 
     let custom: Arc<dyn Executor> = Arc::new(CustomExecutor);
     let journal_boundary_enforced = HarnessBuilder::new()
@@ -229,7 +389,8 @@ mod tests {
         assert!(QUICKSTART_SNIPPET.contains("HarnessBuilder::new"));
         assert!(QUICKSTART_SNIPPET.contains("TaskGroup::new"));
         assert!(QUICKSTART_SNIPPET.contains("group.cancel()"));
-        assert!(QUICKSTART_SNIPPET.contains("MemoryHarnessStorage"));
+        assert!(QUICKSTART_SNIPPET.contains("PersistentHarnessStorage"));
+        assert!(QUICKSTART_SNIPPET.contains("child process"));
         assert!(QUICKSTART_SNIPPET.contains("durable recovery"));
         assert!(QUICKSTART_SNIPPET.contains("metadata[\"replayed\"]"));
         assert!(QUICKSTART_SNIPPET.contains("result.is_err()"));
