@@ -267,6 +267,15 @@ export function decodeHttpResponse(route, response_json) {
 }
 
 /**
+ * Returns the canonical default cumulative hosted response bound.
+ * @returns {bigint}
+ */
+export function defaultHttpResponseBytes() {
+    const ret = wasm.defaultHttpResponseBytes();
+    return BigInt.asUintN(64, ret);
+}
+
+/**
  * Encode one protobuf request into the hosted Stream HTTP JSON shape.
  *
  * Protobuf remains the only request contract crossing from TypeScript into

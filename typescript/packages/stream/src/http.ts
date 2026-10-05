@@ -1,5 +1,5 @@
 import { validateAppend } from "./client.js";
-import { consumeHttpResponseBytes, HttpFollowCursor, nextHttpFollowCursor, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
+import { consumeHttpResponseBytes, defaultHttpResponseBytes, HttpFollowCursor, nextHttpFollowCursor, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
@@ -23,7 +23,7 @@ export class HttpStreamProvider implements StreamProvider {
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
-    this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
+    this.#maximum = options.maximumResponseBytes ?? Number(defaultHttpResponseBytes());
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
   async inspectIdempotency(key: IdempotencyKey, signal?: AbortSignal): Promise<IdempotencyObservation | undefined> { const input = wireInspectIdempotencyRequest(key); return this.#request("idempotency/inspect", await encodeHttpRequest("idempotency/inspect", input), signal); }

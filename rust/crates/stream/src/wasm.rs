@@ -653,6 +653,12 @@ pub fn consume_http_response_bytes(total: u64, chunk: u64, maximum: u64) -> Resu
     crate::http_validation::consume_response_bytes(total, chunk, maximum).map_err(JsValue::from_str)
 }
 
+/// Returns the canonical default cumulative hosted response bound.
+#[wasm_bindgen(js_name = defaultHttpResponseBytes)]
+pub fn default_http_response_bytes() -> u64 {
+    crate::DEFAULT_HTTP_RESPONSE_BYTES as u64
+}
+
 /// Rust-owned state machine for the polling form of hosted HTTP follow.
 /// The JavaScript boundary supplies only fetch and timer primitives.
 #[wasm_bindgen(js_name = HttpFollowCursor)]

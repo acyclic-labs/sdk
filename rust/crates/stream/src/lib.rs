@@ -72,6 +72,8 @@ const REPLAY_PAGE: u32 = 1_024;
 const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
+/// Default cumulative hosted HTTP response bound used by generated adapters.
+pub const DEFAULT_HTTP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// Historical minimum replay window, preserved for source compatibility.
 /// Expiry never authorizes re-executing an admitted identity. Memory and local
 /// providers retain full outcomes indefinitely within their capacity limits.

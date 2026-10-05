@@ -92,6 +92,11 @@ export function consumeHttpResponseBytes(total: bigint, chunk: bigint, maximum: 
 export function decodeHttpResponse(route: string, response_json: string): unknown;
 
 /**
+ * Returns the canonical default cumulative hosted response bound.
+ */
+export function defaultHttpResponseBytes(): bigint;
+
+/**
  * Encode one protobuf request into the hosted Stream HTTP JSON shape.
  *
  * Protobuf remains the only request contract crossing from TypeScript into
@@ -280,6 +285,7 @@ export interface InitOutput {
     readonly wasmmemorystream_new: () => number;
     readonly wasmmemorystream_open_follow: (a: number, b: number, c: number) => any;
     readonly wasmmemorystream_read: (a: number, b: number, c: number) => any;
+    readonly defaultHttpResponseBytes: () => bigint;
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_3e72ab6b5fd5cb1b___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_3e72ab6b5fd5cb1b___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

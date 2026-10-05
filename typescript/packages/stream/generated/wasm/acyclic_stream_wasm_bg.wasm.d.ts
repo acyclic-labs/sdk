@@ -42,6 +42,7 @@ export const wasmmemorystream_dispatch: (a: number, b: number, c: number, d: num
 export const wasmmemorystream_new: () => number;
 export const wasmmemorystream_open_follow: (a: number, b: number, c: number) => any;
 export const wasmmemorystream_read: (a: number, b: number, c: number) => any;
+export const defaultHttpResponseBytes: () => bigint;
 export const wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_: (a: number, b: number, c: any) => [number, number];
 export const wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_3e72ab6b5fd5cb1b___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_3e72ab6b5fd5cb1b___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
