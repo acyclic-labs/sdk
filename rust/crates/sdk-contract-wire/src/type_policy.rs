@@ -175,6 +175,12 @@ pub enum SemanticRule {
     PreserveUnknownOneof,
 }
 
+/// Canonical limits shared by the Rust contract model and native family
+/// implementations.  Native crates must reference these values rather than
+/// repeating literals so generated clients and runtime validation cannot drift.
+pub const MACHINE_PAGE_LIMIT_MAX: u32 = 256;
+pub const MACHINE_EVENT_PAGE_LIMIT_MAX: u32 = 1_024;
+
 /// One Rust-owned semantic type.  `rust_name` is documentation and generator
 /// provenance; the wire kind remains explicit so a projection cannot change
 /// the protocol while adding a stronger local type.
@@ -270,7 +276,8 @@ impl PublicFieldBinding {
             | ("machines", "InspectMachineRequest")
             | ("machines", "InspectCheckpointRequest")
             | ("machines", "OperationRequest")
-            | ("machines", "ListMachinesRequest") => Some("machines"),
+            | ("machines", "ListMachinesRequest")
+            | ("machines", "EventsRequest") => Some("machines"),
             ("filesystem", "ReadRequest") => Some("filesystem"),
             _ => None,
         }
@@ -299,6 +306,7 @@ impl PublicFieldBinding {
             (_, "InspectCheckpointRequest") => Some("InspectCheckpoint"),
             (_, "OperationRequest") => Some("InspectOperation"),
             (_, "ListMachinesRequest") => Some("ListMachines"),
+            (_, "EventsRequest") => Some("Events"),
             _ => None,
         }
     }
@@ -494,7 +502,19 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
         id: "machine_page_limit",
         rust_name: "MachinePageLimit",
         wire_kind: WireValueKind::UnsignedInteger,
-        rules: &[SemanticRule::StrictlyPositive, SemanticRule::MaxItems(256)],
+        rules: &[
+            SemanticRule::StrictlyPositive,
+            SemanticRule::MaxItems(MACHINE_PAGE_LIMIT_MAX),
+        ],
+    },
+    SemanticType {
+        id: "machine_event_page_limit",
+        rust_name: "MachineEventPageLimit",
+        wire_kind: WireValueKind::UnsignedInteger,
+        rules: &[
+            SemanticRule::StrictlyPositive,
+            SemanticRule::MaxItems(MACHINE_EVENT_PAGE_LIMIT_MAX),
+        ],
     },
     SemanticType {
         id: "commit_id",
@@ -666,6 +686,11 @@ pub const FIELD_SEMANTIC_TYPES: &[FieldSemanticType] = &[
         family: "machines",
         field: "page_limit",
         semantic_type: "machine_page_limit",
+    },
+    FieldSemanticType {
+        family: "machines",
+        field: "event_page_limit",
+        semantic_type: "machine_event_page_limit",
     },
     FieldSemanticType {
         family: "filesystem",
@@ -942,6 +967,15 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
         semantic_type: "machine_page_limit",
         module: "machines",
         message: "ListMachinesRequest",
+        wire_field: "limit",
+        direction: PublicFieldDirection::Request,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "event_page_limit",
+        semantic_type: "machine_event_page_limit",
+        module: "machines",
+        message: "EventsRequest",
         wire_field: "limit",
         direction: PublicFieldDirection::Request,
     },
@@ -1460,6 +1494,14 @@ mod tests {
             .expect("page limit")
             .rules
             .contains(&SemanticRule::MaxItems(1000)));
+        assert!(semantic_type("machine_page_limit")
+            .expect("machine page limit")
+            .rules
+            .contains(&SemanticRule::MaxItems(MACHINE_PAGE_LIMIT_MAX)));
+        assert!(semantic_type("machine_event_page_limit")
+            .expect("machine event page limit")
+            .rules
+            .contains(&SemanticRule::MaxItems(MACHINE_EVENT_PAGE_LIMIT_MAX)));
         assert!(semantic_type("oneof_arm")
             .expect("oneof")
             .rules
