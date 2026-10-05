@@ -1,6 +1,8 @@
 name: Additional language qualification
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:

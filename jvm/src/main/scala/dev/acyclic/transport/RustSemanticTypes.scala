@@ -2,23 +2,12 @@
 // Semantic intent and validation rules originate in Rust type_policy.rs.
 package dev.acyclic.transport
 
-import scala.collection.JavaConverters._
-
 /** Rust-owned nominal values. Protobuf classes remain the wire boundary. */
 object RustSemanticTypesScala {
   sealed trait WireChoice
-  final case class KnownHeader(payload: RustTypedResponsesScala.ObjectsGetObjectHeaderView) extends WireChoice
-  final case class KnownBody(payload: WireBytes) extends WireChoice
-  final case class KnownError(payload: RustTypedResponsesScala.ObjectsErrorDetailView) extends WireChoice
-  final case class KnownRaw(tag: String, payload: WireBytes) extends WireChoice
-  final case class Unknown(tag: Int, payload: WireBytes) extends WireChoice
-  final case class WireBytes private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
-  object WireBytes { def from(value: com.google.protobuf.ByteString): Either[String, WireBytes] = Right(new WireBytes(value)) }
-  final case class WireEnum private (value: Int) { def toWire: Int = value }
-  object WireEnum { def from(value: Int): Either[String, WireEnum] = Right(new WireEnum(value)) }
-  final case class WireMessage private (value: com.google.protobuf.Message) { def toWire: com.google.protobuf.Message = value }
-  object WireMessage { def from(value: com.google.protobuf.Message): Either[String, WireMessage] = Right(new WireMessage(value)) }
-    def present[T](value: T, isPresent: Boolean): Option[T] = if (isPresent) Option(value) else None
+  final case class Known(tag: String, payload: Array[Byte]) extends WireChoice
+  final case class Unknown(tag: Int, payload: Array[Byte]) extends WireChoice
+  def present[T](value: T, isPresent: Boolean): Option[T] = if (isPresent) Option(value) else None
 
   final case class ActorId private (value: String) { def toWire: String = value }
   object ActorId { def from(value: String): Either[String, ActorId] = try { require(value.size > 0, "ActorId must be non-empty"); require(value.size > 0, "ActorId must be non-empty"); Right(new ActorId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
@@ -53,9 +42,6 @@ object RustSemanticTypesScala {
   final case class OperationId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
   object OperationId { def from(value: com.google.protobuf.ByteString): Either[String, OperationId] = try { require(value.size > 0, "OperationId must be non-empty"); require(value.size == 16, "OperationId must contain exactly 16 bytes"); Right(new OperationId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class WorkspaceId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
-  object WorkspaceId { def from(value: com.google.protobuf.ByteString): Either[String, WorkspaceId] = try { require(value.size > 0, "WorkspaceId must be non-empty"); require(value.size == 16, "WorkspaceId must contain exactly 16 bytes"); Right(new WorkspaceId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
-
   final case class CheckpointId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
   object CheckpointId { def from(value: com.google.protobuf.ByteString): Either[String, CheckpointId] = try { require(value.size > 0, "CheckpointId must be non-empty"); require(value.size == 16, "CheckpointId must contain exactly 16 bytes"); Right(new CheckpointId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
@@ -65,8 +51,8 @@ object RustSemanticTypesScala {
   final case class IdempotencyKeyText private (value: String) { def toWire: String = value }
   object IdempotencyKeyText { def from(value: String): Either[String, IdempotencyKeyText] = try { require(value.size > 0, "IdempotencyKeyText must be non-empty"); require(value.size > 0, "IdempotencyKeyText must be non-empty"); Right(new IdempotencyKeyText(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class IdempotencyKey private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
-  object IdempotencyKey { def from(value: com.google.protobuf.ByteString): Either[String, IdempotencyKey] = try { Right(new IdempotencyKey(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class IdempotencyKey private (value: com.google.protobuf.Message) { def toWire: com.google.protobuf.Message = value }
+  object IdempotencyKey { def from(value: com.google.protobuf.Message): Either[String, IdempotencyKey] = try { Right(new IdempotencyKey(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class OpaqueText private (value: String) { def toWire: String = value }
   object OpaqueText { def from(value: String): Either[String, OpaqueText] = try { require(value.size > 0, "OpaqueText must be non-empty"); require(value.size > 0, "OpaqueText must be non-empty"); Right(new OpaqueText(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
@@ -109,20 +95,5 @@ object RustSemanticTypesScala {
 
   final case class OpenEnumValue private (value: Int) { def toWire: Int = value }
   object OpenEnumValue { def from(value: Int): Either[String, OpenEnumValue] = try { Right(new OpenEnumValue(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
-
-  final case class OpaqueBytes private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
-  object OpaqueBytes { def from(value: com.google.protobuf.ByteString): Either[String, OpaqueBytes] = try { Right(new OpaqueBytes(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
-
-  final case class SequenceNumber private (value: Long) { def toWire: Long = value }
-  object SequenceNumber { def from(value: Long): Either[String, SequenceNumber] = try { require(value >= 0, "SequenceNumber must be non-negative"); Right(new SequenceNumber(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
-
-  final case class NonNegativeCount private (value: Long) { def toWire: Long = value }
-  object NonNegativeCount { def from(value: Long): Either[String, NonNegativeCount] = try { require(value >= 0, "NonNegativeCount must be non-negative"); Right(new NonNegativeCount(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
-
-  final case class PositiveCount private (value: Long) { def toWire: Long = value }
-  object PositiveCount { def from(value: Long): Either[String, PositiveCount] = try { require(value > 0, "PositiveCount must be positive"); Right(new PositiveCount(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
-
-  final case class UnixTimestampMillis private (value: Long) { def toWire: Long = value }
-  object UnixTimestampMillis { def from(value: Long): Either[String, UnixTimestampMillis] = try { require(value >= 0, "UnixTimestampMillis must be non-negative"); Right(new UnixTimestampMillis(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
 }

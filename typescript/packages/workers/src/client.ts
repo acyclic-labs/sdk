@@ -13,19 +13,8 @@ export async function fromEnv(environment: WorkersEnvironment): Promise<WorkersC
   if (selected === undefined) throw new TypeError(`Workers transport ${environment.transport ?? "default"} is unavailable in the ${runtime} runtime`);
   if (selected.kind === "http") return new HttpWorkersClient(environment);
   if (selected.kind !== "grpc" || runtime !== "native") throw new TypeError("Workers gRPC transport requires a native Node or Bun runtime");
-  let createWorkersGrpcClient: typeof import("./grpc.js")["createWorkersGrpcClient"];
-  try {
-    ({ createWorkersGrpcClient } = await import("./grpc.js"));
-  } catch (error) {
-    if (!isOptionalGrpcAdapterUnavailable(error)) throw error;
-    return new HttpWorkersClient(environment);
-  }
+  const { createWorkersGrpcClient } = await import("./grpc.js");
   return createWorkersGrpcClient({ endpoint: environment.endpoint, token: environment.token, ...(environment.maximumResponseBytes === undefined ? {} : { maximumMessageBytes: environment.maximumResponseBytes }) });
-}
-
-function isOptionalGrpcAdapterUnavailable(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /(?:ERR_MODULE_NOT_FOUND|Cannot find module|Cannot resolve module|not found)/i.test(error.message);
 }
 
 function isNativeRuntime(): boolean {

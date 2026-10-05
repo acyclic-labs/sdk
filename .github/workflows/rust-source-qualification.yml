@@ -1,6 +1,36 @@
 name: Rust Source Qualification
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/rust-source-qualification.yml'
+      - '.github/actions/rust-toolchain/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'rust/crates/**/Cargo.toml'
+      - 'rust/crates/**/build.rs'
+      - 'scripts/**'
+      - 'research/acceptance/**'
+      - 'rust/crates/sdk-generation/**'
+      - 'rust/crates/sdk-contract-wire/**'
+      - 'rust/crates/sdk-contract-validation/**'
+      - 'rust/crates/sdk-openapi-prototype/**'
+      - 'rust/crates/sdk-contract-options/**'
+      - 'rust/crates/sdk-docs/**'
+      - 'rust/crates/sdk-examples/**'
+      - 'rust/crates/sdk-embedded-filesystem/**'
+      - 'rust/crates/sdk-embedded-prototype/**'
+      - 'rust/crates/sdk-python/**'
+      - 'rust/crates/sdk-typescript/**'
+      - 'rust/crates/**/src/**'
+      - 'docs/**'
+      - 'typescript/**'
+      - 'cpp/**'
+      - 'swift/**'
+      - 'languages/**'
+      - 'compatibility/**'
+      - 'proto/**'
   release:
     types: [published]
   workflow_dispatch:
@@ -16,10 +46,28 @@ permissions:
   contents: read
 
 concurrency:
-  group: rust-source-qualification-${{ github.ref }}
-  cancel-in-progress: false
+  group: rust-source-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  fast-policy:
+    name: Fast qualification policy
+    if: github.event_name == 'pull_request'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 2
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify qualification policy
+        # Measured locally at 2.7 seconds; no downstream runtimes or packages.
+        run: |
+          node scripts/test-plan-qualification.mjs
+          node --test scripts/test-platform-qualification.mjs
+          node scripts/test-rust-sdk-generation-source-closure.mjs
 
   qualify:
     # Full source and downstream qualification runs on releases or explicit requests.

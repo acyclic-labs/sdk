@@ -2943,6 +2943,186 @@ pub fn audit_generated_public_surfaces(
     Ok(violations)
 }
 
+/// Audit generated source against the descriptor-derived enum, oneof, and
+/// presence inventory.  The ordinary public-surface audit catches a number
+/// of known erasures, but a generator can evade those checks by emitting a
+/// plausible generic wrapper while omitting a descriptor field altogether.
+/// This audit therefore requires generated source to mention the concrete
+/// Rust descriptor identities for every reachable enum and message-valued
+/// oneof arm, and to retain each presence-bearing field name.  It is source
+/// coverage evidence, not a substitute for the target compiler and runtime
+/// conformance suites.
+pub fn audit_generated_descriptor_shape_coverage(
+    artifact_root: &Path,
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    if !artifact_root.is_dir() {
+        return Err(format!(
+            "generated artifact root does not exist: {}",
+            artifact_root.display()
+        ));
+    }
+
+    let enums = resolved_enum_fields()?;
+    let oneofs = resolved_oneof_members()?;
+    let presence = resolved_presence_fields()?;
+    let mut files = Vec::new();
+    collect_surface_files(artifact_root, &mut files);
+    let mut surfaces: std::collections::BTreeMap<&'static str, (Vec<PathBuf>, String)> =
+        std::collections::BTreeMap::new();
+    for path in files {
+        let Some(language) = surface_language(&path) else {
+            continue;
+        };
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("read generated facade {}: {error}", path.display()))?;
+        let entry = surfaces
+            .entry(language)
+            .or_insert_with(|| (Vec::new(), String::new()));
+        entry.0.push(path);
+        entry.1.push_str(&source);
+        entry.1.push('\n');
+    }
+
+    let mut violations = Vec::new();
+    for (language, (paths, source)) in surfaces {
+        let report_path = paths
+            .first()
+            .and_then(|path| path.strip_prefix(artifact_root).ok())
+            .unwrap_or_else(|| paths.first().map(PathBuf::as_path).unwrap_or(artifact_root))
+            .display()
+            .to_string();
+
+        let mut enum_types = std::collections::BTreeSet::new();
+        for entry in &enums {
+            enum_types.insert(entry.enum_type.clone());
+        }
+        for enum_type in enum_types {
+            let simple_name = descriptor_simple_name(&enum_type);
+            if !source_contains_identifier(&source, &simple_name) {
+                violations.push(GeneratedSurfaceViolation {
+                    language,
+                    path: format!("{report_path} (missing Rust enum {enum_type})"),
+                    line: 0,
+                    reason: "generated facade omits a Rust descriptor enum identity",
+                });
+            }
+        }
+
+        let mut message_oneof_types = std::collections::BTreeSet::new();
+        for entry in &oneofs {
+            if !matches!(entry.payload_kind, FieldType::Message | FieldType::Group) {
+                continue;
+            }
+            if let Some(payload_type) = &entry.payload_type {
+                message_oneof_types.insert(payload_type.clone());
+            }
+        }
+        for payload_type in message_oneof_types {
+            let simple_name = descriptor_simple_name(&payload_type);
+            if !source_contains_identifier(&source, &simple_name) {
+                violations.push(GeneratedSurfaceViolation {
+                    language,
+                    path: format!("{report_path} (missing Rust oneof payload {payload_type})"),
+                    line: 0,
+                    reason: "generated facade omits a descriptor-bound message oneof arm",
+                });
+            }
+        }
+
+        let mut presence_fields = std::collections::BTreeSet::new();
+        for entry in &presence {
+            presence_fields.insert((entry.field.field.clone(), entry.field.json_name.clone()));
+        }
+        for (field, json_name) in presence_fields {
+            let field_present = source_contains_identifier(&source, &field)
+                || source_contains_identifier(&source, &json_name)
+                || source_contains_identifier(&source, &snake_to_camel(&field));
+            if !field_present {
+                violations.push(GeneratedSurfaceViolation {
+                    language,
+                    path: format!("{report_path} (missing Rust presence field {field})"),
+                    line: 0,
+                    reason: "generated facade omits a Rust descriptor presence field",
+                });
+            }
+        }
+    }
+    Ok(violations)
+}
+
+/// The fail-closed form of [`audit_generated_descriptor_shape_coverage`].
+/// A language with no generated source cannot satisfy descriptor shape
+/// coverage, even if another language has a complete projection.
+pub fn audit_required_generated_descriptor_shape_coverage(
+    artifact_root: &Path,
+    required_languages: &[&str],
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    if !artifact_root.is_dir() {
+        return Err(format!(
+            "generated artifact root does not exist: {}",
+            artifact_root.display()
+        ));
+    }
+    let mut files = Vec::new();
+    collect_surface_files(artifact_root, &mut files);
+    let present = files
+        .iter()
+        .filter_map(|path| surface_language(path))
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing = required_languages
+        .iter()
+        .filter(|language| !present.contains(**language))
+        .copied()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "missing generated public SDK surfaces in {}: {}",
+            artifact_root.display(),
+            missing.join(", ")
+        ));
+    }
+    audit_generated_descriptor_shape_coverage(artifact_root)
+}
+
+fn descriptor_simple_name(name: &str) -> String {
+    name.rsplit('.').next().unwrap_or(name).to_owned()
+}
+
+fn snake_to_camel(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    let mut uppercase = false;
+    for character in name.chars() {
+        if character == '_' {
+            uppercase = true;
+        } else if uppercase {
+            result.extend(character.to_uppercase());
+            uppercase = false;
+        } else {
+            result.push(character);
+        }
+    }
+    result
+}
+
+fn source_contains_identifier(source: &str, identifier: &str) -> bool {
+    if identifier.is_empty() {
+        return false;
+    }
+    source.lines().filter(|line| !is_source_comment(line)).any(|line| {
+        line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .any(|token| token == identifier)
+    })
+}
+
+fn is_source_comment(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//")
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with("--")
+}
+
 fn typescript_imported_proto_names(source: &str) -> std::collections::BTreeSet<String> {
     source
         .lines()
@@ -4108,6 +4288,51 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn descriptor_shape_audit_rejects_generic_markers_without_rust_identities() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-descriptor-shape-audit-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("jvm")).expect("audit fixture directory");
+        fs::write(
+            root.join("jvm").join("RustSemanticTypes.java"),
+            "// ActorsState, Known, Optional and every descriptor identity\n"
+                .to_owned()
+                + "public sealed interface KnownOneof permits Known, Unknown {}\n"
+                + "record Known(WireBytes payload) implements KnownOneof {}\n"
+                + "record Unknown(int tag, WireBytes payload) implements KnownOneof {}\n",
+        )
+        .expect("generic JVM fixture");
+
+        let findings = audit_generated_descriptor_shape_coverage(&root)
+            .expect("descriptor shape audit fixture");
+        assert!(
+            findings.iter().any(|finding| {
+                finding.reason == "generated facade omits a Rust descriptor enum identity"
+            }),
+            "generic open enum markers must not satisfy descriptor-bound enum coverage"
+        );
+        assert!(
+            findings.iter().any(|finding| {
+                finding.reason == "generated facade omits a descriptor-bound message oneof arm"
+            }),
+            "generic WireBytes oneof arms must not satisfy message-arm coverage"
+        );
+        assert!(
+            findings.iter().any(|finding| {
+                finding.reason == "generated facade omits a Rust descriptor presence field"
+            }),
+            "generic Optional markers must not satisfy descriptor-bound presence coverage"
+        );
+        assert!(
+            findings.iter().all(|finding| !finding.path.contains("every descriptor identity")),
+            "comments must not satisfy descriptor shape coverage"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

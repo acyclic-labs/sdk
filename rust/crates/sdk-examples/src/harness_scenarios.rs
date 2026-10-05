@@ -134,10 +134,11 @@ pub async fn run_persistent_recovery_child(
 /// Rust source shown in the Harness custom executor projection.
 pub const QUICKSTART_SNIPPET: &str = r#"use std::sync::Arc;
 use std::path::PathBuf;
-use acyclic_harness::executor::{ExecutionEvent, ExecutionJournal};
-use acyclic_harness::filesystem::LocalHarnessStorage;
+use acyclic_sdk_examples::harness_scenarios::PersistentHarnessStorage;
+use acyclic_harness::executor::{Executor, TurnInput};
+use acyclic_harness::model::ModelContent;
 use acyclic_harness::{
-    Admission, AgentId, OperationId, Outcome, TaskGroup,
+    Admission, AgentId, HarnessBuilder, OperationId, Outcome, TaskGroup,
 };
 
 let group = TaskGroup::new(1);
@@ -159,22 +160,30 @@ let fresh_group_after_cancellation = match TaskGroup::new(1).try_spawn(async { 1
 };
 assert!(fresh_group_after_cancellation);
 
-// A durable journal is reopened from the same on-disk root. The executable
-// scenario uses the same LocalHarnessStorage composition across process
-// boundaries, while this compact projection proves the public reopen contract.
-let root = PathBuf::from(std::env::temp_dir()).join(format!("acyclic-harness-example-{}", std::process::id()));
+// A durable custom executor binds an on-disk journal explicitly. The
+// executable scenario runs the first turn in a child process, then reopens
+// this same root in the parent process.
+let root = PathBuf::from("./.acyclic-harness-example");
 let agent = AgentId::new();
-let operation_id = OperationId::new();
-let storage = LocalHarnessStorage::open(&root, agent, 4_096).await?;
-storage.journal().append(
-    operation_id,
-    "durable-start".into(),
-    ExecutionEvent::Started { request_digest: [7; 32] },
-).await?;
+let storage = PersistentHarnessStorage::open(&root, agent).await?;
+let input = TurnInput {
+    operation_id: OperationId::new(),
+    input: ModelContent::Text("durable recovery".into()),
+    selected_context: None,
+    max_steps: 1,
+};
+let _first = MyExecutor.execute(input.clone(), storage.journal().as_ref()).await?;
 drop(storage);
-let storage = LocalHarnessStorage::open(&root, agent, 4_096).await?;
-assert_eq!(storage.replay(operation_id).await?.len(), 1);
-let _ = std::fs::remove_dir_all(root);"#;
+let storage = PersistentHarnessStorage::open(&root, agent).await?;
+let resumed = MyExecutor.execute(input, storage.journal().as_ref()).await?;
+assert_eq!(resumed.metadata["replayed"], true);
+
+// A custom executor without an owner journal is rejected.
+let result = HarnessBuilder::new()
+    .name("example")
+    .executor(Arc::new(MyExecutor))
+    .build();
+assert!(result.is_err());"#;
 
 /// Application-owned executor demonstrating the complete typed callback.
 pub struct CustomExecutor;

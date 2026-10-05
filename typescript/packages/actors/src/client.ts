@@ -13,19 +13,8 @@ export async function fromEnv(environment: ActorsEnvironment): Promise<ActorsCli
   if (selected === undefined) throw new TypeError(`Actors transport ${environment.transport ?? "default"} is unavailable in the ${runtime} runtime`);
   if (selected.kind === "http") return new HttpActorsClient(environment);
   if (selected.kind !== "grpc" || runtime !== "native") throw new TypeError("Actors gRPC transport requires a native Node or Bun runtime");
-  let createActorsGrpcClient: typeof import("./grpc.js")["createActorsGrpcClient"];
-  try {
-    ({ createActorsGrpcClient } = await import("./grpc.js"));
-  } catch (error) {
-    if (!isOptionalGrpcAdapterUnavailable(error)) throw error;
-    return new HttpActorsClient(environment);
-  }
+  const { createActorsGrpcClient } = await import("./grpc.js");
   return createActorsGrpcClient({ endpoint: environment.endpoint, token: environment.token, ...(environment.maximumResponseBytes === undefined ? {} : { maximumMessageBytes: environment.maximumResponseBytes }) });
-}
-
-function isOptionalGrpcAdapterUnavailable(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /(?:ERR_MODULE_NOT_FOUND|Cannot find module|Cannot resolve module|not found)/i.test(error.message);
 }
 
 function isNativeRuntime(): boolean {

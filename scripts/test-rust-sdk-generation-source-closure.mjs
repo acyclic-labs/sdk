@@ -264,15 +264,16 @@ test("all generated producers carry source revision metadata", () => {
   assert.match(typescript, /sourceGitShaKind/);
 });
 
-test("workflow pins actions and keeps expensive qualification off pull requests", () => {
+test("workflow pins actions, aligns Rust edition, and keeps downstream work out of PR fast policy", () => {
   const workflow = read(".github/workflows/rust-source-qualification.yml");
   for (const line of workflow.split(/\r?\n/)) {
     const match = line.match(/^\s*uses:\s+([^\s#]+)/);
     if (match && !match[1].startsWith("./")) assert.match(match[1], /@[0-9a-f]{40}$/i, line);
   }
   assert.match(workflow, /rustfmt --edition 2024 --check/);
-  assert.doesNotMatch(workflow, /(^|\n)\s*pull_request:/);
-  assert.doesNotMatch(workflow, /(^|\n)\s*fast-policy:/);
+  assert.match(workflow, /fast-policy:[\s\S]*?timeout-minutes:\s*2/);
+  const fastPolicy = workflow.split(/\n\s{2}qualify:/, 1)[0];
+  assert.doesNotMatch(fastPolicy, /cargo\s+(test|run|build)/);
   assert.match(workflow, /if: github\.event_name == 'release' \|\| github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'workflow_call'/);
   assert.match(workflow, /generate --source-root "\$GITHUB_WORKSPACE" --output "\$out"/);
   assert.match(workflow, /drift --source-root "\$GITHUB_WORKSPACE" --output "\$out"/);

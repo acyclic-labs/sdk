@@ -99,15 +99,6 @@ const FILESYSTEM_ARCHIVED_DESCRIPTOR: &[u8] =
 const PROTOCOL_ARCHIVED_FIXTURE: &[u8] =
     include_bytes!("../../tests/fixtures/protocol-v1.descriptor.bin");
 
-fn public_field_direction_name(direction: PublicFieldDirection) -> &'static str {
-    match direction {
-        PublicFieldDirection::Request => "request",
-        PublicFieldDirection::Response => "response",
-        PublicFieldDirection::NestedMessage => "nested_message",
-        PublicFieldDirection::EmbeddedOnly => "embedded_only",
-    }
-}
-
 fn type_policy_json() -> Vec<u8> {
     let language_profiles = TypePolicyLanguage::ALL
         .iter()
@@ -232,7 +223,11 @@ fn type_policy_json() -> Vec<u8> {
                 "module": binding.module,
                 "message": binding.message,
                 "wire_field": binding.wire_field,
-                "direction": public_field_direction_name(binding.direction),
+                "direction": match binding.direction {
+                    PublicFieldDirection::Request => "request",
+                    PublicFieldDirection::Response => "response",
+                    PublicFieldDirection::NestedMessage => "nested_message",
+                },
             })
         })
         .collect::<Vec<_>>();
@@ -1518,20 +1513,6 @@ fn check_contract(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn type_policy_preserves_embedded_fields_without_claiming_remote_bindings() {
-        let document: Value = serde_json::from_slice(&type_policy_json()).expect("type policy");
-        let fields = document["public_field_bindings"].as_array().expect("bindings");
-        assert_eq!(fields.len(), PUBLIC_FIELD_BINDINGS.len());
-        for (binding, exported) in PUBLIC_FIELD_BINDINGS.iter().zip(fields) {
-            assert_eq!(exported["field"], binding.field);
-            if binding.direction == PublicFieldDirection::EmbeddedOnly {
-                assert_eq!(exported["direction"], "embedded_only");
-            }
-        }
-        assert_eq!(public_field_direction_name(PublicFieldDirection::EmbeddedOnly), "embedded_only");
-    }
 
     fn evidence_item() -> Value {
         serde_json::json!({

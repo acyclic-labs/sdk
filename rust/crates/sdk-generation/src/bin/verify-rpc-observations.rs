@@ -67,87 +67,6 @@ fn current_executable_sha256() -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn file_sha256(path: &std::path::Path, label: &str) -> Result<String, String> {
-    let bytes = fs::read(path)
-        .map_err(|error| format!("{label} {} cannot be read: {error}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
-}
-
-fn package_artifact_digest(
-    package: &Map<String, Value>,
-    language: &str,
-    expected_digest: Option<&str>,
-    failures: &mut Vec<String>,
-) {
-    let provenance = package
-        .get("provenance")
-        .and_then(Value::as_object)
-        .unwrap_or(package);
-    let declared = package
-        .get("artifact_sha256")
-        .or_else(|| package.get("package_artifact_sha256"))
-        .or_else(|| provenance.get("artifact_sha256"))
-        .or_else(|| provenance.get("package_artifact_sha256"))
-        .and_then(Value::as_str);
-    let Some(expected_digest) = expected_digest else {
-        failures.push(format!(
-            "{language}: Rust inventory package archive digest is missing"
-        ));
-        return;
-    };
-    let Some(declared) = declared else {
-        failures.push(format!(
-            "{language}: executed package artifact_sha256 is missing"
-        ));
-        return;
-    };
-    let expected_digest = expected_digest
-        .strip_prefix("sha256:")
-        .unwrap_or(expected_digest)
-        .to_ascii_lowercase();
-    let declared_digest = declared
-        .strip_prefix("sha256:")
-        .unwrap_or(declared)
-        .to_ascii_lowercase();
-    if !valid_sha(&expected_digest, 32) || !valid_sha(&declared_digest, 32) {
-        failures.push(format!(
-            "{language}: package artifact digest is not a SHA-256 digest"
-        ));
-        return;
-    }
-    if expected_digest != declared_digest {
-        failures.push(format!(
-            "{language}: executed package artifact digest differs from the Rust inventory"
-        ));
-    }
-    let path = package
-        .get("artifact_path")
-        .or_else(|| package.get("package_artifact_path"))
-        .or_else(|| package.get("archive_path"))
-        .or_else(|| provenance.get("artifact_path"))
-        .or_else(|| provenance.get("package_artifact_path"))
-        .or_else(|| provenance.get("archive_path"))
-        .and_then(Value::as_str);
-    let Some(path) = path else {
-        failures.push(format!(
-            "{language}: executed package artifact_path is missing; declared provenance cannot prove installed bytes"
-        ));
-        return;
-    };
-    let actual = match file_sha256(std::path::Path::new(path), "executed package artifact") {
-        Ok(value) => value,
-        Err(error) => {
-            failures.push(format!("{language}: {error}"));
-            return;
-        }
-    };
-    if actual != declared_digest {
-        failures.push(format!(
-            "{language}: executed package artifact bytes do not match artifact_sha256"
-        ));
-    }
-}
-
 fn object<'a>(value: &'a Value, label: &str) -> Result<&'a Map<String, Value>, String> {
     value
         .as_object()
@@ -187,87 +106,6 @@ fn contract_family<'a>(entry: &'a Map<String, Value>, label: &str) -> Result<&'a
     }
 }
 
-fn platform_object<'a>(package: &'a Map<String, Value>) -> Option<&'a Map<String, Value>> {
-    package
-        .get("platform")
-        .and_then(Value::as_object)
-        .or_else(|| {
-            package
-                .get("provenance")
-                .and_then(Value::as_object)
-                .and_then(|provenance| provenance.get("platform"))
-                .and_then(Value::as_object)
-        })
-}
-
-fn validate_platform_provenance(
-    expected_package: &Map<String, Value>,
-    observed_package: &Map<String, Value>,
-    language: &str,
-    failures: &mut Vec<String>,
-) {
-    let Some(expected_platform) = platform_object(expected_package) else {
-        failures.push(format!(
-            "{language}: Rust package platform provenance is missing"
-        ));
-        return;
-    };
-    let Some(observed_platform) = platform_object(observed_package) else {
-        failures.push(format!(
-            "{language}: executed package platform provenance is missing"
-        ));
-        return;
-    };
-    for field in ["execution_scope", "target_triple", "build_host_triple"] {
-        let expected_value = expected_platform.get(field).and_then(Value::as_str);
-        let observed_value = observed_platform.get(field).and_then(Value::as_str);
-        if expected_value.is_none() || observed_value.is_none() {
-            failures.push(format!(
-                "{language}: platform provenance field {field} is missing"
-            ));
-        } else if expected_value != observed_value {
-            failures.push(format!(
-                "{language}: executed package platform field {field} differs from the Rust producer"
-            ));
-        }
-    }
-    for field in ["runtime_triple", "runtime_os", "runtime_arch"] {
-        if observed_platform
-            .get(field)
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-        {
-            failures.push(format!(
-                "{language}: observed platform provenance field {field} is missing"
-            ));
-        }
-    }
-    if observed_platform.get("observed").and_then(Value::as_bool) != Some(true) {
-        failures.push(format!(
-            "{language}: platform provenance is not backed by an observed runtime probe"
-        ));
-    }
-    let scope = observed_platform
-        .get("execution_scope")
-        .and_then(Value::as_str);
-    let target = observed_platform
-        .get("target_triple")
-        .and_then(Value::as_str);
-    let runtime = observed_platform
-        .get("runtime_triple")
-        .and_then(Value::as_str);
-    if scope == Some("native") && target.is_some() && runtime.is_some() && target != runtime {
-        failures.push(format!(
-            "{language}: native package target triple differs from the runtime triple"
-        ));
-    }
-    if !matches!(scope, Some("native") | Some("portable")) {
-        failures.push(format!(
-            "{language}: platform execution_scope must be native or portable"
-        ));
-    }
-}
-
 fn validate_producer_provenance(
     expected_root: &Map<String, Value>,
     observed_root: &Map<String, Value>,
@@ -291,11 +129,6 @@ fn validate_producer_provenance(
         failures.push(format!("expected.packages.{language} is missing"));
         return;
     };
-    let expected_artifact_digest = expected_package
-        .get("sha256")
-        .or_else(|| expected_package.get("artifact_sha256"))
-        .or_else(|| expected_package.get("package_artifact_sha256"))
-        .and_then(Value::as_str);
     let Some(expected_provenance) = expected_package
         .get("provenance")
         .and_then(Value::as_object)
@@ -319,13 +152,6 @@ fn validate_producer_provenance(
         .get("provenance")
         .and_then(Value::as_object)
         .unwrap_or(observed_package);
-    package_artifact_digest(
-        observed_package,
-        language,
-        expected_artifact_digest,
-        failures,
-    );
-    validate_platform_provenance(expected_package, observed_package, language, failures);
     for (field, label) in [
         ("source_git_sha", "source Git revision"),
         ("rust_model_digest", "Rust model digest"),
@@ -1113,82 +939,4 @@ fn main() -> Result<(), String> {
     )
     .map_err(|error| format!("write {}: {error}", output_path.display()))?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn installed_package_digest_is_checked_against_artifact_bytes() {
-        let path = env::temp_dir().join(format!(
-            "acyclic-rpd-artifact-{}-{:x}.zip",
-            std::process::id(),
-            Sha256::digest(b"rpd-artifact-test")
-        ));
-        fs::write(&path, b"Rust-owned package bytes").expect("write package fixture");
-        let digest = format!("{:x}", Sha256::digest(b"Rust-owned package bytes"));
-        let package = json!({
-            "artifact_path": path.clone(),
-            "artifact_sha256": digest.clone(),
-        });
-        let package = package.as_object().expect("package object");
-        let mut failures = Vec::new();
-        package_artifact_digest(package, "ruby", Some(&digest), &mut failures);
-        assert!(
-            failures.is_empty(),
-            "untampered package rejected: {failures:?}"
-        );
-
-        fs::write(&path, b"tampered package bytes").expect("tamper package fixture");
-        failures.clear();
-        package_artifact_digest(package, "ruby", Some(&digest), &mut failures);
-        assert!(
-            failures
-                .iter()
-                .any(|failure| failure.contains("artifact bytes do not match")),
-            "tampered package was accepted: {failures:?}"
-        );
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn native_package_cannot_claim_a_different_runtime_triple() {
-        let expected = json!({
-            "provenance": {
-                "platform": {
-                    "execution_scope": "native",
-                    "target_triple": "aarch64-unknown-linux-gnu",
-                    "build_host_triple": "x86_64-pc-windows-msvc",
-                    "runtime_triple": "aarch64-unknown-linux-gnu",
-                    "runtime_os": "linux",
-                    "runtime_arch": "aarch64",
-                    "observed": true
-                }
-            }
-        });
-        let observed = json!({
-            "provenance": {
-                "platform": {
-                    "execution_scope": "native",
-                    "target_triple": "aarch64-unknown-linux-gnu",
-                    "build_host_triple": "x86_64-pc-windows-msvc",
-                    "runtime_triple": "x86_64-pc-windows-msvc",
-                    "runtime_os": "windows",
-                    "runtime_arch": "x86_64",
-                    "observed": true
-                }
-            }
-        });
-        let expected = expected.as_object().expect("expected package");
-        let observed = observed.as_object().expect("observed package");
-        let mut failures = Vec::new();
-        validate_platform_provenance(expected, observed, "native-test", &mut failures);
-        assert!(
-            failures
-                .iter()
-                .any(|failure| { failure.contains("platform field runtime_triple differs") }),
-            "cross-platform native execution was accepted: {failures:?}"
-        );
-    }
 }

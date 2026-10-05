@@ -202,11 +202,6 @@ $provenance = [
     'authority_manifest_schema' => $authority['schema'] ?? null,
     'authority_source_revision' => $authority['source_revision'] ?? null,
     'authority_exporter' => $authority['exporter'] ?? null,
-    'platform' => [
-        'execution_scope' => 'portable',
-        'target_triple' => 'portable',
-        'build_host_triple' => strtolower(PHP_OS_FAMILY . '-' . php_uname('m')),
-    ],
     'generated_files' => $generated,
 ];
 file_put_contents($output . '/provenance.json', json_encode($provenance, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . PHP_EOL);
