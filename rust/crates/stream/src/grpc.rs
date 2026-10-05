@@ -347,7 +347,7 @@ impl Client {
                     if cursor.active.is_none() {
                         match cursor.open().await {
                             Ok(active) => cursor.active = Some(active),
-                            Err(error) => return Some((Err(error), cursor)),
+                            Err(error) => return Some(cursor.failure(error)),
                         }
                     }
                     let Some(active) = cursor.active.as_mut() else {
@@ -372,7 +372,7 @@ impl Client {
                             tokio::time::sleep(RETRY_DELAY).await;
                             cursor.active = None;
                         }
-                        Some(Err(error)) => return Some((Err(status(&error)), cursor)),
+                        Some(Err(error)) => return Some(cursor.failure(status(&error))),
                         None if cursor.remaining.is_none() => {
                             cursor.advance_follow(active_endpoint);
                             tokio::time::sleep(RETRY_DELAY).await;
@@ -409,6 +409,14 @@ struct ActiveRecords {
 }
 
 impl RecordCursor {
+    fn failure(mut self, error: StreamError) -> (Result<Record, StreamError>, Self) {
+        if matches!(error, StreamError::AccessDenied) {
+            self.active = None;
+            self.remaining = Some(0);
+        }
+        (Err(error), self)
+    }
+
     fn advance_follow(&self, observed: usize) {
         if self.remaining.is_some() {
             return;
@@ -1065,6 +1073,7 @@ mod tests {
         inner: MemoryStream,
         follows: AtomicUsize,
         tail_delay: std::time::Duration,
+        terminal_error: Option<StreamError>,
     }
 
     #[async_trait]
@@ -1099,6 +1108,9 @@ mod tests {
 
         async fn follow(&self, _path: StreamPath, _from: u64) -> Result<RecordStream, StreamError> {
             self.follows.fetch_add(1, Ordering::Relaxed);
+            if let Some(error) = self.terminal_error.clone() {
+                return Ok(stream::iter([Err(error)]).boxed());
+            }
             Ok(stream::empty().boxed())
         }
 
@@ -1326,6 +1338,7 @@ mod tests {
             inner: MemoryStream::default(),
             follows: AtomicUsize::new(0),
             tail_delay: std::time::Duration::from_millis(600),
+            terminal_error: None,
         });
         provider
             .inner
@@ -1350,12 +1363,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn denied_follow_ends_without_reopening_over_tcp()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let provider = Arc::new(FiniteFollow {
+            inner: MemoryStream::default(),
+            follows: AtomicUsize::new(0),
+            tail_delay: std::time::Duration::ZERO,
+            terminal_error: Some(StreamError::AccessDenied),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&admissions);
+        let service = StreamServiceServer::with_interceptor(
+            Service::new(Arc::clone(&provider)),
+            move |request: Request<()>| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                if request
+                    .metadata()
+                    .get("authorization")
+                    .is_some_and(|value| value == "Bearer denied-open")
+                {
+                    return Err(Status::permission_denied("fixture authorization denied"));
+                }
+                Ok(request)
+            },
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        let channel = Endpoint::from_shared(format!("http://{address}"))?
+            .connect()
+            .await?;
+        let client = Client::from_channels(Arc::from([channel]), "fixture")?;
+        let mut records = client
+            .follow(StreamPath::new("accounts/events")?, 0)
+            .await?;
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), records.next()).await?;
+        let next = tokio::time::timeout(std::time::Duration::from_secs(2), records.next()).await?;
+        drop(records);
+        drop(client);
+        let channel = Endpoint::from_shared(format!("http://{address}"))?
+            .connect()
+            .await?;
+        let client = Client::from_channels(Arc::from([channel]), "denied-open")?;
+        let mut records = client
+            .follow(StreamPath::new("accounts/events")?, 0)
+            .await?;
+        let rejected =
+            tokio::time::timeout(std::time::Duration::from_secs(2), records.next()).await?;
+        let rejected_next =
+            tokio::time::timeout(std::time::Duration::from_secs(2), records.next()).await?;
+        drop(records);
+        drop(client);
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(2), server).await???;
+        assert!(matches!(first, Some(Err(StreamError::AccessDenied))));
+        assert!(
+            next.is_none(),
+            "authorization denial must end the cursor: {next:?}"
+        );
+        assert_eq!(provider.follows.load(Ordering::Relaxed), 1);
+        assert!(matches!(rejected, Some(Err(StreamError::AccessDenied))));
+        assert!(
+            rejected_next.is_none(),
+            "rejected open reopened: {rejected_next:?}"
+        );
+        assert_eq!(admissions.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn clean_follow_eof_advances_once_to_the_next_endpoint()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let ended = Arc::new(FiniteFollow {
             inner: MemoryStream::default(),
             follows: AtomicUsize::new(0),
             tail_delay: std::time::Duration::ZERO,
+            terminal_error: None,
         });
         let durable = Arc::new(MemoryStream::default());
         durable
