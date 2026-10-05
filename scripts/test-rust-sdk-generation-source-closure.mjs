@@ -79,6 +79,38 @@ function assertWorkspaceLockClosure(rootCargo, lock) {
   }
 }
 
+function assertFixtureSourceClosure(library, fixtures, hasSource) {
+  assert.match(library, /^pub mod fixtures;\s*$/m,
+    "SDK examples must export the fixture module used by qualification binaries");
+  const modules = [...fixtures.matchAll(/^pub mod ([A-Za-z_][A-Za-z0-9_]*);\s*$/gm)]
+    .map((entry) => entry[1]);
+  assert.ok(modules.length > 0, "fixture module must expose its Rust sources");
+  for (const name of modules) {
+    assert.ok(hasSource(`${name}.rs`) || hasSource(`${name}/mod.rs`),
+      `fixture module ${name} has no source file`);
+  }
+}
+
+test("qualification fixtures have public module wiring and a closed source set", () => {
+  const fixtureRoot = "rust/crates/sdk-examples/src/fixtures";
+  assertFixtureSourceClosure(
+    read("rust/crates/sdk-examples/src/lib.rs"),
+    read(`${fixtureRoot}/mod.rs`),
+    (path) => existsSync(join(root, fixtureRoot, path)),
+  );
+});
+
+test("fixture source closure rejects missing library wiring and source modules", () => {
+  assert.throws(
+    () => assertFixtureSourceClosure("", "pub mod fixture_clock;", () => true),
+    /SDK examples must export the fixture module/,
+  );
+  assert.throws(
+    () => assertFixtureSourceClosure("pub mod fixtures;", "pub mod fixture_clock;", () => false),
+    /fixture module fixture_clock has no source file/,
+  );
+});
+
 test("every generation binary declared by Cargo has a source file", () => {
   const cargo = read("rust/crates/sdk-generation/Cargo.toml");
   const entries = binEntries(cargo);
