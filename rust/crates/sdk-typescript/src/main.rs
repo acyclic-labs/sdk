@@ -886,14 +886,18 @@ fn typescript_semantic_section(family: &str) -> String {
         output.push_str(&format!("export type {name} = {base};\n"));
         let mut checks = String::new();
         for rule in item.rules {
-            let check = match rule {
-                SemanticRule::NonEmpty => "if (value.length === 0) throw new TypeError(\"value must not be empty\");".to_owned(),
-                SemanticRule::NonNegative => "if (value < 0) throw new RangeError(\"value must be non-negative\");".to_owned(),
-                SemanticRule::StrictlyPositive => "if (value <= 0) throw new RangeError(\"value must be positive\");".to_owned(),
-                SemanticRule::Utf8 | SemanticRule::Sha256Digest | SemanticRule::Immutable | SemanticRule::Monotonic | SemanticRule::CanonicalResourceName | SemanticRule::ExactOneof | SemanticRule::ExplicitPresence | SemanticRule::PreserveUnknownEnum | SemanticRule::PreserveUnknownOneof | SemanticRule::BoundedInteger { .. } => String::new(),
-                SemanticRule::FixedLength(length) => format!("if (value.byteLength !== {length}) throw new RangeError(\"value has the wrong length\");"),
-                SemanticRule::MaxBytes(maximum) => format!("if (value.byteLength > {maximum}) throw new RangeError(\"value exceeds its byte limit\");"),
-                SemanticRule::MaxItems(maximum) => format!("if (value > {maximum}) throw new RangeError(\"value exceeds its item limit\");"),
+            let check = match (item.wire_kind, rule) {
+                // Message values are branded Rust-owned protobuf objects. Any
+                // UUID or digest rule applies to their nested wire fields,
+                // never to the object itself.
+                (WireValueKind::Message, _) => String::new(),
+                (WireValueKind::String | WireValueKind::Bytes, SemanticRule::NonEmpty) => "if (value.length === 0) throw new TypeError(\"value must not be empty\");".to_owned(),
+                (WireValueKind::UnsignedInteger | WireValueKind::SignedInteger, SemanticRule::NonNegative) => "if (value < 0) throw new RangeError(\"value must be non-negative\");".to_owned(),
+                (WireValueKind::UnsignedInteger | WireValueKind::SignedInteger, SemanticRule::StrictlyPositive) => "if (value <= 0) throw new RangeError(\"value must be positive\");".to_owned(),
+                (WireValueKind::Bytes, SemanticRule::FixedLength(length)) => format!("if (value.byteLength !== {length}) throw new RangeError(\"value has the wrong length\");"),
+                (WireValueKind::Bytes, SemanticRule::MaxBytes(maximum)) => format!("if (value.byteLength > {maximum}) throw new RangeError(\"value exceeds its byte limit\");"),
+                (WireValueKind::UnsignedInteger | WireValueKind::SignedInteger, SemanticRule::MaxItems(maximum)) => format!("if (value > {maximum}) throw new RangeError(\"value exceeds its item limit\");"),
+                (_, SemanticRule::Utf8 | SemanticRule::Sha256Digest | SemanticRule::Immutable | SemanticRule::Monotonic | SemanticRule::CanonicalResourceName | SemanticRule::ExactOneof | SemanticRule::ExplicitPresence | SemanticRule::PreserveUnknownEnum | SemanticRule::PreserveUnknownOneof | SemanticRule::BoundedInteger { .. } | SemanticRule::NonEmpty | SemanticRule::NonNegative | SemanticRule::StrictlyPositive | SemanticRule::FixedLength(_) | SemanticRule::MaxBytes(_) | SemanticRule::MaxItems(_)) => String::new(),
             };
             checks.push_str(&check);
         }
@@ -2167,11 +2171,21 @@ fn write_or_check_packages(
     let source_model_revision = wire_root
         .map(read_wire_model_revision)
         .transpose()?
+        .or_else(|| env::var("SDK_SOURCE_REVISION").ok())
         .unwrap_or_else(|| "working-tree".to_owned());
     let source_git_sha = wire_root
         .map(read_wire_source_git_sha)
         .transpose()?
-        .flatten();
+        .flatten()
+        .or_else(|| env::var("SDK_SOURCE_GIT_SHA").ok());
+    if matches!(env::var("SDK_RELEASE").as_deref(), Ok("1" | "true" | "yes"))
+        && source_git_sha.is_none()
+    {
+        return Err(Error::Missing(
+            "release package generation requires SDK_SOURCE_GIT_SHA or Rust wire authority output"
+                .to_owned(),
+        ));
+    }
     if source_model_revision == "working-tree"
         && matches!(env::var("SDK_RELEASE").as_deref(), Ok("1" | "true" | "yes"))
     {
