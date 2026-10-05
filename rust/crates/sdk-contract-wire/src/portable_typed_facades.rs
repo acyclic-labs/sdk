@@ -359,8 +359,8 @@ fn render_php() -> String {
     for method in methods {
         let req = message_class(&method.input_message);
         let resp = message_class(&method.output_message);
-        let req = if method.client_streaming { format!("array") } else { req };
-        let ret = if method.server_streaming { format!("array") } else { resp.clone() };
+        let req = if method.client_streaming { "array".to_owned() } else { req };
+        let ret = if method.server_streaming { "array".to_owned() } else { resp.clone() };
         let call_input = if method.client_streaming { "$request" } else { "$request->toWire()" };
         let response = if method.server_streaming {
             format!("if (!is_array($value)) {{ throw new \\UnexpectedValueException('expected stream array'); }} return array_values(array_map(static fn($item) => $item instanceof {resp} ? $item : (is_array($item) ? {resp}::fromWire($item) : throw new \\UnexpectedValueException('expected response object')), $value));")
