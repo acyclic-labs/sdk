@@ -715,7 +715,14 @@ fn operation_target(validation: &'static str) -> OperationTarget {
             || validation.ends_with(".required")
             || validation.ends_with(".nonempty")
             || validation.ends_with(".non_empty")
+            || validation.ends_with(".non_empty_utf8")
+            || validation.ends_with(".non_empty_bytes")
             || validation.ends_with(".nonzero")
+            || validation.ends_with(".16_bytes")
+            || validation.ends_with(".32_bytes")
+            || validation.ends_with(".length_16")
+            || validation.ends_with(".length_32")
+            || validation.ends_with(".exact")
             || validation.ends_with(".preserving")
             || validation.ends_with(".contiguous")
             || validation.ends_with(".monotonic") => {
@@ -2523,6 +2530,10 @@ mod tests {
         }));
         assert!(rules.iter().any(|rule| {
             rule.validation == "action.present" && rule.target.path == "action"
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.validation == "idempotency_key.non_empty_utf8"
+                && rule.target.enforcement == OperationEnforcement::ClientLocal
         }));
     }
 
