@@ -68,40 +68,42 @@ where
     /// Publishes all complete exchanges through a pinned model step before fork
     /// preparation. No unfinished effect becomes a conversation result.
     /// Later authoritative messages cause a stale-boundary refusal.
-    pub async fn completed_conversation(
-        &self,
+    pub fn completed_conversation<'a>(
+        &'a self,
         operation: OperationId,
         step: u32,
         limits: Limits,
-    ) -> Result<StreamAggregate<P>> {
-        self.completed_model_boundary(operation, step, limits)
-            .await?
-            .ok_or_else(|| Error::Conflict("model batch is not complete".into()))?;
-        let mut aggregate = self.open_conversation(limits).await?;
-        let selection = aggregate
-            .reducer()
-            .context_selection_for_operation(operation)
-            .ok_or_else(|| Error::Conflict("batch has no authoritative selection".into()))?;
-        let user = *selection
-            .message_ids
-            .last()
-            .ok_or_else(|| Error::Storage("batch selection has no user".into()))?;
-        let records = self.journal.replay(operation).await?;
-        let batches = self.completed_batches(&records, Some(step), limits).await?;
-        Self::validate_history_tail(
-            &aggregate,
-            user,
-            &Self::history_ids(operation, &batches),
-            true,
-        )?;
-        let messages = self
-            .materialize_history(operation, user, &records, batches)
-            .await?;
-        for message in messages {
-            self.publish_history_message(&mut aggregate, message)
+    ) -> BoxFuture<'a, Result<StreamAggregate<P>>> {
+        Box::pin(async move {
+            self.completed_model_boundary(operation, step, limits)
+                .await?
+                .ok_or_else(|| Error::Conflict("model batch is not complete".into()))?;
+            let mut aggregate = self.open_conversation(limits).await?;
+            let selection = aggregate
+                .reducer()
+                .context_selection_for_operation(operation)
+                .ok_or_else(|| Error::Conflict("batch has no authoritative selection".into()))?;
+            let user = *selection
+                .message_ids
+                .last()
+                .ok_or_else(|| Error::Storage("batch selection has no user".into()))?;
+            let records = self.journal.replay(operation).await?;
+            let batches = self.completed_batches(&records, Some(step), limits).await?;
+            Self::validate_history_tail(
+                &aggregate,
+                user,
+                &Self::history_ids(operation, &batches),
+                true,
+            )?;
+            let messages = self
+                .materialize_history(operation, user, &records, batches)
                 .await?;
-        }
-        Ok(aggregate)
+            for message in messages {
+                self.publish_history_message(&mut aggregate, message)
+                    .await?;
+            }
+            Ok(aggregate)
+        })
     }
 
     pub(super) async fn append_tool_history(
