@@ -191,7 +191,7 @@ fn php_scalar_default(field: &ResolvedRequestField) -> &'static str {
 fn php_decode_single(field: &ResolvedRequestField, value: &str) -> String {
     if let Some(semantic) = field.semantic_type.as_deref() {
         let class = semantic_class(semantic);
-        let scalar = if semantic_value_type(semantic) == "Integer" { "int" } else { "string" };
+        let scalar = if semantic_value_type(semantic) == "Integer" || class.ends_with("PageLimit") || class.ends_with("OpenEnumValue") || class.ends_with("OneofArm") { "int" } else { "string" };
         return format!("new {class}(({scalar})({value}))");
     }
     if message_field(field) {
@@ -336,10 +336,10 @@ fn sorbet_type(field: &ResolvedRequestField) -> String {
 
 fn php_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     let mut out = format!("final readonly class {name}\n{{\n    public function __construct(\n");
-    for field in fields.iter().filter(|field| required(field)) {
+    for field in fields.iter().filter(|field| php_default(field).is_empty()) {
         out.push_str(&format!("        /** @var {} */\n        public {} ${}{},\n", php_doc_type(field), php_type(field), php_field(field), php_default(field)));
     }
-    for field in fields.iter().filter(|field| !required(field)) {
+    for field in fields.iter().filter(|field| !php_default(field).is_empty()) {
         out.push_str(&format!("        /** @var {} */\n        public {} ${}{},\n", php_doc_type(field), php_type(field), php_field(field), php_default(field)));
     }
     out.push_str("    ) {}\n    /** @return array<array-key, mixed> */\n    private static function wireMap(mixed $value): array\n    {\n        if (!is_array($value)) { throw new \\InvalidArgumentException('expected nested message'); }\n        return $value;\n    }\n\n    /** @return array<int, mixed> */\n    private static function wireArray(mixed $value): array\n    {\n        return is_array($value) ? array_values($value) : [];\n    }\n    private static function wireValue(mixed $value): mixed\n    {\n        if (is_object($value) && method_exists($value, 'toWire')) { return $value->toWire(); }\n        if (is_array($value)) { return array_map(static fn(mixed $item): mixed => self::wireValue($item), $value); }\n        return $value;\n    }\n    /** @return array<string, mixed> */\n    public function toWire(): array\n    {\n        return [\n");
