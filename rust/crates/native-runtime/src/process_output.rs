@@ -116,8 +116,8 @@ where
 }
 
 /// Fallback for native targets without a platform cancellation primitive.
-/// The task remains owned and joined; process providers should still supply
-/// an execution boundary that closes inherited pipes before cancellation.
+/// Refuse before creating a reader task; an uninterruptible native pipe is not
+/// a supported execution capability.
 #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
 pub fn spawn_output_reader<R, F>(reader: R, mut consume: F) -> io::Result<OutputReader>
 where
@@ -283,8 +283,11 @@ mod windows {
         },
         thread,
     };
-    use windows_sys::Win32::System::Threading::{
-        CancelSynchronousIo, GetCurrentThreadId, OpenThread, THREAD_TERMINATE,
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::Threading::{
+            CancelSynchronousIo, GetCurrentThreadId, OpenThread, THREAD_TERMINATE, TerminateThread,
+        },
     };
 
     const IDLE: u8 = 0;
@@ -297,6 +300,7 @@ mod windows {
         R: Read + AsRawHandle + Send + 'static,
         F: FnMut(&[u8]) -> bool + Send + 'static,
     {
+        let reader_handle: HANDLE = reader.as_raw_handle().cast();
         let cancelled = Arc::new(AtomicBool::new(false));
         let state = Arc::new(AtomicU8::new(IDLE));
         let worker_cancelled = Arc::clone(&cancelled);
@@ -338,10 +342,9 @@ mod windows {
         };
         let cancel = Box::new(move || {
             cancelled.store(true, Ordering::Release);
-            let mut cancellation_error = None;
             loop {
                 match state.load(Ordering::Acquire) {
-                    STOPPED | IDLE => return cancellation_error.map_or(Ok(()), Err),
+                    STOPPED | IDLE => return Ok(()),
                     STARTING => thread::yield_now(),
                     READING => {
                         // SAFETY: the handle is owned and names exactly the
@@ -351,9 +354,33 @@ mod windows {
                         if unsafe { CancelSynchronousIo(thread_handle.as_raw_handle().cast()) } == 0
                         {
                             let error = io::Error::last_os_error();
-                            if error.raw_os_error() != Some(1168) {
-                                cancellation_error.get_or_insert(error);
+                            if error.raw_os_error() == Some(1168) {
+                                thread::yield_now();
+                                continue;
                             }
+                            // CancelSynchronousIo is expected to work for the
+                            // exact thread handle opened above. If the OS
+                            // rejects it, terminate only this owned reader
+                            // thread, close its raw pipe handle after the
+                            // thread is stopped, and surface cancellation as
+                            // uncertain rather than spinning forever.
+                            if unsafe { TerminateThread(thread_handle.as_raw_handle().cast(), 1) }
+                                == 0
+                            {
+                                // The reader owns a synchronous OS handle and
+                                // cannot be safely detached if both native
+                                // cancellation mechanisms are unavailable.
+                                // Fail-stop preserves the no-leak invariant;
+                                // callers never observe a false success.
+                                let _ = error;
+                                std::process::abort();
+                            }
+                            unsafe { CloseHandle(reader_handle) };
+                            state.store(STOPPED, Ordering::Release);
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "process output reader was forcibly cancelled",
+                            ));
                         }
                         thread::yield_now();
                     }
