@@ -50,6 +50,10 @@ impl SwarmCommunicationHost {
 }
 
 impl DurableTaskHost for SwarmCommunicationHost {
+    fn supports_admitted_message_recovery(&self) -> bool {
+        true
+    }
+
     fn observe_admission<'a>(
         &'a self,
         task: TaskId,
@@ -251,8 +255,13 @@ impl DurableTaskHost for SwarmCommunicationHost {
             {
                 return Ok(());
             }
-            sender_scope.require_new_mutation()?;
-            recipient_scope.require_new_mutation()?;
+            let admitted = swarm
+                .admit_message(sender, recipient, message, payload.clone())
+                .await?;
+            if !admitted {
+                sender_scope.require_new_mutation()?;
+                recipient_scope.require_new_mutation()?;
+            }
             let recipient_harness = swarm.open_session(recipient).await?;
             let storage = recipient_harness.storage();
             let sender_harness = swarm.open_session(sender).await?;
@@ -280,7 +289,7 @@ impl DurableTaskHost for SwarmCommunicationHost {
                     .await?
             };
             MailboxStore::new(self.stream.clone(), storage.content_verifier())
-                .send(self, sender, recipient, message, delivered)
+                .send_admitted(self, sender, recipient, message, delivered, admitted)
                 .await
         })
     }
