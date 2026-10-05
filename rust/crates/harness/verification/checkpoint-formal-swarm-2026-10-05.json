@@ -1,6 +1,6 @@
 {
-  "source_commit": "56516e9186395895c7f8193ffe977cacd4024aa2",
-  "source_tree": "28a74658de869919e44efed3dede6e5b9f0bfe91",
+  "source_commit": "21f44e7d8fcfd0e984b16f8d7854d85b73efde10",
+  "source_tree": "ff3fff9b9303ff0563f8cc2f267eab714d5c6dab",
   "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
   "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
   "tools_jar": {
@@ -9,7 +9,7 @@
   },
   "runner": {
     "path": "rust/crates/harness/verification/check-models.ps1",
-    "sha256": "9a774e24c40b22992cda7c1aa728d7bbbb9d0e79c6ab9a0e776f728400860166",
+    "sha256": "f97fcbde7673591891e80bc221353ec5569acff8f6996526945e0683dd11ba96",
     "workers": 1,
     "fingerprint_index": 0,
     "seed": 1,
@@ -19,22 +19,22 @@
     "SwarmBudgetUnsafeAllocation.cfg": "67db97ee437b43185af7298d744785ec3d907a2b412990855d486f63cc9d9ae7",
     "SwarmPublication.cfg": "2fe8f0164bac6a25b873aff918965bb0fef358d09a3452046eaf6df4641c758b",
     "SwarmBudgetUnsafeDepth.cfg": "714f4b3a597e0fbf0f4a170068a2807ab5a470aa80f93ea970b26d3c0791e6c9",
-    "SwarmAuthorityUnsafe.cfg": "9f465315f259513d0aaadc0bf8acdc3fbff4b86f7e8304c176ac6ff2b1a60304",
+    "SwarmAuthorityUnsafe.cfg": "152b6f614342f661f077343edbab911d3e1c043f6d8720275c056135a68aa9ef",
     "SwarmMessage.cfg": "ff4b99093a2170b3a37280169be427042652473f2d0242f317dc7180c8e0fe6e",
-    "SwarmAuthorityUnsafeSelf.cfg": "c986d5da4a3b575ea585696fa4db47bc2dcdb2083d4daffab61fa01f5fa1d73e",
+    "SwarmAuthorityUnsafeSelf.cfg": "3bd1a6c8a8b3b530d6de6de526ddde4ae1756281335b4ad48d0f7472c93069d9",
     "ForkBoundaryEarlyDispatch.cfg": "9e6fefcd4dfa530cdf1a367bf78fa028a3b413689a070a8e637c41d98eb3f876",
     "SwarmBudget.tla": "51a5bbbd9b2b45422eb17bb124b1863761aca5c1fe839ab787d34653cac2d1e8",
     "SwarmMessageUnsafeOrphan.cfg": "123c926138346bac6c944373686083c8466ab40cf1e4acb106823b97c72c84a9",
-    "ActivationRecoveryUnsafe.cfg": "c0260bd7976c9c4552263f0c1df998d37e456d61bfb162b8f11ce68a0a046105",
+    "ActivationRecoveryUnsafe.cfg": "8d930e9df53a0615f24fb0327fda9221aba5faac95c4e901210700a161c82f05",
     "ForkBoundary.tla": "b297a088b7e4790f2d02bd367d7dc9131c9cc5e5095d460dec82c9e4400958b4",
-    "SwarmAuthority.cfg": "747f14d84abe68e45c1946c38e60cedbbc300549cbb9f60c49594db1da9d2454",
+    "SwarmAuthority.cfg": "86d02687edb6a3afdd7d0f4204b5b030c438d612cb83483a14b7c86bea8f3f80",
     "SwarmBudget.cfg": "6b4fa5831de9a669a7b183921253c7f46c58a961f91f64cf5b8d72a57db3365c",
-    "ActivationRecovery.cfg": "769237fd65d2479579602974cad3eb9facd29337b1a3781a011e18af053851e3",
-    "ActivationRecovery.tla": "4a8cb718953e649a6a942f44af60b18e7b17719e3be62cc628efbf2a886b3a15",
+    "ActivationRecovery.cfg": "a56b44e47da21fc574d29463143aa660aa75f5c4625ba5ff7de30a0fcae3cbf5",
+    "ActivationRecovery.tla": "091f4b82a77d5a3578eccb9f971ffcb69752e284b0f2ce510ef17b1668d684ac",
     "SwarmPublicationUnsafeStale.cfg": "69277ed13cee23ee3f21a781f6efbb982d395b078b1a4a3d70affc31a5725952",
     "SwarmMessage.tla": "be87e8f9e9f746ea8b85fdf22b61d1e39222a80a2e8bf192e82a9b04296639ac",
     "SwarmBudgetUnsafeStep.cfg": "b20aac4287e9368476046d1a132f1585c8d6f7aed251dcc70d00485655a06b09",
-    "SwarmAuthority.tla": "cd31e5dc99f05e59d7deab03098ec443b362a5cb3342b6283f1fbb2f7c065057",
+    "SwarmAuthority.tla": "d637f254536148c94d6cca8c4e686a6a2e9077fb78e32df40a6568d87e838c58",
     "ForkBoundaryMutableCapture.cfg": "af39bbda42f28ba9af9a9d4f745651b525cfd36eec68945489e0f8dca4319576",
     "SwarmMessageUnsafeDuplicate.cfg": "fc74a0bead027721e880455c23a12973a92dc5aa1e69090d2f35b35f5097882f",
     "ForkBoundary.cfg": "4c2e7dafbcf318af102f0d2eab186443964ee918a1fab26bbe54fd10ddd143bd",
@@ -44,7 +44,8 @@
     "SwarmIntegrationUnsafeSibling.cfg": "2e60cfb195af58ca99f65ce67aebcd92efb1f1e6986d93908f4af941e4db9692",
     "SwarmIntegrationUnsafeGrandchild.cfg": "cfe3ee3e25a88491bf6af652e9ad39c9484c6d4ca92afdd23e7fa8e8b057346b",
     "SwarmIntegrationUnsafeStaleApproval.cfg": "c221b68c73a7dc268862222102f97b97a7b2dcbbb3295db3a15c7984eecba4f6",
-    "SwarmIntegrationUnsafeMismatchedApproval.cfg": "f3788655449c4afc312f88a01fcae7e11a3ab911ef71099dcc5bd6fec460bfbc"
+    "SwarmIntegrationUnsafeMismatchedApproval.cfg": "f3788655449c4afc312f88a01fcae7e11a3ab911ef71099dcc5bd6fec460bfbc",
+    "SwarmAuthorityUnsafeTranscript.cfg": "6cdb086550edf4940a4af4aaa010d807411e53806da5ad1bfbf6dc9b3c4636a7"
   },
   "model_results": [
     {
@@ -53,22 +54,29 @@
         {
           "name": "safe",
           "result": "pass",
-          "generated": 217,
-          "distinct": 81
+          "generated": 2701,
+          "distinct": 648
         },
         {
           "name": "unsafe-authority",
           "result": "expected counterexample",
-          "generated": 6,
-          "distinct": 4,
+          "generated": 9,
+          "distinct": 7,
           "invariant": "DirectMessageAuthority"
         },
         {
           "name": "unsafe-self",
           "result": "expected counterexample",
-          "generated": 6,
-          "distinct": 4,
+          "generated": 9,
+          "distinct": 7,
           "invariant": "SelfMessageAuthority"
+        },
+        {
+          "name": "unsafe-transcript",
+          "result": "expected counterexample",
+          "generated": 20,
+          "distinct": 18,
+          "invariant": "TranscriptInheritanceDoesNotGrantAuthority"
         }
       ]
     },
@@ -153,14 +161,14 @@
         {
           "name": "safe",
           "result": "pass",
-          "generated": 61,
-          "distinct": 23
+          "generated": 88,
+          "distinct": 37
         },
         {
           "name": "unsafe",
           "result": "expected counterexample",
           "generated": 16,
-          "distinct": 10,
+          "distinct": 11,
           "invariant": "AdmittedClaimRetained"
         }
       ]
@@ -232,12 +240,8 @@
   ],
   "log_sha256": {
     "SwarmBudget/7123179288bd430da27fd5062d547fc0-unsafe-allocation.log": "d9e1cb70cfee0ddac512f3017c9ae856fbcd0e223478cc3eba9978961b214394",
-    "ActivationRecovery/99c7b00ea5d940fb96d96343ae289769-safe.log": "f4fdfe08c15df43efeed8a40801be589400839c788cad7c939bac163420d9dfe",
     "ForkBoundary/da492c9237a747ba8989ee371d14aaae-safe.log": "463d1a143d4d466a36270cc511e1c70e33f82659ef83eb73eff8665fed4531e6",
-    "SwarmAuthority/6e50a214659149668902343dcb6fd1b6-unsafe-self.log": "d41b79f03fec8dfcfcbb349b0c1812042d2c412e45f225a7b0f2382ed3b1fcc6",
     "ForkBoundary/da492c9237a747ba8989ee371d14aaae-early-dispatch.log": "1b74bd8daa7cc2c74ed5a2e42d066dea53bdd4b937897ddade566b64fc74b805",
-    "ActivationRecovery/99c7b00ea5d940fb96d96343ae289769-unsafe.log": "9ae8c5abdd0b8f801d35b382758beb46c08690298d5f28d3280b436ecac196ea",
-    "SwarmAuthority/6e50a214659149668902343dcb6fd1b6-safe.log": "fe8575ed272dd93a07fa6458fff5b0f14c16b6c77ec6c289ece61f41bbfc3122",
     "ForkBoundary/da492c9237a747ba8989ee371d14aaae-mutable-capture.log": "b648faf5bf80dfcf8354fa55c33184f0df9321b4bf14375d21a16c8fbaeed848",
     "SwarmMessage/14ea45efbac44598870f40f3270d5730-unsafe-orphan.log": "27eb7b71e0fa01d2367263755153b994f30e8876697c02dfe913a7596ac559ef",
     "SwarmMessage/14ea45efbac44598870f40f3270d5730-unsafe-duplicate.log": "6438dd47fc057fe9137c561b0f631258a54514e90fa78134390a8a5e2a8295ab",
@@ -245,14 +249,19 @@
     "SwarmPublication/500aa2267df649ada134a298b50ce2af-safe.log": "f1a46bd1bb2ba2395c56f8f72a42eeb56dcc63357809968a7d682625903b1668",
     "SwarmBudget/7123179288bd430da27fd5062d547fc0-unsafe-depth.log": "389bed066c66b2f60104c62e487aeea93437552d4f557c92c637df42dc23acc5",
     "SwarmBudget/7123179288bd430da27fd5062d547fc0-safe.log": "78e510ffdac476c54f730dd80aeb65bcbdcd26b01c405054446be1a2c61309f9",
-    "SwarmAuthority/6e50a214659149668902343dcb6fd1b6-unsafe-authority.log": "8e8dd9577a1aa67f1b19756bc913f98d89d95aafe9c299690bfe44e5e6ed3e25",
     "SwarmMessage/14ea45efbac44598870f40f3270d5730-safe.log": "5f804534fd8ed8045e6e5886500f19c210a8f5218bdcc9118b1f8e7d1a1c5b8a",
     "SwarmPublication/500aa2267df649ada134a298b50ce2af-unsafe-stale.log": "c99fce609b6a132177e93e64275792668ecf749ba9cfe954d6a91a9ed339a56a",
     "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-unsafe-sibling.log": "3c14311f4e824394c12979f5f9c29f34b853ff824aa81e95c8589feb214d167f",
     "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-unsafe-grandchild.log": "53eda5858a04e1b611dff7d97f4108031161fea1567145b0da698aa802a19dc9",
     "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-unsafe-mismatched-approval.log": "642e3f3c273010f81f29ac04bb35629b1ef161a9aa4658ebcfd9bb0b55bcbe5e",
     "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-unsafe-stale-approval.log": "821cf623961e630c9bbbb251c40064c2c3ac588fea8b9ebe84c40813b338ddf1",
-    "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-safe.log": "d18fcb461d5b40417f18f3d63de936a8057ec5f2a943391ec2621f9d7c861d32"
+    "SwarmIntegration/04cbc5d3590342fcaa18cf43ad2e2332-safe.log": "d18fcb461d5b40417f18f3d63de936a8057ec5f2a943391ec2621f9d7c861d32",
+    "SwarmAuthority/41317ebaa67e430d98bd01f802a174bb-unsafe-authority.log": "aae8e6ae73a19135513b783e98925955aab75d280749c9d03c67eb07d1985269",
+    "SwarmAuthority/41317ebaa67e430d98bd01f802a174bb-unsafe-transcript.log": "16e32a764fdc7fd98f64677448c33e5e46e00ae1c082f829665542a4985cb03a",
+    "SwarmAuthority/41317ebaa67e430d98bd01f802a174bb-safe.log": "e664275d2678d93e025f99dad476840581ebab20056965f5bcc2f49f0214c231",
+    "SwarmAuthority/41317ebaa67e430d98bd01f802a174bb-unsafe-self.log": "18b5e5676dae0594e3fd8b488a178342de11985433e685d70f31fa06a1e1f3a1",
+    "ActivationRecovery/32c14bf2c1ed4e58a45db37cf3ee2767-unsafe.log": "13d8cf641ec85244e68851e9f6d1a19dbafd83c00fffddbb303f2149fe995970",
+    "ActivationRecovery/32c14bf2c1ed4e58a45db37cf3ee2767-safe.log": "ead0a166b59b63dce8981b0b95b37a03cc392f8d504fa46ddf178fa5ef111890"
   },
   "trace_adapter": {
     "runner": "rust/crates/harness/verification/check-trace-fixtures.ps1",
@@ -283,11 +292,11 @@
   },
   "scope": "bounded finite safety design evidence only; no Rust refinement, liveness, OS confinement, approval/budget trace proof, causal total order, or whole-swarm theorem",
   "model_evidence": {
-    "evidence_directory": "D:/graphcoder-builds/formal-evidence/formal-integration-revised4-20261005",
-    "run_scope": "SwarmIntegration safe plus four reachable negative controls: explicit integrate/discard choices, retained stale approvals with safe execution rejection, and actual invalid writeback counterexamples. TLC output logs are bound by log_sha256.",
+    "evidence_directory": "D:/graphcoder-builds/formal-evidence/formal-swarm-qualified-20261005",
+    "run_scope": "All finite model families, including recovery unknown-effect/fatal closure and transcript-inheritance authority, were run with explicit safe cases and reachable negative controls. TLC logs are bound by log_sha256.",
     "model_files_unchanged_since_run": true,
-    "model_run_source_commit": "25fac2e99d2884836f9e3d85bcd0c2e10c3b72da",
-    "model_run_source_tree": "9f488b4870aecf808d0f5a119603c8713837cf74"
+    "model_run_source_commit": "21f44e7d8fcfd0e984b16f8d7854d85b73efde10",
+    "model_run_source_tree": "ff3fff9b9303ff0563f8cc2f267eab714d5c6dab"
   },
   "real_trace_checker": {
     "checker": "rust/crates/harness/verification/check-real-trace.ps1",
