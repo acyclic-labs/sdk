@@ -21,6 +21,7 @@ use acyclic_harness::filesystem::{
 use acyclic_harness::fork::{CapturedResource, ForkSeed, ResourceRevision};
 use acyclic_harness::model::{Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider};
 use acyclic_harness::resources::{GenerationRef, ProviderRef, StreamRef};
+use acyclic_harness::tool::{ToolExecutor, ToolInvocation};
 use acyclic_harness::{Error, Limits, OperationId, Result};
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::stream;
@@ -289,6 +290,45 @@ fn root_facade(
     )
 }
 
+async fn model_git_call(
+    host: Arc<TestHost>,
+    node: &ProjectNode,
+    operation: u8,
+    argv: &[&str],
+) -> Result<serde_json::Value> {
+    let workspace_id = host
+        .workspace_id(node.project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let workspace = Arc::new(acyclic_harness::filesystem::LocalProjectWorkspaceTree::new(
+        host,
+        node.project.clone(),
+        &node.issuer.verifier(),
+        node.scope.clone(),
+    )?);
+    let tool = Arc::new(acyclic_harness::filesystem::FilesystemGitTool::new(
+        Arc::new(root_facade(node, workspace_id)?),
+        workspace,
+        node.authority.id.clone(),
+        || 100,
+    )?)
+    .into_tool();
+    let invocation = ToolInvocation::for_model_call(
+        OperationId::from_bytes([operation; 16]),
+        0,
+        format!("git-call-{operation}"),
+        acyclic_harness::filesystem::GIT_FACADE_TOOL_NAME.into(),
+        json!({"argv": argv}),
+    );
+    let serialized = serde_json::to_vec(&invocation)
+        .map_err(|error| Error::Storage(format!("Git invocation encoding failed: {error}")))?;
+    let decoded: ToolInvocation = serde_json::from_slice(&serialized)
+        .map_err(|error| Error::Invalid(format!("Git invocation decoding failed: {error}")))?;
+    tool.executor
+        .execute(decoded)
+        .await
+        .map(|result| result.value)
+}
+
 async fn merge_notice(
     host: &TestHost,
     node: &ProjectNode,
@@ -538,6 +578,27 @@ async fn recursive_project_merges_use_exact_workspaces_and_reject_cross_lineage(
         )
         .await?
         .generation;
+    for (node, operation) in [(&root, 60), (&child, 61), (&grandchild, 62)] {
+        let status = model_git_call(host.clone(), node, operation, &["status"]).await?;
+        assert!(status.get("output").is_some());
+        let diff = model_git_call(host.clone(), node, operation + 10, &["diff"]).await?;
+        assert!(diff.get("output").is_some());
+    }
+    let read_only_scope = root.issuer.root_for_agent(
+        root.agent,
+        "read-only-git",
+        acyclic_harness::Capabilities::new([root.project.capability(VolumeOperation::Read)?]),
+    );
+    assert!(
+        acyclic_harness::filesystem::LocalProjectWorkspaceTree::new(
+            host.clone(),
+            root.project.clone(),
+            &root.issuer.verifier(),
+            read_only_scope,
+        )
+        .is_err(),
+        "model-visible Git binding must reject a scope without project write"
+    );
     publish_direct_fork(&mut root_reducer, &root, &child, &stream_provider, 10).await?;
     publish_direct_fork(
         &mut child_reducer,
