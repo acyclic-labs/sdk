@@ -61,6 +61,39 @@ case "$target" in
     for project in "${projects[@]}"; do
       run_logged "crystal-$(basename "$(dirname "$project")")" bash -c "cd \"$(dirname \"$project\")\" && shards build"
     done
+    if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
+      # Exercise the generated Crystal API against the Rust fixture. The
+      # request model, JSON body, route, and response model all come from the
+      # generated package.
+      transport_dir="$output_root/crystal-transport"
+      mkdir -p "$transport_dir"
+      crystal_root="$(dirname "${projects[0]}")"
+      cat >"$crystal_root/qualification.cr" <<'EOF'
+require "./src/acyclic_actors_crystal"
+
+endpoint = ENV.fetch("ACYCLIC_FIXTURE_HTTP_ENDPOINT")
+config = AcyclicActorsHttp::Configuration.new
+config.scheme = "http"
+config.host = endpoint
+client = AcyclicActorsHttp::Client.new(AcyclicActorsHttp::Connection.new(config))
+request = AcyclicActorsHttp::AcyclicActorsV1CreateActorRequest.new(
+  code_sha256: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  home_region: "qualification",
+  idempotency_key: "http-target-crystal-qualification",
+  limits: AcyclicActorsHttp::AcyclicActorsV1ActorLimits.new(
+    checkpoint_bytes: "1048576",
+    handler_timeout_millis: "1000",
+    memory_bytes: "1048576"))
+response = client.create.actor(request)
+abort "Rust fixture rejected generated Crystal request: #{response.status}" unless response.success?
+abort "generated Crystal client did not decode the Rust fixture response" if response.value.actor.nil?
+EOF
+      cp "$crystal_root/qualification.cr" "$transport_dir/qualification.cr"
+      run_logged crystal-transport bash -c "cd \"$crystal_root\" && ACYCLIC_FIXTURE_HTTP_ENDPOINT=\"$ACYCLIC_FIXTURE_HTTP_ENDPOINT\" crystal run --path lib qualification.cr"
+      client_transport='crystal-generated-client-fixture-roundtrip'
+    else
+      client_transport='not-run-fixture-endpoint-unset'
+    fi
     runtime='crystal/shards'
     ;;
   elm)
