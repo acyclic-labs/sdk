@@ -37,8 +37,6 @@ $packageProvenancePath = rtrim($packageRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SE
 $packageProvenance = is_file($packageProvenancePath)
     ? json_decode(file_get_contents($packageProvenancePath), true, 512, JSON_THROW_ON_ERROR)
     : [];
-$packageProvenance['source_git_sha'] ??= $authority['source_git_sha'] ?? null;
-$packageProvenance['rust_model_digest'] ??= $authority['model_digest'] ?? null;
 $artifactSha256 = $artifactPath !== null ? hash_file('sha256', $artifactPath) : null;
 $runtimePlatform = array_merge($packageProvenance['platform'] ?? [], [
     'runtime_triple' => strtolower(PHP_OS_FAMILY . '-' . php_uname('m')),
