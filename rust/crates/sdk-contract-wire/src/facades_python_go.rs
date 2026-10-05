@@ -293,17 +293,16 @@ fn python_public_type_exports() -> String {
         if binding.direction != PublicFieldDirection::Request {
             continue;
         }
-        if let (Some(_service), Some(rpc)) = (binding.client_attribute(), binding.rpc()) {
-            if binding.module != "actors"
-                && !(binding.module == "objects" && binding.message == "GetObjectRequest" && rpc == "GetObject")
-                && python_public_response_spec(binding, rpc).is_some()
-            {
+        if let (Some(_service), Some(rpc)) = (binding.client_attribute(), binding.rpc())
+            && binding.module != "actors"
+            && !(binding.module == "objects" && binding.message == "GetObjectRequest" && rpc == "GetObject")
+            && python_public_response_spec(binding, rpc).is_some()
+        {
                 let name = public_response_model_name(binding, rpc);
                 names.push(name.clone());
                 if python_public_response_spec(binding, rpc).is_some_and(|(_, _, streaming)| streaming) {
                     names.push(format!("{}Stream", name));
                 }
-            }
         }
     }
     names.sort();
@@ -375,7 +374,7 @@ fn response_fields_for(
                 && field.message_path.rsplit('.').next() == Some(root)
         })
         .collect::<Vec<_>>();
-    fields.sort_by(|left, right| left.number.cmp(&right.number));
+    fields.sort_by_key(|left| left.number);
     fields.dedup_by(|left, right| left.field == right.field);
     fields
 }
@@ -474,10 +473,9 @@ fn python_public_response_models() -> String {
     for field in &response_fields {
         if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group))
             && !field.map_entry
+            && let Some(type_name) = field.type_name.as_deref()
         {
-            if let Some(type_name) = field.type_name.as_deref() {
-                nested_messages.insert((field.family.clone(), type_name.to_owned()));
-            }
+            nested_messages.insert((field.family.clone(), type_name.to_owned()));
         }
     }
     for (family, type_name) in nested_messages {
@@ -489,7 +487,7 @@ fn python_public_response_models() -> String {
             .iter()
             .filter(|field| field.family == family && field.message_path == type_name)
             .collect::<Vec<_>>();
-        fields.sort_by(|left, right| left.number.cmp(&right.number));
+        fields.sort_by_key(|left| left.number);
         fields.dedup_by(|left, right| left.field == right.field);
         let properties = fields
             .iter()
@@ -1229,7 +1227,7 @@ fn python_all_rpc_models() -> String {
             .iter()
             .filter(|field| field.family == method.family && field.root_message == root && field.message_path == root)
             .collect::<Vec<_>>();
-        fields.sort_by(|left, right| left.number.cmp(&right.number));
+        fields.sort_by_key(|left| left.number);
         fields.dedup_by(|left, right| left.field == right.field);
         output.push_str(&format!("@dataclass(frozen=True)\nclass {request_name}:\n"));
         if fields.is_empty() {
@@ -1262,7 +1260,7 @@ fn python_all_rpc_models() -> String {
             .iter()
             .filter(|field| field.family == method.family && field.root_message == root && field.message_path == root)
             .collect::<Vec<_>>();
-        fields.sort_by(|left, right| left.number.cmp(&right.number));
+        fields.sort_by_key(|left| left.number);
         fields.dedup_by(|left, right| left.field == right.field);
         output.push_str(&format!("@dataclass(frozen=True)\nclass {response_name}:\n"));
         if fields.is_empty() {
@@ -1543,7 +1541,9 @@ fn python_public_field_models() -> String {
                     expression = python_public_binding_from_wire_value(binding, &field_name, &function),
                 ));
             }
-            PublicFieldDirection::Request | PublicFieldDirection::NestedMessage => {
+            PublicFieldDirection::Request
+            | PublicFieldDirection::NestedMessage
+            | PublicFieldDirection::EmbeddedOnly => {
                 let expression =
                     python_public_binding_wire_value(binding, item, &field_name, &function);
                 let presence = if public_binding_requires_presence(binding) {
@@ -1581,6 +1581,7 @@ fn python_binding_direction(direction: PublicFieldDirection) -> &'static str {
         PublicFieldDirection::Request => "request",
         PublicFieldDirection::Response => "response",
         PublicFieldDirection::NestedMessage => "nested_message",
+        PublicFieldDirection::EmbeddedOnly => "embedded_only",
     }
 }
 
@@ -1863,7 +1864,7 @@ fn go_type_projection() -> String {
     }
     output.push_str("}\n\n");
     output.push_str(&format!(
-        "type UnknownEnumValue struct {{ RawValue int32 }}\n\ntype WireChoice interface {{ isWireChoice() }}\n\ntype KnownOneof struct {{ Tag string; Payload any }}\n\nfunc (KnownOneof) isWireChoice() {{}}\n\ntype UnknownOneof struct {{ Tag string; RawPayload []byte }}\n\nfunc (UnknownOneof) isWireChoice() {{}}\n\nfunc NewKnownOneof(payload any) KnownOneof {{ return KnownOneof{{Tag: {known_tag:?}, Payload: payload}} }}\n\nfunc NewUnknownOneof(rawPayload []byte) UnknownOneof {{ return UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), rawPayload...)}} }}\n\ntype WireChoiceEnvelope struct {{\n\tTag string `json:\"tag\"`\n\tPayload any `json:\"payload,omitempty\"`\n\tRawPayload []byte `json:\"raw_payload,omitempty\"`\n}}\n\nfunc EncodeWireChoice(value WireChoice) (WireChoiceEnvelope, error) {{\n\tif value == nil {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice must be present\") }}\n\tswitch choice := value.(type) {{\n\tcase KnownOneof:\n\t\tif choice.Tag != {known_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"known oneof has invalid tag\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {known_tag:?}, Payload: choice.Payload}}, nil\n\tcase UnknownOneof:\n\t\tif choice.Tag != {unknown_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"unknown oneof has invalid tag\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), choice.RawPayload...)}}, nil\n\tdefault:\n\t\treturn WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice has an unsupported variant\")\n\t}}\n}}\n\nfunc EncodeWireChoiceJSON(value WireChoice) ([]byte, error) {{\n\tenvelope, err := EncodeWireChoice(value)\n\tif err != nil {{ return nil, err }}\n\treturn json.Marshal(envelope)\n}}\n\nfunc DecodeWireChoice(envelope WireChoiceEnvelope) (WireChoice, error) {{\n\tswitch envelope.Tag {{\n\tcase {known_tag:?}:\n\t\treturn KnownOneof{{Tag: {known_tag:?}, Payload: envelope.Payload}}, nil\n\tcase {unknown_tag:?}:\n\t\treturn UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), envelope.RawPayload...)}}, nil\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"wire_choice has an unknown discriminant\")\n\t}}\n}}\n\nfunc DecodeWireChoiceJSON(payload []byte) (WireChoice, error) {{\n\tvar envelope WireChoiceEnvelope\n\tif err := json.Unmarshal(payload, &envelope); err != nil {{ return nil, err }}\n\treturn DecodeWireChoice(envelope)\n}}\n\n"
+        "type UnknownEnumValue struct {{ RawValue int32 }}\n\ntype WireChoice interface {{ isWireChoice() }}\n\n// WirePayload is the Rust-owned boundary for a known oneof arm.\n// Concrete generated payload views implement this sealed interface.\ntype WirePayload interface {{ isWirePayload() }}\n\n// JsonWirePayload preserves an open known arm until a generated concrete view\n// is available, without erasing the public API to any.\ntype JsonWirePayload map[string]json.RawMessage\n\nfunc (JsonWirePayload) isWirePayload() {{}}\n\ntype KnownOneof struct {{ Tag string; Payload WirePayload }}\n\nfunc (KnownOneof) isWireChoice() {{}}\n\ntype UnknownOneof struct {{ Tag string; RawPayload []byte }}\n\nfunc (UnknownOneof) isWireChoice() {{}}\n\nfunc NewKnownOneof(payload WirePayload) KnownOneof {{ return KnownOneof{{Tag: {known_tag:?}, Payload: payload}} }}\n\nfunc NewUnknownOneof(rawPayload []byte) UnknownOneof {{ return UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), rawPayload...)}} }}\n\ntype WireChoiceEnvelope struct {{\n\tTag string `json:\"tag\"`\n\tPayload WirePayload `json:\"payload,omitempty\"`\n\tRawPayload []byte `json:\"raw_payload,omitempty\"`\n}}\n\nfunc EncodeWireChoice(value WireChoice) (WireChoiceEnvelope, error) {{\n\tif value == nil {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice must be present\") }}\n\tswitch choice := value.(type) {{\n\tcase KnownOneof:\n\t\tif choice.Tag != {known_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"known oneof has invalid tag\") }}\n\t\tif choice.Payload == nil {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"known oneof payload must be present\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {known_tag:?}, Payload: choice.Payload}}, nil\n\tcase UnknownOneof:\n\t\tif choice.Tag != {unknown_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"unknown oneof has invalid tag\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), choice.RawPayload...)}}, nil\n\tdefault:\n\t\treturn WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice has an unsupported variant\")\n\t}}\n}}\n\nfunc EncodeWireChoiceJSON(value WireChoice) ([]byte, error) {{\n\tenvelope, err := EncodeWireChoice(value)\n\tif err != nil {{ return nil, err }}\n\treturn json.Marshal(envelope)\n}}\n\nfunc DecodeWireChoice(envelope WireChoiceEnvelope) (WireChoice, error) {{\n\tswitch envelope.Tag {{\n\tcase {known_tag:?}:\n\t\tif envelope.Payload == nil {{ return nil, fmt.Errorf(\"known oneof payload must be present\") }}\n\t\treturn KnownOneof{{Tag: {known_tag:?}, Payload: envelope.Payload}}, nil\n\tcase {unknown_tag:?}:\n\t\treturn UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), envelope.RawPayload...)}}, nil\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"wire_choice has an unknown discriminant\")\n\t}}\n}}\n\nfunc DecodeWireChoiceJSON(payload []byte) (WireChoice, error) {{\n\tvar raw struct {{\n\t\tTag string `json:\"tag\"`\n\t\tPayload json.RawMessage `json:\"payload,omitempty\"`\n\t\tRawPayload []byte `json:\"raw_payload,omitempty\"`\n\t}}\n\tif err := json.Unmarshal(payload, &raw); err != nil {{ return nil, err }}\n\tenvelope := WireChoiceEnvelope{{Tag: raw.Tag, RawPayload: raw.RawPayload}}\n\tif raw.Tag == {known_tag:?} {{\n\t\tvar known JsonWirePayload\n\t\tif err := json.Unmarshal(raw.Payload, &known); err != nil {{ return nil, err }}\n\t\tenvelope.Payload = known\n\t}}\n\treturn DecodeWireChoice(envelope)\n}}\n\n"
     ));
     let mut emitted_go_types = Vec::new();
     for item in SEMANTIC_TYPES {
@@ -2128,7 +2129,9 @@ fn go_public_field_models() -> String {
                     field_name = field_name,
                 ));
             }
-            PublicFieldDirection::Request | PublicFieldDirection::NestedMessage => {
+            PublicFieldDirection::Request
+            | PublicFieldDirection::NestedMessage
+            | PublicFieldDirection::EmbeddedOnly => {
                 if public_binding_requires_presence(binding) && public_binding_is_message(binding) {
                     output.push_str(&format!(
                         "func (request {type_name}) ToWire() (*{module}.{message}, error) {{\n\tif request.{field_name} == nil {{ return nil, fmt.Errorf(\"{field_name} must be present\") }}\n\treturn &{module}.{message}{{{wire_field}: request.{field_name}}}, nil\n}}\n\n",
@@ -2151,14 +2154,21 @@ fn go_public_field_models() -> String {
                 } else {
                     format!("request.{field_name}")
                 };
+                let constructor = go_constructor_call(item, &request_field);
+                let wire_value = if binding.message == "Image" && binding.wire_field == "managed_digest" {
+                    format!("ImmutableReference: &machinesv1.Image_ManagedDigest{{ManagedDigest: {assignment}}}")
+                } else if binding.message == "Image" && binding.wire_field == "custom_digest" {
+                    format!("ImmutableReference: &machinesv1.Image_CustomDigest{{CustomDigest: {assignment}}}")
+                } else {
+                    format!("{wire_field}: {assignment}", wire_field = wire_field, assignment = assignment)
+                };
                 output.push_str(&format!(
-                    "func (request {type_name}) ToWire() (*{module}.{message}, error) {{\n\tvalue, err := {constructor}\n\tif err != nil {{ return nil, err }}\n\treturn &{module}.{message}{{{wire_field}: {assignment}}}, nil\n}}\n\n",
+                    "func (request {type_name}) ToWire() (*{module}.{message}, error) {{\n\tvalue, err := {constructor}\n\tif err != nil {{ return nil, err }}\n\treturn &{module}.{message}{{{wire_value}}}, nil\n}}\n\n",
                     type_name = type_name,
                     module = module,
                     message = binding.message,
-                    constructor = go_constructor_call(item, &request_field),
-                    wire_field = wire_field,
-                    assignment = assignment,
+                    constructor = constructor,
+                    wire_value = wire_value,
                 ));
             }
         }
@@ -2244,7 +2254,7 @@ fn go_all_rpc_models() -> String {
         if request_fields.is_empty() {
             output.push_str("\twire ");
             output.push_str(&input);
-            output.push_str("\n");
+        output.push('\n');
         } else {
             for field in &request_fields {
                 output.push_str(&format!("\t{} {}\n", go_rpc_field_identifier(field), go_rpc_field_type(field)));
@@ -2302,7 +2312,7 @@ fn go_rpc_response_name(method: &ResolvedRpcMethod) -> String {
 
 fn go_root_fields<'a>(fields: &'a [ResolvedRequestField], method: &ResolvedRpcMethod, root: &str) -> Vec<&'a ResolvedRequestField> {
     let mut result = fields.iter().filter(|field| field.family == method.family && field.root_message == root && field.message_path == root).collect::<Vec<_>>();
-    result.sort_by(|left, right| left.number.cmp(&right.number));
+    result.sort_by_key(|left| left.number);
     result.dedup_by(|left, right| left.field == right.field);
     result
 }
@@ -2358,6 +2368,7 @@ fn go_rpc_assignment(field: &ResolvedRequestField) -> String {
                 if item.rules.iter().any(|rule| matches!(rule, SemanticRule::FixedLength(_))) { format!("{}[:]", go_deref_if_pointer(field, &source)) } else { go_deref_if_pointer(field, &source) }
             },
             _ if item.wire_kind == WireValueKind::UnsignedInteger && matches!(kind, FieldType::Uint32 | FieldType::Fixed32) => format!("uint32({})", go_deref_if_pointer(field, &source)),
+            _ if item.wire_kind == WireValueKind::UnsignedInteger && matches!(kind, FieldType::Uint64 | FieldType::Fixed64) => format!("uint64({})", go_deref_if_pointer(field, &source)),
             _ => source.clone(),
         }
     } else if matches!(kind, FieldType::Enum) {
@@ -2438,6 +2449,7 @@ fn go_binding_direction(direction: PublicFieldDirection) -> &'static str {
         PublicFieldDirection::Request => "request",
         PublicFieldDirection::Response => "response",
         PublicFieldDirection::NestedMessage => "nested_message",
+        PublicFieldDirection::EmbeddedOnly => "embedded_only",
     }
 }
 
@@ -2691,11 +2703,11 @@ fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) ->
         if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Enum)) {
             return format!("func() []OpenEnumValue {{ result := make([]OpenEnumValue, 0, len({getter})); for _, item := range {getter} {{ result = append(result, OpenEnumValue(item)) }}; return result }}()", getter = getter);
         }
-        if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group)) {
-            if let Some(type_name) = field.type_name.as_deref() {
-                let view = response_view_name(&field.family, type_name);
-                return format!("func() []*{view} {{ result := make([]*{view}, 0, len({getter})); for _, item := range {getter} {{ nested, _ := {view}FromWire(item); result = append(result, nested) }}; return result }}()", view = view, getter = getter);
-            }
+        if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group))
+            && let Some(type_name) = field.type_name.as_deref()
+        {
+            let view = response_view_name(&field.family, type_name);
+            return format!("func() []*{view} {{ result := make([]*{view}, 0, len({getter})); for _, item := range {getter} {{ nested, _ := {view}FromWire(item); result = append(result, nested) }}; return result }}()", view = view, getter = getter);
         }
         return getter;
     }
@@ -2710,7 +2722,12 @@ fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) ->
         if item.wire_kind == WireValueKind::Oneof {
             return getter;
         }
-        return format!("{}({getter})", go_type_name(item.rust_name));
+        let expression = format!("{}({getter})", go_type_name(item.rust_name));
+        if field.proto3_optional || field.oneof_index.is_some() {
+            let ty = go_response_field_type(field).trim_start_matches('*').to_owned();
+            return format!("func() *{ty} {{ value := {expression}; return &value }}()", ty = ty, expression = expression);
+        }
+        return expression;
     }
     let expression = match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
         Some(FieldType::Enum) => format!("OpenEnumValue({getter})"),
@@ -2755,10 +2772,9 @@ fn go_public_response_models() -> String {
     for field in &response_fields {
         if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group))
             && !field.map_entry
+            && let Some(type_name) = field.type_name.as_deref()
         {
-            if let Some(type_name) = field.type_name.as_deref() {
-                nested_messages.insert((field.family.clone(), type_name.to_owned()));
-            }
+            nested_messages.insert((field.family.clone(), type_name.to_owned()));
         }
     }
     for (family, type_name) in nested_messages {
@@ -2776,7 +2792,7 @@ fn go_public_response_models() -> String {
             .iter()
             .filter(|field| field.family == family && field.message_path == type_name)
             .collect::<Vec<_>>();
-        fields.sort_by(|left, right| left.number.cmp(&right.number));
+        fields.sort_by_key(|left| left.number);
         fields.dedup_by(|left, right| left.field == right.field);
         for field in fields {
             output.push_str(&go_response_field_method(field).replace("{model}", &view));
@@ -2975,6 +2991,7 @@ package acyclicsdk
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -2989,7 +3006,7 @@ func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
 	if _, err := NewPageLimit(1); err != nil { t.Fatal(err) }
 	if _, err := NewRevisionDigest(make([]byte, 32)); err != nil { t.Fatal(err) }
 	if _, err := NewSha256Digest(make([]byte, 32)); err != nil { t.Fatal(err) }
-	if _, err := NewWireChoice(NewKnownOneof(map[string]any{"payload": 1})); err != nil { t.Fatal(err) }
+	if _, err := NewWireChoice(NewKnownOneof(JsonWirePayload{"payload": json.RawMessage("1")})); err != nil { t.Fatal(err) }
 	if _, err := NewWireChoice(NewUnknownOneof([]byte("future"))); err != nil { t.Fatal(err) }
 	payload, err := EncodeWireChoiceJSON(NewUnknownOneof([]byte("future")))
 	if err != nil { t.Fatal(err) }

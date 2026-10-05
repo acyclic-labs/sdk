@@ -2024,7 +2024,7 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
         module: "harness",
         message: "FileRef",
         wire_field: "normalized_path",
-        direction: PublicFieldDirection::EmbeddedOnly,
+        direction: PublicFieldDirection::Response,
     },
     // Response and nested response semantics are source-owned too.  These
     // bindings intentionally cover only values with stable identity,
