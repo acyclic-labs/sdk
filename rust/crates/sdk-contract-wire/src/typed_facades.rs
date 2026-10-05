@@ -333,21 +333,25 @@ fn render_java_responses() -> String {
     for (module, message, _fields) in request_groups() {
         let (wire, _streaming) = client_response(module, message);
         let name = response_wrapper_name(module, message);
-        out.push_str("  public record ");
+        out.push_str("  public static final class ");
+        out.push_str(&name);
+        out.push_str(" { private final ");
+        out.push_str(wire);
+        out.push_str(" value; private ");
         out.push_str(&name);
         out.push_str("(");
         out.push_str(wire);
-        out.push_str(" value) { public static ");
-        out.push_str(&name);
-        out.push_str(" fromWire(");
-        out.push_str(wire);
-        out.push_str(" value) { ");
+        out.push_str(" value) { java.util.Objects.requireNonNull(value); ");
         if module == "inference" && message == "InspectEvaluationRequest" {
             out.push_str("RustSemanticTypes.Sha256Digest.of(value.getSpec().getSpecDigest()); ");
         } else if module == "objects" && message == "GetObjectRequest" {
             out.push_str("if (value.getFrameCase() == acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER && !value.getHeader().getObject().getEtag().isEmpty()) RustSemanticTypes.OpaqueText.of(value.getHeader().getObject().getEtag()); ");
         }
-        out.push_str("return new ");
+        out.push_str("this.value = value; } public static ");
+        out.push_str(&name);
+        out.push_str(" fromWire(");
+        out.push_str(wire);
+        out.push_str(" value) { return new ");
         out.push_str(&name);
         out.push_str("(value); } public ");
         out.push_str(wire);
@@ -380,9 +384,9 @@ fn render_kotlin_responses() -> String {
     for (module, message, _fields) in request_groups() {
         let (wire, _streaming) = client_response(module, message);
         let name = response_wrapper_name(module, message);
-        out.push_str("  data class ");
+        out.push_str("  class ");
         out.push_str(&name);
-        out.push_str("(val value: ");
+        out.push_str(" private constructor(private val value: ");
         out.push_str(wire);
         out.push_str(") { companion object { fun fromWire(value: ");
         out.push_str(wire);
@@ -431,9 +435,9 @@ fn render_scala_responses() -> String {
     for (module, message, _fields) in request_groups() {
         let (wire, _streaming) = client_response(module, message);
         let name = response_wrapper_name(module, message);
-        out.push_str("  final case class ");
+        out.push_str("  final class ");
         out.push_str(&name);
-        out.push_str("(value: ");
+        out.push_str(" private (private val value: ");
         out.push_str(wire);
         out.push_str(") { def toWire: ");
         out.push_str(wire);
@@ -457,6 +461,7 @@ fn render_scala_responses() -> String {
         } else if module == "objects" && message == "GetObjectRequest" {
             out.push_str("{ if (value.getFrameCase == acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER && !value.getHeader.getObject.getEtag.isEmpty) RustSemanticTypesScala.OpaqueText.from(value.getHeader.getObject.getEtag).toOption.get; ");
         }
+        out.push_str("new ");
         out.push_str(&name);
         out.push_str("(value)");
         if (module == "inference" && message == "InspectEvaluationRequest")
@@ -1129,11 +1134,15 @@ fn render_java_descriptor_responses(out: &mut String) {
     for method in methods {
         let name = descriptor_response_name(&method);
         let wire = descriptor_message_type(&method.family, &method.output_message);
-        out.push_str("  public record ");
+        out.push_str("  public static final class ");
+        out.push_str(&name);
+        out.push_str(" { private final ");
+        out.push_str(&wire);
+        out.push_str(" value; private ");
         out.push_str(&name);
         out.push('(');
         out.push_str(&wire);
-        out.push_str(" value) { public static ");
+        out.push_str(" value) { this.value = java.util.Objects.requireNonNull(value); } public static ");
         out.push_str(&name);
         out.push_str(" fromWire(");
         out.push_str(&wire);
@@ -1141,7 +1150,7 @@ fn render_java_descriptor_responses(out: &mut String) {
         render_java_descriptor_validation(out, &method, false);
         out.push_str(" return new ");
         out.push_str(&name);
-        out.push_str("(java.util.Objects.requireNonNull(value)); } public ");
+        out.push_str("(value); } public ");
         out.push_str(&wire);
         out.push_str(" toWire() { return value; }");
         render_java_descriptor_projection(out, &method, false);
@@ -1155,9 +1164,9 @@ fn render_kotlin_descriptor_responses(out: &mut String) {
     for method in methods {
         let name = descriptor_response_name(&method);
         let wire = descriptor_message_type(&method.family, &method.output_message);
-        out.push_str("  data class ");
+        out.push_str("  class ");
         out.push_str(&name);
-        out.push_str("(val value: ");
+        out.push_str(" private constructor(private val value: ");
         out.push_str(&wire);
         out.push_str(") { fun toWire(): ");
         out.push_str(&wire);
@@ -1180,9 +1189,9 @@ fn render_scala_descriptor_responses(out: &mut String) {
     for method in methods {
         let name = descriptor_response_name(&method);
         let wire = descriptor_message_type(&method.family, &method.output_message);
-        out.push_str("  final case class ");
+        out.push_str("  final class ");
         out.push_str(&name);
-        out.push_str("(value: ");
+        out.push_str(" private (private val value: ");
         out.push_str(&wire);
         out.push_str(") { def toWire: ");
         out.push_str(&wire);
@@ -1197,6 +1206,7 @@ fn render_scala_descriptor_responses(out: &mut String) {
         out.push_str(&name);
         out.push_str(" = { ");
         render_scala_descriptor_validation(out, &method, false);
+        out.push_str("new ");
         out.push_str(&name);
         out.push_str("(value) } }\n\n");
     }
