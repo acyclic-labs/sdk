@@ -10,11 +10,12 @@ use crate::{
     family_registry::FAMILY_VIEWS,
     transport::TransportKind,
     type_policy::{
-        semantic_type, SemanticRule, FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS,
-        PUBLIC_NESTED_ROUTES, SEMANTIC_TYPES, PublicFieldBinding, PublicFieldDirection,
-        PublicNestedFieldKind, PublicNestedRoute, WIRE_UNION_VARIANTS, WireValueKind,
+        resolved_response_fields, FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
+        PublicFieldDirection, PublicNestedFieldKind, PublicNestedRoute, SEMANTIC_TYPES,
+        ResolvedRequestField, SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, semantic_type,
     },
 };
+use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
 
 pub(super) fn render_python(binding: &str) -> String {
     let mut output = format!(
@@ -151,6 +152,9 @@ def _validate(credentials: Credentials, secure: bool) -> None:
         raise ValueError("certificate_chain and private_key must be supplied together")
 
 
+#PYTHON_RESPONSE_MODELS#
+
+
 class Client:
     """Async remote client with Rust-selected secure transport defaults."""
 
@@ -175,22 +179,22 @@ class Client:
             self._channel = grpc.aio.secure_channel(target, channel_credentials)
         else:
             self._channel = grpc.aio.insecure_channel(target)
-        self.actors = actors_pb2_grpc.ActorsServiceStub(self._channel)
-        self.stream = stream_pb2_grpc.StreamServiceStub(self._channel)
-        self.buckets = objects_pb2_grpc.BucketsServiceStub(self._channel)
-        self.objects = objects_pb2_grpc.ObjectsServiceStub(self._channel)
-        self.multipart = objects_pb2_grpc.MultipartServiceStub(self._channel)
-        self.workers = workers_pb2_grpc.WorkersServiceStub(self._channel)
-        self.filesystem = filesystem_pb2_grpc.FilesystemServiceStub(self._channel)
-        self.harness = harness_pb2_grpc.HarnessServiceStub(self._channel)
-        self.inference = InferenceServices(
+        self._actors = actors_pb2_grpc.ActorsServiceStub(self._channel)
+        self._stream = stream_pb2_grpc.StreamServiceStub(self._channel)
+        self._buckets = objects_pb2_grpc.BucketsServiceStub(self._channel)
+        self._objects = objects_pb2_grpc.ObjectsServiceStub(self._channel)
+        self._multipart = objects_pb2_grpc.MultipartServiceStub(self._channel)
+        self._workers = workers_pb2_grpc.WorkersServiceStub(self._channel)
+        self._filesystem = filesystem_pb2_grpc.FilesystemServiceStub(self._channel)
+        self._harness = harness_pb2_grpc.HarnessServiceStub(self._channel)
+        self._inference = InferenceServices(
             models=inference_pb2_grpc.ModelsServiceStub(self._channel),
             contexts=inference_pb2_grpc.ContextsServiceStub(self._channel),
             warm_contexts=inference_pb2_grpc.WarmContextsServiceStub(self._channel),
             runs=inference_pb2_grpc.RunsServiceStub(self._channel),
             evaluations=inference_pb2_grpc.EvaluationsServiceStub(self._channel),
         )
-        self.machines = machines_pb2_grpc.MachinesServiceStub(self._channel)
+        self._machines = machines_pb2_grpc.MachinesServiceStub(self._channel)
 
     async def close(self) -> None:
         await self._channel.close()
@@ -200,7 +204,7 @@ class Client:
         request: ActorInvokeRequest,
         timeout: float | None = None,
     ) -> ActorInvokeResponse:
-        response = await self.actors.InvokeActor(request.to_wire(), timeout=timeout)
+        response = await self._actors.InvokeActor(request.to_wire(), timeout=timeout)
         return ActorInvokeResponse.from_wire(response)
 
 #PUBLIC_CLIENT_METHODS#
@@ -237,6 +241,7 @@ TRANSPORTS_BY_RUNTIME = {
     output = output.replace("#TYPES#", &python_type_projection());
     output = output.replace("#PUBLIC_TYPE_EXPORTS#", &python_public_type_exports());
     output = output.replace("#PUBLIC_CLIENT_METHODS#", &python_public_client_methods());
+    output = output.replace("#PYTHON_RESPONSE_MODELS#", &python_public_response_models());
     output = output.replace("#SELECTION_PROBE#", FACADE_SELECTION_POLICY.probe);
     output = output.replace(
         "#POST_FAILURE_FALLBACK#",
@@ -268,13 +273,282 @@ fn python_public_type_exports() -> String {
         names.push(python_public_binding_name(binding));
     }
     for route in PUBLIC_NESTED_ROUTES {
+        names.push(format!("{}Response", python_nested_route_name(route)));
+    }
+    for route in PUBLIC_NESTED_ROUTES {
         names.push(python_nested_route_name(route));
     }
     names.push("ObjectsGetObjectResponse".to_owned());
     names.push("ObjectsGetObjectStream".to_owned());
+    for binding in PUBLIC_FIELD_BINDINGS {
+        if binding.direction != PublicFieldDirection::Request {
+            continue;
+        }
+        if let (Some(_service), Some(rpc)) = (binding.client_attribute(), binding.rpc()) {
+            if binding.module != "actors"
+                && !(binding.module == "objects" && binding.message == "GetObjectRequest" && rpc == "GetObject")
+                && python_public_response_spec(binding, rpc).is_some()
+            {
+                let name = public_response_model_name(binding, rpc);
+                names.push(name.clone());
+                if python_public_response_spec(binding, rpc).is_some_and(|(_, _, streaming)| streaming) {
+                    names.push(format!("{}Stream", name));
+                }
+            }
+        }
+    }
     names.sort();
     names.dedup();
-    names.iter().map(|name| format!("\"{}\"", name)).collect::<Vec<_>>().join(", ")
+    names
+        .iter()
+        .map(|name| format!("\"{}\"", name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn python_public_response_spec(
+    binding: &PublicFieldBinding,
+    rpc: &str,
+) -> Option<(String, String, bool)> {
+    let module = match binding.module {
+        "workers" => "workers_pb2",
+        "stream" => "stream_pb2",
+        "objects" => "objects_pb2",
+        "inference" => "inference_pb2",
+        "machines" => "machines_pb2",
+        "filesystem" => "filesystem_pb2",
+        _ => return None,
+    };
+    let (message, streaming) = match (binding.module, binding.message, rpc) {
+        ("workers", "SelectDeploymentRequest", "SelectDeployment") => ("SelectDeploymentResponse", false),
+        ("workers", "InspectJobRequest", "InspectJob") => ("InspectJobResponse", false),
+        ("workers", "InvokeVersionRequest", "InvokeVersion") => ("InvokeResponse", false),
+        ("stream", "AppendRequest", "Append") => ("AppendResponse", false),
+        ("stream", "ForkRequest", "Fork") => ("ForkReceipt", false),
+        ("stream", "ReadRequest", "Read") => ("ReadResponse", true),
+        ("stream", "ReadCommitRequest", "ReadCommit") => ("CommittedEnvelope", false),
+        ("objects", "ListObjectsRequest", "ListObjects") => ("ListObjectsResponse", false),
+        ("objects", "ListPartsRequest", "ListParts") => ("ListPartsResponse", false),
+        ("inference", "InspectRunRequest", "Inspect") => ("RunView", false),
+        ("inference", "InspectContextRequest", "Inspect") => ("ContextView", false),
+        ("inference", "InspectWarmRequest", "Inspect") => ("WarmView", false),
+        ("inference", "InspectEvaluationRequest", "Inspect") => ("EvaluationView", false),
+        ("machines", "CreateMachineRequest", "Create") => ("MachineAdmission", false),
+        ("machines", "InspectMachineRequest", "InspectMachine") => ("MachineState", false),
+        ("machines", "InspectCheckpointRequest", "InspectCheckpoint") => ("CheckpointState", false),
+        ("machines", "OperationRequest", "InspectOperation") => ("OperationState", false),
+        ("machines", "ListMachinesRequest", "ListMachines") => ("MachinePage", false),
+        ("filesystem", "ReadRequest", "Read") => ("ReadResponse", false),
+        _ => return None,
+    };
+    Some((
+        public_response_model_name(binding, rpc),
+        format!("{module}.{message}"),
+        streaming,
+    ))
+}
+
+fn response_root_name(raw: &str) -> &str {
+    raw.rsplit('.').next().unwrap_or(raw)
+}
+
+fn response_fields_for(
+    family: &str,
+    rpc: &str,
+    root: &str,
+) -> Vec<ResolvedRequestField> {
+    let mut fields = resolved_response_fields()
+        .expect("Rust response fields must resolve before facade generation")
+        .into_iter()
+        .filter(|field| {
+            field.family == family
+                && field.rpc.ends_with(&format!("/{rpc}"))
+                && field.message_path.rsplit('.').next() == Some(root)
+        })
+        .collect::<Vec<_>>();
+    fields.sort_by(|left, right| left.number.cmp(&right.number));
+    fields.dedup_by(|left, right| left.field == right.field);
+    fields
+}
+
+fn response_view_name(family: &str, type_name: &str) -> String {
+    let message = type_name.rsplit('.').next().unwrap_or(type_name);
+    format!("{}{}View", pascal_case(family), pascal_case(message))
+}
+
+fn python_response_field_type(field: &ResolvedRequestField) -> String {
+    let base = if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
+        item.rust_name.to_owned()
+    } else {
+        match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+            Some(FieldType::String) => "str".to_owned(),
+            Some(FieldType::Bytes) => "bytes".to_owned(),
+            Some(FieldType::Bool) => "bool".to_owned(),
+            Some(FieldType::Double | FieldType::Float) => "float".to_owned(),
+            Some(
+                FieldType::Int32
+                | FieldType::Sint32
+                | FieldType::Sfixed32
+                | FieldType::Uint32
+                | FieldType::Fixed32
+                | FieldType::Int64
+                | FieldType::Sint64
+                | FieldType::Sfixed64
+                | FieldType::Uint64
+                | FieldType::Fixed64,
+            ) => "int".to_owned(),
+            Some(FieldType::Enum) => "OpenEnumValue".to_owned(),
+            Some(FieldType::Message | FieldType::Group) => field
+                .type_name
+                .as_deref()
+                .map(|name| response_view_name(&field.family, name))
+                .unwrap_or_else(|| "object".to_owned()),
+            _ => "object".to_owned(),
+        }
+    };
+    let repeated = field.label == Some(FieldLabel::Repeated as i32) && !field.map_entry;
+    let optional = field.proto3_optional || field.oneof_index.is_some();
+    let value = if repeated { format!("tuple[{base}, ...]") } else { base };
+    if optional { format!("{value} | None") } else { value }
+}
+
+fn python_response_field_expression(field: &ResolvedRequestField, receiver: &str) -> String {
+    let wire = format!("{receiver}.{}", field.json_name);
+    if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
+        if matches!(item.wire_kind, WireValueKind::Message) {
+            if matches!(item.rust_name, "MachineId" | "CheckpointId" | "OperationId") {
+                return format!("{}(bytes({wire}.value))", item.rust_name);
+            }
+            return format!("{}({wire})", item.rust_name);
+        }
+        if item.wire_kind == WireValueKind::Oneof {
+            return format!("decode_wire_choice({wire})");
+        }
+        return format!("{}({wire})", item.rust_name);
+    }
+    match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+        Some(FieldType::Enum) => format!("OpenEnumValue({wire})"),
+        Some(FieldType::Message | FieldType::Group) => field
+            .type_name
+            .as_deref()
+            .map(|name| format!("{}.from_wire({wire})", response_view_name(&field.family, name)))
+            .unwrap_or(wire),
+        _ if field.label == Some(FieldLabel::Repeated as i32) => format!("tuple({wire})"),
+        _ => wire,
+    }
+}
+
+fn python_response_field_property(field: &ResolvedRequestField) -> String {
+    let name = field.json_name.as_str();
+    let annotation = python_response_field_type(field);
+    let expression = python_response_field_expression(field, "self._wire");
+    let presence = if field.proto3_optional || field.oneof_index.is_some() {
+        format!("        if not self._wire.HasField({name:?}):\n            return None\n")
+    } else {
+        String::new()
+    };
+    format!(
+        "    @property\n    def {name}(self) -> {annotation}:\n{presence}        return {expression}\n\n",
+        name = name,
+        annotation = annotation,
+        presence = presence,
+        expression = expression,
+    )
+}
+
+fn python_public_response_models() -> String {
+    let mut output = String::from("# Nominal response projections; wire messages remain private implementation details.\n\n");
+    let mut emitted = std::collections::BTreeSet::new();
+    let response_fields = resolved_response_fields()
+        .expect("Rust response fields must resolve before Python facade generation");
+    let mut nested_messages = std::collections::BTreeSet::new();
+    for field in &response_fields {
+        if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group))
+            && !field.map_entry
+        {
+            if let Some(type_name) = field.type_name.as_deref() {
+                nested_messages.insert((field.family.clone(), type_name.to_owned()));
+            }
+        }
+    }
+    for (family, type_name) in nested_messages {
+        let view = response_view_name(&family, &type_name);
+        if !emitted.insert(view.clone()) {
+            continue;
+        }
+        let mut fields = response_fields
+            .iter()
+            .filter(|field| field.family == family && field.message_path == type_name)
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| left.number.cmp(&right.number));
+        fields.dedup_by(|left, right| left.field == right.field);
+        let properties = fields
+            .iter()
+            .map(|field| python_response_field_property(field))
+            .collect::<String>();
+        output.push_str(&format!(
+            "@dataclass(frozen=True)\nclass {view}:\n    _wire: object\n\n{properties}    @classmethod\n    def from_wire(cls, message: object) -> \"{view}\":\n        if message is None:\n            raise ValueError(\"{view} must be present\")\n        return cls(_wire=message)\n\n",
+            view = view,
+            properties = properties,
+        ));
+    }
+    for binding in PUBLIC_FIELD_BINDINGS {
+        if binding.direction != PublicFieldDirection::Request || binding.module == "actors" {
+            continue;
+        }
+        let (Some(_service), Some(rpc)) = (binding.client_attribute(), binding.rpc()) else {
+            continue;
+        };
+        if binding.module == "objects" && binding.message == "GetObjectRequest" && rpc == "GetObject" {
+            continue;
+        }
+        let Some((model, raw, streaming)) = python_public_response_spec(binding, rpc) else {
+            continue;
+        };
+        if streaming {
+            let stream_model = format!("{}Stream", model);
+            if emitted.insert(stream_model.clone()) {
+                output.push_str(&format!(
+                    "class {stream_model}:\n    def __init__(self, call: object):\n        self._call = call\n\n    def __aiter__(self) -> AsyncIterator[{model}]:\n        return self._iterate()\n\n    async def _iterate(self) -> AsyncIterator[{model}]:\n        async for message in self._call:\n            yield {model}.from_wire(message)\n\n",
+                    stream_model = stream_model,
+                    model = model,
+                ));
+            }
+        } else if emitted.insert(model.clone()) {
+            let root = response_root_name(&raw);
+            let fields = response_fields_for(binding.family, rpc, root);
+            let properties = fields
+                .iter()
+                .map(python_response_field_property)
+                .collect::<String>();
+            output.push_str(&format!(
+                "@dataclass(frozen=True)\nclass {model}:\n    _wire: {raw}\n\n{properties}    @classmethod\n    def from_wire(cls, message: {raw}) -> \"{model}\":\n        if message is None:\n            raise ValueError(\"{model} must be present\")\n        return cls(_wire=message)\n\n",
+                model = model,
+                raw = raw,
+                properties = properties,
+            ));
+        }
+    }
+    for route in PUBLIC_NESTED_ROUTES {
+        let (model, raw) = python_nested_response_spec(route);
+        if emitted.insert(model.clone()) {
+            output.push_str(&format!(
+                "@dataclass(frozen=True)\nclass {model}:\n    _wire: {raw}\n\n    @classmethod\n    def from_wire(cls, message: {raw}) -> \"{model}\":\n        if message is None:\n            raise ValueError(\"{model} must be present\")\n        return cls(_wire=message)\n\n",
+                model = model,
+                raw = raw,
+            ));
+        }
+    }
+    output
+}
+
+fn python_nested_response_spec(route: &PublicNestedRoute) -> (String, String) {
+    let raw = match (route.module, route.response) {
+        ("objects", "Bucket") => "objects_pb2.Bucket",
+        ("inference", "EvaluationView") => "inference_pb2.EvaluationView",
+        _ => "object",
+    };
+    (format!("{}Response", python_nested_route_name(route)), raw.to_owned())
 }
 
 /// Generate one public client entry point per Rust-owned request binding. The
@@ -289,6 +563,7 @@ fn python_public_client_methods() -> String {
         let (Some(service), Some(rpc)) = (binding.client_attribute(), binding.rpc()) else {
             continue;
         };
+        let client = python_client_expression(service);
         let method = format!("{}_{}", camel_to_snake(rpc), binding.field);
         let model = python_public_binding_name(binding);
         if binding.module == "objects"
@@ -296,20 +571,33 @@ fn python_public_client_methods() -> String {
             && rpc == "GetObject"
         {
             output.push_str(&format!(
-                "    async def {method}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ) -> ObjectsGetObjectStream:\n        wire_request = request.to_wire()\n        return ObjectsGetObjectStream(self.{service}.{rpc}(wire_request, timeout=timeout))\n\n",
+                "    async def {method}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ) -> ObjectsGetObjectStream:\n        wire_request = request.to_wire()\n        return ObjectsGetObjectStream({client}.{rpc}(wire_request, timeout=timeout))\n\n",
                 method = method,
                 model = model,
-                service = service,
+                client = client,
                 rpc = rpc,
             ));
             continue;
         }
+        let Some((response_model, _raw, streaming)) = python_public_response_spec(binding, rpc) else {
+            continue;
+        };
+        let response_annotation = if streaming {
+            format!("{}Stream", response_model)
+        } else {
+            response_model.clone()
+        };
+        let body = if streaming {
+            format!("return {response_annotation}({client}.{rpc}(wire_request, timeout=timeout))", response_annotation = response_annotation, client = client)
+        } else {
+            format!("response = await {client}.{rpc}(wire_request, timeout=timeout)\n        return {response_model}.from_wire(response)", response_model = response_model, client = client)
+        };
         output.push_str(&format!(
-            "    async def {method}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ):\n        wire_request = request.to_wire()\n        return await self.{service}.{rpc}(wire_request, timeout=timeout)\n\n",
+            "    async def {method}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ) -> {response_annotation}:\n        wire_request = request.to_wire()\n        {body}\n\n",
             method = method,
             model = model,
-            service = service,
-            rpc = rpc,
+            body = body,
+            response_annotation = response_annotation,
         ));
     }
     output.push_str(&python_public_nested_client_methods());
@@ -321,36 +609,43 @@ fn python_public_nested_client_methods() -> String {
     for route in PUBLIC_NESTED_ROUTES {
         let model = python_nested_route_name(route);
         let client = python_client_expression(route.client_attribute);
+        let (response_model, _) = python_nested_response_spec(route);
         output.push_str(&format!(
-            "    async def {operation}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ):\n        wire_request = request.to_wire()\n        return await self.{client}.{rpc}(wire_request, timeout=timeout)\n\n",
+            "    async def {operation}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ) -> {response_model}:\n        wire_request = request.to_wire()\n        response = await self.{client}.{rpc}(wire_request, timeout=timeout)\n        return {response_model}.from_wire(response)\n\n",
             operation = route.operation,
             model = model,
             client = client.trim_start_matches("self."),
             rpc = route.rpc,
+            response_model = response_model,
         ));
     }
     output
 }
 
 fn python_nested_route_name(route: &PublicNestedRoute) -> String {
-    format!("{}{}", pascal_case(route.family), pascal_case(route.request_message))
+    format!(
+        "{}{}",
+        pascal_case(route.family),
+        pascal_case(route.request_message)
+    )
 }
 
 fn python_client_expression(attribute: &str) -> &'static str {
     match attribute {
-        "actors" => "self.actors",
-        "workers" => "self.workers",
-        "stream" => "self.stream",
-        "objects" => "self.objects",
-        "buckets" => "self.buckets",
-        "multipart" => "self.multipart",
-        "filesystem" => "self.filesystem",
-        "machines" => "self.machines",
-        "inference.models" => "self.inference.models",
-        "inference.contexts" => "self.inference.contexts",
-        "inference.warm_contexts" => "self.inference.warm_contexts",
-        "inference.runs" => "self.inference.runs",
-        "inference.evaluations" => "self.inference.evaluations",
+        "actors" => "self._actors",
+        "workers" => "self._workers",
+        "stream" => "self._stream",
+        "objects" => "self._objects",
+        "buckets" => "self._buckets",
+        "multipart" => "self._multipart",
+        "filesystem" => "self._filesystem",
+        "harness" => "self._harness",
+        "machines" => "self._machines",
+        "inference.models" => "self._inference.models",
+        "inference.contexts" => "self._inference.contexts",
+        "inference.warm_contexts" => "self._inference.warm_contexts",
+        "inference.runs" => "self._inference.runs",
+        "inference.evaluations" => "self._inference.evaluations",
         _ => "self",
     }
 }
@@ -377,12 +672,15 @@ import (
     inferencev1 "github.com/acyclic-labs/sdk/go/gen/inference/v1"
     machinesv1 "github.com/acyclic-labs/sdk/go/gen/machines/v1"
     objectsv2 "github.com/acyclic-labs/sdk/go/gen/objects/v2"
+    protocolv1 "github.com/acyclic-labs/sdk/go/gen/protocol/v1"
     streamv2 "github.com/acyclic-labs/sdk/go/gen/stream/v2"
     workersv1 "github.com/acyclic-labs/sdk/go/gen/workers/v1"
     "google.golang.org/grpc"
     "google.golang.org/grpc/credentials"
     "google.golang.org/grpc/credentials/insecure"
     "google.golang.org/grpc/metadata"
+    "google.golang.org/protobuf/proto"
+    "google.golang.org/protobuf/types/known/timestamppb"
     "unicode/utf8"
 )
 
@@ -612,9 +910,8 @@ fn python_operations() -> String {
 }
 
 fn python_type_projection() -> String {
-    let mut output = String::from(
-        "# Rust-owned semantic type projection; generated from type_policy.rs.\n\n"
-    );
+    let mut output =
+        String::from("# Rust-owned semantic type projection; generated from type_policy.rs.\n\n");
     let known_tag = WIRE_UNION_VARIANTS
         .iter()
         .find(|variant| variant.variant == "KnownOneof")
@@ -625,9 +922,7 @@ fn python_type_projection() -> String {
         .find(|variant| variant.variant == "UnknownOneof")
         .expect("Rust policy must define UnknownOneof")
         .tag;
-    output.push_str(
-        "@dataclass(frozen=True)\nclass UnknownEnumValue:\n    raw_value: int\n\n\n"
-    );
+    output.push_str("@dataclass(frozen=True)\nclass UnknownEnumValue:\n    raw_value: int\n\n\n");
     output.push_str(&format!(
         "@dataclass(frozen=True)\nclass KnownOneof:\n    tag: Literal[{known_tag:?}]\n    payload: object\n\n\n"
     ));
@@ -772,6 +1067,12 @@ def _require_integer(value: object, name: str, minimum: int | None = None, maxim
     return value
 
 
+def _require_message(value: object, expected: type, name: str) -> object:
+    if not isinstance(value, expected):
+        raise TypeError(f"{name} must be a {expected.__name__} message")
+    return value
+
+
 "#,
     );
     for item in SEMANTIC_TYPES {
@@ -789,13 +1090,17 @@ def _require_integer(value: object, name: str, minimum: int | None = None, maxim
                 }
             }
             WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => {
-                let minimum = if item.rules.iter().any(|rule| {
-                    matches!(rule, SemanticRule::StrictlyPositive)
-                }) {
+                let minimum = if item
+                    .rules
+                    .iter()
+                    .any(|rule| matches!(rule, SemanticRule::StrictlyPositive))
+                {
                     "1"
-                } else if item.rules.iter().any(|rule| {
-                    matches!(rule, SemanticRule::NonNegative)
-                }) {
+                } else if item
+                    .rules
+                    .iter()
+                    .any(|rule| matches!(rule, SemanticRule::NonNegative))
+                {
                     "0"
                 } else {
                     "None"
@@ -813,9 +1118,13 @@ def _require_integer(value: object, name: str, minimum: int | None = None, maxim
                 )
             }
             WireValueKind::Enum => format!("_require_integer(value, {:?})", item.id),
-            WireValueKind::Boolean | WireValueKind::Timestamp | WireValueKind::Message => {
-                "value".to_owned()
-            }
+            WireValueKind::Boolean | WireValueKind::Timestamp => "value".to_owned(),
+            WireValueKind::Message => match item.id {
+                "immutable_image" =>
+                    "_require_message(value, machines_pb2.Image, \"immutable_image\")".to_owned(),
+                "idempotency_key_message" => "_require_message(value, machines_pb2.IdempotencyKey, \"idempotency_key_message\")".to_owned(),
+                _ => "value".to_owned(),
+            },
             WireValueKind::Oneof => format!(
                 "value if isinstance(value, (KnownOneof, UnknownOneof)) and ((isinstance(value, KnownOneof) and value.tag == {known_tag:?}) or (isinstance(value, UnknownOneof) and value.tag == {unknown_tag:?})) else (_ for _ in ()).throw(TypeError({:?}))",
                 format!("{} must be a known or unknown discriminated oneof", item.id)
@@ -830,7 +1139,7 @@ def _require_integer(value: object, name: str, minimum: int | None = None, maxim
             output.push_str(&format!(
                 "def {}(value: {}) -> {}:\n    checked = {}\n    return {}(checked)\n\n",
                 function,
-                python_wire_base(item.wire_kind),
+                python_wire_base(item),
                 item.rust_name,
                 validation,
                 item.rust_name
@@ -841,7 +1150,8 @@ def _require_integer(value: object, name: str, minimum: int | None = None, maxim
 }
 
 fn python_public_nested_route_models() -> String {
-    let mut output = String::from("# Production request models with Rust-owned nested semantic fields.\n\n");
+    let mut output =
+        String::from("# Production request models with Rust-owned nested semantic fields.\n\n");
     for route in PUBLIC_NESTED_ROUTES {
         let model = python_nested_route_name(route);
         let module = format!("{}_pb2", route.module);
@@ -853,7 +1163,8 @@ fn python_public_nested_route_models() -> String {
                     && binding.field == route.semantic_field
             })
             .expect("nested production route must resolve to a Rust public binding");
-        let nested_item = semantic_type(nested_binding.semantic_type).expect("nested semantic type");
+        let nested_item =
+            semantic_type(nested_binding.semantic_type).expect("nested semantic type");
         let nested_annotation = python_public_binding_annotation(nested_binding, nested_item);
         let nested_function = snake_case(nested_item.id);
         output.push_str("@dataclass(frozen=True)\n");
@@ -863,9 +1174,17 @@ fn python_public_nested_route_models() -> String {
                 PublicNestedFieldKind::Text => "str".to_owned(),
                 PublicNestedFieldKind::Message(message) => format!("{module}.{message}"),
             };
-            output.push_str(&format!("    {field}: {annotation}\n", field = field, annotation = annotation));
+            output.push_str(&format!(
+                "    {field}: {annotation}\n",
+                field = field,
+                annotation = annotation
+            ));
         }
-        output.push_str(&format!("    {field}: {nested_annotation}\n\n", field = route.semantic_field, nested_annotation = nested_annotation));
+        output.push_str(&format!(
+            "    {field}: {nested_annotation}\n\n",
+            field = route.semantic_field,
+            nested_annotation = nested_annotation
+        ));
         output.push_str("    def to_wire(self):\n");
         if route.operation == "create_bucket" {
             output.push_str(&format!(
@@ -893,8 +1212,11 @@ fn python_public_nested_route_models() -> String {
 /// These models deliberately construct or decode the real generated protobuf
 /// message; `SemanticFieldValues` remains only a compact inventory view.
 fn python_public_field_models() -> String {
-    let mut output = String::from("# Concrete public request/response bindings; generated from Rust policy.\n\n");
-    output.push_str("PUBLIC_FIELD_BINDINGS: dict[tuple[str, str], tuple[str, str, str, str]] = {\n");
+    let mut output = String::from(
+        "# Concrete public request/response bindings; generated from Rust policy.\n\n",
+    );
+    output
+        .push_str("PUBLIC_FIELD_BINDINGS: dict[tuple[str, str], tuple[str, str, str, str]] = {\n");
     for binding in PUBLIC_FIELD_BINDINGS {
         output.push_str(&format!(
             "    ({family:?}, {field:?}): ({module:?}, {message:?}, {wire_field:?}, {direction:?}),\n",
@@ -915,7 +1237,9 @@ fn python_public_field_models() -> String {
         let function = snake_case(item.id);
         let annotation = python_public_binding_annotation(binding, item);
         output.push_str("@dataclass(frozen=True)\n");
-        output.push_str(&format!("class {class_name}:\n    {field_name}: {annotation}\n\n"));
+        output.push_str(&format!(
+            "class {class_name}:\n    {field_name}: {annotation}\n\n"
+        ));
         match binding.direction {
             PublicFieldDirection::Response => {
                 output.push_str(&format!(
@@ -928,9 +1252,12 @@ fn python_public_field_models() -> String {
                 ));
             }
             PublicFieldDirection::Request | PublicFieldDirection::NestedMessage => {
-                let expression = python_public_binding_wire_value(binding, item, &field_name, &function);
+                let expression =
+                    python_public_binding_wire_value(binding, item, &field_name, &function);
                 let presence = if public_binding_requires_presence(binding) {
-                    format!("        if self.{field_name} is None:\n            raise ValueError(\"{field_name} must be present\")\n")
+                    format!(
+                        "        if self.{field_name} is None:\n            raise ValueError(\"{field_name} must be present\")\n"
+                    )
                 } else {
                     String::new()
                 };
@@ -965,8 +1292,14 @@ fn python_binding_direction(direction: PublicFieldDirection) -> &'static str {
     }
 }
 
-fn python_public_binding_annotation(binding: &PublicFieldBinding, item: &crate::type_policy::SemanticType) -> String {
-    if matches!(binding.semantic_type, "machine_id" | "checkpoint_id" | "operation_id") {
+fn python_public_binding_annotation(
+    binding: &PublicFieldBinding,
+    item: &crate::type_policy::SemanticType,
+) -> String {
+    if matches!(
+        binding.semantic_type,
+        "machine_id" | "checkpoint_id" | "operation_id"
+    ) {
         return item.rust_name.to_owned();
     }
     if public_binding_is_message(binding) {
@@ -995,7 +1328,10 @@ fn python_public_binding_wire_value(
     field_name: &str,
     function: &str,
 ) -> String {
-    if matches!(binding.semantic_type, "machine_id" | "checkpoint_id" | "operation_id") {
+    if matches!(
+        binding.semantic_type,
+        "machine_id" | "checkpoint_id" | "operation_id"
+    ) {
         let message = match binding.semantic_type {
             "machine_id" => "MachineId",
             "checkpoint_id" => "CheckpointId",
@@ -1015,13 +1351,13 @@ fn python_public_binding_wire_value(
 
 fn python_public_binding_from_wire_value(
     binding: &PublicFieldBinding,
-    field_name: &str,
+    _field_name: &str,
     function: &str,
 ) -> String {
     if public_binding_requires_message_wrapper(binding) {
-        return format!("{function}(message.{field_name}.value)");
+        return format!("{function}(message.{}.value)", binding.wire_field);
     }
-    format!("{function}(message.{field_name})")
+    format!("{function}(message.{})", binding.wire_field)
 }
 
 pub(super) fn render_python_type_policy_test() -> String {
@@ -1080,6 +1416,7 @@ def test_rust_owned_refinements_accept_valid_values():
 
 
 def test_rust_owned_refinements_reject_invalid_values():
+    accepted = []
     for constructor, value in (
         (actor_id, ""),
         (idempotency_key_bytes, b""),
@@ -1094,7 +1431,8 @@ def test_rust_owned_refinements_reject_invalid_values():
             constructor(value)
         except (TypeError, ValueError):
             continue
-    raise AssertionError(f"{constructor.__name__} accepted invalid value")
+        accepted.append(constructor.__name__)
+    assert not accepted, f"constructors accepted invalid values: {accepted}"
 
 
 def test_rust_owned_response_and_nested_bindings_are_typed():
@@ -1131,7 +1469,7 @@ def test_rust_owned_production_object_stream_decodes_typed_frames():
 
     async def run():
         client = object.__new__(Client)
-        client.objects = ObjectsStub()
+        client._objects = ObjectsStub()
         stream = await client.get_object_key(ObjectsGetObjectRequestKey(key="artifact"))
         frames = [frame async for frame in stream]
         assert isinstance(frames[0], ObjectsGetObjectResponse)
@@ -1171,14 +1509,14 @@ def test_rust_owned_nested_fields_are_in_production_request_signatures():
         client = object.__new__(Client)
         class Buckets:
             async def CreateBucket(self, request, timeout=None):
-                return request
+                return objects_pb2.Bucket(bucket=objects_pb2.BucketRef(name=request.name))
         class Evaluations:
             async def Create(self, request, timeout=None):
-                return request
-        client.buckets = Buckets()
-        client.inference = type("Inference", (), {"evaluations": Evaluations()})()
-        assert (await client.create_bucket(bucket)).mutation.idempotency_key == "retry"
-        assert (await client.create_evaluation(evaluation)).spec.spec_digest == b"d" * 32
+                return inference_pb2.EvaluationView()
+        client._buckets = Buckets()
+        client._inference = type("Inference", (), {"evaluations": Evaluations()})()
+        assert (await client.create_bucket(bucket))._wire.bucket.name == "bucket"
+        assert (await client.create_evaluation(evaluation))._wire is not None
         try:
             await client.create_bucket(ObjectsCreateBucketRequest(
                 name="bucket",
@@ -1193,9 +1531,8 @@ def test_rust_owned_nested_fields_are_in_production_request_signatures():
 }
 
 fn go_type_projection() -> String {
-    let mut output = String::from(
-        "// Rust-owned semantic type projection; generated from type_policy.rs.\n\n"
-    );
+    let mut output =
+        String::from("// Rust-owned semantic type projection; generated from type_policy.rs.\n\n");
     let known_tag = WIRE_UNION_VARIANTS
         .iter()
         .find(|variant| variant.variant == "KnownOneof")
@@ -1220,10 +1557,15 @@ fn go_type_projection() -> String {
     }
     output.push_str("}\n\n");
     output.push_str("var FieldSemanticTypes = map[string]string{\n");
+    let mut emitted_field_keys = std::collections::BTreeSet::new();
     for mapping in FIELD_SEMANTIC_TYPES {
+        let key = format!("{}.{}", mapping.family, mapping.field);
+        if !emitted_field_keys.insert(key.clone()) {
+            continue;
+        }
         output.push_str(&format!(
             "\t{:?}: {:?},\n",
-            format!("{}.{}", mapping.family, mapping.field),
+            key,
             mapping.semantic_type
         ));
     }
@@ -1244,20 +1586,37 @@ fn go_type_projection() -> String {
         output.push_str(&format!("type {} {}\n\n", name, go_wire_base(item)));
     }
     output.push_str("type SemanticFieldValues struct {\n");
-    for mapping in FIELD_SEMANTIC_TYPES {
-        let item = semantic_type(mapping.semantic_type)
-            .expect("every Rust-owned field mapping resolves during Go projection");
-        output.push_str(&format!(
-            "\t{} *{}\n",
-            go_field_identifier(mapping.family, mapping.field),
-            go_type_name(item.rust_name)
-        ));
-    }
-    output.push_str("}\n\nfunc (values SemanticFieldValues) ToWireFields() map[string]any {\n\tresult := map[string]any{}\n");
+    let mut emitted_value_fields = std::collections::BTreeSet::new();
     for mapping in FIELD_SEMANTIC_TYPES {
         let identifier = go_field_identifier(mapping.family, mapping.field);
+        if !emitted_value_fields.insert(identifier.clone()) {
+            continue;
+        }
+        let item = semantic_type(mapping.semantic_type)
+            .expect("every Rust-owned field mapping resolves during Go projection");
+        let field_type = if matches!(item.id, "immutable_image" | "idempotency_key_message") {
+            go_type_name(item.rust_name)
+        } else {
+            format!("*{}", go_type_name(item.rust_name))
+        };
+        output.push_str(&format!("\t{} {}\n", identifier, field_type));
+    }
+    output.push_str("}\n\nfunc (values SemanticFieldValues) ToWireFields() map[string]any {\n\tresult := map[string]any{}\n");
+    let mut emitted_wire_fields = std::collections::BTreeSet::new();
+    for mapping in FIELD_SEMANTIC_TYPES {
+        let identifier = go_field_identifier(mapping.family, mapping.field);
+        if !emitted_wire_fields.insert(identifier.clone()) {
+            continue;
+        }
+        let item = semantic_type(mapping.semantic_type)
+            .expect("every Rust-owned field mapping resolves during Go projection");
+        let value = if matches!(item.id, "immutable_image" | "idempotency_key_message") {
+            format!("values.{identifier}")
+        } else {
+            format!("*values.{identifier}")
+        };
         output.push_str(&format!(
-            "\tif values.{identifier} != nil {{ result[{key:?}] = *values.{identifier} }}\n",
+            "\tif values.{identifier} != nil {{ result[{key:?}] = {value} }}\n",
             key = format!("{}.{}", mapping.family, mapping.field),
         ));
     }
@@ -1348,7 +1707,14 @@ func requireGoUint(value uint64, name string, minimum, maximum uint64) error {
     for item in SEMANTIC_TYPES {
         let name = go_type_name(item.rust_name);
         let function = format!("New{}", go_constructor_name(item));
-        let body = match item.wire_kind {
+        let body = if matches!(item.id, "immutable_image" | "idempotency_key_message") {
+            format!(
+                "if value == nil {{ return nil, fmt.Errorf({:?}) }}\n\treturn {}(value), nil",
+                format!("{} must be present", item.id),
+                name
+            )
+        } else {
+            match item.wire_kind {
             WireValueKind::String => format!(
                 "if err := requireGoText(value, {:?}); err != nil {{ return \"\", err }}\n\treturn {}(value), nil",
                 item.id, name
@@ -1358,11 +1724,16 @@ func requireGoUint(value uint64, name string, minimum, maximum uint64) error {
                     SemanticRule::FixedLength(length) => Some(*length),
                     _ => None,
                 });
-                let required_length = length.map(|length| length.to_string()).unwrap_or_else(|| "-1".to_owned());
+                let required_length = length
+                    .map(|length| length.to_string())
+                    .unwrap_or_else(|| "-1".to_owned());
                 if let Some(length) = length {
                     format!(
                         "if err := requireGoBytes(value, {:?}, {}); err != nil {{ return {}, err }}\n\tvar result {}\n\tcopy(result[:], value)\n\treturn result, nil",
-                        item.id, length, go_zero_value(item), name
+                        item.id,
+                        length,
+                        go_zero_value(item),
+                        name
                     )
                 } else {
                     let _ = required_length;
@@ -1373,12 +1744,24 @@ func requireGoUint(value uint64, name string, minimum, maximum uint64) error {
                 }
             }
             WireValueKind::UnsignedInteger => {
-                let minimum = if item.rules.iter().any(|rule| matches!(rule, SemanticRule::StrictlyPositive)) { "1" } else { "0" };
-                let maximum = item.rules.iter().find_map(|rule| match rule {
-                    SemanticRule::MaxItems(value) => Some(value.to_string()),
-                    SemanticRule::BoundedInteger { max, .. } => Some(max.to_string()),
-                    _ => None,
-                }).unwrap_or_else(|| "0".to_owned());
+                let minimum = if item
+                    .rules
+                    .iter()
+                    .any(|rule| matches!(rule, SemanticRule::StrictlyPositive))
+                {
+                    "1"
+                } else {
+                    "0"
+                };
+                let maximum = item
+                    .rules
+                    .iter()
+                    .find_map(|rule| match rule {
+                        SemanticRule::MaxItems(value) => Some(value.to_string()),
+                        SemanticRule::BoundedInteger { max, .. } => Some(max.to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "0".to_owned());
                 format!(
                     "if err := requireGoUint(value, {:?}, {}, {}); err != nil {{ return 0, err }}\n\treturn {}(value), nil",
                     item.id, minimum, maximum, name
@@ -1389,21 +1772,34 @@ func requireGoUint(value uint64, name string, minimum, maximum uint64) error {
             WireValueKind::Boolean | WireValueKind::Timestamp | WireValueKind::Message => {
                 format!("return {}(value), nil", name)
             }
-            WireValueKind::Oneof => format!("if value == nil {{ return nil, fmt.Errorf(\"wire_choice must be present\") }}\n\tswitch choice := value.(type) {{\n\tcase KnownOneof:\n\t\tif choice.Tag != {known_tag:?} {{ return nil, fmt.Errorf(\"known oneof has invalid tag\") }}\n\tcase UnknownOneof:\n\t\tif choice.Tag != {unknown_tag:?} {{ return nil, fmt.Errorf(\"unknown oneof has invalid tag\") }}\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"wire_choice has an unsupported variant\")\n\t}}\n\treturn value, nil"),
+            WireValueKind::Oneof => format!(
+                "if value == nil {{ return nil, fmt.Errorf(\"wire_choice must be present\") }}\n\tswitch choice := value.(type) {{\n\tcase KnownOneof:\n\t\tif choice.Tag != {known_tag:?} {{ return nil, fmt.Errorf(\"known oneof has invalid tag\") }}\n\tcase UnknownOneof:\n\t\tif choice.Tag != {unknown_tag:?} {{ return nil, fmt.Errorf(\"unknown oneof has invalid tag\") }}\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"wire_choice has an unsupported variant\")\n\t}}\n\treturn value, nil"
+            ),
+            }
         };
         let input = go_constructor_input(item);
         let result = go_constructor_result(item);
-        output.push_str(&format!("func {}({}) ({}, error) {{\n\t{}\n}}\n\n", function, input, result, body));
+        output.push_str(&format!(
+            "func {}({}) ({}, error) {{\n\t{}\n}}\n\n",
+            function, input, result, body
+        ));
     }
     output
 }
 
 fn go_public_field_models() -> String {
-    let mut output = String::from("// Concrete public request/response bindings; generated from Rust policy.\n\nvar PublicFieldBindings = map[string][4]string{\n");
+    let mut output = String::from(
+        "// Concrete public request/response bindings; generated from Rust policy.\n\nvar PublicFieldBindings = map[string][4]string{\n",
+    );
+    let mut emitted_public_keys = std::collections::BTreeSet::new();
     for binding in PUBLIC_FIELD_BINDINGS {
+        let key = format!("{}.{}", binding.family, binding.field);
+        if !emitted_public_keys.insert(key.clone()) {
+            continue;
+        }
         output.push_str(&format!(
             "\t{:?}: {{{:?}, {:?}, {:?}, {:?}}},\n",
-            format!("{}.{}", binding.family, binding.field),
+            key,
             binding.module,
             binding.message,
             binding.wire_field,
@@ -1415,13 +1811,19 @@ fn go_public_field_models() -> String {
         let item = semantic_type(binding.semantic_type).expect("public field semantic type");
         let type_name = go_public_binding_name(binding);
         let field_name = go_public_binding_field_name(binding);
-        let module = format!("{}v{}", binding.module, match binding.module {
-            "stream" | "objects" | "filesystem" | "harness" => "2",
-            _ => "1",
-        });
+        let module = format!(
+            "{}v{}",
+            binding.module,
+            match binding.module {
+                "stream" | "objects" | "filesystem" | "harness" => "2",
+                _ => "1",
+            }
+        );
         let wire_field = go_proto_field_identifier(binding.wire_field);
         let field_type = go_public_binding_annotation(binding, item);
-        output.push_str(&format!("type {type_name} struct {{ {field_name} {field_type} }}\n\n"));
+        output.push_str(&format!(
+            "type {type_name} struct {{ {field_name} {field_type} }}\n\n"
+        ));
         match binding.direction {
             PublicFieldDirection::Response => {
                 output.push_str(&format!(
@@ -1447,9 +1849,12 @@ fn go_public_field_models() -> String {
                 }
                 let assignment = go_public_wire_assignment(item, "value", binding);
                 let request_field = if item.wire_kind == WireValueKind::Bytes
-                    && item.rules.iter().any(|rule| matches!(rule, SemanticRule::FixedLength(_)))
+                    && item
+                        .rules
+                        .iter()
+                        .any(|rule| matches!(rule, SemanticRule::FixedLength(_)))
                 {
-                    format!("request.{field_name}[:]" )
+                    format!("request.{field_name}[:]")
                 } else {
                     format!("request.{field_name}")
                 };
@@ -1469,10 +1874,19 @@ fn go_public_field_models() -> String {
 }
 
 fn go_public_nested_route_models() -> String {
-    let mut output = String::from("// Production request models with Rust-owned nested semantic fields.\n\n");
+    let mut output =
+        String::from("// Production request models with Rust-owned nested semantic fields.\n\n");
     for route in PUBLIC_NESTED_ROUTES {
         let model = go_nested_route_name(route);
-        let module = format!("{}v{}", route.module, if route.module == "inference" { "1" } else { "2" });
+        let module = format!(
+            "{}v{}",
+            route.module,
+            if route.module == "inference" {
+                "1"
+            } else {
+                "2"
+            }
+        );
         let nested_binding = PUBLIC_FIELD_BINDINGS
             .iter()
             .find(|binding| {
@@ -1481,7 +1895,8 @@ fn go_public_nested_route_models() -> String {
                     && binding.field == route.semantic_field
             })
             .expect("nested production route must resolve to a Rust public binding");
-        let nested_item = semantic_type(nested_binding.semantic_type).expect("nested semantic type");
+        let nested_item =
+            semantic_type(nested_binding.semantic_type).expect("nested semantic type");
         let nested_type = go_type_name(nested_item.rust_name);
         output.push_str(&format!("type {model} struct {{\n", model = model));
         for (field, kind) in route.fields {
@@ -1491,7 +1906,11 @@ fn go_public_nested_route_models() -> String {
             };
             output.push_str(&format!("\t{} {}\n", pascal_case(field), annotation));
         }
-        output.push_str(&format!("\t{} {}\n}}\n\n", pascal_case(route.semantic_field), nested_type));
+        output.push_str(&format!(
+            "\t{} {}\n}}\n\n",
+            pascal_case(route.semantic_field),
+            nested_type
+        ));
         if route.operation == "create_bucket" {
             output.push_str(&format!(
                 "func (request {model}) ToWire() (*{module}.{message}, error) {{\n\tif err := requireGoText(request.Name, \"name\"); err != nil {{ return nil, err }}\n\tkey, err := NewIdempotencyKeyText(string(request.{semantic_field}))\n\tif err != nil {{ return nil, err }}\n\tmutation := &{module}.MutationIdentity{{IdempotencyKey: string(key)}}\n\treturn &{module}.{message}{{Name: request.Name, Mutation: mutation}}, nil\n}}\n\n",
@@ -1502,7 +1921,7 @@ fn go_public_nested_route_models() -> String {
             ));
         } else {
             output.push_str(&format!(
-                "func (request {model}) ToWire() (*{module}.{message}, error) {{\n\tif request.Identity == nil || request.Spec == nil {{ return nil, fmt.Errorf(\"identity and spec must be present\") }}\n\twireSpec := *request.Spec\n\twireSpec.SpecDigest = append([]byte(nil), request.SpecDigest[:]...)\n\treturn &{module}.{message}{{Identity: request.Identity, Spec: &wireSpec}}, nil\n}}\n\n",
+                "func (request {model}) ToWire() (*{module}.{message}, error) {{\n\tif request.Identity == nil || request.Spec == nil {{ return nil, fmt.Errorf(\"identity and spec must be present\") }}\n\twireSpec, ok := proto.Clone(request.Spec).(*{module}.EvaluationSpec)\n\tif !ok {{ return nil, fmt.Errorf(\"failed to clone evaluation spec\") }}\n\twireSpec.SpecDigest = append([]byte(nil), request.SpecDigest[:]...)\n\treturn &{module}.{message}{{Identity: request.Identity, Spec: wireSpec}}, nil\n}}\n\n",
                 model = model,
                 module = module,
                 message = route.request_message,
@@ -1512,8 +1931,15 @@ fn go_public_nested_route_models() -> String {
     output
 }
 
-fn go_public_wire_assignment(item: &crate::type_policy::SemanticType, value: &str, binding: &PublicFieldBinding) -> String {
-    if matches!(binding.semantic_type, "machine_id" | "checkpoint_id" | "operation_id") {
+fn go_public_wire_assignment(
+    item: &crate::type_policy::SemanticType,
+    value: &str,
+    binding: &PublicFieldBinding,
+) -> String {
+    if matches!(
+        binding.semantic_type,
+        "machine_id" | "checkpoint_id" | "operation_id"
+    ) {
         let message = match binding.semantic_type {
             "machine_id" => "MachineId",
             "checkpoint_id" => "CheckpointId",
@@ -1524,8 +1950,19 @@ fn go_public_wire_assignment(item: &crate::type_policy::SemanticType, value: &st
     }
     match item.wire_kind {
         WireValueKind::String => format!("string({value})"),
-        WireValueKind::Bytes if item.rules.iter().any(|rule| matches!(rule, SemanticRule::FixedLength(_))) => format!("{value}[:]"),
-        WireValueKind::UnsignedInteger if binding.wire_field == "limit" || binding.wire_field == "page_size" => format!("uint32({value})"),
+        WireValueKind::Bytes
+            if item
+                .rules
+                .iter()
+                .any(|rule| matches!(rule, SemanticRule::FixedLength(_))) =>
+        {
+            format!("{value}[:]")
+        }
+        WireValueKind::UnsignedInteger
+            if binding.wire_field == "limit" || binding.wire_field == "page_size" =>
+        {
+            format!("uint32({value})")
+        }
         _ => value.to_owned(),
     }
 }
@@ -1539,15 +1976,26 @@ fn go_binding_direction(direction: PublicFieldDirection) -> &'static str {
 }
 
 fn go_public_binding_name(binding: &PublicFieldBinding) -> String {
-    format!("{}{}{}", pascal_case(binding.family), pascal_case(binding.message), pascal_case(binding.field))
+    format!(
+        "{}{}{}",
+        pascal_case(binding.family),
+        pascal_case(binding.message),
+        pascal_case(binding.field)
+    )
 }
 
 fn go_public_binding_field_name(binding: &PublicFieldBinding) -> String {
     pascal_case(binding.field)
 }
 
-fn go_public_binding_annotation(binding: &PublicFieldBinding, item: &crate::type_policy::SemanticType) -> String {
-    if matches!(binding.semantic_type, "machine_id" | "checkpoint_id" | "operation_id") {
+fn go_public_binding_annotation(
+    binding: &PublicFieldBinding,
+    item: &crate::type_policy::SemanticType,
+) -> String {
+    if matches!(
+        binding.semantic_type,
+        "machine_id" | "checkpoint_id" | "operation_id"
+    ) {
         return go_type_name(item.rust_name);
     }
     if public_binding_is_message(binding) {
@@ -1570,19 +2018,31 @@ fn go_public_binding_annotation(binding: &PublicFieldBinding, item: &crate::type
     }
 }
 
-fn go_public_binding_from_wire_expression(binding: &PublicFieldBinding, wire_field: &str) -> String {
-    if matches!(binding.semantic_type, "machine_id" | "checkpoint_id" | "operation_id") {
+fn go_public_binding_from_wire_expression(
+    binding: &PublicFieldBinding,
+    wire_field: &str,
+) -> String {
+    if matches!(
+        binding.semantic_type,
+        "machine_id" | "checkpoint_id" | "operation_id"
+    ) {
         return format!("message.Get{}().GetValue()", wire_field);
     }
     format!("message.Get{}()", wire_field)
 }
 
 fn public_binding_is_message(binding: &PublicFieldBinding) -> bool {
-    matches!(binding.semantic_type, "immutable_image" | "idempotency_key_message")
+    matches!(
+        binding.semantic_type,
+        "immutable_image" | "idempotency_key_message"
+    )
 }
 
 fn public_binding_requires_message_wrapper(binding: &PublicFieldBinding) -> bool {
-    matches!(binding.semantic_type, "machine_id" | "checkpoint_id" | "operation_id")
+    matches!(
+        binding.semantic_type,
+        "machine_id" | "checkpoint_id" | "operation_id"
+    )
 }
 
 fn public_binding_requires_presence(binding: &PublicFieldBinding) -> bool {
@@ -1611,34 +2071,322 @@ fn go_client_expression(attribute: &str) -> &'static str {
 /// Return the concrete generated response type and whether the RPC is server
 /// streaming. The mapping is derived from the Rust request identity rather
 /// than asking consumers to know protobuf service details.
-fn go_public_response(binding: &PublicFieldBinding, rpc: &str) -> Option<(&'static str, bool)> {
+fn public_response_model_name(binding: &PublicFieldBinding, _rpc: &str) -> String {
+    format!(
+        "{}{}Response",
+        pascal_case(binding.module),
+        pascal_case(binding.message.trim_end_matches("Request")),
+    )
+}
+
+fn go_public_response_spec(
+    binding: &PublicFieldBinding,
+    rpc: &str,
+) -> Option<(String, String, bool)> {
     match (binding.module, binding.message, rpc) {
-        ("workers", "SelectDeploymentRequest", "SelectDeployment") => Some(("*workersv1.SelectDeploymentResponse", false)),
-        ("workers", "InspectJobRequest", "InspectJob") => Some(("*workersv1.InspectJobResponse", false)),
-        ("workers", "InvokeVersionRequest", "InvokeVersion") => Some(("*workersv1.InvokeResponse", false)),
-        ("stream", "AppendRequest", "Append") => Some(("*streamv2.AppendResponse", false)),
-        ("stream", "ForkRequest", "Fork") => Some(("*streamv2.ForkReceipt", false)),
-        ("stream", "ReadRequest", "Read") => Some(("grpc.ServerStreamingClient[streamv2.ReadResponse]", true)),
-        ("stream", "ReadCommitRequest", "ReadCommit") => Some(("*streamv2.CommittedEnvelope", false)),
-        ("objects", "GetObjectRequest", "GetObject") => Some(("grpc.ServerStreamingClient[objectsv2.GetObjectResponse]", true)),
-        ("objects", "ListObjectsRequest", "ListObjects") => Some(("*objectsv2.ListObjectsResponse", false)),
-        ("objects", "ListPartsRequest", "ListParts") => Some(("*objectsv2.ListPartsResponse", false)),
-        ("inference", "InspectRunRequest", "Inspect") => Some(("*inferencev1.RunView", false)),
-        ("inference", "InspectContextRequest", "Inspect") => Some(("*inferencev1.ContextView", false)),
-        ("inference", "InspectWarmRequest", "Inspect") => Some(("*inferencev1.WarmView", false)),
-        ("inference", "InspectEvaluationRequest", "Inspect") => Some(("*inferencev1.EvaluationView", false)),
-        ("machines", "CreateMachineRequest", "Create") => Some(("*machinesv1.MachineAdmission", false)),
-        ("machines", "InspectMachineRequest", "InspectMachine") => Some(("*machinesv1.MachineState", false)),
-        ("machines", "InspectCheckpointRequest", "InspectCheckpoint") => Some(("*machinesv1.CheckpointState", false)),
-        ("machines", "OperationRequest", "InspectOperation") => Some(("*machinesv1.OperationState", false)),
-        ("machines", "ListMachinesRequest", "ListMachines") => Some(("*machinesv1.MachinePage", false)),
-        ("filesystem", "ReadRequest", "Read") => Some(("*filesystemv2.ReadResponse", false)),
+        ("workers", "SelectDeploymentRequest", "SelectDeployment") => {
+            Some((public_response_model_name(binding, rpc), "*workersv1.SelectDeploymentResponse".to_owned(), false))
+        }
+        ("workers", "InspectJobRequest", "InspectJob") => {
+            Some((public_response_model_name(binding, rpc), "*workersv1.InspectJobResponse".to_owned(), false))
+        }
+        ("workers", "InvokeVersionRequest", "InvokeVersion") => {
+            Some((public_response_model_name(binding, rpc), "*workersv1.InvokeResponse".to_owned(), false))
+        }
+        ("stream", "AppendRequest", "Append") => Some((public_response_model_name(binding, rpc), "*streamv2.AppendResponse".to_owned(), false)),
+        ("stream", "ForkRequest", "Fork") => Some((public_response_model_name(binding, rpc), "*streamv2.ForkReceipt".to_owned(), false)),
+        ("stream", "ReadRequest", "Read") => {
+            Some((public_response_model_name(binding, rpc), "grpc.ServerStreamingClient[streamv2.ReadResponse]".to_owned(), true))
+        }
+        ("stream", "ReadCommitRequest", "ReadCommit") => {
+            Some((public_response_model_name(binding, rpc), "*streamv2.CommittedEnvelope".to_owned(), false))
+        }
+        ("objects", "GetObjectRequest", "GetObject") => Some((
+            public_response_model_name(binding, rpc),
+            "grpc.ServerStreamingClient[objectsv2.GetObjectResponse]".to_owned(),
+            true,
+        )),
+        ("objects", "ListObjectsRequest", "ListObjects") => {
+            Some((public_response_model_name(binding, rpc), "*objectsv2.ListObjectsResponse".to_owned(), false))
+        }
+        ("objects", "ListPartsRequest", "ListParts") => {
+            Some((public_response_model_name(binding, rpc), "*objectsv2.ListPartsResponse".to_owned(), false))
+        }
+        ("inference", "InspectRunRequest", "Inspect") => Some((public_response_model_name(binding, rpc), "*inferencev1.RunView".to_owned(), false)),
+        ("inference", "InspectContextRequest", "Inspect") => {
+            Some((public_response_model_name(binding, rpc), "*inferencev1.ContextView".to_owned(), false))
+        }
+        ("inference", "InspectWarmRequest", "Inspect") => Some((public_response_model_name(binding, rpc), "*inferencev1.WarmView".to_owned(), false)),
+        ("inference", "InspectEvaluationRequest", "Inspect") => {
+            Some((public_response_model_name(binding, rpc), "*inferencev1.EvaluationView".to_owned(), false))
+        }
+        ("machines", "CreateMachineRequest", "Create") => {
+            Some((public_response_model_name(binding, rpc), "*machinesv1.MachineAdmission".to_owned(), false))
+        }
+        ("machines", "InspectMachineRequest", "InspectMachine") => {
+            Some((public_response_model_name(binding, rpc), "*machinesv1.MachineState".to_owned(), false))
+        }
+        ("machines", "InspectCheckpointRequest", "InspectCheckpoint") => {
+            Some((public_response_model_name(binding, rpc), "*machinesv1.CheckpointState".to_owned(), false))
+        }
+        ("machines", "OperationRequest", "InspectOperation") => {
+            Some((public_response_model_name(binding, rpc), "*machinesv1.OperationState".to_owned(), false))
+        }
+        ("machines", "ListMachinesRequest", "ListMachines") => {
+            Some((public_response_model_name(binding, rpc), "*machinesv1.MachinePage".to_owned(), false))
+        }
+        ("filesystem", "ReadRequest", "Read") => Some((public_response_model_name(binding, rpc), "*filesystemv2.ReadResponse".to_owned(), false)),
         _ => None,
     }
 }
 
+fn go_response_module(family: &str) -> &'static str {
+    match family {
+        "actors" => "actorsv1",
+        "workers" => "workersv1",
+        "stream" => "streamv2",
+        "objects" => "objectsv2",
+        "inference" => "inferencev1",
+        "machines" => "machinesv1",
+        "filesystem" => "filesystemv2",
+        "harness" => "harnessv2",
+        _ => "any",
+    }
+}
+
+fn go_response_wire_type(family: &str, type_name: &str) -> String {
+    let message = type_name.rsplit('.').next().unwrap_or(type_name);
+    if type_name.trim_start_matches('.') == "google.protobuf.Timestamp" {
+        return "*timestamppb.Timestamp".to_owned();
+    }
+    let module = if type_name.contains(".protocol.") {
+        "protocolv1"
+    } else {
+        go_response_module(family)
+    };
+    format!("*{}.{message}", module)
+}
+
+fn go_response_field_type(field: &ResolvedRequestField) -> String {
+    if field.map_entry {
+        return "any".to_owned();
+    }
+    let base = if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
+        if item.wire_kind == WireValueKind::Message {
+            match item.id {
+                "immutable_image" => "*machinesv1.Image".to_owned(),
+                "idempotency_key_message" => "*machinesv1.IdempotencyKey".to_owned(),
+                _ => go_type_name(item.rust_name),
+            }
+        } else if item.wire_kind == WireValueKind::Oneof {
+            "WireChoice".to_owned()
+        } else {
+            go_type_name(item.rust_name)
+        }
+    } else {
+        match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+            Some(FieldType::String) => "string".to_owned(),
+            Some(FieldType::Bytes) => "[]byte".to_owned(),
+            Some(FieldType::Bool) => "bool".to_owned(),
+            Some(FieldType::Double) => "float64".to_owned(),
+            Some(FieldType::Float) => "float32".to_owned(),
+            Some(FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32) => "int32".to_owned(),
+            Some(FieldType::Uint32 | FieldType::Fixed32) => "uint32".to_owned(),
+            Some(FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64) => "int64".to_owned(),
+            Some(FieldType::Uint64 | FieldType::Fixed64) => "uint64".to_owned(),
+            Some(FieldType::Enum) => "OpenEnumValue".to_owned(),
+            Some(FieldType::Message | FieldType::Group) => field
+                .type_name
+                .as_deref()
+                .map(|name| format!("*{}", response_view_name(&field.family, name)))
+                .unwrap_or_else(|| "proto.Message".to_owned()),
+            _ => "any".to_owned(),
+        }
+    };
+    if field.label == Some(FieldLabel::Repeated as i32) && !field.map_entry {
+        format!("[]{base}")
+    } else if field.proto3_optional || field.oneof_index.is_some() {
+        if base.starts_with('*') {
+            base
+        } else {
+            format!("*{base}")
+        }
+    } else {
+        base
+    }
+}
+
+fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) -> String {
+    let getter = format!("{receiver}.Get{}()", pascal_case(&field.json_name));
+    if field.map_entry {
+        return getter;
+    }
+    if field.label == Some(FieldLabel::Repeated as i32) {
+        if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group)) {
+            if let Some(type_name) = field.type_name.as_deref() {
+                let view = response_view_name(&field.family, type_name);
+                return format!("func() []*{view} {{ result := make([]*{view}, 0, len({getter})); for _, item := range {getter} {{ nested, _ := {view}FromWire(item); result = append(result, nested) }}; return result }}()", view = view, getter = getter);
+            }
+        }
+        return getter;
+    }
+    if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
+        if matches!(item.rust_name, "MachineId" | "CheckpointId" | "OperationId") {
+            let alias = go_type_name(item.rust_name);
+            return format!("func() {alias} {{ var result {alias}; copy(result[:], {getter}.GetValue()); return result }}()", alias = alias, getter = getter);
+        }
+        if item.wire_kind == WireValueKind::Message {
+            return getter;
+        }
+        if item.wire_kind == WireValueKind::Oneof {
+            return getter;
+        }
+        return format!("{}({getter})", go_type_name(item.rust_name));
+    }
+    let expression = match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+        Some(FieldType::Enum) => format!("OpenEnumValue({getter})"),
+        Some(FieldType::Message | FieldType::Group) => field
+            .type_name
+            .as_deref()
+            .map(|name| {
+                let view = response_view_name(&field.family, name);
+                format!("func() *{view} {{ nested, _ := {view}FromWire({getter}); return nested }}()")
+            })
+            .unwrap_or(getter),
+        _ => getter,
+    };
+    if field.proto3_optional || field.oneof_index.is_some() {
+        if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group)) {
+            return expression;
+        }
+        let ty = go_response_field_type(field).trim_start_matches('*').to_owned();
+        return format!("func() *{ty} {{ value := {expression}; return &value }}()", ty = ty, expression = expression);
+    }
+    expression
+}
+
+fn go_response_field_method(field: &ResolvedRequestField) -> String {
+    let name = pascal_case(&field.json_name);
+    let ty = go_response_field_type(field);
+    let expression = go_response_field_expression(field, "value.wire");
+    format!(
+        "func (value *{{model}}) {name}() {ty} {{\n\treturn {expression}\n}}\n\n",
+        name = name,
+        ty = ty,
+        expression = expression,
+    )
+}
+
+fn go_public_response_models() -> String {
+    let mut output = String::from("// Nominal response projections; wire messages remain private implementation details.\n\n");
+    let mut emitted = std::collections::BTreeSet::new();
+    let response_fields = resolved_response_fields()
+        .expect("Rust response fields must resolve before Go facade generation");
+    let mut nested_messages = std::collections::BTreeSet::new();
+    for field in &response_fields {
+        if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group))
+            && !field.map_entry
+        {
+            if let Some(type_name) = field.type_name.as_deref() {
+                nested_messages.insert((field.family.clone(), type_name.to_owned()));
+            }
+        }
+    }
+    for (family, type_name) in nested_messages {
+        let view = response_view_name(&family, &type_name);
+        if !emitted.insert(view.clone()) {
+            continue;
+        }
+        let wire = go_response_wire_type(&family, &type_name);
+        output.push_str(&format!(
+            "type {view} struct {{ wire {wire} }}\n\nfunc {view}FromWire(message {wire}) (*{view}, error) {{\n\tif message == nil {{ return nil, fmt.Errorf(\"{view} must be present\") }}\n\treturn &{view}{{wire: message}}, nil\n}}\n\n",
+            view = view,
+            wire = wire,
+        ));
+        let mut fields = response_fields
+            .iter()
+            .filter(|field| field.family == family && field.message_path == type_name)
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| left.number.cmp(&right.number));
+        fields.dedup_by(|left, right| left.field == right.field);
+        for field in fields {
+            output.push_str(&go_response_field_method(field).replace("{model}", &view));
+        }
+    }
+    for binding in PUBLIC_FIELD_BINDINGS {
+        if binding.direction != PublicFieldDirection::Request {
+            continue;
+        }
+        let (Some(_service), Some(rpc)) = (binding.client_attribute(), binding.rpc()) else {
+            continue;
+        };
+        if binding.module == "actors"
+            || (binding.module == "objects" && binding.message == "GetObjectRequest" && rpc == "GetObject")
+        {
+            continue;
+        }
+        let Some((model, raw, streaming)) = go_public_response_spec(binding, rpc) else {
+            continue;
+        };
+        if streaming {
+            let stream_model = format!("{}Stream", model);
+            let wire = raw
+                    .strip_prefix("grpc.ServerStreamingClient[")
+                    .and_then(|value| value.strip_suffix(']'))
+                    .expect("stream response type must have a concrete wire message");
+            if emitted.insert(model.clone()) {
+                output.push_str(&format!(
+                    "type {model} struct {{ wire *{wire} }}\n\nfunc {model}FromWire(message *{wire}) (*{model}, error) {{\n\tif message == nil {{ return nil, fmt.Errorf(\"{model} must be present\") }}\n\treturn &{model}{{wire: message}}, nil\n}}\n\n",
+                    model = model,
+                    wire = wire,
+                ));
+            }
+            if emitted.insert(stream_model.clone()) {
+                output.push_str(&format!(
+                    "type {stream_model} struct {{ inner grpc.ServerStreamingClient[{wire}] }}\n\nfunc (stream *{stream_model}) Recv() (*{model}, error) {{\n\tmessage, err := stream.inner.Recv()\n\tif err != nil {{ return nil, err }}\n\treturn {model}FromWire(message)\n}}\n\n",
+                    stream_model = stream_model,
+                    wire = wire,
+                    model = model,
+                ));
+            }
+        } else if emitted.insert(model.clone()) {
+            let root = response_root_name(&raw);
+            let fields = response_fields_for(binding.family, rpc, root);
+            output.push_str(&format!(
+                "type {model} struct {{ wire {raw} }}\n\nfunc {model}FromWire(message {raw}) (*{model}, error) {{\n\tif message == nil {{ return nil, fmt.Errorf(\"{model} must be present\") }}\n\treturn &{model}{{wire: message}}, nil\n}}\n\n{methods}",
+                model = model,
+                raw = raw,
+                methods = fields
+                    .iter()
+                    .map(|field| go_response_field_method(field).replace("{model}", &model))
+                    .collect::<String>(),
+            ));
+        }
+    }
+    for route in PUBLIC_NESTED_ROUTES {
+        let (model, raw) = go_nested_response_spec(route);
+        if emitted.insert(model.clone()) {
+            output.push_str(&format!(
+                "type {model} struct {{ wire {raw} }}\n\nfunc {model}FromWire(message {raw}) (*{model}, error) {{\n\tif message == nil {{ return nil, fmt.Errorf(\"{model} must be present\") }}\n\treturn &{model}{{wire: message}}, nil\n}}\n\n",
+                model = model,
+                raw = raw,
+            ));
+        }
+    }
+    output
+}
+
+fn go_nested_response_spec(route: &PublicNestedRoute) -> (String, String) {
+    let raw = match (route.module, route.response) {
+        ("objects", "Bucket") => "*objectsv2.Bucket",
+        ("inference", "EvaluationView") => "*inferencev1.EvaluationView",
+        _ => "any",
+    };
+    (format!("{}Response", go_nested_route_name(route)), raw.to_owned())
+}
+
 fn go_public_client_methods() -> String {
-    let mut output = String::new();
+    let mut output = go_public_response_models();
     for binding in PUBLIC_FIELD_BINDINGS {
         if binding.direction != PublicFieldDirection::Request {
             continue;
@@ -1670,25 +2418,37 @@ fn go_public_client_methods() -> String {
             ));
             continue;
         }
-        let Some((response, streaming)) = go_public_response(binding, rpc) else {
+        let Some((response_model, _raw, streaming)) = go_public_response_spec(binding, rpc) else {
             continue;
         };
+        let response = if streaming {
+            format!("*{}Stream", response_model)
+        } else {
+            format!("*{}", response_model)
+        };
+        let call = if streaming {
+            format!("stream, err := {client}.{rpc}(ctx, wireRequest, opts...)\n\tif err != nil {{ return nil, err }}\n\treturn &{response_model}Stream{{inner: stream}}, nil", response_model = response_model)
+        } else {
+            format!("wireResponse, err := {client}.{rpc}(ctx, wireRequest, opts...)\n\tif err != nil {{ return nil, err }}\n\treturn {response_model}FromWire(wireResponse)", response_model = response_model)
+        };
         output.push_str(&format!(
-            "func (client *Client) {method}(ctx context.Context, request {model}, opts ...grpc.CallOption) ({response}, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\treturn {client}.{rpc}(ctx, wireRequest, opts...)\n}}\n\n",
+            "func (client *Client) {method}(ctx context.Context, request {model}, opts ...grpc.CallOption) ({response}, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\t{call}\n}}\n\n",
             method = method,
             model = model,
             response = response,
-            client = client,
-            rpc = rpc,
+            call = call,
         ));
-        let _ = streaming;
     }
     output.push_str(&go_public_nested_client_methods());
     output
 }
 
 fn go_nested_route_name(route: &PublicNestedRoute) -> String {
-    format!("{}{}", pascal_case(route.family), pascal_case(route.request_message))
+    format!(
+        "{}{}",
+        pascal_case(route.family),
+        pascal_case(route.request_message)
+    )
 }
 
 fn go_public_nested_client_methods() -> String {
@@ -1696,16 +2456,12 @@ fn go_public_nested_client_methods() -> String {
     for route in PUBLIC_NESTED_ROUTES {
         let model = go_nested_route_name(route);
         let client = go_client_expression(route.client_attribute);
-        let response = match (route.module, route.response) {
-            ("objects", "Bucket") => "*objectsv2.Bucket",
-            ("inference", "EvaluationView") => "*inferencev1.EvaluationView",
-            _ => "any",
-        };
+        let (response_model, _) = go_nested_response_spec(route);
         output.push_str(&format!(
-            "func (client *Client) {operation}(ctx context.Context, request {model}, opts ...grpc.CallOption) ({response}, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\treturn {client}.{rpc}(ctx, wireRequest, opts...)\n}}\n\n",
+            "func (client *Client) {operation}(ctx context.Context, request {model}, opts ...grpc.CallOption) (*{response_model}, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\twireResponse, err := {client}.{rpc}(ctx, wireRequest, opts...)\n\tif err != nil {{ return nil, err }}\n\treturn {response_model}FromWire(wireResponse)\n}}\n\n",
             operation = pascal_case(route.operation),
             model = model,
-            response = response,
+            response_model = response_model,
             client = client,
             rpc = route.rpc,
         ));
@@ -1716,12 +2472,16 @@ fn go_public_nested_client_methods() -> String {
 fn go_constructor_call(item: &crate::type_policy::SemanticType, expression: &str) -> String {
     match item.wire_kind {
         WireValueKind::Message => format!("{}, nil", expression),
-        WireValueKind::String => format!("New{}(string({}))", go_constructor_name(item), expression),
+        WireValueKind::String => {
+            format!("New{}(string({}))", go_constructor_name(item), expression)
+        }
         WireValueKind::Bytes => {
             let argument = format!("[]byte({})", expression);
             format!("New{}({})", go_constructor_name(item), argument)
         }
-        WireValueKind::UnsignedInteger => format!("New{}(uint64({}))", go_constructor_name(item), expression),
+        WireValueKind::UnsignedInteger => {
+            format!("New{}(uint64({}))", go_constructor_name(item), expression)
+        }
         _ => format!("New{}({})", go_constructor_name(item), expression),
     }
 }
@@ -1732,7 +2492,10 @@ fn go_proto_field_identifier(field: &str) -> String {
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
-            chars.next().map(|first| first.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
+            chars
+                .next()
+                .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+                .unwrap_or_default()
         })
         .collect()
 }
@@ -1790,7 +2553,7 @@ func TestRustOwnedProductionClientRoutesRejectInvalidRequests(t *testing.T) {
 	ctx := context.Background()
 	if _, err := (&Client{}).InvokeActorActorId(ctx, ActorsInvokeActorRequestActorId{ActorId: ActorID("")}); err == nil { t.Fatal("production actor route accepted empty actor id") }
 	if _, err := (&Client{}).SelectDeploymentAlias(ctx, WorkersSelectDeploymentRequestAlias{Alias: VersionAlias("")}); err == nil { t.Fatal("production workers route accepted empty alias") }
-	if _, err := (&Client{}).ReadLimit(ctx, StreamReadRequestLimit{Limit: PageLimit(0)}); err == nil { t.Fatal("production stream route accepted zero limit") }
+	if _, err := (&Client{}).ReadLimit(ctx, StreamReadRequestLimit{Limit: StreamPageLimit(0)}); err == nil { t.Fatal("production stream route accepted zero limit") }
 	if _, err := (&Client{}).CreateImage(ctx, MachinesCreateMachineRequestImage{}); err == nil { t.Fatal("production machines route accepted missing image") }
 }
 
@@ -1845,18 +2608,24 @@ func TestRustOwnedNestedFieldsAreInProductionRequestSignatures(t *testing.T) {
     .to_owned()
 }
 
-fn python_wire_base(kind: WireValueKind) -> &'static str {
-    match kind {
+fn python_wire_base(item: &crate::type_policy::SemanticType) -> String {
+    match item.id {
+        "immutable_image" => "machines_pb2.Image".to_owned(),
+        "idempotency_key_message" => "machines_pb2.IdempotencyKey".to_owned(),
+        _ => match item.wire_kind {
         WireValueKind::String => "str",
         WireValueKind::Bytes => "bytes",
-        WireValueKind::SignedInteger | WireValueKind::UnsignedInteger | WireValueKind::Enum => "int",
+        WireValueKind::SignedInteger | WireValueKind::UnsignedInteger | WireValueKind::Enum => {
+            "int"
+        }
         WireValueKind::Boolean => "bool",
         WireValueKind::Timestamp | WireValueKind::Message | WireValueKind::Oneof => "object",
+        }.to_owned(),
     }
 }
 
 fn python_annotation(item: &crate::type_policy::SemanticType) -> String {
-    let base = python_wire_base(item.wire_kind);
+    let base = python_wire_base(item);
     if item.rules.is_empty() {
         base.to_owned()
     } else {
@@ -1888,7 +2657,10 @@ fn python_rules_literal(rules: &[SemanticRule]) -> String {
 }
 
 fn go_wire_base(item: &crate::type_policy::SemanticType) -> String {
-    match item.wire_kind {
+    match item.id {
+        "immutable_image" => "*machinesv1.Image".to_owned(),
+        "idempotency_key_message" => "*machinesv1.IdempotencyKey".to_owned(),
+        _ => match item.wire_kind {
         WireValueKind::String => "string".to_owned(),
         WireValueKind::Bytes => item
             .rules
@@ -1903,11 +2675,15 @@ fn go_wire_base(item: &crate::type_policy::SemanticType) -> String {
         WireValueKind::Enum => "int32".to_owned(),
         WireValueKind::Boolean => "bool".to_owned(),
         WireValueKind::Timestamp | WireValueKind::Message | WireValueKind::Oneof => "any".to_owned(),
+        },
     }
 }
 
 fn go_constructor_input(item: &crate::type_policy::SemanticType) -> String {
-    match item.wire_kind {
+    match item.id {
+        "immutable_image" => "value *machinesv1.Image".to_owned(),
+        "idempotency_key_message" => "value *machinesv1.IdempotencyKey".to_owned(),
+        _ => match item.wire_kind {
         WireValueKind::String => "value string".to_owned(),
         WireValueKind::Bytes => "value []byte".to_owned(),
         WireValueKind::SignedInteger => "value int64".to_owned(),
@@ -1916,11 +2692,16 @@ fn go_constructor_input(item: &crate::type_policy::SemanticType) -> String {
         WireValueKind::Boolean => "value bool".to_owned(),
         WireValueKind::Timestamp | WireValueKind::Message => "value any".to_owned(),
         WireValueKind::Oneof => "value WireChoice".to_owned(),
+        },
     }
 }
 
 fn go_constructor_result(item: &crate::type_policy::SemanticType) -> String {
-    if item.wire_kind == WireValueKind::Oneof { "WireChoice".to_owned() } else { go_type_name(item.rust_name).to_owned() }
+    if item.wire_kind == WireValueKind::Oneof {
+        "WireChoice".to_owned()
+    } else {
+        go_type_name(item.rust_name).to_owned()
+    }
 }
 
 fn go_zero_value(item: &crate::type_policy::SemanticType) -> String {
@@ -1928,14 +2709,19 @@ fn go_zero_value(item: &crate::type_policy::SemanticType) -> String {
         && let Some(length) = item.rules.iter().find_map(|rule| match rule {
             SemanticRule::FixedLength(length) => Some(length),
             _ => None,
-        }) {
+        })
+    {
         return format!("[{}]byte{{}}", length);
     }
     "nil".to_owned()
 }
 
 fn go_type_name(name: &str) -> String {
-    if let Some(prefix) = name.strip_suffix("Id") { format!("{}ID", prefix) } else { name.to_owned() }
+    if let Some(prefix) = name.strip_suffix("Id") {
+        format!("{}ID", prefix)
+    } else {
+        name.to_owned()
+    }
 }
 
 fn go_constructor_name(item: &crate::type_policy::SemanticType) -> String {
@@ -1966,7 +2752,11 @@ fn go_constructor_name(item: &crate::type_policy::SemanticType) -> String {
 }
 
 fn python_field_identifier(family: &str, field: &str) -> String {
-    format!("{}_{}", snake_case(family).replace('-', "_"), snake_case(field).replace('-', "_"))
+    format!(
+        "{}_{}",
+        snake_case(family).replace('-', "_"),
+        snake_case(field).replace('-', "_")
+    )
 }
 
 fn go_field_identifier(family: &str, field: &str) -> String {
@@ -1979,14 +2769,19 @@ fn go_field_identifier(family: &str, field: &str) -> String {
                     return "ID".to_owned();
                 }
                 let mut chars = part.chars();
-                chars.next().map(|first| first.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
+                chars
+                    .next()
+                    .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+                    .unwrap_or_default()
             })
             .collect()
     }
     format!("{}{}", title(family), title(field))
 }
 
-fn snake_case(value: &str) -> String { value.to_owned() }
+fn snake_case(value: &str) -> String {
+    value.to_owned()
+}
 
 fn camel_to_snake(value: &str) -> String {
     let mut output = String::new();
@@ -2015,19 +2810,28 @@ fn pascal_case(value: &str) -> String {
 
 fn python_rule_name(rule: SemanticRule) -> String {
     match rule {
-        SemanticRule::NonEmpty => "non_empty".to_owned(), SemanticRule::Utf8 => "utf8".to_owned(),
-        SemanticRule::NonNegative => "non_negative".to_owned(), SemanticRule::StrictlyPositive => "strictly_positive".to_owned(),
-        SemanticRule::FixedLength(value) => format!("fixed_length:{}", value), SemanticRule::MaxBytes(value) => format!("max_bytes:{}", value),
-        SemanticRule::MaxItems(value) => format!("max_items:{}", value), SemanticRule::BoundedInteger { min, max } => format!("bounded_integer:{}..{}", min, max),
-        SemanticRule::Sha256Digest => "sha256_digest".to_owned(), SemanticRule::Immutable => "immutable".to_owned(),
-        SemanticRule::Monotonic => "monotonic".to_owned(), SemanticRule::CanonicalResourceName => "canonical_resource_name".to_owned(),
-        SemanticRule::ExactOneof => "exact_oneof".to_owned(), SemanticRule::ExplicitPresence => "explicit_presence".to_owned(),
-        SemanticRule::PreserveUnknownEnum => "preserve_unknown_enum".to_owned(), SemanticRule::PreserveUnknownOneof => "preserve_unknown_oneof".to_owned(),
+        SemanticRule::NonEmpty => "non_empty".to_owned(),
+        SemanticRule::Utf8 => "utf8".to_owned(),
+        SemanticRule::NonNegative => "non_negative".to_owned(),
+        SemanticRule::StrictlyPositive => "strictly_positive".to_owned(),
+        SemanticRule::FixedLength(value) => format!("fixed_length:{}", value),
+        SemanticRule::MaxBytes(value) => format!("max_bytes:{}", value),
+        SemanticRule::MaxItems(value) => format!("max_items:{}", value),
+        SemanticRule::BoundedInteger { min, max } => format!("bounded_integer:{}..{}", min, max),
+        SemanticRule::Sha256Digest => "sha256_digest".to_owned(),
+        SemanticRule::Immutable => "immutable".to_owned(),
+        SemanticRule::Monotonic => "monotonic".to_owned(),
+        SemanticRule::CanonicalResourceName => "canonical_resource_name".to_owned(),
+        SemanticRule::ExactOneof => "exact_oneof".to_owned(),
+        SemanticRule::ExplicitPresence => "explicit_presence".to_owned(),
+        SemanticRule::PreserveUnknownEnum => "preserve_unknown_enum".to_owned(),
+        SemanticRule::PreserveUnknownOneof => "preserve_unknown_oneof".to_owned(),
     }
 }
 
-fn go_rule_name(rule: SemanticRule) -> String { python_rule_name(rule) }
-
+fn go_rule_name(rule: SemanticRule) -> String {
+    python_rule_name(rule)
+}
 
 fn go_operations() -> String {
     let mut output = String::new();
