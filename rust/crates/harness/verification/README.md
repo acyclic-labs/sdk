@@ -3,8 +3,10 @@
 This is a finite TLA+ safety model of one stable activation operation with two
 possible owners. It checks admission before dispatch, claim retention when the
 journal is unavailable, durable results before success, and cancellation before
-success. Crashes remove the live owner without removing durable admission.
-Recovery enters reconciliation instead of starting a fresh provider attempt.
+success. A crash after dispatch marks the effect indeterminate and retains the
+claim for reconciliation; a proven pre-dispatch fatal result closes the turn
+with a failed terminal outcome. Recovery enters reconciliation instead of
+starting a fresh provider attempt.
 
 `ActivationRecovery.cfg` must finish without an invariant violation.
 `ActivationRecoveryUnsafe.cfg` deliberately enables the rejected claim-release
@@ -126,13 +128,17 @@ The checker also runs four deliberately small finite models. They use numeric
 identities and fixed operators inside the TLA modules, so the configuration
 files do not depend on symbolic function expressions:
 
-* `SwarmAuthority.tla` has four agents, three message identities and three wait
+* `SwarmAuthority.tla` has four agents, four message identities and three wait
   identities. It checks that message and wait admission is restricted to
-  distinct direct parent/child pairs. The root's `Parent(1) = 1` mapping is
-  therefore harmless. `SwarmAuthorityUnsafe.cfg` enables an unauthorized
-  sibling/self admission path and must violate `DirectMessageAuthority`; the
-  separate `SwarmAuthorityUnsafeSelf.cfg` negative control must violate
-  `SelfMessageAuthority` for the explicit root self-target message.
+  distinct direct parent/child pairs, even after a child inherits a transcript
+  prefix. The root's `Parent(1) = 1` mapping is therefore harmless.
+  `SwarmAuthorityUnsafe.cfg` enables an unauthorized sibling/self admission
+  path and must violate `DirectMessageAuthority`; the separate
+  `SwarmAuthorityUnsafeSelf.cfg` negative control must violate
+  `SelfMessageAuthority` for the explicit root self-target message; and
+  `SwarmAuthorityUnsafeTranscript.cfg` must violate
+  `TranscriptInheritanceDoesNotGrantAuthority` after an inherited prefix is
+  present.
 * `SwarmBudget.tla` has five finite agent identities, a depth bound of two, a
   session allocation budget of three, and a two-step per-agent budget. It
   separately checks aggregate allocation, per-agent steps, and recursive depth.
@@ -167,7 +173,7 @@ seed `1`, and a 512 MB heap. The qualified finite cases are:
 
 | Property family | Finite bound | Safe evidence | Required negative controls |
 | --- | --- | --- | --- |
-| Authority | four agents; directed parent map; three message and wait identities | `SwarmAuthority` | sibling/unauthorized and root self-target admission violate `DirectMessageAuthority` / `SelfMessageAuthority` |
+| Authority | four agents; directed parent map; four message and three wait identities; transcript inheritance flags | `SwarmAuthority` | sibling/unauthorized, root self-target, and inherited-prefix authority violations cover `DirectMessageAuthority` / `SelfMessageAuthority` / `TranscriptInheritanceDoesNotGrantAuthority` |
 | Budget | five agents; depth two; total allocation three; two steps per agent | `SwarmBudget` | over-allocation, over-step, and over-depth violate their conservation/bound invariants |
 | Publication | one child; generations `0..1` | `SwarmPublication` | stale publication violates `PublicationAtCapturedGeneration` |
 | Message delivery | one durable message; delivery count `0..2` | `SwarmMessage` | duplicate and orphan delivery violate `AtMostOnce` / `DeliveredRequiresAdmission` |

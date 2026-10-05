@@ -24,7 +24,8 @@ $cases = if ($Model -eq 'ActivationRecovery') { @(
 ) } elseif ($Model -eq 'SwarmAuthority') { @(
     @{ Name = 'safe'; Config = 'SwarmAuthority.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe-authority'; Config = 'SwarmAuthorityUnsafe.cfg'; Exit = 12; Expected = 'Invariant DirectMessageAuthority is violated.' },
-    @{ Name = 'unsafe-self'; Config = 'SwarmAuthorityUnsafeSelf.cfg'; Exit = 12; Expected = 'Invariant SelfMessageAuthority is violated.' }
+    @{ Name = 'unsafe-self'; Config = 'SwarmAuthorityUnsafeSelf.cfg'; Exit = 12; Expected = 'Invariant SelfMessageAuthority is violated.' },
+    @{ Name = 'unsafe-transcript'; Config = 'SwarmAuthorityUnsafeTranscript.cfg'; Exit = 12; Expected = 'Invariant TranscriptInheritanceDoesNotGrantAuthority is violated.' }
 ) } elseif ($Model -eq 'SwarmBudget') { @(
     @{ Name = 'safe'; Config = 'SwarmBudget.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe-allocation'; Config = 'SwarmBudgetUnsafeAllocation.cfg'; Exit = 12; Expected = 'Invariant TotalBudgetConserved is violated.' },
