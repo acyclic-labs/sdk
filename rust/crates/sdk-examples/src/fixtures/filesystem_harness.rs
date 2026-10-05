@@ -648,6 +648,7 @@ pub fn empty_filesystem_service() -> std::result::Result<FilesystemFixtureServic
 /// empty and authenticates the imported closure before creating its authority.
 /// This preserves the product's duplicate-create behavior while making a
 /// long-lived hosted replay observe the same semantics as the Rust scenario.
+#[derive(Clone)]
 pub struct FilesystemTransferRouter {
     source: acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer<
         FilesystemFixtureService,
