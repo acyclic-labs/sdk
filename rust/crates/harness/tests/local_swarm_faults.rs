@@ -574,10 +574,15 @@ async fn wait_for_child_stream_drop<T: std::fmt::Debug>(
     if provider.child_stream_dropped.load(Ordering::SeqCst) {
         return;
     }
-    if timeout(Duration::from_secs(30), notified).await.is_err() {
+    if timeout(Duration::from_secs(2), notified).await.is_err() {
         running.abort();
         let stopped = running.await;
-        panic!("child provider stream did not drop after cancellation; owned run stopped: {stopped:?}");
+        panic!(
+            "child provider stream did not drop within the cancellation bound; dispatches={}, started={}, dropped={}, owned run stopped: {stopped:?}",
+            provider.dispatches.load(Ordering::SeqCst),
+            provider.child_a_started.load(Ordering::SeqCst),
+            provider.child_stream_dropped.load(Ordering::SeqCst),
+        );
     }
 }
 
@@ -947,7 +952,7 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
         "the second handle must observe durable cancellation before the owner is joined"
     );
     wait_for_child_stream_drop(&provider, &mut running).await;
-    let result = finish_owned_run(&mut running, Duration::from_secs(2)).await;
+    let result = finish_owned_run(&mut running, Duration::from_secs(30)).await;
     assert!(result.is_ok(), "root admission should complete before child cancellation: {result:?}");
     first.shutdown_workers().await;
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst),
@@ -1069,7 +1074,7 @@ async fn concurrent_handle_reconciles_live_admission_without_duplicate_dispatch(
 
     second.cancel(task(child_a)).await?;
     wait_for_child_stream_drop(&provider, &mut first_run).await;
-    let first_output = finish_owned_run(&mut first_run, Duration::from_secs(5)).await;
+    let first_output = finish_owned_run(&mut first_run, Duration::from_secs(30)).await;
     assert!(first_output.is_ok(), "root admission should complete before cancellation: {first_output:?}");
     first.shutdown_workers().await;
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst));

@@ -40,6 +40,30 @@ fn id(byte: u8) -> OperationId {
     OperationId::from_bytes([byte; 16])
 }
 
+fn publication_operation(parent: OperationId, step: u32) -> OperationId {
+    let digest = blake3::hash(
+        &[
+            b"harness:model-batch-publication:v1".as_slice(),
+            parent.into_bytes().as_slice(),
+            &step.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
+}
+
+fn child_fork_operation(publication: OperationId, child: OperationId) -> OperationId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic.local-swarm.child-fork.v1\0");
+    hasher.update(&publication.into_bytes());
+    hasher.update(&child.into_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
+}
+
 fn message_contains(request: &ModelRequest, needle: &str) -> bool {
     request
         .messages
@@ -549,6 +573,7 @@ impl ModelProvider for DeterministicProvider {
         let is_grandchild = declared_task == Some("grandchild");
         let sibling_fork_attempt = is_child_a
             && self.sibling_fork_requested.load(Ordering::SeqCst)
+            && has_read_result(&request)
             && !self.sibling_fork_sent.load(Ordering::SeqCst);
         let root = !is_child_a && !is_child_b && !is_grandchild;
         if is_grandchild && has_read_result(&request) {
@@ -789,6 +814,11 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
     )
     .await?;
     provider.bind_swarm(&swarm);
+    // Exercise sibling integration from an authenticated child model turn.
+    // The provider emits the forged sibling fork only after child A has
+    // received its inherited file result, so this is a real tool exchange,
+    // rather than a bypass through a manually pinned child run.
+    provider.sibling_fork_requested.store(true, Ordering::SeqCst);
     let root_operation = id(0x01);
     let root_output = swarm
         .run_root(root_operation, "start recursive local swarm")
@@ -849,15 +879,71 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         assert_eq!(swarm.outcome(task).await?.text, "ordinary completion");
     }
 
-    // A completed child cannot select its sibling as a new child. The
-    // authenticated parent binding and durable operation index reject the
-    // forged sibling fork before another child is admitted.
-    provider.sibling_fork_requested.store(true, Ordering::SeqCst);
-    let sibling_error = swarm
-        .run(child_a_task, id(0xA2), "attempt sibling fork")
-        .await;
-    assert!(sibling_error.is_err());
-    assert!(provider.sibling_fork_sent.load(Ordering::SeqCst), "sibling attempt failed before model dispatch: {sibling_error:?}");
+    // A child turn attempted to select its sibling through the authenticated
+    // model tool. The already admitted sibling remains the only child-B
+    // request and the tool exchange is retained in child A's journal.
+    assert!(provider.sibling_fork_sent.load(Ordering::SeqCst));
+    let sibling_tool_result = provider
+        .decoded_requests()
+        .iter()
+        .flat_map(|request| request.messages.iter())
+        .find_map(|message| match &message.content {
+            ModelContent::Part(ModelContentPart::ToolResult { call_id, .. })
+                if call_id == "fork-sibling" =>
+            {
+                Some(message)
+            }
+            _ => None,
+        });
+    assert!(
+        sibling_tool_result.is_some(),
+        "sibling rejection must be delivered through the authenticated child tool exchange"
+    );
+    assert_eq!(
+        provider
+            .decoded_requests()
+            .iter()
+            .filter(|request| latest_declared_child_task(request) == Some("child-b"))
+            .count(),
+        1,
+        "sibling rejection must not redispatch the already admitted sibling"
+    );
+
+    let requests_before_rejections = provider.serialized_requests();
+    let dispatches_before_rejections = provider.dispatches.load(Ordering::SeqCst);
+    let sessions_before_rejections = swarm.sessions().await?;
+    let activity_before_rejections = swarm.read_activity(child_a_task, 0, 1_024).await?;
+    // Same retained operation with a changed prompt must be rejected before
+    // opening the child model or appending a journal event.
+    assert!(matches!(
+        swarm
+            .run(child_a_task, child_a, "changed child prompt")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    // Same retained prompt with a changed operation is equally invalid.
+    assert!(matches!(
+        swarm
+            .run(child_a_task, id(0xA2), "prepare child a")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        provider.dispatches.load(Ordering::SeqCst),
+        dispatches_before_rejections
+    );
+    assert_eq!(provider.serialized_requests(), requests_before_rejections);
+    assert_eq!(swarm.sessions().await?, sessions_before_rejections);
+    assert_eq!(
+        swarm.read_activity(child_a_task, 0, 1_024).await?,
+        activity_before_rejections
+    );
+
+    // An exact retry of the retained child operation and prompt remains a
+    // valid idempotent replay and does not start a second model turn.
+    let replay = swarm.run(child_a_task, child_a, "prepare child a").await?;
+    assert_eq!(replay.text, "ordinary completion");
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), dispatches_before_rejections);
 
     let dispatches_before_restart = provider.dispatches.load(Ordering::SeqCst);
     let requests_before_restart = provider.serialized_requests();
@@ -995,9 +1081,25 @@ async fn model_selected_child_rejects_grandchild_at_configured_depth() -> Result
             }) if call_id == "fork-grandchild" && name == "acyclic.fork_child" => Some(value),
             _ => None,
         });
-    assert!(
-        denied_fork_result.is_some_and(|value| value.to_string().contains("depth limit")),
-        "depth denial must be delivered as the fork tool's paired result"
+    let denied_fork_result = denied_fork_result
+        .expect("depth denial must be delivered as the fork tool's paired result");
+    assert_eq!(denied_fork_result.get("status"), Some(&json!("denied")));
+    assert_eq!(denied_fork_result.get("reason"), Some(&json!("depth_limit")));
+    assert_eq!(
+        denied_fork_result
+            .get("fork_operation")
+            .and_then(Value::as_str),
+        Some(
+            child_fork_operation(publication_operation(id(0xE0), 0), grandchild)
+                .to_string()
+                .as_str()
+        )
+    );
+    assert_eq!(
+        denied_fork_result
+            .get("child_operation")
+            .and_then(Value::as_str),
+        Some(grandchild.to_string().as_str())
     );
     assert!(
         swarm
