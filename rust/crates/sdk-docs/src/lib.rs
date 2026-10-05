@@ -413,6 +413,10 @@ pub struct LandingCatalog {
 pub struct LandingNavigationEntry {
     pub package: String,
     pub route: String,
+    /// Exact Rust package/crate identity and normalized public route used by
+    /// current and historical documentation archives.
+    #[serde(rename = "routeIdentity")]
+    pub route_identity: DocumentationRouteIdentity,
     pub title: String,
     pub category: String,
     pub publish: bool,
@@ -914,6 +918,10 @@ fn landing_catalog(crates: &[CrateBundle]) -> LandingCatalog {
         .map(|crate_bundle| LandingNavigationEntry {
             package: crate_bundle.package_name.clone(),
             route: crate_bundle.navigation.clone(),
+            route_identity: documentation_route_identity(
+                &crate_bundle.package_name,
+                crate_bundle.crate_name.as_deref(),
+            ),
             title: crate_bundle
                 .package_name
                 .strip_prefix("acyclic-")
@@ -2524,6 +2532,11 @@ fn validate_qualified_receipt(
     }
 
     if let Some(artifact) = receipt.get("artifact") {
+        if require_source_identity {
+            return Err(Error::Strict(format!(
+                "SDK examples qualified receipt for {relative_snippet} must bind compile, runtime, and package artifacts in a source-authoritative bundle"
+            )));
+        }
         verify_bound_receipt_artifact(
             artifact,
             bundle_root,
@@ -6675,6 +6688,102 @@ mod tests {
         let error = load_scenario_bundle(&root, &root, "scenario-test-revision")
             .expect_err("missing qualified artifact bytes must fail closed");
         assert!(error.to_string().contains("declared file is unavailable"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_authoritative_receipt_rejects_compact_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-source-authoritative-compact-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("artifacts")).unwrap();
+        let artifact = b"package bytes";
+        fs::write(root.join("artifacts/package.tgz"), artifact).unwrap();
+        let snippet = serde_json::json!({
+            "validation": {
+                "receipt": {
+                    "status": "qualified",
+                    "source_revision": "source-revision",
+                    "source_path": "examples/source.rs",
+                    "assertions": ["package installed and executed"],
+                    "artifact": {
+                        "kind": "generated-package",
+                        "path": "artifacts/package.tgz",
+                        "sha256": sha256_digest(artifact),
+                    }
+                }
+            }
+        });
+        let declared_files = HashSet::from(["artifacts/package.tgz".to_owned()]);
+        let error = validate_qualified_receipt(
+            snippet.as_object().unwrap(),
+            &root,
+            &declared_files,
+            "snippets/example.rs",
+            Some("source-revision"),
+            Some("examples/source.rs"),
+            true,
+        )
+        .expect_err("source-authoritative receipts must use stage-bound artifacts");
+        assert!(error
+            .to_string()
+            .contains("must bind compile, runtime, and package artifacts"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_authoritative_receipt_accepts_expanded_stage_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-source-authoritative-expanded-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("artifacts")).unwrap();
+        let artifacts = [
+            ("compile.bin", b"compile bytes".as_slice()),
+            ("runtime.bin", b"runtime bytes".as_slice()),
+            ("package.tgz", b"package bytes".as_slice()),
+        ];
+        for (name, bytes) in artifacts {
+            fs::write(root.join("artifacts").join(name), bytes).unwrap();
+        }
+        fs::write(root.join("artifacts/stdout.log"), []).unwrap();
+        let snippet = serde_json::json!({
+            "validation": {
+                "receipt": {
+                    "status": "qualified",
+                    "source_revision": "source-revision",
+                    "source_path": "examples/source.rs",
+                    "assertions": ["package installed and executed"],
+                    "compile_artifact_path": "artifacts/compile.bin",
+                    "compile_artifact_sha256": sha256_digest(b"compile bytes"),
+                    "runtime_artifact_path": "artifacts/runtime.bin",
+                    "runtime_artifact_sha256": sha256_digest(b"runtime bytes"),
+                    "package_artifact_path": "artifacts/package.tgz",
+                    "package_artifact_sha256": sha256_digest(b"package bytes"),
+                    "stdout_path": "artifacts/stdout.log",
+                    "stdout_sha256": sha256_digest(b""),
+                }
+            }
+        });
+        let declared_files = HashSet::from([
+            "artifacts/compile.bin".to_owned(),
+            "artifacts/runtime.bin".to_owned(),
+            "artifacts/package.tgz".to_owned(),
+            "artifacts/stdout.log".to_owned(),
+        ]);
+        validate_qualified_receipt(
+            snippet.as_object().unwrap(),
+            &root,
+            &declared_files,
+            "snippets/example.rs",
+            Some("source-revision"),
+            Some("examples/source.rs"),
+            true,
+        )
+        .expect("source-authoritative receipts accept all source-bound stages");
         fs::remove_dir_all(root).unwrap();
     }
 
