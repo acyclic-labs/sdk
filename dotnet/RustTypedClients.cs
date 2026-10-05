@@ -334,14 +334,14 @@ public abstract record ImmutableImage
 
     internal Acyclic.Machines.V1.Image ToWire() => this switch
     {
-        Managed value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Managed, ManagedDigest = value.Digest.ToWire() },
+        Managed value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.ManagedOci, ManagedDigest = value.Digest.ToWire() },
         Custom value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Custom, CustomDigest = value.Digest.ToWire() },
         Checkpoint value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Checkpoint, Checkpoint = new Acyclic.Machines.V1.CheckpointId { Value = value.Id.ToWire() } },
-        _ => throw new ArgumentOutOfRangeException(nameof(this)),
+        _ => throw new ArgumentOutOfRangeException(nameof(ImmutableImage)),
     };
 }
 
-public abstract record wire_choice
+public abstract record wire_choice(string Tag, ByteString Payload)
 {
     public sealed record KnownOneof(string Tag, ByteString Payload) : wire_choice(Tag, Payload);
     public sealed record Unknown(int RawTag, ByteString Payload) : wire_choice("unknown", Payload);

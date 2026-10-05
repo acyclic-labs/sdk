@@ -158,7 +158,7 @@ fn render_semantic_types(out: &mut String) {
 
 fn render_machine_image(out: &mut String) {
     out.push_str(
-        "public abstract record ImmutableImage\n{\n    public sealed record Managed(Sha256Digest Digest) : ImmutableImage;\n    public sealed record Custom(Sha256Digest Digest) : ImmutableImage;\n    public sealed record Checkpoint(CheckpointId Id) : ImmutableImage;\n\n    internal Acyclic.Machines.V1.Image ToWire() => this switch\n    {\n        Managed value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Managed, ManagedDigest = value.Digest.ToWire() },\n        Custom value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Custom, CustomDigest = value.Digest.ToWire() },\n        Checkpoint value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Checkpoint, Checkpoint = new Acyclic.Machines.V1.CheckpointId { Value = value.Id.ToWire() } },\n        _ => throw new ArgumentOutOfRangeException(nameof(this)),\n    };\n}\n\n",
+        "public abstract record ImmutableImage\n{\n    public sealed record Managed(Sha256Digest Digest) : ImmutableImage;\n    public sealed record Custom(Sha256Digest Digest) : ImmutableImage;\n    public sealed record Checkpoint(CheckpointId Id) : ImmutableImage;\n\n    internal Acyclic.Machines.V1.Image ToWire() => this switch\n    {\n        Managed value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.ManagedOci, ManagedDigest = value.Digest.ToWire() },\n        Custom value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Custom, CustomDigest = value.Digest.ToWire() },\n        Checkpoint value => new Acyclic.Machines.V1.Image { Kind = Acyclic.Machines.V1.ImageKind.Checkpoint, Checkpoint = new Acyclic.Machines.V1.CheckpointId { Value = value.Id.ToWire() } },\n        _ => throw new ArgumentOutOfRangeException(nameof(ImmutableImage)),\n    };\n}\n\n",
     );
 }
 
@@ -181,7 +181,7 @@ fn render_unions(out: &mut String) {
         if !emitted.insert(union.union) {
             continue;
         }
-        out.push_str(&format!("public abstract record {}\n{{\n", union.union));
+        out.push_str(&format!("public abstract record {}(string Tag, ByteString Payload)\n{{\n", union.union));
         out.push_str(&format!(
             "    public sealed record {}(string Tag, ByteString Payload) : {}(Tag, Payload);\n",
             upper(union.variant),
