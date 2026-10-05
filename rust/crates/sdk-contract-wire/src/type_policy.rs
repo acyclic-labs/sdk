@@ -114,6 +114,10 @@ pub enum OperationEnforcement {
     ClientLocal,
     ProviderState,
     ResponseInvariant,
+    /// The Rust source has named a rule that has no qualified projection yet.
+    /// Generators must surface this state and fail the qualification gate;
+    /// it must never be downgraded to a provider or documentation-only rule.
+    Unsupported,
 }
 
 /// The concrete logical target of an operation validation.
@@ -704,6 +708,16 @@ fn operation_target(validation: &'static str) -> OperationTarget {
         }
         "mutation.oneof" => ("mutation", OperationEnforcement::ClientLocal),
         "transaction.bounded" => ("transaction", OperationEnforcement::ClientLocal),
+        "preconditions.atomic" => ("preconditions", OperationEnforcement::ClientLocal),
+        "upload.completion_frame" => ("upload.completion_frame", OperationEnforcement::ClientLocal),
+        "part_number.positive" => ("part_number", OperationEnforcement::ClientLocal),
+        "limit.max_stream_items" => ("limit", OperationEnforcement::ClientLocal),
+        "expected_configuration_revision.non_negative" => {
+            ("expected_configuration_revision", OperationEnforcement::ClientLocal)
+        }
+        "image.immutable_digest" => ("image", OperationEnforcement::ClientLocal),
+        "source.present" => ("source", OperationEnforcement::ClientLocal),
+        "maximum_output.positive" => ("maximum_output", OperationEnforcement::ClientLocal),
         "parts.ordered_exact" => ("parts", OperationEnforcement::ClientLocal),
         "records.max_bytes" => ("records", OperationEnforcement::ClientLocal),
         "mutations.max_command_bytes" => ("mutations", OperationEnforcement::ClientLocal),
@@ -728,7 +742,7 @@ fn operation_target(validation: &'static str) -> OperationTarget {
             || validation.ends_with(".monotonic") => {
             (validation, OperationEnforcement::ClientLocal)
         }
-        _ => (validation, OperationEnforcement::ProviderState),
+        _ => (validation, OperationEnforcement::Unsupported),
     };
     OperationTarget { path, enforcement }
 }
@@ -2510,6 +2524,12 @@ mod tests {
         let rules = resolved_operation_rules();
         assert!(rules.len() >= 200, "all Rust-authored operation validations must be inventoried");
         assert!(rules.iter().all(|rule| !rule.target.path.is_empty()));
+        assert!(
+            rules
+                .iter()
+                .all(|rule| rule.target.enforcement != OperationEnforcement::Unsupported),
+            "every current Rust operation policy must have an explicit target projection"
+        );
         assert!(rules.iter().any(|rule| {
             rule.validation == "bucket.empty"
                 && rule.target.path == "bucket"
@@ -2543,7 +2563,7 @@ mod tests {
         assert_eq!(target.path, "future.aggregate.valid");
         assert_eq!(target.enforcement, OperationEnforcement::ClientLocal);
         let provider = operation_target("provider.unknown_rule");
-        assert_eq!(provider.enforcement, OperationEnforcement::ProviderState);
+        assert_eq!(provider.enforcement, OperationEnforcement::Unsupported);
     }
 
     #[test]

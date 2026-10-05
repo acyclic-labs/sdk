@@ -137,8 +137,9 @@ fn render_semantic_types(out: &mut String) {
                     SemanticRule::MaxItems(value) => Some(*value),
                     _ => None,
                 });
-                let max_check = max.map(|value| format!("        if (value > {value}) throw new ArgumentOutOfRangeException(nameof(value));\n")).unwrap_or_default();
-                out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(ulong value)\n    {{\n        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));\n{max_check}        Value = value;\n    }}\n    public ulong Value {{ get; }}\n    internal ulong ToWire()\n    {{\n        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));\n{max_check}        return Value;\n    }}\n}}\n\n"));
+                let max_check_constructor = max.map(|value| format!("        if (value > {value}) throw new ArgumentOutOfRangeException(nameof(value));\n")).unwrap_or_default();
+                let max_check_wire = max.map(|value| format!("        if (Value > {value}) throw new ArgumentOutOfRangeException(nameof(Value));\n")).unwrap_or_default();
+                out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(ulong value)\n    {{\n        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));\n{max_check_constructor}        Value = value;\n    }}\n    public ulong Value {{ get; }}\n    internal ulong ToWire()\n    {{\n        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));\n{max_check_wire}        return Value;\n    }}\n}}\n\n"));
             }
             WireValueKind::SignedInteger => {
                 let positive = item.rules.iter().any(|rule| matches!(rule, SemanticRule::StrictlyPositive));
@@ -523,6 +524,7 @@ fn render_operation_validation(out: &mut String) {
             OperationEnforcement::ClientLocal => "ClientLocal",
             OperationEnforcement::ProviderState => "ProviderState",
             OperationEnforcement::ResponseInvariant => "ResponseInvariant",
+            OperationEnforcement::Unsupported => "Unsupported",
         };
         out.push_str(&format!(
             "        new RustOperationPolicy(\"{}\", \"{}\", \"{}\", \"{}\", RustOperationEnforcement.{}),\n",
