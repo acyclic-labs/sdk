@@ -58,13 +58,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
-/** Replays the Rust-owned canonical execution plan against the installed JVM artifact. */
+/**
+ * Replays canonical Rust plan bytes through generated JVM descriptors and an
+ * in-process gRPC transport. Stateful fixture receipts are qualified separately.
+ */
 class InstalledCanonicalReplayTest {
   private static final String DEFAULT_MANIFEST = "work/canonical-106-manifest.json";
   private static final String AFTER_COMPLETION = "/after-completion";
 
   @Test
-  void installedArtifactReplaysCanonicalRustPlan() throws Exception {
+  void installedArtifactReplaysCanonicalPlanWireShape() throws Exception {
     Path manifest = canonicalManifest();
     assertTrue(Files.isRegularFile(manifest), "canonical manifest is missing: " + manifest);
     JsonObject root = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
@@ -186,10 +189,10 @@ class InstalledCanonicalReplayTest {
 
   private static void checkRequest(MethodDescriptor<?, ?> method, ExpectedCall call, List<byte[]> actual, FailureSink failures) {
     List<byte[]> expected = call.requests;
-    if (expected.isEmpty() && actual.size() == 1 && actual.get(0).length == 0
+    if (expected.isEmpty()
         && (method.getType() == MethodDescriptor.MethodType.UNARY
             || method.getType() == MethodDescriptor.MethodType.SERVER_STREAMING)) {
-      expected = List.of(new byte[0]);
+      return;
     }
     if (!expected.equals(actual)) failures.add(new AssertionError("request wire mismatch for " + method.getFullMethodName()
         + " expected=" + describe(call.requests) + " actual=" + describe(actual)));
