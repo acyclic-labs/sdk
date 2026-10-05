@@ -1880,7 +1880,8 @@ fn semantic_for(binding: &PublicFieldBinding) -> &'static SemanticType {
 fn java_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
     let ty = semantic_for(binding);
     if ty.rust_name == "IdempotencyKey" {
-        return format!("{parameter}.toWire()");
+        let container = java_proto_container(binding.module);
+        return format!("{container}.IdempotencyKey.newBuilder().setValue({parameter}.toWire()).build()");
     }
     if binding.module == "machines"
         && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")
@@ -1920,7 +1921,8 @@ fn java_value_expression(binding: &PublicFieldBinding, parameter: &str) -> Strin
 fn kotlin_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
     let ty = semantic_for(binding);
     if ty.rust_name == "IdempotencyKey" {
-        return format!("{parameter}.toWire()");
+        let container = java_proto_container(binding.module);
+        return format!("{container}.IdempotencyKey.newBuilder().setValue({parameter}.toWire()).build()");
     }
     if binding.module == "machines"
         && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")
@@ -1960,7 +1962,8 @@ fn kotlin_value_expression(binding: &PublicFieldBinding, parameter: &str) -> Str
 fn scala_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
     let ty = semantic_for(binding);
     if ty.rust_name == "IdempotencyKey" {
-        return format!("{parameter}.toWire");
+        let container = java_proto_container(binding.module);
+        return format!("{container}.IdempotencyKey.newBuilder().setValue({parameter}.toWire).build()");
     }
     if binding.module == "machines"
         && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")

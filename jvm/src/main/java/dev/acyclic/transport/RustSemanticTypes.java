@@ -8,6 +8,7 @@ import java.util.Optional;
 public final class RustSemanticTypes {
   private RustSemanticTypes() {}
 
+  /** Open oneof projection: known arms carry nominal DTOs; unknown arms retain raw wire bytes. */
   public sealed interface WireChoice permits KnownHeader, KnownBody, KnownError, KnownRaw, Unknown {}
   public record KnownHeader(RustTypedResponses.ObjectsGetObjectHeaderView payload) implements WireChoice {}
   public record KnownBody(WireBytes payload) implements WireChoice {}
@@ -15,7 +16,9 @@ public final class RustSemanticTypes {
   public record KnownRaw(String tag, WireBytes payload) implements WireChoice {}
   public record Unknown(int tag, WireBytes payload) implements WireChoice {}
   public record WireBytes(com.google.protobuf.ByteString value) { public WireBytes { java.util.Objects.requireNonNull(value); } public static WireBytes of(com.google.protobuf.ByteString value) { return new WireBytes(value); } public com.google.protobuf.ByteString toWire() { return value; } }
-  public static <T> Optional<T> present(T value, boolean isPresent) { return isPresent ? Optional.ofNullable(value) : Optional.empty(); }
+  public record WireEnum(int value) { public static WireEnum of(int value) { return new WireEnum(value); } public int toWire() { return value; } }
+  public record WireMessage(com.google.protobuf.Message value) { public WireMessage { java.util.Objects.requireNonNull(value); } public static WireMessage of(com.google.protobuf.Message value) { return new WireMessage(value); } public com.google.protobuf.Message toWire() { return value; } }
+    public static <T> Optional<T> present(T value, boolean isPresent) { return isPresent ? Optional.ofNullable(value) : Optional.empty(); }
 
   public record ActorId(String value) {
     public ActorId(String value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("ActorId must be non-empty");; if (value == null || value.isEmpty()) throw new IllegalArgumentException("ActorId must be non-empty"); this.value = value; }
@@ -71,22 +74,28 @@ public final class RustSemanticTypes {
     public String toWire() { return value; }
   }
 
-  public record MachineId(String value) {
-    public MachineId(String value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("MachineId must be non-empty");; if (value == null || value.isEmpty()) throw new IllegalArgumentException("MachineId must be non-empty"); this.value = value; }
-    public static MachineId of(String value) { return new MachineId(value); }
-    public String toWire() { return value; }
+  public record MachineId(com.google.protobuf.ByteString value) {
+    public MachineId(com.google.protobuf.ByteString value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("MachineId must be non-empty");; if (value == null || value.size() != 16) throw new IllegalArgumentException("MachineId must contain exactly 16 bytes"); this.value = value; }
+    public static MachineId of(com.google.protobuf.ByteString value) { return new MachineId(value); }
+    public com.google.protobuf.ByteString toWire() { return value; }
   }
 
-  public record OperationId(String value) {
-    public OperationId(String value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("OperationId must be non-empty");; if (value == null || value.isEmpty()) throw new IllegalArgumentException("OperationId must be non-empty"); this.value = value; }
-    public static OperationId of(String value) { return new OperationId(value); }
-    public String toWire() { return value; }
+  public record OperationId(com.google.protobuf.ByteString value) {
+    public OperationId(com.google.protobuf.ByteString value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("OperationId must be non-empty");; if (value == null || value.size() != 16) throw new IllegalArgumentException("OperationId must contain exactly 16 bytes"); this.value = value; }
+    public static OperationId of(com.google.protobuf.ByteString value) { return new OperationId(value); }
+    public com.google.protobuf.ByteString toWire() { return value; }
   }
 
-  public record CheckpointId(String value) {
-    public CheckpointId(String value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("CheckpointId must be non-empty");; if (value == null || value.isEmpty()) throw new IllegalArgumentException("CheckpointId must be non-empty"); this.value = value; }
-    public static CheckpointId of(String value) { return new CheckpointId(value); }
-    public String toWire() { return value; }
+  public record WorkspaceId(com.google.protobuf.ByteString value) {
+    public WorkspaceId(com.google.protobuf.ByteString value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("WorkspaceId must be non-empty");; if (value == null || value.size() != 16) throw new IllegalArgumentException("WorkspaceId must contain exactly 16 bytes"); this.value = value; }
+    public static WorkspaceId of(com.google.protobuf.ByteString value) { return new WorkspaceId(value); }
+    public com.google.protobuf.ByteString toWire() { return value; }
+  }
+
+  public record CheckpointId(com.google.protobuf.ByteString value) {
+    public CheckpointId(com.google.protobuf.ByteString value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("CheckpointId must be non-empty");; if (value == null || value.size() != 16) throw new IllegalArgumentException("CheckpointId must contain exactly 16 bytes"); this.value = value; }
+    public static CheckpointId of(com.google.protobuf.ByteString value) { return new CheckpointId(value); }
+    public com.google.protobuf.ByteString toWire() { return value; }
   }
 
   public record IdempotencyKeyBytes(com.google.protobuf.ByteString value) {
@@ -101,10 +110,10 @@ public final class RustSemanticTypes {
     public String toWire() { return value; }
   }
 
-  public record IdempotencyKey(com.google.protobuf.Message value) {
-    public IdempotencyKey(com.google.protobuf.Message value) { java.util.Objects.requireNonNull(value);  this.value = value; }
-    public static IdempotencyKey of(com.google.protobuf.Message value) { return new IdempotencyKey(value); }
-    public com.google.protobuf.Message toWire() { return value; }
+  public record IdempotencyKey(com.google.protobuf.ByteString value) {
+    public IdempotencyKey(com.google.protobuf.ByteString value) { java.util.Objects.requireNonNull(value);  this.value = value; }
+    public static IdempotencyKey of(com.google.protobuf.ByteString value) { return new IdempotencyKey(value); }
+    public com.google.protobuf.ByteString toWire() { return value; }
   }
 
   public record OpaqueText(String value) {
@@ -161,6 +170,24 @@ public final class RustSemanticTypes {
     public long toWire() { return value; }
   }
 
+  public record StreamPageLimit(long value) {
+    public StreamPageLimit(long value) { if (value <= 0) throw new IllegalArgumentException("StreamPageLimit must be positive");; if (value > 1024) throw new IllegalArgumentException("StreamPageLimit exceeds its maximum"); this.value = value; }
+    public static StreamPageLimit of(long value) { return new StreamPageLimit(value); }
+    public long toWire() { return value; }
+  }
+
+  public record MachinePageLimit(long value) {
+    public MachinePageLimit(long value) { if (value <= 0) throw new IllegalArgumentException("MachinePageLimit must be positive");; if (value > 256) throw new IllegalArgumentException("MachinePageLimit exceeds its maximum"); this.value = value; }
+    public static MachinePageLimit of(long value) { return new MachinePageLimit(value); }
+    public long toWire() { return value; }
+  }
+
+  public record MachineEventPageLimit(long value) {
+    public MachineEventPageLimit(long value) { if (value <= 0) throw new IllegalArgumentException("MachineEventPageLimit must be positive");; if (value > 1024) throw new IllegalArgumentException("MachineEventPageLimit exceeds its maximum"); this.value = value; }
+    public static MachineEventPageLimit of(long value) { return new MachineEventPageLimit(value); }
+    public long toWire() { return value; }
+  }
+
   public record CommitId(com.google.protobuf.ByteString value) {
     public CommitId(com.google.protobuf.ByteString value) { java.util.Objects.requireNonNull(value); if (value == null || value.isEmpty()) throw new IllegalArgumentException("CommitId must be non-empty"); this.value = value; }
     public static CommitId of(com.google.protobuf.ByteString value) { return new CommitId(value); }
@@ -171,6 +198,36 @@ public final class RustSemanticTypes {
     public OpenEnumValue(int value) {  this.value = value; }
     public static OpenEnumValue of(int value) { return new OpenEnumValue(value); }
     public int toWire() { return value; }
+  }
+
+  public record OpaqueBytes(com.google.protobuf.ByteString value) {
+    public OpaqueBytes(com.google.protobuf.ByteString value) { java.util.Objects.requireNonNull(value);  this.value = value; }
+    public static OpaqueBytes of(com.google.protobuf.ByteString value) { return new OpaqueBytes(value); }
+    public com.google.protobuf.ByteString toWire() { return value; }
+  }
+
+  public record SequenceNumber(long value) {
+    public SequenceNumber(long value) { if (value < 0) throw new IllegalArgumentException("SequenceNumber must be non-negative"); this.value = value; }
+    public static SequenceNumber of(long value) { return new SequenceNumber(value); }
+    public long toWire() { return value; }
+  }
+
+  public record NonNegativeCount(long value) {
+    public NonNegativeCount(long value) { if (value < 0) throw new IllegalArgumentException("NonNegativeCount must be non-negative"); this.value = value; }
+    public static NonNegativeCount of(long value) { return new NonNegativeCount(value); }
+    public long toWire() { return value; }
+  }
+
+  public record PositiveCount(long value) {
+    public PositiveCount(long value) { if (value <= 0) throw new IllegalArgumentException("PositiveCount must be positive"); this.value = value; }
+    public static PositiveCount of(long value) { return new PositiveCount(value); }
+    public long toWire() { return value; }
+  }
+
+  public record UnixTimestampMillis(long value) {
+    public UnixTimestampMillis(long value) { if (value < 0) throw new IllegalArgumentException("UnixTimestampMillis must be non-negative"); this.value = value; }
+    public static UnixTimestampMillis of(long value) { return new UnixTimestampMillis(value); }
+    public long toWire() { return value; }
   }
 
 }
