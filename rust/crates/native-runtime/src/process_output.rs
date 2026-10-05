@@ -318,8 +318,10 @@ mod windows {
                 if ready_sender.send(Ok(thread_handle)).is_err() {
                     return;
                 }
+                let state_guard = StoppedState(Arc::clone(&worker_state));
                 let result =
                     run_reader(reader, worker_cancelled, Arc::clone(&worker_state), consume);
+                drop(state_guard);
                 worker_state.store(STOPPED, Ordering::Release);
                 let _ = sender.send(result);
             })?;
@@ -336,17 +338,23 @@ mod windows {
         };
         let cancel = Box::new(move || {
             cancelled.store(true, Ordering::Release);
+            let mut cancellation_error = None;
             loop {
                 match state.load(Ordering::Acquire) {
-                    STOPPED | IDLE => return Ok(()),
+                    STOPPED | IDLE => return cancellation_error.map_or(Ok(()), Err),
                     STARTING => thread::yield_now(),
                     READING => {
                         // SAFETY: the handle is owned and names exactly the
                         // reader thread. The state handshake guarantees that
                         // a synchronous read is either already pending or the
                         // worker will observe cancellation before starting it.
-                        let _ =
-                            unsafe { CancelSynchronousIo(thread_handle.as_raw_handle().cast()) };
+                        if unsafe { CancelSynchronousIo(thread_handle.as_raw_handle().cast()) } == 0
+                        {
+                            let error = io::Error::last_os_error();
+                            if error.raw_os_error() != Some(1168) {
+                                cancellation_error.get_or_insert(error);
+                            }
+                        }
                         thread::yield_now();
                     }
                 }
@@ -357,6 +365,14 @@ mod windows {
             cancel: Some(cancel),
             handle: Some(handle),
         })
+    }
+
+    struct StoppedState(Arc<AtomicU8>);
+
+    impl Drop for StoppedState {
+        fn drop(&mut self) {
+            self.0.store(STOPPED, Ordering::Release);
+        }
     }
 
     fn run_reader<R, F>(
@@ -425,56 +441,43 @@ mod tests {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::spawn_output_reader;
-    use std::{
-        process::{Child, Command, Stdio},
-        sync::mpsc,
-        time::Duration,
-    };
+    use std::{fs::File, io::Write, os::windows::io::FromRawHandle, sync::mpsc, time::Duration};
+    use windows_sys::Win32::{Foundation::HANDLE, System::Pipes::CreatePipe};
 
-    fn held_pipe_process(script: &str) -> Child {
-        let system_root = std::env::var_os("SystemRoot").expect("SystemRoot");
-        let shell = std::path::Path::new(&system_root)
-            .join("System32")
-            .join("cmd.exe");
-        let mut command = Command::new(shell);
-        command
-            .args(["/D", "/C", script])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-        command.spawn().expect("spawn held-pipe process")
-    }
-
-    fn reap(child: &mut Child) {
-        let _ = child.kill();
-        let _ = child.wait();
+    fn anonymous_pipe() -> (File, File) {
+        let mut read_handle: HANDLE = std::ptr::null_mut();
+        let mut write_handle: HANDLE = std::ptr::null_mut();
+        assert_ne!(
+            unsafe { CreatePipe(&mut read_handle, &mut write_handle, std::ptr::null(), 0,) },
+            0
+        );
+        // SAFETY: CreatePipe initialized both handles and ownership is moved
+        // exactly once into these values.
+        let reader = unsafe { File::from_raw_handle(read_handle) };
+        let writer = unsafe { File::from_raw_handle(write_handle) };
+        (reader, writer)
     }
 
     #[test]
     fn cancellation_before_first_read_joins_reader() {
-        let mut child = held_pipe_process("ping -n 100 127.0.0.1 >NUL");
-        let stdout = child.stdout.take().expect("stdout pipe");
-        let mut reader = spawn_output_reader(stdout, |_| true).expect("spawn reader");
+        let (reader_file, _writer_file) = anonymous_pipe();
+        let mut reader = spawn_output_reader(reader_file, |_| true).expect("spawn reader");
         assert_eq!(reader.cancel_and_join().expect("cancel and join"), None);
-        reap(&mut child);
     }
 
     #[test]
     fn cancellation_between_chunks_joins_reader() {
-        let mut child = held_pipe_process("echo first & ping -n 100 127.0.0.1 >NUL");
-        let stdout = child.stdout.take().expect("stdout pipe");
+        let (reader_file, mut writer_file) = anonymous_pipe();
         let (seen_sender, seen_receiver) = mpsc::channel();
-        let mut reader = spawn_output_reader(stdout, move |_| {
+        let mut reader = spawn_output_reader(reader_file, move |_| {
             let _ = seen_sender.send(());
             true
         })
         .expect("spawn reader");
+        writer_file.write_all(b"first").expect("write first chunk");
         seen_receiver
             .recv_timeout(Duration::from_secs(5))
             .expect("first output chunk");
         assert_eq!(reader.cancel_and_join().expect("cancel and join"), None);
-        reap(&mut child);
     }
 }
