@@ -751,6 +751,35 @@ pub trait DurableTaskHost: Send + Sync {
         })
     }
 
+    /// Reconciles an already committed message without publishing or staging
+    /// a new payload. `true` means the exact endpoint, identity, and payload
+    /// were already committed; `false` leaves a new send eligible for the
+    /// lifecycle fence below. Hosts that do not retain a mailbox probe may
+    /// conservatively return `false` and rely on their normal send path.
+    fn replay_message<'a>(
+        &'a self,
+        _sender: TaskId,
+        _recipient: TaskId,
+        _message_id: OperationId,
+        _payload: FileRef,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    /// Reconciles a raw local message body before a caller stages it. Local
+    /// hosts use this to recover an exact committed send after cancellation;
+    /// `None` means no committed delivery exists and a new mutation may still
+    /// be admitted after lifecycle checks.
+    fn replay_message_body<'a>(
+        &'a self,
+        _sender: TaskId,
+        _recipient: TaskId,
+        _message_id: OperationId,
+        _body: &'a [u8],
+    ) -> BoxFuture<'a, Result<Option<FileRef>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Discovers direct owner-retained children at one pinned hierarchy revision.
     fn children<'a>(
         &'a self,

@@ -187,4 +187,37 @@ impl<P: StreamProvider> MailboxStore<P> {
         }
         Ok(items)
     }
+
+    /// Finds one exact endpoint message without admitting a new delivery.
+    /// This is the replay probe used when a task is lifecycle-fenced: callers
+    /// may recover a committed operation, but a changed payload remains a
+    /// conflict and no new mailbox record is published.
+    pub(crate) async fn find_message(
+        &self,
+        host: &dyn DurableTaskHost,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+    ) -> Result<Option<FileRef>> {
+        let mut after = 0_u64;
+        let message_id = message_id.to_string();
+        loop {
+            let page = self.inbox(host, recipient, after, 1_024).await?;
+            let page_len = page.len();
+            let Some(item) = page
+                .iter()
+                .find(|item| item.sender == sender && item.message_id == message_id)
+            else {
+                if page_len < 1_024 {
+                    return Ok(None);
+                }
+                after = page
+                    .last()
+                    .map(|item| item.sequence)
+                    .ok_or_else(|| Error::Storage("mailbox page made no progress".into()))?;
+                continue;
+            };
+            return Ok(Some(item.payload.clone()));
+        }
+    }
 }

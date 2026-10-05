@@ -4063,15 +4063,29 @@ impl PersistentLocalSwarm {
             self.bindings.communication_host.clone().ok_or_else(|| {
                 Error::Unsupported("durable communication host is not bound".into())
             })?;
+        let sender_scope = host.communication_scope(sender).await?;
+        let recipient_scope = host.communication_scope(recipient).await?;
+        if !sender_scope.accepts_new_mutations || !recipient_scope.accepts_new_mutations {
+            // Recover an exact committed delivery before staging a new sender
+            // body. A changed body is rejected by the host and a new identity
+            // still reaches the lifecycle fence below.
+            if let Some(payload) = host
+                .replay_message_body(sender, recipient, message_id, body)
+                .await?
+            {
+                return Ok(LocalSwarmMessage {
+                    sender,
+                    recipient,
+                    message_id,
+                    payload,
+                });
+            }
+        }
         // Fence cancelled or failed senders before staging bytes. Completed
         // tasks remain eligible for an explicit new user turn, while the
         // durable host still rechecks both endpoints at publication time.
-        host.communication_scope(sender)
-            .await?
-            .require_new_mutation()?;
-        host.communication_scope(recipient)
-            .await?
-            .require_new_mutation()?;
+        sender_scope.require_new_mutation()?;
+        recipient_scope.require_new_mutation()?;
         // The sender owns the explicit source. The communication host checks
         // sender read authority and transfers it into recipient-private storage
         // before publishing the inbox record.
@@ -7984,9 +7998,36 @@ mod tests {
         let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
             root.path(), model, provider.clone(), Limits::default(),
         ).await?;
-        assert_eq!(reopened.wait(request).await?, WaitCompletion::Cancelled);
+        assert_eq!(reopened.wait(request.clone()).await?, WaitCompletion::Cancelled);
         assert_eq!(reopened.wait(interrupted.clone()).await?, WaitCompletion::Cancelled);
         assert_eq!(reopened.wait(interrupted).await?, WaitCompletion::Cancelled);
+        let timer = reopened
+            .conversation_stream
+            .stream(format!("harness/v2/swarm-timers/{task}"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let timer_tail = timer
+            .bounds()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .tail;
+        let changed = WaitRequest {
+            target: WaitTarget::Deadline {
+                deadline_epoch_ms: now + 1_800_000,
+            },
+            ..request
+        };
+        assert!(matches!(
+            reopened.wait(changed).await,
+            Err(crate::Error::Conflict(message)) if message.contains("identity")
+        ));
+        assert_eq!(
+            timer
+                .bounds()
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .tail,
+            timer_tail
+        );
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         Ok(())
     }
