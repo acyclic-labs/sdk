@@ -2475,6 +2475,10 @@ pub fn audit_generated_public_surfaces(
                     Some("Go oneof payload is erased to any")
                 }
                 "jvm"
+                    if jvm_opaque_message_projection(line) => {
+                    Some("public JVM response getter exposes an opaque message wrapper")
+                }
+                "jvm"
                     if jvm_raw_public_wire_record(line)
                         || (((line.contains("public acyclic.") && line.contains("()"))
                             || line.contains("public java.util.List<acyclic.")
@@ -2489,6 +2493,9 @@ pub fn audit_generated_public_surfaces(
                 }
                 "csharp" if csharp_raw_public_wire_record(line) => {
                     Some("public C# facade record exposes a raw protobuf message")
+                }
+                "csharp" if csharp_timestamp_precision_loss(line) => {
+                    Some("C# timestamp projection can lose protobuf nanosecond precision")
                 }
                 _ => None,
             };
@@ -2616,6 +2623,10 @@ fn csharp_raw_public_wire_record(line: &str) -> bool {
         && (trimmed.contains("Acyclic.") || trimmed.contains("Inference."))
 }
 
+fn csharp_timestamp_precision_loss(line: &str) -> bool {
+    line.contains("DateTimeOffset") && line.contains("ToDateTimeOffset()")
+}
+
 fn jvm_raw_public_wire_record(line: &str) -> bool {
     let trimmed = line.trim_start();
     let record_declaration = trimmed.starts_with("public record ")
@@ -2626,6 +2637,12 @@ fn jvm_raw_public_wire_record(line: &str) -> bool {
             || trimmed.contains("(inference.")
             || trimmed.contains("value: acyclic.")
             || trimmed.contains("value: inference."))
+}
+
+fn jvm_opaque_message_projection(line: &str) -> bool {
+    line.contains("RustSemanticTypes.WireMessage")
+        || line.contains("RustSemanticTypesKotlin.WireMessage")
+        || line.contains("RustSemanticTypesScala.WireMessage")
 }
 
 /// Check that each generated facade contains the Rust-owned type features
@@ -2981,6 +2998,38 @@ mod tests {
         }));
         assert!(findings.iter().any(|finding| {
             finding.language == "go" && finding.reason == "Go oneof payload is erased to any"
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generated_surface_audit_rejects_lossy_timestamps_and_opaque_messages() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-surface-audit-precision-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("csharp")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("jvm")).expect("audit fixture directory");
+        fs::write(
+            root.join("csharp").join("RustTypedClients.cs"),
+            "public sealed record ObjectInfo(DateTimeOffset? LastModified);\nmessage.LastModified?.ToDateTimeOffset();\n",
+        )
+        .expect("csharp fixture");
+        fs::write(
+            root.join("jvm").join("RustTypedResponses.java"),
+            "public record ObjectResponse(acyclic.objects.v2.Objects.ObjectInfo value) { public RustSemanticTypes.WireMessage metadata() { return RustSemanticTypes.WireMessage.of(value.getMetadata()); } }\n",
+        )
+        .expect("jvm fixture");
+
+        let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
+        assert!(findings.iter().any(|finding| {
+            finding.language == "csharp"
+                && finding.reason == "C# timestamp projection can lose protobuf nanosecond precision"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "jvm"
+                && finding.reason == "public JVM response getter exposes an opaque message wrapper"
         }));
         let _ = fs::remove_dir_all(root);
     }
