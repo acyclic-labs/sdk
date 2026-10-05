@@ -1,0 +1,58 @@
+{
+  "source": "2ff9ee0fc61a811f3b9398293118df49a286cd72",
+  "command": "cargo test -p acyclic-harness --features filesystem-local,test-support --lib --test communication_local --test local_model_swarm --test local_swarm_faults --test persistent_model_input_admission_v3 --test model_input_conformance_v3 --test model_input_rejection_conformance_v3 -- --nocapture",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "artifacts": [
+    {
+      "sha256": "72c4350869618661dadaadf2b462b265d1d434bb35f9f7f54765612f23c1ed79",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\2ff9ee0fc\\default-communication-integrated\\default-mail-composition-full-native.log"
+    },
+    {
+      "sha256": "2d172035a6827795045ed6d94b93f03a49ca619c588a1877caf8071a81edc91e",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\2ff9ee0fc\\default-communication-integrated\\acyclic_harness-a0e0b54a493c063d.exe"
+    },
+    {
+      "sha256": "82fea2a6a60a20c807dac069f6c400c00c0d0369b3bd51dd264b8230bac74b28",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\2ff9ee0fc\\default-communication-integrated\\communication_local-66c8dc4cfd9ce2ce.exe"
+    },
+    {
+      "sha256": "4d7d297384c4d0a2e7362d03fda5e57a87394e0bf8bd3d8f6ecc8d0fa436358c",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\2ff9ee0fc\\default-communication-integrated\\local_model_swarm-3f642312c75e8c3e.exe"
+    },
+    {
+      "sha256": "c057d4d12b9fe741d1b21be80824ff1e702663184041d4881d2a7ee26c65cbd3",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\2ff9ee0fc\\default-communication-integrated\\local_swarm_faults-e1c1fff8b83f86c8.exe"
+    },
+    {
+      "sha256": "b3df2d012fcf472f6fac4edb4900729be186126448cae2f8f684b775bc215459",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\2ff9ee0fc\\default-communication-integrated\\source.zip"
+    }
+  ],
+  "suites": {
+    "recursive": {
+      "failed": 0,
+      "ignored": 0,
+      "passed": 4
+    },
+    "library": {
+      "failed": 0,
+      "ignored": 0,
+      "passed": 368
+    },
+    "communication": {
+      "failed": 0,
+      "ignored": 0,
+      "passed": 4
+    },
+    "exact_input": "not-run: Cargo stopped after fault-suite failure",
+    "faults": {
+      "failed": 2,
+      "ignored": 0,
+      "passed": 4
+    }
+  },
+  "platform": "Windows native",
+  "exit_code": 101,
+  "failure": "Two 30-second fixture preparation waits expire under concurrent execution. Retained notification permits are insufficient to repair the full parallel gate; owned runs are now aborted and awaited on these failure paths. Startup timing versus further runtime defects remains under investigation.",
+  "scope": "Integrated test-support library and default production communication/recursive scenarios pass, but the parallel fault gate remains failed. Focused serial passes do not close this failure."
+}
