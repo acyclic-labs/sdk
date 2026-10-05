@@ -2969,6 +2969,10 @@ pub struct PersistentLocalSwarm {
     /// seed publication barrier. Git joins consult this authenticated map so
     /// siblings and descendants cannot be integrated by a child facade.
     project_children: LocalProjectChildren,
+    /// Deferred owner resolver used by model-facing Git joins. Keeping this
+    /// as a cell lets the root tool be composed before the swarm is wrapped in
+    /// its shared `Arc`, while still hydrating parent authority only at join.
+    git_parent_resolver: Arc<OnceLock<Weak<PersistentLocalSwarm>>>,
     reports: Mutex<BTreeMap<TaskId, ForkReport>>,
     publications: Mutex<BTreeMap<TaskId, ModelBatchPublication>>,
     declarations: Mutex<BTreeMap<TaskId, LocalInheritedModelDeclaration>>,
@@ -3021,7 +3025,6 @@ impl PersistentLocalSwarm {
         let Some(store) = self.git_store.clone() else {
             return Ok(None);
         };
-        self.ensure_project_child_bindings(task, project).await?;
         let workspace = Arc::new(
             LocalProjectWorkspaceTree::new(
                 self.filesystem_host.clone(),
@@ -3041,10 +3044,14 @@ impl PersistentLocalSwarm {
         let host = self.filesystem_host.clone();
         let children = self.project_children.clone();
         let parent_facade = facade.clone();
+        let parent_project = project.clone();
+        let parent_resolver = self.git_parent_resolver.clone();
         workspace.bind_direct_project_join(Arc::new(move |operation_id, action| {
             let host = host.clone();
             let children = children.clone();
             let facade = parent_facade.clone();
+            let parent_project = parent_project.clone();
+            let parent_resolver = parent_resolver.clone();
             Box::pin(async move {
                 let GitFilesystemAction::Join {
                     target_tree,
@@ -3057,6 +3064,15 @@ impl PersistentLocalSwarm {
                         "direct Git join route received another action".into(),
                     ));
                 };
+                let swarm = parent_resolver
+                    .get()
+                    .and_then(Weak::upgrade)
+                    .ok_or_else(|| {
+                        Error::Conflict("local Git owner resolver is unavailable".into())
+                    })?;
+                swarm
+                    .ensure_project_child_bindings(task, &parent_project)
+                    .await?;
                 let binding = children
                     .read()
                     .map_err(|_| {
@@ -3478,6 +3494,7 @@ impl PersistentLocalSwarm {
             requests: Mutex::new(requests),
             seeds: Mutex::new(seeds),
             project_children: Arc::new(RwLock::new(BTreeMap::new())),
+            git_parent_resolver: Arc::new(OnceLock::new()),
             reports: Mutex::new(reports),
             publications: Mutex::new(publications),
             declarations: Mutex::new(declarations),
@@ -3687,6 +3704,10 @@ impl PersistentLocalSwarm {
         swarm.sessions.get_mut().insert(root_task, Arc::new(root_harness));
         swarm.model_fork_publisher = Some(publisher.clone());
         let swarm = Arc::new(swarm);
+        swarm
+            .git_parent_resolver
+            .set(Arc::downgrade(&swarm))
+            .map_err(|_| Error::Conflict("local Git owner resolver was already bound".into()))?;
         plans.bind_swarm(Arc::downgrade(&swarm))?;
         publisher.bind(Arc::downgrade(&swarm))?;
         communication.bind(Arc::downgrade(&swarm))?;
