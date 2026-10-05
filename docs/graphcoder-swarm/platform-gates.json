@@ -202,6 +202,9 @@
         "target/graphcoder-package-qualification/consumer/verification.json",
         "target/graphcoder-package-qualification/graphcoder-package.json"
       ],
+      "produced_artifacts_by_platform": {
+        "windows": ["target/graphcoder-package-qualification/acyclic-fs-native-package.tgz"]
+      },
       "timeout_ms": 900000,
       "evidence": "GraphCoder generated outputs, fresh packed archive, and isolated export-map consumer checks"
     },
