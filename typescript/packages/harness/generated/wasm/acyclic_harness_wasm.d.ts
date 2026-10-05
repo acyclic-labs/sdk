@@ -531,6 +531,24 @@ export class BrowserHarnessRemoteClient {
     submit(request: Uint8Array): Promise<Uint8Array>;
 }
 
+/**
+ * Rust-owned state machine for the polling form of hosted HTTP follow.
+ * The JavaScript boundary supplies only fetch and timer primitives.
+ */
+export class HttpFollowCursor {
+    free(): void;
+    [Symbol.dispose](): void;
+    acceptRead(response_json: string): void;
+    acceptTail(response_json: string): void;
+    close(): void;
+    isClosed(): boolean;
+    constructor(input: Uint8Array);
+    pollDelayMillis(): number;
+    readRequest(): Uint8Array;
+    shouldPoll(): boolean;
+    tailRequest(): Uint8Array;
+}
+
 declare class IntoUnderlyingByteSource {
     private constructor();
     free(): void;
@@ -583,6 +601,14 @@ export class WasmContentStore {
      */
     list(path: string, generation: any, after: string | null | undefined, maximum: number): any;
     constructor(volume: any, maximum_file_bytes: number, maximum_path_bytes: number, maximum_resident_bytes: number, maximum_resident_files: number);
+    /**
+     * Constructs a store with the canonical Rust policy for resident data.
+     *
+     * File and path limits remain explicit because they are selected by the
+     * conversation contract; residency defaults are platform policy and must
+     * not be independently re-authored by a JavaScript adapter.
+     */
+    static newDefault(volume: any, maximum_file_bytes: number, maximum_path_bytes: number): WasmContentStore;
     /**
      * Reports whether a new file at `path` would conflict with a file or
      * directory already retained by this provider.
@@ -875,6 +901,11 @@ export function decodeHttpResponse(route: string, response_json: string): unknow
 export function decodeJson(bytes: Uint8Array): any;
 
 /**
+ * Returns the canonical default cumulative hosted response bound.
+ */
+export function defaultHttpResponseBytes(): bigint;
+
+/**
  * Derives a stable child operation/message identity from one admitted operation
  * and a local role label without duplicating UUID bit manipulation in hosts.
  */
@@ -917,6 +948,21 @@ export function fileDescriptor(bytes: Uint8Array, media_type: string): any;
  * Converts a fully captured report into its canonical publishable child seed.
  */
 export function forkSeedFromReport(report: any): any;
+
+export function harnessAttachmentManifestMediaType(): string;
+
+/**
+ * Returns the Rust-owned policy used by ephemeral memory content hosts.
+ *
+ * These exports are deliberately small scalar values so generated bindings
+ * remain strongly typed in every host language and adapters do not need to
+ * deserialize a second policy document.
+ */
+export function harnessDefaultResidentBytes(): number;
+
+export function harnessDefaultResidentFiles(): number;
+
+export function harnessMaxInlineAttachments(): number;
 
 /**
  * Return whether a code can be emitted by this WASM adapter.
@@ -1300,6 +1346,8 @@ export interface InitOutput {
     readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
+    readonly harnessAttachmentManifestMediaType: () => [number, number];
+    readonly harnessMaxInlineAttachments: () => number;
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
@@ -1333,6 +1381,7 @@ export interface InitOutput {
     readonly wasmcontentstore_has: (a: number, b: any) => [number, number, number];
     readonly wasmcontentstore_list: (a: number, b: number, c: number, d: any, e: number, f: number, g: number) => [number, number, number];
     readonly wasmcontentstore_new: (a: any, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly wasmcontentstore_newDefault: (a: any, b: number, c: number) => [number, number, number];
     readonly wasmcontentstore_pathConflicts: (a: number, b: number, c: number) => number;
     readonly wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
     readonly wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
@@ -1367,6 +1416,8 @@ export interface InitOutput {
     readonly wasmreducer_verifyScope: (a: number, b: any) => [number, number];
     readonly wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
+    readonly harnessDefaultResidentBytes: () => number;
+    readonly harnessDefaultResidentFiles: () => number;
     readonly __wbg_browserfilesystemclient_free: (a: number, b: number) => void;
     readonly __wbg_browserharnessclient_free: (a: number, b: number) => void;
     readonly browserfilesystemclient_cancel: (a: number, b: number, c: number) => any;
@@ -1404,11 +1455,21 @@ export interface InitOutput {
     readonly intounderlyingsource_cancel: (a: number) => void;
     readonly intounderlyingsource_pull: (a: number, b: any) => any;
     readonly __streamErrorCodeContract: (a: any) => any;
+    readonly __wbg_httpfollowcursor_free: (a: number, b: number) => void;
     readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
     readonly __wbg_wasmmemorystream_free: (a: number, b: number) => void;
     readonly consumeHttpResponseBytes: (a: bigint, b: bigint, c: bigint) => [bigint, number, number];
     readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly httpfollowcursor_acceptRead: (a: number, b: number, c: number) => [number, number];
+    readonly httpfollowcursor_acceptTail: (a: number, b: number, c: number) => [number, number];
+    readonly httpfollowcursor_close: (a: number) => void;
+    readonly httpfollowcursor_isClosed: (a: number) => number;
+    readonly httpfollowcursor_new: (a: number, b: number) => [number, number, number];
+    readonly httpfollowcursor_pollDelayMillis: (a: number) => number;
+    readonly httpfollowcursor_readRequest: (a: number) => [number, number, number, number];
+    readonly httpfollowcursor_shouldPoll: (a: number) => number;
+    readonly httpfollowcursor_tailRequest: (a: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
     readonly nextHttpFollowCursor: (a: number, b: number, c: bigint) => [bigint, number, number];
     readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
@@ -1434,6 +1495,7 @@ export interface InitOutput {
     readonly wasmmemorystream_new: () => number;
     readonly wasmmemorystream_open_follow: (a: number, b: number, c: number) => any;
     readonly wasmmemorystream_read: (a: number, b: number, c: number) => any;
+    readonly defaultHttpResponseBytes: () => bigint;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
