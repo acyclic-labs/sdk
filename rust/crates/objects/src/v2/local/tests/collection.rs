@@ -188,7 +188,8 @@ async fn dominant_inline_bytes_trigger_owned_maintenance_after_reopen()
     let provider = create(root.path()).await?;
     assert!(provider.core.local_maintenance_due()?);
     provider.put(put("second"), body.clone()).await?;
-    assert_eq!(segments(root.path())?.len(), 2);
+    // Both live bodies move into one segment.
+    assert_eq!(segments(root.path())?.len(), 1);
     let before = segments(root.path())?;
     assert!(provider.put_batch(Vec::new()).await.is_empty());
     assert!(provider.get_batch(Vec::new()).await.is_empty());
