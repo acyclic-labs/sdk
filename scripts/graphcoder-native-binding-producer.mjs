@@ -7,7 +7,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { constants, copyFileSync, existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeArtifact } from "./graphcoder-artifact.mjs";
 import { executeOwnedProcess } from "./graphcoder-process-ownership.mjs";
@@ -19,7 +19,7 @@ const QUALIFICATION_ROOT = join(ROOT, "target", "graphcoder-package-qualificatio
 const PROTOCOL = "acyclic.graphcoder.producer-receipt.v1";
 const PRODUCER_ID = "graphcoder-native-binding-producer";
 const CARGO = "cargo";
-const CARGO_ARGS = ["build", "-p", "acyclic-fs-napi", "--locked"];
+const CARGO_ARGS = ["build", "-p", "acyclic-fs-napi", "--locked", "-j1"];
 const CARGO_TIMEOUT_MS = 1_800_000;
 const SECRET_ENVIRONMENT = /(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|AUTH|PRIVATE_KEY|ACCESS_KEY)/iu;
 const TOOLCHAIN_KEYS = new Set([
@@ -66,6 +66,29 @@ function sourceIdentity(sourceRoot) {
   };
 }
 
+function resolveCargoTool(environment) {
+  let candidates;
+  try {
+    candidates = execFileSync("where.exe", [CARGO], { encoding: "utf8", windowsHide: true, env: environment })
+      .split(/\r?\n/u).map(value => value.trim()).filter(Boolean);
+  } catch (error) {
+    fail(`Cargo tool identity is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const executable = candidates.map(value => resolve(value)).find(value => {
+    const metadata = lstatSync(value, { throwIfNoEntry: false });
+    return metadata?.isFile() === true && metadata.isSymbolicLink() === false;
+  });
+  if (executable === undefined) fail("Cargo tool identity is unavailable: where.exe returned no regular executable");
+  let version;
+  try {
+    version = execFileSync(executable, ["--version"], { encoding: "utf8", windowsHide: true, env: environment }).trim();
+  } catch (error) {
+    fail(`Cargo tool identity is unavailable: version probe failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (version === "") fail("Cargo tool identity is unavailable: version probe was empty");
+  return { executable, version, executable_sha256: sha256(executable), version_sha256: digest(version) };
+}
+
 function outputPath(value) {
   if (typeof value !== "string" || value.trim() === "") fail("--output requires a path");
   const output = resolve(ROOT, value);
@@ -81,10 +104,10 @@ function regularFile(path, label) {
   if (!metadata || !metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} is not a regular file: ${path}`);
 }
 
-function buildInvocation(sourceRoot, targetDirectory, environment) {
+function buildInvocation(sourceRoot, targetDirectory, environment, cargoTool) {
   const args = [...CARGO_ARGS, "--target-dir", targetDirectory];
   const tool = {
-    executable: CARGO,
+    ...cargoTool,
     args,
     cwd: sourceRoot,
     environment_policy: "toolchain",
@@ -93,7 +116,7 @@ function buildInvocation(sourceRoot, targetDirectory, environment) {
   return { args, tool, invocation_sha256: digest(JSON.stringify(tool)) };
 }
 
-function bindingReceipt({ artifactPath, source, build, attemptNonce, observedAt, status, signal, stdout, stderr }) {
+function bindingReceipt({ artifactPath, source, build, attemptNonce, observedAt, status, signal, stdoutPath, stderrPath }) {
   const artifactSha256 = sha256(artifactPath);
   return {
     protocol: PROTOCOL,
@@ -113,8 +136,10 @@ function bindingReceipt({ artifactPath, source, build, attemptNonce, observedAt,
       target_directory: build.tool.args.at(-1),
       exit_code: status,
       signal,
-      stdout_sha256: digest(stdout ?? ""),
-      stderr_sha256: digest(stderr ?? ""),
+      stdout_path: stdoutPath,
+      stderr_path: stderrPath,
+      stdout_sha256: sha256(stdoutPath),
+      stderr_sha256: sha256(stderrPath),
     },
     platform_target: `win32-${process.arch}`,
     architecture: process.arch,
@@ -131,8 +156,24 @@ export function verifyNativeBindingReceipt({ artifactPath, receiptPath, sourceRo
   let receipt;
   try { receipt = JSON.parse(readFileSync(resolvedReceipt, "utf8")); }
   catch (error) { fail(`native binding producer receipt is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
-  if (receipt?.producer_id !== PRODUCER_ID || receipt?.tool?.executable !== CARGO || !Array.isArray(receipt?.build?.argv)) fail("native binding producer receipt does not identify the Cargo build");
+  if (receipt?.producer_id !== PRODUCER_ID || typeof receipt?.tool?.executable !== "string" || !Array.isArray(receipt?.build?.argv)) fail("native binding producer receipt does not identify the Cargo build");
+  regularFile(receipt.tool.executable, "Cargo executable");
+  if (sha256(receipt.tool.executable) !== receipt.tool.executable_sha256) fail("native binding producer receipt Cargo executable digest does not match");
+  let observedVersion;
+  try { observedVersion = execFileSync(receipt.tool.executable, ["--version"], { encoding: "utf8", windowsHide: true, env: filteredEnvironment() }).trim(); }
+  catch (error) { fail(`native binding producer receipt Cargo version probe failed: ${error instanceof Error ? error.message : String(error)}`); }
+  if (observedVersion !== receipt.tool.version || digest(observedVersion) !== receipt.tool.version_sha256) fail("native binding producer receipt Cargo version does not match");
   if (receipt.build.argv.join("\0") !== receipt.tool.args.join("\0")) fail("native binding producer receipt build argv differs from its tool argv");
+  for (const [label, pathValue, expectedDigest] of [
+    ["stdout", receipt.build.stdout_path, receipt.build.stdout_sha256],
+    ["stderr", receipt.build.stderr_path, receipt.build.stderr_sha256],
+  ]) {
+    if (typeof pathValue !== "string" || !/^[0-9a-f]{64}$/u.test(expectedDigest ?? "")) fail(`native binding producer receipt lacks ${label} log provenance`);
+    const logPath = resolve(pathValue);
+    if (!isWithin(dirname(resolvedReceipt), logPath)) fail(`native binding producer receipt ${label} log escapes its receipt directory`);
+    regularFile(logPath, `Cargo ${label} log`);
+    if (sha256(logPath) !== expectedDigest) fail(`native binding producer receipt Cargo ${label} log digest does not match`);
+  }
   const record = describeArtifact({
     path: resolvedArtifact,
     sourceCwd: sourceRoot,
@@ -146,7 +187,7 @@ export function verifyNativeBindingReceipt({ artifactPath, receiptPath, sourceRo
   return record;
 }
 
-export async function runNativeBindingProducer({ outputArgument, sourceRoot = ROOT, execute = executeOwnedProcess, now = () => new Date(), attemptNonce = randomUUID() }) {
+export async function runNativeBindingProducer({ outputArgument, sourceRoot = ROOT, execute = executeOwnedProcess, resolveTool = resolveCargoTool, sourceIdentityFn = sourceIdentity, now = () => new Date(), attemptNonce = randomUUID() }) {
   if (process.platform !== "win32") fail(`Windows N-API production is unsupported on ${process.platform}`);
   const output = outputPath(outputArgument);
   const targetDirectory = join(output, "cargo-target");
@@ -156,17 +197,26 @@ export async function runNativeBindingProducer({ outputArgument, sourceRoot = RO
   const bindingPath = join(output, `acyclic-fs-${packageVersion}-win32-${process.arch}.node`);
   const receiptPath = join(output, "producer-receipt.json");
   const environment = filteredEnvironment();
-  const source = sourceIdentity(sourceRoot);
-  const build = buildInvocation(sourceRoot, targetDirectory, environment);
+  const source = sourceIdentityFn(sourceRoot);
+  const cargoTool = resolveTool(environment);
+  const build = buildInvocation(sourceRoot, targetDirectory, environment, cargoTool);
   const startedAt = now().toISOString();
-  const result = await execute(CARGO, build.args, {
+  const result = await execute(build.tool.executable, build.args, {
     cwd: sourceRoot,
     env: environment,
     timeoutMs: CARGO_TIMEOUT_MS,
     windowsHide: true,
   });
+  const stdoutPath = join(output, "cargo.stdout.log");
+  const stderrPath = join(output, "cargo.stderr.log");
+  writeFileSync(stdoutPath, result.stdout ?? "", { flag: "wx" });
+  writeFileSync(stderrPath, result.stderr ?? "", { flag: "wx" });
   if (result.error || result.status !== 0 || result.signal !== null) {
     fail(`Cargo build failed with ${result.status ?? result.signal ?? "start error"}: ${result.error?.message ?? String(result.stderr ?? "").trim()}`);
+  }
+  const afterSource = sourceIdentityFn(sourceRoot);
+  if (afterSource.source_commit !== source.source_commit || afterSource.source_tree !== source.source_tree || afterSource.source_working_tree_sha256 !== source.source_working_tree_sha256) {
+    fail("source identity changed during Cargo build");
   }
   if (!existsSync(builtBinding)) fail(`Cargo build did not produce ${builtBinding}`);
   regularFile(builtBinding, "Cargo N-API output");
@@ -182,8 +232,8 @@ export async function runNativeBindingProducer({ outputArgument, sourceRoot = RO
     observedAt,
     status: result.status,
     signal: result.signal,
-    stdout: result.stdout,
-    stderr: result.stderr,
+    stdoutPath,
+    stderrPath,
   });
   writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx" });
   const record = verifyNativeBindingReceipt({ artifactPath: bindingPath, receiptPath, sourceRoot });

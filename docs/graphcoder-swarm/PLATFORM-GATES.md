@@ -102,10 +102,14 @@ tree:
    node scripts/graphcoder-native-binding-producer.mjs run --output target/graphcoder-package-qualification/native-binding
    ```
 
-   This runs the exact `cargo build -p acyclic-fs-napi --locked --target-dir
-   <fresh-output>/cargo-target` argv, copies the post-dispatch DLL to the
-   package's `.node` filename, and verifies the receipt against the observed
-   bytes. Set `ACYCLIC_FS_NATIVE_BINDING` to that `.node` path and
+   This resolves and records the regular Cargo executable, version, and
+   SHA-256 digests before dispatch, then runs the exact
+   `cargo build -p acyclic-fs-napi --locked -j1 --target-dir
+   <fresh-output>/cargo-target` argv. It retains the actual stdout and stderr
+   logs with digests in the output directory, rechecks the source identity
+   after Cargo exits, copies the post-dispatch DLL to the package's `.node`
+   filename, and verifies the receipt against the observed bytes and logs. Set
+   `ACYCLIC_FS_NATIVE_BINDING` to that `.node` path and
    `ACYCLIC_FS_NATIVE_BINDING_RECEIPT` to `producer-receipt.json`. Both paths
    must remain in the same clean qualified worktree. A failed build, missing
    output, stale output directory, or changed binding bytes produces no valid
