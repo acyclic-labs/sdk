@@ -224,7 +224,8 @@ function prepare(language, packageArtifact, directory) {
     const packageToml = readFileSync(packageArtifact, "utf8");
     const packageName = packageToml.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
     if (!packageName) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package name" };
-    const packageVersion = packageToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+    const packageVersion = packageToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1]
+      ?? readFileSync(join(repo, "Cargo.toml"), "utf8").match(/\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1];
     if (!packageVersion) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package version" };
     const packageCache = join(output, "cargo-packages");
     const bundleSource = join(packageCache, "workspace-source");
@@ -272,7 +273,7 @@ function prepare(language, packageArtifact, directory) {
     mkdirSync(packageInstall, { recursive: true });
     cpSync(bundleSource, packageInstall, { recursive: true });
     const installedRoot = join(packageInstall, relative(repo, packageRoot));
-    writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
+    writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nprost = "0.14.4"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
     return { status: "installed", packageArtifact: packageManifest, install: { ...packaged, command: `${packaged.command} && internal rust package install ${packageInstall}`, stdout: packaged.stdout, stderr: packaged.stderr }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
   }
 
