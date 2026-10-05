@@ -20,7 +20,7 @@ use crate::{
         ToolResult,
     },
 };
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;

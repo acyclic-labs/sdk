@@ -6,7 +6,7 @@ use crate::{
     core::{AuthorityIssuer, EffectAttestation},
     core::{EffectGuarantee, EffectState, EffectStatus},
 };
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

@@ -5,7 +5,7 @@ use crate::{
     core::{AuthorityVerifier, Scope},
     registry::validate_component_label,
 };
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};

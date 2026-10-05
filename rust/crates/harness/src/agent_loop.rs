@@ -1,7 +1,7 @@
 //! Code-first agent behavior over the same typed task context as tools and tasks.
 
 use crate::{Outcome, Result, conversation::Attachment, runtime::TaskContext};
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

@@ -27,7 +27,7 @@ use crate::{
     tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
     workflow::{MachineIdentity, ResumableMachine, WorkflowJournal},
 };
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use futures::{StreamExt as _, stream, stream::BoxStream};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
