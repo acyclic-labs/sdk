@@ -50,12 +50,12 @@ if (runNative) {
   const cargo = process.env.ACYCLIC_CARGO_BIN || "cargo";
   const native = spawnSync(cargo, [
     "test", "--locked", "-p", "acyclic-harness", "--test", "model_input_conformance_v3",
-    "emit_native_model_input_v3_fixture", "--", "--nocapture",
+    "--", "--nocapture",
   ], { cwd: root, encoding: "utf8", windowsHide: true });
   if (native.status !== 0) {
     process.stderr.write(native.stdout ?? "");
     process.stderr.write(native.stderr ?? "");
-    throw new Error(`native model-input fixture emission failed (${native.status ?? "unknown"})`);
+    throw new Error(`native model-input conformance failed (${native.status ?? "unknown"})`);
   }
   const marker = (native.stdout ?? "").match(/MODEL_INPUT_NATIVE_FIXTURE_V3 (\{.*\})/);
   if (marker === null) throw new Error("native model-input fixture emission produced no report");
