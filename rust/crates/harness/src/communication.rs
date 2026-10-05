@@ -2066,6 +2066,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_wait_retains_cancelled_target_outcome_across_restart() -> Result<()> {
+        let mut outcomes = BTreeMap::new();
+        outcomes.insert(task(2), Outcome::Cancelled);
+        let host = host(outcomes)?;
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider.clone(),
+        )));
+        let request = WaitRequest {
+            operation_id: operation(37),
+            waiter: task(1),
+            target: WaitTarget::Tasks {
+                task_ids: vec![task(2)],
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(38)),
+        };
+        let first = DurableCommunication::new(host.clone())
+            .with_wait_store(store)
+            .wait(request.clone(), None)
+            .await?;
+        assert_eq!(
+            first,
+            WaitCompletion::Tasks {
+                outcomes: vec![(task(2), Outcome::Cancelled)],
+            }
+        );
+        assert_eq!(
+            host.observed_outcomes
+                .lock()
+                .expect("test lock")
+                .as_slice(),
+            &[task(2)]
+        );
+
+        // A cold owner reconstructs the wait from its durable completion and
+        // does not poll the cancelled target again or admit a second wait.
+        let reopened = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider,
+        )));
+        let second = DurableCommunication::new(host.clone())
+            .with_wait_store(reopened)
+            .wait(request, None)
+            .await?;
+        assert_eq!(second, first);
+        assert_eq!(
+            host.observed_outcomes
+                .lock()
+                .expect("test lock")
+                .as_slice(),
+            &[task(2)]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_task_waits_share_one_durable_completion() -> Result<()> {
+        let mut outcomes = BTreeMap::new();
+        outcomes.insert(task(2), Outcome::Cancelled);
+        let host = host(outcomes)?;
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider.clone(),
+        )));
+        let request = WaitRequest {
+            operation_id: operation(43),
+            waiter: task(1),
+            target: WaitTarget::Tasks {
+                task_ids: vec![task(2)],
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(44)),
+        };
+        let first = DurableCommunication::new(host.clone()).with_wait_store(store.clone());
+        let second = DurableCommunication::new(host.clone()).with_wait_store(store);
+        let (first, second) = tokio::join!(
+            first.wait(request.clone(), None),
+            second.wait(request, None),
+        );
+        let first = first?;
+        let second = second?;
+        assert_eq!(first, second);
+        assert!(!host
+            .observed_outcomes
+            .lock()
+            .expect("test lock")
+            .is_empty());
+        let stream = acyclic_stream::StreamClient::new(provider)
+            .stream(format!("harness/v2/waits/{}", task(1)))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(stream.bounds().await?.tail, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn durable_deadline_rejects_fenced_waiter_before_timer_effect() -> Result<()> {
         let mut host = host(BTreeMap::new())?;
         Arc::get_mut(&mut host)
