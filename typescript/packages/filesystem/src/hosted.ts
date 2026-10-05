@@ -85,7 +85,7 @@ import type {
   WorkspaceRebaseResult,
   WorkspaceStat,
 } from "./contracts.js";
-import { secureServiceEndpoint } from "./endpoint.js";
+import { rustOwnedServiceEndpoint } from "./endpoint.js";
 import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 
 /**
@@ -106,6 +106,12 @@ type HostedRustPolicy = {
     maximumChanges: number,
     maximumConflicts: number,
     maximumPageItems: number,
+  ): void;
+  validateHostedSourceState(state: number, reason: number, hasGeneration: boolean): void;
+  validateHostedGenerationIdentity(
+    generationId: Uint8Array,
+    ownerWorkspaceId: Uint8Array,
+    expectedWorkspaceId: Uint8Array,
   ): void;
 };
 
@@ -131,7 +137,7 @@ interface HostedClient {
 }
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
-  const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
+  const endpoint = await rustOwnedServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
   try {
     await validateRustOwnedCredentialPolicy(options.bearerToken);
   } catch {
@@ -144,6 +150,8 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     validateHostedPageBound: rustWasm.validateHostedPageBound,
     validateHostedTransactionBounds: rustWasm.validateHostedTransactionBounds,
     validateHostedGenerationBounds: rustWasm.validateHostedGenerationBounds,
+    validateHostedSourceState: rustWasm.validateHostedSourceState,
+    validateHostedGenerationIdentity: rustWasm.validateHostedGenerationIdentity,
   };
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
@@ -302,18 +310,18 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     },
     async sourceState() {
       requireSourceReconciliation(client);
-      return sourceResult(reference, await call(client.rpc.getSourceState({ workspace: reference })));
+      return sourceResult(client, reference, await call(client.rpc.getSourceState({ workspace: reference })));
     },
     async reconcileSource(idempotencyKey) {
       requireSourceReconciliation(client);
-      return sourceResult(reference, await call(client.rpc.reconcileSource({
+      return sourceResult(client, reference, await call(client.rpc.reconcileSource({
         workspace: reference,
         operation: operation(idempotencyKey),
       })));
     },
     async rescanSource(idempotencyKey) {
       requireSourceReconciliation(client);
-      return sourceResult(reference, await call(client.rpc.rescanSource({
+      return sourceResult(client, reference, await call(client.rpc.rescanSource({
         workspace: reference,
         operation: operation(idempotencyKey),
       })));
@@ -324,7 +332,7 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
         workspace: reference,
         operation: operation(idempotencyKey),
       }));
-      const result = sourceResult(reference, response);
+      const result = sourceResult(client, reference, response);
       if (result.status !== "sealed" || response.generation === undefined) {
         throw new HostedFsError("invalid_response", "seal did not return a sealed generation");
       }
@@ -418,9 +426,15 @@ function requireSourceReconciliation(client: HostedClient): void {
 }
 
 function sourceResult(
+  client: HostedClient,
   workspace: WireWorkspaceRef,
   response: WireSourceResponse,
 ): SourceResult {
+  client.rustPolicy.validateHostedSourceState(
+    response.state,
+    response.reason,
+    response.generation !== undefined,
+  );
   const status = SOURCE_STATE_TO_STATUS[response.state];
   if (status === undefined) throw new HostedFsError("invalid_response", "source state is invalid");
   const reason = response.reason === WireSourceInvalidationReason.UNSPECIFIED
@@ -438,10 +452,12 @@ function sourceResult(
   }
   if (selected !== undefined) {
     const owner = required(selected.workspace, "source generation workspace");
-    requireBytes(selected.generationId, 32, "source generation identity");
-    if (!equalBytes(owner.workspaceId, workspace.workspaceId) || owner.name !== workspace.name) {
-      throw new HostedFsError("invalid_response", "source generation belongs to another workspace");
-    }
+    client.rustPolicy.validateHostedGenerationIdentity(
+      selected.generationId,
+      owner.workspaceId,
+      workspace.workspaceId,
+    );
+    if (owner.name !== workspace.name) throw new HostedFsError("invalid_response", "source generation belongs to another workspace");
   }
   return { status, reason, generationId: copyOptionalBytes(selected?.generationId) };
 }
@@ -467,7 +483,7 @@ async function s3Access(
   if (response.credential.case !== "s3") {
     throw new HostedFsError("protocol", "missing S3 credential");
   }
-  secureServiceEndpoint(response.endpoint, message => new HostedFsError("invalid_response", `S3 credential ${message}`));
+  await rustOwnedServiceEndpoint(response.endpoint, message => new HostedFsError("invalid_response", `S3 credential ${message}`));
   const credential = response.credential.value;
   requireName(credential.bucket);
   requireName(credential.region);
