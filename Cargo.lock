@@ -20,6 +20,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-sdk-contract-wire",
  "acyclic-workers",
+ "futures",
  "prost",
  "prost-reflect",
  "rcgen",
@@ -160,6 +161,7 @@ dependencies = [
  "acyclic-machines",
  "acyclic-objects",
  "acyclic-sdk-contract-wire",
+ "acyclic-sdk-remote-web",
  "acyclic-stream",
  "blake3",
  "bytes",
@@ -211,11 +213,14 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-sdk-contract-wire",
+ "futures",
  "prost",
  "prost-build",
  "prost-reflect",
  "prost-types",
  "rcgen",
+ "reqwest",
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
@@ -246,10 +251,12 @@ version = "0.2.0"
 dependencies = [
  "acyclic-inference",
  "acyclic-inference-contract",
+ "acyclic-sdk-contract-wire",
  "js-sys",
  "prost",
  "prost-reflect",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -259,6 +266,7 @@ dependencies = [
  "acyclic-sdk-contract-wire",
  "async-trait",
  "futures",
+ "gloo-timers",
  "hex",
  "hyper-util",
  "prost",
@@ -275,7 +283,9 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tonic-web-wasm-client",
  "tower",
+ "url",
  "uuid",
 ]
 
@@ -303,6 +313,7 @@ dependencies = [
  "futures",
  "hex",
  "js-sys",
+ "sdk-machines-public",
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",
@@ -494,6 +505,7 @@ dependencies = [
  "js-sys",
  "libc",
  "prost",
+ "prost-reflect",
  "protoc-bin-vendored",
  "rcgen",
  "reqwest",
@@ -510,9 +522,11 @@ dependencies = [
  "tonic-prost-build",
  "tower",
  "tsify-next",
+ "url",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -551,6 +565,7 @@ name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
  "acyclic-sdk-contract-wire",
+ "futures",
  "prost",
  "prost-reflect",
  "reqwest",
@@ -1638,6 +1653,18 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "gloo-timers"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
  "wasm-bindgen",
 ]
 
@@ -3809,9 +3836,28 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "sdk-machines-public",
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "sdk-machines-public"
+version = "0.2.0"
+dependencies = [
+ "acyclic-machines",
+ "futures",
+ "hex",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_bytes",
+ "serde_json",
+ "sha2 0.10.9",
+ "tsify-next",
+ "uuid",
+ "wasm-bindgen",
 ]
 
 [[package]]
