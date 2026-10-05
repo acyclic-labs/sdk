@@ -10,14 +10,15 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::indexing_slicing))]
 
 use acyclic_harness::{
-    Error as HarnessError, InteractionId, OperationId, TaskId,
+    Error as HarnessError, IdempotencyKey, InteractionId, OperationId, TaskId,
     conversation::Limits,
     filesystem::{LocalSessionPhase, PersistentLocalSwarm},
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
-        ModelProvider,
+        ModelProvider, ProviderDispatchContext,
     },
     registry::ComponentIdentity,
+    swarm_budget::{SwarmUsage, SwarmUsageSource},
 };
 use clap::Parser;
 use futures::StreamExt;
@@ -25,11 +26,13 @@ use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Instant,
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -64,11 +67,37 @@ struct Args {
     operator_token: Option<String>,
 }
 
+#[derive(Default)]
+struct MockUsageSource {
+    usage: StdMutex<BTreeMap<(OperationId, String), SwarmUsage>>,
+}
+
+impl SwarmUsageSource for MockUsageSource {
+    fn provider_identity(&self) -> &str {
+        "graphcoder.mock.local"
+    }
+
+    fn cumulative_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+    ) -> Result<SwarmUsage, HarnessError> {
+        Ok(self
+            .usage
+            .lock()
+            .map_err(|_| HarnessError::Conflict("mock usage lock poisoned".into()))?
+            .get(&(operation_id, dispatch_id.0.clone()))
+            .copied()
+            .unwrap_or_default())
+    }
+}
+
 #[derive(Clone)]
 struct EchoModel {
     fixture: String,
     calls: Arc<AtomicUsize>,
     option_policy: ModelOptionPolicy,
+    usage: Arc<MockUsageSource>,
 }
 
 impl ModelProvider for EchoModel {
@@ -234,6 +263,63 @@ impl ModelProvider for EchoModel {
         async { Ok(None) }.boxed()
     }
 
+    fn supports_dispatch_context(&self) -> bool {
+        true
+    }
+
+    fn swarm_usage_source(&self) -> Option<Arc<dyn SwarmUsageSource>> {
+        Some(self.usage.clone())
+    }
+
+    fn generate_with_dispatch<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+        dispatch: ProviderDispatchContext,
+    ) -> BoxStream<'a, acyclic_harness::Result<ModelEvent>> {
+        let usage = self.usage.clone();
+        if let Ok(mut counters) = usage.usage.lock() {
+            let entry = counters
+                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                .or_default();
+            entry.model_steps = entry.model_steps.saturating_add(1);
+        }
+        let started = Instant::now();
+        Box::pin(self.generate(prepared).map(move |event| {
+            if let Ok(value) = &event {
+                let bytes = serde_json::to_vec(value)
+                    .map(|value| value.len() as u64)
+                    .unwrap_or_default();
+                if let Ok(mut counters) = usage.usage.lock() {
+                    let entry = counters
+                        .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                        .or_default();
+                    entry.output_bytes = entry.output_bytes.saturating_add(bytes);
+                    entry.execution_time_ms = entry
+                        .execution_time_ms
+                        .max(started.elapsed().as_millis() as u64);
+                }
+            }
+            event
+        }))
+    }
+
+    fn reconcile_admitted_with_dispatch<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+        attempt: ModelAttempt,
+        _dispatch: ProviderDispatchContext,
+    ) -> BoxFuture<'a, acyclic_harness::Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async move {
+            self.admit(prepared.request())?;
+            if prepared.manifest().request_digest != attempt.request_digest {
+                return Err(HarnessError::Conflict(
+                    "reconciliation request digest changed".into(),
+                ));
+            }
+            self.reconcile(attempt).await
+        })
+    }
+
     fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
         Some(&self.option_policy)
     }
@@ -331,6 +417,7 @@ impl Runtime {
             fixture: fixture.clone(),
             calls: Arc::new(AtomicUsize::new(0)),
             option_policy,
+            usage: Arc::new(MockUsageSource::default()),
         });
         let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
             &args.root,
@@ -357,6 +444,7 @@ impl Runtime {
         let result = match request.method.as_str() {
             "list_sessions" => self.list_sessions(&request.params).await,
             "start_session" => self.start_session(&request.params).await,
+            "input_session" => self.input_session(&request.params).await,
             "open_session" => self.open_session(&request.params, false).await,
             "resume_session" => self.open_session(&request.params, true).await,
             "read_activity" => self.read_activity(&request.params).await,
@@ -429,6 +517,47 @@ impl Runtime {
         let task = self
             .swarm
             .root_task()
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let mut snapshot = self.snapshot(task).await?;
+        snapshot["outcome"] = serde_json::to_value(output).map_err(|error| {
+            DispatchError::invalid(format!("outcome is not serializable: {error}"))
+        })?;
+        Ok(snapshot)
+    }
+
+    async fn input_session(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let root = self
+            .swarm
+            .root_task()
+            .await
+            .map_err(DispatchError::from_harness)?;
+        if task != root {
+            return Err(DispatchError::invalid(
+                "input_session accepts only the root session",
+            ));
+        }
+        let prompt = required_text(params, "prompt")?;
+        let operation_id = required_text(params, "operation_id")?;
+        if operation_id.trim().is_empty() || operation_id.len() > 256 {
+            return Err(DispatchError::invalid(
+                "operation_id must be nonempty and at most 256 bytes",
+            ));
+        }
+        if prompt.trim().is_empty() || prompt.len() > 64 * 1024 {
+            return Err(DispatchError::invalid(
+                "prompt must be nonempty and at most 64 KiB",
+            ));
+        }
+        self.swarm
+            .resume(task)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let output = self
+            .swarm
+            .run_root(operation_for(operation_id), prompt)
             .await
             .map_err(DispatchError::from_harness)?;
         let mut snapshot = self.snapshot(task).await?;
@@ -1287,7 +1416,7 @@ mod tests {
             1
         );
         let started = exchange(
-            runtime,
+            runtime.clone(),
             json!({
                 "request_id":"start-1",
                 "method":"start_session",
@@ -1306,6 +1435,38 @@ mod tests {
         // workspace generation yet. Generation-bearing operations obtain an
         // explicit pinned generation through their own Filesystem projection.
         assert!(started["result"]["workspace_generation"].is_null());
+        let session_id = started["result"]["summary"]["id"]
+            .as_str()
+            .expect("root session id")
+            .to_owned();
+        let input = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"input-1",
+                "method":"input_session",
+                "params":{
+                    "session_id": session_id,
+                    "prompt":"follow-up  with exact bytes",
+                    "operation_id":"op-echo-2"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(input["ok"], true, "{input}");
+        assert_eq!(input["result"]["summary"]["state"], "completed");
+        let messages = exchange(
+            runtime,
+            json!({
+                "request_id":"messages-1",
+                "method":"read_messages",
+                "params":{"session_id": session_id}
+            }),
+        )
+        .await;
+        assert_eq!(messages["ok"], true, "{messages}");
+        assert!(messages["result"]["items"].as_array().is_some_and(|items| {
+            items.iter().any(|item| item["body"] == "follow-up  with exact bytes")
+        }));
     }
 
     #[tokio::test]
