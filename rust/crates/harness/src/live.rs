@@ -286,6 +286,10 @@ pub async fn join_all<T>(handles: Vec<TaskHandle<T>>) -> Vec<Outcome<T>> {
 }
 
 /// Streams outcomes in completion order.
+///
+/// Dropping the stream drops every in-flight handle and therefore aborts its
+/// owned task. Callers that need the work to continue should retain the
+/// handles and observe them through another operation.
 pub fn completion_stream<T: Send + 'static>(
     handles: Vec<TaskHandle<T>>,
 ) -> BoxStream<'static, (OperationId, Outcome<T>)> {
@@ -299,7 +303,8 @@ pub fn completion_stream<T: Send + 'static>(
         .boxed()
 }
 
-/// Returns the first terminal task; cancellation remains an explicit group action.
+/// Returns the first terminal task and cancels every unobserved loser when the
+/// completion stream is dropped.
 pub async fn race<T: Send + 'static>(
     handles: Vec<TaskHandle<T>>,
 ) -> Option<(OperationId, Outcome<T>)> {
@@ -314,7 +319,8 @@ where
     join_all(handles).await.into_iter().fold(initial, reducer)
 }
 
-/// Returns the first success or all failures.
+/// Returns the first success or all failures. Once a success is returned, the
+/// unobserved loser handles are dropped and their tasks are aborted.
 pub async fn first_success<T: Send + 'static>(
     handles: Vec<TaskHandle<T>>,
 ) -> std::result::Result<T, Vec<Outcome<T>>> {
@@ -329,7 +335,9 @@ pub async fn first_success<T: Send + 'static>(
     Err(failures)
 }
 
-/// Collects the first `required` successes.
+/// Collects the first `required` successes. Reaching the quorum drops and
+/// aborts all unobserved loser handles; a zero quorum drops and aborts every
+/// supplied handle immediately.
 pub async fn quorum<T: Send + 'static>(
     handles: Vec<TaskHandle<T>>,
     required: usize,
@@ -392,10 +400,17 @@ fn recursive_sum_boxed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        sync::atomic::{AtomicBool, Ordering},
-        time::Duration,
-    };
+    use std::time::Duration;
+
+    struct MarkDropped(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for MarkDropped {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
 
     #[tokio::test]
     async fn recursive_work_joins_to_expected_value() {
@@ -415,14 +430,6 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_handle_cancels_and_releases_its_future()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct MarkDropped(Option<tokio::sync::oneshot::Sender<()>>);
-        impl Drop for MarkDropped {
-            fn drop(&mut self) {
-                if let Some(sender) = self.0.take() {
-                    let _ = sender.send(());
-                }
-            }
-        }
         let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
         let (started, observed) = tokio::sync::oneshot::channel();
         let handle = TaskGroup::new(1)
@@ -443,14 +450,6 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_pending_result_future_also_cancels_its_worker()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct MarkDropped(Option<tokio::sync::oneshot::Sender<()>>);
-        impl Drop for MarkDropped {
-            fn drop(&mut self) {
-                if let Some(sender) = self.0.take() {
-                    let _ = sender.send(());
-                }
-            }
-        }
         let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
         let (started, observed) = tokio::sync::oneshot::channel();
         let handle = TaskGroup::new(1)
@@ -478,21 +477,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_success_observes_without_implicitly_cancelling_losers()
+    async fn first_success_cancels_unobserved_losers()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct MarkDropped(Arc<AtomicBool>);
-        impl Drop for MarkDropped {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
-            }
-        }
-        let dropped = Arc::new(AtomicBool::new(false));
+        let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
         let (started, observed) = tokio::sync::oneshot::channel();
-        let flag = Arc::clone(&dropped);
         let group = TaskGroup::new(2);
         let loser = group
             .spawn(async move {
-                let _guard = MarkDropped(flag);
+                let _guard = MarkDropped(Some(dropped));
                 let _ = started.send(());
                 std::future::pending::<u64>().await
             })
@@ -500,15 +492,98 @@ mod tests {
         observed.await?;
         let winner = group.spawn(async { 7_u64 }).await;
         assert_eq!(first_success(vec![loser, winner]).await, Ok(7));
-        assert!(!dropped.load(Ordering::SeqCst));
-        group.cancel();
-        for _ in 0..16 {
-            if dropped.load(Ordering::SeqCst) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(dropped.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+            .await
+            .map_err(|_| "first_success left its loser running")??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn race_cancels_unobserved_losers() -> Result<(), Box<dyn std::error::Error>> {
+        let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let group = TaskGroup::new(2);
+        let loser = group
+            .spawn(async move {
+                let _guard = MarkDropped(Some(dropped));
+                let _ = started.send(());
+                std::future::pending::<u64>().await
+            })
+            .await;
+        observed.await?;
+        let winner = group.spawn(async { 7_u64 }).await;
+        assert!(matches!(
+            race(vec![loser, winner]).await,
+            Some((_, Outcome::Succeeded(7)))
+        ));
+        tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+            .await
+            .map_err(|_| "race left its loser running")??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn quorum_cancels_unobserved_losers() -> Result<(), Box<dyn std::error::Error>> {
+        let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let group = TaskGroup::new(2);
+        let loser = group
+            .spawn(async move {
+                let _guard = MarkDropped(Some(dropped));
+                let _ = started.send(());
+                std::future::pending::<u64>().await
+            })
+            .await;
+        observed.await?;
+        let winner = group.spawn(async { 7_u64 }).await;
+        assert_eq!(quorum(vec![loser, winner], 1).await, Ok(vec![7]));
+        tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+            .await
+            .map_err(|_| "quorum left its loser running")??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn zero_quorum_cancels_supplied_handles() -> Result<(), Box<dyn std::error::Error>> {
+        let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let group = TaskGroup::new(1);
+        let handle = group
+            .spawn(async move {
+                let _guard = MarkDropped(Some(dropped));
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
+        observed.await?;
+        assert!(matches!(
+            quorum(vec![handle], 0).await,
+            Ok(values) if values.is_empty()
+        ));
+        tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+            .await
+            .map_err(|_| "zero quorum left a supplied handle running")??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_completion_stream_cancels_inflight_handles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (dropped, dropped_observed) = tokio::sync::oneshot::channel();
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let handle = TaskGroup::new(1)
+            .spawn(async move {
+                let _guard = MarkDropped(Some(dropped));
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
+        observed.await?;
+        let completions = completion_stream(vec![handle]);
+        drop(completions);
+        tokio::time::timeout(Duration::from_secs(1), dropped_observed)
+            .await
+            .map_err(|_| "dropping completion stream left a task running")??;
         Ok(())
     }
 
