@@ -29,3 +29,12 @@ assert.equal(verify({ ...valid, source_revision: "source-sha256:another-source" 
 assert.equal(verifyQualificationSummary(valid, { expectedProjections: Array(54).fill(expectedProjections[0]) }).valid, false);
 assert.equal(verifyQualificationSummary(valid, { expectedProjections: expectedProjections.map((p,i) => i === 3 ? { ...p, code: "altered" } : p) }).valid, false);
 console.log("Rust projection coverage, source, snippet and execution regressions passed");
+const packageBytes = Buffer.from("installed package bytes");
+const bytesReceipts = receipts.map(receipt => ({ ...receipt, package_sha256: createHash("sha256").update(packageBytes).digest("hex") }));
+const bytesSummary = { ...valid, receipts: bytesReceipts };
+const verifyBytes = (summary, readArtifact) => verifyQualificationSummary(summary, { expectedProjections, readArtifact });
+assert.equal(verifyBytes(bytesSummary, path => { assert.equal(path, "package.crate"); return packageBytes; }).valid, true);
+assert.equal(verifyBytes(bytesSummary, () => Buffer.from("tampered package bytes")).valid, false);
+assert.equal(verifyBytes(bytesSummary, () => { throw new Error("missing package"); }).valid, false);
+assert.equal(verifyBytes({ ...bytesSummary, receipts: bytesReceipts.map(receipt => ({ ...receipt, package_sha256: "sha256:" + receipt.package_sha256 })) }, () => packageBytes).valid, true);
+console.log("Package byte integrity regressions passed");
