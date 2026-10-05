@@ -1,0 +1,56 @@
+{
+  "kind": "failed-native-checkpoint",
+  "source_commit": "5c5eafcc933857d32bf4d5d5b807e0326aef1bdd",
+  "platform": "Windows native",
+  "features": ["filesystem-local", "native-process-tree"],
+  "evidence_directory": "D:/graphcoder-builds/root-qualification-artifacts/5c5eafcc9/composed-grants",
+  "source_archive_sha256": "8ad58fa27b1b9d5555f4de54c8ffb611637c20fe6fa91f902fe09dbf3139e61c",
+  "artifacts": [
+    {"name": "local_model_swarm-d3511dedf296d78f.exe", "sha256": "f5d6b36e86866272011df78cf11e86420d5e7c3e607ff6876d9841b12b9930f7"},
+    {"name": "local_swarm_faults-8739aa3e83b87068.exe", "sha256": "90019e8050741e01c60c1703c93df5a63d182abb61a0ec4d688833ce1aaee5c4"}
+  ],
+  "runs": [
+    {
+      "session": 47950,
+      "exit_code": 101,
+      "log": "native.log",
+      "sha256": "42f8e8a87a52c920813252ac057499a692e017828792cfff5a17568d95a29bb2",
+      "result": "Invocation rejected before compilation: incorrect Harness feature local. Corrected invocation is recorded separately."
+    },
+    {
+      "session": 49717,
+      "exit_code": -1073741571,
+      "log": "native-corrected.log",
+      "sha256": "79fb81e5d3b889953593cb259b3fff7d3cc39eb5a9b2628caf3182cb22ea2dfe",
+      "result": "Build succeeded; recursive cancellation passed; default recursive composition crashed with STATUS_STACK_OVERFLOW. Remaining three swarm cases and Cargo fault-suite execution were not reached."
+    },
+    {
+      "session": 71188,
+      "exit_code": -1073741571,
+      "log": "faults.log",
+      "sha256": "5c6f3887ad26daa81ef2f98e698b097c03021676e78d058ff64e34bdbf820d68",
+      "result": "Same-source retained fault binary: before-intent, concurrent live admission, and fork-intent recovery passed; cancellation failed; precompletion recovery crashed with STATUS_STACK_OVERFLOW; prepared-batch case not reached."
+    },
+    {
+      "session": 33582,
+      "exit_code": 101,
+      "log": "fault-cancellation.log",
+      "sha256": "2a245fc77b94335ece0df9d90cda8c5c5d62d0799c1c17172fb331045f6d4a80",
+      "result": "Exact cancellation case failed: reopened root replay returned success where the fixture required an error; contract diagnosis remains open."
+    },
+    {
+      "session": 89405,
+      "exit_code": -1073741571,
+      "log": "fault-prepared.log",
+      "sha256": "b6fe8cf9c78dd10702d3fdc760203110cf6a76ed1600ee7d68a5268edcfd5792",
+      "result": "Exact prepared-batch recovery case crashed with STATUS_STACK_OVERFLOW."
+    }
+  ],
+  "qualification": "failed",
+  "next_gates": [
+    "Repair actual stack cause without raising test stack size",
+    "Resolve root replay behavior after child cancellation against the durable contract",
+    "Integrate and qualify initial root owner admission and exact terminal-failure journal classification",
+    "Rerun all swarm and fault cases after the repair; partial successes do not qualify either suite"
+  ]
+}
