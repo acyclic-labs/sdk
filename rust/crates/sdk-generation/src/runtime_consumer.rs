@@ -6,6 +6,7 @@
 
 use base64::Engine as _;
 use serde_json::{Map, Value};
+use sha2::Digest;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -146,6 +147,10 @@ fn normalized_digest(value: &Value, label: &str) -> Result<String, String> {
         return Err(format!("{label} must be a SHA-256 digest"));
     }
     Ok(normalized)
+}
+
+fn sha256_bytes(value: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(value))
 }
 
 fn authority_binding(inventory: &Value, receipt: &Value) -> Result<Value, String> {
@@ -400,9 +405,10 @@ fn normalize_receipt(
             }
         }
         let request_digest = observation.get("request_sha256").and_then(Value::as_str)
-            .map(str::to_owned).unwrap_or_else(|| digest(&request_bytes));
+            .map(str::to_owned).unwrap_or_else(|| sha256_bytes(&request_bytes));
+        let actual_request_digest = sha256_bytes(&request_bytes);
         if request_digest.strip_prefix("sha256:").unwrap_or(&request_digest).to_ascii_lowercase()
-            != digest(&request_bytes).strip_prefix("sha256:").unwrap_or(&digest(&request_bytes)).to_ascii_lowercase()
+            != actual_request_digest.strip_prefix("sha256:").unwrap_or(&actual_request_digest).to_ascii_lowercase()
         {
             return Err(format!("{rpc}: request digest does not match request bytes"));
         }
@@ -417,7 +423,7 @@ fn normalize_receipt(
                 return Err(format!("{rpc}: response digest count does not match response frame count"));
             }
             for (frame_index, (digest_value, (_, bytes))) in digests.iter().zip(frames.iter()).enumerate() {
-                let actual = digest(bytes);
+                let actual = sha256_bytes(bytes);
                 let expected = normalized_digest(digest_value, &format!("{rpc}.response_sha256[{frame_index}]"))?;
                 if expected != actual.strip_prefix("sha256:").unwrap_or(&actual) {
                     return Err(format!("{rpc}: response frame {frame_index} digest does not match response bytes"));
@@ -439,7 +445,7 @@ fn normalize_receipt(
             object.insert("execution_step".into(), raw_plan.get("execution_step").cloned().unwrap_or_else(|| Value::Number((index as u64).into())));
         }
         let frame_hexes: Vec<Value> = frames.iter().map(|(hex, _)| Value::String(hex.clone())).collect();
-        let frame_digests: Vec<Value> = frames.iter().map(|(_, bytes)| Value::String(digest(bytes))).collect();
+        let frame_digests: Vec<Value> = frames.iter().map(|(_, bytes)| Value::String(sha256_bytes(bytes))).collect();
         object.insert("response_frames_sha256".into(), Value::Array(frame_digests));
         if is_server_streaming(method) {
             let semantic = observation.get("response_frames").or_else(|| observation.get("decoded_response"))
@@ -1011,8 +1017,8 @@ pub fn collect_runtime_observation_receipt(project: &Path, output: &Path, source
         if metadata.is_file() {
             item.extend(observation_metadata(&metadata)?);
         }
-        if let Some(rpc) = item.get("rpc").and_then(Value::as_str) {
-            item.insert("family".into(), Value::from(rpc.split('.').next().unwrap_or(rpc)));
+        if let Some(rpc) = item.get("rpc").and_then(Value::as_str).map(str::to_owned) {
+            item.insert("family".into(), Value::from(rpc.split('.').next().unwrap_or(rpc.as_str())));
         }
         observations.push(Value::Object(item));
     }
@@ -1056,6 +1062,9 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let mut receipt_project = None;
     let mut source_revision = None;
     let mut manifest_sha256 = None;
+    let mut inventory = None;
+    let mut receipt = None;
+    let mut normalize_output = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1068,6 +1077,9 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
             "--collect-receipt" => { index += 1; receipt_project = args.get(index).map(PathBuf::from); }
             "--source-revision" => { index += 1; source_revision = args.get(index).cloned(); }
             "--manifest-sha256" => { index += 1; manifest_sha256 = args.get(index).cloned(); }
+            "--inventory" => { index += 1; inventory = args.get(index).map(PathBuf::from); }
+            "--receipt" => { index += 1; receipt = args.get(index).map(PathBuf::from); }
+            "--normalize-output" => { index += 1; normalize_output = args.get(index).map(PathBuf::from); }
             value => return Err(format!("unknown runtime-consumer argument {value}")),
         }
         index += 1;
@@ -1087,6 +1099,17 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
         )?;
         println!("collected {count} runtime observations from {}", project.display());
         return Ok(());
+    }
+    if let (Some(inventory), Some(receipt), Some(output)) = (inventory, receipt, normalize_output) {
+        return normalize_receipt(
+            &inventory,
+            &receipt,
+            language.as_deref().ok_or_else(|| "--language is required for receipt normalization".to_string())?,
+            &output,
+        );
+    }
+    if inventory.is_some() || receipt.is_some() || normalize_output.is_some() {
+        return Err("--inventory, --receipt, and --normalize-output must be supplied together".into());
     }
     let authority = authority.ok_or_else(|| "--authority is required".to_string())?;
     let typed = typed.ok_or_else(|| "--typed-request-manifest is required".to_string())?;
