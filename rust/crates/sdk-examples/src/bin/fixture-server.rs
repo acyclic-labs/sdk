@@ -976,8 +976,47 @@ impl HarnessWireApi for HarnessFixtureApi {
         .boxed()
     }
 }
-#[derive(Clone)]
-struct WorkersFixture;
+#[derive(Clone, Default)]
+struct WorkersFixture {
+    state: Arc<Mutex<WorkersState>>,
+}
+
+#[derive(Default)]
+struct WorkersState {
+    versions: HashMap<Vec<u8>, workers_wire::CodeVersion>,
+    modules: HashMap<Vec<u8>, Vec<u8>>,
+    deployments: HashMap<String, workers_wire::Deployment>,
+    jobs: HashMap<String, workers_wire::JobObservation>,
+    idempotency: HashMap<String, String>,
+    publish_idempotency: HashMap<String, Vec<u8>>,
+}
+
+impl WorkersFixture {
+    fn invalid(error: impl std::fmt::Display) -> Status {
+        Status::invalid_argument(format!("Workers fixture request: {error}"))
+    }
+
+    fn job_id(key: &str) -> String {
+        format!("fixture-job-{}", hex::encode(Sha256::digest(key.as_bytes())))
+    }
+
+    fn invocation(
+        body: Vec<u8>,
+        sha256: Vec<u8>,
+        revision: Option<u64>,
+    ) -> workers_wire::InvokeResponse {
+        workers_wire::InvokeResponse {
+            status: 200,
+            headers: vec![workers_wire::Header {
+                name: "content-type".into(),
+                value: "application/octet-stream".into(),
+            }],
+            body,
+            resolved_sha256: sha256,
+            resolved_revision: revision,
+        }
+    }
+}
 
 #[tonic::async_trait]
 impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
@@ -985,56 +1024,178 @@ impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
         &self,
         request: Request<workers_wire::PublishVersionRequest>,
     ) -> Result<Response<workers_wire::PublishVersionResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
+        let request = request.into_inner();
+        validate_publish(&request).map_err(Self::invalid)?;
+        let version = workers_wire::CodeVersion {
+            sha256: request.expected_sha256.clone(),
+            size_bytes: request.javascript_module.len() as u64,
+        };
+        let mut state = self.state.lock().await;
+        if let Some(existing) = state.publish_idempotency.get(&request.idempotency_key) {
+            if existing != &request.expected_sha256 {
+                return Err(Status::already_exists("publish idempotency key is rebound"));
+            }
+        }
+        state
+            .versions
+            .insert(request.expected_sha256.clone(), version.clone());
+        state
+            .modules
+            .insert(request.expected_sha256.clone(), request.javascript_module);
+        state
+            .publish_idempotency
+            .insert(request.idempotency_key, request.expected_sha256);
+        Ok(Response::new(workers_wire::PublishVersionResponse {
+            version: Some(version),
+        }))
     }
 
     async fn select_deployment(
         &self,
         request: Request<workers_wire::SelectDeploymentRequest>,
     ) -> Result<Response<workers_wire::SelectDeploymentResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
+        let request = request.into_inner();
+        validate_select(&request).map_err(Self::invalid)?;
+        let mut state = self.state.lock().await;
+        if !state.versions.contains_key(&request.version_sha256) {
+            return Err(Status::not_found("Workers version is unknown"));
+        }
+        let current_revision = state
+            .deployments
+            .get(&request.alias)
+            .map_or(0, |deployment| deployment.revision);
+        if request
+            .expected_revision
+            .is_some_and(|expected| expected != current_revision)
+        {
+            return Err(Status::aborted("Workers deployment revision conflict"));
+        }
+        let deployment = workers_wire::Deployment {
+            alias: request.alias.clone(),
+            version: state.versions.get(&request.version_sha256).cloned(),
+            revision: current_revision.saturating_add(1),
+        };
+        state.deployments.insert(request.alias, deployment.clone());
+        Ok(Response::new(workers_wire::SelectDeploymentResponse {
+            deployment: Some(deployment),
+        }))
     }
 
     async fn submit_job(
         &self,
         request: Request<workers_wire::SubmitJobRequest>,
     ) -> Result<Response<workers_wire::SubmitJobResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
+        let request = request.into_inner();
+        validate_submit(&request).map_err(Self::invalid)?;
+        let mut state = self.state.lock().await;
+        if let Some(existing) = state.idempotency.get(&request.idempotency_key) {
+            if let Some(job) = state.jobs.get(existing).cloned() {
+                return Ok(Response::new(workers_wire::SubmitJobResponse { job: Some(job) }));
+            }
+        }
+        let sha256 = match request.target.as_ref().and_then(|target| target.target.as_ref()) {
+            Some(workers_wire::job_target::Target::VersionSha256(value)) => value.clone(),
+            Some(workers_wire::job_target::Target::DeploymentAlias(alias)) => state
+                .deployments
+                .get(alias)
+                .and_then(|deployment| deployment.version.as_ref())
+                .map(|version| version.sha256.clone())
+                .ok_or_else(|| Status::not_found("Workers deployment is unknown"))?,
+            None => return Err(Self::invalid("job target is required")),
+        };
+        if !state.versions.contains_key(&sha256) {
+            return Err(Status::not_found("Workers version is unknown"));
+        }
+        let body = request
+            .input
+            .as_ref()
+            .and_then(|input| input.source.as_ref())
+            .and_then(|source| match source {
+                workers_wire::payload::Source::InlineBytes(value) => Some(value.clone()),
+                workers_wire::payload::Source::Object(_) => None,
+            })
+            .unwrap_or_default();
+        let job_id = Self::job_id(&request.idempotency_key);
+        let job = workers_wire::JobObservation {
+            job_id: job_id.clone(),
+            state: workers_wire::JobState::Succeeded as i32,
+            resolved_sha256: sha256,
+            attempt: 1,
+            result: Some(workers_wire::JobResult { body }),
+            failure_code: String::new(),
+            cancellation_requested: false,
+        };
+        state.jobs.insert(job_id.clone(), job.clone());
+        state.idempotency.insert(request.idempotency_key, job_id);
+        Ok(Response::new(workers_wire::SubmitJobResponse { job: Some(job) }))
     }
 
     async fn inspect_job(
         &self,
         request: Request<workers_wire::InspectJobRequest>,
     ) -> Result<Response<workers_wire::InspectJobResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
+        let request = request.into_inner();
+        let state = self.state.lock().await;
+        let job = state
+            .jobs
+            .get(&request.job_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found("Workers job is unknown"))?;
+        Ok(Response::new(workers_wire::InspectJobResponse { job: Some(job) }))
     }
 
     async fn cancel_job(
         &self,
         request: Request<workers_wire::CancelJobRequest>,
     ) -> Result<Response<workers_wire::CancelJobResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
+        let request = request.into_inner();
+        let mut state = self.state.lock().await;
+        let job = state
+            .jobs
+            .get_mut(&request.job_id)
+            .ok_or_else(|| Status::not_found("Workers job is unknown"))?;
+        job.state = workers_wire::JobState::Cancelled as i32;
+        job.cancellation_requested = true;
+        Ok(Response::new(workers_wire::CancelJobResponse {
+            job: Some(job.clone()),
+        }))
     }
 
     async fn invoke_version(
         &self,
         request: Request<workers_wire::InvokeVersionRequest>,
     ) -> Result<Response<workers_wire::InvokeResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
+        let request = request.into_inner();
+        let state = self.state.lock().await;
+        if !state.versions.contains_key(&request.version_sha256) {
+            return Err(Status::not_found("Workers version is unknown"));
+        }
+        Ok(Response::new(Self::invocation(
+            request.body,
+            request.version_sha256,
+            None,
+        )))
     }
 
     async fn invoke_deployment(
         &self,
         request: Request<workers_wire::InvokeDeploymentRequest>,
     ) -> Result<Response<workers_wire::InvokeResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
+        let request = request.into_inner();
+        let state = self.state.lock().await;
+        let deployment = state
+            .deployments
+            .get(&request.alias)
+            .ok_or_else(|| Status::not_found("Workers deployment is unknown"))?;
+        let version = deployment
+            .version
+            .as_ref()
+            .ok_or_else(|| Status::internal("Workers deployment has no version"))?;
+        Ok(Response::new(Self::invocation(
+            request.body,
+            version.sha256.clone(),
+            Some(deployment.revision),
+        )))
     }
 }
 #[tokio::main(flavor = "current_thread")]
@@ -1085,7 +1246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interceptor.clone(),
         );
         let workers = tonic::service::interceptor::InterceptedService::new(
-            workers_wire::workers_service_server::WorkersServiceServer::new(WorkersFixture)
+            workers_wire::workers_service_server::WorkersServiceServer::new(WorkersFixture::default())
                 .max_decoding_message_size(MAX_BODY_BYTES)
                 .max_encoding_message_size(MAX_BODY_BYTES),
             interceptor.clone(),

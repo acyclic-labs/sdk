@@ -101,7 +101,7 @@ fn create_request() -> wire::CreateMachineRequest {
         idempotency_key: Some(idempotency(1)),
         image: Some(image()),
         compatibility: Some(wire::CompatibilityPolicy {
-            mode: wire::CompatibilityMode::BestEffort as i32,
+            mode: wire::CompatibilityMode::Require as i32,
             required: vec![wire::Capability::LiveCheckpoint as i32],
         }),
         suspension: Some(wire::SuspensionPolicy {
