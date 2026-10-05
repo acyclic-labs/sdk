@@ -59,6 +59,12 @@ foreach ($family in $families) {
     if ($LASTEXITCODE -ne 0) { throw "OpenAPI Generator failed for $TargetId/$family" }
 }
 
+if ($TargetId -eq 'ada') {
+    $adapter = Join-Path $SourceRoot 'research/additional-languages/openapi-targets/apply-ada-compatibility.ps1'
+    & pwsh '-NoProfile' '-File' $adapter '-PackagesRoot' $packageRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Rust-owned Ada AWS compatibility adapter failed' }
+}
+
 $zipWriter = Join-Path $SourceRoot 'research/additional-languages/openapi-targets/write-deterministic-zip.ps1'
 $archive = Join-Path $TargetOutput ("acyclic-http-$TargetId-0.1.0.zip")
 & pwsh '-NoProfile' '-File' $zipWriter '-Root' $packageRoot '-Archive' $archive

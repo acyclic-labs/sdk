@@ -37,18 +37,66 @@ fi
 
 case "$target" in
   ada)
-    command -v gprbuild >/dev/null 2>&1 || { echo 'gprbuild is required' >&2; exit 2; }
+    command -v alr >/dev/null 2>&1 || { echo 'Alire is required' >&2; exit 2; }
     mapfile -t projects < <(find "$package_root" -name '*.gpr' -type f | sort)
     ((${#projects[@]} > 0)) || { echo 'no Ada project files were generated' >&2; exit 1; }
     for project in "${projects[@]}"; do
-      run_logged "ada-$(basename "${project%.gpr}")" gprbuild -p -P "$project"
+      project_dir="$(dirname "$project")"
+      run_logged "ada-$(basename "${project%.gpr}")" bash -c "cd \"$project_dir\" && alr exec -- gprbuild -p -P \"$project\""
     done
-    # The generated Ada package currently supplies compile-time models and
-    # client facades; its compatibility adapter does not provide a network
-    # implementation. Keep that fact explicit in the receipt so a successful
-    # build cannot be mistaken for transport qualification.
-    client_transport='not-run-ada-transport-adapter'
-    runtime='gnat/gprbuild'
+    if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
+      # Keep the executable source beside the generated package.  Its request
+      # record, route, JSON codec, response record, and AWS transport all come
+      # from the Rust-derived Ada projection and compatibility adapter.
+      actor_project="$(dirname "${projects[0]}")"
+      transport_dir="$output_root/ada-transport"
+      mkdir -p "$transport_dir"
+      cat >"$actor_project/src/qualification.adb" <<'EOF'
+with Ada.Environment_Variables;
+with AcyclicActors;
+with AcyclicActors.Clients;
+with AcyclicActors.Models;
+
+procedure Qualification is
+   Client : AcyclicActors.Clients.Client_Type;
+   Request : AcyclicActors.Models.AcyclicActorsV1CreateActorRequest_Type;
+   Result : AcyclicActors.Models.AcyclicActorsV1CreateActorResponse_Type;
+begin
+   AcyclicActors.Set_Server
+     (AcyclicActors.Client_Base_Type (Client),
+      AcyclicActors.To_UString
+        (Ada.Environment_Variables.Value ("ACYCLIC_FIXTURE_HTTP_ENDPOINT")));
+   Request.Code_Sha_256 := AcyclicActors.To_UString
+     ("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=");
+   Request.Home_Region.Present := True;
+   Request.Home_Region.Value := AcyclicActors.To_UString ("qualification");
+   Request.Idempotency_Key.Present := True;
+   Request.Idempotency_Key.Value := AcyclicActors.To_UString
+     ("http-target-ada-qualification");
+   Request.Limits.Checkpoint_Bytes.Present := True;
+   Request.Limits.Checkpoint_Bytes.Value := AcyclicActors.To_UString ("1048576");
+   Request.Limits.Handler_Timeout_Millis.Present := True;
+   Request.Limits.Handler_Timeout_Millis.Value := AcyclicActors.To_UString ("1000");
+   Request.Limits.Memory_Bytes.Present := True;
+   Request.Limits.Memory_Bytes.Value := AcyclicActors.To_UString ("1048576");
+   AcyclicActors.Clients.Create_Actor (Client, Request, Result);
+end Qualification;
+EOF
+      cat >"$actor_project/qualification.gpr" <<EOF
+with "$(basename "${projects[0]}")";
+project Qualification is
+   for Source_Dirs use ("src");
+   for Main use ("qualification.adb");
+end Qualification;
+EOF
+      run_logged ada-transport-build bash -c "cd \"$actor_project\" && alr exec -- gprbuild -p -P qualification.gpr"
+      run_logged ada-transport env ACYCLIC_FIXTURE_HTTP_ENDPOINT="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" "$actor_project/bin/qualification"
+      cp "$actor_project/src/qualification.adb" "$transport_dir/qualification.adb"
+      client_transport='ada-generated-client-aws-fixture-roundtrip'
+    else
+      client_transport='not-run-fixture-endpoint-unset'
+    fi
+    runtime='ada/alire-aws-gprbuild'
     ;;
   clojure)
     command -v lein >/dev/null 2>&1 || { echo 'Leiningen is required' >&2; exit 2; }

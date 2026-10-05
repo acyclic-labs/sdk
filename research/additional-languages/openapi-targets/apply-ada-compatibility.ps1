@@ -40,14 +40,23 @@ package $rootUnit is
    subtype UString_Map is UString_Vectors.Vector;
    subtype Nullable_Date is Nullable_UString;
    type One_Of_String_Integer is new Ada.Strings.Unbounded.Unbounded_String;
-   type Value_Type is null record;
+   type Value_Type is record
+      Payload : UString;
+      Status : Integer := 0;
+   end record;
    subtype Object is Value_Type;
    function Is_Null (Value : Value_Type) return Boolean;
    package Value_Vectors is new Ada.Containers.Vectors (Positive, Value_Type);
    subtype Value_Array_Type is Value_Vectors.Vector;
    function To_String (Value : Value_Type) return String;
    function To_UString (Value : Value_Type) return UString;
-   type Output_Stream is tagged null record;
+   type Flag_Array is array (Positive range 1 .. 64) of Boolean;
+   type Output_Stream is tagged record
+      Payload : UString;
+      Depth : Natural := 0;
+      First : Flag_Array := (others => True);
+      In_Array : Flag_Array := (others => False);
+   end record;
    procedure Start_Entity (Into : in out Output_Stream; Name : String);
    procedure End_Entity (Into : in out Output_Stream; Name : String);
    procedure Start_Array (Into : in out Output_Stream; Name : String);
@@ -64,7 +73,9 @@ package $rootUnit is
    procedure Set_Path (URI : in out URI_Type; Value : String);
    procedure Set_Path_Param (URI : in out URI_Type; Name : String; Value : UString);
    type Request_Type is record Stream : Output_Stream; end record;
-   type Client_Base_Type is tagged null record;
+   type Client_Base_Type is tagged record
+      Server : UString;
+   end record;
    procedure Set_Accept (Client : in out Client_Base_Type; Value : Mime_List);
    procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accepted : Mime_List);
    procedure Call (Client : in out Client_Base_Type; Verb : Integer; URI : URI_Type; Request : Request_Type; Reply : out Value_Type);
@@ -76,32 +87,97 @@ end $rootUnit;
 "@
     Set-Content -LiteralPath (Join-Path $src (($rootUnit.ToLowerInvariant()) + '.ads')) -Value $rootSpec -Encoding utf8NoBOM
     $rootBody = @"
+with Ada.Streams;
 with Ada.Strings.Unbounded;
+with AWS.Client;
+with AWS.Response;
 package body $rootUnit is
    function To_UString (Value : String) return UString is begin return Ada.Strings.Unbounded.To_Unbounded_String (Value); end;
    function To_String (Value : UString) return String is begin return Ada.Strings.Unbounded.To_String (Value); end;
    function Is_Null (Value : Nullable_UString) return Boolean is begin return not Value.Present; end;
    function Is_Null (Value : Nullable_Integer) return Boolean is begin return not Value.Present; end;
    function Is_Null (Value : Nullable_Boolean) return Boolean is begin return not Value.Present; end;
-   function Is_Null (Value : Value_Type) return Boolean is begin return False; end;
-   function To_String (Value : Value_Type) return String is begin return ""; end;
-   function To_UString (Value : Value_Type) return UString is begin return To_UString (To_String (Value)); end;
-   procedure Start_Entity (Into : in out Output_Stream; Name : String) is begin null; end;
-   procedure End_Entity (Into : in out Output_Stream; Name : String) is begin null; end;
-   procedure Start_Array (Into : in out Output_Stream; Name : String) is begin null; end;
-   procedure End_Array (Into : in out Output_Stream; Name : String) is begin null; end;
-   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : String) is begin null; end;
-   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : UString) is begin null; end;
-   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_UString) is begin null; end;
-   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Integer) is begin null; end;
-   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Boolean) is begin null; end;
-   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Value_Type) is begin null; end;
+   function Is_Null (Value : Value_Type) return Boolean is begin return Ada.Strings.Unbounded.Length (Value.Payload) = 0 or else To_String (Value.Payload) = "null"; end;
+   function To_String (Value : Value_Type) return String is begin return To_String (Value.Payload); end;
+   function To_UString (Value : Value_Type) return UString is begin return Value.Payload; end;
+
+   procedure Append (Into : in out Output_Stream; Value : String) is
+   begin
+      Ada.Strings.Unbounded.Append (Into.Payload, Value);
+   end Append;
+   procedure Append (Into : in out Output_Stream; Value : Character) is
+   begin
+      Ada.Strings.Unbounded.Append (Into.Payload, Value);
+   end Append;
+
+   procedure Comma (Into : in out Output_Stream) is
+   begin
+      if not Into.First (Into.Depth) then Append (Into, ","); end if;
+      Into.First (Into.Depth) := False;
+   end Comma;
+
+   procedure Field (Into : in out Output_Stream; Name : String) is
+   begin
+      Comma (Into);
+      Append (Into, '"');
+      Append (Into, Name);
+      Append (Into, '"');
+      Append (Into, ':');
+   end Field;
+
+   function Quoted (Value : String) return String is
+      Result : UString;
+   begin
+      Ada.Strings.Unbounded.Append (Result, '"');
+      for Character of Value loop
+         if Character = '"' or else Character = '\' then Ada.Strings.Unbounded.Append (Result, '\'); end if;
+         Ada.Strings.Unbounded.Append (Result, Character);
+      end loop;
+      Ada.Strings.Unbounded.Append (Result, '"');
+      return Ada.Strings.Unbounded.To_String (Result);
+   end Quoted;
+
+   procedure Start_Entity (Into : in out Output_Stream; Name : String) is
+   begin
+      if Into.Depth = 0 then Append (Into, "{");
+      elsif Name = "" and then Into.In_Array (Into.Depth) then Comma (Into); Append (Into, "{");
+      else Field (Into, Name); Append (Into, "{"); end if;
+      Into.Depth := Into.Depth + 1; Into.First (Into.Depth) := True; Into.In_Array (Into.Depth) := False;
+   end Start_Entity;
+   procedure End_Entity (Into : in out Output_Stream; Name : String) is
+   begin Append (Into, "}"); Into.Depth := Into.Depth - 1; end End_Entity;
+   procedure Start_Array (Into : in out Output_Stream; Name : String) is
+   begin
+      if Into.Depth = 0 then Append (Into, "[");
+      elsif Name = "" and then Into.In_Array (Into.Depth) then Comma (Into); Append (Into, "[");
+      else Field (Into, Name); Append (Into, "["); end if;
+      Into.Depth := Into.Depth + 1; Into.First (Into.Depth) := True; Into.In_Array (Into.Depth) := True;
+   end Start_Array;
+   procedure End_Array (Into : in out Output_Stream; Name : String) is
+   begin Append (Into, "]"); Into.Depth := Into.Depth - 1; end End_Array;
+   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : String) is begin Field (Into, Name); Append (Into, Quoted (Value)); end;
+   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : UString) is begin Write_Entity (Into, Name, To_String (Value)); end;
+   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_UString) is begin if Value.Present then Write_Entity (Into, Name, Value.Value); else Field (Into, Name); Append (Into, "null"); end if; end;
+   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Integer) is begin if Value.Present then Field (Into, Name); Append (Into, Integer'Image (Value.Value)); else Field (Into, Name); Append (Into, "null"); end if; end;
+   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Boolean) is begin if Value.Present then Field (Into, Name); if Value.Value then Append (Into, "true"); else Append (Into, "false"); end if; else Field (Into, Name); Append (Into, "null"); end if; end;
+   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Value_Type) is begin Field (Into, Name); Append (Into, To_String (Value)); end;
    procedure Set_Path (URI : in out URI_Type; Value : String) is begin URI.Path := To_UString (Value); end;
    procedure Set_Path_Param (URI : in out URI_Type; Name : String; Value : UString) is begin null; end;
    procedure Set_Accept (Client : in out Client_Base_Type; Value : Mime_List) is begin null; end;
-   procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accepted : Mime_List) is begin null; end;
-   procedure Call (Client : in out Client_Base_Type; Verb : Integer; URI : URI_Type; Request : Request_Type; Reply : out Value_Type) is begin null; end;
-   procedure Set_Server (Client : in out Client_Base_Type; Value : UString) is begin null; end;
+   procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accepted : Mime_List) is begin Request.Stream.Payload := To_UString (""); Request.Stream.Depth := 0; end;
+   procedure Call (Client : in out Client_Base_Type; Verb : Integer; URI : URI_Type; Request : Request_Type; Reply : out Value_Type) is
+      Data : AWS.Response.Data;
+      URL : constant String := To_String (Client.Server) & To_String (URI.Path);
+   begin
+      if Verb /= POST then raise Program_Error with "generated Ada adapter only supports POST"; end if;
+      Data := AWS.Client.Post (URL => URL, Data => To_String (Request.Stream.Payload), Content_Type => "application/json");
+      Reply.Payload := To_UString (AWS.Response.Message_Body (Data));
+      Reply.Status := AWS.Response.Status_Code (Data);
+      if Reply.Status not in 200 .. 299 then
+         raise Program_Error with "generated Ada service error" & Integer'Image (Reply.Status);
+      end if;
+   end Call;
+   procedure Set_Server (Client : in out Client_Base_Type; Value : UString) is begin Client.Server := Value; end;
    procedure Set_Credentials (Client : in out Client_Base_Type; Value : access Integer) is begin null; end;
 end $rootUnit;
 "@
@@ -128,18 +204,47 @@ end $rootUnit.Streams;
 "@
     $streamsBody = @"
 with Ada.Strings.Unbounded;
+with GNATCOLL.JSON;
 package body $rootUnit.Streams is
-   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Value_Type) is begin null; end;
+   use GNATCOLL.JSON;
+   function Pick (From : $rootUnit.Value_Type; Name : String) return JSON_Value is
+      Root : JSON_Value;
+   begin
+      Root := Read ($rootUnit.To_String (From));
+      if Name = "" then return Root; end if;
+      if Root.Kind = JSON_Object_Type and then Root.Has_Field (Name) then return Root.Get (Name); end if;
+      return Create;
+   exception when others => return Create;
+   end Pick;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Value_Type) is
+      Item : constant JSON_Value := Pick (From, Name);
+   begin
+      Value.Payload := $rootUnit.To_UString (Write (Item)); Value.Status := From.Status;
+   end Deserialize;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Value_Array_Type) is begin Value.Clear; end;
-   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_UString) is begin Value.Present := False; end;
-   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Integer) is begin Value.Present := False; end;
-   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Boolean) is begin Value.Present := False; end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_UString) is
+      Item : constant JSON_Value := Pick (From, Name);
+   begin
+      if Item.Kind = JSON_String_Type then Value.Value := $rootUnit.To_UString (Item.Get); Value.Present := True;
+      elsif Item.Kind = JSON_Int_Type then Value.Value := $rootUnit.To_UString (Long_Long_Integer'Image (Item.Get)); Value.Present := True;
+      else Value.Present := False; end if;
+   end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Integer) is
+      Item : constant JSON_Value := Pick (From, Name);
+   begin
+      if Item.Kind = JSON_Int_Type then Value.Value := Item.Get; Value.Present := True; else Value.Present := False; end if;
+   end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Boolean) is
+      Item : constant JSON_Value := Pick (From, Name);
+   begin
+      if Item.Kind = JSON_Boolean_Type then Value.Value := Item.Get; Value.Present := True; else Value.Present := False; end if;
+   end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.ByteArray_Vectors.Vector) is begin Value.Clear; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString_Vectors.Vector) is begin Value.Clear; end;
-   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.ByteArray_Vectors.Vector) is begin null; end;
-   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString_Vectors.Vector) is begin null; end;
-   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString) is begin null; end;
-   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer) is begin null; end;
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.ByteArray_Vectors.Vector) is begin Into.Start_Array (Name); Into.End_Array (Name); end;
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString_Vectors.Vector) is begin Into.Start_Array (Name); Into.End_Array (Name); end;
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString) is begin Into.Write_Entity (Name, Value); end;
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer) is begin Into.Write_Entity (Name, $rootUnit.To_UString (String (Value))); end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString) is begin Value := $rootUnit.To_UString (""); end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.One_Of_String_Integer) is begin null; end;
 end $rootUnit.Streams;
@@ -292,10 +397,23 @@ end $rootUnit.Streams;
 
     $project = Join-Path $package "$projectName.gpr"
     $content = @"
+with ""aws"";
 -- Rust-owned compatibility project for OpenAPI Generator Ada output.
 project $projectName is
-   for Source_Dirs use ();
+   for Source_Dirs use (""src"", ""src/model"", ""src/client"", ""src/credentials"");
 end $projectName;
 "@
     Set-Content -LiteralPath $project -Value $content -Encoding utf8NoBOM
+
+    $alire = @"
+name = ""$projectName""
+version = ""0.1.0""
+description = ""Rust-derived Acyclic HTTP client""
+licenses = [""Apache-2.0""]
+
+[[depends-on]]
+aws = ""25.2.0""
+"@
+    Set-Content -LiteralPath (Join-Path $package 'alire.toml') -Value $alire -Encoding utf8NoBOM
 }
+
