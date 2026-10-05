@@ -45,7 +45,7 @@ use acyclic_fs::path::PortablePath;
 
 let root = std::env::temp_dir().join(format!("acyclic-sdk-guide-fs-{}", std::process::id()));
 std::fs::create_dir_all(&root)?;
-let fs = Fs::local(LocalOptions::new(root)).await?;
+let fs = Fs::local(LocalOptions::new(&root)).await?;
 let cancel = CancellationToken::default();
 let workspace = fs.create_volume(VolumeConfig::portable(Lifecycle::Durable), WorkBudget::UNBOUNDED, &cancel).await?.value;
 let scratch = fs.create_volume(VolumeConfig::portable(Lifecycle::Ephemeral), WorkBudget::UNBOUNDED, &cancel).await?.value;
