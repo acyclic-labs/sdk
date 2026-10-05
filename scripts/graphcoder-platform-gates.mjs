@@ -23,6 +23,8 @@ const HEX40 = /^[0-9a-f]{40}$/u;
 const HEX64 = /^[0-9a-f]{64}$/u;
 const EXECUTION_COUNT_LINE = /^graphcoder-executed-count:\s*(\d+)\s*$/gmu;
 const CASE_WITNESS_LINE = /^graphcoder-case:\s*([A-Z][A-Z0-9-]*-\d+)\s+([a-z][a-z0-9._-]*)\s+passed\s*$/gmu;
+const REQUIREMENT_ID = /^[A-Z][A-Z0-9-]*-\d+$/u;
+const ASSERTION_NAME = /^[a-z][a-z0-9._-]*$/u;
 const SAFE_ENVIRONMENT_KEYS = new Set([
   "PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP",
   "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_HOME", "RUSTFLAGS", "RUSTDOCFLAGS",
@@ -175,7 +177,15 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   if (descriptor.protocol !== "acyclic.graphcoder.suite-descriptor.v1") fail(`${lane.id} ${executionKind} descriptor protocol is invalid`);
   if (descriptor.id !== suite.id || descriptor.descriptor !== suite.descriptor || descriptor.execution_kind !== executionKind || descriptor.platform !== platform) fail(`${lane.id} ${executionKind} descriptor identity is invalid`);
   if (descriptor.source_commit !== source.commit || descriptor.source_tree !== source.tree || descriptor.source_clean !== true) fail(`${lane.id} ${executionKind} receipt is bound to a different or dirty source`);
-  if (!Array.isArray(descriptor.coverage) || descriptor.coverage.length === 0 || descriptor.coverage.some(item => !item || typeof item.requirement_id !== "string" || typeof item.assertion !== "string")) fail(`${lane.id} ${executionKind} descriptor lacks named requirement coverage`);
+  if (!Array.isArray(descriptor.coverage) || descriptor.coverage.length === 0) fail(`${lane.id} ${executionKind} descriptor lacks named requirement coverage`);
+  const coverageRequirements = new Set();
+  for (const [index, item] of descriptor.coverage.entries()) {
+    if (!item || typeof item.requirement_id !== "string" || !REQUIREMENT_ID.test(item.requirement_id) || typeof item.assertion !== "string" || !ASSERTION_NAME.test(item.assertion)) {
+      fail(`${lane.id} ${executionKind} descriptor coverage ${index} is invalid`);
+    }
+    if (coverageRequirements.has(item.requirement_id)) fail(`${lane.id} ${executionKind} descriptor repeats requirement ${item.requirement_id}`);
+    coverageRequirements.add(item.requirement_id);
+  }
   if (source.canonical_worktree === undefined || descriptor.source_working_tree_sha256 !== workingTreeDigest(source.canonical_worktree)) fail(`${lane.id} ${executionKind} receipt working-tree digest is stale`);
   if (!descriptor.execution_assertion || descriptor.execution_assertion.marker !== "graphcoder-executed-count" || !Number.isInteger(descriptor.execution_assertion.minimum_executed) || descriptor.execution_assertion.minimum_executed <= 0) fail(`${lane.id} ${executionKind} descriptor lacks an executed-count assertion`);
   const command = descriptor.command;
@@ -229,6 +239,14 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   if (executionEvidence.minimum_executed !== descriptor.execution_assertion.minimum_executed || executionEvidence.raw_exit_code !== 0) fail(`${lane.id} ${executionKind} execution witness does not match the descriptor or successful raw exit`);
   const countMatches = [...transcriptBytes.toString("utf8").matchAll(EXECUTION_COUNT_LINE)];
   if (countMatches.length !== 1 || Number(countMatches[0][1]) !== executionEvidence.executed_count || executionEvidence.executed_count < executionEvidence.minimum_executed) fail(`${lane.id} ${executionKind} transcript does not prove the required executed count`);
+  const evidenceRequirements = new Set();
+  for (const [index, item] of executionEvidence.cases.entries()) {
+    if (!item || typeof item.requirement_id !== "string" || !REQUIREMENT_ID.test(item.requirement_id) || typeof item.assertion !== "string" || !ASSERTION_NAME.test(item.assertion) || item.status !== "passed") {
+      fail(`${lane.id} ${executionKind} execution case ${index} is invalid`);
+    }
+    if (evidenceRequirements.has(item.requirement_id)) fail(`${lane.id} ${executionKind} execution repeats requirement ${item.requirement_id}`);
+    evidenceRequirements.add(item.requirement_id);
+  }
   const descriptorCoverage = descriptor.coverage.map(item => `${item.requirement_id}\0${item.assertion}`);
   const evidenceCoverage = executionEvidence.cases.map(item => `${item?.requirement_id}\0${item?.assertion}`);
   const transcriptCoverage = [...transcriptBytes.toString("utf8").matchAll(CASE_WITNESS_LINE)].map(match => `${match[1]}\0${match[2]}`);
