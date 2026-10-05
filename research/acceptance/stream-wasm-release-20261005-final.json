@@ -1,0 +1,24 @@
+{
+  "schema": "acyclic.acceptance.v1",
+  "kind": "stream-wasm-release",
+  "status": "passed",
+  "captured_at": "2026-10-05",
+  "source_revision": "dfae8601a3e31db2316b637476acfa1c8c61ba3a",
+  "source_file": "rust/crates/stream/src/memory.rs",
+  "source_sha256": "c2878b271327313d08df6feba14464f7aec75c44f7e66cc021de4b5ff7255329",
+  "artifact": {
+    "dts_sha256": "3e5bc3621763c29f6f2a60d563f62b62bab5f8aa16c9e1dc888165fa4ab6ca0b",
+    "js_sha256": "90330e4264ef970b2172570c529f6d1ecc3fd4aef0c1973368aba001cae2ac0e",
+    "wasm_bg_sha256": "c6a63d291420615045e882e6d469642a8ee38105fa0fb42ba4d6de8a5d5ab240"
+  },
+  "build": {
+    "bindgen": "wasm-bindgen 0.2.117 --target web",
+    "linker": "C:\\Program Files\\LLVM\\bin\\wasm-ld.exe",
+    "command": "cargo build --offline --locked -p acyclic-stream --no-default-features --features wasm --target wasm32-unknown-unknown --profile wasm-release"
+  },
+  "validation": {
+    "memory_tests": "13 passed, 1 ignored",
+    "exports": "Rust validator and HTTP response bound exports linked",
+    "wasm_check": "passed"
+  }
+}
