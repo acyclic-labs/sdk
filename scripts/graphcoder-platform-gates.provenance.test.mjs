@@ -88,11 +88,12 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
   const transcriptPath = join(root, "transcript.log");
   const artifactPath = join(root, "artifact.bin");
   writeFileSync(artifactPath, "artifact bytes");
-  writeFileSync(transcriptPath, "native lane passed\n");
+  writeFileSync(transcriptPath, "native lane passed\ngraphcoder-case: QUAL-02 native-lane-receipt passed\ngraphcoder-executed-count: 1\n");
   const artifact = { path: artifactPath, sha256: createHash("sha256").update(readFileSync(artifactPath)).digest("hex"), source_commit: source.commit, source_tree: source.tree, build_id: "native-stage-fixture", fresh: true };
   const baseDescriptor = {
     protocol: "acyclic.graphcoder.suite-descriptor.v1",
     id: "native-stage",
+    coverage: [{ requirement_id: "QUAL-02", assertion: "native-lane-receipt" }],
     descriptor: "native stage fixture",
     execution_kind: "native",
     platform: "windows",
@@ -100,12 +101,13 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
     source_tree: source.tree,
     source_clean: true,
     source_working_tree_sha256: workingTreeDigest(process.cwd()),
+    execution_assertion: { marker: "graphcoder-executed-count", minimum_executed: 1 },
     command: { executable: "node", args: [lane.driver], cwd: process.cwd(), env: [] },
     consumed_artifacts: [{ path: artifact.path, sha256: artifact.sha256, source_commit: artifact.source_commit, source_tree: artifact.source_tree, build_id: artifact.build_id }],
   };
   writeFileSync(descriptorPath, `${JSON.stringify(baseDescriptor)}\n`);
   const makeReceipt = (status, artifacts = [{ ...artifact }]) => ({
-    suite: { status, descriptor: "native stage fixture", execution_kind: "native", platform: "windows", id: "native-stage", descriptor_path: descriptorPath, descriptor_sha256: createHash("sha256").update(readFileSync(descriptorPath)).digest("hex"), artifact_paths: artifacts.map(item => item.path), transcript_path: transcriptPath, transcript_sha256: createHash("sha256").update(readFileSync(transcriptPath)).digest("hex") },
+    suite: { status, descriptor: "native stage fixture", execution_kind: "native", platform: "windows", id: "native-stage", descriptor_path: descriptorPath, descriptor_sha256: createHash("sha256").update(readFileSync(descriptorPath)).digest("hex"), artifact_paths: artifacts.map(item => item.path), transcript_path: transcriptPath, transcript_sha256: createHash("sha256").update(readFileSync(transcriptPath)).digest("hex"), execution_evidence: { marker: "graphcoder-executed-count", executed_count: 1, minimum_executed: 1, raw_exit_code: 0, signal: null, cases: [{ requirement_id: "QUAL-02", assertion: "native-lane-receipt", status: "passed" }] } },
     artifacts,
   });
   for (const status of ["skipped", "flaky", "failed"]) {
@@ -144,12 +146,13 @@ test("the qualification-suite producer emits a receipt consumed by the platform 
   const artifactSha256 = createHash("sha256").update(readFileSync(artifactPath)).digest("hex");
   writeFileSync(configPath, `${JSON.stringify({
     id: "platform-lane-producer-shape",
+    coverage: [{ requirement_id: "QUAL-01", assertion: "producer-shape" }],
     descriptor: "installed transport producer shape",
     execution_kind: "package",
     platform: "windows",
     command: {
       executable: process.execPath,
-      args: ["-e", "process.exit(0)"],
+      args: ["-e", "process.stdout.write('graphcoder-case: QUAL-01 producer-shape passed\\ngraphcoder-executed-count: 1\\n'); process.exit(0)"],
       cwd: process.cwd(),
       env: {},
     },

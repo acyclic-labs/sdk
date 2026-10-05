@@ -21,6 +21,11 @@ import { workingTreeDigest } from "./graphcoder-source-fence.mjs";
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX40 = /^[0-9a-f]{40}$/;
 const KINDS = new Set(["native", "compile", "mock", "pty", "package", "wasm"]);
+const REQUIREMENT_ID = /^[A-Z][A-Z0-9-]*-\d+$/u;
+const ASSERTION_NAME = /^[a-z][a-z0-9._-]*$/u;
+const EXECUTION_MARKER = "graphcoder-executed-count";
+const EXECUTION_COUNT_LINE = /^graphcoder-executed-count:\s*(\d+)\s*$/gmu;
+const CASE_WITNESS_LINE = /^graphcoder-case:\s*([A-Z][A-Z0-9-]*-\d+)\s+([a-z][a-z0-9._-]*)\s+passed\s*$/gmu;
 
 function fail(message) {
   throw new Error(`qualification-suite: ${message}`);
@@ -64,10 +69,48 @@ function nonemptyText(value, label) {
   return value;
 }
 
+function observedExecutionCount(output) {
+  const matches = [...output.matchAll(EXECUTION_COUNT_LINE)];
+  if (matches.length !== 1) return { count: null, error: `expected exactly one ${EXECUTION_MARKER} line, observed ${matches.length}` };
+  const count = Number(matches[0][1]);
+  if (!Number.isSafeInteger(count)) return { count: null, error: `${EXECUTION_MARKER} is not a safe integer` };
+  return { count, error: null };
+}
+
+function normalizeCoverage(value) {
+  if (!Array.isArray(value) || value.length === 0) fail("coverage must contain named requirement assertions");
+  const seen = new Set();
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object") fail(`coverage ${index} is not an object`);
+    const requirementId = nonemptyText(item.requirement_id, `coverage ${index}.requirement_id`);
+    if (!REQUIREMENT_ID.test(requirementId)) fail(`coverage ${index}.requirement_id is invalid: ${requirementId}`);
+    const assertion = nonemptyText(item.assertion, `coverage ${index}.assertion`);
+    if (!ASSERTION_NAME.test(assertion)) fail(`coverage ${index}.assertion is invalid: ${assertion}`);
+    if (seen.has(requirementId)) fail(`coverage repeats requirement ${requirementId}`);
+    seen.add(requirementId);
+    return { requirement_id: requirementId, assertion };
+  });
+}
+
+function observedCoverage(output, coverage) {
+  const expected = new Set(coverage.map(item => `${item.requirement_id}\0${item.assertion}`));
+  const matches = [...output.matchAll(CASE_WITNESS_LINE)];
+  const observed = new Set();
+  for (const match of matches) {
+    const key = `${match[1]}\0${match[2]}`;
+    if (!expected.has(key)) return { cases: [], error: `unmapped graphcoder-case witness: ${match[1]} ${match[2]}` };
+    if (observed.has(key)) return { cases: [], error: `duplicate graphcoder-case witness: ${match[1]} ${match[2]}` };
+    observed.add(key);
+  }
+  if (observed.size !== expected.size) return { cases: [], error: `expected ${expected.size} named graphcoder-case witnesses, observed ${observed.size}` };
+  return { cases: coverage.map(item => ({ ...item, status: "passed" })), error: null };
+}
+
 function loadConfig(path) {
   const config = JSON.parse(readFileSync(resolve(path), "utf8"));
   if (!config || typeof config !== "object") fail("config must be an object");
   const id = nonemptyText(config.id, "id");
+  const coverage = normalizeCoverage(config.coverage);
   const executionKind = nonemptyText(config.execution_kind, "execution_kind");
   if (!KINDS.has(executionKind)) fail(`execution_kind is invalid: ${executionKind}`);
   const platform = nonemptyText(config.platform, "platform");
@@ -111,14 +154,18 @@ function loadConfig(path) {
   if (normalizedArtifacts.some(item => item.fresh !== true)) fail("every artifact must declare fresh: true");
   const timeoutMs = config.timeout_ms === undefined ? 120_000 : config.timeout_ms;
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) fail("timeout_ms must be a positive integer");
+  const minimumExecuted = config.minimum_executed === undefined ? coverage.length : config.minimum_executed;
+  if (!Number.isInteger(minimumExecuted) || minimumExecuted < coverage.length) fail(`minimum_executed must be at least the number of named coverage assertions (${coverage.length})`);
   return {
     id,
+    coverage,
     descriptor: typeof config.descriptor === "string" && config.descriptor.trim() !== "" ? config.descriptor : id,
     execution_kind: executionKind,
     platform,
     command: { executable, args: [...command.args], cwd, env: { ...env } },
     artifacts: normalizedArtifacts,
     expected_exit_code: config.expected_exit_code === undefined ? 0 : config.expected_exit_code,
+    minimum_executed: minimumExecuted,
     timeout_ms: timeoutMs,
     started_at: config.started_at,
     output: config.output === undefined ? ".qualification/suites" : config.output,
@@ -129,6 +176,7 @@ export function makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, so
   return {
     protocol: "acyclic.graphcoder.suite-descriptor.v1",
     id: config.id,
+    requirement_id: config.requirement_id,
     descriptor: config.descriptor,
     // Bind the suite descriptor itself to the checkout being qualified. The
     // consumed artifacts carry the same pair, but mock/package lanes may use
@@ -144,6 +192,8 @@ export function makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, so
       env: Object.keys(config.command.env).sort(),
     },
     expected_exit_code: config.expected_exit_code,
+    execution_assertion: { marker: EXECUTION_MARKER, minimum_executed: config.minimum_executed ?? config.coverage.length },
+    coverage: config.coverage,
     timeout_ms: config.timeout_ms,
     consumed_artifacts: config.artifacts.map(item => ({
       path: item.path,
@@ -185,6 +235,8 @@ function capture(configPath) {
   const stdout = typeof result.stdout === "string" ? result.stdout : "";
   const stderr = typeof result.stderr === "string" ? result.stderr : "";
   const transcript = `${stdout}${stderr === "" ? "" : `\n[stderr]\n${stderr}`}`;
+  const execution = observedExecutionCount(transcript);
+  const coverageWitness = observedCoverage(transcript, config.coverage);
   const output = resolve(config.output);
   mkdirSync(output, { recursive: true });
   const descriptorPath = resolve(output, `${config.id}.descriptor.json`);
@@ -205,8 +257,9 @@ function capture(configPath) {
     return { ...item, sha256: after };
   });
   const exitCode = result.error ? null : result.status;
-  const status = artifactError === undefined && exitCode === config.expected_exit_code && result.signal === null && !result.error ? "passed" : "failed";
-  const resultError = artifactError ?? result.error?.message;
+  const executionError = execution.error ?? coverageWitness.error ?? (execution.count < config.minimum_executed ? `${EXECUTION_MARKER} ${execution.count} is below required minimum ${config.minimum_executed}` : undefined);
+  const status = artifactError === undefined && executionError === undefined && exitCode === config.expected_exit_code && result.signal === null && !result.error ? "passed" : "failed";
+  const resultError = artifactError ?? executionError ?? result.error?.message;
   const suite = {
     id: config.id,
     descriptor: config.descriptor,
@@ -220,9 +273,18 @@ function capture(configPath) {
     artifact_paths: artifacts.map(item => item.path),
     transcript_path: transcriptPath,
     transcript_sha256: hash(readFileSync(transcriptPath)),
+    execution_evidence: {
+      marker: EXECUTION_MARKER,
+      executed_count: execution.count,
+      minimum_executed: config.minimum_executed,
+      raw_exit_code: exitCode,
+      signal: result.signal,
+      cases: coverageWitness.cases,
+    },
   };
-  writeFileSync(recordPath, `${JSON.stringify({ suite, artifacts, result: { status, exit_code: exitCode, signal: result.signal, error: resultError } }, null, 2)}\n`, { flag: "wx" });
-  process.stdout.write(`${JSON.stringify({ record: recordPath, suite, artifacts, result: { status, exit_code: exitCode, signal: result.signal, error: resultError } }, null, 2)}\n`);
+  const resultRecord = { status, exit_code: exitCode, signal: result.signal, executed_count: execution.count, error: resultError };
+  writeFileSync(recordPath, `${JSON.stringify({ suite, artifacts, result: resultRecord }, null, 2)}\n`, { flag: "wx" });
+  process.stdout.write(`${JSON.stringify({ record: recordPath, suite, artifacts, result: resultRecord }, null, 2)}\n`);
   process.exitCode = status === "passed" ? 0 : 1;
 }
 

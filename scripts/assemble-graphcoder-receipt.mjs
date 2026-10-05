@@ -43,13 +43,17 @@ function loadRecords(paths) {
   return { suites, artifacts: [...artifacts.values()] };
 }
 
-function caseEvidence(bindings, suiteById) {
+function caseEvidence(bindings, suiteById, requirementId) {
   const evidence = [];
   for (const suiteId of bindings) {
     const suite = suiteById.get(suiteId);
     if (suite === undefined) fail(`case binding references unknown suite ${suiteId}`);
+    const descriptor = readJson(suite.descriptor_path);
+    const assertion = Array.isArray(descriptor.coverage) ? descriptor.coverage.find(item => item?.requirement_id === requirementId) : undefined;
+    if (!assertion || typeof assertion.assertion !== "string") fail(`suite ${suite.id} does not declare named coverage for ${requirementId}`);
     evidence.push({
       suite: suite.id,
+      assertion: assertion.assertion,
       descriptor_sha256: suite.descriptor_sha256,
       execution_kind: suite.execution_kind,
       artifact_paths: [...suite.artifact_paths],
@@ -88,7 +92,7 @@ export function assemble(configPath, { gitOps } = {}) {
   receipt.artifacts = records.artifacts;
   receipt.cases = matrix.entries.map(entry => {
     const suites = bindings.get(entry.id) ?? [];
-    const evidence = caseEvidence(suites, suiteById);
+    const evidence = caseEvidence(suites, suiteById, entry.id);
     return { id: entry.id, status: caseStatus(evidence, suiteById), evidence };
   });
   receipt.gate = {

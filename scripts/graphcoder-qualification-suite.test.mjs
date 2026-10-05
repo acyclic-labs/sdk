@@ -17,6 +17,7 @@ test("suite configuration binds declared artifact digests to current bytes", () 
     writeFileSync(artifactPath, bytes);
     const config = {
       id: "package-smoke",
+      coverage: [{ requirement_id: "QUAL-01", assertion: "package-consumer" }],
       execution_kind: "package",
       platform: "windows-x86_64",
       command: { executable: process.execPath, args: ["-e", ""], cwd: process.cwd(), env: {} },
@@ -48,6 +49,7 @@ test("suite configuration requires fresh artifacts and a bounded timeout", () =>
     writeFileSync(artifactPath, "runtime bytes\n");
     const config = {
       id: "native-smoke",
+      coverage: [{ requirement_id: "QUAL-02", assertion: "native-receipt" }],
       execution_kind: "native",
       platform: "windows-x86_64",
       timeout_ms: 2500,
@@ -79,6 +81,7 @@ test("suite configuration requires fresh artifacts and a bounded timeout", () =>
 test("suite descriptors bind source provenance and every consumed artifact", () => {
   const config = {
     id: "mock-stage",
+    coverage: [{ requirement_id: "QUAL-01", assertion: "package-consumer" }],
     descriptor: "graphcoder-real-backend-scenarios.json",
     execution_kind: "package",
     platform: "windows-x86_64",

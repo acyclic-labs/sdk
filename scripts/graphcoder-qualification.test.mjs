@@ -30,12 +30,14 @@ const validateReceiptSchema = receiptSchemaAjv.compile(
   JSON.parse(readFileSync("docs/graphcoder-swarm/qualification-receipt.schema.json", "utf8")),
 );
 
-function suiteFixture(directory, executionKind = "native") {
+function suiteFixture(directory, executionKind = "native", coverage = [{ requirement_id: "SCOPE-01", assertion: "fixture" }]) {
+  if (typeof coverage === "string") coverage = [{ requirement_id: coverage, assertion: "fixture" }];
   const descriptorPath = join(directory, `${executionKind}.descriptor.json`);
   const transcriptPath = join(directory, `${executionKind}.transcript.log`);
   const descriptor = `${JSON.stringify({
     protocol: "acyclic.graphcoder.suite-descriptor.v1",
     id: `suite-${executionKind}`,
+    coverage,
     descriptor: `${executionKind} fixture`,
     source_commit: TEST_COMMIT,
     source_tree: TEST_TREE,
@@ -74,6 +76,30 @@ function bindSuiteArtifacts(suite, artifacts) {
   const bytes = `${JSON.stringify(descriptor)}\n`;
   writeFileSync(suite.descriptor_path, bytes);
   suite.descriptor_sha256 = digest(bytes);
+}
+
+function makeFinalDescriptor(suite) {
+  const descriptor = JSON.parse(readFileSync(suite.descriptor_path, "utf8"));
+  const coverage = descriptor.coverage;
+  Object.assign(descriptor, {
+    source_clean: true,
+    source_working_tree_sha256: workingTreeDigest(TEST_ROOT),
+    command: {
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: TEST_ROOT,
+      env: [],
+    },
+    expected_exit_code: 0,
+    execution_assertion: { marker: "graphcoder-executed-count", minimum_executed: coverage.length },
+  });
+  const bytes = `${JSON.stringify(descriptor)}\n`;
+  writeFileSync(suite.descriptor_path, bytes);
+  suite.descriptor_sha256 = digest(bytes);
+  const transcript = `${coverage.map(item => `graphcoder-case: ${item.requirement_id} ${item.assertion} passed`).join("\n")}\ngraphcoder-executed-count: ${coverage.length}\n`;
+  writeFileSync(suite.transcript_path, transcript);
+  suite.transcript_sha256 = digest(transcript);
+  suite.execution_evidence = { marker: "graphcoder-executed-count", executed_count: coverage.length, minimum_executed: coverage.length, raw_exit_code: 0, signal: null, cases: coverage.map(item => ({ ...item, status: "passed" })) };
 }
 
 test("the locked matrix has unique coverage for every requirement", () => {
@@ -173,10 +199,16 @@ test("final evidence rejects fixture-only commands for non-mock suites", () => {
         cwd: TEST_ROOT,
         env: [],
       },
+      expected_exit_code: 0,
+      execution_assertion: { marker: "graphcoder-executed-count", minimum_executed: 1 },
     });
     const bytes = `${JSON.stringify(descriptor)}\n`;
     writeFileSync(suite.descriptor_path, bytes);
     suite.descriptor_sha256 = digest(bytes);
+    const transcript = "graphcoder-case: SCOPE-01 fixture passed\ngraphcoder-executed-count: 1\n";
+    writeFileSync(suite.transcript_path, transcript);
+    suite.transcript_sha256 = digest(transcript);
+    suite.execution_evidence = { marker: "graphcoder-executed-count", executed_count: 1, minimum_executed: 1, raw_exit_code: 0, signal: null, cases: [{ requirement_id: "SCOPE-01", assertion: "fixture", status: "passed" }] };
     const receipt = pendingReceipt();
     receipt.suites = [suite];
     receipt.cases[0] = {
@@ -186,6 +218,78 @@ test("final evidence rejects fixture-only commands for non-mock suites", () => {
     };
     receipt.gate = { final: true, failed: 0, skipped: 0, flaky: 0, missing: 67 };
     assert.throws(() => validate(receipt, { final: true }), /fixture-only command/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("final evidence rejects a suite with invalid named coverage", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-scope-"));
+  try {
+    const suite = suiteFixture(directory, "native", "INVALID_SCOPE");
+    makeFinalDescriptor(suite);
+    const receipt = pendingReceipt();
+    receipt.suites = [suite];
+    receipt.cases.find(item => item.id === "SCOPE-01").status = "passed";
+    receipt.cases.find(item => item.id === "SCOPE-01").evidence = [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [] }];
+    receipt.gate = { final: true, failed: 0, skipped: 0, flaky: 0, missing: 67 };
+    assert.throws(() => validate(receipt, { final: true }), /receipt schema validation failed/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("final evidence allows one suite to prove two named requirements", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-scope-mismatch-"));
+  try {
+    const suite = suiteFixture(directory, "native", [
+      { requirement_id: "SCOPE-01", assertion: "provenance" },
+      { requirement_id: "SCOPE-02", assertion: "boundary" },
+    ]);
+    makeFinalDescriptor(suite);
+    const artifactPath = join(directory, "shared-runtime.bin");
+    writeFileSync(artifactPath, "shared runtime\n");
+    const artifact = { path: artifactPath, sha256: digest(readFileSync(artifactPath)), source_commit: TEST_COMMIT, source_tree: TEST_TREE, built_at: "2026-10-02T23:59:00.000Z", build_id: "shared-runtime", fresh: true };
+    suite.artifact_paths = [artifactPath];
+    bindSuiteArtifacts(suite, [artifact]);
+    const sharedMatrix = { ...matrix, entries: matrix.entries.filter(item => ["SCOPE-01", "SCOPE-02"].includes(item.id)) };
+    const matrixPath = join(directory, "requirements.json");
+    writeFileSync(matrixPath, `${JSON.stringify(sharedMatrix)}\n`);
+    const sharedGitOps = { ...testGitOps, currentBranch: () => sharedMatrix.scope.branch };
+    const receipt = makePendingReceipt(matrixPath, { gitOps: sharedGitOps });
+    receipt.source.branch = sharedMatrix.scope.branch;
+    receipt.suites = [suite];
+    receipt.artifacts = [artifact];
+    for (const [id, assertion] of [["SCOPE-01", "provenance"], ["SCOPE-02", "boundary"]]) {
+      const record = receipt.cases.find(item => item.id === id);
+      record.status = "passed";
+      record.evidence = [{ suite: suite.id, assertion, descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [artifactPath] }];
+    }
+    receipt.gate = { final: true, failed: 0, skipped: 0, flaky: 0, missing: 0 };
+    assert.doesNotThrow(() => validateReceipt(sharedMatrix, receipt, { final: true, matrixPath, gitOps: sharedGitOps }));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("final evidence rejects generic reuse without a named assertion", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-reuse-"));
+  try {
+    const suite = suiteFixture(directory, "native", "SCOPE-01");
+    makeFinalDescriptor(suite);
+    const receipt = pendingReceipt();
+    receipt.suites = [suite];
+    for (const id of ["SCOPE-01", "SCOPE-02"]) {
+      const record = receipt.cases.find(item => item.id === id);
+      record.status = "passed";
+      record.evidence = [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [] }];
+    }
+    receipt.cases.find(item => item.id === "SCOPE-01").status = "passed";
+    receipt.cases.find(item => item.id === "SCOPE-01").evidence = [{ suite: suite.id, assertion: "fixture", descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [] }];
+    receipt.cases.find(item => item.id === "SCOPE-02").status = "passed";
+    receipt.cases.find(item => item.id === "SCOPE-02").evidence = [{ suite: suite.id, assertion: "fixture", descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [] }];
+    receipt.gate = { final: true, failed: 0, skipped: 0, flaky: 0, missing: 66 };
+    assert.throws(() => validate(receipt, { final: true }), /has no named requirement assertion/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -260,7 +364,7 @@ test("suite descriptors are bound to the qualified source and suite identity", (
 test("final package suites must identify the installed artifact used by their evidence", () => {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-"));
   try {
-    const suite = suiteFixture(directory, "package");
+    const suite = suiteFixture(directory, "package", "CLI-01");
     const receipt = pendingReceipt();
     receipt.suites = [suite];
     receipt.gate.final = true;

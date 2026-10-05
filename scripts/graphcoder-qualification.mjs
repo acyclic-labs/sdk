@@ -13,6 +13,10 @@ const SUITE_DESCRIPTOR_PROTOCOL = "acyclic.graphcoder.suite-descriptor.v1";
 const STATUS_VALUES = new Set(["passed", "pending", "failed", "skipped", "flaky", "not-run"]);
 const EXECUTION_KINDS = new Set(["native", "compile", "mock", "pty", "package", "wasm"]);
 const HEX64 = /^[0-9a-f]{64}$/;
+const REQUIREMENT_ID = /^[A-Z][A-Z0-9-]*-\d+$/u;
+const EXECUTION_COUNT_LINE = /^graphcoder-executed-count:\s*(\d+)\s*$/gmu;
+const CASE_WITNESS_LINE = /^graphcoder-case:\s*([A-Z][A-Z0-9-]*-\d+)\s+([a-z][a-z0-9._-]*)\s+passed\s*$/gmu;
+const ASSERTION_NAME = /^[a-z][a-z0-9._-]*$/u;
 
 const readJson = path => JSON.parse(readFileSync(resolve(path), "utf8"));
 const receiptSchemaAjv = new Ajv2020({ allErrors: true });
@@ -89,11 +93,21 @@ function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifi
   if (descriptor.platform !== suite.platform) failure(`suite ${suite.id} descriptor platform does not match the suite`);
   if (descriptor.execution_kind !== suite.execution_kind) failure(`suite ${suite.id} descriptor execution kind does not match the suite`);
   if (final) {
+    if (!Array.isArray(descriptor.coverage) || descriptor.coverage.length === 0) failure(`suite ${suite.id} final descriptor lacks named requirement coverage`);
+    const coverageIds = new Set();
+    for (const [index, item] of descriptor.coverage.entries()) {
+      if (!item || typeof item !== "object" || typeof item.requirement_id !== "string" || !REQUIREMENT_ID.test(item.requirement_id) || typeof item.assertion !== "string" || !ASSERTION_NAME.test(item.assertion)) failure(`suite ${suite.id} final descriptor coverage ${index} is invalid`);
+      if (coverageIds.has(item.requirement_id)) failure(`suite ${suite.id} final descriptor repeats requirement ${item.requirement_id}`);
+      coverageIds.add(item.requirement_id);
+    }
     if (descriptor.source_clean !== true) failure(`suite ${suite.id} final descriptor is not bound to a clean source`);
     if (typeof descriptor.source_working_tree_sha256 !== "string" || !HEX64.test(descriptor.source_working_tree_sha256)) failure(`suite ${suite.id} final descriptor lacks a working-tree digest`);
     if (typeof gitRoot !== "string" || descriptor.source_working_tree_sha256 !== workingTreeDigest(gitRoot)) failure(`suite ${suite.id} final descriptor working-tree digest is stale`);
     if (!descriptor.command || typeof descriptor.command !== "object" || !Array.isArray(descriptor.command.args) || typeof descriptor.command.executable !== "string") {
       failure(`suite ${suite.id} final descriptor lacks an executable command`);
+    }
+    if (!descriptor.execution_assertion || descriptor.execution_assertion.marker !== "graphcoder-executed-count" || !Number.isInteger(descriptor.execution_assertion.minimum_executed) || descriptor.execution_assertion.minimum_executed <= 0) {
+      failure(`suite ${suite.id} final descriptor lacks an executed-count assertion`);
     }
     if (suite.execution_kind !== "mock" && (descriptor.command.args.some(arg => typeof arg === "string" && /(?:^|=)--fixture(?:=|$)/u.test(arg)) || (Array.isArray(descriptor.command.env) && descriptor.command.env.some(key => typeof key === "string" && /(?:MOCK_FIXTURE|PTY_FIXTURE|ALLOW_FIXTURE)/u.test(key))))) {
       failure(`suite ${suite.id} final descriptor invokes a fixture-only command`);
@@ -117,6 +131,7 @@ function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifi
   const descriptorPaths = [...descriptorArtifacts.keys()].sort();
   const suitePaths = [...new Set(suite.artifact_paths)].sort();
   if (JSON.stringify(descriptorPaths) !== JSON.stringify(suitePaths)) failure(`suite ${suite.id} descriptor artifact use does not match the suite`);
+  return descriptor;
 }
 
 function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qualifiedTree, gitOps) {
@@ -138,7 +153,26 @@ function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qua
     const actual = fileDigest(path);
     if (actual !== expected) failure(`suite ${suite.id} ${kind} digest mismatch: ${path}`);
   }
-  validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree, { final, gitRoot: final ? gitOps.gitRoot() : undefined });
+  const descriptor = validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree, { final, gitRoot: final ? gitOps.gitRoot() : undefined });
+  if (final) {
+    const evidence = suite.execution_evidence;
+    if (!evidence || evidence.marker !== "graphcoder-executed-count" || !Number.isInteger(evidence.executed_count) || !Number.isInteger(evidence.minimum_executed) || !Number.isInteger(evidence.raw_exit_code) || evidence.signal !== null || !Array.isArray(evidence.cases)) {
+      failure(`suite ${suite.id} final evidence lacks a raw-exit and executed-count witness`);
+    }
+    const descriptorCoverage = descriptor.coverage.map(item => `${item.requirement_id}\0${item.assertion}`);
+    const evidenceCoverage = evidence.cases.map(item => `${item?.requirement_id}\0${item?.assertion}`);
+    if (JSON.stringify(descriptorCoverage) !== JSON.stringify(evidenceCoverage)) failure(`suite ${suite.id} final execution witness coverage does not match its descriptor`);
+    if (evidence.minimum_executed !== descriptor.execution_assertion.minimum_executed) failure(`suite ${suite.id} executed-count minimum does not match its descriptor`);
+    if (evidence.raw_exit_code !== descriptor.expected_exit_code) failure(`suite ${suite.id} raw exit code does not match its descriptor`);
+    const transcript = readFileSync(resolve(suite.transcript_path), "utf8");
+    const matches = [...transcript.matchAll(EXECUTION_COUNT_LINE)];
+    if (matches.length !== 1 || Number(matches[0][1]) !== evidence.executed_count) failure(`suite ${suite.id} executed-count witness does not match its transcript`);
+    const caseMatches = [...transcript.matchAll(CASE_WITNESS_LINE)];
+    const observedCases = caseMatches.map(match => `${match[1]}\0${match[2]}`);
+    if (JSON.stringify(observedCases) !== JSON.stringify(descriptorCoverage)) failure(`suite ${suite.id} named case witnesses do not match its descriptor`);
+    if (evidence.executed_count < evidence.minimum_executed) failure(`suite ${suite.id} executed-count witness is below its required minimum`);
+  }
+  return descriptor;
 }
 
 function validateArtifact(artifact, index, final, qualifiedCommit, qualifiedTree) {
@@ -161,7 +195,7 @@ function validateArtifact(artifact, index, final, qualifiedCommit, qualifiedTree
   if (actual !== artifact.sha256) failure(`artifact digest mismatch: ${artifact.path}`);
 }
 
-function validateCase(caseRecord, entry, suites, final) {
+function validateCase(caseRecord, entry, suites, descriptors, matrixIds, final, suiteUsage) {
   if (!caseRecord || typeof caseRecord !== "object") failure(`${entry.id} case is not an object`);
   if (caseRecord.id !== entry.id) failure(`case id ${caseRecord.id} does not match matrix entry ${entry.id}`);
   if (!STATUS_VALUES.has(caseRecord.status)) failure(`${entry.id} has invalid status`);
@@ -182,6 +216,13 @@ function validateCase(caseRecord, entry, suites, final) {
     const evidenceArtifacts = [...new Set(evidence.artifact_paths)].sort();
     const suiteArtifacts = [...new Set(suite.artifact_paths)].sort();
     if (JSON.stringify(evidenceArtifacts) !== JSON.stringify(suiteArtifacts)) failure(`${entry.id} evidence ${index} artifact use does not match suite ${suite.id}`);
+    if (final) {
+      const descriptor = descriptors.get(suite.id);
+      const assertion = descriptor.coverage.find(item => item.requirement_id === entry.id);
+      if (!matrixIds.has(entry.id) || assertion === undefined) failure(`${entry.id} evidence ${index} suite ${suite.id} has no named requirement assertion`);
+      if (typeof evidence.assertion !== "string" || evidence.assertion !== assertion.assertion) failure(`${entry.id} evidence ${index} suite ${suite.id} assertion does not match its named coverage`);
+      suiteUsage.add(suite.id);
+    }
     modes.add(evidence.execution_kind);
   }
   if (final) {
@@ -224,10 +265,11 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   if (!receipt.gate || typeof receipt.gate !== "object") failure("receipt gate is missing");
   const effectiveFinal = final || receipt.gate.final === true;
   const suiteIds = new Set();
+  const suiteDescriptors = new Map();
   const artifactByPath = new Map(receipt.artifacts.map(artifact => [artifact?.path, artifact]));
   const qualifiedTree = gitOps.gitTree(qualifiedCommit);
   for (const [index, suite] of receipt.suites.entries()) {
-    validateSuite(suite, index, effectiveFinal, artifactByPath, qualifiedCommit, qualifiedTree, gitOps);
+    suiteDescriptors.set(suite.id, validateSuite(suite, index, effectiveFinal, artifactByPath, qualifiedCommit, qualifiedTree, gitOps));
     if (suiteIds.has(suite.id)) failure(`duplicate suite id ${suite.id}`);
     suiteIds.add(suite.id);
   }
@@ -241,6 +283,8 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
     }
   }
   const casesById = new Map();
+  const suiteUsage = new Set();
+  const matrixIds = new Set(matrix.entries.map(entry => entry.id));
   for (const record of receipt.cases) {
     if (casesById.has(record?.id)) failure(`duplicate case id ${record?.id}`);
     casesById.set(record?.id, record);
@@ -248,9 +292,14 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   for (const entry of matrix.entries) {
     const record = casesById.get(entry.id);
     if (!record) failure(`receipt is missing matrix case ${entry.id}`);
-    validateCase(record, entry, receipt.suites, effectiveFinal);
+    validateCase(record, entry, receipt.suites, suiteDescriptors, matrixIds, effectiveFinal, suiteUsage);
   }
   if (casesById.size !== matrix.entries.length) failure("receipt contains a case not present in the locked matrix");
+  if (effectiveFinal) {
+    for (const suite of receipt.suites) {
+      if (!suiteUsage.has(suite.id)) failure(`final receipt contains unbound suite ${suite.id}`);
+    }
+  }
   const counts = { failed: 0, skipped: 0, flaky: 0, missing: 0 };
   for (const record of receipt.cases) {
     if (record.status === "failed") counts.failed++;

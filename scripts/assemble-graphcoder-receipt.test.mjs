@@ -34,6 +34,8 @@ function suiteRecord(directory, id = "mock-suite") {
     source_tree: TEST_TREE,
     source_clean: true,
     source_working_tree_sha256: "d".repeat(64),
+    coverage: [{ requirement_id: "SCOPE-03", assertion: "assembler-binding" }],
+    execution_assertion: { marker: "graphcoder-executed-count", minimum_executed: 1 },
     platform: "windows-x86_64",
     execution_kind: "mock",
     consumed_artifacts: [],
@@ -77,6 +79,7 @@ test("assembler emits every matrix ID and binds only explicit suite cases", () =
     assert.equal(receipt.cases.length, 68);
     assert.equal(receipt.cases.find(item => item.id === "SCOPE-03").status, "passed");
     assert.equal(receipt.cases.find(item => item.id === "SCOPE-03").evidence[0].suite, "mock-suite");
+    assert.equal(receipt.cases.find(item => item.id === "SCOPE-03").evidence[0].assertion, "assembler-binding");
     assert.equal(receipt.gate.missing, 67);
     assert.equal(receipt.gate.failed, 0);
   } finally {

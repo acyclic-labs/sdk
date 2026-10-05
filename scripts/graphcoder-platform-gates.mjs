@@ -21,6 +21,8 @@ const PLATFORMS = new Set(["windows", "linux", "macos"]);
 const KINDS = new Set(["native", "compile", "package"]);
 const HEX40 = /^[0-9a-f]{40}$/u;
 const HEX64 = /^[0-9a-f]{64}$/u;
+const EXECUTION_COUNT_LINE = /^graphcoder-executed-count:\s*(\d+)\s*$/gmu;
+const CASE_WITNESS_LINE = /^graphcoder-case:\s*([A-Z][A-Z0-9-]*-\d+)\s+([a-z][a-z0-9._-]*)\s+passed\s*$/gmu;
 const SAFE_ENVIRONMENT_KEYS = new Set([
   "PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP",
   "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_HOME", "RUSTFLAGS", "RUSTDOCFLAGS",
@@ -173,7 +175,9 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   if (descriptor.protocol !== "acyclic.graphcoder.suite-descriptor.v1") fail(`${lane.id} ${executionKind} descriptor protocol is invalid`);
   if (descriptor.id !== suite.id || descriptor.descriptor !== suite.descriptor || descriptor.execution_kind !== executionKind || descriptor.platform !== platform) fail(`${lane.id} ${executionKind} descriptor identity is invalid`);
   if (descriptor.source_commit !== source.commit || descriptor.source_tree !== source.tree || descriptor.source_clean !== true) fail(`${lane.id} ${executionKind} receipt is bound to a different or dirty source`);
+  if (!Array.isArray(descriptor.coverage) || descriptor.coverage.length === 0 || descriptor.coverage.some(item => !item || typeof item.requirement_id !== "string" || typeof item.assertion !== "string")) fail(`${lane.id} ${executionKind} descriptor lacks named requirement coverage`);
   if (source.canonical_worktree === undefined || descriptor.source_working_tree_sha256 !== workingTreeDigest(source.canonical_worktree)) fail(`${lane.id} ${executionKind} receipt working-tree digest is stale`);
+  if (!descriptor.execution_assertion || descriptor.execution_assertion.marker !== "graphcoder-executed-count" || !Number.isInteger(descriptor.execution_assertion.minimum_executed) || descriptor.execution_assertion.minimum_executed <= 0) fail(`${lane.id} ${executionKind} descriptor lacks an executed-count assertion`);
   const command = descriptor.command;
   if (!command || typeof command !== "object" || !Array.isArray(command.args) || typeof command.executable !== "string") fail(`${lane.id} ${executionKind} descriptor command is invalid`);
   if (lane.driver && command.args[0] !== lane.driver) fail(`${lane.id} ${executionKind} descriptor command does not invoke its declared driver as argv[0]`);
@@ -218,7 +222,17 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   }
   if (typeof suite.transcript_path !== "string" || !existsSync(suite.transcript_path)) fail(`${lane.id} ${executionKind} transcript is missing`);
   const ownedTranscriptPath = ownedPath(suite.transcript_path, "transcript");
-  if (typeof suite.transcript_sha256 !== "string" || suite.transcript_sha256 !== hash(readFileSync(ownedTranscriptPath))) fail(`${lane.id} ${executionKind} transcript digest does not match its bytes`);
+  const transcriptBytes = readFileSync(ownedTranscriptPath);
+  if (typeof suite.transcript_sha256 !== "string" || suite.transcript_sha256 !== hash(transcriptBytes)) fail(`${lane.id} ${executionKind} transcript digest does not match its bytes`);
+  const executionEvidence = suite.execution_evidence;
+  if (!executionEvidence || executionEvidence.marker !== "graphcoder-executed-count" || !Number.isInteger(executionEvidence.executed_count) || !Number.isInteger(executionEvidence.minimum_executed) || !Number.isInteger(executionEvidence.raw_exit_code) || executionEvidence.signal !== null || !Array.isArray(executionEvidence.cases)) fail(`${lane.id} ${executionKind} receipt lacks a raw-exit and executed-count witness`);
+  if (executionEvidence.minimum_executed !== descriptor.execution_assertion.minimum_executed || executionEvidence.raw_exit_code !== 0) fail(`${lane.id} ${executionKind} execution witness does not match the descriptor or successful raw exit`);
+  const countMatches = [...transcriptBytes.toString("utf8").matchAll(EXECUTION_COUNT_LINE)];
+  if (countMatches.length !== 1 || Number(countMatches[0][1]) !== executionEvidence.executed_count || executionEvidence.executed_count < executionEvidence.minimum_executed) fail(`${lane.id} ${executionKind} transcript does not prove the required executed count`);
+  const descriptorCoverage = descriptor.coverage.map(item => `${item.requirement_id}\0${item.assertion}`);
+  const evidenceCoverage = executionEvidence.cases.map(item => `${item?.requirement_id}\0${item?.assertion}`);
+  const transcriptCoverage = [...transcriptBytes.toString("utf8").matchAll(CASE_WITNESS_LINE)].map(match => `${match[1]}\0${match[2]}`);
+  if (JSON.stringify(descriptorCoverage) !== JSON.stringify(evidenceCoverage) || JSON.stringify(descriptorCoverage) !== JSON.stringify(transcriptCoverage)) fail(`${lane.id} ${executionKind} named case witnesses do not match descriptor coverage`);
   return { lane: lane.id, execution_kind: executionKind, receipt_path: receiptPath, suite_id: suite.id, descriptor_path: descriptorPath };
 }
 
