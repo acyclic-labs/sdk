@@ -35,7 +35,12 @@ use std::{
 };
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-use acyclic_fs::{CaptureOptions, HostCheckout, SourceMode, SourceOptions};
+use acyclic_fs::{
+    CaptureOptions, CancellationToken, HostCheckout, HostCheckoutRestore, HostPathReplacement,
+    MaterializeOptions, SourceMode, SourceOptions, WorkBudget,
+};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+use std::path::{Path, PathBuf};
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
@@ -1736,6 +1741,64 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// Attaches one exact native checkout to this provider. The returned
+    /// bridge retains the provider-owned source binding; callers must keep it
+    /// behind an approved Harness operation before restoring files.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn attach_native_checkout(
+        &self,
+        name: impl AsRef<str>,
+        path: impl AsRef<Path>,
+        options: SourceOptions,
+    ) -> Result<HostCheckout<A, O>> {
+        let name = name.as_ref().to_owned();
+        let path = path.as_ref().to_owned();
+        match HostCheckout::attach(&self.filesystem, &name, &path, options).await {
+            Ok(checkout) => Ok(checkout),
+            Err(attach_error) => {
+                let workspace = self
+                    .open(&workspace_ref(self.provider.clone(), &name)?)
+                    .await
+                    .map_err(|_| Error::Storage(attach_error.to_string()))?;
+                HostCheckout::from_workspace(workspace)
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))
+            }
+        }
+    }
+
+    /// Restores an authenticated generation through one already attached
+    /// checkout. Revalidation is part of the same provider-owned boundary,
+    /// so a stale host generation cannot be published after an edit.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub(crate) async fn restore_native_checkout(
+        &self,
+        checkout: &HostCheckout<A, O>,
+        generation: &GenerationRef,
+        expected: &acyclic_fs::SourceBinding,
+        reconciliation_key: acyclic_fs::IdempotencyKey,
+        paths: &[PathBuf],
+        replacement: HostPathReplacement,
+        options: &MaterializeOptions,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<HostCheckoutRestore> {
+        let generation = self.generation(checkout.workspace(), generation).await?;
+        checkout
+            .restore_paths_after_revalidation(
+                &generation,
+                expected,
+                reconciliation_key,
+                paths,
+                replacement,
+                options,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))
+    }
+
     /// Forks a project workspace from one exact generation into a new project volume.
     async fn fork_project(
         &self,

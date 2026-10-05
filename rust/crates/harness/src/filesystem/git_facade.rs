@@ -250,6 +250,14 @@ impl RootWritebackApproval {
         &self.action_digest
     }
 
+    /// Digest of the exact normalized host path set, when the approval is
+    /// path-bound. This lets a sealed native restore verify its paths without
+    /// accepting a caller-supplied authority or grant.
+    #[must_use]
+    pub const fn path_digest(&self) -> Option<&[u8; 32]> {
+        self.path_digest.as_ref()
+    }
+
     /// Parent project bound to this approval.
     #[must_use]
     pub const fn target_project(&self) -> &VolumeRef {
