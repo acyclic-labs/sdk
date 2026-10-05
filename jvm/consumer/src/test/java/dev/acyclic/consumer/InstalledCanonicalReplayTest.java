@@ -60,12 +60,12 @@ import org.junit.jupiter.api.Test;
 
 /** Replays the Rust-owned canonical execution plan against the installed JVM artifact. */
 class InstalledCanonicalReplayTest {
-  private static final String DEFAULT_MANIFEST = "../../work/canonical-106-manifest.json";
+  private static final String DEFAULT_MANIFEST = "work/canonical-106-manifest.json";
   private static final String AFTER_COMPLETION = "/after-completion";
 
   @Test
   void installedArtifactReplaysCanonicalRustPlan() throws Exception {
-    Path manifest = Path.of(System.getProperty("acyclic.canonical.manifest", DEFAULT_MANIFEST));
+    Path manifest = canonicalManifest();
     assertTrue(Files.isRegularFile(manifest), "canonical manifest is missing: " + manifest);
     JsonObject root = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
     assertEquals(111, root.get("execution_plan_count").getAsInt());
@@ -108,6 +108,19 @@ class InstalledCanonicalReplayTest {
     }
     assertTrue(failures.isEmpty(), failures.describe());
     expected.forEach((rpc, calls) -> assertTrue(calls.isEmpty(), "unreplayed canonical RPC: " + rpc));
+  }
+
+  private static Path canonicalManifest() {
+    String configured = System.getProperty("acyclic.canonical.manifest");
+    if (configured != null && !configured.isBlank()) return Path.of(configured);
+    Path cwd = Path.of(System.getProperty("user.dir")).toAbsolutePath();
+    for (Path root : List.of(cwd, cwd.getParent(), cwd.getParent() == null ? cwd : cwd.getParent().getParent())) {
+      if (root != null) {
+        Path candidate = root.resolve(DEFAULT_MANIFEST);
+        if (Files.isRegularFile(candidate)) return candidate;
+      }
+    }
+    return cwd.resolve(DEFAULT_MANIFEST);
   }
 
   private static List<ServerServiceDefinition> serviceDefinitions(
