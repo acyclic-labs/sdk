@@ -1343,13 +1343,15 @@ where
         selected.rejection_evidence = self
             .selected_rejection_evidence(&historical, &selected.selection, limits)
             .await?;
-        let output = bundle
-            .run(TurnInput::from_selected_context(
-                operation_id,
-                selected,
-                max_steps,
-            )?)
-            .await?;
+        crate::stack_diagnostics::marker("run-with-admission-enter");
+        let run = bundle.run(TurnInput::from_selected_context(
+            operation_id,
+            selected,
+            max_steps,
+        )?);
+        crate::stack_diagnostics::future_size("run-with-admission", &run);
+        let output = run.await?;
+        crate::stack_diagnostics::marker("run-with-admission-complete");
         self.append_assistant(operation_id, user_id, &output, limits)
             .await?;
         Ok(output)

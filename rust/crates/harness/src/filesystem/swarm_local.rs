@@ -1574,6 +1574,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
 
     fn publish<'a>(&'a self, publication: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            crate::stack_diagnostics::marker("fork-publisher-enter");
             // The publisher is registered for every completed model batch;
             // most batches do not select the fork tool and must complete as a
             // durable no-op. A selected fork is still required to carry its
@@ -1681,6 +1682,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                     swarm.workers.enqueue(child, Self::run_scheduled_child(owner, turn)).await?;
                 }
             }
+            crate::stack_diagnostics::marker("fork-publisher-complete");
             self.plans
                 .mark_completed(
                     publication.operation_id,
@@ -3463,7 +3465,9 @@ impl PersistentLocalSwarm {
     /// Runs a root prompt under the shared durable local harness.
     pub async fn run_root(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
         let task = self.root_task().await?;
-        self.run_existing(task, operation, prompt).await
+        let run = self.run_existing(task, operation, prompt);
+        crate::stack_diagnostics::future_size("run-existing", &run);
+        run.await
     }
 
     /// Runs a known session with an explicit operation identity.
@@ -3473,7 +3477,9 @@ impl PersistentLocalSwarm {
         operation: OperationId,
         prompt: &str,
     ) -> Result<TurnOutput> {
-        self.run_existing(task, operation, prompt).await
+        let run = self.run_existing(task, operation, prompt);
+        crate::stack_diagnostics::future_size("run-existing", &run);
+        run.await
     }
 
     fn run_existing<'a>(
@@ -3487,6 +3493,7 @@ impl PersistentLocalSwarm {
         // cancellation, storage, and executor state in every caller future
         // can exhaust the native test thread stack before provider dispatch.
         Box::pin(async move {
+            crate::stack_diagnostics::marker("root-admission-enter");
             self.live.cancellation.register(task)?;
             let mut cancelled = self.live.cancellation.receiver(task).ok_or_else(|| {
                 Error::Storage("registered task cancellation scope disappeared".into())
@@ -3520,6 +3527,7 @@ impl PersistentLocalSwarm {
                     harness.run_with_max_steps(operation, prompt, max_steps).await
                 }
             };
+            crate::stack_diagnostics::future_size("local-run-body", &run);
             let output = tokio::select! {
                 biased;
                 result = cancellation_requested(&mut cancelled) => {
@@ -3528,6 +3536,7 @@ impl PersistentLocalSwarm {
                 }
                 output = run => output?,
             };
+            crate::stack_diagnostics::marker("root-admission-model-complete");
             // The per-task mutex only fences handles in this process.  A second
             // process can cancel the task while the model is running, so the
             // registry must be refreshed before the terminal Session event is
@@ -4504,6 +4513,7 @@ impl PersistentLocalSwarm {
         // cancellation cannot leave a second task detached from provider
         // cleanup.
         let child_task = Self::run_child_turn(harness, bundle, request, max_steps);
+        crate::stack_diagnostics::future_size("run-child-boxed", &child_task);
         tokio::pin!(child_task);
         tokio::select! {
             result = &mut child_task => result,
