@@ -775,6 +775,55 @@ pub fn to_pretty_json(bundle: &DocsBundle) -> Result<String, Error> {
     Ok(serde_json::to_string_pretty(bundle)? + "\n")
 }
 
+/// Rust identity and public route identity for one generated documentation
+/// family. The package and crate names remain exact Rust metadata; the public
+/// slug is the stable website route shared by current and historical package
+/// names.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocumentationRouteIdentity {
+    /// Stable public route used by the website, such as inference.
+    #[serde(rename = "publicSlug")]
+    pub public_slug: String,
+    /// Exact Cargo package name that produced this bundle entry.
+    #[serde(rename = "rustPackage")]
+    pub rust_package: String,
+    /// Exact Rust library crate name, when the manifest declares one.
+    #[serde(rename = "rustCrate", skip_serializing_if = "Option::is_none")]
+    pub rust_crate: Option<String>,
+    /// Older package-derived slugs normalized to public_slug for released
+    /// archives. These are provenance, not independently authored redirects.
+    #[serde(rename = "historicalSlugs")]
+    pub historical_slugs: Vec<String>,
+}
+
+/// Derive the public documentation route from Rust package metadata.
+///
+/// Historical archives used fs and inference-sdk as package-derived route
+/// slugs. Their Rust identities remain intact, while the generated public
+/// route is normalized to filesystem and inference respectively so the
+/// website can resolve every release through one data-driven lookup.
+pub fn documentation_route_identity(
+    package_name: &str,
+    crate_name: Option<&str>,
+) -> DocumentationRouteIdentity {
+    let package_slug = package_name.strip_prefix("acyclic-").unwrap_or(package_name);
+    let public_slug = match package_slug {
+        "fs" => "filesystem",
+        "inference-sdk" => "inference",
+        slug => slug,
+    };
+    let historical_slugs = (public_slug != package_slug)
+        .then(|| package_slug.to_owned())
+        .into_iter()
+        .collect();
+    DocumentationRouteIdentity {
+        public_slug: public_slug.to_owned(),
+        rust_package: package_name.to_owned(),
+        rust_crate: crate_name.map(str::to_owned),
+        historical_slugs,
+    }
+}
+
 /// Serialize the compact, website-facing projection without moving content
 /// authority into a website language. The full bundle remains the provenance
 /// artifact; this projection carries its digest and source revision.
@@ -788,6 +837,10 @@ pub fn to_website_json(
         .crates
         .iter()
         .map(|crate_bundle| {
+            let route = documentation_route_identity(
+                &crate_bundle.package_name,
+                crate_bundle.crate_name.as_deref(),
+            );
             let title = crate_bundle
                 .package_name
                 .strip_prefix("acyclic-")
@@ -842,7 +895,8 @@ pub fn to_website_json(
                 })
                 .collect::<Vec<_>>();
             serde_json::json!({
-                "slug": crate_bundle.package_name.strip_prefix("acyclic-").unwrap_or(&crate_bundle.package_name),
+                "slug": route.public_slug,
+                "route": route,
                 "title": title,
                 "crate": crate_bundle.package_name,
                 "crateName": crate_bundle.crate_name,
@@ -936,10 +990,7 @@ fn reexport_target_projection(
                 .find(|(_, item)| item.name == name)
         })
     });
-    let family = target
-        .package
-        .strip_prefix("acyclic-")
-        .unwrap_or(&target.package);
+    let family = documentation_route_identity(&target.package, None).public_slug;
     serde_json::json!({
         "package": target.package,
         "family": family,
@@ -4603,7 +4654,7 @@ mod tests {
             },
             &[target_crate],
         );
-        assert_eq!(projection["family"], "fs");
+        assert_eq!(projection["family"], "filesystem");
         assert_eq!(projection["definition"]["name"], "Filesystem");
         assert_eq!(projection["definition"]["index"], 0);
         assert_eq!(projection["definition"]["summary"], "Filesystem access.");
@@ -4620,6 +4671,23 @@ mod tests {
             projection["definition"]["signature"]["generics"]["params"],
             serde_json::json!([])
         );
+    }
+
+    #[test]
+    fn documentation_routes_normalize_historical_package_slugs() {
+        let inference = documentation_route_identity("inference-sdk", Some("inference_sdk"));
+        assert_eq!(inference.public_slug, "inference");
+        assert_eq!(inference.rust_package, "inference-sdk");
+        assert_eq!(inference.rust_crate.as_deref(), Some("inference_sdk"));
+        assert_eq!(inference.historical_slugs, ["inference-sdk"]);
+
+        let filesystem = documentation_route_identity("acyclic-fs", Some("acyclic_fs"));
+        assert_eq!(filesystem.public_slug, "filesystem");
+        assert_eq!(filesystem.historical_slugs, ["fs"]);
+
+        let current = documentation_route_identity("acyclic-inference", Some("inference_sdk"));
+        assert_eq!(current.public_slug, "inference");
+        assert!(current.historical_slugs.is_empty());
     }
 
     #[test]
