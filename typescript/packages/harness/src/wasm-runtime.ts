@@ -38,6 +38,9 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateTaskChildrenPage",
   "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
   "encodeCanonicalJson", "digestCanonicalJson",
+  "validateOfflineCommand", "validateReplayDelivery",
+  "harnessDefaultResidentBytes", "harnessDefaultResidentFiles",
+  "harnessMaxInlineAttachments", "harnessAttachmentManifestMediaType",
 ] as const satisfies readonly (keyof typeof import("../generated/wasm/acyclic_harness_wasm.js"))[];
 
 // `initWasm()` resolves to the raw instance exports. The generated JS module
@@ -46,6 +49,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
 const REQUIRED_WASM_CONTENT_EXPORTS = [
   "__wbg_wasmcontentstore_free", "wasmcontentstore_generation",
   "wasmcontentstore_has", "wasmcontentstore_list", "wasmcontentstore_new",
+  "wasmcontentstore_newDefault",
   "wasmcontentstore_pathConflicts", "wasmcontentstore_read",
   "wasmcontentstore_read_path", "wasmcontentstore_stage",
 ] as const;

@@ -399,24 +399,13 @@ export class HarnessClient<Event = unknown> {
   async #acceptSerialized(delivery: Delivery<Event>): Promise<void> {
     const key = authorityKey(delivery.authority);
     const previous = this.#cursors.get(key);
-    const expected = previous?.revision ?? 0n;
-    if (previous !== undefined && previous.generation !== delivery.generation) {
-      throw new ReplayError(delivery.authority, "replay generation changed");
+    let cursor: ReplayCursor;
+    try {
+      cursor = await (await NativeContracts.create()).validateReplayDelivery(previous ?? null, delivery);
+    } catch (error) {
+      throw new ReplayError(delivery.authority, String(error));
     }
-    if (delivery.fromRevision !== expected || delivery.throughRevision < delivery.fromRevision) {
-      throw new ReplayError(delivery.authority, "non-contiguous delivery");
-    }
-    let revision = expected;
-    for (const event of delivery.events) {
-      revision += 1n;
-      if (authorityKey(event.authority) !== key || event.revision !== revision) {
-        throw new ReplayError(delivery.authority, "event authority or revision mismatch");
-      }
-    }
-    if (revision !== delivery.throughRevision) {
-      throw new ReplayError(delivery.authority, "delivery coverage mismatch");
-    }
-    let committed = expected;
+    let committed = previous?.revision ?? 0n;
     for (const event of delivery.events) {
       for (const listener of this.#listeners) listener(event);
       committed = event.revision;
@@ -430,7 +419,6 @@ export class HarnessClient<Event = unknown> {
       this.#cursors.set(key, cursor);
     }
     if (delivery.events.length === 0) {
-      const cursor = { generation: delivery.generation, revision };
       await this.cursorStore.putCursor(delivery.authority, cursor);
       this.#cursors.set(key, cursor);
     }
@@ -507,70 +495,8 @@ function positiveBound(value: number, name: string): number {
 /** An offline retry record may carry refs and routing metadata, never a bearer or inline body. */
 async function assertOutboxSafe(command: ClientCommand): Promise<ClientCommand> {
   const admitted = cloneStructuredValue(command, new Set()) as ClientCommand;
-  if (admitted.offlineSafe !== true || admitted.kind === "interaction.resolve.approval") {
-    throw new TypeError("command is not safe for the offline outbox");
-  }
-  const fields = Object.keys(admitted);
-  if (fields.length !== 5 || fields.some(field => !["operationId", "authority", "kind", "payload", "offlineSafe"].includes(field))) {
-    throw new TypeError("offline outbox command contains an unsupported field");
-  }
-  if (admitted.authority === null || typeof admitted.authority !== "object"
-    || Object.getPrototypeOf(admitted.authority) !== Object.prototype
-    || Object.keys(admitted.authority).length !== 2
-    || !Object.keys(admitted.authority).every(field => field === "kind" || field === "id")) {
-    throw new TypeError("offline outbox authority contains an unsupported field");
-  }
-  if (!isSafeAuthorityId(admitted.authority.id)) {
-    throw new TypeError("offline outbox authority contains an unsafe identity");
-  }
-  const forbidden = /(?:token|authorization|credential|secret|password|api[_-]?key|(?:^|[_-])(?:scope|proof|body|text|bytes|base64|data)(?:$|[_-]))/i;
-  const visit = (value: unknown, ancestors: Set<object>): void => {
-    if (value === null || typeof value !== "object") return;
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-      throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-    }
-    if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-    ancestors.add(value);
-    try {
-      for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-        if (!descriptor.enumerable) continue;
-        if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-        if (forbidden.test(key)) throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-        visit(descriptor.value, ancestors);
-      }
-    } finally { ancestors.delete(value); }
-  };
-  visit(admitted, new Set());
-  const payload = admitted.payload;
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload) ||
-      Object.getPrototypeOf(payload) !== Object.prototype) {
-    throw new TypeError("offline outbox payload must be a ref-only record");
-  }
-  for (const key of Object.keys(payload)) {
-    if (!["content", "attachments", "artifacts", "references", "metadata"].includes(key)) {
-      throw new TypeError("offline outbox payload contains an unsupported field");
-    }
-  }
   const contracts = await NativeContracts.create();
-  if (payload.content !== undefined) contracts.validate("file_ref", payload.content);
-  if (payload.attachments !== undefined) contracts.validate("attachments", payload.attachments);
-  for (const refs of [payload.artifacts, payload.references]) {
-    if (refs === undefined) continue;
-    if (!Array.isArray(refs)) throw new TypeError("offline outbox references must be a list");
-    for (const reference of refs) contracts.validate("file_ref", reference);
-  }
-  if (payload.metadata !== undefined) {
-    if (payload.metadata === null || typeof payload.metadata !== "object" || Array.isArray(payload.metadata) ||
-        Object.getPrototypeOf(payload.metadata) !== Object.prototype) {
-      throw new TypeError("offline outbox metadata must be a record");
-    }
-    for (const [key, value] of Object.entries(payload.metadata)) {
-      if (forbidden.test(key) || !(value === null || ["number", "boolean", "bigint"].includes(typeof value))) {
-        throw new TypeError("offline outbox metadata contains an unsafe value");
-      }
-    }
-  }
-  return admitted;
+  return contracts.validateOfflineCommand(admitted);
 }
 
 async function structuredSize(value: unknown): Promise<number> {

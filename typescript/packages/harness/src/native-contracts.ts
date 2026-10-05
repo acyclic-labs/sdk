@@ -483,6 +483,16 @@ export class NativeContracts {
     if (digest.byteLength !== 32) throw new TypeError("native canonical digest has an invalid length");
     return digest;
   }
+
+  /** Admit a retryable command through the Rust-owned outbox policy. */
+  validateOfflineCommand<Command>(value: Command): Command {
+    return this.native.validateOfflineCommand(value) as Command;
+  }
+
+  /** Validate replay generation, authority, and cursor continuity in Rust. */
+  validateReplayDelivery<Cursor, Delivery>(previous: Cursor | null, delivery: Delivery): Cursor {
+    return this.native.validateReplayDelivery(previous, delivery) as Cursor;
+  }
 }
 
 /** Strip executable parser/handler members before crossing the serde WASM ABI. */

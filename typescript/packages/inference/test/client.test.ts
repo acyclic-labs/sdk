@@ -56,15 +56,15 @@ test("Rust reflection supplies every nonzero terminal and validates request shap
   await expect(validateRuntimeShape(CreateContextRequestSchema, JSON.parse('{"model":7}'))).rejects.toThrow("invalid protobuf type");
 });
 
-test("terminal metadata validation rejects Rust/protobuf drift", () => {
+test("Rust terminal metadata validation rejects descriptor drift", async () => {
   const valid = RUN_TERMINAL_METADATA.map(item => ({ ...item }));
-  expect(validateRunTerminalMetadata(JSON.stringify(valid))).toEqual(valid);
-  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.slice(1)))).toThrow("does not cover the generated enum");
-  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
-    index === 0 ? { ...item, kind: "renamed" } : item)))).toThrow("does not cover the generated enum");
-  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
-    index === 0 ? { ...item, partial: !item.partial } : item)))).toThrow("does not cover the generated enum");
-  expect(() => validateRunTerminalMetadata("[{\"number\":1,\"kind\":\"completed\"}]")).toThrow("invalid entry");
+  await expect(validateRunTerminalMetadata(JSON.stringify(valid))).resolves.toEqual(valid);
+  await expect(validateRunTerminalMetadata(JSON.stringify(valid.slice(1)))).rejects.toThrow("does not match the Rust descriptor");
+  await expect(validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
+    index === 0 ? { ...item, kind: "renamed" } : item)))).rejects.toThrow("does not match the Rust descriptor");
+  await expect(validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
+    index === 0 ? { ...item, partial: !item.partial } : item)))).rejects.toThrow("does not match the Rust descriptor");
+  await expect(validateRunTerminalMetadata("[{\"number\":1,\"kind\":\"completed\"}]")).rejects.toThrow("does not match the Rust descriptor");
 });
 
 test("ergonomic identity helpers enforce Rust-derived fixed widths at both boundaries", () => {
