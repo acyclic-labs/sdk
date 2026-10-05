@@ -13,6 +13,14 @@ if ($manifest.kind -ne 'real_harness_trace_manifest') {
 foreach ($name in @(
     'fork_admitted_sequence',
     'fork_completed_sequence',
+    'publication_completion_sequence',
+    'publication_completion_operation',
+    'publication_completion_digest',
+    'publication_completion_record_bytes_hex',
+    'publication_completion_record_sha256',
+    'publication_completion_replay_count',
+    'publication_completion_replay_same_digest',
+    'publication_completion_replay_substitution_rejected',
     'parent_conversation_revision',
     'parent_conversation_operation',
     'child_execution_model_started_sequence',
@@ -60,6 +68,7 @@ foreach ($name in @(
 foreach ($name in @(
     'fork_operation_id',
     'publication_operation_id',
+    'publication_completion_operation_id',
     'child_operation_id',
     'parent_event_operation_id',
     'completion_operation_id'
@@ -209,6 +218,11 @@ function RequireJsonEqual($Observed, $Expected, [string]$Name) {
     }
 }
 
+function EventBody($Event) {
+    if ($null -ne $Event.message) { return $Event.message }
+    return $Event
+}
+
 function JsonByteArrayHex($Value, [string]$Name) {
     if ($null -eq $Value) { throw "$Name is missing." }
     try {
@@ -231,7 +245,7 @@ if (($manifest.source.admission_record -eq 'fork_prepared' -and [string]$admissi
     ($manifest.source.admission_record -eq 'fork_admitted_legacy' -and [string]$admissionEvent.kind -ne 'fork_admitted')) {
     throw 'admission record kind does not match the recorded source kind.'
 }
-$admissionMessage = $admissionEvent.message
+$admissionMessage = EventBody $admissionEvent
 if ($null -eq $admissionMessage) { throw 'admission record has no typed message body.' }
 if ([string]$admissionMessage.parent_operation -ne [string]$manifest.source.root_operation -or
     [string]$admissionMessage.child_operation -ne [string]$manifest.identity_binding.child_operation_id -or
@@ -282,12 +296,17 @@ if ([string]$admissionPublication.operation_id -ne [string]$manifest.identity_bi
     [int64]$admissionPublication.step -ne [int64]$manifest.source.parent_step) {
     throw 'admission publication operation, parent, or step does not match the source binding.'
 }
+$recomputedPublicationDigest = InvokePythonHex (DecodeHex ([string]$manifest.source.publication_canonical_bytes_hex) 'publication') $blake3Code 'publication digest'
+if ($recomputedPublicationDigest -ne (JsonByteArrayHex $manifest.source.publication_completion_digest 'publication completion digest')) {
+    throw 'publication completion digest does not match the SDK blake3 digest of canonical publication bytes.'
+}
 
 $completionRecord = ParseCanonicalJson ([string]$manifest.source.completion_record_bytes_hex) 'completion record'
-if ($null -eq $completionRecord.event -or [string]$completionRecord.event.kind -ne 'fork_completed') {
+$completionEvent = $completionRecord.event
+if ($null -eq $completionEvent -or [string]$completionEvent.kind -ne 'fork_completed') {
     throw 'completion record is not a ForkCompleted envelope.'
 }
-$completionMessage = $completionRecord.event.message
+$completionMessage = if ($null -ne $completionEvent.message) { $completionEvent.message } else { $completionEvent }
 if ($null -eq $completionMessage -or
     [string]$completionMessage.child -ne [string]$manifest.source.child_task -or
     [string]$completionMessage.operation -ne [string]$manifest.identity_binding.child_operation_id) {
@@ -302,6 +321,37 @@ RequireJsonEqual $completionMessage.output_ref $manifest.source.completion_outpu
 RequireJsonEqual $completionMessage.output_digest $manifest.source.completion_output_digest 'completion output digest'
 if ($null -eq $completionMessage.output_digest) {
     throw 'completion record has no durable output digest.'
+}
+
+$publicationCompletionRecord = ParseCanonicalJson ([string]$manifest.source.publication_completion_record_bytes_hex) 'publication completion record'
+$publicationCompletionEvent = $publicationCompletionRecord.event
+if ($null -eq $publicationCompletionEvent -or
+    [string]$publicationCompletionEvent.kind -ne 'fork_publication_completed') {
+    throw 'publication completion record is not a ForkPublicationCompleted envelope.'
+}
+$publicationCompletionMessage = if ($null -ne $publicationCompletionEvent.message) {
+    $publicationCompletionEvent.message
+} else {
+    $publicationCompletionEvent
+}
+if ($null -eq $publicationCompletionMessage -or
+    [string]$publicationCompletionMessage.operation -ne [string]$manifest.identity_binding.publication_operation_id -or
+    [string]$publicationCompletionMessage.operation -ne [string]$manifest.source.publication_completion_operation -or
+    (JsonByteArrayHex $publicationCompletionMessage.digest 'publication completion digest') -ne
+        (JsonByteArrayHex $manifest.source.publication_completion_digest 'manifest publication completion digest')) {
+    throw 'publication completion receipt is not bound to the admitted publication identity and digest.'
+}
+if ([int64]$manifest.source.publication_completion_sequence -le [int64]$manifest.source.fork_admitted_sequence) {
+    throw 'publication completion receipt does not follow its admitted fork record.'
+}
+if ([string]$manifest.identity_binding.publication_completion_operation_id -ne
+    [string]$manifest.identity_binding.publication_operation_id) {
+    throw 'publication completion operation is not the admitted publication operation.'
+}
+if ([int64]$manifest.source.publication_completion_replay_count -ne 1 -or
+    $manifest.source.publication_completion_replay_same_digest -ne $true -or
+    $manifest.source.publication_completion_replay_substitution_rejected -ne $true) {
+    throw 'publication completion replay did not prove same-digest idempotence and substitution rejection.'
 }
 
 $parentEvent = ParseCanonicalJson ([string]$manifest.source.parent_event_canonical_bytes_hex) 'parent event'
@@ -382,6 +432,7 @@ if ($manifest.trace_binding.trace_sha256 -ne (Sha256Hex $traceBytes)) {
 }
 foreach ($record in @(
     @{ Bytes = $manifest.source.admission_record_bytes_hex; Digest = $manifest.source.admission_record_sha256; Name = 'admission record' },
+    @{ Bytes = $manifest.source.publication_completion_record_bytes_hex; Digest = $manifest.source.publication_completion_record_sha256; Name = 'publication completion record' },
     @{ Bytes = $manifest.source.completion_record_bytes_hex; Digest = $manifest.source.completion_record_sha256; Name = 'completion record' },
     @{ Bytes = $manifest.source.parent_event_canonical_bytes_hex; Digest = $manifest.source.parent_event_sha256; Name = 'parent event' },
     @{ Bytes = $manifest.source.child_model_event_canonical_bytes_hex; Digest = $manifest.source.child_model_event_sha256; Name = 'child model event' }
@@ -415,6 +466,9 @@ if ($admission[0].fork_operation_id -ne $manifest.identity_binding.fork_operatio
     $admission[0].child_operation_id -ne $manifest.identity_binding.child_operation_id -or
     $publication[0].fork_operation_id -ne $manifest.identity_binding.fork_operation_id -or
     $publication[0].publication_operation_id -ne $manifest.identity_binding.publication_operation_id -or
+    [int64]$publication[0].publication_completion_sequence -ne [int64]$manifest.source.publication_completion_sequence -or
+    [string]$publication[0].publication_completion_digest -ne
+        (JsonByteArrayHex $manifest.source.publication_completion_digest 'manifest publication completion digest') -or
     $started[0].child_operation_id -ne $manifest.identity_binding.child_operation_id -or
     $completed[0].child_operation_id -ne $manifest.identity_binding.child_operation_id) {
     throw 'real trace event identities do not match the authenticated source binding.'
@@ -448,6 +502,7 @@ if ([string]$manifest.normalization.task_ids.'1' -ne [string]$manifest.source.ro
     throw 'real trace normalization maps do not match the durable identity witnesses.'
 }
 if ($manifest.identity_binding.parent_event_operation_id -ne $manifest.identity_binding.fork_operation_id -or
+    $manifest.identity_binding.publication_completion_operation_id -ne $manifest.identity_binding.publication_operation_id -or
     $manifest.identity_binding.completion_operation_id -ne $manifest.identity_binding.child_operation_id) {
     throw 'real source operation identities are not bound across publication and completion.'
 }

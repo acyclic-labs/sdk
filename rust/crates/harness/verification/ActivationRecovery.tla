@@ -99,4 +99,7 @@ SuccessRequiresDurableResult ==
 FailureRequiresDurableResult ==
     (reported /\ outcome = "failed") => (~started \/ dispatched = 1)
 CancellationNeverReportsSuccess == cancelled => ~reported
+CancellationBeforeAdmissionHasNoDispatch == (cancelled /\ ~started) => dispatched = 0
+CancellationAfterAdmissionRetainsClaim == (cancelled /\ started) => claim
+RecoveryDoesNotRedispatch == dispatched <= 1
 =============================================================================
