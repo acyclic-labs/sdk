@@ -1,6 +1,6 @@
 {
-  "source_commit": "2d05ab46b1e5312005ba32321ca312303b06f0ab",
-  "source_tree": "eb7214b8f5a667d49aaeee4682224c5fcb8f4b6e",
+  "source_commit": "f1ec28db125d0e1fffd1dcf11c52f11f74f7d2a8",
+  "source_tree": "f2f23c899a9acf22e6274df92b5d6dd7b2af522f",
   "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
   "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
   "tools_jar": {
@@ -279,12 +279,21 @@
   "runtime_conformance": {
     "status": "open",
     "qualification": "rust/crates/harness/verification/qualify-real-trace.ps1",
-    "reason": "No Cargo/native real-trace gate was run in this slot; the bounded integration/approval model and transition matrix are qualified, but actual runtime evidence remains open."
+    "reason": "No Cargo/native real-trace gate was run in this slot; finite integration/approval evidence and strict canonical seed validation are qualified, but actual runtime evidence remains open."
   },
   "scope": "bounded finite safety design evidence only; no Rust refinement, liveness, OS confinement, approval/budget trace proof, causal total order, or whole-swarm theorem",
   "model_evidence": {
     "evidence_directory": "D:/graphcoder-builds/formal-evidence/formal-integration-precommit4-20261005",
-    "run_scope": "SwarmIntegration safe plus four reachable negative controls; source model and runner files are bound to source_commit/source_tree and model_files/runner; TLC output logs are bound by log_sha256.",
-    "model_files_unchanged_since_run": true
+    "run_scope": "SwarmIntegration safe plus four reachable negative controls, run against model commit 2d05ab46; current source commit retains identical model and checker hashes and adds canonical trace validation.",
+    "model_files_unchanged_since_run": true,
+    "model_run_source_commit": "2d05ab46b1e5312005ba32321ca312303b06f0ab",
+    "model_run_source_tree": "eb7214b8f5a667d49aaeee4682224c5fcb8f4b6e"
+  },
+  "real_trace_checker": {
+    "checker": "rust/crates/harness/verification/check-real-trace.ps1",
+    "checker_sha256": "1d0f20a9d9d97a13e3995b3d7e2821b8a1fee464639c8902cdcd9e58729cec1b",
+    "qualification": "rust/crates/harness/verification/qualify-real-trace.ps1",
+    "qualification_sha256": "a788fbd86c45a120dd5784ff5d84d6b89d9e3cba3fd0ae1ea3b034fcf0d0196b",
+    "mutation_count": 12
   }
 }
