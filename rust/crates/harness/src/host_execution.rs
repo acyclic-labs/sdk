@@ -12,7 +12,9 @@ use crate::{
     effects::{EffectDispatch, EffectObservation, EffectProvider},
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use acyclic_native_runtime::{
+    OutputReader, ProcessTree, spawn_output_reader, spawn_process_tree,
+};
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -1099,8 +1101,29 @@ impl ExecutionRunner for NativeExecutionRunner {
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(
             request.max_output_bytes as usize,
         ));
-        let stdout_thread = spawn_reader(stdout, Arc::clone(&remaining), Arc::clone(&overflow));
-        let stderr_thread = spawn_reader(stderr, Arc::clone(&remaining), Arc::clone(&overflow));
+        let mut stdout_thread = match spawn_reader(
+            stdout,
+            Arc::clone(&remaining),
+            Arc::clone(&overflow),
+        ) {
+            Ok(reader) => reader,
+            Err(error) => {
+                let _ = child.terminate();
+                return Err(error);
+            }
+        };
+        let mut stderr_thread = match spawn_reader(
+            stderr,
+            Arc::clone(&remaining),
+            Arc::clone(&overflow),
+        ) {
+            Ok(reader) => reader,
+            Err(error) => {
+                let _ = child.terminate();
+                let _ = finish_reader(&mut stdout_thread, None);
+                return Err(error);
+            }
+        };
         let termination;
         let mut termination_error = None;
         loop {
@@ -1121,8 +1144,46 @@ impl ExecutionRunner for NativeExecutionRunner {
             if let Some(status) = child.try_wait().map_err(|error| {
                 Error::Storage(format!("failed waiting for approved process: {error}"))
             })? {
-                let stdout = receive_reader(&stdout_thread)?;
-                let stderr = receive_reader(&stderr_thread)?;
+                let stdout = match receive_reader(&mut stdout_thread) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        let _ = child.terminate();
+                        let _ = finish_reader(&mut stdout_thread, None);
+                        let _ = finish_reader(&mut stderr_thread, None);
+                        return Err(error);
+                    }
+                };
+                let stderr = match receive_reader(&mut stderr_thread) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        let _ = child.terminate();
+                        let _ = finish_reader(&mut stdout_thread, stdout);
+                        let _ = finish_reader(&mut stderr_thread, None);
+                        return Err(error);
+                    }
+                };
+                if stdout.is_none() || stderr.is_none() {
+                    let _ = child.terminate();
+                    let stdout = finish_reader(&mut stdout_thread, stdout)?;
+                    let stderr = finish_reader(&mut stderr_thread, stderr)?;
+                    if overflow.load(Ordering::Acquire) {
+                        return Err(Error::Invalid(
+                            "approved process output exceeded its limit".into(),
+                        ));
+                    }
+                    let (Some(stdout), Some(stderr)) = (stdout, stderr) else {
+                        return Ok(RunnerOutcome::Unknown {
+                            reason: "process descendants retained output handles".into(),
+                        });
+                    };
+                    return Ok(RunnerOutcome::Exited {
+                        status_code: status.code(),
+                        stdout,
+                        stderr,
+                    });
+                }
+                finish_reader(&mut stdout_thread, stdout)?;
+                finish_reader(&mut stderr_thread, stderr)?;
                 if overflow.load(Ordering::Acquire) {
                     return Err(Error::Invalid(
                         "approved process output exceeded its limit".into(),
@@ -1148,16 +1209,37 @@ impl ExecutionRunner for NativeExecutionRunner {
             }
             thread::sleep(Duration::from_millis(5));
         }
-        let stdout = receive_reader(&stdout_thread);
-        let stderr = receive_reader(&stderr_thread);
+        let stdout_observed = receive_reader(&mut stdout_thread);
+        let stderr_observed = receive_reader(&mut stderr_thread);
         if let Some(reason) = termination_error {
             // A failed tree signal leaves the external effect uncertain even
             // when both output pipes have closed. Never publish timeout,
             // cancellation, or overflow as a terminal result in that case.
+            let _ = finish_reader(
+                &mut stdout_thread,
+                stdout_observed.ok().flatten(),
+            );
+            let _ = finish_reader(
+                &mut stderr_thread,
+                stderr_observed.ok().flatten(),
+            );
             return Ok(RunnerOutcome::Unknown { reason });
         }
-        let stdout = stdout?;
-        let stderr = stderr?;
+        let stdout = match stdout_observed {
+            Ok(output) => finish_reader(&mut stdout_thread, output)?,
+            Err(error) => {
+                let _ = finish_reader(&mut stdout_thread, None);
+                let _ = finish_reader(&mut stderr_thread, stderr_observed.ok().flatten());
+                return Err(error);
+            }
+        };
+        let stderr = match stderr_observed {
+            Ok(output) => finish_reader(&mut stderr_thread, output)?,
+            Err(error) => {
+                let _ = finish_reader(&mut stderr_thread, None);
+                return Err(error);
+            }
+        };
         if overflow.load(Ordering::Acquire) {
             return Err(Error::Invalid(
                 "approved process output exceeded its limit".into(),
@@ -1259,11 +1341,87 @@ enum Termination {
     Overflow,
 }
 
+fn consume_output(
+    chunk: &[u8],
+    remaining: &std::sync::atomic::AtomicUsize,
+    overflow: &AtomicBool,
+) -> bool {
+    let consumed = remaining.fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
+        available.checked_sub(chunk.len())
+    });
+    if consumed.is_err() {
+        overflow.store(true, Ordering::Release);
+        false
+    } else {
+        true
+    }
+}
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+struct ReaderTask(OutputReader);
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn reader_consumer(
+    remaining: Arc<std::sync::atomic::AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> impl FnMut(&[u8]) -> bool + Send + 'static {
+    move |chunk| consume_output(chunk, &remaining, &overflow)
+}
+
+#[cfg(all(
+    feature = "native-process-tree",
+    not(target_arch = "wasm32"),
+    any(target_os = "linux", target_vendor = "apple")
+))]
+fn spawn_reader<R: Read + std::os::fd::AsRawFd + Send + 'static>(
+    reader: R,
+    remaining: Arc<std::sync::atomic::AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> Result<ReaderTask> {
+    spawn_output_reader(reader, reader_consumer(remaining, overflow))
+        .map(ReaderTask)
+        .map_err(|error| Error::Storage(format!("failed to start process output reader: {error}")))
+}
+
+#[cfg(all(
+    feature = "native-process-tree",
+    not(target_arch = "wasm32"),
+    windows
+))]
+fn spawn_reader<R: Read + std::os::windows::io::AsRawHandle + Send + 'static>(
+    reader: R,
+    remaining: Arc<std::sync::atomic::AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> Result<ReaderTask> {
+    spawn_output_reader(reader, reader_consumer(remaining, overflow))
+        .map(ReaderTask)
+        .map_err(|error| Error::Storage(format!("failed to start process output reader: {error}")))
+}
+
+#[cfg(all(
+    feature = "native-process-tree",
+    not(target_arch = "wasm32"),
+    not(any(target_os = "linux", target_vendor = "apple", windows))
+))]
+fn spawn_reader<R: Read + Send + 'static>(
+    reader: R,
+    remaining: Arc<std::sync::atomic::AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> Result<ReaderTask> {
+    spawn_output_reader(reader, reader_consumer(remaining, overflow))
+        .map(ReaderTask)
+        .map_err(|error| Error::Storage(format!("failed to start process output reader: {error}")))
+}
+
+#[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
+type ReaderTask = Receiver<Result<Vec<u8>>>;
+
+#[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     remaining: Arc<std::sync::atomic::AtomicUsize>,
     overflow: Arc<AtomicBool>,
-) -> Receiver<Result<Vec<u8>>> {
+) -> Result<ReaderTask> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let result = (|| {
@@ -1276,25 +1434,27 @@ fn spawn_reader<R: Read + Send + 'static>(
                 if read == 0 {
                     break;
                 }
-                let consumed =
-                    remaining.fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
-                        available.checked_sub(read)
-                    });
-                if consumed.is_err() {
-                    overflow.store(true, Ordering::Release);
+                if !consume_output(&buffer[..read], &remaining, &overflow) {
                     break;
                 }
-                bytes.extend_from_slice(buffer.get(..read).ok_or_else(|| {
-                    Error::Storage("process reader returned an invalid length".into())
-                })?);
+                bytes.extend_from_slice(&buffer[..read]);
             }
             Ok(bytes)
         })();
         let _ = sender.send(result);
     });
-    receiver
+    Ok(receiver)
 }
 
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn receive_reader(reader: &mut ReaderTask) -> Result<Option<Vec<u8>>> {
+    reader
+        .0
+        .receive(READER_GRACE)
+        .map_err(|error| Error::Storage(format!("failed reading process output: {error}")))
+}
+
+#[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
 fn receive_reader(receiver: &Receiver<Result<Vec<u8>>>) -> Result<Option<Vec<u8>>> {
     match receiver.recv_timeout(READER_GRACE) {
         Ok(result) => result.map(Some),
@@ -1303,6 +1463,27 @@ fn receive_reader(receiver: &Receiver<Result<Vec<u8>>>) -> Result<Option<Vec<u8>
             "process output reader disconnected without a result".into(),
         )),
     }
+}
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn finish_reader(reader: &mut ReaderTask, output: Option<Vec<u8>>) -> Result<Option<Vec<u8>>> {
+    if let Some(output) = output {
+        reader
+            .0
+            .join()
+            .map_err(|error| Error::Storage(format!("process output reader failed: {error}")))?;
+        Ok(Some(output))
+    } else {
+        reader
+            .0
+            .cancel_and_join()
+            .map_err(|error| Error::Storage(format!("process output reader failed: {error}")))
+    }
+}
+
+#[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
+fn finish_reader(_reader: &mut ReaderTask, output: Option<Vec<u8>>) -> Result<Option<Vec<u8>>> {
+    Ok(output)
 }
 
 /// Immutable dispatch identity presented to the approval authority.

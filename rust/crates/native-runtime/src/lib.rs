@@ -339,10 +339,12 @@ impl NativeFile {
 mod apple;
 #[cfg(target_os = "linux")]
 mod linux;
+mod process_output;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
 
+pub use process_output::{OutputReader, spawn_output_reader};
 pub use process_tree::ProcessTree;
 
 /// Whether a native operation may still have an unresolved kernel completion.
