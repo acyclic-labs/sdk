@@ -1140,6 +1140,10 @@ impl ExecutionRunner for NativeExecutionRunner {
             if let Some(status) = child.try_wait().map_err(|error| {
                 Error::Storage(format!("failed waiting for approved process: {error}"))
             })? {
+                #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+                let descendant_error = child.terminate_descendants().err();
+                #[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
+                let descendant_error = None;
                 let stdout = match receive_reader(&mut stdout_thread) {
                     Ok(output) => output,
                     Err(error) => {
@@ -1160,6 +1164,11 @@ impl ExecutionRunner for NativeExecutionRunner {
                 };
                 let stdout = finish_reader(&mut stdout_thread, stdout)?;
                 let stderr = finish_reader(&mut stderr_thread, stderr)?;
+                if let Some(error) = descendant_error {
+                    return Ok(RunnerOutcome::Unknown {
+                        reason: format!("native process tree termination failed: {error}"),
+                    });
+                }
                 if overflow.load(Ordering::Acquire) {
                     return Err(Error::Invalid(
                         "approved process output exceeded its limit".into(),
@@ -1292,6 +1301,20 @@ impl ManagedChild {
             }
             #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
             Self::Tree(tree) => tree.terminate(),
+        }
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    fn terminate_descendants(&mut self) -> std::io::Result<()> {
+        #[cfg(test)]
+        if FORCE_NATIVE_TERMINATION_ERROR.with(|forced| forced.get()) {
+            return Err(std::io::Error::other(
+                "fault-injected descendant termination failure",
+            ));
+        }
+        match self {
+            Self::Direct(_) => Ok(()),
+            Self::Tree(tree) => tree.terminate_descendants(),
         }
     }
 
@@ -3345,6 +3368,29 @@ mod tests {
             outcome,
             RunnerOutcome::Unknown { ref reason }
                 if reason.contains("native process termination failed")
+        ));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_runner_reports_unknown_when_tree_finalization_fails_after_exit() -> Result<()> {
+        let mut request = spec();
+        if cfg!(windows) {
+            request.arguments = vec!["/C".into(), "echo completed".into()];
+        } else {
+            request.arguments = vec!["-c".into(), "printf completed".into()];
+        }
+        let outcome = FORCE_NATIVE_TERMINATION_ERROR.with(|forced| {
+            forced.set(true);
+            let outcome = NativeExecutionRunner.run(&request);
+            forced.set(false);
+            outcome
+        })?;
+        assert!(matches!(
+            outcome,
+            RunnerOutcome::Unknown { ref reason }
+                if reason.contains("process tree termination failed")
         ));
         Ok(())
     }
