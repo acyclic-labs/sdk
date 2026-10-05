@@ -10,6 +10,7 @@ use prost::Message;
 
 pub mod bindings;
 pub mod credential;
+pub mod embedded_facades;
 pub mod facades;
 pub mod family_registry;
 pub mod filesystem;
@@ -18,8 +19,12 @@ pub mod inference;
 pub mod machines;
 pub mod objects;
 pub mod protocol;
+pub mod semantic_oracle;
 pub mod stream;
+pub mod type_policy;
 pub mod transport;
+pub mod transport_control;
+pub mod wire_semantics;
 pub mod workers;
 
 pub use bindings::{
@@ -28,11 +33,12 @@ pub use bindings::{
     generate_rust_bindings, native_binding_boundary,
 };
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
+pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 
 pub use facades::{
     CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,
-    FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_remote_facade,
-    generate_remote_facades,
+    FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_jvm_semantic_types,
+    generate_remote_facade, generate_remote_facades, generate_type_policy_qualification_tests,
 };
 pub use family_registry::{
     FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,
@@ -50,10 +56,23 @@ pub use inference::{INFERENCE, inference_descriptor, inference_proto};
 pub use machines::{MACHINES, machines_descriptor, machines_proto};
 pub use objects::{OBJECTS_V2, objects_descriptor, objects_proto};
 pub use stream::{STREAM, STREAM_ROUTES, STREAM_SERVICE, stream_descriptor, stream_proto};
+pub use type_policy::{
+    FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES,
+    FieldSemanticType, PublicFieldBinding, PublicFieldDirection,
+    SemanticRule, SemanticType, TypePolicyLanguage, TypeProjectionProfile,
+    WIRE_UNION_VARIANTS, WireUnionVariant, WireValueKind, field_semantic_type, semantic_type,
+    type_projection_profile,
+};
 pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
     TransportKind, TransportOption, TransportRequirements, TransportSelection,
     TransportSelectionError, TransportSelectionRequest, select_transport, select_transport_by_name,
+};
+pub use wire_semantics::{
+    compare_family_rpc_message, compare_message, compare_message_with_options, family_rpc_streaming,
+    compare_rpc_message, compare_rpc_message_with_options, CompareOptions, FloatPolicy,
+    rpc_streaming, RpcDirection, RpcSemanticError, RpcStreaming, SemanticMismatch,
+    UnknownFieldPolicy,
 };
 pub use workers::{WORKERS, WORKERS_ROUTES, WORKERS_SERVICE, workers_descriptor, workers_proto};
 
