@@ -126,7 +126,7 @@ function compile(language, file, cwd, packageArtifact, environment = {}) {
       const wrapped = join(cwd, "__qualified_snippet.rs");
       const source = readFileSync(file, "utf8");
       writeFileSync(wrapped, `async fn main() -> Result<(), Box<dyn std::error::Error>> {\n${source}\nOk(())\n}\n`);
-      const result = command(binaries.rustfmt, ["--check", wrapped], cwd, environment);
+      const result = command(binaries.rustfmt, ["--emit", "stdout", wrapped], cwd, environment);
       try { unlinkSync(wrapped); } catch {}
       return result;
     }
