@@ -190,18 +190,26 @@ function prepare(language, packageArtifact, directory) {
     if (!packageName) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package name" };
     const packageVersion = packageToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
     if (!packageVersion) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package version" };
-    const packageTarget = join(directory, "cargo-package-target");
-    const packaged = command(cargo, ["package", "--locked", "--offline", "--allow-dirty", "--no-verify", "--manifest-path", packageArtifact, "--target-dir", packageTarget], packageRoot);
-    if (packaged.exitCode !== 0) return { status: "install-failed", install: packaged, environment: {} };
-    const crate = allFiles(packageTarget).find((path) => path.endsWith(`${packageName}-${packageVersion}.crate`));
-    if (!crate) return { status: "install-failed", install: { ...packaged, stderr: `${packaged.stderr}\nCargo package produced no .crate artifact` }, environment: {} };
+    const packageCache = join(output, "cargo-packages");
+    const bundleSource = join(packageCache, "workspace-source");
+    const archive = join(packageCache, `${packageName}-${packageVersion}.tar`);
+    mkdirSync(packageCache, { recursive: true });
+    let packaged = { command: "", exitCode: 0, stdout: "", stderr: "" };
+    if (!existsSync(archive)) {
+      mkdirSync(bundleSource, { recursive: true });
+      cpSync(join(repo, "rust"), join(bundleSource, "rust"), { recursive: true, filter: (path) => !path.includes(`${String.fromCharCode(92)}target${String.fromCharCode(92)}`) && !path.includes(`${String.fromCharCode(92)}.git${String.fromCharCode(92)}`) });
+      cpSync(join(repo, "Cargo.toml"), join(bundleSource, "Cargo.toml"));
+      cpSync(join(repo, "Cargo.lock"), join(bundleSource, "Cargo.lock"));
+      packaged = command(process.env.SDK_TAR_BIN ?? "tar", ["-cf", archive, "-C", bundleSource, "."], directory);
+      if (packaged.exitCode !== 0) return { status: "install-failed", install: packaged, environment: {} };
+    }
     const packageInstall = join(directory, "installed-package");
     mkdirSync(packageInstall, { recursive: true });
-    const extracted = command(process.env.SDK_TAR_BIN ?? "tar", ["-xf", crate, "-C", packageInstall], directory, environment);
+    const extracted = command(process.env.SDK_TAR_BIN ?? "tar", ["-xf", archive, "-C", packageInstall], directory);
     if (extracted.exitCode !== 0) return { status: "install-failed", install: extracted, environment: {} };
-    const installedRoot = join(packageInstall, `${packageName}-${packageVersion}`);
+    const installedRoot = join(packageInstall, relative(repo, packageRoot));
     writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
-    return { status: "installed", packageArtifact: crate, install: { ...extracted, command: `${packaged.command} && ${extracted.command}`, stdout: `${packaged.stdout}${extracted.stdout}`, stderr: `${packaged.stderr}${extracted.stderr}` }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
+    return { status: "installed", packageArtifact: archive, install: { ...extracted, command: packaged.command ? `${packaged.command} && ${extracted.command}` : extracted.command, stdout: `${packaged.stdout}${extracted.stdout}`, stderr: `${packaged.stderr}${extracted.stderr}` }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
   }
 
   if (language === "python" && packageArtifact.endsWith(".whl")) {
