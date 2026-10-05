@@ -273,7 +273,8 @@ test("workflow pins actions and keeps expensive qualification off pull requests"
   assert.match(workflow, /rustfmt --edition 2024 --check/);
   assert.doesNotMatch(workflow, /(^|\n)\s*pull_request:/);
   assert.doesNotMatch(workflow, /(^|\n)\s*fast-policy:/);
-  assert.match(workflow, /if: github\.event_name == 'release' \|\| github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'workflow_call'/);
+  assert.match(workflow, /if: github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'workflow_call'/);
+  assert.doesNotMatch(workflow, /event_name == 'release'/, "standalone release trigger duplicates central qualification");
   assert.match(workflow, /generate --source-root "\$GITHUB_WORKSPACE" --output "\$out"/);
   assert.match(workflow, /drift --source-root "\$GITHUB_WORKSPACE" --output "\$out"/);
   const metadataStep = workflow.indexOf("cargo metadata --locked --format-version 1");
@@ -288,6 +289,7 @@ function assertIndependentCanonicalProducer(workflow) {
   assert.ok(begin >= 0 && end > begin, 'manifest production must precede installed consumption');
   const producer = workflow.slice(begin, end);
   assert.match(producer, /export ACYCLIC_RUST_SOURCE_REVISION="\$\(git rev-parse HEAD\)"/);
+  assert.match(producer, /export ACYCLIC_RUST_SOURCE_REVISION=/, "canonical Rust evidence must bind to the checked-out source");
   const invocations = [...producer.matchAll(/--bin typed-request-manifest > "([^"\n]+)"/g)].map(match => match[1]);
   assert.equal(invocations.length, 2, 'independent canonical evidence requires two Rust producer executions');
   assert.equal(new Set(invocations).size, 2, 'consumer input and canonical evidence must use distinct paths');
@@ -305,7 +307,10 @@ test('additional language qualification independently regenerates canonical Rust
   );
   assert.notEqual(copied, workflow, 'negative control must replace the actual independent invocation');
   assert.throws(() => assertIndependentCanonicalProducer(copied), /two Rust producer executions/);
-  assert.throws(() => assertIndependentCanonicalProducer(workflow.replace(/export ACYCLIC_RUST_SOURCE_REVISION=.*\n/, '')), /ACYCLIC_RUST_SOURCE_REVISION/);
+  assert.throws(
+    () => assertIndependentCanonicalProducer(workflow.replaceAll('export ACYCLIC_RUST_SOURCE_REVISION=', 'export REMOVED_SOURCE_REVISION=')),
+    /ACYCLIC_RUST_SOURCE_REVISION/,
+  );
 });
 
 function assertGenerationModuleClosure(source, hasSource) {
