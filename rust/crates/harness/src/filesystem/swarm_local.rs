@@ -1808,13 +1808,16 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                     .await
                     .is_empty()
             {
+                crate::stack_diagnostics::marker("fork-publisher-no-plans");
                 return Ok(());
             }
             let plans = self.plans.resolve_intents(publication.clone()).await?;
+            crate::stack_diagnostics::marker("fork-publisher-after-resolve");
             let swarm = self.target()?.ok_or_else(|| {
                 Error::Conflict("local recursive fork publisher is not bound to a swarm".into())
             })?;
             swarm.workers.ensure_open().await?;
+            crate::stack_diagnostics::marker("fork-publisher-after-worker-admission");
             let first_parent = plans
                 .first()
                 .map(|plan| plan.parent)
@@ -1823,6 +1826,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             let mut parent = parent_harness
                 .conversation_aggregate(swarm.config.limits)
                 .await?;
+            crate::stack_diagnostics::marker("fork-publisher-after-parent-open");
             let mut prepared = Vec::with_capacity(plans.len());
             for mut plan in plans {
                 if publication.operation_id != plan.publication_operation
@@ -1875,6 +1879,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                     // inventing a new allocation.
                     plan.host.rebind_fork_seed(&old_seed, &rebound_seed).await?;
                 }
+                crate::stack_diagnostics::marker("fork-publisher-before-seed");
                 let seed = swarm
                     .publish_child_seed_with_publication(
                         plan.request.clone(),
@@ -1887,6 +1892,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                         plan.rebind_proof.as_ref(),
                     )
                     .await?;
+                crate::stack_diagnostics::marker("fork-publisher-after-seed");
                 prepared.push((plan, seed));
             }
             // Every child is now durably admitted and bound to the parent
@@ -1896,9 +1902,11 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 if swarm.workers.contains(child).await {
                     continue;
                 }
+                crate::stack_diagnostics::marker("fork-publisher-before-child-prepare");
                 let activation = Box::pin(swarm.prepare_published_child(
                     plan.request, plan.host, plan.stream, plan.issuer, &parent, &seed,
                 )).await?;
+                crate::stack_diagnostics::marker("fork-publisher-after-child-prepare");
                 if let LocalChildActivation::Ready(turn) = activation {
                     let owner = Arc::downgrade(&swarm);
                     swarm.workers.enqueue(child, Self::run_scheduled_child(owner, turn)).await?;
