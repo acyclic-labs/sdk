@@ -7,8 +7,8 @@
 //! lifecycle and integration effects still go through typed SDK operations.
 
 use super::super::merge::{
-    ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan,
-    ProjectMergeReceipt, ProjectMergeVerifier,
+    ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan, ProjectMergeReceipt,
+    ProjectMergeVerifier,
 };
 use super::{
     ParentMergePlan, ParentProjectController, ProjectMergeRecovery, ProjectMergeRecoveryEntry,
@@ -843,8 +843,9 @@ impl<S> FilesystemGitFacade<S> {
             )
             .await?;
         match outcome {
-            ProjectJoinOutcome::Applied(receipt)
-            | ProjectJoinOutcome::AlreadyApplied(receipt) => Ok(receipt),
+            ProjectJoinOutcome::Applied(receipt) | ProjectJoinOutcome::AlreadyApplied(receipt) => {
+                Ok(receipt)
+            }
             ProjectJoinOutcome::NoChanges(_)
             | ProjectJoinOutcome::StaleTarget(_)
             | ProjectJoinOutcome::Conflicted { .. }

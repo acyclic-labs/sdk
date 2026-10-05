@@ -1,5 +1,6 @@
 //! Verify the durable completed exchange before entering the existing fork engine.
 use super::*;
+use crate::fork::InheritedConversationPrefix;
 use crate::{
     batch_publication::ModelBatchPublication,
     conversation::ModelContextSelection,
@@ -8,7 +9,6 @@ use crate::{
     model_input::{CompletedModelBoundary, FrozenModelPrefix, PreparedModelInput},
     tool::ModelToolContext,
 };
-use crate::fork::InheritedConversationPrefix;
 
 fn collect_projected_file_refs(
     value: &serde_json::Value,
@@ -50,7 +50,9 @@ fn collect_tool_content_file_refs(
     for part in parts {
         match part {
             crate::model::ModelContentPart::ToolCall { arguments, .. }
-            | crate::model::ModelContentPart::ToolResult { value: arguments, .. } => {
+            | crate::model::ModelContentPart::ToolResult {
+                value: arguments, ..
+            } => {
                 collect_projected_file_refs(arguments, files);
             }
             crate::model::ModelContentPart::Text { .. }
@@ -163,9 +165,9 @@ where
             inherited_parent_revision: request.parent_revision,
             inherited_through_sequence: request.preparation.inherited_through_sequence,
             inherited_prefix_digest: {
-                let parent_agent = messages
-                    .agent
-                    .ok_or_else(|| Error::Storage("verified fork parent agent is missing".into()))?;
+                let parent_agent = messages.agent.ok_or_else(|| {
+                    Error::Storage("verified fork parent agent is missing".into())
+                })?;
                 let prefix = InheritedConversationPrefix::select(
                     request.parent.clone(),
                     request.parent_revision,

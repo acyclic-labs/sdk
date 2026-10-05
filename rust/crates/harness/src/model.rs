@@ -1,10 +1,6 @@
 //! Provider-neutral immutable model values and streaming host contract.
 
-use crate::{
-    Error, OperationId, Result,
-    conversation::FileRef,
-    registry::ComponentIdentity,
-};
+use crate::{Error, OperationId, Result, conversation::FileRef, registry::ComponentIdentity};
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,9 +55,7 @@ impl ModelOptionPolicy {
             "model option policy revision",
         )?;
         if self.identity.digest == [0; 32] {
-            return Err(Error::Invalid(
-                "model option policy digest is empty".into(),
-            ));
+            return Err(Error::Invalid("model option policy digest is empty".into()));
         }
         jsonschema::validator_for(&self.schema)
             .map_err(|error| Error::Invalid(format!("invalid model option schema: {error}")))?;
@@ -519,7 +513,8 @@ mod wire_contract_tests {
             },
             json!({"type": "object", "additionalProperties": false}),
         )?;
-        let mut encoded = serde_json::to_value(&policy).map_err(|error| Error::Invalid(error.to_string()))?;
+        let mut encoded =
+            serde_json::to_value(&policy).map_err(|error| Error::Invalid(error.to_string()))?;
         encoded["schema"] = json!({"type": "not-a-schema-type"});
         let decoded: ModelOptionPolicy =
             serde_json::from_value(encoded).map_err(|error| Error::Invalid(error.to_string()))?;

@@ -1422,7 +1422,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         ]),
     );
     let mut parent_reducer = Reducer::new(
-            parent_authority.clone(),
+        parent_authority.clone(),
         parent_issuer.verifier(),
         SchemaRegistry::new(),
     );

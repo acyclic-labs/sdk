@@ -8,8 +8,8 @@
 
 use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
-    InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
-    LocalHarnessTools, PersistentLocalHarness, workspace_ref,
+    InteractionApprovalAuthorization, InteractionOperatorAuthorizer, LocalHarnessTools,
+    PersistentLocalHarness, workspace_ref,
 };
 use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
@@ -24,7 +24,10 @@ use crate::{
         Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
         ResourceRevision,
     },
-    interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
+    interaction::{
+        InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse,
+        InteractionTicket,
+    },
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
@@ -68,9 +71,8 @@ type LocalFilesystemHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBack
 /// handle per composition root so independently opened swarm handles observe
 /// the same journal and CAS boundary.
 static LOCAL_STREAM_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Weak<LocalStream>>>> = OnceLock::new();
-static LOCAL_FILESYSTEM_CACHE: OnceLock<
-    Mutex<BTreeMap<PathBuf, Weak<LocalFilesystemHost>>>,
-> = OnceLock::new();
+static LOCAL_FILESYSTEM_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Weak<LocalFilesystemHost>>>> =
+    OnceLock::new();
 
 async fn shared_local_stream(root: PathBuf) -> Result<StreamClient<LocalStream>> {
     let root = normalized_path(&root);
@@ -307,7 +309,9 @@ impl LocalForkIntent {
             || self.task.len() > 4 * 1024
             || self.prompt.len() > 64 * 1024
         {
-            return Err(Error::Invalid("model-selected fork intent is invalid".into()));
+            return Err(Error::Invalid(
+                "model-selected fork intent is invalid".into(),
+            ));
         }
         Ok(())
     }
@@ -428,7 +432,9 @@ impl LocalFilesystemForkResolver {
     #[must_use]
     pub fn with_host_secret(mut self, secret: [u8; 32]) -> Result<Self> {
         if secret == [0; 32] {
-            return Err(Error::Invalid("local fork issuer secret cannot be zero".into()));
+            return Err(Error::Invalid(
+                "local fork issuer secret cannot be zero".into(),
+            ));
         }
         self.issuer_secret = Some(secret);
         Ok(self)
@@ -519,7 +525,9 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             let parent_harness = swarm.open_session(intent.parent).await?;
             let parent_session = swarm.session(intent.parent).await?;
             if parent_session.depth >= swarm.config.maximum_depth {
-                return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
+                return Err(Error::Unauthorized(
+                    "local swarm depth limit exceeded".into(),
+                ));
             }
             let existing_task_ids = swarm
                 .records
@@ -538,7 +546,9 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 0
             };
             if existing_children + pending_children > swarm.config.maximum_children {
-                return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
+                return Err(Error::Unauthorized(
+                    "local swarm child limit exceeded".into(),
+                ));
             }
             let issuer_secret = self.issuer_secret.ok_or_else(|| {
                 Error::Unauthorized("local fork resolver has no durable host secret".into())
@@ -565,9 +575,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             let boundary = verified.boundary().clone();
             let parent = verified.parent();
             let parent_revision = parent.reducer().revision();
-            if parent.reducer().authority() != storage.conversation()
-                || parent_revision == 0
-            {
+            if parent.reducer().authority() != storage.conversation() || parent_revision == 0 {
                 return Err(Error::Conflict(
                     "fork publication parent aggregate changed during allocation".into(),
                 ));
@@ -579,20 +587,14 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             // never allocate another pair of child volumes for one operation.
             let child_task = TaskId::from_bytes(intent.child_operation.into_bytes());
             let existing_report = swarm.reports.lock().await.get(&child_task).cloned();
-            let existing_declaration = swarm
-                .declarations
-                .lock()
-                .await
-                .get(&child_task)
-                .cloned();
+            let existing_declaration = swarm.declarations.lock().await.get(&child_task).cloned();
             if let (Some(report), Some(declaration)) = (existing_report, existing_declaration) {
                 report.validate()?;
                 let seed = report.clone().into_seed()?;
                 if seed.operation_id != intent.fork_operation
                     || seed.parent != *storage.conversation()
                     || seed.child != Self::child_authority(&intent)
-                    || seed.child_agent
-                        != AgentId::from_bytes(intent.child_operation.into_bytes())
+                    || seed.child_agent != AgentId::from_bytes(intent.child_operation.into_bytes())
                     || declaration.boundary != boundary
                 {
                     return Err(Error::Conflict(
@@ -625,11 +627,8 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
 
             let child_authority = Self::child_authority(&intent);
             let child_agent = AgentId::from_bytes(intent.child_operation.into_bytes());
-            let child_issuer = Self::child_issuer(
-                &child_authority,
-                intent.child_operation,
-                issuer_secret,
-            );
+            let child_issuer =
+                Self::child_issuer(&child_authority, intent.child_operation, issuer_secret);
             let child_private = VolumeRef::new(
                 self.host.provider.clone(),
                 format!("local-private-{}", intent.child_operation),
@@ -640,40 +639,42 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             // its direct parent received.  The root resolver's configured
             // project is only the fallback for the root task; reusing it at
             // every depth would silently discard edits made by an ancestor.
-            let parent_project = swarm
-                .reports
-                .lock()
-                .await
-                .get(&intent.parent)
-                .and_then(|report| {
-                    report
-                        .request
-                        .selections
-                        .iter()
-                        .zip(&report.captures)
-                        .find_map(|(selection, capture)| {
-                            if !matches!(&selection.revision, ResourceRevision::Project { .. }) {
-                                return None;
-                            }
-                            match capture {
-                                Capture::Captured(resource) => {
-                                    // The child's direct-parent workspace is the captured
-                                    // project revision, while `source` names the ancestor
-                                    // volume from which that revision was allocated. Reuse
-                                    // the immutable child revision and generation; resolving
-                                    // a mutable head would let a later publication leak into
-                                    // this fork boundary.
-                                    match &resource.revision {
-                                        ResourceRevision::Project { volume, generation } => {
-                                            Some((volume.clone(), generation.clone()))
-                                        }
-                                        _ => None,
-                                    }
+            let parent_project =
+                swarm
+                    .reports
+                    .lock()
+                    .await
+                    .get(&intent.parent)
+                    .and_then(|report| {
+                        report
+                            .request
+                            .selections
+                            .iter()
+                            .zip(&report.captures)
+                            .find_map(|(selection, capture)| {
+                                if !matches!(&selection.revision, ResourceRevision::Project { .. })
+                                {
+                                    return None;
                                 }
-                                _ => None,
-                            }
-                        })
-                });
+                                match capture {
+                                    Capture::Captured(resource) => {
+                                        // The child's direct-parent workspace is the captured
+                                        // project revision, while `source` names the ancestor
+                                        // volume from which that revision was allocated. Reuse
+                                        // the immutable child revision and generation; resolving
+                                        // a mutable head would let a later publication leak into
+                                        // this fork boundary.
+                                        match &resource.revision {
+                                            ResourceRevision::Project { volume, generation } => {
+                                                Some((volume.clone(), generation.clone()))
+                                            }
+                                            _ => None,
+                                        }
+                                    }
+                                    _ => None,
+                                }
+                            })
+                    });
             let (source_project, source_generation) = match parent_project {
                 Some((source_project, source_generation)) => (source_project, source_generation),
                 None if parent_session.parent.is_some() => {
@@ -917,11 +918,7 @@ impl LocalModelForkPlans {
                 child_operation,
                 digest,
             } => {
-                Self::apply_issuer_binding(
-                    (operation, child_operation),
-                    digest,
-                    issuer_bindings,
-                )?;
+                Self::apply_issuer_binding((operation, child_operation), digest, issuer_bindings)?;
             }
             _ => {}
         }
@@ -1029,12 +1026,7 @@ impl LocalModelForkPlans {
             .and_then(|resolver| resolver.issuer_binding_digest());
         if intents.contains_key(&key) {
             if let Some(expected) = issuer_digest
-                && self
-                    .issuer_bindings
-                    .lock()
-                    .await
-                    .get(&key)
-                    != Some(&expected)
+                && self.issuer_bindings.lock().await.get(&key) != Some(&expected)
             {
                 return Err(Error::Conflict(
                     "model fork issuer binding is missing or changed on retry".into(),
@@ -1057,15 +1049,15 @@ impl LocalModelForkPlans {
         }
         intents.insert(key, intent);
         if let Some(digest) = issuer_digest {
-            self.issuer_bindings
-                .lock()
-                .await
-                .insert(key, digest);
+            self.issuer_bindings.lock().await.insert(key, digest);
         }
         Ok(())
     }
 
-    async fn resolve_intents(&self, publication: ModelBatchPublication) -> Result<Vec<LocalModelForkPlan>> {
+    async fn resolve_intents(
+        &self,
+        publication: ModelBatchPublication,
+    ) -> Result<Vec<LocalModelForkPlan>> {
         self.refresh_intents_from_journal().await?;
         let intents = self
             .intents
@@ -1080,7 +1072,9 @@ impl LocalModelForkPlans {
             if !prepared.is_empty() {
                 return Ok(prepared);
             }
-            return Err(Error::Conflict("completed fork publication has no durable intent".into()));
+            return Err(Error::Conflict(
+                "completed fork publication has no durable intent".into(),
+            ));
         }
         let existing = self
             .plans
@@ -1104,12 +1098,7 @@ impl LocalModelForkPlans {
             let key = (intent.fork_operation, intent.child_operation);
             if let Some(resolver) = resolver.as_ref()
                 && let Some(expected) = resolver.issuer_binding_digest()
-                && self
-                    .issuer_bindings
-                    .lock()
-                    .await
-                    .get(&key)
-                    != Some(&expected)
+                && self.issuer_bindings.lock().await.get(&key) != Some(&expected)
             {
                 return Err(Error::Conflict(
                     "durable model fork issuer binding does not match the owner secret".into(),
@@ -1188,9 +1177,10 @@ impl LocalModelForkPlans {
                 "durable model fork issuer binding does not match the owner secret".into(),
             ));
         }
-        let resolver = self.resolver.clone().ok_or_else(|| {
-            Error::Unsupported("local model fork resolver is not bound".into())
-        })?;
+        let resolver = self
+            .resolver
+            .clone()
+            .ok_or_else(|| Error::Unsupported("local model fork resolver is not bound".into()))?;
         let plan = resolver.resolve(intent, publication.clone()).await?;
         plan.validate()?;
         if plan.publication_operation != publication.operation_id
@@ -1445,7 +1435,10 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
         publication: ModelBatchPublication,
     ) -> BoxFuture<'a, Result<Option<()>>> {
         Box::pin(async move {
-            let plans = self.plans.get_for_publication(publication.operation_id).await;
+            let plans = self
+                .plans
+                .get_for_publication(publication.operation_id)
+                .await;
             let mut expected = self
                 .plans
                 .expected_children_for_publication(publication.operation_id)
@@ -1512,7 +1505,9 @@ impl ToolExecutor for LocalForkToolExecutor {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
             let input: LocalForkToolInput = LocalForkToolInput::deserialize(&invocation.arguments)
-                .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
+                .map_err(|error| {
+                    Error::Invalid(format!("local fork arguments are invalid: {error}"))
+                })?;
             let publication_operation = context.publication_operation();
             let fork_operation = child_fork_operation(publication_operation, input.child_operation);
             if input
@@ -1561,7 +1556,9 @@ impl ToolExecutor for LocalForkToolExecutor {
             }
             invocation.validate()?;
             let input: LocalForkToolInput = LocalForkToolInput::deserialize(&invocation.arguments)
-                .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
+                .map_err(|error| {
+                    Error::Invalid(format!("local fork arguments are invalid: {error}"))
+                })?;
             let Some(intent) = self
                 .plans
                 .replay_intent(self.parent, &invocation, &input)
@@ -1917,7 +1914,9 @@ enum StoredEvent {
     },
     /// Model-selected child intent retained before completed-batch
     /// publication. The owner allocator resolves it only after publication.
-    ForkIntent { intent: LocalForkIntent },
+    ForkIntent {
+        intent: LocalForkIntent,
+    },
     /// Non-secret owner binding fingerprint retained beside the selected
     /// intent. It prevents a reopen with another host issuer secret.
     ForkIssuerBinding {
@@ -2144,8 +2143,8 @@ impl PersistentLocalSwarm {
                 )
             } else {
                 let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
-                let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider)
-                    .await?;
+                let host =
+                    shared_local_filesystem(root.join("filesystem"), filesystem_provider).await?;
                 let stream_provider = ProviderRef::new("local", "stream", "2")?;
                 let stream = shared_local_stream(root.join("conversation")).await?;
                 (host, stream, stream_provider)
@@ -2289,7 +2288,8 @@ impl PersistentLocalSwarm {
         let bindings = if let Some(plans) = bindings.model_fork_plans.clone() {
             bindings.with_model_fork_plans(plans)
         } else if let Some(resolver) = bindings.filesystem_fork_resolver.clone() {
-            bindings.with_model_fork_plans(Arc::new(LocalModelForkPlans::new().with_resolver(resolver)))
+            bindings
+                .with_model_fork_plans(Arc::new(LocalModelForkPlans::new().with_resolver(resolver)))
         } else {
             bindings
         };
@@ -2348,8 +2348,8 @@ impl PersistentLocalSwarm {
     ) -> Result<Arc<Self>> {
         let root = root.as_ref().to_path_buf();
         let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
-        let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone())
-            .await?;
+        let host =
+            shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone()).await?;
         let stream_provider = ProviderRef::new("local", "stream", "2")?;
         let stream = shared_local_stream(root.join("conversation")).await?;
         let project = VolumeRef::new(
@@ -2468,9 +2468,7 @@ impl PersistentLocalSwarm {
             .get(&operator_choice_key(task, id))
             .cloned()
             .ok_or_else(|| {
-                Error::Unauthorized(
-                    "approval requires an authenticated operator choice".into(),
-                )
+                Error::Unauthorized("approval requires an authenticated operator choice".into())
             })?;
         if choice.approved != approved
             || choice.operation != binding.operation_id
@@ -2548,10 +2546,7 @@ impl PersistentLocalSwarm {
             .conversation()
             .cloned()
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        let workspace_generation = match harness
-            .list_private_directory("", None, None, 1)
-            .await
-        {
+        let workspace_generation = match harness.list_private_directory("", None, None, 1).await {
             Ok(page) => Some(page.generation),
             Err(Error::NotFound(_)) => None,
             Err(error) => return Err(error),
@@ -2691,10 +2686,12 @@ impl PersistentLocalSwarm {
             };
             let existing = if let Some(detail) = &resolution.detail {
                 let harness = self.open_session(task).await?;
-                serde_json::from_slice::<InteractionResponse>(&harness.storage().read(detail).await?)
-                    .map_err(|error| {
-                        Error::Storage(format!("invalid persisted approval response: {error}"))
-                    })?
+                serde_json::from_slice::<InteractionResponse>(
+                    &harness.storage().read(detail).await?,
+                )
+                .map_err(|error| {
+                    Error::Storage(format!("invalid persisted approval response: {error}"))
+                })?
             } else {
                 InteractionResponse::Approval { approved, reason }
             };
@@ -2738,11 +2735,10 @@ impl PersistentLocalSwarm {
                 "swarm messages require a direct parent or child recipient".into(),
             ));
         };
-        let host = self
-            .bindings
-            .communication_host
-            .clone()
-            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        let host =
+            self.bindings.communication_host.clone().ok_or_else(|| {
+                Error::Unsupported("durable communication host is not bound".into())
+            })?;
         // Mail payloads are staged into the recipient's own private volume.
         // A sender-owned FileRef would require an implicit sibling read grant
         // and would make an otherwise valid parent/child message unreadable
@@ -2911,9 +2907,10 @@ impl PersistentLocalSwarm {
         let expected_operation = if let Some(request) = self.requests.lock().await.get(&task) {
             request.child_operation
         } else {
-            self.session(task).await?.operation.ok_or_else(|| {
-                Error::NotFound(format!("local swarm operation {task}"))
-            })?
+            self.session(task)
+                .await?
+                .operation
+                .ok_or_else(|| Error::NotFound(format!("local swarm operation {task}")))?
         };
         if reference.operation != expected_operation {
             return Err(Error::Conflict(
@@ -3047,7 +3044,8 @@ impl PersistentLocalSwarm {
         // registry must be refreshed before the terminal Session event is
         // appended.  `complete_session` also makes same-operation recovery
         // idempotent while rejecting a different operation key.
-        self.complete_session(task, operation, &harness, &output).await?;
+        self.complete_session(task, operation, &harness, &output)
+            .await?;
         self.outcomes.lock().await.insert(task, output.clone());
         Ok(output)
     }
@@ -3065,7 +3063,9 @@ impl PersistentLocalSwarm {
             .messages
             .iter()
             .find(|message| message.kind == MessageKind::User)
-            .ok_or_else(|| Error::Conflict("completed root session has no prompt receipt".into()))?;
+            .ok_or_else(|| {
+                Error::Conflict("completed root session has no prompt receipt".into())
+            })?;
         let bytes = harness.storage().read(&user.content).await?;
         if bytes != prompt.as_bytes() {
             return Err(Error::Conflict(
@@ -3177,10 +3177,12 @@ impl PersistentLocalSwarm {
                             )
                             .await?
                     }
-                    None => parent_harness
-                        .storage()
-                        .verified_model_fork_boundary(&publication, self.config.limits)
-                        .await?,
+                    None => {
+                        parent_harness
+                            .storage()
+                            .verified_model_fork_boundary(&publication, self.config.limits)
+                            .await?
+                    }
                 };
                 let (boundary, parent) = verified.into_parts();
                 (boundary, Some(parent))
@@ -3250,19 +3252,21 @@ impl PersistentLocalSwarm {
             let observed_tail = self.refresh_registry_state_with_tail().await?;
             let latest_parent = self.session(request.parent).await?;
             if latest_parent.depth >= self.config.maximum_depth {
-                return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
+                return Err(Error::Unauthorized(
+                    "local swarm depth limit exceeded".into(),
+                ));
             }
             let latest_child_count = self
                 .records
                 .lock()
                 .await
                 .values()
-                .filter(|session| {
-                    session.parent == Some(request.parent) && session.task != child
-                })
+                .filter(|session| session.parent == Some(request.parent) && session.task != child)
                 .count();
             if latest_child_count >= self.config.maximum_children {
-                return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
+                return Err(Error::Unauthorized(
+                    "local swarm child limit exceeded".into(),
+                ));
             }
             if let Some(session) = self.records.lock().await.get(&child).cloned() {
                 if session.phase == LocalSessionPhase::Cancelled {
@@ -3360,8 +3364,14 @@ impl PersistentLocalSwarm {
                     self.requests.lock().await.insert(child, request.clone());
                     self.seeds.lock().await.insert(child, seed.clone());
                     self.reports.lock().await.insert(child, report.clone());
-                    self.publications.lock().await.insert(child, publication.clone());
-                    self.declarations.lock().await.insert(child, declaration.clone());
+                    self.publications
+                        .lock()
+                        .await
+                        .insert(child, publication.clone());
+                    self.declarations
+                        .lock()
+                        .await
+                        .insert(child, declaration.clone());
                 }
             }
         }
@@ -3400,26 +3410,27 @@ impl PersistentLocalSwarm {
                 .await?;
             }
         }
-        let harness = match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
-            self.config.model.clone(),
-            self.provider.clone(),
-            self.config.limits,
-            host,
-            stream,
-            issuer,
-            storage_parent,
-            seed,
-            self.bindings.tools_for(child)?,
-            self.stream_provider.clone(),
-        )
-        .await
-        {
-            Ok(harness) => Arc::new(harness),
-            Err(error) => {
-                self.mark_failed(child, error.to_string()).await?;
-                return Err(error);
-            }
-        };
+        let harness =
+            match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
+                self.config.model.clone(),
+                self.provider.clone(),
+                self.config.limits,
+                host,
+                stream,
+                issuer,
+                storage_parent,
+                seed,
+                self.bindings.tools_for(child)?,
+                self.stream_provider.clone(),
+            )
+            .await
+            {
+                Ok(harness) => Arc::new(harness),
+                Err(error) => {
+                    self.mark_failed(child, error.to_string()).await?;
+                    return Err(error);
+                }
+            };
         self.verify_admitted_task(child, Some(request.parent))
             .await?;
         self.sessions.lock().await.insert(child, harness.clone());
@@ -3482,7 +3493,8 @@ impl PersistentLocalSwarm {
             || seed.parent != report.request.parent
             || seed.child != report.request.child
             || seed.child_agent != report.request.child_agent
-            || child_fork_operation(publication.operation_id, request.child_operation) != fork_operation
+            || child_fork_operation(publication.operation_id, request.child_operation)
+                != fork_operation
         {
             return Err(Error::Conflict(
                 "published fork seed or model publication has the wrong operation binding".into(),
@@ -3874,13 +3886,10 @@ impl PersistentLocalSwarm {
         // or completion that won the preceding refresh cannot be overwritten
         // by this worker's terminal event.
         let terminal = self.records.lock().await.get(&child).cloned();
-        if terminal
-            .as_ref()
-            .is_some_and(|session| {
-                session.phase == LocalSessionPhase::Cancelled
-                    || matches!(&session.phase, LocalSessionPhase::Failed(_))
-            })
-        {
+        if terminal.as_ref().is_some_and(|session| {
+            session.phase == LocalSessionPhase::Cancelled
+                || matches!(&session.phase, LocalSessionPhase::Failed(_))
+        }) {
             return Err(Error::Conflict(
                 "child operation became terminal before completion acknowledgement".into(),
             ));
@@ -3966,8 +3975,7 @@ impl PersistentLocalSwarm {
                 (Some(output), None, digest) => {
                     if replay_form == Some(false) {
                         return Err(Error::Conflict(
-                            "persisted child completion mixes inline and referenced outputs"
-                                .into(),
+                            "persisted child completion mixes inline and referenced outputs".into(),
                         ));
                     }
                     replay_form = Some(true);
@@ -3984,8 +3992,7 @@ impl PersistentLocalSwarm {
                 (None, Some(file), Some(digest)) => {
                     if replay_form == Some(true) {
                         return Err(Error::Conflict(
-                            "persisted child completion mixes inline and referenced outputs"
-                                .into(),
+                            "persisted child completion mixes inline and referenced outputs".into(),
                         ));
                     }
                     replay_form = Some(false);
@@ -4155,14 +4162,13 @@ impl PersistentLocalSwarm {
             .await
             .get(&task)
             .cloned()
-            .ok_or_else(|| Error::Conflict("activating child has no durable fork request".into()))?;
-        let seed = self
-            .seeds
-            .lock()
-            .await
-            .get(&task)
-            .cloned()
-            .ok_or_else(|| Error::Conflict("activating child has no durable fork seed".into()))?;
+            .ok_or_else(|| {
+                Error::Conflict("activating child has no durable fork request".into())
+            })?;
+        let seed =
+            self.seeds.lock().await.get(&task).cloned().ok_or_else(|| {
+                Error::Conflict("activating child has no durable fork seed".into())
+            })?;
         let report = self
             .reports
             .lock()
@@ -4292,17 +4298,11 @@ impl PersistentLocalSwarm {
                 .get(&task)
                 .cloned()
                 .ok_or_else(|| {
-                    Error::Conflict(
-                        "activating child has no durable fork request to resume".into(),
-                    )
+                    Error::Conflict("activating child has no durable fork request to resume".into())
                 })?;
-            let seed = self
-                .seeds
-                .lock()
-                .await
-                .get(&task)
-                .cloned()
-                .ok_or_else(|| Error::Conflict("activating child has no durable fork seed".into()))?;
+            let seed = self.seeds.lock().await.get(&task).cloned().ok_or_else(|| {
+                Error::Conflict("activating child has no durable fork seed".into())
+            })?;
             let report = self
                 .reports
                 .lock()
@@ -4418,11 +4418,7 @@ impl PersistentLocalSwarm {
     /// model harness. The registry append is the cross-handle fence; a stale
     /// caller cannot dispatch under a different operation after another
     /// handle has claimed the task.
-    async fn reserve_session_operation(
-        &self,
-        task: TaskId,
-        operation: OperationId,
-    ) -> Result<()> {
+    async fn reserve_session_operation(&self, task: TaskId, operation: OperationId) -> Result<()> {
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         let current = self.session(task).await?;
         if matches!(
@@ -4462,12 +4458,7 @@ impl PersistentLocalSwarm {
         }
     }
 
-    async fn update_session_at<F>(
-        &self,
-        observed_tail: u64,
-        task: TaskId,
-        update: F,
-    ) -> Result<()>
+    async fn update_session_at<F>(&self, observed_tail: u64, task: TaskId, update: F) -> Result<()>
     where
         F: FnOnce(&mut LocalSwarmSession),
     {
@@ -5162,8 +5153,7 @@ fn apply_record(
                     "persisted child completion follows a terminal failure".into(),
                 ));
             }
-            if session.phase == LocalSessionPhase::Completed
-                && session.operation != Some(operation)
+            if session.phase == LocalSessionPhase::Completed && session.operation != Some(operation)
             {
                 return Err(Error::Conflict(
                     "persisted child completion changes the terminal operation".into(),
@@ -5175,8 +5165,7 @@ fn apply_record(
                 (Some(output), None, digest) => {
                     if completion_refs.contains_key(&child) {
                         return Err(Error::Conflict(
-                            "persisted child completion mixes inline and referenced outputs"
-                                .into(),
+                            "persisted child completion mixes inline and referenced outputs".into(),
                         ));
                     }
                     if let Some(digest) = digest {
@@ -5199,8 +5188,7 @@ fn apply_record(
                 (None, Some(file), Some(digest)) => {
                     if outcomes.contains_key(&child) {
                         return Err(Error::Conflict(
-                            "persisted child completion mixes inline and referenced outputs"
-                                .into(),
+                            "persisted child completion mixes inline and referenced outputs".into(),
                         ));
                     }
                     let value = StoredCompletionRef {
@@ -5284,7 +5272,10 @@ mod tests {
     }
 
     impl ModelProvider for MockModel {
-        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             self.requests.lock().expect("request lock").push(request);
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -5385,18 +5376,20 @@ mod tests {
                 output_digest: None,
             },
         };
-        assert!(apply_record(
-            &mut sessions,
-            &mut requests,
-            &mut seeds,
-            &mut reports,
-            &mut publications,
-            &mut declarations,
-            &mut outcomes,
-            &mut completion_refs,
-            wrong,
-        )
-        .is_err());
+        assert!(
+            apply_record(
+                &mut sessions,
+                &mut requests,
+                &mut seeds,
+                &mut reports,
+                &mut publications,
+                &mut declarations,
+                &mut outcomes,
+                &mut completion_refs,
+                wrong,
+            )
+            .is_err()
+        );
         assert_eq!(sessions[&child].phase, LocalSessionPhase::Activating);
         apply_record(
             &mut sessions,
@@ -5504,41 +5497,45 @@ mod tests {
             &sessions[&child].phase,
             LocalSessionPhase::Failed(reason) if reason == "provider stopped"
         ));
-        assert!(apply_record(
-            &mut sessions,
-            &mut requests,
-            &mut seeds,
-            &mut reports,
-            &mut publications,
-            &mut declarations,
-            &mut outcomes,
-            &mut completion_refs,
-            record(StoredEvent::ForkCancelled { child }),
-        )
-        .is_err());
-        assert!(apply_record(
-            &mut sessions,
-            &mut requests,
-            &mut seeds,
-            &mut reports,
-            &mut publications,
-            &mut declarations,
-            &mut outcomes,
-            &mut completion_refs,
-            record(StoredEvent::ForkCompleted {
-                child,
-                operation,
-                output: Some(TurnOutput {
-                    text: "late completion".into(),
-                    attachments: Vec::new(),
-                    metadata: Value::Null,
-                    steps: 1,
+        assert!(
+            apply_record(
+                &mut sessions,
+                &mut requests,
+                &mut seeds,
+                &mut reports,
+                &mut publications,
+                &mut declarations,
+                &mut outcomes,
+                &mut completion_refs,
+                record(StoredEvent::ForkCancelled { child }),
+            )
+            .is_err()
+        );
+        assert!(
+            apply_record(
+                &mut sessions,
+                &mut requests,
+                &mut seeds,
+                &mut reports,
+                &mut publications,
+                &mut declarations,
+                &mut outcomes,
+                &mut completion_refs,
+                record(StoredEvent::ForkCompleted {
+                    child,
+                    operation,
+                    output: Some(TurnOutput {
+                        text: "late completion".into(),
+                        attachments: Vec::new(),
+                        metadata: Value::Null,
+                        steps: 1,
+                    }),
+                    output_ref: None,
+                    output_digest: None,
                 }),
-                output_ref: None,
-                output_digest: None,
-            }),
-        )
-        .is_err());
+            )
+            .is_err()
+        );
         assert!(matches!(
             &sessions[&child].phase,
             LocalSessionPhase::Failed(reason) if reason == "provider stopped"

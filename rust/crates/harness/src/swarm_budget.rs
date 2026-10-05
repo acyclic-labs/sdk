@@ -222,10 +222,7 @@ impl SwarmUsageLimiter {
                 "restored provider usage exceeds the child reservation ceiling".into(),
             ));
         }
-        Ok(Self {
-            limits,
-            usage,
-        })
+        Ok(Self { limits, usage })
     }
 
     /// Returns cumulative usage admitted by the provider guard.
@@ -1326,9 +1323,10 @@ impl SwarmBudget {
         source: S,
     ) -> Result<SwarmUsageReceiptIssuer<S>> {
         let state = self.lock()?;
-        let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
-            Error::Unauthorized("canonical root dispatch lease required".into())
-        })?;
+        let dispatch_id = state
+            .root_dispatch_id
+            .clone()
+            .ok_or_else(|| Error::Unauthorized("canonical root dispatch lease required".into()))?;
         let limits = root_resource_limits(&state)?;
         let cursor = SwarmUsageReceiptCursor::new(
             state.root_usage_sequence,
@@ -1353,9 +1351,10 @@ impl SwarmBudget {
         let state = self.lock()?;
         let limits = root_resource_limits(&state)?;
         let limiter = SwarmUsageLimiter::resume(limits, state.root_usage)?;
-        let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
-            Error::Unauthorized("canonical root dispatch lease required".into())
-        })?;
+        let dispatch_id = state
+            .root_dispatch_id
+            .clone()
+            .ok_or_else(|| Error::Unauthorized("canonical root dispatch lease required".into()))?;
         let cursor = SwarmUsageReceiptCursor::new(
             state.root_usage_sequence,
             (state.root_usage_sequence != 0).then_some(state.root_usage),
@@ -2262,9 +2261,10 @@ fn update_root_usage(
             .root_usage_sequence
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("swarm root usage receipt sequence exhausted".into()))?;
-        let root_dispatch_id = state.root_dispatch_id.as_ref().ok_or_else(|| {
-            Error::Unauthorized("canonical root dispatch lease required".into())
-        })?;
+        let root_dispatch_id = state
+            .root_dispatch_id
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("canonical root dispatch lease required".into()))?;
         if receipt.operation_id != state.session_id
             || receipt.usage != usage
             || receipt.sequence != expected_sequence

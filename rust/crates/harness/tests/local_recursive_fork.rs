@@ -888,10 +888,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 )
                 .await?;
             let concurrent_target = host
-                .resolve(&workspace_ref(
-                    provider.clone(),
-                    &project.storage_name()?,
-                )?)
+                .resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?)
                 .await?;
             host.apply(
                 &concurrent_target.workspace,
@@ -920,11 +917,10 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 grant_scope.clone(),
                 64 * 1_024,
             )?;
-            let terminal_recovery = ProjectMergeRecovery::new(&terminal_journal, terminal_operation);
-            let terminal_request = RootWritebackRequest::new(
-                terminal_approval,
-                grant_scope.clone(),
-            );
+            let terminal_recovery =
+                ProjectMergeRecovery::new(&terminal_journal, terminal_operation);
+            let terminal_request =
+                RootWritebackRequest::new(terminal_approval, grant_scope.clone());
             let terminal_outcome = reopened_facade
                 .apply_root_writeback_plan_for_child_with_recovery_outcome(
                     &terminal_request,

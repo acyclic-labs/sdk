@@ -57,7 +57,10 @@ struct CapturedModel {
     overlap_barrier: Option<Arc<Barrier>>,
 }
 impl ModelProvider for CapturedModel {
-    fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         let prepared = match PreparedModelInput::prepare(request.clone(), Limits::default()) {
             Ok(prepared) => prepared,
@@ -789,10 +792,14 @@ impl ForkAtBatch {
                 .as_mut()
                 .ok_or_else(|| Error::Storage("model boundary attestation missing".into()))?
                 .attestation[0] ^= 1;
-            let forged_private_workspace =
-                workspace_ref(private.provider().clone(), &forged.preparation.child_private_volume.storage_name()?)?;
-            let forged_project_workspace =
-                workspace_ref(project.provider().clone(), &forged.preparation.child_project_volume.storage_name()?)?;
+            let forged_private_workspace = workspace_ref(
+                private.provider().clone(),
+                &forged.preparation.child_private_volume.storage_name()?,
+            )?;
+            let forged_project_workspace = workspace_ref(
+                project.provider().clone(),
+                &forged.preparation.child_project_volume.storage_name()?,
+            )?;
             let forged_journal = workspace_ref(
                 provider.clone(),
                 &format!("harness-fork-preparation-{}", forged.operation_id),
@@ -1789,10 +1796,8 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
         workspace_ref(provider.clone(), &parent_project.storage_name()?)?;
     let parent_private_workspace =
         workspace_ref(provider.clone(), &parent_private.storage_name()?)?;
-    let child_project_workspace =
-        workspace_ref(provider.clone(), &child_project.storage_name()?)?;
-    let child_private_workspace =
-        workspace_ref(provider.clone(), &child_private.storage_name()?)?;
+    let child_project_workspace = workspace_ref(provider.clone(), &child_project.storage_name()?)?;
+    let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name()?)?;
     let parent_project_before = host.resolve(&parent_project_workspace).await?;
     let parent_private_before = host.resolve(&parent_private_workspace).await?;
     let initial_child_project = host.resolve(&child_project_workspace).await;

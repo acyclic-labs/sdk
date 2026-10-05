@@ -286,7 +286,8 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
     // A low-level host caller still cannot bypass the direct parent/child
     // relationship enforced by the typed communication adapter.
     assert!(matches!(
-        host.send(child, sibling, request.message_id, body.clone()).await,
+        host.send(child, sibling, request.message_id, body.clone())
+            .await,
         Err(Error::Unauthorized(_))
     ));
     drop(communication);
@@ -348,10 +349,7 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
         timeout_epoch_ms: None,
         cancellation_id: Some(OperationId::from_bytes([15; 16])),
     };
-    assert_eq!(
-        wait_store.open(pre_cancel_request.clone()).await?,
-        None
-    );
+    assert_eq!(wait_store.open(pre_cancel_request.clone()).await?, None);
     assert_eq!(
         DurableCommunication::new(host.clone())
             .with_wait_store(wait_store.clone())

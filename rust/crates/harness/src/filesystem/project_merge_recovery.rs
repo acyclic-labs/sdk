@@ -136,9 +136,7 @@ impl ProjectMergeTerminal {
     pub fn outcome(&self) -> ProjectJoinOutcome {
         match self {
             Self::NoChanges { generation } => ProjectJoinOutcome::NoChanges(generation.clone()),
-            Self::StaleTarget { generation } => {
-                ProjectJoinOutcome::StaleTarget(generation.clone())
-            }
+            Self::StaleTarget { generation } => ProjectJoinOutcome::StaleTarget(generation.clone()),
             Self::Conflicted {
                 conflicts,
                 truncated,

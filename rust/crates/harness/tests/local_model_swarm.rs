@@ -17,8 +17,7 @@ use acyclic_harness::{
         PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
     },
     model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider,
-        ModelRequest, ModelRole,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest, ModelRole,
     },
     resources::ProviderRef,
 };
@@ -156,7 +155,10 @@ impl DeterministicProvider {
 }
 
 impl ModelProvider for DeterministicProvider {
-    fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         Self::assert_request_round_trips(&request);
         let bytes = serde_json::to_vec(&request).expect("serialize model request");
@@ -210,60 +212,59 @@ impl ModelProvider for DeterministicProvider {
                     delta: String::new(),
                 })
             };
-            let events =
-                if (sibling_fork_attempt || active_sibling_attempt)
-                    && !self.sibling_fork_sent.swap(true, Ordering::SeqCst)
-                {
-                    vec![
-                        ModelEvent::ToolCall {
-                            call_id: "fork-sibling".into(),
-                            name: "acyclic.fork_child".into(),
-                            arguments: json!({
-                                "child_operation": self.child_b.to_string(),
-                                "task": "sibling-from-child-a",
-                                "prompt": "sibling must be rejected"
-                            }),
-                        },
-                        ModelEvent::Completed {
-                            metadata: Value::Null,
-                        },
-                    ]
-                } else if is_child_a && self.child_fork_sent.swap(true, Ordering::SeqCst) == false {
-                    let file = staged_file(&request).ok_or_else(|| {
-                        Error::Conflict("child request did not inherit root staged file".into())
-                    });
-                    let file = match file {
-                        Ok(file) => file,
-                        Err(error) => return Box::pin(stream::once(async move { Err(error) })),
-                    };
-                    vec![
-                        ModelEvent::ToolCall {
-                            call_id: "child-read-root".into(),
-                            name: "acyclic.read_file".into(),
-                            arguments: json!({"file": file}),
-                        },
-                        ModelEvent::ToolCall {
-                            call_id: "fork-grandchild".into(),
-                            name: "acyclic.fork_child".into(),
-                            arguments: json!({
-                                "child_operation": self.grandchild.to_string(),
-                                "task": "grandchild",
-                                "prompt": "read the inherited root file"
-                            }),
-                        },
-                        ModelEvent::Completed {
-                            metadata: Value::Null,
-                        },
-                    ]
-                } else {
-                    if is_child_a && has_read_result(&request) {
-                        self.child_read_verified.store(true, Ordering::SeqCst);
-                    }
-                    if is_grandchild && has_read_result(&request) {
-                        self.grandchild_inherited_read.store(true, Ordering::SeqCst);
-                    }
-                    Self::ordinary()
+            let events = if (sibling_fork_attempt || active_sibling_attempt)
+                && !self.sibling_fork_sent.swap(true, Ordering::SeqCst)
+            {
+                vec![
+                    ModelEvent::ToolCall {
+                        call_id: "fork-sibling".into(),
+                        name: "acyclic.fork_child".into(),
+                        arguments: json!({
+                            "child_operation": self.child_b.to_string(),
+                            "task": "sibling-from-child-a",
+                            "prompt": "sibling must be rejected"
+                        }),
+                    },
+                    ModelEvent::Completed {
+                        metadata: Value::Null,
+                    },
+                ]
+            } else if is_child_a && self.child_fork_sent.swap(true, Ordering::SeqCst) == false {
+                let file = staged_file(&request).ok_or_else(|| {
+                    Error::Conflict("child request did not inherit root staged file".into())
+                });
+                let file = match file {
+                    Ok(file) => file,
+                    Err(error) => return Box::pin(stream::once(async move { Err(error) })),
                 };
+                vec![
+                    ModelEvent::ToolCall {
+                        call_id: "child-read-root".into(),
+                        name: "acyclic.read_file".into(),
+                        arguments: json!({"file": file}),
+                    },
+                    ModelEvent::ToolCall {
+                        call_id: "fork-grandchild".into(),
+                        name: "acyclic.fork_child".into(),
+                        arguments: json!({
+                            "child_operation": self.grandchild.to_string(),
+                            "task": "grandchild",
+                            "prompt": "read the inherited root file"
+                        }),
+                    },
+                    ModelEvent::Completed {
+                        metadata: Value::Null,
+                    },
+                ]
+            } else {
+                if is_child_a && has_read_result(&request) {
+                    self.child_read_verified.store(true, Ordering::SeqCst);
+                }
+                if is_grandchild && has_read_result(&request) {
+                    self.grandchild_inherited_read.store(true, Ordering::SeqCst);
+                }
+                Self::ordinary()
+            };
             return Box::pin(stream::once(barrier).chain(stream::iter(events.into_iter().map(Ok))));
         }
 
@@ -522,13 +523,8 @@ async fn local_active_child_rejects_sibling_fork_before_integration() -> Result<
     provider.enable_active_sibling_attempt();
     let model = Model::new("mock", "local-model-swarm", "1", json!({}))?;
     let resolver = Arc::new(
-        LocalFilesystemForkResolver::new(
-            host,
-            stream,
-            stream_provider,
-            project,
-        )?
-        .with_host_secret([0x5A; 32])?,
+        LocalFilesystemForkResolver::new(host, stream, stream_provider, project)?
+            .with_host_secret([0x5A; 32])?,
     );
     let bindings = LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver);
     let swarm = PersistentLocalSwarm::open_shared_with_model_and_bindings(

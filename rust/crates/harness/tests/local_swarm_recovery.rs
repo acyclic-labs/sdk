@@ -116,7 +116,10 @@ impl ModelProvider for RecoveryProvider {
         Ok(())
     }
 
-    fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         self.requests.lock().expect("request lock").push(request);
@@ -557,9 +560,8 @@ async fn local_reopened_handles_replay_one_cancelled_terminal_state() -> Result<
     .await?;
     let task = first.root_task().await?;
     let operation = OperationId::new();
-    let running = tokio::spawn(async move {
-        first.run_root(operation, "cancel exactly once").await
-    });
+    let running =
+        tokio::spawn(async move { first.run_root(operation, "cancel exactly once").await });
     provider.wait_for_calls(1).await;
     canceller.cancel(task).await?;
     provider.release();
@@ -598,6 +600,9 @@ async fn local_reopened_handles_replay_one_cancelled_terminal_state() -> Result<
         Limits::default(),
     )
     .await?;
-    assert_eq!(final_state.session(task).await?.phase, LocalSessionPhase::Cancelled);
+    assert_eq!(
+        final_state.session(task).await?.phase,
+        LocalSessionPhase::Cancelled
+    );
     Ok(())
 }
