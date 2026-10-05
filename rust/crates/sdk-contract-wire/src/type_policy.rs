@@ -1277,6 +1277,10 @@ const UUID_BYTES: &[SemanticRule] = &[SemanticRule::NonEmpty, SemanticRule::Fixe
 const DIGEST: &[SemanticRule] = &[SemanticRule::FixedLength(32), SemanticRule::Sha256Digest];
 const FIXED_32_BYTES: &[SemanticRule] = &[SemanticRule::FixedLength(32)];
 const NON_NEGATIVE: &[SemanticRule] = &[SemanticRule::NonNegative];
+const OPAQUE_BYTES: &[SemanticRule] = &[];
+const NON_NEGATIVE_COUNT: &[SemanticRule] = &[SemanticRule::NonNegative];
+const POSITIVE_COUNT: &[SemanticRule] = &[SemanticRule::StrictlyPositive];
+const TIMESTAMP_MILLIS: &[SemanticRule] = &[SemanticRule::NonNegative];
 const PRESENT_ONEOF: &[SemanticRule] =
     &[SemanticRule::ExactOneof, SemanticRule::PreserveUnknownOneof];
 const IMMUTABLE_MESSAGE: &[SemanticRule] = &[SemanticRule::Immutable];
@@ -1486,6 +1490,40 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
         wire_kind: WireValueKind::Oneof,
         rules: PRESENT_ONEOF,
     },
+    // Response metadata is explicit even when the wire representation is a
+    // primitive.  This keeps cursors, identities, counters, and timestamps
+    // nominal at every public boundary instead of leaving emitters to infer
+    // semantics from a protobuf scalar name.
+    SemanticType {
+        id: "opaque_bytes",
+        rust_name: "OpaqueBytes",
+        wire_kind: WireValueKind::Bytes,
+        rules: OPAQUE_BYTES,
+    },
+    SemanticType {
+        id: "sequence",
+        rust_name: "SequenceNumber",
+        wire_kind: WireValueKind::UnsignedInteger,
+        rules: NON_NEGATIVE_COUNT,
+    },
+    SemanticType {
+        id: "non_negative_count",
+        rust_name: "NonNegativeCount",
+        wire_kind: WireValueKind::UnsignedInteger,
+        rules: NON_NEGATIVE_COUNT,
+    },
+    SemanticType {
+        id: "positive_count",
+        rust_name: "PositiveCount",
+        wire_kind: WireValueKind::UnsignedInteger,
+        rules: POSITIVE_COUNT,
+    },
+    SemanticType {
+        id: "timestamp_millis",
+        rust_name: "UnixTimestampMillis",
+        wire_kind: WireValueKind::UnsignedInteger,
+        rules: TIMESTAMP_MILLIS,
+    },
 ];
 
 /// Rust-owned field mappings consumed by every target generator.
@@ -1613,6 +1651,16 @@ pub const FIELD_SEMANTIC_TYPES: &[FieldSemanticType] = &[
         family: "machines",
         field: "image",
         semantic_type: "immutable_image",
+    },
+    FieldSemanticType {
+        family: "machines",
+        field: "managed_digest",
+        semantic_type: "sha256_digest",
+    },
+    FieldSemanticType {
+        family: "machines",
+        field: "custom_digest",
+        semantic_type: "sha256_digest",
     },
     FieldSemanticType {
         family: "machines",
@@ -1888,6 +1936,24 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
     },
     PublicFieldBinding {
         family: "machines",
+        field: "managed_digest",
+        semantic_type: "sha256_digest",
+        module: "machines",
+        message: "Image",
+        wire_field: "managed_digest",
+        direction: PublicFieldDirection::NestedMessage,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "custom_digest",
+        semantic_type: "sha256_digest",
+        module: "machines",
+        message: "Image",
+        wire_field: "custom_digest",
+        direction: PublicFieldDirection::NestedMessage,
+    },
+    PublicFieldBinding {
+        family: "machines",
         field: "idempotency_key",
         semantic_type: "idempotency_key_message",
         module: "machines",
@@ -1958,6 +2024,62 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
         wire_field: "normalized_path",
         direction: PublicFieldDirection::Response,
     },
+    // Response and nested response semantics are source-owned too.  These
+    // bindings intentionally cover only values with stable identity,
+    // digest, cursor, count, timestamp, or presence meaning; payload bytes
+    // remain ordinary bytes and are never falsely branded.
+    PublicFieldBinding { family: "filesystem", field: "identity", semantic_type: "opaque_text", module: "filesystem", message: "CheckpointResponse", wire_field: "identity", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "cursor", semantic_type: "opaque_bytes", module: "filesystem", message: "ExportResponse", wire_field: "cursor", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "object_id", semantic_type: "opaque_bytes", module: "filesystem", message: "ExportResponse", wire_field: "object_id", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "endpoint", semantic_type: "opaque_text", module: "filesystem", message: "IssueMountCredentialResponse", wire_field: "endpoint", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "expires_at_unix_seconds", semantic_type: "timestamp_millis", module: "filesystem", message: "IssueMountCredentialResponse", wire_field: "expires_at_unix_seconds", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "bearer_token", semantic_type: "opaque_text", module: "filesystem", message: "IssueMountCredentialResponse", wire_field: "bearer_token", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "state", semantic_type: "opaque_text", module: "filesystem", message: "ObserveResponse", wire_field: "state", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "identity", semantic_type: "opaque_text", module: "filesystem", message: "PinResponse", wire_field: "identity", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "plan_id", semantic_type: "opaque_bytes", module: "filesystem", message: "PlanJoinResponse", wire_field: "plan_id", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "maximum_generations", semantic_type: "non_negative_count", module: "filesystem", message: "PlanJoinResponse", wire_field: "maximum_generations", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "maximum_changes", semantic_type: "non_negative_count", module: "filesystem", message: "PlanJoinResponse", wire_field: "maximum_changes", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "maximum_conflicts", semantic_type: "non_negative_count", module: "filesystem", message: "PlanJoinResponse", wire_field: "maximum_conflicts", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "endpoint", semantic_type: "opaque_text", module: "filesystem", message: "IssueS3CredentialResponse", wire_field: "endpoint", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "expires_at_unix_seconds", semantic_type: "timestamp_millis", module: "filesystem", message: "IssueS3CredentialResponse", wire_field: "expires_at_unix_seconds", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "filesystem", field: "bearer_token", semantic_type: "opaque_text", module: "filesystem", message: "IssueS3CredentialResponse", wire_field: "bearer_token", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "harness", field: "revision", semantic_type: "revision", module: "harness", message: "ObserveResponse", wire_field: "revision", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "harness", field: "generation", semantic_type: "opaque_text", module: "harness", message: "ReplayResponse", wire_field: "generation", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "harness", field: "from_revision", semantic_type: "revision", module: "harness", message: "ReplayResponse", wire_field: "from_revision", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "harness", field: "through_revision", semantic_type: "revision", module: "harness", message: "ReplayResponse", wire_field: "through_revision", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "next_sequence", semantic_type: "sequence", module: "machines", message: "EventsResponse", wire_field: "next_sequence", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "created_at_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "InspectCheckpointResponse", wire_field: "created_at_unix_ms", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "created_at_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "InspectMachineResponse", wire_field: "created_at_unix_ms", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "changed_at_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "InspectMachineResponse", wire_field: "changed_at_unix_ms", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "compatibility_revision", semantic_type: "revision_digest", module: "machines", message: "QualifyImageResponse", wire_field: "compatibility_revision", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "start_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "UsageResponse", wire_field: "start_unix_ms", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "end_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "UsageResponse", wire_field: "end_unix_ms", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "receipt", semantic_type: "opaque_bytes", module: "machines", message: "UsageResponse", wire_field: "receipt", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "machines", field: "lineage_receipt_sha256", semantic_type: "sha256_digest", module: "machines", message: "UsageResponse", wire_field: "lineage_receipt_sha256", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "objects", field: "next_part_number", semantic_type: "positive_count", module: "objects", message: "ListPartsResponse", wire_field: "next_part_number", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "objects", field: "continuation_token", semantic_type: "opaque_text", module: "objects", message: "ListObjectsResponse", wire_field: "continuation_token", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "stream", field: "hierarchy_version", semantic_type: "revision_digest", module: "stream", message: "ChildrenPageResponse", wire_field: "hierarchy_version", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "stream", field: "next_after", semantic_type: "opaque_text", module: "stream", message: "ChildrenPageResponse", wire_field: "next_after", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "stream", field: "forked_at", semantic_type: "sequence", module: "stream", message: "ForkResponse", wire_field: "forked_at", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "stream", field: "tail", semantic_type: "sequence", module: "stream", message: "ForkResponse", wire_field: "tail", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "stream", field: "tail", semantic_type: "sequence", module: "stream", message: "TailResponse", wire_field: "tail", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "workers", field: "resolved_sha256", semantic_type: "sha256_digest", module: "workers", message: "InvokeDeploymentResponse", wire_field: "resolved_sha256", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "workers", field: "resolved_revision", semantic_type: "revision", module: "workers", message: "InvokeDeploymentResponse", wire_field: "resolved_revision", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "workers", field: "resolved_sha256", semantic_type: "sha256_digest", module: "workers", message: "InvokeVersionResponse", wire_field: "resolved_sha256", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "workers", field: "resolved_revision", semantic_type: "revision", module: "workers", message: "InvokeVersionResponse", wire_field: "resolved_revision", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "command_digest", semantic_type: "sha256_digest", module: "inference", message: "ContextsCreateResponse", wire_field: "command_digest", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "sequence", semantic_type: "sequence", module: "inference", message: "ContextsCreateResponse", wire_field: "sequence", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "parent", semantic_type: "opaque_bytes", module: "inference", message: "ContextsInspectResponse", wire_field: "parent", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "lineage", semantic_type: "opaque_bytes", module: "inference", message: "ContextsInspectResponse", wire_field: "lineage", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "execution_profile", semantic_type: "opaque_bytes", module: "inference", message: "ContextsInspectResponse", wire_field: "execution_profile", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "content_digest", semantic_type: "sha256_digest", module: "inference", message: "ContextsInspectResponse", wire_field: "content_digest", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "model", semantic_type: "opaque_text", module: "inference", message: "ContextsInspectResponse", wire_field: "model", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "last_sequence", semantic_type: "sequence", module: "inference", message: "RunsInspectResponse", wire_field: "last_sequence", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "last_sequence", semantic_type: "sequence", module: "inference", message: "RunsCancelResponse", wire_field: "last_sequence", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "expires_at_ms", semantic_type: "timestamp_millis", module: "inference", message: "WarmContextsInspectResponse", wire_field: "expires_at_ms", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "evidence_digest", semantic_type: "sha256_digest", module: "inference", message: "WarmContextsInspectResponse", wire_field: "evidence_digest", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "admission_receipt_id", semantic_type: "opaque_bytes", module: "inference", message: "WarmContextsInspectResponse", wire_field: "admission_receipt_id", direction: PublicFieldDirection::Response },
+    PublicFieldBinding { family: "inference", field: "sequence", semantic_type: "sequence", module: "inference", message: "WarmContextsInspectResponse", wire_field: "sequence", direction: PublicFieldDirection::Response },
 ];
 
 const CREATE_BUCKET_FIELDS: &[(&str, PublicNestedFieldKind)] =
@@ -3483,6 +3605,18 @@ mod tests {
             WireValueKind::Message
         );
         assert_eq!(
+            field_semantic_type("machines", "managed_digest")
+                .unwrap()
+                .rust_name,
+            "Sha256Digest"
+        );
+        assert_eq!(
+            field_semantic_type("machines", "custom_digest")
+                .unwrap()
+                .rust_name,
+            "Sha256Digest"
+        );
+        assert_eq!(
             field_semantic_type("inference", "revision")
                 .unwrap()
                 .wire_kind,
@@ -3775,5 +3909,53 @@ mod tests {
             constraints.as_slice(),
             [ResolvedValidationConstraint::Unresolved(rule)] if rule == "request.future_rule"
         ));
+    }
+
+    #[test]
+    fn response_bindings_are_rust_owned_and_cover_non_payload_semantics() {
+        let responses: Vec<_> = PUBLIC_FIELD_BINDINGS
+            .iter()
+            .filter(|binding| binding.direction == PublicFieldDirection::Response)
+            .collect();
+        assert!(responses.len() >= 45, "response metadata regressed");
+        for binding in responses {
+            let semantic = semantic_type(binding.semantic_type)
+                .unwrap_or_else(|| panic!("missing semantic type {}", binding.semantic_type));
+            assert!(
+                matches!(
+                    semantic.wire_kind,
+                    WireValueKind::Bytes
+                        | WireValueKind::String
+                        | WireValueKind::UnsignedInteger
+                        | WireValueKind::Enum
+                        | WireValueKind::Oneof
+                ),
+                "response {}.{} has an invalid wire kind",
+                binding.message,
+                binding.wire_field
+            );
+            assert!(!binding.module.is_empty() && !binding.message.is_empty());
+            assert!(!binding.wire_field.is_empty());
+        }
+        assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
+            binding.direction == PublicFieldDirection::Response
+                && binding.semantic_type == "timestamp_millis"
+        }));
+        assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
+            binding.direction == PublicFieldDirection::Response
+                && binding.semantic_type == "sha256_digest"
+        }));
+        assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
+            binding.direction == PublicFieldDirection::Response
+                && binding.semantic_type == "opaque_bytes"
+        }));
+    }
+
+    #[test]
+    fn response_payload_bytes_are_not_branded_as_identity_metadata() {
+        assert!(!PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
+            binding.direction == PublicFieldDirection::Response
+                && matches!(binding.wire_field, "body" | "contents" | "output")
+        }));
     }
 }

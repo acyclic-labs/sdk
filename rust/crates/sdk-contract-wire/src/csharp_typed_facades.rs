@@ -64,9 +64,9 @@ using Acyclic.Sdk.Transport;
 
 public static class RustTypedFacadeNegative
 {
-    // CS1503: empty strings cannot construct a validated semantic value at runtime.
+    // CS1503: a raw string cannot bypass the nominal id wrapper.
     public static ObjectsCreateBucketRequest EmptyKey() =>
-        new("bucket", new IdempotencyKeyText(""));
+        new("bucket", "");
 
     // CS1503: raw string is not assignable to the nominal request field.
     public static ObjectsCreateBucketRequest RawKey() =>
@@ -1905,6 +1905,18 @@ mod tests {
     }
 
     #[test]
+    fn csharp_negative_fixture_uses_compile_time_nominal_type_mismatches() {
+        let outputs = generate_csharp_type_policy_tests();
+        let (_, negative) = outputs
+            .iter()
+            .find(|(path, _)| path.ends_with("RustTypedFacadeNegative.cs.txt"))
+            .expect("generated C# negative fixture");
+        assert!(negative.contains("new(\"bucket\", \"\");"));
+        assert!(negative.contains("new(\"bucket\", \"raw\");"));
+        assert!(!negative.contains("new IdempotencyKeyText(\"\")"));
+    }
+
+    #[test]
     fn csharp_response_projection_retains_unknown_oneof_wire_bytes() {
         let (_, source) = generate_csharp_typed_facade();
         assert!(source.contains("record Unknown(int RawCase, ByteString WireBytes)"));
@@ -1932,6 +1944,23 @@ mod tests {
         assert!(source.contains("record Custom(Sha256Digest Digest)"));
         assert!(source.contains("record Checkpoint(CheckpointId Id)"));
         assert!(source.contains("wire.Image = Image.ToWire();"));
+    }
+
+    #[test]
+    fn csharp_known_image_digest_variants_keep_nominal_digest_types() {
+        let (_, source) = generate_csharp_typed_facade();
+        assert!(source.contains(
+            "public sealed record ManagedDigest(Sha256Digest Value) : RustMachinesImageImmutableReferenceChoice;"
+        ));
+        assert!(source.contains(
+            "public sealed record CustomDigest(Sha256Digest Value) : RustMachinesImageImmutableReferenceChoice;"
+        ));
+        assert!(source.contains(
+            "new ManagedDigest(new Sha256Digest(wire.ManagedDigest.ToByteArray()))"
+        ));
+        assert!(source.contains(
+            "new CustomDigest(new Sha256Digest(wire.CustomDigest.ToByteArray()))"
+        ));
     }
 
     #[test]
