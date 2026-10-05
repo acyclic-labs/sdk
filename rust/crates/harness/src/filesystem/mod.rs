@@ -26,6 +26,8 @@ use acyclic_fs::{
     PublicationReservation, TransactionCommit, Workspace, WorkspaceDirectoryPage, WorkspaceError,
     WorkspaceStat,
 };
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+use acyclic_fs::path::PortablePath;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -1923,6 +1925,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "native capture requires a project volume on this provider".into(),
             ));
         }
+        let excluded_paths = native_capture_boundary(&capture.source_root)?;
         let observed = acyclic_fs::capture_root_identity(&capture.source_root)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if observed != capture.expected_root_identity {
@@ -1934,6 +1937,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             mode: SourceMode::Pinned,
             maximum_paths: capture.maximum_paths,
             maximum_extent_spans: capture.maximum_extent_spans,
+            excluded_paths,
             ..SourceOptions::default()
         };
         let checkout = HostCheckout::attach(
@@ -2636,6 +2640,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+const NATIVE_CAPTURE_RESERVED_PREFIXES: &[&str] = &[
+    "/history",
+    "/filesystem",
+    "/runtime",
+    "/.runtime",
+    "/session",
+    "/.session",
+    "/credentials",
+    "/credential",
+    "/secrets",
+    "/.credentials",
+    "/.secrets",
+];
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+fn native_capture_boundary(source_root: &std::path::Path) -> Result<Vec<PortablePath>> {
+    // A session root is identified by its two durable stores. Rejecting that
+    // root prevents history, private volumes, and execution records from
+    // becoming a project generation. Named host-owned children are excluded
+    // from every capture interval as an additional race-resistant fence.
+    let has_history = source_root.join("history").is_dir();
+    let has_filesystem = source_root.join("filesystem").is_dir();
+    if has_history && has_filesystem {
+        return Err(Error::Unauthorized(
+            "native capture root is a Harness session store".into(),
+        ));
+    }
+    if source_root.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        NATIVE_CAPTURE_RESERVED_PREFIXES.iter().any(|prefix| {
+            prefix
+                .trim_start_matches('/')
+                .eq_ignore_ascii_case(name.as_ref())
+        })
+    }) {
+        return Err(Error::Unauthorized(
+            "native capture root is host-owned runtime or credential storage".into(),
+        ));
+    }
+    NATIVE_CAPTURE_RESERVED_PREFIXES
+        .iter()
+        .map(|prefix| {
+            PortablePath::parse(prefix, acyclic_fs::model::VolumeLimits::default())
+                .map_err(|error| Error::Invalid(error.to_string()))
+        })
+        .collect()
+}
+
 /// Creates the canonical provider-owned reference for a named workspace.
 pub fn workspace_ref(provider: ProviderRef, name: &str) -> Result<WorkspaceRef> {
     acyclic_fs::WorkspaceName::new(name).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -2703,6 +2756,37 @@ mod tests {
         AgentId, Capabilities,
         conversation::{VolumeClass, VolumeOwner},
     };
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_capture_boundary_keeps_session_and_host_state_out_of_projects() -> Result<()> {
+        let session_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::create_dir(session_root.path().join("history"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::create_dir(session_root.path().join("filesystem"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            native_capture_boundary(session_root.path()),
+            Err(Error::Unauthorized(_))
+        ));
+
+        let project_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        for name in ["runtime", "session", "credentials", "secrets"] {
+            std::fs::create_dir(project_root.path().join(name))
+                .map_err(|error| Error::Storage(error.to_string()))?;
+        }
+        let excluded = native_capture_boundary(project_root.path())?;
+        for name in ["runtime", "session", "credentials", "secrets"] {
+            assert!(excluded.iter().any(|path| path.as_str() == format!("/{name}")));
+        }
+
+        let credentials_root = project_root.path().join("credentials");
+        assert!(matches!(
+            native_capture_boundary(&credentials_root),
+            Err(Error::Unauthorized(_))
+        ));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Result<()> {
