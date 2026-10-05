@@ -15,6 +15,10 @@ use crate::{
 /// Workspace preparation and publication remain owned by the existing typed
 /// fork APIs. The caller must persist its original `ForkRequest` before dispatch.
 pub struct VerifiedModelForkBoundary<P> {
+    parts: Box<VerifiedModelForkBoundaryParts<P>>,
+}
+
+struct VerifiedModelForkBoundaryParts<P> {
     boundary: CompletedModelBoundary,
     publication: ModelBatchPublication,
     parent: StreamAggregate<P>,
@@ -22,17 +26,18 @@ pub struct VerifiedModelForkBoundary<P> {
 
 impl<P> VerifiedModelForkBoundary<P> {
     pub(crate) const fn parent(&self) -> &StreamAggregate<P> {
-        &self.parent
+        &self.parts.parent
     }
 
     /// Immutable model input inherited by every child at this batch boundary.
     pub const fn boundary(&self) -> &CompletedModelBoundary {
-        &self.boundary
+        &self.parts.boundary
     }
 
     /// Consume the verification result without regenerating the prefix.
     pub fn into_parts(self) -> (CompletedModelBoundary, StreamAggregate<P>) {
-        (self.boundary, self.parent)
+        let parts = *self.parts;
+        (parts.boundary, parts.parent)
     }
 }
 
@@ -70,10 +75,10 @@ where
         }
         let mut unique = std::collections::BTreeSet::new();
         let mut files = Vec::new();
-        for message in &verified.boundary.request.messages {
+        for message in &verified.parts.boundary.request.messages {
             for file in crate::model_input::message_file_refs(
                 message,
-                &verified.boundary.request.tools,
+                &verified.parts.boundary.request.tools,
             )? {
                 if unique.insert(file.read_capability()?) {
                     self.content_verifier.verify(&file).await?;
@@ -82,9 +87,9 @@ where
             }
         }
         let mut references = crate::fork::ModelBoundaryReferences {
-            publication: verified.publication.operation_id,
-            publication_digest: crate::contract::canonical_json_digest(&verified.publication)?,
-            boundary_digest: crate::contract::canonical_json_digest(&verified.boundary)?,
+            publication: verified.parts.publication.operation_id,
+            publication_digest: crate::contract::canonical_json_digest(&verified.parts.publication)?,
+            boundary_digest: crate::contract::canonical_json_digest(&verified.parts.boundary)?,
             attestation: [0; 32],
             files,
         };
@@ -261,9 +266,11 @@ where
         }
         crate::stack_diagnostics::marker("fork-boundary-before-result");
         let verified = VerifiedModelForkBoundary {
-            boundary,
-            publication: publication.clone(),
-            parent,
+            parts: Box::new(VerifiedModelForkBoundaryParts {
+                boundary,
+                publication: publication.clone(),
+                parent,
+            }),
         };
         crate::stack_diagnostics::marker("fork-boundary-after-result");
         drop(selected);
