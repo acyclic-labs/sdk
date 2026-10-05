@@ -1272,6 +1272,77 @@ pub fn parse_language(value: &str) -> Result<Language, String> {
     }
 }
 
+const ELIXIR_PROTOBUF_VERSION: &str = "0.17.0";
+const ELIXIR_GRPC_VERSION: &str = "1.0.3";
+const ELIXIR_GUN_VERSION: &str = "2.4.1";
+
+/// Emit the Elixir package recipe from Rust-owned transport metadata.
+///
+/// `grpc` keeps its Gun adapter optional, so leaving Gun out of the generated
+/// Mix project produces a package that compiles but cannot open a remote
+/// channel. Keep this dependency decision beside the Rust generation entry
+/// point and emit a small provenance manifest with the recipe.
+pub fn emit_elixir_package(
+    project: &Path,
+    source_revision: &str,
+    authority_manifest_sha256: &str,
+) -> Result<(), String> {
+    if source_revision.trim().is_empty() || authority_manifest_sha256.trim().is_empty() {
+        return Err("Elixir package emission requires Rust source revision and authority manifest digest".into());
+    }
+    fs::create_dir_all(project)
+        .map_err(|error| format!("create Elixir project {}: {error}", project.display()))?;
+    let mix = format!(
+        r#"defmodule AcyclicSdkQualification.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :acyclic_sdk_qualification,
+      version: "0.0.0",
+      elixir: "~> 1.17",
+      start_permanent: Mix.env() == :prod,
+      deps: deps()
+    ]
+  end
+
+  def application do
+    [extra_applications: [:logger]]
+  end
+
+  defp deps do
+    [
+      {{:protobuf, "{ELIXIR_PROTOBUF_VERSION}"}},
+      {{:grpc, "{ELIXIR_GRPC_VERSION}"}},
+      # grpc's remote adapter is optional; Rust generation makes it explicit
+      # so every generated Elixir remote client works without feature flags.
+      {{:gun, "{ELIXIR_GUN_VERSION}"}}
+    ]
+  end
+end
+"#
+    );
+    fs::write(project.join("mix.exs"), mix)
+        .map_err(|error| format!("write Elixir Mix recipe: {error}"))?;
+    let manifest = serde_json::json!({
+        "schema": "acyclic.sdk.elixir-package-manifest.v1",
+        "language": "elixir",
+        "source_revision": source_revision,
+        "rust_authority_manifest_sha256": authority_manifest_sha256,
+        "dependencies": [
+            {"name": "protobuf", "version": ELIXIR_PROTOBUF_VERSION, "role": "serialization"},
+            {"name": "grpc", "version": ELIXIR_GRPC_VERSION, "role": "transport"},
+            {"name": "gun", "version": ELIXIR_GUN_VERSION, "role": "grpc-adapter"}
+        ]
+    });
+    fs::write(
+        project.join("rust-elixir-package-manifest.json"),
+        serde_json::to_string_pretty(&manifest).map_err(|error| format!("serialize Elixir package manifest: {error}"))? + "\n",
+    )
+    .map_err(|error| format!("write Elixir package manifest: {error}"))?;
+    Ok(())
+}
+
 pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let mut language: Option<String> = None;
     let mut authority = None;
@@ -1285,6 +1356,7 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let mut inventory = None;
     let mut receipt = None;
     let mut normalize_output = None;
+    let mut elixir_package = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1300,6 +1372,7 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
             "--inventory" => { index += 1; inventory = args.get(index).map(PathBuf::from); }
             "--receipt" => { index += 1; receipt = args.get(index).map(PathBuf::from); }
             "--normalize-output" => { index += 1; normalize_output = args.get(index).map(PathBuf::from); }
+            "--emit-elixir-package" => { index += 1; elixir_package = args.get(index).map(PathBuf::from); }
             value => return Err(format!("unknown runtime-consumer argument {value}")),
         }
         index += 1;
@@ -1331,6 +1404,13 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
             &receipt,
             language.as_deref().ok_or_else(|| "--language is required for receipt normalization".to_string())?,
             &output,
+        );
+    }
+    if let Some(project) = elixir_package {
+        return emit_elixir_package(
+            &project,
+            source_revision.as_deref().ok_or_else(|| "--source-revision is required for --emit-elixir-package".to_string())?,
+            manifest_sha256.as_deref().ok_or_else(|| "--manifest-sha256 is required for --emit-elixir-package".to_string())?,
         );
     }
     let authority = authority.ok_or_else(|| "--authority is required".to_string())?;

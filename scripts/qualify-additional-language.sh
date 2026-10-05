@@ -135,11 +135,22 @@ verify_rust_wire_semantics() {
     echo 'Rust executable typed-request manifest is required for semantic qualification' >&2
     return 1
   }
-  cargo run --locked --manifest-path "$source_root/rust/crates/sdk-contract-wire/Cargo.toml" \
+  local schema
+  schema=$(python3 - "$receipt" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    print(json.load(stream).get("schema", ""))
+PY
+  )
+  [[ "$schema" == "acyclic.sdk.rpc-scenario-log.v2" ]] || {
+    echo "Rust observation verifier requires scenario-log.v2 transport observations; got $schema" >&2
+    return 1
+  }
+  cargo run --locked --manifest-path "$source_root/rust/crates/sdk-generation/Cargo.toml" \
     --bin verify-observations -- \
     --manifest "$ACYCLIC_RUST_TYPED_REQUEST_MANIFEST" \
+    --canonical-manifest "${ACYCLIC_RUST_CANONICAL_TYPED_REQUEST_MANIFEST:-$ACYCLIC_RUST_TYPED_REQUEST_MANIFEST}" \
     --observed "$receipt" \
-    --source-git-sha "$source_revision" \
     --output "$output"
   test -s "$output"
 }
@@ -155,19 +166,11 @@ EOF
     # `elixir` is reserved by the runtime, so the output directory cannot be
     # used as Mix's inferred application name on Windows or current Elixir.
     mix new "$project" --app acyclic_sdk_qualification --sup >/dev/null
-    python3 - "$project/mix.exs" <<'PY'
-from pathlib import Path
-import sys
-p = Path(sys.argv[1])
-s = p.read_text()
-s = s.replace(
-    '      # {:dep_from_hexpm, "~> 0.3.0"},\n'
-    '      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}',
-    '      {:protobuf, "0.17.0"},\n'
-    '      {:grpc, "1.0.3"}'
-)
-p.write_text(s)
-PY
+    cargo run --locked --manifest-path "$source_root/rust/crates/sdk-generation/Cargo.toml" \
+      --bin sdk-runtime-consumer -- \
+      --emit-elixir-package "$project" \
+      --source-revision "$source_revision" \
+      --manifest-sha256 "$manifest_digest"
     pushd "$project" >/dev/null
     mix do deps.get, deps.compile
     mix escript.install hex protobuf 0.17.0 --force
