@@ -4919,6 +4919,7 @@ impl PersistentLocalSwarm {
         }
         let parent_session = self.session(request.parent).await?;
         let parent_admission = self.authenticated_admission(request.parent).await?;
+        let budget_parent_operation = self.budget_parent_operation(request.parent).await?;
         let parent_harness = self.open_session(request.parent).await?;
         self.verify_admitted_task(parent_session.parent, &parent_admission, &parent_harness)
             .await?;
@@ -5036,7 +5037,7 @@ impl PersistentLocalSwarm {
         let budget_publication = match Self::verified_child_publication(
             &boundary,
             seed,
-            Some(parent_admission.operation_id),
+            budget_parent_operation,
         ) {
             Ok(publication) => publication,
             Err(error) => {
