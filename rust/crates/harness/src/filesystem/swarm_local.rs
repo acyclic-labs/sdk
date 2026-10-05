@@ -7795,6 +7795,7 @@ mod tests {
         Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+    use std::time::Instant;
 
     /// Provider used by the activation recovery test. The underlying
     /// provider commits the append normally, while this adapter loses the
@@ -7904,7 +7905,64 @@ mod tests {
 
     #[derive(Default)]
     struct MockUsageSource {
-        usage: Mutex<BTreeMap<(OperationId, String), SwarmUsage>>,
+        usage: Mutex<BTreeMap<(OperationId, String), MockMeasurement>>,
+    }
+
+    #[derive(Default, Clone, Copy)]
+    struct MockMeasurement {
+        usage: SwarmUsage,
+        elapsed_sample_ms: u64,
+    }
+
+    impl MockUsageSource {
+        fn begin(&self, dispatch: &ProviderDispatchContext) -> Result<()> {
+            let key = (dispatch.operation_id, dispatch.dispatch_id.0.clone());
+            let mut usage = self
+                .usage
+                .lock()
+                .map_err(|_| Error::Conflict("mock usage lock poisoned".into()))?;
+            let entry = usage.entry(key).or_default();
+            entry.usage.model_steps = entry
+                .usage
+                .model_steps
+                .checked_add(1)
+                .ok_or_else(|| Error::Conflict("mock model-step measurement overflow".into()))?;
+            entry.elapsed_sample_ms = 0;
+            Ok(())
+        }
+
+        fn record(
+            &self,
+            dispatch: &ProviderDispatchContext,
+            started: Instant,
+            event: &ModelEvent,
+        ) -> Result<()> {
+            let bytes = crate::contract::canonical_json_bytes(event)?.len() as u64;
+            let elapsed = u64::try_from(started.elapsed().as_millis())
+                .map_err(|_| Error::Conflict("mock elapsed measurement overflow".into()))?;
+            let mut usage = self
+                .usage
+                .lock()
+                .map_err(|_| Error::Conflict("mock usage lock poisoned".into()))?;
+            let entry = usage
+                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                .or_default();
+            entry.usage.output_bytes = entry
+                .usage
+                .output_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| Error::Conflict("mock output measurement overflow".into()))?;
+            let delta = elapsed
+                .checked_sub(entry.elapsed_sample_ms)
+                .ok_or_else(|| Error::Conflict("mock elapsed measurement regressed".into()))?;
+            entry.elapsed_sample_ms = elapsed;
+            entry.usage.execution_time_ms = entry
+                .usage
+                .execution_time_ms
+                .checked_add(delta)
+                .ok_or_else(|| Error::Conflict("mock time measurement overflow".into()))?;
+            Ok(())
+        }
     }
 
     impl SwarmUsageSource for MockUsageSource {
@@ -7922,8 +7980,9 @@ mod tests {
                 .lock()
                 .map_err(|_| Error::Conflict("mock usage lock poisoned".into()))?
                 .get(&(operation_id, dispatch_id.0.clone()))
-                .copied()
-                .unwrap_or_default())
+                .map(|measurement| measurement.usage)
+                .ok_or_else(|| Error::Indeterminate(operation_id))
+        )
         }
     }
 
@@ -8791,28 +8850,15 @@ mod tests {
             dispatch: ProviderDispatchContext,
         ) -> BoxStream<'a, Result<ModelEvent>> {
             let source = self.usage.clone();
-            if let Ok(mut usage) = source.usage.lock() {
-                usage
-                    .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                    .or_default()
-                    .model_steps = 1;
+            if let Err(error) = source.begin(&dispatch) {
+                return Box::pin(futures::stream::once(async move { Err(error) }));
             }
             let started = Instant::now();
             let stream = self.generate(prepared);
             Box::pin(stream.map(move |event| {
                 if let Ok(event) = &event {
-                    if let Ok(mut usage) = source.usage.lock() {
-                        let entry = usage
-                            .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                            .or_default();
-                        entry.output_bytes = entry.output_bytes.saturating_add(
-                            crate::contract::canonical_json_bytes(event)
-                                .map(|bytes| bytes.len() as u64)
-                                .unwrap_or_default(),
-                        );
-                        entry.execution_time_ms = entry
-                            .execution_time_ms
-                            .max(started.elapsed().as_millis() as u64);
+                    if let Err(error) = source.record(&dispatch, started, event) {
+                        return Err(error);
                     }
                 }
                 event
@@ -9796,27 +9842,15 @@ mod tests {
             dispatch: ProviderDispatchContext,
         ) -> BoxStream<'a, Result<ModelEvent>> {
             let source = self.usage.clone();
-            if let Ok(mut usage) = source.usage.lock() {
-                let entry = usage
-                    .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                    .or_default();
-                entry.model_steps = entry.model_steps.saturating_add(1);
+            if let Err(error) = source.begin(&dispatch) {
+                return Box::pin(futures::stream::once(async move { Err(error) }));
             }
             let started = Instant::now();
             let stream = self.generate(prepared);
             Box::pin(stream.map(move |event| {
                 if let Ok(event) = &event {
-                    let bytes = crate::contract::canonical_json_bytes(event)
-                        .map(|bytes| bytes.len() as u64)
-                        .unwrap_or_default();
-                    if let Ok(mut usage) = source.usage.lock() {
-                        let entry = usage
-                            .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                            .or_default();
-                        entry.output_bytes = entry.output_bytes.saturating_add(bytes);
-                        entry.execution_time_ms = entry
-                            .execution_time_ms
-                            .max(started.elapsed().as_millis() as u64);
+                    if let Err(error) = source.record(&dispatch, started, event) {
+                        return Err(error);
                     }
                 }
                 event
@@ -10179,11 +10213,8 @@ mod tests {
                 prepared: crate::model_input::PreparedModelInput,
                 dispatch: ProviderDispatchContext,
             ) -> BoxStream<'a, Result<ModelEvent>> {
-                if let Ok(mut usage) = self.usage.usage.lock() {
-                    usage
-                        .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                        .or_default()
-                        .model_steps = 1;
+                if let Err(error) = self.usage.begin(&dispatch) {
+                    return Box::pin(futures::stream::once(async move { Err(error) }));
                 }
                 self.generate(prepared)
             }
