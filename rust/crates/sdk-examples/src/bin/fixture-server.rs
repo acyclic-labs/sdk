@@ -23,7 +23,7 @@ use acyclic_sdk_examples::{
 };
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
-    StreamProvider, wire as stream_wire,
+    StreamProvider, decode_http_request, http_response, wire as stream_wire,
 };
 use acyclic_workers::{
     FILE_DESCRIPTOR_SET as WORKERS_FILE_DESCRIPTOR_SET, validate_publish, validate_select,
@@ -1299,9 +1299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interceptor.clone(),
         );
         let filesystem = tonic::service::interceptor::InterceptedService::new(
-            filesystem_service
-                .max_decoding_message_size(MAX_BODY_BYTES)
-                .max_encoding_message_size(MAX_BODY_BYTES),
+            filesystem_service,
             interceptor.clone(),
         );
         let streams = tonic::service::interceptor::InterceptedService::new(
@@ -1595,6 +1593,7 @@ async fn dispatch(app: &App, request: &HttpRequest) -> Result<Value, HttpError> 
         "/v1/workers/jobs/inspect" => workers_inspect(&request.content_type, &request.body),
         "/v1/workers/jobs/cancel" => workers_cancel(&request.content_type, &request.body),
         "/v1/stream/append" => stream_append(app, &request.body).await,
+        "/v1/stream/tail" => stream_tail(app, &request.body).await,
         "/v1/stream/read" => stream_read(app, &request.body).await,
         "/health" => Ok(json!({
             "schema": "acyclic.sdk.fixture-response.v1",
@@ -2169,9 +2168,13 @@ fn encode_workers_response<M: Message>(response: &M, name: &str) -> Result<Value
 }
 
 async fn stream_append(app: &App, body: &[u8]) -> Result<Value, HttpError> {
-    let wire = stream_wire::AppendRequest::decode(body).map_err(|error| HttpError {
+    let wire_bytes = decode_http_request("append", body).map_err(|error| HttpError {
         status: 400,
-        message: format!("invalid AppendRequest protobuf: {error}"),
+        message: format!("Rust Stream HTTP request projection rejected append: {error}"),
+    })?;
+    let wire = stream_wire::AppendRequest::decode(wire_bytes.as_slice()).map_err(|error| HttpError {
+        status: 400,
+        message: format!("invalid projected AppendRequest: {error}"),
     })?;
     let path = StreamPath::new(wire.path.clone()).map_err(|error| HttpError {
         status: 422,
@@ -2198,34 +2201,59 @@ async fn stream_append(app: &App, body: &[u8]) -> Result<Value, HttpError> {
             status: 422,
             message: format!("Rust MemoryStream rejected append: {error}"),
         })?;
-    match outcome {
-        AppendOutcome::Committed(receipt) => Ok(json!({
-            "schema": "acyclic.sdk.fixture-response.v1",
-            "fixture_id": "stream-append-read-v2",
-            "operation_id": "acyclic.stream.v2.Stream/Append",
-            "status": "committed",
-            "request_sha256": digest(body),
-            "start": receipt.start,
-            "end": receipt.end,
-            "tail": receipt.tail,
-            "commit_id_hex": hex(receipt.commit_id.as_bytes()),
-            "service_availability": "not_claimed",
-        })),
-        AppendOutcome::TailConflict { actual_tail } => Ok(json!({
-            "schema": "acyclic.sdk.fixture-response.v1",
-            "fixture_id": "stream-append-read-v2",
-            "status": "tail_conflict",
-            "request_sha256": digest(body),
-            "actual_tail": actual_tail,
-            "service_availability": "not_claimed",
-        })),
-    }
+    let response = match outcome {
+        AppendOutcome::Committed(receipt) => stream_wire::AppendResponse {
+            outcome: Some(stream_wire::append_response::Outcome::Committed(
+                stream_wire::AppendReceipt {
+                    start: receipt.start,
+                    end: receipt.end,
+                    tail: receipt.tail,
+                    commit_id: receipt.commit_id.as_bytes().to_vec().into(),
+                },
+            )),
+        },
+        AppendOutcome::TailConflict { actual_tail } => stream_wire::AppendResponse {
+            outcome: Some(stream_wire::append_response::Outcome::Conflict(
+                stream_wire::TailConflict { actual_tail },
+            )),
+        },
+    };
+    let encoded = http_response::encode("append", &response.encode_to_vec(), 8 * 1024 * 1024)
+        .map_err(|error| HttpError { status: 500, message: format!("Rust Stream HTTP response projection failed: {error}") })?;
+    serde_json::from_slice(&encoded).map_err(|error| HttpError {
+        status: 500,
+        message: format!("invalid projected AppendResponse: {error}"),
+    })
+}
+
+async fn stream_tail(app: &App, body: &[u8]) -> Result<Value, HttpError> {
+    let wire_bytes = decode_http_request("tail", body).map_err(|error| HttpError {
+        status: 400,
+        message: format!("Rust Stream HTTP request projection rejected tail: {error}"),
+    })?;
+    let wire = stream_wire::TailRequest::decode(wire_bytes.as_slice()).map_err(|error| HttpError {
+        status: 400,
+        message: format!("invalid projected TailRequest: {error}"),
+    })?;
+    let path = StreamPath::new(wire.path).map_err(|error| HttpError {
+        status: 422,
+        message: format!("invalid Stream path: {error}"),
+    })?;
+    let tail = app.stream.tail(path).await.map_err(|error| HttpError {
+        status: 422,
+        message: format!("Rust MemoryStream rejected tail: {error}"),
+    })?;
+    Ok(json!({ "tail": tail }))
 }
 
 async fn stream_read(app: &App, body: &[u8]) -> Result<Value, HttpError> {
-    let wire = stream_wire::ReadRequest::decode(body).map_err(|error| HttpError {
+    let wire_bytes = decode_http_request("read", body).map_err(|error| HttpError {
         status: 400,
-        message: format!("invalid ReadRequest protobuf: {error}"),
+        message: format!("Rust Stream HTTP request projection rejected read: {error}"),
+    })?;
+    let wire = stream_wire::ReadRequest::decode(wire_bytes.as_slice()).map_err(|error| HttpError {
+        status: 400,
+        message: format!("invalid projected ReadRequest: {error}"),
     })?;
     let path = StreamPath::new(wire.path).map_err(|error| HttpError {
         status: 422,
@@ -2250,19 +2278,13 @@ async fn stream_read(app: &App, body: &[u8]) -> Result<Value, HttpError> {
             message: format!("Rust MemoryStream read failed: {error}"),
         })?;
         values.push(json!({
-            "sequence": record.sequence,
-            "value_hex": hex(&record.value),
+            "sequence": record.sequence.to_string(),
+            "value": base64_bytes(&record.value),
+            "commitId": base64_bytes(record.commit_id.as_bytes()),
+            "committedAtMicros": record.committed_at_micros.to_string(),
         }));
     }
-    Ok(json!({
-        "schema": "acyclic.sdk.fixture-response.v1",
-        "fixture_id": "stream-append-read-v2",
-        "operation_id": "acyclic.stream.v2.Stream/Read",
-        "status": "ok",
-        "request_sha256": digest(body),
-        "records": values,
-        "service_availability": "not_claimed",
-    }))
+    Ok(Value::Array(values))
 }
 
 async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpError> {
@@ -2406,6 +2428,31 @@ fn digest(bytes: &[u8]) -> String {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn base64_bytes(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        output.push(TABLE[(first >> 2) as usize] as char);
+        if chunk.len() == 1 {
+            output.push(TABLE[((first & 0x03) << 4) as usize] as char);
+            output.push_str("==");
+        } else {
+            let second = chunk[1];
+            output.push(TABLE[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+            if chunk.len() == 2 {
+                output.push(TABLE[((second & 0x0f) << 2) as usize] as char);
+                output.push('=');
+            } else {
+                let third = chunk[2];
+                output.push(TABLE[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+                output.push(TABLE[(third & 0x3f) as usize] as char);
+            }
+        }
+    }
+    output
 }
 
 fn source_sha256() -> String {

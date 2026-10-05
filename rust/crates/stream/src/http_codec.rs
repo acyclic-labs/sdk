@@ -1,6 +1,8 @@
 //! Shared Rust-owned hosted Stream request projection for native and browser clients.
 use crate::{MAX_COMMAND_BYTES, StreamError, TOKEN_OPERATIONS, memory, wire, wire_codec};
 use prost::Message;
+use prost_reflect::{DescriptorPool, DynamicMessage};
+use serde::de::Deserializer;
 use serde_json::Value;
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
@@ -324,6 +326,140 @@ pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
     serde_json::to_string(&request_json(route, input)?).map_err(|_| "could not encode request")
 }
 
+/// Decode the canonical hosted JSON projection back into the generated wire
+/// message used by the Rust provider.  The fixture server uses this adapter
+/// so its HTTP surface exercises exactly the same protobuf-JSON contract as
+/// native and browser clients.
+pub fn decode(route: &str, input: &[u8]) -> std::result::Result<Vec<u8>, &'static str> {
+    if input.len() > MAX_COMMAND_BYTES {
+        return Err("limit_exceeded");
+    }
+    let value: Value = serde_json::from_slice(input).map_err(|_| "invalid_argument")?;
+    match route {
+        "append" => decode_append_json(value),
+        "read" => decode_read_json(value),
+        _ => decode_protobuf_json(route, value),
+    }
+}
+
+fn decode_append_json(value: Value) -> std::result::Result<Vec<u8>, &'static str> {
+    let object = value.as_object().ok_or("invalid_argument")?;
+    let path = object
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or("invalid_argument")?
+        .to_owned();
+    let records = object
+        .get("values")
+        .and_then(Value::as_array)
+        .ok_or("invalid_argument")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or("invalid_argument")
+                .and_then(decode_base64)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let options = object.get("options").and_then(Value::as_object);
+    let if_tail = options
+        .and_then(|options| options.get("ifTail"))
+        .and_then(Value::as_u64);
+    let idempotency_key = options
+        .and_then(|options| options.get("idempotencyKey"))
+        .map(|value| value.as_str().ok_or("invalid_argument").and_then(decode_base64))
+        .transpose()?;
+    Ok(wire::AppendRequest {
+        path,
+        records,
+        if_tail,
+        idempotency_key: idempotency_key.map(bytes::Bytes::from),
+    }
+    .encode_to_vec())
+}
+
+fn decode_read_json(value: Value) -> std::result::Result<Vec<u8>, &'static str> {
+    let object = value.as_object().ok_or("invalid_argument")?;
+    Ok(wire::ReadRequest {
+        path: object
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or("invalid_argument")?
+            .to_owned(),
+        from: object
+            .get("from")
+            .and_then(Value::as_u64)
+            .ok_or("invalid_argument")?,
+        limit: object
+            .get("limit")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or("invalid_argument")?,
+    }
+    .encode_to_vec())
+}
+
+fn decode_protobuf_json(
+    route: &str,
+    value: Value,
+) -> std::result::Result<Vec<u8>, &'static str> {
+    let message_name = match route {
+        "idempotency/inspect" => "acyclic.stream.v2.InspectIdempotencyRequest",
+        "tail" => "acyclic.stream.v2.TailRequest",
+        "fork" => "acyclic.stream.v2.ForkRequest",
+        "children" => "acyclic.stream.v2.ChildrenRequest",
+        "children/page" => "acyclic.stream.v2.ChildrenPageRequest",
+        "commit" => "acyclic.stream.v2.CommitRequest",
+        "commits/read" => "acyclic.stream.v2.ReadCommitRequest",
+        "tokens/create" => "acyclic.stream.v2.CreateTokenRequest",
+        _ => return Err("invalid_argument"),
+    };
+    let pool = DescriptorPool::decode(crate::FILE_DESCRIPTOR_SET)
+        .map_err(|_| "invalid_argument")?;
+    let descriptor = pool
+        .get_message_by_name(message_name)
+        .ok_or("invalid_argument")?;
+    let serialized = value.to_string();
+    let mut json = serde_json::Deserializer::from_str(&serialized);
+    let message = DynamicMessage::deserialize(descriptor, &mut json)
+        .map_err(|_| "invalid_argument")?;
+    json.end().map_err(|_| "invalid_argument")?;
+    let bytes = message.encode_to_vec();
+    if bytes.len() > MAX_COMMAND_BYTES {
+        return Err("limit_exceeded");
+    }
+    Ok(bytes)
+}
+
+fn decode_base64(value: &str) -> std::result::Result<Vec<u8>, &'static str> {
+    if value.len() % 4 != 0 {
+        return Err("invalid_argument");
+    }
+    let mut output = Vec::with_capacity(value.len() / 4 * 3);
+    let mut chunk = [0u8; 4];
+    for part in value.as_bytes().chunks(4) {
+        for (index, byte) in part.iter().enumerate() {
+            chunk[index] = match *byte {
+                b'A'..=b'Z' => *byte - b'A',
+                b'a'..=b'z' => *byte - b'a' + 26,
+                b'0'..=b'9' => *byte - b'0' + 52,
+                b'+' => 62,
+                b'/' => 63,
+                b'=' => 0,
+                _ => return Err("invalid_argument"),
+            };
+        }
+        output.push((chunk[0] << 2) | (chunk[1] >> 4));
+        if part[2] != b'=' {
+            output.push((chunk[1] << 4) | (chunk[2] >> 2));
+        }
+        if part[3] != b'=' {
+            output.push((chunk[2] << 6) | chunk[3]);
+        }
+    }
+    Ok(output)
+}
+
 fn encode_base64(value: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let table_char = |index: u8| TABLE.get(index as usize).copied().unwrap_or_default() as char;
@@ -386,5 +522,33 @@ mod tests {
         let projected: Value = serde_json::from_str(&encode("commit", &wire.encode_to_vec())?)?;
         assert!(projected.pointer("/options/deadlineUnixMillis").is_none());
         Ok(())
+    }
+
+    #[test]
+    fn canonical_append_and_read_json_round_trip_through_wire() {
+        let append = wire::AppendRequest {
+            path: "events".to_owned(),
+            records: vec![bytes::Bytes::from_static(b"hello")],
+            if_tail: Some(0),
+            idempotency_key: Some(bytes::Bytes::from_static(b"append-1")),
+        };
+        let encoded = encode("append", &append.encode_to_vec()).expect("append JSON");
+        let decoded = wire::AppendRequest::decode(
+            decode("append", encoded.as_bytes()).expect("append wire").as_slice(),
+        )
+        .expect("append request");
+        assert_eq!(decoded, append);
+
+        let read = wire::ReadRequest {
+            path: "events".to_owned(),
+            from: 3,
+            limit: 17,
+        };
+        let encoded = encode("read", &read.encode_to_vec()).expect("read JSON");
+        let decoded = wire::ReadRequest::decode(
+            decode("read", encoded.as_bytes()).expect("read wire").as_slice(),
+        )
+        .expect("read request");
+        assert_eq!(decoded, read);
     }
 }

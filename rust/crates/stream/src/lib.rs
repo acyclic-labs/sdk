@@ -12,19 +12,27 @@ use futures::stream::BoxStream;
 use futures::stream::LocalBoxStream;
 use thiserror::Error;
 
+/// Transport-neutral Stream client and best-transport connection helper.
 pub mod client;
+/// Conformance checks for provider implementations and protocol observations.
 pub mod conformance;
 #[cfg(not(target_arch = "wasm32"))]
+/// Native gRPC Stream transport.
 pub mod grpc;
+/// Framed HTTP response decoding and stream error mapping.
 pub mod http_response;
+/// Durable local stream persistence primitives.
 pub mod persistence;
+/// Stream append and commit preparation helpers.
 pub mod preparation;
+/// Canonical request validation and route encoding.
 pub mod request;
 // The WASM adapter consumes this module on browser builds; native builds keep
 // it available for contract tests without pulling in JS bindings.
 pub mod http;
 #[allow(dead_code)]
 mod http_codec;
+pub use http_codec::decode as decode_http_request;
 #[allow(dead_code)]
 mod http_validation;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
