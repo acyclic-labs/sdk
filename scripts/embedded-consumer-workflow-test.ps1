@@ -10,6 +10,8 @@ if (-not (Test-Path -LiteralPath $Workflow -PathType Leaf)) {
 
 $text = Get-Content -Raw -LiteralPath $Workflow
 $requiredJobs = @(
+  'abi-installed-consumer:',
+  'abi-installed-consumer-musl:',
   'dotnet-installed-consumer:',
   'dotnet-installed-consumer-musl:',
   'jvm-installed-consumer:',
