@@ -6,7 +6,7 @@
 //! cannot stand in for native admission.
 
 use acyclic_harness::{
-    Result,
+    Error, Result,
     conversation::Limits,
     model::{
         ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy, ModelProvider,
@@ -15,7 +15,7 @@ use acyclic_harness::{
     model_input::{FrozenModelPrefix, PrefixBoundModelProvider, PreparedModelInput},
 };
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
@@ -32,6 +32,7 @@ struct Vector {
     root: Case,
     children: Vec<Case>,
     grandchild: Case,
+    rejections: Vec<RejectionCase>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +52,37 @@ struct Expected {
     binding_digest: [u8; 32],
     manifest_digest: [u8; 32],
     prefix_digest: [u8; 32],
+}
+
+#[derive(Debug, Deserialize)]
+struct RejectionCase {
+    name: String,
+    error_contains: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeFixture {
+    version: u32,
+    cases: Vec<NativeCase>,
+    rejections: Vec<NativeRejection>,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeCase {
+    name: String,
+    request_json: String,
+    manifest_json: String,
+    request_digest: [u8; 32],
+    binding_digest: [u8; 32],
+    manifest_digest: [u8; 32],
+    prefix_digest: [u8; 32],
+}
+
+#[derive(Debug, Serialize)]
+struct NativeRejection {
+    name: String,
+    kind: &'static str,
+    message: String,
 }
 
 fn parse_vector() -> Vector {
@@ -98,6 +130,144 @@ fn prepare(case: &Case, limits: Limits, policy: &ModelOptionPolicy) -> Result<Pr
         &case.expected.manifest_json,
     )?;
     Ok(prepared)
+}
+
+fn rejection_request(base: &ModelRequest, name: &str) -> Result<ModelRequest> {
+    let mut request = base.clone();
+    match name {
+        "unknown-tool-result" => {
+            let Some(message) = request.messages.get_mut(3) else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "unknown-tool-result fixture is missing its tool result".into(),
+                ));
+            };
+            let ModelContent::Part(ModelContentPart::ToolResult { name, .. }) =
+                &mut message.content
+            else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "unknown-tool-result fixture is not a tool result".into(),
+                ));
+            };
+            *name = "missing-tool".into();
+        }
+        "schema-invalid-tool-result" => {
+            let Some(tool) = request.tools.first_mut() else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "schema-invalid-tool-result fixture has no tool".into(),
+                ));
+            };
+            tool.model_output_schema = json!({
+                "type": "object",
+                "properties": {"accepted": {"type": "boolean"}},
+                "required": ["accepted"],
+                "additionalProperties": false,
+            });
+            let Some(message) = request.messages.get_mut(3) else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "schema-invalid-tool-result fixture is missing its tool result".into(),
+                ));
+            };
+            let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) =
+                &mut message.content
+            else {
+                return Err(acyclic_harness::Error::Invalid(
+                    "schema-invalid-tool-result fixture is not a tool result".into(),
+                ));
+            };
+            *value = json!({"accepted": "yes"});
+        }
+        other => {
+            return Err(acyclic_harness::Error::Invalid(format!(
+                "unknown model-input rejection fixture {other}"
+            )));
+        }
+    }
+    Ok(request)
+}
+
+fn native_case(
+    case: &Case,
+    fallback_name: &str,
+    limits: Limits,
+    policy: &ModelOptionPolicy,
+) -> Result<NativeCase> {
+    let prepared =
+        PreparedModelInput::prepare_with_policy(case.request.clone(), limits, Some(policy))?;
+    let manifest_bytes = prepared.manifest_bytes()?;
+    let request_json = std::str::from_utf8(prepared.bytes())
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
+        .to_owned();
+    let manifest_json = std::str::from_utf8(&manifest_bytes)
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
+        .to_owned();
+    let prefix = FrozenModelPrefix::capture(&prepared, case.prefix_message_count)?;
+    Ok(NativeCase {
+        name: case.name.clone().unwrap_or_else(|| fallback_name.into()),
+        request_json,
+        manifest_json,
+        request_digest: prepared.manifest().request_digest,
+        binding_digest: prepared.manifest().binding_digest,
+        manifest_digest: *blake3::hash(&manifest_bytes).as_bytes(),
+        prefix_digest: prefix.digest(),
+    })
+}
+
+#[test]
+fn emit_native_model_input_v3_fixture() -> Result<()> {
+    let vector = parse_vector();
+    let mut cases = Vec::with_capacity(4);
+    cases.push(native_case(
+        &vector.root,
+        "root",
+        vector.limits,
+        &vector.policy,
+    )?);
+    cases.extend(
+        vector
+            .children
+            .iter()
+            .map(|case| native_case(case, "child", vector.limits, &vector.policy))
+            .collect::<Result<Vec<_>>>()?,
+    );
+    cases.push(native_case(
+        &vector.grandchild,
+        "grandchild",
+        vector.limits,
+        &vector.policy,
+    )?);
+
+    let mut rejections = Vec::with_capacity(vector.rejections.len());
+    for case in &vector.rejections {
+        let request = rejection_request(&vector.root.request, &case.name)?;
+        let error =
+            PreparedModelInput::prepare_with_policy(request, vector.limits, Some(&vector.policy))
+                .expect_err("rejection fixture unexpectedly admitted");
+        let Error::Invalid(message) = error else {
+            return Err(acyclic_harness::Error::Invalid(format!(
+                "{} rejection returned a non-invalid error: {error:?}",
+                case.name
+            )));
+        };
+        if !message.starts_with(&case.error_contains) {
+            return Err(acyclic_harness::Error::Invalid(format!(
+                "{} rejection message does not start with {:?}: {message}",
+                case.name, case.error_contains
+            )));
+        }
+        rejections.push(NativeRejection {
+            name: case.name.clone(),
+            kind: "invalid",
+            message,
+        });
+    }
+    let report = serde_json::to_string(&NativeFixture {
+        version: vector.version,
+        cases,
+        rejections,
+    })
+    .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    println!("MODEL_INPUT_NATIVE_FIXTURE_V3 {report}");
+    Ok(())
 }
 
 #[test]
