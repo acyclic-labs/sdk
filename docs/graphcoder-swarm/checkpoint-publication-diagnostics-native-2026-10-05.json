@@ -1,0 +1,37 @@
+{
+  "kind": "failed-native-diagnostic-checkpoint",
+  "source_commit": "6434fec1640207753d13a6a746e47c4ef66cb5d7",
+  "platform": "Windows native",
+  "evidence_directory": "D:\\graphcoder-builds\\root-qualification-artifacts\\6434fec16\\publication-diagnostics",
+  "artifacts": [],
+  "runs": [
+    {
+      "exit_code": 101,
+      "inherited_executable_source_commit": "dcd03176b54bc8b1adbb238c1cea4de065d7d2ef",
+      "result": "Linker could not open Rust std library; no executable produced and no runtime test launched",
+      "log": "native-link-failure.log",
+      "inherited_executable": "inherited-dcd03176b-local_model_swarm.exe",
+      "session": 2867
+    },
+    {
+      "log": "native.log",
+      "session": 73621,
+      "result": "Retry after std library read/hash succeeded: fresh native build launched and stack overflowed after publisher entry",
+      "exit_code": -1073741571
+    }
+  ],
+  "observations": {
+    "model_step_future_bytes": 4424,
+    "publication_dynamic_future_bytes": 39568,
+    "child_execution_marker_observed": false,
+    "run_existing_future_bytes": 36944,
+    "provider_dispatch_completed": true,
+    "publication_box_handle_bytes": 16,
+    "local_run_body_future_bytes": 17744,
+    "bundle_run_future_bytes": 416,
+    "last_marker": "fork-publisher-enter"
+  },
+  "qualification": "failed",
+  "remaining_gate": "Trace canonical digest, durable plan journal refresh, and resolver entry; prove cause and repair without stack inflation or detached workers",
+  "artifact_availability": "Unavailable: D:\\graphcoder-builds disappeared after these runs completed. Observations are retained in conversation tool outputs; this receipt is not retained-artifact qualification."
+}
