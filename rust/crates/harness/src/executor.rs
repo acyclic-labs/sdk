@@ -2259,7 +2259,7 @@ impl StockExecutor {
         &self,
         input: TurnInput,
         journal: &dyn ExecutionJournal,
-        budget: Option<&mut dyn SwarmProviderAdmission>,
+        mut budget: Option<&mut dyn SwarmProviderAdmission>,
     ) -> Result<TurnOutput> {
             self.validate_turn_input(journal, &input).await?;
             self.ensure_started(journal, &input).await?;
