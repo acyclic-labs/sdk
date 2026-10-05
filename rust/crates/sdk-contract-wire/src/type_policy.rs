@@ -2471,6 +2471,9 @@ pub fn audit_generated_public_surfaces(
                 "cpp" if line.contains("Wire { RustWireMessage wire;") => {
                     Some("public C++ wrapper exposes an opaque RustWireMessage")
                 }
+                "csharp" if csharp_raw_public_wire_record(line) => {
+                    Some("public C# facade record exposes a raw protobuf message")
+                }
                 _ => None,
             };
             if let Some(reason) = reason {
@@ -2566,6 +2569,13 @@ fn go_raw_protobuf_response(line: &str) -> bool {
             .is_some_and(|character| character.is_ascii_lowercase())
             && tail.contains('.')
     })
+}
+
+fn csharp_raw_public_wire_record(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("public sealed record ")
+        && trimmed.contains(" Wire)")
+        && (trimmed.contains("Acyclic.") || trimmed.contains("Inference."))
 }
 
 /// Check that each generated facade contains the Rust-owned type features
@@ -2791,6 +2801,7 @@ mod tests {
         fs::create_dir_all(root.join("jvm")).expect("audit fixture directory");
         fs::create_dir_all(root.join("go")).expect("audit fixture directory");
         fs::create_dir_all(root.join("python")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("csharp")).expect("audit fixture directory");
         fs::write(
             root.join("typescript-metadata.ts"),
             "import { PublishRequest, PublishResponse } from \"./generated/proto/workers_pb\";\npublish(request: PublishRequest): Promise<PublishResponse> { }\n",
@@ -2811,12 +2822,18 @@ mod tests {
             "public acyclic.protocol.v1.Protocol.HandshakeResponse protocol() { }\n",
         )
         .expect("jvm fixture");
+        fs::write(
+            root.join("csharp").join("RustTypedClients.cs"),
+            "public sealed record RawResponse(Acyclic.Protocol.V1.HandshakeResponse Wire);\npublic sealed record TypedResponse(ProtocolHandshakeResponseValue Value);\n",
+        )
+        .expect("csharp fixture");
 
         let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
         assert!(findings.iter().any(|finding| finding.language == "typescript"));
         assert!(findings.iter().any(|finding| finding.language == "python"));
         assert!(findings.iter().any(|finding| finding.language == "go"));
         assert!(findings.iter().any(|finding| finding.language == "jvm"));
+        assert!(findings.iter().any(|finding| finding.language == "csharp"));
         assert!(findings.iter().all(|finding| finding.line <= 2));
         let _ = fs::remove_dir_all(root);
     }
