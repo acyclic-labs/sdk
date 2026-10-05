@@ -9,25 +9,25 @@ object RustTypedRequestsScala {
 
   def filesystemRead(path: RustSemanticTypesScala.ResourcePath): acyclic.filesystem.v2.Filesystem.ReadRequest = { val builder = acyclic.filesystem.v2.Filesystem.ReadRequest.newBuilder(); builder.setPath(path.toWire); builder.build() }
 
-  def inferenceInspectContext(revision: RustSemanticTypesScala.RevisionDigest): inference.customer.v1.Inference.InspectContextRequest = { val builder = inference.customer.v1.Inference.InspectContextRequest.newBuilder(); builder.setRevision(com.google.protobuf.ByteString.copyFrom(revision.toWire)); builder.build() }
+  def inferenceInspectContext(revision: RustSemanticTypesScala.RevisionDigest): inference.customer.v1.Inference.InspectContextRequest = { val builder = inference.customer.v1.Inference.InspectContextRequest.newBuilder(); builder.setRevision(revision.toWire); builder.build() }
 
-  def inferenceInspectEvaluation(evaluation_id: RustSemanticTypesScala.EvaluationId): inference.customer.v1.Inference.InspectEvaluationRequest = { val builder = inference.customer.v1.Inference.InspectEvaluationRequest.newBuilder(); builder.setEvaluationId(com.google.protobuf.ByteString.copyFrom(evaluation_id.toWire)); builder.build() }
+  def inferenceInspectEvaluation(evaluation_id: RustSemanticTypesScala.EvaluationId): inference.customer.v1.Inference.InspectEvaluationRequest = { val builder = inference.customer.v1.Inference.InspectEvaluationRequest.newBuilder(); builder.setEvaluationId(evaluation_id.toWire); builder.build() }
 
-  def inferenceInspectRun(run_id: RustSemanticTypesScala.RunId): inference.customer.v1.Inference.InspectRunRequest = { val builder = inference.customer.v1.Inference.InspectRunRequest.newBuilder(); builder.setRunId(com.google.protobuf.ByteString.copyFrom(run_id.toWire)); builder.build() }
+  def inferenceInspectRun(run_id: RustSemanticTypesScala.RunId): inference.customer.v1.Inference.InspectRunRequest = { val builder = inference.customer.v1.Inference.InspectRunRequest.newBuilder(); builder.setRunId(run_id.toWire); builder.build() }
 
-  def inferenceInspectWarm(commitment: RustSemanticTypesScala.Sha256Digest): inference.customer.v1.Inference.InspectWarmRequest = { val builder = inference.customer.v1.Inference.InspectWarmRequest.newBuilder(); builder.setCommitment(com.google.protobuf.ByteString.copyFrom(commitment.toWire)); builder.build() }
+  def inferenceInspectWarm(commitment: RustSemanticTypesScala.Sha256Digest): inference.customer.v1.Inference.InspectWarmRequest = { val builder = inference.customer.v1.Inference.InspectWarmRequest.newBuilder(); builder.setCommitment(commitment.toWire); builder.build() }
 
   def machinesCreateMachine(image: RustSemanticTypesScala.Image, idempotency_key: RustSemanticTypesScala.IdempotencyKey): acyclic.machines.v1.Machines.CreateMachineRequest = { val builder = acyclic.machines.v1.Machines.CreateMachineRequest.newBuilder(); builder.setImage(image.toWire.asInstanceOf[acyclic.machines.v1.Machines.Image]); builder.setIdempotencyKey(idempotency_key.toWire.asInstanceOf[acyclic.machines.v1.Machines.IdempotencyKey]); builder.build() }
 
   def machinesEvents(event_page_limit: RustSemanticTypesScala.MachineEventPageLimit): acyclic.machines.v1.Machines.EventsRequest = { val builder = acyclic.machines.v1.Machines.EventsRequest.newBuilder(); builder.setLimit(event_page_limit.toWire.toInt); builder.build() }
 
-  def machinesInspectCheckpoint(checkpoint_id: RustSemanticTypesScala.CheckpointId): acyclic.machines.v1.Machines.InspectCheckpointRequest = { val builder = acyclic.machines.v1.Machines.InspectCheckpointRequest.newBuilder(); builder.setCheckpoint(acyclic.machines.v1.Machines.CheckpointId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(checkpoint_id.toWire)).build()); builder.build() }
+  def machinesInspectCheckpoint(checkpoint_id: RustSemanticTypesScala.CheckpointId): acyclic.machines.v1.Machines.InspectCheckpointRequest = { val builder = acyclic.machines.v1.Machines.InspectCheckpointRequest.newBuilder(); builder.setCheckpoint(acyclic.machines.v1.Machines.CheckpointId.newBuilder().setValue(checkpoint_id.toWire).build()); builder.build() }
 
-  def machinesInspectMachine(machine_id: RustSemanticTypesScala.MachineId): acyclic.machines.v1.Machines.InspectMachineRequest = { val builder = acyclic.machines.v1.Machines.InspectMachineRequest.newBuilder(); builder.setMachine(acyclic.machines.v1.Machines.MachineId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(machine_id.toWire)).build()); builder.build() }
+  def machinesInspectMachine(machine_id: RustSemanticTypesScala.MachineId): acyclic.machines.v1.Machines.InspectMachineRequest = { val builder = acyclic.machines.v1.Machines.InspectMachineRequest.newBuilder(); builder.setMachine(acyclic.machines.v1.Machines.MachineId.newBuilder().setValue(machine_id.toWire).build()); builder.build() }
 
   def machinesListMachines(page_limit: RustSemanticTypesScala.MachinePageLimit): acyclic.machines.v1.Machines.ListMachinesRequest = { val builder = acyclic.machines.v1.Machines.ListMachinesRequest.newBuilder(); builder.setLimit(page_limit.toWire.toInt); builder.build() }
 
-  def machinesOperation(operation_id: RustSemanticTypesScala.OperationId): acyclic.machines.v1.Machines.OperationRequest = { val builder = acyclic.machines.v1.Machines.OperationRequest.newBuilder(); builder.setOperation(acyclic.machines.v1.Machines.OperationId.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(operation_id.toWire)).build()); builder.build() }
+  def machinesOperation(operation_id: RustSemanticTypesScala.OperationId): acyclic.machines.v1.Machines.OperationRequest = { val builder = acyclic.machines.v1.Machines.OperationRequest.newBuilder(); builder.setOperation(acyclic.machines.v1.Machines.OperationId.newBuilder().setValue(operation_id.toWire).build()); builder.build() }
 
   def machinesQualifyImage(image: RustSemanticTypesScala.Image): acyclic.machines.v1.Machines.QualifyImageRequest = { val builder = acyclic.machines.v1.Machines.QualifyImageRequest.newBuilder(); builder.setImage(image.toWire.asInstanceOf[acyclic.machines.v1.Machines.Image]); builder.build() }
 
@@ -37,11 +37,11 @@ object RustTypedRequestsScala {
 
   def objectsListParts(upload_id: RustSemanticTypesScala.UploadId): acyclic.objects.v2.Objects.ListPartsRequest = { val builder = acyclic.objects.v2.Objects.ListPartsRequest.newBuilder(); builder.setUploadId(upload_id.toWire); builder.build() }
 
-  def streamAppend(idempotency_key: RustSemanticTypesScala.IdempotencyKeyBytes, path: RustSemanticTypesScala.ResourcePath): acyclic.stream.v2.Stream.AppendRequest = { val builder = acyclic.stream.v2.Stream.AppendRequest.newBuilder(); builder.setIdempotencyKey(com.google.protobuf.ByteString.copyFrom(idempotency_key.toWire)); builder.setPath(path.toWire); builder.build() }
+  def streamAppend(idempotency_key: RustSemanticTypesScala.IdempotencyKeyBytes, path: RustSemanticTypesScala.ResourcePath): acyclic.stream.v2.Stream.AppendRequest = { val builder = acyclic.stream.v2.Stream.AppendRequest.newBuilder(); builder.setIdempotencyKey(idempotency_key.toWire); builder.setPath(path.toWire); builder.build() }
 
   def streamFork(source: RustSemanticTypesScala.SourceName, destination: RustSemanticTypesScala.DestinationName): acyclic.stream.v2.Stream.ForkRequest = { val builder = acyclic.stream.v2.Stream.ForkRequest.newBuilder(); builder.setSource(source.toWire); builder.setDestination(destination.toWire); builder.build() }
 
-  def streamReadCommit(commit_id: RustSemanticTypesScala.CommitId): acyclic.stream.v2.Stream.ReadCommitRequest = { val builder = acyclic.stream.v2.Stream.ReadCommitRequest.newBuilder(); builder.setCommitId(com.google.protobuf.ByteString.copyFrom(commit_id.toWire)); builder.build() }
+  def streamReadCommit(commit_id: RustSemanticTypesScala.CommitId): acyclic.stream.v2.Stream.ReadCommitRequest = { val builder = acyclic.stream.v2.Stream.ReadCommitRequest.newBuilder(); builder.setCommitId(commit_id.toWire); builder.build() }
 
   def streamRead(limit: RustSemanticTypesScala.StreamPageLimit): acyclic.stream.v2.Stream.ReadRequest = { val builder = acyclic.stream.v2.Stream.ReadRequest.newBuilder(); builder.setLimit(limit.toWire.toInt); builder.build() }
 
@@ -49,7 +49,7 @@ object RustTypedRequestsScala {
 
   def workersInvokeVersion(method: RustSemanticTypesScala.MethodName): acyclic.workers.v1.Workers.InvokeVersionRequest = { val builder = acyclic.workers.v1.Workers.InvokeVersionRequest.newBuilder(); builder.setMethod(method.toWire); builder.build() }
 
-  def workersSelectDeployment(alias: RustSemanticTypesScala.VersionAlias, version_sha256: RustSemanticTypesScala.Sha256Digest, idempotency_key: RustSemanticTypesScala.IdempotencyKeyText): acyclic.workers.v1.Workers.SelectDeploymentRequest = { val builder = acyclic.workers.v1.Workers.SelectDeploymentRequest.newBuilder(); builder.setAlias(alias.toWire); builder.setVersionSha256(com.google.protobuf.ByteString.copyFrom(version_sha256.toWire)); builder.setIdempotencyKey(idempotency_key.toWire); builder.build() }
+  def workersSelectDeployment(alias: RustSemanticTypesScala.VersionAlias, version_sha256: RustSemanticTypesScala.Sha256Digest, idempotency_key: RustSemanticTypesScala.IdempotencyKeyText): acyclic.workers.v1.Workers.SelectDeploymentRequest = { val builder = acyclic.workers.v1.Workers.SelectDeploymentRequest.newBuilder(); builder.setAlias(alias.toWire); builder.setVersionSha256(version_sha256.toWire); builder.setIdempotencyKey(idempotency_key.toWire); builder.build() }
 
   final case class ActorsActorsAddSubscriptionRequest(value: acyclic.actors.v1.Actors.AddSubscriptionRequest) { def toWire: acyclic.actors.v1.Actors.AddSubscriptionRequest = value; def actorId: RustSemanticTypesScala.ActorId = RustSemanticTypesScala.ActorId.from(value.getActorId()).toOption.get; def subscription: acyclic.actors.v1.Actors.SubscriptionSpec = value.getSubscription(); def hasSubscription: Boolean = value.hasSubscription(); def idempotencyKey: String = value.getIdempotencyKey(); }
   object ActorsActorsAddSubscriptionRequest { def fromWire(value: acyclic.actors.v1.Actors.AddSubscriptionRequest): ActorsActorsAddSubscriptionRequest = { RustSemanticTypesScala.ActorId.from(value.getActorId()).toOption.get;ActorsActorsAddSubscriptionRequest(value) } }

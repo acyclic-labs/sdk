@@ -10,79 +10,88 @@ object RustSemanticTypesScala {
   def present[T](value: T, isPresent: Boolean): Option[T] = if (isPresent) Option(value) else None
 
   final case class ActorId private (value: String) { def toWire: String = value }
-  object ActorId { def from(value: String): Either[String, ActorId] = try { require(value.nonEmpty, "ActorId must be non-empty"); require(value.nonEmpty, "ActorId must be non-empty"); Right(new ActorId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object ActorId { def from(value: String): Either[String, ActorId] = try { require(value.size > 0, "ActorId must be non-empty"); require(value.size > 0, "ActorId must be non-empty"); Right(new ActorId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class MethodName private (value: String) { def toWire: String = value }
-  object MethodName { def from(value: String): Either[String, MethodName] = try { require(value.nonEmpty, "MethodName must be non-empty"); require(value.nonEmpty, "MethodName must be non-empty"); Right(new MethodName(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object MethodName { def from(value: String): Either[String, MethodName] = try { require(value.size > 0, "MethodName must be non-empty"); require(value.size > 0, "MethodName must be non-empty"); Right(new MethodName(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class ResourcePath private (value: String) { def toWire: String = value }
-  object ResourcePath { def from(value: String): Either[String, ResourcePath] = try { require(value.nonEmpty, "ResourcePath must be non-empty"); require(value.nonEmpty, "ResourcePath must be non-empty"); Right(new ResourcePath(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object ResourcePath { def from(value: String): Either[String, ResourcePath] = try { require(value.size > 0, "ResourcePath must be non-empty"); require(value.size > 0, "ResourcePath must be non-empty"); Right(new ResourcePath(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class SourceName private (value: String) { def toWire: String = value }
-  object SourceName { def from(value: String): Either[String, SourceName] = try { require(value.nonEmpty, "SourceName must be non-empty"); require(value.nonEmpty, "SourceName must be non-empty"); Right(new SourceName(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object SourceName { def from(value: String): Either[String, SourceName] = try { require(value.size > 0, "SourceName must be non-empty"); require(value.size > 0, "SourceName must be non-empty"); Right(new SourceName(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class DestinationName private (value: String) { def toWire: String = value }
-  object DestinationName { def from(value: String): Either[String, DestinationName] = try { require(value.nonEmpty, "DestinationName must be non-empty"); require(value.nonEmpty, "DestinationName must be non-empty"); Right(new DestinationName(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object DestinationName { def from(value: String): Either[String, DestinationName] = try { require(value.size > 0, "DestinationName must be non-empty"); require(value.size > 0, "DestinationName must be non-empty"); Right(new DestinationName(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class BucketName private (value: String) { def toWire: String = value }
-  object BucketName { def from(value: String): Either[String, BucketName] = try { require(value.nonEmpty, "BucketName must be non-empty"); require(value.nonEmpty, "BucketName must be non-empty"); Right(new BucketName(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object BucketName { def from(value: String): Either[String, BucketName] = try { require(value.size > 0, "BucketName must be non-empty"); require(value.size > 0, "BucketName must be non-empty"); Right(new BucketName(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class ObjectKey private (value: String) { def toWire: String = value }
-  object ObjectKey { def from(value: String): Either[String, ObjectKey] = try { require(value.nonEmpty, "ObjectKey must be non-empty"); require(value.nonEmpty, "ObjectKey must be non-empty"); Right(new ObjectKey(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object ObjectKey { def from(value: String): Either[String, ObjectKey] = try { require(value.size > 0, "ObjectKey must be non-empty"); require(value.size > 0, "ObjectKey must be non-empty"); Right(new ObjectKey(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class VersionAlias private (value: String) { def toWire: String = value }
-  object VersionAlias { def from(value: String): Either[String, VersionAlias] = try { require(value.nonEmpty, "VersionAlias must be non-empty"); require(value.nonEmpty, "VersionAlias must be non-empty"); Right(new VersionAlias(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object VersionAlias { def from(value: String): Either[String, VersionAlias] = try { require(value.size > 0, "VersionAlias must be non-empty"); require(value.size > 0, "VersionAlias must be non-empty"); Right(new VersionAlias(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class JobId private (value: String) { def toWire: String = value }
-  object JobId { def from(value: String): Either[String, JobId] = try { require(value.nonEmpty, "JobId must be non-empty"); require(value.nonEmpty, "JobId must be non-empty"); Right(new JobId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object JobId { def from(value: String): Either[String, JobId] = try { require(value.size > 0, "JobId must be non-empty"); require(value.size > 0, "JobId must be non-empty"); Right(new JobId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class MachineId private (value: String) { def toWire: String = value }
-  object MachineId { def from(value: String): Either[String, MachineId] = try { require(value.nonEmpty, "MachineId must be non-empty"); require(value.nonEmpty, "MachineId must be non-empty"); Right(new MachineId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class MachineId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object MachineId { def from(value: com.google.protobuf.ByteString): Either[String, MachineId] = try { require(value.size > 0, "MachineId must be non-empty"); require(value.size == 16, "MachineId must contain exactly 16 bytes"); Right(new MachineId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class OperationId private (value: String) { def toWire: String = value }
-  object OperationId { def from(value: String): Either[String, OperationId] = try { require(value.nonEmpty, "OperationId must be non-empty"); require(value.nonEmpty, "OperationId must be non-empty"); Right(new OperationId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class OperationId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object OperationId { def from(value: com.google.protobuf.ByteString): Either[String, OperationId] = try { require(value.size > 0, "OperationId must be non-empty"); require(value.size == 16, "OperationId must contain exactly 16 bytes"); Right(new OperationId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class CheckpointId private (value: String) { def toWire: String = value }
-  object CheckpointId { def from(value: String): Either[String, CheckpointId] = try { require(value.nonEmpty, "CheckpointId must be non-empty"); require(value.nonEmpty, "CheckpointId must be non-empty"); Right(new CheckpointId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class CheckpointId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object CheckpointId { def from(value: com.google.protobuf.ByteString): Either[String, CheckpointId] = try { require(value.size > 0, "CheckpointId must be non-empty"); require(value.size == 16, "CheckpointId must contain exactly 16 bytes"); Right(new CheckpointId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class IdempotencyKeyBytes private (value: Array[Byte]) { def toWire: Array[Byte] = value }
-  object IdempotencyKeyBytes { def from(value: Array[Byte]): Either[String, IdempotencyKeyBytes] = try { require(value.nonEmpty, "IdempotencyKeyBytes must be non-empty"); Right(new IdempotencyKeyBytes(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class IdempotencyKeyBytes private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object IdempotencyKeyBytes { def from(value: com.google.protobuf.ByteString): Either[String, IdempotencyKeyBytes] = try { require(value.size > 0, "IdempotencyKeyBytes must be non-empty"); Right(new IdempotencyKeyBytes(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class IdempotencyKeyText private (value: String) { def toWire: String = value }
-  object IdempotencyKeyText { def from(value: String): Either[String, IdempotencyKeyText] = try { require(value.nonEmpty, "IdempotencyKeyText must be non-empty"); require(value.nonEmpty, "IdempotencyKeyText must be non-empty"); Right(new IdempotencyKeyText(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object IdempotencyKeyText { def from(value: String): Either[String, IdempotencyKeyText] = try { require(value.size > 0, "IdempotencyKeyText must be non-empty"); require(value.size > 0, "IdempotencyKeyText must be non-empty"); Right(new IdempotencyKeyText(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class IdempotencyKey private (value: Array[Byte]) { def toWire: Array[Byte] = value }
-  object IdempotencyKey { def from(value: Array[Byte]): Either[String, IdempotencyKey] = try { Right(new IdempotencyKey(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class IdempotencyKey private (value: com.google.protobuf.Message) { def toWire: com.google.protobuf.Message = value }
+  object IdempotencyKey { def from(value: com.google.protobuf.Message): Either[String, IdempotencyKey] = try { Right(new IdempotencyKey(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class OpaqueText private (value: String) { def toWire: String = value }
-  object OpaqueText { def from(value: String): Either[String, OpaqueText] = try { require(value.nonEmpty, "OpaqueText must be non-empty"); require(value.nonEmpty, "OpaqueText must be non-empty"); Right(new OpaqueText(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object OpaqueText { def from(value: String): Either[String, OpaqueText] = try { require(value.size > 0, "OpaqueText must be non-empty"); require(value.size > 0, "OpaqueText must be non-empty"); Right(new OpaqueText(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class UploadId private (value: String) { def toWire: String = value }
-  object UploadId { def from(value: String): Either[String, UploadId] = try { require(value.nonEmpty, "UploadId must be non-empty"); require(value.nonEmpty, "UploadId must be non-empty"); Right(new UploadId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  object UploadId { def from(value: String): Either[String, UploadId] = try { require(value.size > 0, "UploadId must be non-empty"); require(value.size > 0, "UploadId must be non-empty"); Right(new UploadId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class Sha256Digest private (value: Array[Byte]) { def toWire: Array[Byte] = value }
-  object Sha256Digest { def from(value: Array[Byte]): Either[String, Sha256Digest] = try { require(value.length == 32, "Sha256Digest must contain exactly 32 bytes"); Right(new Sha256Digest(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class Sha256Digest private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object Sha256Digest { def from(value: com.google.protobuf.ByteString): Either[String, Sha256Digest] = try { require(value.size == 32, "Sha256Digest must contain exactly 32 bytes"); Right(new Sha256Digest(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class RevisionDigest private (value: Array[Byte]) { def toWire: Array[Byte] = value }
-  object RevisionDigest { def from(value: Array[Byte]): Either[String, RevisionDigest] = try { require(value.length == 32, "RevisionDigest must contain exactly 32 bytes"); Right(new RevisionDigest(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class RevisionDigest private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object RevisionDigest { def from(value: com.google.protobuf.ByteString): Either[String, RevisionDigest] = try { require(value.size == 32, "RevisionDigest must contain exactly 32 bytes"); Right(new RevisionDigest(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class Image private (value: Array[Byte]) { def toWire: Array[Byte] = value }
-  object Image { def from(value: Array[Byte]): Either[String, Image] = try { Right(new Image(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class Image private (value: com.google.protobuf.Message) { def toWire: com.google.protobuf.Message = value }
+  object Image { def from(value: com.google.protobuf.Message): Either[String, Image] = try { Right(new Image(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class Revision private (value: Long) { def toWire: Long = value }
   object Revision { def from(value: Long): Either[String, Revision] = try { require(value >= 0, "Revision must be non-negative"); Right(new Revision(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class RunId private (value: Array[Byte]) { def toWire: Array[Byte] = value }
-  object RunId { def from(value: Array[Byte]): Either[String, RunId] = try { require(value.length == 16, "RunId must contain exactly 16 bytes"); Right(new RunId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class RunId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object RunId { def from(value: com.google.protobuf.ByteString): Either[String, RunId] = try { require(value.size == 16, "RunId must contain exactly 16 bytes"); Right(new RunId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class EvaluationId private (value: Array[Byte]) { def toWire: Array[Byte] = value }
-  object EvaluationId { def from(value: Array[Byte]): Either[String, EvaluationId] = try { require(value.length == 16, "EvaluationId must contain exactly 16 bytes"); Right(new EvaluationId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class EvaluationId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object EvaluationId { def from(value: com.google.protobuf.ByteString): Either[String, EvaluationId] = try { require(value.size == 16, "EvaluationId must contain exactly 16 bytes"); Right(new EvaluationId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class PageLimit private (value: Long) { def toWire: Long = value }
   object PageLimit { def from(value: Long): Either[String, PageLimit] = try { require(value > 0, "PageLimit must be positive"); require(value <= 1000, "PageLimit exceeds its maximum"); Right(new PageLimit(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
-  final case class CommitId private (value: Array[Byte]) { def toWire: Array[Byte] = value }
-  object CommitId { def from(value: Array[Byte]): Either[String, CommitId] = try { require(value.nonEmpty, "CommitId must be non-empty"); Right(new CommitId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+  final case class StreamPageLimit private (value: Long) { def toWire: Long = value }
+  object StreamPageLimit { def from(value: Long): Either[String, StreamPageLimit] = try { require(value > 0, "StreamPageLimit must be positive"); require(value <= 1024, "StreamPageLimit exceeds its maximum"); Right(new StreamPageLimit(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+
+  final case class MachinePageLimit private (value: Long) { def toWire: Long = value }
+  object MachinePageLimit { def from(value: Long): Either[String, MachinePageLimit] = try { require(value > 0, "MachinePageLimit must be positive"); require(value <= 256, "MachinePageLimit exceeds its maximum"); Right(new MachinePageLimit(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+
+  final case class MachineEventPageLimit private (value: Long) { def toWire: Long = value }
+  object MachineEventPageLimit { def from(value: Long): Either[String, MachineEventPageLimit] = try { require(value > 0, "MachineEventPageLimit must be positive"); require(value <= 1024, "MachineEventPageLimit exceeds its maximum"); Right(new MachineEventPageLimit(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
+
+  final case class CommitId private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object CommitId { def from(value: com.google.protobuf.ByteString): Either[String, CommitId] = try { require(value.size > 0, "CommitId must be non-empty"); Right(new CommitId(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }
 
   final case class OpenEnumValue private (value: Int) { def toWire: Int = value }
   object OpenEnumValue { def from(value: Int): Either[String, OpenEnumValue] = try { Right(new OpenEnumValue(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }

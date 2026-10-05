@@ -8,9 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
-    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, PUBLIC_FIELD_BINDINGS,
-    PublicFieldBinding, PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule,
-    SemanticType, WireValueKind, semantic_type,
+    PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection, ResolvedRequestField,
+    SEMANTIC_TYPES, SemanticRule, SemanticType, WireValueKind, resolved_request_fields,
+    resolved_response_fields, resolved_rpc_methods, semantic_type,
 };
 use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
 
@@ -23,8 +23,7 @@ pub const KOTLIN_REQUESTS_PATH: &str =
     "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedRequests.kt";
 pub const SCALA_REQUESTS_PATH: &str =
     "jvm/src/main/scala/dev/acyclic/transport/RustTypedRequests.scala";
-pub const JAVA_CLIENTS_PATH: &str =
-    "jvm/src/main/java/dev/acyclic/transport/RustTypedClients.java";
+pub const JAVA_CLIENTS_PATH: &str = "jvm/src/main/java/dev/acyclic/transport/RustTypedClients.java";
 pub const KOTLIN_CLIENTS_PATH: &str =
     "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedClients.kt";
 pub const SCALA_CLIENTS_PATH: &str =
@@ -129,12 +128,21 @@ fn upper_camel(value: &str) -> String {
 
 fn scala_identifier(value: String) -> String {
     match value.as_str() {
-        "abstract" | "case" | "catch" | "class" | "def" | "do" | "else" | "extends"
-        | "false" | "final" | "finally" | "for" | "forSome" | "if" | "implicit"
-        | "import" | "lazy" | "match" | "new" | "null" | "object" | "override"
-        | "package" | "private" | "protected" | "return" | "sealed" | "super"
-        | "this" | "throw" | "trait" | "try" | "true" | "type" | "val" | "var"
-        | "while" | "with" | "yield" => format!("`{value}`"),
+        "abstract" | "case" | "catch" | "class" | "def" | "do" | "else" | "extends" | "false"
+        | "final" | "finally" | "for" | "forSome" | "if" | "implicit" | "import" | "lazy"
+        | "match" | "new" | "null" | "object" | "override" | "package" | "private"
+        | "protected" | "return" | "sealed" | "super" | "this" | "throw" | "trait" | "try"
+        | "true" | "type" | "val" | "var" | "while" | "with" | "yield" => format!("`{value}`"),
+        _ => value,
+    }
+}
+
+fn kotlin_identifier(value: String) -> String {
+    match value.as_str() {
+        "as" | "break" | "class" | "continue" | "do" | "else" | "false" | "for"
+        | "fun" | "if" | "in" | "interface" | "is" | "null" | "object" | "package"
+        | "return" | "super" | "this" | "throw" | "true" | "try" | "typealias"
+        | "typeof" | "val" | "var" | "when" | "while" => format!("`{value}`"),
         _ => value,
     }
 }
@@ -214,7 +222,10 @@ fn java_grpc_service(family: &str, service: &str, async_stub: bool) -> String {
 
 fn descriptor_method_descriptor(method: &crate::type_policy::ResolvedRpcMethod) -> String {
     let grpc = java_grpc_service(&method.family, &method.service, true);
-    let class = grpc.rsplit_once('.').map(|(class, _)| class).unwrap_or(&grpc);
+    let class = grpc
+        .rsplit_once('.')
+        .map(|(class, _)| class)
+        .unwrap_or(&grpc);
     format!("{class}.get{}Method()", method.method)
 }
 
@@ -258,35 +269,45 @@ fn client_service(module: &str, message: &str) -> &'static str {
 fn client_response(module: &str, message: &str) -> (&'static str, bool) {
     match (module, message) {
         ("actors", "InvokeActorRequest") => ("acyclic.actors.v1.Actors.InvokeActorResponse", false),
-        ("workers", "SelectDeploymentRequest") => (
-            "acyclic.workers.v1.Workers.SelectDeploymentResponse",
-            false,
-        ),
-        ("workers", "InspectJobRequest") => ("acyclic.workers.v1.Workers.InspectJobResponse", false),
+        ("workers", "SelectDeploymentRequest") => {
+            ("acyclic.workers.v1.Workers.SelectDeploymentResponse", false)
+        }
+        ("workers", "InspectJobRequest") => {
+            ("acyclic.workers.v1.Workers.InspectJobResponse", false)
+        }
         ("workers", "InvokeVersionRequest") => ("acyclic.workers.v1.Workers.InvokeResponse", false),
         ("stream", "AppendRequest") => ("acyclic.stream.v2.Stream.AppendResponse", false),
         ("stream", "ForkRequest") => ("acyclic.stream.v2.Stream.ForkReceipt", false),
         ("stream", "ReadRequest") => ("acyclic.stream.v2.Stream.ReadResponse", true),
         ("stream", "ReadCommitRequest") => ("acyclic.stream.v2.Stream.CommittedEnvelope", false),
         ("objects", "GetObjectRequest") => ("acyclic.objects.v2.Objects.GetObjectResponse", true),
-        ("objects", "ListObjectsRequest") => ("acyclic.objects.v2.Objects.ListObjectsResponse", false),
+        ("objects", "ListObjectsRequest") => {
+            ("acyclic.objects.v2.Objects.ListObjectsResponse", false)
+        }
         ("objects", "ListPartsRequest") => ("acyclic.objects.v2.Objects.ListPartsResponse", false),
         ("inference", "InspectRunRequest") => ("inference.customer.v1.Inference.RunView", false),
-        ("inference", "InspectContextRequest") => ("inference.customer.v1.Inference.ContextView", false),
+        ("inference", "InspectContextRequest") => {
+            ("inference.customer.v1.Inference.ContextView", false)
+        }
         ("inference", "InspectWarmRequest") => ("inference.customer.v1.Inference.WarmView", false),
         ("inference", "InspectEvaluationRequest") => {
             ("inference.customer.v1.Inference.EvaluationView", false)
         }
-        ("machines", "CreateMachineRequest") => ("acyclic.machines.v1.Machines.MachineAdmission", false),
-        ("machines", "InspectMachineRequest") => ("acyclic.machines.v1.Machines.MachineState", false),
-        ("machines", "InspectCheckpointRequest") => ("acyclic.machines.v1.Machines.CheckpointState", false),
+        ("machines", "CreateMachineRequest") => {
+            ("acyclic.machines.v1.Machines.MachineAdmission", false)
+        }
+        ("machines", "InspectMachineRequest") => {
+            ("acyclic.machines.v1.Machines.MachineState", false)
+        }
+        ("machines", "InspectCheckpointRequest") => {
+            ("acyclic.machines.v1.Machines.CheckpointState", false)
+        }
         ("machines", "OperationRequest") => ("acyclic.machines.v1.Machines.OperationState", false),
         ("machines", "ListMachinesRequest") => ("acyclic.machines.v1.Machines.MachinePage", false),
         ("machines", "EventsRequest") => ("acyclic.machines.v1.Machines.EventPage", false),
-        ("machines", "QualifyImageRequest") => (
-            "acyclic.machines.v1.Machines.ImageQualification",
-            false,
-        ),
+        ("machines", "QualifyImageRequest") => {
+            ("acyclic.machines.v1.Machines.ImageQualification", false)
+        }
         ("filesystem", "ReadRequest") => ("acyclic.filesystem.v2.Filesystem.ReadResponse", false),
         _ => panic!("missing JVM response mapping for {module}.{message}"),
     }
@@ -362,7 +383,9 @@ fn render_kotlin_responses() -> String {
         }
         out.push_str(&name);
         out.push_str("(value)");
-        if (module == "inference" && message == "InspectEvaluationRequest") || (module == "objects" && message == "GetObjectRequest") {
+        if (module == "inference" && message == "InspectEvaluationRequest")
+            || (module == "objects" && message == "GetObjectRequest")
+        {
             out.push_str(" }");
         }
         out.push_str(" } fun toWire(): ");
@@ -382,7 +405,8 @@ fn render_kotlin_responses() -> String {
     out.push_str("  fun fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesKotlin.ResourcePath = RustSemanticTypesKotlin.ResourcePath.of(value.normalizedPath)\n");
     out.push_str("  fun preserveKnown(tag: String, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = RustSemanticTypesKotlin.Known(tag, payload)\n");
     out.push_str("  fun preserveUnknown(tag: Int, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = RustSemanticTypesKotlin.Unknown(tag, payload)\n");
-    out.push_str("  fun preserveOneof(tag: Int, knownTag: String, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");    out.push_str("  fun frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesKotlin.WireChoice = when (value.frameCase) { acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER -> preserveKnown(\"header\", value.header.toByteString()); acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.BODY -> preserveKnown(\"body\", value.body); acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.ERROR -> preserveKnown(\"error\", value.error.toByteString()); else -> { val entry = value.getUnknownFields().asMap().entries.firstOrNull(); if (entry != null && entry.value.getLengthDelimitedList().isNotEmpty()) preserveUnknown(entry.key, entry.value.getLengthDelimitedList().first()) else if (entry != null && entry.value.getVarintList().isNotEmpty()) preserveUnknown(entry.key, com.google.protobuf.ByteString.copyFromUtf8(entry.value.getVarintList().first().toString())) else preserveUnknown(0, com.google.protobuf.ByteString.EMPTY) } }\n\n");
+    out.push_str("  fun preserveOneof(tag: Int, knownTag: String, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");
+    out.push_str("  fun frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesKotlin.WireChoice = when (value.frameCase) { acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER -> preserveKnown(\"header\", value.header.toByteString()); acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.BODY -> preserveKnown(\"body\", value.body); acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.ERROR -> preserveKnown(\"error\", value.error.toByteString()); else -> { val entry = value.getUnknownFields().asMap().entries.firstOrNull(); if (entry != null && entry.value.getLengthDelimitedList().isNotEmpty()) preserveUnknown(entry.key, entry.value.getLengthDelimitedList().first()) else if (entry != null && entry.value.getVarintList().isNotEmpty()) preserveUnknown(entry.key, com.google.protobuf.ByteString.copyFromUtf8(entry.value.getVarintList().first().toString())) else preserveUnknown(0, com.google.protobuf.ByteString.EMPTY) } }\n\n");
     out.push_str("}\n");
     out
 }
@@ -405,7 +429,7 @@ fn render_scala_responses() -> String {
             out.push_str("def etag: Option[RustSemanticTypesScala.OpaqueText] = if (value.getFrameCase != acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER) None else Option(RustSemanticTypesScala.OpaqueText.from(value.getHeader.getObject.getEtag).toOption).flatten; def frameChoice: RustSemanticTypesScala.WireChoice = RustTypedResponsesScala.frameChoice(value)");
         }
         if module == "inference" && message == "InspectEvaluationRequest" {
-            out.push_str("def specDigest: RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpec.getSpecDigest.toByteArray).toOption.get");
+            out.push_str("def specDigest: RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpec.getSpecDigest).toOption.get");
         }
         out.push_str(" }\n");
         out.push_str("  object ");
@@ -416,13 +440,15 @@ fn render_scala_responses() -> String {
         out.push_str(&name);
         out.push_str(" = ");
         if module == "inference" && message == "InspectEvaluationRequest" {
-            out.push_str("{ RustSemanticTypesScala.Sha256Digest.from(value.getSpec.getSpecDigest.toByteArray).toOption.get; ");
+            out.push_str("{ RustSemanticTypesScala.Sha256Digest.from(value.getSpec.getSpecDigest).toOption.get; ");
         } else if module == "objects" && message == "GetObjectRequest" {
             out.push_str("{ if (value.getFrameCase == acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER && !value.getHeader.getObject.getEtag.isEmpty) RustSemanticTypesScala.OpaqueText.from(value.getHeader.getObject.getEtag).toOption.get; ");
         }
         out.push_str(&name);
         out.push_str("(value)");
-        if (module == "inference" && message == "InspectEvaluationRequest") || (module == "objects" && message == "GetObjectRequest") {
+        if (module == "inference" && message == "InspectEvaluationRequest")
+            || (module == "objects" && message == "GetObjectRequest")
+        {
             out.push_str(" }");
         }
         out.push_str(" }");
@@ -430,11 +456,12 @@ fn render_scala_responses() -> String {
     }
     render_scala_descriptor_responses(&mut out);
     out.push_str("  def mutationIdentityIdempotencyKey(value: acyclic.objects.v2.Objects.MutationIdentity): RustSemanticTypesScala.IdempotencyKeyText = RustSemanticTypesScala.IdempotencyKeyText.from(value.getIdempotencyKey).toOption.get\n");
-    out.push_str("  def evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpecDigest.toByteArray).toOption.get\n");
+    out.push_str("  def evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpecDigest).toOption.get\n");
     out.push_str("  def fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesScala.ResourcePath = RustSemanticTypesScala.ResourcePath.from(value.getNormalizedPath).toOption.get\n");
     out.push_str("  def preserveKnown(tag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Known(tag, payload)\n");
     out.push_str("  def preserveUnknown(tag: Int, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Unknown(tag, payload)\n");
-    out.push_str("  def preserveOneof(tag: Int, knownTag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");    out.push_str("  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = RustTypedResponses.frameChoice(value) match { case known: RustSemanticTypes.Known => RustSemanticTypesScala.Known(known.tag(), known.payload().toByteArray); case unknown: RustSemanticTypes.Unknown => RustSemanticTypesScala.Unknown(unknown.tag(), unknown.payload().toByteArray) }\n\n");
+    out.push_str("  def preserveOneof(tag: Int, knownTag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");
+    out.push_str("  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = RustTypedResponses.frameChoice(value) match { case known: RustSemanticTypes.Known => RustSemanticTypesScala.Known(known.tag(), known.payload().toByteArray); case unknown: RustSemanticTypes.Unknown => RustSemanticTypesScala.Unknown(unknown.tag(), unknown.payload().toByteArray) }\n\n");
     out.push_str("}\n");
     out
 }
@@ -443,7 +470,10 @@ fn render_scala_responses() -> String {
 /// Semantic refinements above remain the ergonomic overloads; these DTOs make
 /// the complete Rust operation inventory available without a handwritten RPC
 /// table or a raw protobuf return type.
-fn descriptor_fields(method: &crate::type_policy::ResolvedRpcMethod, request: bool) -> Vec<ResolvedRequestField> {
+fn descriptor_fields(
+    method: &crate::type_policy::ResolvedRpcMethod,
+    request: bool,
+) -> Vec<ResolvedRequestField> {
     let fields = if request {
         resolved_request_fields().expect("Rust request fields must resolve before JVM generation")
     } else {
@@ -455,13 +485,20 @@ fn descriptor_fields(method: &crate::type_policy::ResolvedRpcMethod, request: bo
         .collect()
 }
 
-fn descriptor_field_chain(fields: &[ResolvedRequestField], target: &ResolvedRequestField) -> Option<Vec<ResolvedRequestField>> {
+fn descriptor_field_chain(
+    fields: &[ResolvedRequestField],
+    target: &ResolvedRequestField,
+) -> Option<Vec<ResolvedRequestField>> {
     let mut current = target.message_path.clone();
     let mut chain = Vec::new();
     while current != target.root_message {
         let parent = fields.iter().find(|field| {
             field.message_path != current
-                && field.type_name.as_deref().map(|name| name.trim_start_matches('.')) == Some(current.as_str())
+                && field
+                    .type_name
+                    .as_deref()
+                    .map(|name| name.trim_start_matches('.'))
+                    == Some(current.as_str())
         })?;
         if parent.label == Some(FieldLabel::Repeated as i32) {
             return None;
@@ -473,7 +510,10 @@ fn descriptor_field_chain(fields: &[ResolvedRequestField], target: &ResolvedRequ
     Some(chain)
 }
 
-fn descriptor_projected_fields(method: &crate::type_policy::ResolvedRpcMethod, request: bool) -> Vec<(ResolvedRequestField, Vec<ResolvedRequestField>)> {
+fn descriptor_projected_fields(
+    method: &crate::type_policy::ResolvedRpcMethod,
+    request: bool,
+) -> Vec<(ResolvedRequestField, Vec<ResolvedRequestField>)> {
     let fields = descriptor_fields(method, request);
     fields
         .iter()
@@ -498,18 +538,25 @@ fn descriptor_field_suffix(field: &ResolvedRequestField, chain: &[ResolvedReques
 
 fn descriptor_semantic_type(field: &ResolvedRequestField) -> Option<&'static SemanticType> {
     let semantic = field.semantic_type.as_deref().and_then(semantic_type)?;
-    let wire = field.wire_type.and_then(|kind| FieldType::try_from(kind).ok());
+    let wire = field
+        .wire_type
+        .and_then(|kind| FieldType::try_from(kind).ok());
     let applies = match semantic.wire_kind {
         WireValueKind::Message => matches!(wire, Some(FieldType::Message | FieldType::Group)),
         WireValueKind::String => matches!(wire, Some(FieldType::String)),
-        WireValueKind::Bytes => matches!(wire, Some(FieldType::Bytes))
-            || (matches!(wire, Some(FieldType::Message | FieldType::Group))
-                && matches!(semantic.rust_name, "MachineId" | "CheckpointId" | "OperationId")
-                && field
-                    .type_name
-                    .as_deref()
-                    .and_then(|name| name.rsplit('.').next())
-                    == Some(semantic.rust_name)),
+        WireValueKind::Bytes => {
+            matches!(wire, Some(FieldType::Bytes))
+                || (matches!(wire, Some(FieldType::Message | FieldType::Group))
+                    && matches!(
+                        semantic.rust_name,
+                        "MachineId" | "CheckpointId" | "OperationId"
+                    )
+                    && field
+                        .type_name
+                        .as_deref()
+                        .and_then(|name| name.rsplit('.').next())
+                        == Some(semantic.rust_name))
+        }
         WireValueKind::Boolean => matches!(wire, Some(FieldType::Bool)),
         WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => matches!(
             wire,
@@ -544,18 +591,61 @@ fn descriptor_field_type(family: &str, field: &ResolvedRequestField, language: &
             _ => unreachable!(),
         }
     } else {
-        match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+        match field
+            .wire_type
+            .and_then(|kind| FieldType::try_from(kind).ok())
+        {
             Some(FieldType::String) => "String".to_owned(),
             Some(FieldType::Bytes) => "com.google.protobuf.ByteString".to_owned(),
-            Some(FieldType::Bool) => match language { "scala" => "Boolean", _ => "boolean" }.to_owned(),
-            Some(FieldType::Double) => "double".to_owned(),
-            Some(FieldType::Float) => "float".to_owned(),
-            Some(FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 | FieldType::Uint32 | FieldType::Fixed32 | FieldType::Enum) => match language { "scala" => "Int", _ => "int" }.to_owned(),
-            Some(FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 | FieldType::Uint64 | FieldType::Fixed64) => match language { "scala" => "Long", _ => "long" }.to_owned(),
+            Some(FieldType::Bool) => match language {
+                "scala" | "kotlin" => "Boolean",
+                _ => "boolean",
+            }
+            .to_owned(),
+            Some(FieldType::Double) => match language {
+                "scala" | "kotlin" => "Double",
+                _ => "double",
+            }
+            .to_owned(),
+            Some(FieldType::Float) => match language {
+                "scala" | "kotlin" => "Float",
+                _ => "float",
+            }
+            .to_owned(),
+            Some(
+                FieldType::Int32
+                | FieldType::Sint32
+                | FieldType::Sfixed32
+                | FieldType::Uint32
+                | FieldType::Fixed32
+                | FieldType::Enum,
+            ) => match language {
+                "scala" | "kotlin" => "Int",
+                _ => "int",
+            }
+            .to_owned(),
+            Some(
+                FieldType::Int64
+                | FieldType::Sint64
+                | FieldType::Sfixed64
+                | FieldType::Uint64
+                | FieldType::Fixed64,
+            ) => match language {
+                "scala" | "kotlin" => "Long",
+                _ => "long",
+            }
+            .to_owned(),
             Some(FieldType::Message | FieldType::Group) => {
-                let type_name = field.type_name.as_deref().unwrap_or("com.google.protobuf.Message").trim_start_matches('.');
+                let type_name = field
+                    .type_name
+                    .as_deref()
+                    .unwrap_or("com.google.protobuf.Message")
+                    .trim_start_matches('.');
                 if type_name.starts_with("google.protobuf.") {
-                    format!("com.google.protobuf.{}", type_name.rsplit('.').next().unwrap_or("Message"))
+                    format!(
+                        "com.google.protobuf.{}",
+                        type_name.rsplit('.').next().unwrap_or("Message")
+                    )
                 } else {
                     descriptor_message_type(family, type_name)
                 }
@@ -564,22 +654,27 @@ fn descriptor_field_type(family: &str, field: &ResolvedRequestField, language: &
         }
     };
     if repeated {
-        let boxed = if language == "java" {
+        let boxed = if language == "java" || language == "scala" {
             match base.as_str() {
                 "int" => "Integer".to_owned(),
+                "Int" => "Integer".to_owned(),
                 "long" => "Long".to_owned(),
+                "Long" => "Long".to_owned(),
                 "boolean" => "Boolean".to_owned(),
+                "Boolean" => "Boolean".to_owned(),
                 "float" => "Float".to_owned(),
+                "Float" => "Float".to_owned(),
                 "double" => "Double".to_owned(),
+                "Double" => "Double".to_owned(),
                 other => other.to_owned(),
             }
         } else {
             base.clone()
         };
         match language {
-            "java" => format!("java.util.List<{boxed}>") ,
-            "kotlin" => format!("kotlin.collections.List<{boxed}>") ,
-            "scala" => format!("java.util.List[{boxed}]") ,
+            "java" => format!("java.util.List<{boxed}>"),
+            "kotlin" => format!("kotlin.collections.List<{boxed}>"),
+            "scala" => format!("java.util.List[{boxed}]"),
             _ => unreachable!(),
         }
     } else {
@@ -587,7 +682,11 @@ fn descriptor_field_type(family: &str, field: &ResolvedRequestField, language: &
     }
 }
 
-fn descriptor_field_expression(field: &ResolvedRequestField, chain: &[ResolvedRequestField], receiver: &str) -> String {
+fn descriptor_field_expression(
+    field: &ResolvedRequestField,
+    chain: &[ResolvedRequestField],
+    receiver: &str,
+) -> String {
     let mut expression = receiver.to_owned();
     for parent in chain {
         expression.push_str(".get");
@@ -625,7 +724,10 @@ fn descriptor_field_has_expression(field: &ResolvedRequestField, receiver: &str)
     if field.label == Some(FieldLabel::Repeated as i32) {
         return None;
     }
-    if field.oneof_index.is_some() || field.proto3_optional || matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) {
+    if field.oneof_index.is_some()
+        || field.proto3_optional
+        || matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32)
+    {
         Some(format!("{receiver}.has{}()", upper_camel(&field.field)))
     } else {
         None
@@ -634,35 +736,65 @@ fn descriptor_field_has_expression(field: &ResolvedRequestField, receiver: &str)
 
 fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
     let expression = descriptor_field_expression(field, chain, "value");
-    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none() {
+    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none()
+    {
         expression
     } else {
-        format!("RustSemanticTypes.{}.of({expression})", descriptor_semantic_type(field).unwrap().rust_name)
+        format!(
+            "RustSemanticTypes.{}.of({expression})",
+            descriptor_semantic_type(field).unwrap().rust_name
+        )
     }
 }
 
 fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
-    let expression = descriptor_field_expression(field, chain, "value");
-    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none() {
+    let mut expression = descriptor_field_expression(field, chain, "value");
+    if descriptor_semantic_type(field).is_some()
+        && matches!(
+            field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()),
+            Some(
+                FieldType::Int32
+                    | FieldType::Sint32
+                    | FieldType::Sfixed32
+                    | FieldType::Uint32
+                    | FieldType::Fixed32
+            )
+        )
+    {
+        expression.push_str(".toLong()");
+    }
+    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none()
+    {
         expression
     } else {
-        format!("RustSemanticTypesKotlin.{}.of({expression})", descriptor_semantic_type(field).unwrap().rust_name)
+        format!(
+            "RustSemanticTypesKotlin.{}.of({expression})",
+            descriptor_semantic_type(field).unwrap().rust_name
+        )
     }
 }
 
 fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
     let expression = descriptor_field_expression(field, chain, "value");
-    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none() {
+    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none()
+    {
         expression
     } else {
-        format!("RustSemanticTypesScala.{}.from({expression}).toOption.get", descriptor_semantic_type(field).unwrap().rust_name)
+        format!(
+            "RustSemanticTypesScala.{}.from({expression}).toOption.get",
+            descriptor_semantic_type(field).unwrap().rust_name
+        )
     }
 }
 
-fn render_java_descriptor_projection(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+fn render_java_descriptor_projection(
+    out: &mut String,
+    method: &crate::type_policy::ResolvedRpcMethod,
+    request: bool,
+) {
     for (field, chain) in descriptor_projected_fields(method, request) {
         let suffix = descriptor_field_suffix(&field, &chain);
-        let method_name = suffix[..1].to_lowercase() + &suffix[1..];
+        let method_name = kotlin_identifier(suffix[..1].to_lowercase() + &suffix[1..]);
         let ty = descriptor_field_type(&method.family, &field, "java");
         out.push_str(" public ");
         out.push_str(&ty);
@@ -683,7 +815,11 @@ fn render_java_descriptor_projection(out: &mut String, method: &crate::type_poli
     }
 }
 
-fn render_kotlin_descriptor_projection(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+fn render_kotlin_descriptor_projection(
+    out: &mut String,
+    method: &crate::type_policy::ResolvedRpcMethod,
+    request: bool,
+) {
     for (field, chain) in descriptor_projected_fields(method, request) {
         let suffix = descriptor_field_suffix(&field, &chain);
         let method_name = suffix[..1].to_lowercase() + &suffix[1..];
@@ -706,7 +842,11 @@ fn render_kotlin_descriptor_projection(out: &mut String, method: &crate::type_po
     }
 }
 
-fn render_scala_descriptor_projection(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+fn render_scala_descriptor_projection(
+    out: &mut String,
+    method: &crate::type_policy::ResolvedRpcMethod,
+    request: bool,
+) {
     for (field, chain) in descriptor_projected_fields(method, request) {
         let suffix = descriptor_field_suffix(&field, &chain);
         let method_name = scala_identifier(suffix[..1].to_lowercase() + &suffix[1..]);
@@ -729,9 +869,16 @@ fn render_scala_descriptor_projection(out: &mut String, method: &crate::type_pol
     }
 }
 
-fn render_java_descriptor_validation(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+fn render_java_descriptor_validation(
+    out: &mut String,
+    method: &crate::type_policy::ResolvedRpcMethod,
+    request: bool,
+) {
     for (field, chain) in descriptor_projected_fields(method, request) {
-        if !chain.is_empty() || descriptor_semantic_type(&field).is_none() || field.label == Some(FieldLabel::Repeated as i32) {
+        if !chain.is_empty()
+            || descriptor_semantic_type(&field).is_none()
+            || field.label == Some(FieldLabel::Repeated as i32)
+        {
             continue;
         }
         let value = descriptor_java_value(&field, &chain);
@@ -746,9 +893,16 @@ fn render_java_descriptor_validation(out: &mut String, method: &crate::type_poli
     }
 }
 
-fn render_kotlin_descriptor_validation(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+fn render_kotlin_descriptor_validation(
+    out: &mut String,
+    method: &crate::type_policy::ResolvedRpcMethod,
+    request: bool,
+) {
     for (field, chain) in descriptor_projected_fields(method, request) {
-        if !chain.is_empty() || descriptor_semantic_type(&field).is_none() || field.label == Some(FieldLabel::Repeated as i32) {
+        if !chain.is_empty()
+            || descriptor_semantic_type(&field).is_none()
+            || field.label == Some(FieldLabel::Repeated as i32)
+        {
             continue;
         }
         let value = descriptor_kotlin_value(&field, &chain);
@@ -762,9 +916,16 @@ fn render_kotlin_descriptor_validation(out: &mut String, method: &crate::type_po
     }
 }
 
-fn render_scala_descriptor_validation(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+fn render_scala_descriptor_validation(
+    out: &mut String,
+    method: &crate::type_policy::ResolvedRpcMethod,
+    request: bool,
+) {
     for (field, chain) in descriptor_projected_fields(method, request) {
-        if !chain.is_empty() || descriptor_semantic_type(&field).is_none() || field.label == Some(FieldLabel::Repeated as i32) {
+        if !chain.is_empty()
+            || descriptor_semantic_type(&field).is_none()
+            || field.label == Some(FieldLabel::Repeated as i32)
+        {
             continue;
         }
         let value = descriptor_scala_value(&field, &chain);
@@ -778,7 +939,8 @@ fn render_scala_descriptor_validation(out: &mut String, method: &crate::type_pol
     }
 }
 fn render_java_descriptor_responses(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         let name = descriptor_response_name(&method);
         let wire = descriptor_message_type(&method.family, &method.output_message);
@@ -803,7 +965,8 @@ fn render_java_descriptor_responses(out: &mut String) {
 }
 
 fn render_kotlin_descriptor_responses(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         let name = descriptor_response_name(&method);
         let wire = descriptor_message_type(&method.family, &method.output_message);
@@ -827,7 +990,8 @@ fn render_kotlin_descriptor_responses(out: &mut String) {
 }
 
 fn render_scala_descriptor_responses(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         let name = descriptor_response_name(&method);
         let wire = descriptor_message_type(&method.family, &method.output_message);
@@ -862,11 +1026,15 @@ fn response_wrapper_name(module: &str, message: &str) -> String {
 }
 
 fn response_wrapper_type(module: &str, message: &str) -> String {
-    format!("RustTypedResponses.{}", response_wrapper_name(module, message))
+    format!(
+        "RustTypedResponses.{}",
+        response_wrapper_name(module, message)
+    )
 }
 
 fn render_java_descriptor_clients(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         let request_name = descriptor_request_name(&method);
         let response_name = descriptor_response_name(&method);
@@ -892,9 +1060,13 @@ fn render_java_descriptor_clients(out: &mut String) {
             out.push_str(&response_stream);
             out.push_str(".fromWire(value)); } public void onError(Throwable error) { observer.onError(error); } public void onCompleted() { observer.onCompleted(); } };\n");
             let call = if method.client_streaming && method.server_streaming {
-                format!("io.grpc.stub.ClientCalls.asyncBidiStreamingCall(channel.newCall({descriptor}, io.grpc.CallOptions.DEFAULT), wireObserver)")
+                format!(
+                    "io.grpc.stub.ClientCalls.asyncBidiStreamingCall(channel.newCall({descriptor}, io.grpc.CallOptions.DEFAULT), wireObserver)"
+                )
             } else {
-                format!("io.grpc.stub.ClientCalls.asyncClientStreamingCall(channel.newCall({descriptor}, io.grpc.CallOptions.DEFAULT), wireObserver)")
+                format!(
+                    "io.grpc.stub.ClientCalls.asyncClientStreamingCall(channel.newCall({descriptor}, io.grpc.CallOptions.DEFAULT), wireObserver)"
+                )
             };
             out.push_str("    var wireRequest = ");
             out.push_str(&call);
@@ -937,7 +1109,8 @@ fn render_java_descriptor_clients(out: &mut String) {
 }
 
 fn render_kotlin_descriptor_clients(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         if method.client_streaming {
             continue;
@@ -977,7 +1150,8 @@ fn render_kotlin_descriptor_clients(out: &mut String) {
 }
 
 fn render_scala_descriptor_clients(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         if method.client_streaming {
             continue;
@@ -1286,11 +1460,13 @@ fn scala_value_expression(binding: &PublicFieldBinding, parameter: &str) -> Stri
             _ => unreachable!(),
         };
         return format!(
-            "acyclic.machines.v1.Machines.{message_type}.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom({parameter}.toWire)).build()"
+            "acyclic.machines.v1.Machines.{message_type}.newBuilder().setValue({parameter}.toWire).build()"
         );
     }
     match ty.wire_kind {
-        WireValueKind::Bytes => format!("com.google.protobuf.ByteString.copyFrom({parameter}.toWire)"),
+        WireValueKind::Bytes => {
+            format!("{parameter}.toWire")
+        }
         WireValueKind::Message => {
             let container = java_proto_container(binding.module);
             let message_type = match ty.rust_name {
@@ -1348,12 +1524,12 @@ fn kotlin_wire_type(ty: &SemanticType) -> &'static str {
 fn scala_wire_type(ty: &SemanticType) -> &'static str {
     match ty.wire_kind {
         WireValueKind::String => "String",
-        WireValueKind::Bytes => "Array[Byte]",
+        WireValueKind::Bytes => "com.google.protobuf.ByteString",
         WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => "Long",
         WireValueKind::Boolean => "Boolean",
         WireValueKind::Timestamp => "java.time.Instant",
         WireValueKind::Enum => "Int",
-        WireValueKind::Message => "Array[Byte]",
+        WireValueKind::Message => "com.google.protobuf.Message",
         WireValueKind::Oneof => "WireChoice",
     }
 }
@@ -1430,19 +1606,19 @@ fn scala_validation(ty: &SemanticType, value: &str) -> String {
                 if ty.wire_kind == WireValueKind::String =>
             {
                 lines.push(format!(
-                    "require({value}.nonEmpty, \"{} must be non-empty\")",
+                    "require({value}.size > 0, \"{} must be non-empty\")",
                     ty.rust_name
                 ));
             }
             SemanticRule::NonEmpty if ty.wire_kind == WireValueKind::Bytes => {
                 lines.push(format!(
-                    "require({value}.nonEmpty, \"{} must be non-empty\")",
+                    "require({value}.size > 0, \"{} must be non-empty\")",
                     ty.rust_name
                 ));
             }
             SemanticRule::FixedLength(n) if ty.wire_kind == WireValueKind::Bytes => {
                 lines.push(format!(
-                    "require({value}.length == {n}, \"{} must contain exactly {n} bytes\")",
+                    "require({value}.size == {n}, \"{} must contain exactly {n} bytes\")",
                     ty.rust_name
                 ));
             }
@@ -1465,7 +1641,8 @@ fn scala_validation(ty: &SemanticType, value: &str) -> String {
 }
 
 fn render_java_descriptor_requests(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         let name = descriptor_request_name(&method);
         let wire = descriptor_message_type(&method.family, &method.input_message);
@@ -1490,7 +1667,8 @@ fn render_java_descriptor_requests(out: &mut String) {
 }
 
 fn render_kotlin_descriptor_requests(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         let name = descriptor_request_name(&method);
         let wire = descriptor_message_type(&method.family, &method.input_message);
@@ -1514,7 +1692,8 @@ fn render_kotlin_descriptor_requests(out: &mut String) {
 }
 
 fn render_scala_descriptor_requests(out: &mut String) {
-    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
+    let methods =
+        resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
         let name = descriptor_request_name(&method);
         let wire = descriptor_message_type(&method.family, &method.input_message);
