@@ -82,7 +82,6 @@ import type {
   WorkspaceFileKind,
   WorkspaceMetadata,
   WorkspaceName,
-  WorkspaceRebaseOptions,
   WorkspaceRebaseResult,
   WorkspaceStat,
 } from "./contracts.js";
@@ -102,8 +101,6 @@ export class HostedFsError extends Error {
 interface HostedClient {
   readonly rpc: Client<typeof FilesystemService>;
   readonly maximumResponseBytes: number;
-  readonly maximumTransactionMutations: number;
-  readonly maximumPageItems: number;
   readonly s3Credentials: boolean;
   readonly sourceReconciliation: boolean;
   closed: boolean;
@@ -112,7 +109,7 @@ interface HostedClient {
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
   try {
-    validateRustOwnedCredentialPolicy(options.bearerToken);
+    await validateRustOwnedCredentialPolicy(options.bearerToken);
   } catch {
     throw new RangeError("invalid bearer token");
   }
@@ -174,8 +171,6 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   const client: HostedClient = {
     rpc: rpcClient,
     maximumResponseBytes: Number(negotiatedResponseBytes),
-    maximumTransactionMutations: advertised.maximumTransactionMutations,
-    maximumPageItems: advertised.maximumPageItems,
     s3Credentials: advertised.s3Credentials,
     sourceReconciliation: advertised.sourceReconciliation,
     closed: false,
@@ -206,7 +201,6 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     capabilities,
     async createWorkspace(name) {
       assertOpen(client);
-      requireName(name);
       const response = await call(client.rpc.createWorkspace({
         name,
         profile: FilesystemProfile.PORTABLE,
@@ -216,7 +210,6 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     },
     async openWorkspace(name) {
       assertOpen(client);
-      requireName(name);
       const response = await call(client.rpc.openWorkspace({
         selector: { case: "name", value: name },
       }));
@@ -247,7 +240,6 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     async head() { return Uint8Array.from((await currentGeneration(client, reference)).generationId); },
     async sync() { return generation(client, await currentGeneration(client, reference)); },
     async checkpoint(label) {
-      requireName(label);
       const response = await call(client.rpc.checkpoint({
         generation: await currentGeneration(client, reference),
         identity: label,
@@ -256,7 +248,6 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       return generation(client, required(response.generation, "checkpoint generation"));
     },
     async pin(identity) {
-      requireName(identity);
       const response = await call(client.rpc.pin({
         generation: await currentGeneration(client, reference),
         identity,
@@ -337,10 +328,6 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       return transaction(client, await currentGeneration(client, reference), idempotencyKey);
     },
     async liveRebase(options, idempotencyKey) {
-      validateRebase(options);
-      requirePageBound(client, options.maximumGenerations, "maximum generations");
-      requirePageBound(client, options.maximumChanges, "maximum changes");
-      requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const response = await call(client.rpc.rebase({
         workspace: reference,
         maximumGenerations: options.maximumGenerations,
@@ -351,8 +338,6 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       return workspaceRebase(response.status, response.generation, response.conflicts, response.truncated);
     },
     async diff(from, to, maximumChanges) {
-      positiveU32(maximumChanges, "maximum changes");
-      requirePageBound(client, maximumChanges, "maximum changes");
       return diff(
         client,
         reference.workspaceId,
@@ -362,10 +347,6 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       );
     },
     async joinInto(target, options) {
-      validateJoin(options);
-      requirePageBound(client, options.maximumGenerations, "maximum generations");
-      requirePageBound(client, options.maximumChanges, "maximum changes");
-      requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const destination = requireWorkspace(target, client);
       const plan = await call(client.rpc.planJoin({
         source: await currentGeneration(client, reference),
@@ -429,7 +410,6 @@ async function s3Access(
   if (!client.s3Credentials) {
     throw new HostedFsError("unsupported", "hosted filesystem does not issue S3 credentials");
   }
-  positiveU64(expiresAfterSeconds, "S3 credential lifetime");
   const response = await call(client.rpc.issueS3Credential({
     workspace: reference,
     generation: await currentGeneration(client, reference),
@@ -474,7 +454,6 @@ function generation(client: HostedClient, reference: WireGenerationRef): FsGener
     planExtents: (path, offset, length, maximumSpans) =>
       extents(client, reference, path, offset, length, maximumSpans),
     async pin(identity) {
-      requireName(identity);
       const response = await call(client.rpc.pin({
         generation: reference,
         identity,
@@ -498,7 +477,6 @@ async function fork(
   source: WireGenerationRef,
   destinationName: string,
 ): Promise<HostedFsWorkspace> {
-  requireName(destinationName);
   const response = await call(client.rpc.forkWorkspace({
     source,
     destinationName,
@@ -515,13 +493,6 @@ async function read(
   maximumBytes: bigint,
 ): Promise<Uint8Array> {
   assertOpen(client);
-  if (range === undefined) positiveU64(maximumBytes, "maximum read bytes");
-  else nonnegativeU64(maximumBytes, "maximum read bytes");
-  requireResponseBound(client, maximumBytes, "maximum read bytes");
-  if (range !== undefined) {
-    nonnegativeU64(range.offset, "read offset");
-    nonnegativeU64(range.length, "read length");
-  }
   const response = await call(client.rpc.read({
     generation: selected,
     path,
@@ -551,8 +522,6 @@ async function list(
   maximumEntries: number,
 ): Promise<WorkspaceDirectoryPage> {
   assertOpen(client);
-  positiveU32(maximumEntries, "maximum entries");
-  requirePageBound(client, maximumEntries, "maximum entries");
   const page = required((await call(client.rpc.listDirectory({
     generation: selected,
     path,
@@ -590,10 +559,6 @@ async function extents(
   maximumSpans: number,
 ): Promise<WorkspaceExtentPlan> {
   assertOpen(client);
-  nonnegativeU64(offset, "extent offset");
-  nonnegativeU64(length, "extent length");
-  positiveU32(maximumSpans, "maximum spans");
-  requirePageBound(client, maximumSpans, "maximum spans");
   const response = await call(client.rpc.planExtents({
     generation: selected,
     path,
@@ -623,9 +588,6 @@ function transaction(
   const stage = (value: WireMutation): Promise<void> => {
     assertOpen(client);
     if (closed) throw new HostedFsError("closed", "transaction is closed");
-    if (mutations.length >= client.maximumTransactionMutations) {
-      throw new RangeError("transaction exceeds the advertised mutation bound");
-    }
     mutations.push(value);
     return Promise.resolve();
   };
@@ -639,32 +601,21 @@ function transaction(
     rename: (source, destination) => stage(mutation("rename", { source, destination, replace: false })),
     hardLink: (source, destination) => stage(mutation("hardLink", { source, destination })),
     writeRange(path, offset, bytes) {
-      nonnegativeU64(offset, "write offset");
       return stage(mutation("write", { path, offset, contents: bytes }));
     },
     resize(path, logicalBytes) {
-      nonnegativeU64(logicalBytes, "logical bytes");
       return stage(mutation("resize", { path, logicalBytes }));
     },
     zeroRange(path, offset, length, allocated, extend) {
-      nonnegativeU64(offset, "zero offset");
-      nonnegativeU64(length, "zero length");
       return stage(mutation("zeroRange", { path, range: { offset, length }, allocated, extend }));
     },
     preallocate(path, offset, length, keepSize) {
-      nonnegativeU64(offset, "preallocation offset");
-      nonnegativeU64(length, "preallocation length");
       return stage(mutation("preallocate", { path, range: { offset, length }, keepSize }));
     },
     cloneRange(source, sourceOffset, destination, destinationOffset, length) {
-      nonnegativeU64(sourceOffset, "source offset");
-      nonnegativeU64(destinationOffset, "destination offset");
-      nonnegativeU64(length, "clone length");
       return stage(mutation("cloneRange", { source, sourceOffset, destination, destinationOffset, length }));
     },
     async rebase(maximumConflicts): Promise<TransactionRebaseResult> {
-      positiveU32(maximumConflicts, "maximum conflicts");
-      requirePageBound(client, maximumConflicts, "maximum conflicts");
       const response = await call(client.rpc.rebaseTransaction({
         base,
         mutations,
@@ -689,7 +640,7 @@ function transaction(
         mutations,
         operation: operationOptions,
         // Generated from Rust's DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS.
-        maximumConflicts: Math.min(DEFAULT_HOSTED_OPTIONS.maximumPageItems, client.maximumPageItems),
+        maximumConflicts: DEFAULT_HOSTED_OPTIONS.maximumPageItems,
       }));
       return commit(response.status, response.generation);
     },
@@ -713,7 +664,6 @@ async function diff(
   to: WireGenerationRef,
   maximumChanges: number,
 ): Promise<FsChangeSet> {
-  requirePageBound(client, maximumChanges, "maximum changes");
   const response = await call(client.rpc.diff({ from, to, maximumChanges }));
   const semantic = generationDiff(response);
   const result: FsChangeSet = {
@@ -721,7 +671,6 @@ async function diff(
     to: generation(client, required(response.to, "diff result")),
     changes: () => semantic,
     async compose(next, bound) {
-      positiveU32(bound, "maximum changes");
       const owner = changeSetOwners.get(next);
       if (owner === undefined || owner.client !== client || !equalBytes(owner.workspaceId, workspaceId)
         || !equalBytes(owner.from.generationId, to.generationId)) {
@@ -1018,42 +967,12 @@ function conflictUse(value: ConflictUse): TransactionConflict["usage"] {
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid conflict use");
   return translated;
 }
-function validateJoin(value: JoinOptions): void {
-  positiveU32(value.maximumGenerations, "maximum generations");
-  positiveU32(value.maximumChanges, "maximum changes");
-  positiveU32(value.maximumConflicts, "maximum conflicts");
-}
-function validateRebase(value: WorkspaceRebaseOptions): void {
-  positiveU32(value.maximumGenerations, "maximum generations");
-  positiveU32(value.maximumChanges, "maximum changes");
-  positiveU32(value.maximumConflicts, "maximum conflicts");
-}
-
 function assertOpen(client: HostedClient): void {
   if (client.closed) throw new HostedFsError("closed", "hosted filesystem is closed");
-}
-function requirePageBound(client: HostedClient, value: number, name: string): void {
-  if (value > client.maximumPageItems) {
-    throw new HostedFsError("limit", `${name} exceeds the negotiated page limit`);
-  }
-}
-function requireResponseBound(client: HostedClient, value: bigint, name: string): void {
-  if (value <= 0n || value > BigInt(client.maximumResponseBytes)) {
-    throw new HostedFsError("limit", `${name} exceeds the negotiated response limit`);
-  }
 }
 function requireName(value: string): void { if (value.length === 0) throw new RangeError("name must be non-empty"); }
 function positiveSafeInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be positive`);
-}
-function positiveU32(value: number, name: string): void {
-  if (!Number.isInteger(value) || value <= 0 || value > 0xffff_ffff) throw new RangeError(`${name} must be a positive u32`);
-}
-function positiveU64(value: bigint, name: string): void {
-  if (value <= 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError(`${name} must be a positive u64`);
-}
-function nonnegativeU64(value: bigint, name: string): void {
-  if (value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError(`${name} must be a u64`);
 }
 function required<T>(value: T | undefined, name: string): T {
   if (value === undefined) throw new HostedFsError("invalid_response", `${name} is absent`);
