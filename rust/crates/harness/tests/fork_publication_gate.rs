@@ -243,6 +243,10 @@ async fn production_publisher_reuses_seed_and_publication_after_activation_gate_
             LocalSessionPhase::Activating
         );
     }
+    // The gate is after both durable seeds and before activation. A failed
+    // publication must therefore leave no child model request in flight.
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests.lock().expect("model request lock").len(), 1);
 
     drop(swarm);
     drop(host);
