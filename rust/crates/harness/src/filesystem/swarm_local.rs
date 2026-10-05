@@ -4627,6 +4627,9 @@ impl PersistentLocalSwarm {
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
+        // Message identity is scoped to the sender. The recipient is part of
+        // the immutable operation binding, so changing it must conflict
+        // rather than create a second mailbox publication.
         for record in load_records(&registry).await? {
             if let StoredEvent::MessageAdmitted {
                 sender: candidate_sender,
@@ -4635,9 +4638,13 @@ impl PersistentLocalSwarm {
                 payload: candidate_payload,
             } = record.event
                 && candidate_sender == sender
-                && candidate_recipient == recipient
                 && candidate_message == message_id
             {
+                if candidate_recipient != recipient {
+                    return Err(Error::Conflict(
+                        "message identity was reused with another recipient".into(),
+                    ));
+                }
                 if candidate_payload != *payload {
                     return Err(Error::Conflict(
                         "message identity was reused with another payload".into(),
@@ -9482,6 +9489,33 @@ mod tests {
         admission.operation_id = child_operation;
         admission.parent = Some(parent);
         swarm.persist_local_admission(child, admission).await?;
+        let sibling = TaskId::from_bytes([0xE0; 16]);
+        let sibling_operation = OperationId::from_bytes([0xE1; 16]);
+        let sibling_tail = match registry.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        append_record_at(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: sibling,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "message sibling".into(),
+                operation: Some(sibling_operation),
+                phase: StoredPhase::Ready,
+            }),
+            sibling_tail,
+        )
+        .await?;
+        let mut sibling_admission = swarm.authenticated_admission(parent).await?;
+        sibling_admission.operation_id = sibling_operation;
+        sibling_admission.parent = Some(parent);
+        swarm
+            .persist_local_admission(sibling, sibling_admission)
+            .await?;
         swarm.refresh_registry_state().await?;
         let source = swarm.open_session(parent).await?;
         let payload = source
@@ -9510,6 +9544,12 @@ mod tests {
         ));
         let message = OperationId::from_bytes([0xDB; 16]);
         swarm.admit_message(parent, child, message, payload.clone()).await?;
+        assert!(matches!(
+            swarm
+                .admit_message(parent, sibling, message, payload.clone())
+                .await,
+            Err(Error::Conflict(_))
+        ));
         let timer = OperationId::from_bytes([0xDC; 16]);
         swarm.admit_timer(child, timer, 10_000).await?;
         swarm.cancel(child).await?;
