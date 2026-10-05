@@ -530,7 +530,7 @@ async fn assert_git_branch_target(
         .ok_or_else(|| Error::NotFound(format!("Git branch {name}")))?;
     if branch.workspace_id != expected_source {
         return Err(Error::Conflict(format!(
-            "Git branch {name} resolved to {} instead of published workspace {expected_source}",
+            "Git branch {name} resolved to {:?} instead of published workspace {expected_source:?}",
             branch.workspace_id
         )));
     }
