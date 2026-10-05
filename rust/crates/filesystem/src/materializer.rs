@@ -1563,8 +1563,6 @@ pub struct NativeWorkspacePublication<'a> {
     pub from: GenerationId,
     /// Exact target generation.
     pub to: GenerationId,
-    /// Root-level names never touched by publication.
-    pub excluded_names: &'a [&'a str],
     /// Native staging policy.
     pub options: &'a crate::MaterializeOptions,
     /// Cumulative planning and staging budget.
@@ -1621,7 +1619,6 @@ where
         operation_id,
         from,
         to,
-        excluded_names,
         options,
         budget,
         cancellation,
@@ -1665,10 +1662,6 @@ where
     let mut paths = Vec::with_capacity(changed.value.len());
     let mut structural_directories = Vec::new();
     let mut metadata_edits = Vec::new();
-    let excluded_names = excluded_names
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
     for change in changed.value {
         let mut path = String::new();
         for component in change.path.components() {
@@ -1678,10 +1671,6 @@ where
             path.push_str(&component.unicode_text().ok_or_else(|| {
                 NativeTreeMaterializationError::InvalidPath("<non-Unicode>".to_owned())
             })?);
-        }
-        let top = path.split('/').next().unwrap_or_default();
-        if excluded_names.contains(top) {
-            continue;
         }
         let before_directory = change
             .before
