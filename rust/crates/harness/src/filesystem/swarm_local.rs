@@ -117,6 +117,7 @@ struct LocalChildTurn {
     stream: acyclic_stream::Stream<LocalStream>,
     harness: Arc<PersistentLocalHarness>,
     bundle: crate::Harness,
+    admission: crate::runtime::TaskAdmissionRecord,
     max_steps: u32,
     cancelled: tokio::sync::watch::Receiver<bool>,
     _activation_guard: tokio::sync::OwnedMutexGuard<()>,
@@ -1008,6 +1009,20 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             storage
                 .attach_model_fork_references(&verified, &mut request)
                 .await?;
+            // Admit the child before the filesystem preparer can claim either
+            // workspace. The scheduler reserves the returned admission before
+            // invoking this resolver; the exact prompt, parent, model,
+            // grants, and limits are persisted in the owner registry first.
+            let child_admission = swarm
+                .admit_local_child_turn(
+                    child_task,
+                    intent.child_operation,
+                    &intent.prompt,
+                    intent.parent,
+                    &parent_harness,
+                )
+                .await?;
+            let _ = child_admission;
             let parent_reader = Arc::new(FilesystemContentVerifier::new(
                 self.host.clone(),
                 storage.verifier(),
@@ -2202,6 +2217,13 @@ struct StoredRecord {
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 enum StoredEvent {
     Session(StoredSession),
+    /// Canonical owner admission for one local task turn. The value is kept
+    /// in canonical form so recovery validates the same runtime record that
+    /// the execution boundary consumed.
+    TaskAdmitted {
+        task: TaskId,
+        admission: Value,
+    },
     /// Atomically records the selected child and host issuer binding.
     ForkIntentSelected {
         intent: LocalForkIntent,
@@ -2378,6 +2400,9 @@ pub struct PersistentLocalSwarm {
     declarations: Mutex<BTreeMap<TaskId, LocalInheritedModelDeclaration>>,
     outcomes: Mutex<BTreeMap<TaskId, TurnOutput>>,
     completion_refs: Mutex<BTreeMap<TaskId, StoredCompletionRef>>,
+    /// Latest owner admission for each task. The append-only registry retains
+    /// prior turns; this projection is the record used by dispatch.
+    admissions: Mutex<BTreeMap<TaskId, crate::runtime::TaskAdmissionRecord>>,
     /// Last append-only registry sequence incorporated into the in-memory
     /// projection. This is a disposable cursor; the registry remains the
     /// authority and refreshes read only an unseen suffix.
@@ -2492,6 +2517,7 @@ impl PersistentLocalSwarm {
         let mut declarations = BTreeMap::new();
         let mut outcomes = BTreeMap::new();
         let mut completion_refs = BTreeMap::new();
+        let mut admissions = BTreeMap::new();
         for record in records {
             apply_record(
                 &mut sessions,
@@ -2502,6 +2528,7 @@ impl PersistentLocalSwarm {
                 &mut declarations,
                 &mut outcomes,
                 &mut completion_refs,
+                &mut admissions,
                 record,
             )?;
         }
@@ -2548,6 +2575,7 @@ impl PersistentLocalSwarm {
                     declarations.clear();
                     outcomes.clear();
                     completion_refs.clear();
+                    admissions.clear();
                     for record in winner_records {
                         apply_record(
                             &mut sessions,
@@ -2558,6 +2586,7 @@ impl PersistentLocalSwarm {
                             &mut declarations,
                             &mut outcomes,
                             &mut completion_refs,
+                            &mut admissions,
                             record,
                         )?;
                     }
@@ -2630,6 +2659,7 @@ impl PersistentLocalSwarm {
             declarations: Mutex::new(declarations),
             outcomes: Mutex::new(outcomes),
             completion_refs: Mutex::new(completion_refs),
+            admissions: Mutex::new(admissions),
             registry_tail: Mutex::new(registry_tail),
             registry_refresh: Mutex::new(()),
             sessions: Mutex::new(opened),
@@ -2815,6 +2845,235 @@ impl PersistentLocalSwarm {
         self.budget_journal.clone()
     }
 
+    /// Returns the latest canonical owner admission for a task. The registry
+    /// projection is refreshed before every read so another swarm handle
+    /// cannot dispatch under a stale turn binding.
+    pub async fn authenticated_admission(
+        &self,
+        task: TaskId,
+    ) -> Result<crate::runtime::TaskAdmissionRecord> {
+        self.refresh_registry_state().await?;
+        self.admissions
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local task admission {task}")))
+    }
+
+    fn local_turn_input_schema() -> Value {
+        json!({"type": "string", "maxLength": 65536})
+    }
+
+    fn local_turn_output_schema() -> Value {
+        json!({"type": "object", "additionalProperties": true})
+    }
+
+    /// Admits the exact local turn through the authoritative swarm registry.
+    /// The resulting record is later used by budget reservation and model
+    /// execution; no turn output or fork request reconstructs its limits.
+    pub async fn admit_local_turn(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        prompt: &str,
+    ) -> Result<crate::runtime::TaskAdmissionRecord> {
+        self.refresh_registry_state().await?;
+        if let Some(existing) = self.admissions.lock().await.get(&task).cloned() {
+            if existing.operation_id == operation {
+                if existing.input == Value::String(prompt.to_owned()) {
+                    return Ok(existing);
+                }
+                return Err(Error::Conflict(
+                    "local task admission input changed for the operation".into(),
+                ));
+            }
+        }
+        let session = self.session(task).await?;
+        let harness = self.open_session(task).await?;
+        let machine_digest = crate::contract::canonical_json_digest(&json!({
+            "model": self.config.model.clone(),
+            "limits": harness.bundle().limits(),
+            "run_limits": self.config.run_limits,
+        }))?;
+        let admission = crate::runtime::TaskAdmissionRecord::from_parts(
+            operation,
+            "acyclic.local-swarm.turn",
+            "1",
+            Value::String(prompt.to_owned()),
+            Self::local_turn_input_schema(),
+            Self::local_turn_output_schema(),
+            &BTreeSet::new(),
+            &machine_digest,
+            session.parent,
+            Capabilities::new(
+                harness
+                    .bundle()
+                    .capabilities()
+                    .iter()
+                    .map(str::to_owned)
+                    .chain(["mail:send".into(), "mail:read".into(), "timer:wait".into()]),
+            ),
+            harness.bundle().limits(),
+            self.config.run_limits,
+            self.provider
+                .model_option_policy()
+                .map(|policy| policy.identity.clone()),
+            None,
+            None,
+        )?;
+        self.persist_local_admission(task, admission).await
+    }
+
+    /// Admits a child before its private/project volumes are prepared. The
+    /// parent harness supplies the already pinned local authority and model
+    /// binding; opening the child harness is intentionally deferred until the
+    /// durable admission and budget reservation have succeeded.
+    async fn admit_local_child_turn(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        prompt: &str,
+        parent: TaskId,
+        parent_harness: &PersistentLocalHarness,
+    ) -> Result<crate::runtime::TaskAdmissionRecord> {
+        self.refresh_registry_state().await?;
+        if let Some(existing) = self.admissions.lock().await.get(&task).cloned() {
+            if existing.operation_id == operation {
+                if existing.input == Value::String(prompt.to_owned()) {
+                    return Ok(existing);
+                }
+                return Err(Error::Conflict(
+                    "local child admission input changed for the operation".into(),
+                ));
+            }
+        }
+        let machine_digest = crate::contract::canonical_json_digest(&json!({
+            "model": self.config.model.clone(),
+            "limits": parent_harness.bundle().limits(),
+            "run_limits": self.config.run_limits,
+        }))?;
+        let admission = crate::runtime::TaskAdmissionRecord::from_parts(
+            operation,
+            "acyclic.local-swarm.turn",
+            "1",
+            Value::String(prompt.to_owned()),
+            Self::local_turn_input_schema(),
+            Self::local_turn_output_schema(),
+            &BTreeSet::new(),
+            &machine_digest,
+            Some(parent),
+            Capabilities::new(
+                parent_harness
+                    .bundle()
+                    .capabilities()
+                    .iter()
+                    .map(str::to_owned)
+                    .chain(["mail:send".into(), "mail:read".into(), "timer:wait".into()]),
+            ),
+            parent_harness.bundle().limits(),
+            self.config.run_limits,
+            self.provider
+                .model_option_policy()
+                .map(|policy| policy.identity.clone()),
+            None,
+            None,
+        )?;
+        self.persist_local_admission(task, admission).await
+    }
+
+    /// Persists the exact child turn admission before a resolver allocates
+    /// workspace resources. Scheduler code should call this before invoking a
+    /// filesystem fork resolver; the returned record is the input to the
+    /// canonical budget reservation.
+    pub async fn admit_child_turn(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        prompt: &str,
+        parent: TaskId,
+    ) -> Result<crate::runtime::TaskAdmissionRecord> {
+        let parent_harness = self.open_session(parent).await?;
+        self.admit_local_child_turn(task, operation, prompt, parent, &parent_harness)
+            .await
+    }
+
+    /// Performs the durable child admission and budget reservation as one
+    /// scheduler boundary. Callers must invoke this before filesystem fork
+    /// preparation or provider publication; the journal atomically accounts
+    /// active, total, depth, and resource ceilings from this record.
+    pub async fn admit_and_reserve_child(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        prompt: &str,
+        parent: TaskId,
+        idempotency_key: crate::IdempotencyKey,
+        depth: u32,
+        resources: SwarmResourceRequest,
+    ) -> Result<(
+        crate::runtime::TaskAdmissionRecord,
+        SwarmAdmissionReceipt,
+    )> {
+        let admission = self.admit_child_turn(task, operation, prompt, parent).await?;
+        let parent_admission = self.authenticated_admission(parent).await?;
+        let receipt = self
+            .reserve_child_budget(
+                task,
+                idempotency_key,
+                Some(parent_admission.operation_id),
+                depth,
+                resources,
+            )
+            .await?;
+        Ok((admission, receipt))
+    }
+
+    async fn persist_local_admission(
+        &self,
+        task: TaskId,
+        admission: crate::runtime::TaskAdmissionRecord,
+    ) -> Result<crate::runtime::TaskAdmissionRecord> {
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let append = append_record_at(
+            &registry,
+            StoredEvent::TaskAdmitted {
+                task,
+                admission: admission.canonical_value(),
+            },
+            observed_tail,
+        )
+        .await;
+        match append {
+            Ok(()) => {}
+            Err(Error::Conflict(_)) => {
+                // A second opener may have committed the same admission first.
+                // Reconcile that durable winner instead of manufacturing a
+                // new operation record or treating the lost CAS as a provider
+                // error.
+                self.refresh_registry_state().await?;
+                if let Some(existing) = self.admissions.lock().await.get(&task).cloned()
+                    && existing == admission
+                {
+                    return Ok(existing);
+                }
+                return Err(Error::Conflict(
+                    "local task admission lost its durable registry race".into(),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+        self.admissions.lock().await.insert(task, admission.clone());
+        *self.registry_tail.lock().await = observed_tail
+            .checked_add(1)
+            .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+        Ok(admission)
+    }
+
     /// Atomically reserves a child from the owner-retained task admission.
     /// Callers must invoke this before workspace fork preparation or provider
     /// dispatch; the local fork request is never used to reconstruct limits.
@@ -2826,7 +3085,7 @@ impl PersistentLocalSwarm {
         depth: u32,
         resources: SwarmResourceRequest,
     ) -> Result<SwarmAdmissionReceipt> {
-        let admission = self.bindings.authenticated_admission(child_task).await?;
+        let admission = self.authenticated_admission(child_task).await?;
         let mut journal = self.budget_journal.lock().await;
         journal
             .reserve_after_admission(
@@ -3621,7 +3880,8 @@ impl PersistentLocalSwarm {
             ));
         }
         let parent = session.parent;
-        self.verify_admitted_task(task, parent).await?;
+        let admission = self.admit_local_turn(task, operation, prompt).await?;
+        self.verify_admitted_task(task, parent, &admission).await?;
         let harness = self.open_session(task).await?;
         let max_steps = u32::try_from(
             self.config
@@ -3635,9 +3895,13 @@ impl PersistentLocalSwarm {
         let run = async {
             if let Some(declaration) = declaration {
                 let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
-                harness.run_with_bundle(&bundle, operation, prompt, max_steps).await
+                harness
+                    .run_with_admission(&bundle, &admission, prompt, max_steps)
+                    .await
             } else {
-                harness.run_with_max_steps(operation, prompt, max_steps).await
+                harness
+                    .run_with_admission(&harness.bundle(), &admission, prompt, max_steps)
+                    .await
             }
         };
         let output = tokio::select! {
@@ -3735,7 +3999,8 @@ impl PersistentLocalSwarm {
             ));
         }
         let parent_session = self.session(request.parent).await?;
-        self.verify_admitted_task(request.parent, parent_session.parent)
+        let parent_admission = self.authenticated_admission(request.parent).await?;
+        self.verify_admitted_task(request.parent, parent_session.parent, &parent_admission)
             .await?;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         if let Some(existing) = self.requests.lock().await.get(&child)
@@ -3861,7 +4126,8 @@ impl PersistentLocalSwarm {
                     return Err(error);
                 }
             };
-        self.verify_admitted_task(child, Some(request.parent))
+        let child_admission = self.authenticated_admission(child).await?;
+        self.verify_admitted_task(child, Some(request.parent), &child_admission)
             .await?;
         self.sessions.lock().await.insert(child, harness.clone());
         self.prepare_child_turn(
@@ -3907,6 +4173,18 @@ impl PersistentLocalSwarm {
                 "fork report is bound to another publication operation or parent".into(),
             ));
         }
+        let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        // Keep the owner admission durable before publication or activation.
+        // Resolver-backed paths perform this before workspace preparation;
+        // this idempotent check also covers plans recovered after restart.
+        self.admit_local_child_turn(
+            child,
+            request.child_operation,
+            &request.prompt,
+            request.parent,
+            &parent_storage,
+        )
+        .await?;
         let child_authority = request.child_authority.as_ref().ok_or_else(|| {
             Error::Invalid("typed fork publication requires child authority".into())
         })?;
@@ -3948,7 +4226,6 @@ impl PersistentLocalSwarm {
                 "published model boundary does not match fork request".into(),
             ));
         }
-        let child = TaskId::from_bytes(request.child_operation.into_bytes());
         // Admission and completion share one per-child terminal fence.
         // Narrowing the lock to this child permits a model turn to select a
         // grandchild without recursively taking a global swarm lock.
@@ -4358,20 +4635,23 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
+        let admission = self.authenticated_admission(child).await?;
+        self.verify_admitted_task(child, Some(request.parent), &admission)
+            .await?;
         Ok(LocalChildActivation::Ready(Box::new(LocalChildTurn {
-            request, stream, harness, bundle, max_steps, cancelled,
+            request, stream, harness, bundle, admission, max_steps, cancelled,
             _activation_guard: activation_guard,
         })))
     }
 
     async fn execute_child_turn(&self, turn: Box<LocalChildTurn>) -> Result<LocalForkOutcome> {
         let LocalChildTurn {
-            request, stream, harness, bundle, max_steps, cancelled, _activation_guard,
+            request, stream, harness, bundle, admission, max_steps, cancelled, _activation_guard,
         } = *turn;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
         let child_result = Self::run_owned_child_turn(
-            harness.clone(), bundle, request.clone(), max_steps, cancelled,
+            harness.clone(), bundle, admission, request.clone(), max_steps, cancelled,
         ).await;
         let output = match child_result {
             Ok(output) => output,
@@ -4598,12 +4878,13 @@ impl PersistentLocalSwarm {
     async fn run_owned_child_turn(
         harness: Arc<PersistentLocalHarness>,
         bundle: crate::Harness,
+        admission: crate::runtime::TaskAdmissionRecord,
         request: LocalForkRequest,
         max_steps: u32,
         mut cancelled: tokio::sync::watch::Receiver<bool>,
     ) -> Result<TurnOutput> {
         let child_task = AbortOnDrop::new(tokio::spawn(Self::run_child_turn(
-            harness, bundle, request, max_steps,
+            harness, bundle, admission, request, max_steps,
         )));
         tokio::pin!(child_task);
         tokio::select! {
@@ -4623,11 +4904,12 @@ impl PersistentLocalSwarm {
     async fn run_child_turn(
         harness: Arc<PersistentLocalHarness>,
         bundle: crate::Harness,
+        admission: crate::runtime::TaskAdmissionRecord,
         request: LocalForkRequest,
         max_steps: u32,
     ) -> Result<TurnOutput> {
         harness
-            .run_with_bundle(&bundle, request.child_operation, &request.prompt, max_steps)
+            .run_with_admission(&bundle, &admission, &request.prompt, max_steps)
             .await
     }
 
@@ -4651,11 +4933,12 @@ impl PersistentLocalSwarm {
     /// Rechecks the owner-retained admission immediately before model
     /// dispatch. A reopened process must not run a task under a changed
     /// parent, numeric limit, or run budget binding.
-    async fn verify_admitted_task(&self, task: TaskId, parent: Option<TaskId>) -> Result<()> {
-        let Some(host) = &self.bindings.communication_host else {
-            return Ok(());
-        };
-        let admission = host.communication_scope(task).await?;
+    async fn verify_admitted_task(
+        &self,
+        _task: TaskId,
+        parent: Option<TaskId>,
+        admission: &crate::runtime::TaskAdmissionRecord,
+    ) -> Result<()> {
         if admission.parent != parent
             || admission.limits != self.config.limits
             || admission.run_limits != self.config.run_limits
@@ -4952,6 +5235,7 @@ impl PersistentLocalSwarm {
         let mut declarations = self.declarations.lock().await.clone();
         let mut outcomes = self.outcomes.lock().await.clone();
         let mut completion_refs = self.completion_refs.lock().await.clone();
+        let mut admissions = self.admissions.lock().await.clone();
         for record in records {
             apply_record(
                 &mut sessions,
@@ -4962,6 +5246,7 @@ impl PersistentLocalSwarm {
                 &mut declarations,
                 &mut outcomes,
                 &mut completion_refs,
+                &mut admissions,
                 record,
             )?;
         }
@@ -4976,6 +5261,7 @@ impl PersistentLocalSwarm {
         *self.declarations.lock().await = declarations;
         *self.outcomes.lock().await = outcomes;
         *self.completion_refs.lock().await = completion_refs;
+        *self.admissions.lock().await = admissions;
         *self.registry_tail.lock().await = observed_tail;
         Ok(observed_tail)
     }
@@ -5255,6 +5541,7 @@ fn apply_record(
     declarations: &mut BTreeMap<TaskId, LocalInheritedModelDeclaration>,
     outcomes: &mut BTreeMap<TaskId, TurnOutput>,
     completion_refs: &mut BTreeMap<TaskId, StoredCompletionRef>,
+    admissions: &mut BTreeMap<TaskId, crate::runtime::TaskAdmissionRecord>,
     record: StoredRecord,
 ) -> Result<()> {
     match record.event {
@@ -5280,6 +5567,21 @@ fn apply_record(
                 }
             }
             sessions.insert(next.task, next);
+        }
+        StoredEvent::TaskAdmitted { task, admission } => {
+            let admission = crate::runtime::TaskAdmissionRecord::from_canonical_value(admission)?;
+            if admission.operation_id.into_bytes() == [0; 16] {
+                return Err(Error::Conflict("persisted task admission operation is empty".into()));
+            }
+            if let Some(existing) = admissions.get(&task)
+                && existing.operation_id == admission.operation_id
+                && existing != &admission
+            {
+                return Err(Error::Conflict(
+                    "persisted task admission changed for the operation".into(),
+                ));
+            }
+            admissions.insert(task, admission);
         }
         StoredEvent::ForkIntent { intent } => {
             intent.validate()?;
