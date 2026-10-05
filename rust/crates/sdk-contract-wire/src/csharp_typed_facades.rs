@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use prost_types::field_descriptor_proto::Type as FieldType;
 
 use crate::type_policy::{
-    resolved_request_fields, resolved_rpc_methods, semantic_type, PublicFieldBinding,
+    resolved_operation_rules, resolved_request_fields, resolved_rpc_methods, semantic_type,
+    OperationEnforcement, PublicFieldBinding,
     PublicFieldDirection,
     ResolvedRequestField, SemanticRule, WireValueKind,
     PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, SEMANTIC_TYPES, WIRE_UNION_VARIANTS,
@@ -125,11 +126,11 @@ fn render_semantic_types(out: &mut String) {
         }
         match item.wire_kind {
             WireValueKind::String => {
-                out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(string value)\n    {{\n        if (string.IsNullOrEmpty(value)) throw new ArgumentException(\"{ty} must be non-empty\", nameof(value));\n        Value = value;\n    }}\n    public string Value {{ get; }}\n    internal string ToWire() => Value;\n}}\n\n"));
+                out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(string value)\n    {{\n        if (string.IsNullOrEmpty(value)) throw new ArgumentException(\"{ty} must be non-empty\", nameof(value));\n        Value = value;\n    }}\n    public string Value {{ get; }}\n    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException(\"{ty} must be non-empty\", nameof(Value)) : Value;\n}}\n\n"));
             }
             WireValueKind::Bytes => {
                 let checks = checks(item.rules);
-                out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(ReadOnlyMemory<byte> value)\n    {{\n        var bytes = value.ToArray();\n        {checks}        Value = bytes;\n    }}\n    public byte[] Value {{ get; }}\n    internal ByteString ToWire() => ByteString.CopyFrom(Value);\n}}\n\n"));
+                out.push_str(&format!("public readonly record struct {ty}\n{{\n    private readonly byte[] _value;\n    public {ty}(ReadOnlyMemory<byte> value)\n    {{\n        var bytes = value.ToArray();\n        {checks}        _value = bytes;\n    }}\n    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();\n    internal ByteString ToWire()\n    {{\n        var bytes = _value ?? Array.Empty<byte>();\n        {checks}        return ByteString.CopyFrom(bytes);\n    }}\n}}\n\n"));
             }
             WireValueKind::UnsignedInteger => {
                 let max = item.rules.iter().find_map(|rule| match rule {
@@ -137,10 +138,12 @@ fn render_semantic_types(out: &mut String) {
                     _ => None,
                 });
                 let max_check = max.map(|value| format!("        if (value > {value}) throw new ArgumentOutOfRangeException(nameof(value));\n")).unwrap_or_default();
-                out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(ulong value)\n    {{\n        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));\n{max_check}        Value = value;\n    }}\n    public ulong Value {{ get; }}\n    internal ulong ToWire() => Value;\n}}\n\n"));
+                out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(ulong value)\n    {{\n        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));\n{max_check}        Value = value;\n    }}\n    public ulong Value {{ get; }}\n    internal ulong ToWire()\n    {{\n        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));\n{max_check}        return Value;\n    }}\n}}\n\n"));
             }
             WireValueKind::SignedInteger => {
-                out.push_str(&format!("public readonly record struct {ty}(long Value)\n{{\n    internal long ToWire() => Value;\n}}\n\n"));
+                let positive = item.rules.iter().any(|rule| matches!(rule, SemanticRule::StrictlyPositive));
+                let check = positive.then(|| "        if (Value <= 0) throw new ArgumentOutOfRangeException(nameof(Value));\n").unwrap_or_default();
+                out.push_str(&format!("public readonly record struct {ty}(long Value)\n{{\n    internal long ToWire()\n    {{\n{check}        return Value;\n    }}\n}}\n\n"));
             }
             WireValueKind::Boolean => {
                 out.push_str(&format!("public readonly record struct {ty}(bool Value)\n{{\n    internal bool ToWire() => Value;\n}}\n\n"));
@@ -150,9 +153,9 @@ fn render_semantic_types(out: &mut String) {
             }
             WireValueKind::Message => {
                 if item.id == "idempotency_key_message" {
-                    out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(ReadOnlyMemory<byte> value)\n    {{\n        var bytes = value.ToArray();\n        if (bytes.Length != 16) throw new ArgumentException(\"{ty} must be a 16-byte UUID\", nameof(value));\n        Value = bytes;\n    }}\n    public byte[] Value {{ get; }}\n    internal ByteString ToWire() => ByteString.CopyFrom(Value);\n}}\n\n"));
+                    out.push_str(&format!("public readonly record struct {ty}\n{{\n    private readonly byte[] _value;\n    public {ty}(ReadOnlyMemory<byte> value)\n    {{\n        var bytes = value.ToArray();\n        if (bytes.Length != 16) throw new ArgumentException(\"{ty} must be a 16-byte UUID\", nameof(value));\n        _value = bytes;\n    }}\n    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();\n    internal ByteString ToWire()\n    {{\n        var bytes = _value ?? Array.Empty<byte>();\n        if (bytes.Length != 16) throw new ArgumentException(\"{ty} must be a 16-byte UUID\", nameof(Value));\n        return ByteString.CopyFrom(bytes);\n    }}\n}}\n\n"));
                 } else {
-                    out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(string value)\n    {{\n        if (string.IsNullOrEmpty(value)) throw new ArgumentException(\"{ty} must be non-empty\", nameof(value));\n        Value = value;\n    }}\n    public string Value {{ get; }}\n    internal string ToWire() => Value;\n}}\n\n"));
+                    out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(string value)\n    {{\n        if (string.IsNullOrEmpty(value)) throw new ArgumentException(\"{ty} must be non-empty\", nameof(value));\n        Value = value;\n    }}\n    public string Value {{ get; }}\n    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException(\"{ty} must be non-empty\", nameof(Value)) : Value;\n}}\n\n"));
                 }
             }
             WireValueKind::Enum | WireValueKind::Oneof => {}
@@ -320,7 +323,6 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
                     kind,
                     x if x == FieldType::Uint32 as i32
                         || x == FieldType::Fixed32 as i32
-                        || x == FieldType::Sfixed32 as i32
                 ) =>
             {
                 "uint".to_owned()
@@ -330,7 +332,6 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
                     kind,
                     x if x == FieldType::Uint64 as i32
                         || x == FieldType::Fixed64 as i32
-                        || x == FieldType::Sfixed64 as i32
                 ) =>
             {
                 "ulong".to_owned()
@@ -340,6 +341,7 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
                     kind,
                     x if x == FieldType::Int32 as i32
                         || x == FieldType::Sint32 as i32
+                        || x == FieldType::Sfixed32 as i32
                 ) =>
             {
                 "int".to_owned()
@@ -349,6 +351,7 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
                     kind,
                     x if x == FieldType::Int64 as i32
                         || x == FieldType::Sint64 as i32
+                        || x == FieldType::Sfixed64 as i32
                 ) =>
             {
                 "long".to_owned()
@@ -510,9 +513,23 @@ fn render_object_stream(out: &mut String) {
 }
 
 fn render_operation_validation(out: &mut String) {
+    let rules = resolved_operation_rules();
     out.push_str(
         "internal static class RustOperationValidation\n{\n    internal const int MaxMultipartParts = 10000;\n    internal const int MaxRecordBytes = 65536;\n    internal const int MaxCommandBytes = 1056768;\n\n    internal static void ValidateOrderedPartNumbers(IEnumerable<uint> partNumbers)\n    {\n        var count = 0;\n        uint previous = 0;\n        foreach (var partNumber in partNumbers)\n        {\n            if (++count > MaxMultipartParts || partNumber == 0 || partNumber > MaxMultipartParts || (count > 1 && partNumber <= previous))\n                throw new ArgumentOutOfRangeException(nameof(partNumbers), \"Rust multipart parts must be strictly increasing and within the canonical bound.\");\n            previous = partNumber;\n        }\n    }\n\n    internal static void ValidateRecordBytes(IEnumerable<ByteString> records)\n    {\n        foreach (var record in records)\n            if (record.Length > MaxRecordBytes)\n                throw new ArgumentOutOfRangeException(nameof(records), \"Rust stream record exceeds the canonical byte limit.\");\n    }\n\n    internal static void ValidateCommandSize(IMessage request)\n    {\n        if (request.CalculateSize() > MaxCommandBytes)\n            throw new ArgumentOutOfRangeException(nameof(request), \"Rust stream command exceeds the canonical byte limit.\");\n    }\n\n    internal static void RequireCapability(IReadOnlySet<string> capabilities, string capability)\n    {\n        if (!capabilities.Contains(capability))\n            throw new UnauthorizedAccessException($\"Rust operation requires capability '{capability}'.\");\n    }\n\n    // Bucket emptiness is provider state. The server remains authoritative;\n    // the generated client preserves this rule as operation metadata.\n}\n\n",
     );
+    out.push_str("internal enum RustOperationEnforcement { ClientLocal, ProviderState, ResponseInvariant }\n\ninternal sealed record RustOperationPolicy(string Family, string Rpc, string Validation, string Target, RustOperationEnforcement Enforcement);\n\ninternal static class RustOperationPolicies\n{\n    internal static IReadOnlyList<RustOperationPolicy> All { get; } = new[]\n    {\n");
+    for rule in rules {
+        let enforcement = match rule.target.enforcement {
+            OperationEnforcement::ClientLocal => "ClientLocal",
+            OperationEnforcement::ProviderState => "ProviderState",
+            OperationEnforcement::ResponseInvariant => "ResponseInvariant",
+        };
+        out.push_str(&format!(
+            "        new RustOperationPolicy(\"{}\", \"{}\", \"{}\", \"{}\", RustOperationEnforcement.{}),\n",
+            rule.family, rule.rpc, rule.validation, rule.target.path, enforcement
+        ));
+    }
+    out.push_str("    };\n}\n\n");
 }
 
 fn render_clients(out: &mut String) {

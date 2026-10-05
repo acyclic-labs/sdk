@@ -97,6 +97,30 @@ pub enum OperationRule {
     /// Every stream mutation command is bounded by the canonical Rust wire
     /// envelope limit.
     MaxCommandBytes(u32),
+    /// A Rust-owned policy identity whose target language projection must
+    /// retain the original validation and target metadata even when no
+    /// single scalar refinement can represent it.
+    Policy(&'static str),
+}
+
+/// Where the Rust contract requires an operation rule to be enforced.
+///
+/// This classification is part of the Rust source model.  Generators use it
+/// to emit local checks, provider-state requirements, or response checks;
+/// they must not silently turn any of these rules into documentation-only
+/// strings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationEnforcement {
+    ClientLocal,
+    ProviderState,
+    ResponseInvariant,
+}
+
+/// The concrete logical target of an operation validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationTarget {
+    pub path: &'static str,
+    pub enforcement: OperationEnforcement,
 }
 
 /// A Rust-owned operation validation that cannot be represented by a scalar
@@ -109,6 +133,7 @@ pub struct ResolvedOperationRule {
     pub rpc: &'static str,
     pub validation: &'static str,
     pub rule: OperationRule,
+    pub target: OperationTarget,
 }
 
 /// Resolve every reachable request field from the single Rust contract model.
@@ -189,6 +214,18 @@ pub fn resolved_operation_rules() -> Vec<ResolvedOperationRule> {
                         rpc: policy.rpc,
                         validation,
                         rule,
+                        target: operation_target(validation),
+                    });
+                } else {
+                    // Keep every Rust-authored policy visible to generators,
+                    // including the 82 operation-only validations that do
+                    // not attach to a single descriptor field.
+                    rules.push(ResolvedOperationRule {
+                        family: family.name,
+                        rpc: policy.rpc,
+                        validation,
+                        rule: OperationRule::Policy(validation),
+                        target: operation_target(validation),
                     });
                 }
             }
@@ -611,6 +648,82 @@ fn operation_rule(validation: &str) -> Option<OperationRule> {
         }
         _ => None,
     }
+}
+
+/// Resolve a policy's logical target and enforcement boundary from the
+/// Rust-authored validation identity.  The explicit targets cover nested
+/// request values and provider/response invariants; the fallback retains the
+/// complete policy identity so a newly added rule cannot disappear from a
+/// generated SDK.
+fn operation_target(validation: &'static str) -> OperationTarget {
+    let (path, enforcement) = match validation {
+        "bucket.empty" => ("bucket", OperationEnforcement::ProviderState),
+        "bucket.name.non_empty" => ("bucket.name", OperationEnforcement::ClientLocal),
+        "object.key.non_empty" => ("object.key", OperationEnforcement::ClientLocal),
+        "request_identity.nonzero" => ("request_identity", OperationEnforcement::ClientLocal),
+        "action.present" => ("action", OperationEnforcement::ClientLocal),
+        "message.bounded" => ("message", OperationEnforcement::ClientLocal),
+        "contract.valid" => ("contract", OperationEnforcement::ClientLocal),
+        "limits.valid" => ("limits", OperationEnforcement::ClientLocal),
+        "scope.capability.operation_cancel" => {
+            ("scope.capability", OperationEnforcement::ClientLocal)
+        }
+        "scope.capability.operation_observe" => {
+            ("scope.capability", OperationEnforcement::ClientLocal)
+        }
+        "response.identity.matches" | "status.identity.matches" => {
+            ("response.identity", OperationEnforcement::ResponseInvariant)
+        }
+        "delivery.identity.preserving" => {
+            ("delivery.identity", OperationEnforcement::ResponseInvariant)
+        }
+        "admission.identity.matches" => {
+            ("admission.identity", OperationEnforcement::ResponseInvariant)
+        }
+        "protocol.identity.exact" | "protocol.version.exact" => {
+            ("protocol", OperationEnforcement::ClientLocal)
+        }
+        "descriptor_digest.matches" | "workspace.identity.matches" => {
+            ("identity", OperationEnforcement::ClientLocal)
+        }
+        "join.plan_identity.matches" => ("join.plan_identity", OperationEnforcement::ClientLocal),
+        "workspace.selector.required" => ("workspace.selector", OperationEnforcement::ClientLocal),
+        "workspace.reference.required" => ("workspace.reference", OperationEnforcement::ClientLocal),
+        "generation.reference.required" => ("generation.reference", OperationEnforcement::ClientLocal),
+        "generation.references.required" => ("generation.references", OperationEnforcement::ClientLocal),
+        "owner.required" => ("owner", OperationEnforcement::ClientLocal),
+        "scope.required" => ("scope", OperationEnforcement::ClientLocal),
+        "required_capability.nonempty" | "required_capability.supported" => {
+            ("required_capability", OperationEnforcement::ClientLocal)
+        }
+        "operation_id.16_bytes" | "operation_id.nonempty" => {
+            ("operation_id", OperationEnforcement::ClientLocal)
+        }
+        "idempotency_key.nonempty" | "operation.idempotency_key.16_bytes" => {
+            ("idempotency_key", OperationEnforcement::ClientLocal)
+        }
+        "mutation.oneof" => ("mutation", OperationEnforcement::ClientLocal),
+        "transaction.bounded" => ("transaction", OperationEnforcement::ClientLocal),
+        "parts.ordered_exact" => ("parts", OperationEnforcement::ClientLocal),
+        "records.max_bytes" => ("records", OperationEnforcement::ClientLocal),
+        "mutations.max_command_bytes" => ("mutations", OperationEnforcement::ClientLocal),
+        _ if validation.ends_with(".valid")
+            || validation.ends_with(".bounded")
+            || validation.ends_with(".supported")
+            || validation.ends_with(".proven")
+            || validation.ends_with(".declared")
+            || validation.ends_with(".required")
+            || validation.ends_with(".nonempty")
+            || validation.ends_with(".non_empty")
+            || validation.ends_with(".nonzero")
+            || validation.ends_with(".preserving")
+            || validation.ends_with(".contiguous")
+            || validation.ends_with(".monotonic") => {
+            (validation, OperationEnforcement::ClientLocal)
+        }
+        _ => (validation, OperationEnforcement::ProviderState),
+    };
+    OperationTarget { path, enforcement }
 }
 
 /// Every language target currently inventoried by the generation pipeline.
@@ -2383,6 +2496,43 @@ mod tests {
                 && matches!(rule.rule, OperationRule::MaxRecordBytes(STREAM_MAX_RECORD_BYTES))
         }));
         assert!(rules.iter().all(|rule| !rule.rpc.is_empty() && !rule.validation.is_empty()));
+    }
+
+    #[test]
+    fn every_rust_operation_policy_has_a_target_and_enforcement_boundary() {
+        let rules = resolved_operation_rules();
+        assert!(rules.len() >= 200, "all Rust-authored operation validations must be inventoried");
+        assert!(rules.iter().all(|rule| !rule.target.path.is_empty()));
+        assert!(rules.iter().any(|rule| {
+            rule.validation == "bucket.empty"
+                && rule.target.path == "bucket"
+                && rule.target.enforcement == OperationEnforcement::ProviderState
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.validation == "bucket.name.non_empty"
+                && rule.target.path == "bucket.name"
+                && rule.target.enforcement == OperationEnforcement::ClientLocal
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.validation == "object.key.non_empty"
+                && rule.target.path == "object.key"
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.validation == "request_identity.nonzero"
+                && rule.target.path == "request_identity"
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.validation == "action.present" && rule.target.path == "action"
+        }));
+    }
+
+    #[test]
+    fn operation_target_classification_does_not_hide_unknown_policy_names() {
+        let target = operation_target("future.aggregate.valid");
+        assert_eq!(target.path, "future.aggregate.valid");
+        assert_eq!(target.enforcement, OperationEnforcement::ClientLocal);
+        let provider = operation_target("provider.unknown_rule");
+        assert_eq!(provider.enforcement, OperationEnforcement::ProviderState);
     }
 
     #[test]

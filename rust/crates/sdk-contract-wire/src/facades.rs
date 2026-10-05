@@ -931,7 +931,7 @@ class GeneratedRemotePolicy {
     final direct = generatedRemoteRpcShapes[rpc];
     if (direct != null && (family == null || direct['family'] == family)) return rpc;
     for (final entry in generatedRemoteRpcShapes.entries) {
-      if (entry.key.endsWith('/$rpc') && (family == null || entry.value['family'] == family)) return entry.key;
+      if (entry.key.toLowerCase().endsWith('/${rpc.toLowerCase()}') && (family == null || entry.value['family'] == family)) return entry.key;
     }
     return rpc;
   }
@@ -951,32 +951,65 @@ class GeneratedRemotePolicy {
   static Object? preserveUnknown(Object? value) => value;
 
   static Object? _validateShape(Map<String, Object?> shape, Object? value) {
-    if (value is! Map) return value;
-    _validateNested(shape['fields'], shape['message'], value, <String>{});
+    if (value == null) return value;
+    _validateNested(shape['fields'], shape['message'], value, <int>{}, 0);
     final fields = shape['fields'];
     if (fields is! List) return value;
     for (final rawField in fields) {
       if (rawField is! Map || rawField['required'] != true) continue;
       final name = rawField['field'];
-      if (name is String && !value.containsKey(name)) {
+      if (name is String && !_fieldPresent(value, rawField)) {
         throw ArgumentError('required field missing: $name');
       }
     }
     return value;
   }
 
-  static void _validateNested(Object? rawFields, Object? rawMessage, Object value, Set<String> seen) {
-    if (rawFields is! List || rawMessage is! String || seen.contains(rawMessage)) return;
-    seen.add(rawMessage);
+  static Map<Object?, Object?>? _proto3Json(Object value) {
+    if (value is Map) return value.cast<Object?, Object?>();
+    try {
+      final json = (value as dynamic).toProto3Json();
+      return json is Map ? json.cast<Object?, Object?>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Object? _fieldValue(Object value, Map rawField) {
+    final number = rawField['number'];
+    try {
+      if (number is int) return (value as dynamic).getField(number);
+    } catch (_) {}
+    final json = _proto3Json(value);
+    return json?[rawField['jsonName']];
+  }
+
+  static bool _fieldPresent(Object value, Map rawField) {
+    if (value is Map) return value.containsKey(rawField['field']);
+    final number = rawField['number'];
+    try {
+      if (number is int && (value as dynamic).hasField(number) == true) return true;
+    } catch (_) {}
+    final json = _proto3Json(value);
+    if (json != null) return json.containsKey(rawField['jsonName']);
+    return rawField['required'] == true && _fieldValue(value, rawField) != null;
+  }
+
+  static void _validateNested(Object? rawFields, Object? rawMessage, Object value, Set<int> seen, [int depth = 0]) {
+    if (rawFields is! List || rawMessage is! String || depth >= 64) return;
+    final identity = identityHashCode(value);
+    if (seen.contains(identity)) return;
+    seen.add(identity);
     for (final rawField in rawFields) {
       if (rawField is! Map) continue;
       final path = rawField['path'];
       if (path is! String || !path.startsWith('$rawMessage.') || path.split('.').length != rawMessage.split('.').length + 1) continue;
       final name = rawField['field'];
       if (name is! String) continue;
-      final map = value is Map ? value : const <Object?, Object?>{};
-      final present = map.containsKey(name);
-      final fieldValue = map[name];
+      final map = value is Map ? value : null;
+      var present = map?.containsKey(name) ?? _fieldPresent(value, rawField);
+      var fieldValue = map?[name] ?? (map == null ? _fieldValue(value, rawField) : null);
+      if (rawField['required'] == true && !present && fieldValue != null) present = true;
       if (rawField['required'] == true && !present) throw ArgumentError('required field missing: $name');
       if (!present) continue;
       for (final constraint in (rawField['constraints'] is List ? rawField['constraints'] as List : const [])) {
@@ -990,15 +1023,82 @@ class GeneratedRemotePolicy {
         }
         if (constraint == 'non_negative' && fieldValue is num && fieldValue < 0) throw ArgumentError('invalid field: $name');
         if (constraint == 'strictly_positive' && fieldValue is num && fieldValue <= 0) throw ArgumentError('invalid field: $name');
+        if (constraint is String && constraint.startsWith('operation_capability:')) {
+          final capability = constraint.substring('operation_capability:'.length);
+          final capabilities = fieldValue is Map
+              ? fieldValue['capabilities']
+              : (fieldValue == null ? null : _proto3Json(fieldValue)?['capabilities']);
+          if (capabilities is! List || !capabilities.contains(capability)) throw ArgumentError('missing operation capability $capability for $name');
+        }
+        if (constraint is String && constraint.startsWith('ordered_parts:')) {
+          final limits = constraint.substring('ordered_parts:'.length).split(':').map(int.parse).toList();
+          if (fieldValue is! List || fieldValue.length > limits[0]) throw ArgumentError('invalid ordered parts for $name');
+          var previous = 0;
+          for (final part in fieldValue) {
+            final number = part is Map
+                ? (part['part_number'] ?? part['partNumber'])
+                : (_proto3Json(part)?['partNumber'] ?? _proto3Json(part)?['part_number']);
+            if (number is! int || number <= previous || number > limits[1]) throw ArgumentError('invalid ordered parts for $name');
+            previous = number;
+          }
+        }
+        if (constraint is String && constraint.startsWith('max_record_bytes:')) {
+          final maximum = int.parse(constraint.substring('max_record_bytes:'.length));
+          if (fieldValue is! List) throw ArgumentError('record is not serializable for $name');
+          for (final record in fieldValue) {
+            if (record is! List<int>) throw ArgumentError('record is not serializable for $name');
+            if (record.length > maximum) throw ArgumentError('record exceeds Rust byte limit for $name');
+          }
+        }
+        if (constraint is String && constraint.startsWith('max_command_bytes:')) {
+          final maximum = int.parse(constraint.substring('max_command_bytes:'.length));
+          if (fieldValue is! List) throw ArgumentError('command is not serializable for $name');
+          for (final command in fieldValue) {
+            int? bytes;
+            if (command is List<int>) {
+              bytes = command.length;
+            } else {
+              try {
+                final encoded = (command as dynamic).writeToBuffer();
+                if (encoded is List<int>) bytes = encoded.length;
+              } catch (_) {}
+            }
+            if (bytes == null) throw ArgumentError('command is not serializable for $name');
+            if (bytes > maximum) throw ArgumentError('command exceeds Rust byte limit for $name');
+          }
+        }
+        if (constraint == 'atomic_precondition') {
+          var arms = 0;
+          if (fieldValue is Map) {
+            arms = (fieldValue.containsKey('if_absent') || fieldValue.containsKey('ifAbsent') ? 1 : 0)
+                + (fieldValue.containsKey('if_match') || fieldValue.containsKey('ifMatch') ? 1 : 0);
+          } else {
+            final json = fieldValue == null ? null : _proto3Json(fieldValue);
+            arms = json == null ? 0 : (json.containsKey('ifAbsent') || json.containsKey('if_absent') ? 1 : 0)
+                + (json.containsKey('ifMatch') || json.containsKey('if_match') ? 1 : 0);
+            try {
+              final which = (fieldValue as dynamic).whichOneof('condition');
+              if (which != null) arms = 1;
+            } catch (_) {}
+          }
+          if (arms != 1) throw ArgumentError('preconditions must select exactly one condition');
+        }
+        if (constraint is String && constraint.startsWith('cross_field:') && constraint.endsWith('.required')) {
+          if (fieldValue == null || (fieldValue is String && fieldValue.isEmpty) || (fieldValue is List && fieldValue.isEmpty)) {
+            throw ArgumentError('required cross-field value missing: $name');
+          }
+        }
+        // bucket_must_be_empty is provider state and remains metadata for
+        // server admission; a client cannot invent a bucket snapshot.
       }
       final typeName = (rawField['typeName'] ?? '').toString().replaceFirst(RegExp(r'^\.'), '');
       if (typeName.isEmpty) continue;
       if (rawField['repeated'] == true && fieldValue is List) {
         for (final item in fieldValue) {
-          _validateNested(rawFields, typeName, item, <String>{...seen});
+          _validateNested(rawFields, typeName, item, <int>{...seen}, depth + 1);
         }
       } else if (fieldValue != null) {
-        _validateNested(rawFields, typeName, fieldValue, <String>{...seen});
+        _validateNested(rawFields, typeName, fieldValue, <int>{...seen}, depth + 1);
       }
     }
   }
@@ -1109,6 +1209,9 @@ fn shape_constraint_name(constraint: &ResolvedValidationConstraint) -> String {
             crate::type_policy::OperationRule::MaxCommandBytes(value) => {
                 format!("max_command_bytes:{value}")
             }
+            crate::type_policy::OperationRule::Policy(value) => {
+                format!("rust_policy:{value}")
+            }
         },
         ResolvedValidationConstraint::CrossField(value) => format!("cross_field:{value}"),
         ResolvedValidationConstraint::Unresolved(value) => format!("unresolved:{value}"),
@@ -1200,21 +1303,34 @@ fn render_ruby_shapes() -> String {
             method.client_streaming, method.server_streaming
         ));
     }
-    output.push_str("      }.freeze\n\n      def request_shape(rpc, family: nil)\n        SHAPES.fetch(shape_key(rpc, family)).fetch(\"request\")\n      end\n\n      def response_shape(rpc, family: nil)\n        SHAPES.fetch(shape_key(rpc, family)).fetch(\"response\")\n      end\n\n      def shape_key(rpc, family = nil)\n        key = rpc.to_s\n        return key if SHAPES.key?(key) && (family.nil? || SHAPES.fetch(key).fetch(\"family\") == family.to_s)\n        SHAPES.keys.find { |candidate| candidate.end_with?(\"/#{key}\") && (family.nil? || SHAPES.fetch(candidate).fetch(\"family\") == family.to_s) } || key\n      end\n\n      def construct_request(rpc, values = {}, family: nil)\n        validate_request(rpc, values, family: family)\n      end\n\n      def validate_request(rpc, request, family: nil)\n        validate_shape!(request_shape(rpc, family: family), request)\n      end\n\n      def validate_response(rpc, response, family: nil)\n        validate_shape!(response_shape(rpc, family: family), response)\n      end\n\n      def preserve_unknown(value)\n        value\n      end\n\n      def validate_shape!(shape, value)\n        return value unless value\n        shape.fetch(\"fields\").each do |field|\n          next unless field[\"required\"]\n          field_name = field.fetch(\"field\")\n          present = if value.is_a?(Hash)\n            value.key?(field_name) || value.key?(field_name.to_sym)\n          elsif value.respond_to?(field_name)\n            !value.public_send(field_name).nil?\n          else\n            false\n          end\n          raise ArgumentError, \"required field missing: #{field_name}\" unless present\n        end\n        value\n      end\n\n      module_function :request_shape, :response_shape, :shape_key, :construct_request, :validate_request, :validate_response, :preserve_unknown, :validate_shape!\n\n");
-    output.push_str(r###"      def validate_nested!(fields, message, value, seen)
+    output.push_str("      }.freeze\n\n      def request_shape(rpc, family: nil)\n        SHAPES.fetch(shape_key(rpc, family)).fetch(\"request\")\n      end\n\n      def response_shape(rpc, family: nil)\n        SHAPES.fetch(shape_key(rpc, family)).fetch(\"response\")\n      end\n\n      def shape_key(rpc, family = nil)\n        key = rpc.to_s\n        return key if SHAPES.key?(key) && (family.nil? || SHAPES.fetch(key).fetch(\"family\") == family.to_s)\n        SHAPES.keys.find { |candidate| candidate.downcase.end_with?(\"/#{key.downcase}\") && (family.nil? || SHAPES.fetch(candidate).fetch(\"family\") == family.to_s) } || key\n      end\n\n      def construct_request(rpc, values = {}, family: nil)\n        validate_request(rpc, values, family: family)\n      end\n\n      def validate_request(rpc, request, family: nil)\n        validate_shape!(request_shape(rpc, family: family), request)\n      end\n\n      def validate_response(rpc, response, family: nil)\n        validate_shape!(response_shape(rpc, family: family), response)\n      end\n\n      def preserve_unknown(value)\n        value\n      end\n\n      def validate_shape!(shape, value)\n        return value unless value\n        shape.fetch(\"fields\").each do |field|\n          next unless field[\"required\"]\n          field_name = field.fetch(\"field\")\n          present = if value.is_a?(Hash)\n            value.key?(field_name) || value.key?(field_name.to_sym)\n          elsif value.respond_to?(field_name)\n            !value.public_send(field_name).nil?\n          else\n            false\n          end\n          raise ArgumentError, \"required field missing: #{field_name}\" unless present\n        end\n        value\n      end\n\n      module_function :request_shape, :response_shape, :shape_key, :construct_request, :validate_request, :validate_response, :preserve_unknown, :validate_shape!\n\n");
+    output.push_str(r###"      def validate_nested!(fields, message, value, seen, depth = 0)
         return value unless value
-        return value if seen[message]
-        seen[message] = true
-        fields.select { |field| field["path"].start_with?("#{message}.") && field["path"].count(".") == message.count(".") + 1 }.each do |field|
-          field_name = field.fetch("field")
+        return value if depth >= 64 || seen[value.object_id]
+        seen[value.object_id] = true
+          fields.select { |field| field["path"].start_with?("#{message}.") && field["path"].count(".") == message.count(".") + 1 }.each do |field|
+            field_name = field.fetch("field")
           present, field_value = if value.is_a?(Hash)
             key = value.key?(field_name) ? field_name : field_name.to_sym
             [value.key?(key), value[key]]
           elsif value.respond_to?(field_name)
             candidate = value.public_send(field_name)
-            [!candidate.nil?, candidate]
+            present = if value.respond_to?(:to_h) && value.to_h.is_a?(Hash)
+              wire = value.to_h
+              wire.key?(field_name.to_sym) || wire.key?(field_name)
+            else
+              !candidate.nil?
+            end
+            [present, candidate]
           else
             [false, nil]
+          end
+          # A required proto3 scalar has no wire-level presence bit.  Its
+          # generated getter still exposes the Rust contract's default, so
+          # validate that default (for example, 0 must fail a positive rule)
+          # instead of treating it as an absent optional field.
+          if field["required"] && !present && !field_value.nil?
+            present = true
           end
           raise ArgumentError, "required field missing: #{field_name}" if field["required"] && !present
           next unless present
@@ -1228,7 +1344,69 @@ fn render_ruby_shapes() -> String {
               raise ArgumentError, "invalid #{field_name}" if field_value.is_a?(Numeric) && field_value.negative?
             when "strictly_positive"
               raise ArgumentError, "invalid #{field_name}" if field_value.is_a?(Numeric) && field_value <= 0
-            when /^fixed_length:(\d+)$/
+            when /^operation_capability:(.+)$/
+              capability = Regexp.last_match(1)
+              capabilities = if field_value.is_a?(Hash)
+                field_value["capabilities"] || field_value[:capabilities]
+              elsif field_value.respond_to?(:capabilities)
+                field_value.public_send(:capabilities)
+              end
+              unless capabilities.respond_to?(:include?) && capabilities.include?(capability)
+                raise ArgumentError, "missing operation capability #{capability} for #{field_name}"
+              end
+            when /^ordered_parts:(\d+):(\d+)$/
+              maximum_items = Regexp.last_match(1).to_i
+              maximum_part_number = Regexp.last_match(2).to_i
+              unless field_value.is_a?(Array) && field_value.length <= maximum_items
+                raise ArgumentError, "invalid ordered parts for #{field_name}"
+              end
+              previous = 0
+              field_value.each do |part|
+                part_number = if part.is_a?(Hash)
+                  part["part_number"] || part[:part_number]
+                elsif part.respond_to?(:part_number)
+                  part.public_send(:part_number)
+                end
+                unless part_number.is_a?(Integer) && part_number.positive? && part_number <= maximum_part_number && part_number > previous
+                  raise ArgumentError, "invalid ordered parts for #{field_name}"
+                end
+                previous = part_number
+              end
+            when /^max_record_bytes:(\d+)$/
+              maximum = Regexp.last_match(1).to_i
+              Array(field_value).each do |record|
+                bytes = record.respond_to?(:bytesize) ? record.bytesize : nil
+                raise ArgumentError, "record is not serializable for #{field_name}" unless bytes.is_a?(Integer)
+                raise ArgumentError, "record exceeds Rust byte limit for #{field_name}" if bytes > maximum
+              end
+            when /^max_command_bytes:(\d+)$/
+              maximum = Regexp.last_match(1).to_i
+              Array(field_value).each do |command|
+                bytes = if command.respond_to?(:to_proto)
+                  command.to_proto.bytesize
+                elsif command.respond_to?(:serialize_to_string)
+                  command.serialize_to_string.bytesize
+                end
+                raise ArgumentError, "command is not serializable for #{field_name}" unless bytes.is_a?(Integer)
+                raise ArgumentError, "command exceeds Rust byte limit for #{field_name}" if bytes > maximum
+              end
+            when "atomic_precondition"
+              arms = if field_value.is_a?(Hash)
+                %w[if_absent if_match].count { |arm| field_value.key?(arm) || field_value.key?(arm.to_sym) }
+              elsif field_value.respond_to?(:which_oneof)
+                field_value.which_oneof(:condition) ? 1 : 0
+              else
+                0
+              end
+              raise ArgumentError, "preconditions must select exactly one condition" unless arms == 1
+            when /^cross_field:(.+)\.required$/
+              raise ArgumentError, "required cross-field value missing for #{field_name}" if field_value.nil? || (field_value.respond_to?(:empty?) && field_value.empty?)
+            when /^cross_field:(.+)$/
+              # Rust retains multi-field and provider rules in SHAPES; a
+              # client never guesses those rules from partial local state.
+            when "bucket_must_be_empty"
+              # Emptiness is provider state and remains a Rust-owned server
+              # admission check, never a fabricated client snapshot.\n            when /^fixed_length:(\d+)$/
               raise ArgumentError, "invalid #{field_name}" if field_value.respond_to?(:bytesize) && field_value.bytesize != Regexp.last_match(1).to_i
             when /^max_bytes:(\d+)$/
               raise ArgumentError, "invalid #{field_name}" if field_value.respond_to?(:bytesize) && field_value.bytesize > Regexp.last_match(1).to_i
@@ -1245,9 +1423,9 @@ fn render_ruby_shapes() -> String {
           type_name = field["type_name"].to_s.sub(/^\./, "")
           next if type_name.empty?
           if field["repeated"] && field_value.is_a?(Array)
-            field_value.each { |item| validate_nested!(fields, type_name, item, seen.dup) }
+            field_value.each { |item| validate_nested!(fields, type_name, item, seen.dup, depth + 1) }
           else
-            validate_nested!(fields, type_name, field_value, seen.dup)
+            validate_nested!(fields, type_name, field_value, seen.dup, depth + 1)
           end
         end
         value
@@ -1255,7 +1433,7 @@ fn render_ruby_shapes() -> String {
 
       def validate_shape!(shape, value)
         return value unless value
-        validate_nested!(shape.fetch("fields"), shape.fetch("message"), value, {})
+        validate_nested!(shape.fetch("fields"), shape.fetch("message"), value, {}, 0)
         value
       end
 
@@ -1323,11 +1501,15 @@ fn render_php_shapes() -> String {
             method.client_streaming, method.server_streaming
         ));
     }
-    output.push_str("    ];\n\n    public static function requestShape(string $rpc, ?string $family = null): array\n    {\n        return self::SHAPES[self::shapeKey($rpc, $family)]['request'] ?? throw new \\InvalidArgumentException(\"unknown RPC shape: {$rpc}\");\n    }\n\n    public static function responseShape(string $rpc, ?string $family = null): array\n    {\n        return self::SHAPES[self::shapeKey($rpc, $family)]['response'] ?? throw new \\InvalidArgumentException(\"unknown RPC shape: {$rpc}\");\n    }\n\n    private static function shapeKey(string $rpc, ?string $family): string\n    {\n        if (isset(self::SHAPES[$rpc]) && ($family === null || self::SHAPES[$rpc]['family'] === $family)) return $rpc;\n        foreach (self::SHAPES as $candidate => $shape) {\n            if (str_ends_with($candidate, '/' . $rpc) && ($family === null || $shape['family'] === $family)) return $candidate;\n        }\n        return $rpc;\n    }\n\n    public static function constructRequest(string $rpc, mixed $values = [], ?string $family = null): mixed\n    {\n        return self::validateRequest($rpc, $values, $family);\n    }\n\n    public static function validateRequest(string $rpc, mixed $request, ?string $family = null): mixed\n    {\n        return self::validateShape(self::requestShape($rpc, $family), $request);\n    }\n\n    public static function validateResponse(string $rpc, mixed $response, ?string $family = null): mixed\n    {\n        return self::validateShape(self::responseShape($rpc, $family), $response);\n    }\n\n    public static function preserveUnknown(mixed $value): mixed\n    {\n        return $value;\n    }\n\n    private static function validateShape(array $shape, mixed $value): mixed\n    {\n        if ($value === null) return $value;\n        self::validateNested($shape['fields'], $shape['message'], $value, []);\n        foreach ($shape['fields'] as $field) {\n            if (!($field['required'] ?? false)) continue;\n            $name = $field['field'];\n            $getter = 'get' . str_replace(' ', '', ucwords(str_replace('_', ' ', $name)));\n            $present = is_array($value) ? array_key_exists($name, $value) : (method_exists($value, $getter) && $value->{$getter}() !== null);\n            if (!$present) throw new \\InvalidArgumentException(\"required field missing: {$name}\");\n        }\n        return $value;\n    }\n\n");
-    output.push_str(r###"    private static function validateNested(array $fields, string $message, mixed $value, array $seen): mixed
+    output.push_str("    ];\n\n    public static function requestShape(string $rpc, ?string $family = null): array\n    {\n        return self::SHAPES[self::shapeKey($rpc, $family)]['request'] ?? throw new \\InvalidArgumentException(\"unknown RPC shape: {$rpc}\");\n    }\n\n    public static function responseShape(string $rpc, ?string $family = null): array\n    {\n        return self::SHAPES[self::shapeKey($rpc, $family)]['response'] ?? throw new \\InvalidArgumentException(\"unknown RPC shape: {$rpc}\");\n    }\n\n    private static function shapeKey(string $rpc, ?string $family): string\n    {\n        if (isset(self::SHAPES[$rpc]) && ($family === null || self::SHAPES[$rpc]['family'] === $family)) return $rpc;\n        foreach (self::SHAPES as $candidate => $shape) {\n            if (str_ends_with(strtolower($candidate), '/' . strtolower($rpc)) && ($family === null || $shape['family'] === $family)) return $candidate;\n        }\n        return $rpc;\n    }\n\n    public static function constructRequest(string $rpc, mixed $values = [], ?string $family = null): mixed\n    {\n        return self::validateRequest($rpc, $values, $family);\n    }\n\n    public static function validateRequest(string $rpc, mixed $request, ?string $family = null): mixed\n    {\n        return self::validateShape(self::requestShape($rpc, $family), $request);\n    }\n\n    public static function validateResponse(string $rpc, mixed $response, ?string $family = null): mixed\n    {\n        return self::validateShape(self::responseShape($rpc, $family), $response);\n    }\n\n    public static function preserveUnknown(mixed $value): mixed\n    {\n        return $value;\n    }\n\n    private static function validateShape(array $shape, mixed $value): mixed\n    {\n        if ($value === null) return $value;\n        self::validateNested($shape['fields'], $shape['message'], $value, [], 0);\n        foreach ($shape['fields'] as $field) {\n            if (!($field['required'] ?? false)) continue;\n            $name = $field['field'];\n            $getter = 'get' . str_replace(' ', '', ucwords(str_replace('_', ' ', $name)));\n            $present = is_array($value) ? array_key_exists($name, $value) : (method_exists($value, $getter) && $value->{$getter}() !== null);\n            if (!$present) throw new \\InvalidArgumentException(\"required field missing: {$name}\");\n        }\n        return $value;\n    }\n\n");
+    output.push_str(r###"    private static function validateNested(array $fields, string $message, mixed $value, array $seen, int $depth = 0): mixed
     {
-        if ($value === null || isset($seen[$message])) return $value;
-        $seen[$message] = true;
+        if ($value === null || $depth >= 64) return $value;
+        if (is_object($value)) {
+            $identity = spl_object_id($value);
+            if (isset($seen[$identity])) return $value;
+            $seen[$identity] = true;
+        }
         foreach ($fields as $field) {
             $path = (string) ($field['path'] ?? '');
             if (!str_starts_with($path, $message . '.') || substr_count($path, '.') !== substr_count($message, '.') + 1) continue;
@@ -1339,7 +1521,25 @@ fn render_php_shapes() -> String {
                 $getter = 'get' . str_replace(' ', '', ucwords(str_replace('_', ' ', $name)));
                 $present = method_exists($value, $getter);
                 $fieldValue = $present ? $value->{$getter}() : null;
+                if ($present) {
+                    $has = 'has' . str_replace(' ', '', ucwords(str_replace('_', ' ', $name)));
+                    if (method_exists($value, $has)) {
+                        $present = (bool) $value->{$has}();
+                    } elseif (method_exists($value, 'serializeToJsonString')) {
+                        $json = json_decode($value->serializeToJsonString(), true);
+                        $present = is_array($json) && array_key_exists((string) ($field['json_name'] ?? $name), $json);
+                    } elseif (($field['required'] ?? false) === true) {
+                        // Required proto3 scalars have no presence bit.  Keep
+                        // their getter default so Rust semantic checks run.
+                        $present = true;
+                    } elseif (is_scalar($fieldValue) || $fieldValue === null) {
+                        // Ordinary proto3 scalar defaults are absent unless
+                        // the schema explicitly grants presence.
+                        $present = false;
+                    }
+                }
             }
+            if (($field['required'] ?? false) && !$present && $fieldValue !== null) $present = true;
             if (($field['required'] ?? false) && !$present) throw new \InvalidArgumentException("required field missing: {$name}");
             if (!$present) continue;
             foreach (($field['constraints'] ?? []) as $constraint) {
@@ -1347,13 +1547,67 @@ fn render_php_shapes() -> String {
                 if ($constraint === 'utf8' && is_string($fieldValue) && preg_match('//u', $fieldValue) !== 1) throw new \InvalidArgumentException("invalid field: {$name}");
                 if ($constraint === 'non_negative' && is_numeric($fieldValue) && $fieldValue < 0) throw new \InvalidArgumentException("invalid field: {$name}");
                 if ($constraint === 'strictly_positive' && is_numeric($fieldValue) && $fieldValue <= 0) throw new \InvalidArgumentException("invalid field: {$name}");
+                if (str_starts_with($constraint, 'operation_capability:')) {
+                    $capability = substr($constraint, strlen('operation_capability:'));
+                    $capabilities = is_array($fieldValue) ? ($fieldValue['capabilities'] ?? null) : (method_exists($fieldValue, 'getCapabilities') ? $fieldValue->getCapabilities() : null);
+                    if ($capabilities instanceof \Traversable) $capabilities = iterator_to_array($capabilities);
+                    if (!is_array($capabilities) || !in_array($capability, $capabilities, true)) throw new \InvalidArgumentException("missing operation capability {$capability} for {$name}");
+                }
+                if (str_starts_with($constraint, 'ordered_parts:')) {
+                    $limits = array_map('intval', explode(':', substr($constraint, strlen('ordered_parts:'))));
+                    $previous = 0;
+                    if ($fieldValue instanceof \Traversable) $fieldValue = iterator_to_array($fieldValue);
+                    if (!is_array($fieldValue) || count($fieldValue) > ($limits[0] ?? 0)) throw new \InvalidArgumentException("invalid ordered parts for {$name}");
+                    foreach ($fieldValue as $part) {
+                        $number = is_array($part) ? ($part['part_number'] ?? null) : (method_exists($part, 'getPartNumber') ? $part->getPartNumber() : null);
+                        if (!is_int($number) || $number <= $previous || $number > ($limits[1] ?? 0)) throw new \InvalidArgumentException("invalid ordered parts for {$name}");
+                        $previous = $number;
+                    }
+                }
+                if (str_starts_with($constraint, 'max_record_bytes:')) {
+                    $maximum = (int) substr($constraint, strlen('max_record_bytes:'));
+                    if ($fieldValue instanceof \Traversable) $fieldValue = iterator_to_array($fieldValue);
+                    if (!is_array($fieldValue)) throw new \InvalidArgumentException("record is not serializable for {$name}");
+                    foreach ($fieldValue as $record) {
+                        if (!is_string($record)) throw new \InvalidArgumentException("record is not serializable for {$name}");
+                        if (strlen($record) > $maximum) throw new \InvalidArgumentException("record exceeds Rust byte limit for {$name}");
+                    }
+                }
+                if (str_starts_with($constraint, 'max_command_bytes:')) {
+                    $maximum = (int) substr($constraint, strlen('max_command_bytes:'));
+                    if ($fieldValue instanceof \Traversable) $fieldValue = iterator_to_array($fieldValue);
+                    if (!is_array($fieldValue)) throw new \InvalidArgumentException("command is not serializable for {$name}");
+                    foreach ($fieldValue as $command) {
+                        if (!is_object($command) || !method_exists($command, 'serializeToString')) throw new \InvalidArgumentException("command is not serializable for {$name}");
+                        if (strlen($command->serializeToString()) > $maximum) throw new \InvalidArgumentException("command exceeds Rust byte limit for {$name}");
+                    }
+                }
+                if ($constraint === 'atomic_precondition') {
+                    $arms = 0;
+                    if (is_array($fieldValue)) {
+                        $arms = (int) array_key_exists('if_absent', $fieldValue) + (int) array_key_exists('if_match', $fieldValue)
+                            + (int) array_key_exists('ifAbsent', $fieldValue) + (int) array_key_exists('ifMatch', $fieldValue);
+                    } elseif (is_object($fieldValue) && method_exists($fieldValue, 'serializeToJsonString')) {
+                        $json = json_decode($fieldValue->serializeToJsonString(), true);
+                        $arms = is_array($json) ? (int) array_key_exists('ifAbsent', $json) + (int) array_key_exists('ifMatch', $json) : 0;
+                    }
+                    if ($arms !== 1) throw new \InvalidArgumentException("preconditions must select exactly one condition");
+                }
+                if (str_starts_with($constraint, 'cross_field:') && str_ends_with($constraint, '.required')) {
+                    if ($fieldValue === null || (is_string($fieldValue) && $fieldValue === '') || (is_array($fieldValue) && count($fieldValue) === 0)) {
+                        throw new \InvalidArgumentException("required cross-field value missing: {$name}");
+                    }
+                }
+                // Bucket emptiness is provider state.  The structured Rust
+                // rule remains in SHAPES for server admission and is not
+                // approximated with a client-side snapshot.
             }
             $typeName = ltrim((string) ($field['type_name'] ?? ''), '.');
             if ($typeName === '') continue;
             if (($field['repeated'] ?? false) && is_array($fieldValue)) {
-                foreach ($fieldValue as $item) self::validateNested($fields, $typeName, $item, $seen);
+                foreach ($fieldValue as $item) self::validateNested($fields, $typeName, $item, $seen, $depth + 1);
             } else {
-                self::validateNested($fields, $typeName, $fieldValue, $seen);
+                self::validateNested($fields, $typeName, $fieldValue, $seen, $depth + 1);
             }
         }
         return $value;
@@ -1772,4 +2026,19 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn python_and_go_machine_ids_cross_the_wire_as_nominal_values() {
+        let python = generate_remote_facade(FacadeLanguage::Python).source;
+        assert!(python.contains("machines_pb2.MachineId(value=machine_id(self.machine_id))"));
+        assert!(python.contains("machines_pb2.MachineId(value="));
+        let go = generate_remote_facade(FacadeLanguage::Go).source;
+        assert!(go.contains("&machinesv1.MachineId{Value: value[:]}"));
+    }
 }
+
+
+
+
+
+
