@@ -105,26 +105,28 @@ where
     /// Verify the exact durable admission and publish its ordered conversation
     /// results before preparing any child workspace. Refuses substituted content,
     /// unadmitted publications, incomplete exchanges, and later parent history.
-    pub async fn verified_model_fork_boundary(
-        &self,
-        publication: &ModelBatchPublication,
+    pub fn verified_model_fork_boundary<'a>(
+        &'a self,
+        publication: &'a ModelBatchPublication,
         limits: Limits,
-    ) -> Result<VerifiedModelForkBoundary<P>> {
-        self.verify_model_fork_composition(publication, limits, None)
-            .await
+    ) -> futures::future::BoxFuture<'a, Result<VerifiedModelForkBoundary<P>>> {
+        let verification = self.verify_model_fork_composition(publication, limits, None);
+        crate::stack_diagnostics::future_size("fork-boundary-verification", &verification);
+        Box::pin(verification)
     }
 
     /// Verify a recursive boundary against the exact inheritance declaration
     /// retained by the composition layer for this child. Extra middle messages
     /// are rejected even when the child's own conversation tail matches.
-    pub async fn verified_inherited_model_fork_boundary(
-        &self,
-        publication: &ModelBatchPublication,
+    pub fn verified_inherited_model_fork_boundary<'a>(
+        &'a self,
+        publication: &'a ModelBatchPublication,
         limits: Limits,
-        inherited: &crate::model_input::InheritedModelContext,
-    ) -> Result<VerifiedModelForkBoundary<P>> {
-        self.verify_model_fork_composition(publication, limits, Some(inherited))
-            .await
+        inherited: &'a crate::model_input::InheritedModelContext,
+    ) -> futures::future::BoxFuture<'a, Result<VerifiedModelForkBoundary<P>>> {
+        let verification = self.verify_model_fork_composition(publication, limits, Some(inherited));
+        crate::stack_diagnostics::future_size("fork-boundary-verification", &verification);
+        Box::pin(verification)
     }
 
     async fn verify_model_fork_composition(
@@ -133,6 +135,7 @@ where
         limits: Limits,
         inherited: Option<&crate::model_input::InheritedModelContext>,
     ) -> Result<VerifiedModelForkBoundary<P>> {
+        crate::stack_diagnostics::marker("fork-boundary-verification-enter");
         let expected = ModelToolContext {
             parent_operation: publication.parent_operation,
             step: publication.step,
