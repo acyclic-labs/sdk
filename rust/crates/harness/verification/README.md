@@ -254,8 +254,9 @@ The shared checker runs one safe case and four reachable negative controls:
   `DirectIntegrationAuthority`.
 * `unsafe-grandchild` lets root approve child `2` but writes back child `3`,
   and must violate `RootWritebackScope`.
-* `unsafe-stale-approval` changes the approved generation, bypasses the safe
-  execution guard, and must violate `ApprovalBinding` on the written effect.
+* `unsafe-stale-approval` advances the workspace after approval, bypasses the
+  safe stale-execution guard, and must violate `ApprovalBinding` on the written
+  effect because its target generation differs from the approved generation.
 * `unsafe-mismatched-approval` changes the operation and action, bypasses the
   safe execution guard, and must violate `ApprovalBinding` on the written
   effect.

@@ -90,9 +90,7 @@ ApproveWriteback(child) == /\ child \in Children
     /\ approvalOperation' =
           (IF UnsafeMismatchedApproval THEN WritebackOperation(3) ELSE WritebackOperation(child))
     /\ approvalAction' = (IF UnsafeMismatchedApproval THEN "discard" ELSE "writeback")
-    /\ approvalGeneration' =
-          (IF UnsafeStaleApproval THEN 1 - capturedGeneration[child]
-           ELSE capturedGeneration[child])
+    /\ approvalGeneration' = capturedGeneration[child]
     /\ approvalTargetGeneration' = currentGeneration
     /\ UNCHANGED <<currentGeneration, status, capturedGeneration, integrationActor,
                      integrationAction, writebackState, writebackActor,
@@ -105,13 +103,13 @@ Writeback(child) == /\ child \in Children
     /\ child = WritebackTarget(child)
     /\ status[child] = "ready"
     /\ approvalState = "approved"
-    /\ (UnsafeGrandchild \/ UnsafeStaleApproval \/ UnsafeMismatchedApproval
-        \/ (approvalTarget = child
-            /\ approvalOperation = WritebackOperation(child)
-            /\ approvalAction = "writeback"
-            /\ approvalGeneration = capturedGeneration[child]
-            /\ approvalTargetGeneration = currentGeneration
-            /\ currentGeneration = capturedGeneration[child]))
+    /\ (UnsafeGrandchild \/ approvalTarget = child)
+    /\ (UnsafeGrandchild \/ UnsafeMismatchedApproval
+        \/ (approvalOperation = WritebackOperation(child)
+        /\ approvalAction = "writeback"))
+    /\ approvalGeneration = capturedGeneration[child]
+    /\ (UnsafeStaleApproval \/ (approvalTargetGeneration = currentGeneration
+        /\ currentGeneration = capturedGeneration[child]))
     /\ writebackState' = [writebackState EXCEPT ![child] = "written"]
     /\ writebackActor' = [writebackActor EXCEPT ![child] = Root]
     /\ writebackGeneration' = [writebackGeneration EXCEPT ![child] = capturedGeneration[child]]
