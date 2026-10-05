@@ -26,6 +26,15 @@ run_logged() {
   "$@" >"$output_root/$name.stdout" 2>"$output_root/$name.stderr"
 }
 
+archive_sha256=''
+if [[ -n "$archive" ]]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    archive_sha256=$(sha256sum "$archive" | awk '{print $1}')
+  else
+    archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
+  fi
+fi
+
 case "$target" in
   ada)
     command -v gprbuild >/dev/null 2>&1 || { echo 'gprbuild is required' >&2; exit 2; }
@@ -140,9 +149,9 @@ EOF
   *) echo "unsupported HTTP target: $target" >&2; exit 2 ;;
 esac
 
-python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" <<'PY'
+python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" "$archive_sha256" <<'PY'
 import json, pathlib, sys
-path, target, runtime, revision, archive = sys.argv[1:]
+path, target, runtime, revision, archive, archive_sha256 = sys.argv[1:]
 payload = {
     "schema": "acyclic.sdk.http-target-runtime-qualification.v1",
     "target": target,
@@ -151,6 +160,7 @@ payload = {
     "runtime": {"name": runtime},
     "source_revision": revision,
     "archive": archive or None,
+    "archive_sha256": archive_sha256 or None,
     "installed_from_archive": bool(archive),
     "streaming": "not-applicable-to-http-projection",
     "native_grpc": "unqualified",
