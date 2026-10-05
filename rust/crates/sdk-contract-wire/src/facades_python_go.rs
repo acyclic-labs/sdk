@@ -23,7 +23,7 @@ pub(super) fn render_python(binding: &str) -> String {
         r###"from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal, NewType, TypeAlias
+from typing import Annotated, AsyncIterator, Literal, NewType, TypeAlias
 from urllib.parse import urlsplit
 
 import grpc
@@ -266,6 +266,8 @@ fn python_public_type_exports() -> String {
     for binding in PUBLIC_FIELD_BINDINGS {
         names.push(python_public_binding_name(binding));
     }
+    names.push("ObjectsGetObjectResponse".to_owned());
+    names.push("ObjectsGetObjectStream".to_owned());
     names.sort();
     names.dedup();
     names.iter().map(|name| format!("\"{}\"", name)).collect::<Vec<_>>().join(", ")
@@ -285,6 +287,19 @@ fn python_public_client_methods() -> String {
         };
         let method = format!("{}_{}", camel_to_snake(rpc), binding.field);
         let model = python_public_binding_name(binding);
+        if binding.module == "objects"
+            && binding.message == "GetObjectRequest"
+            && rpc == "GetObject"
+        {
+            output.push_str(&format!(
+                "    async def {method}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ) -> ObjectsGetObjectStream:\n        wire_request = request.to_wire()\n        return ObjectsGetObjectStream(self.{service}.{rpc}(wire_request, timeout=timeout))\n\n",
+                method = method,
+                model = model,
+                service = service,
+                rpc = rpc,
+            ));
+            continue;
+        }
         output.push_str(&format!(
             "    async def {method}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ):\n        wire_request = request.to_wire()\n        return await self.{service}.{rpc}(wire_request, timeout=timeout)\n\n",
             method = method,
