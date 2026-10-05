@@ -1303,7 +1303,7 @@ fn render_ruby_shapes() -> String {
             method.client_streaming, method.server_streaming
         ));
     }
-    output.push_str("      }.freeze\n\n      def request_shape(rpc, family: nil)\n        SHAPES.fetch(shape_key(rpc, family)).fetch(\"request\")\n      end\n\n      def response_shape(rpc, family: nil)\n        SHAPES.fetch(shape_key(rpc, family)).fetch(\"response\")\n      end\n\n      def shape_key(rpc, family = nil)\n        key = rpc.to_s\n        return key if SHAPES.key?(key) && (family.nil? || SHAPES.fetch(key).fetch(\"family\") == family.to_s)\n        SHAPES.keys.find { |candidate| candidate.downcase.end_with?(\"/#{key.downcase}\") && (family.nil? || SHAPES.fetch(candidate).fetch(\"family\") == family.to_s) } || key\n      end\n\n      def construct_request(rpc, values = {}, family: nil)\n        validate_request(rpc, values, family: family)\n      end\n\n      def validate_request(rpc, request, family: nil)\n        validate_shape!(request_shape(rpc, family: family), request)\n      end\n\n      def validate_response(rpc, response, family: nil)\n        validate_shape!(response_shape(rpc, family: family), response)\n      end\n\n      def preserve_unknown(value)\n        value\n      end\n\n      def validate_shape!(shape, value)\n        return value unless value\n        shape.fetch(\"fields\").each do |field|\n          next unless field[\"required\"]\n          field_name = field.fetch(\"field\")\n          present = if value.is_a?(Hash)\n            value.key?(field_name) || value.key?(field_name.to_sym)\n          elsif value.respond_to?(field_name)\n            !value.public_send(field_name).nil?\n          else\n            false\n          end\n          raise ArgumentError, \"required field missing: #{field_name}\" unless present\n        end\n        value\n      end\n\n      module_function :request_shape, :response_shape, :shape_key, :construct_request, :validate_request, :validate_response, :preserve_unknown, :validate_shape!\n\n");
+    output.push_str("      }.freeze\n\n      def request_shape(rpc, family: nil)\n        SHAPES.fetch(shape_key(rpc, family)).fetch(\"request\")\n      end\n\n      def response_shape(rpc, family: nil)\n        SHAPES.fetch(shape_key(rpc, family)).fetch(\"response\")\n      end\n\n      def shape_key(rpc, family = nil)\n        key = rpc.to_s\n        return key if SHAPES.key?(key) && (family.nil? || SHAPES.fetch(key).fetch(\"family\") == family.to_s)\n        SHAPES.keys.find { |candidate| candidate.downcase.end_with?(\"/#{key.downcase}\") && (family.nil? || SHAPES.fetch(candidate).fetch(\"family\") == family.to_s) } || key\n      end\n\n      def construct_request(rpc, values = {}, family: nil)\n        validate_request(rpc, values, family: family)\n      end\n\n      def validate_request(rpc, request, family: nil)\n        validate_shape!(request_shape(rpc, family: family), request)\n      end\n\n      def validate_response(rpc, response, family: nil)\n        shape = response_shape(rpc, family: family)\n        if response.is_a?(Array)\n          response.each { |item| validate_shape!(shape, item) }\n          response\n        else\n          validate_shape!(shape, response)\n        end\n      end\n\n      def preserve_unknown(value)\n        value\n      end\n\n      def validate_shape!(shape, value)\n        return value unless value\n        shape.fetch(\"fields\").each do |field|\n          next unless field[\"required\"]\n          field_name = field.fetch(\"field\")\n          present = if value.is_a?(Hash)\n            value.key?(field_name) || value.key?(field_name.to_sym)\n          elsif value.respond_to?(field_name)\n            !value.public_send(field_name).nil?\n          else\n            false\n          end\n          raise ArgumentError, \"required field missing: #{field_name}\" unless present\n        end\n        value\n      end\n\n      module_function :request_shape, :response_shape, :shape_key, :construct_request, :validate_request, :validate_response, :preserve_unknown, :validate_shape!\n\n");
     output.push_str(r###"      def validate_nested!(fields, message, value, seen, depth = 0)
         return value unless value
         return value if depth >= 64 || seen[value.object_id]
@@ -1313,7 +1313,11 @@ fn render_ruby_shapes() -> String {
           present, field_value = if value.is_a?(Hash)
             key = value.key?(field_name) ? field_name : field_name.to_sym
             [value.key?(key), value[key]]
-          elsif value.respond_to?(field_name)
+          elsif value.respond_to?(field_name) && begin
+            value.method(field_name).arity <= 0
+          rescue NameError, ArgumentError
+            false
+          end
             candidate = value.public_send(field_name)
             present = if value.respond_to?(:to_h) && value.to_h.is_a?(Hash)
               wire = value.to_h
@@ -1322,6 +1326,10 @@ fn render_ruby_shapes() -> String {
               !candidate.nil?
             end
             [present, candidate]
+          elsif value.respond_to?(:to_h) && value.to_h.is_a?(Hash)
+            wire = value.to_h
+            key = wire.key?(field_name.to_sym) ? field_name.to_sym : field_name
+            [wire.key?(key), wire[key]]
           else
             [false, nil]
           end
