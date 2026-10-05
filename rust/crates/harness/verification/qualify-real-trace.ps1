@@ -60,6 +60,8 @@ $mutations = @(
     @{ Name = 'publication'; Apply = { param($m) $m.source.publication.operation_id = '00000000-0000-0000-0000-000000000000' } },
     @{ Name = 'declaration'; Apply = { param($m) $m.source.declaration.suffix = @() } },
     @{ Name = 'generation'; Apply = { param($m) $m.normalization.generation.raw_captured_generation = $null } },
+    @{ Name = 'generation-ordinal'; Apply = { param($m) $m.normalization.generation.finite_ordinal = 1 } },
+    @{ Name = 'parent-revision'; Apply = { param($m) $m.source.parent_conversation_revision = [int64]$m.source.parent_conversation_revision + 1 } },
     @{ Name = 'model-start'; Apply = { param($m) $m.source.child_execution_model_started_step = [int64]$m.source.child_execution_model_started_step + 1 } },
     @{ Name = 'completion-digest'; Apply = { param($m) $m.source.completion_output_digest = @(0..31) } }
 )

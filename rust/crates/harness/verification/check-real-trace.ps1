@@ -291,8 +291,10 @@ $parentEvent = ParseCanonicalJson ([string]$manifest.source.parent_event_canonic
 if ($null -eq $parentEvent.payload -or
     [string]$parentEvent.payload.kind -ne 'fork_published' -or
     [string]$parentEvent.operation_id -ne [string]$manifest.identity_binding.parent_event_operation_id -or
+    [string]$parentEvent.operation_id -ne [string]$manifest.source.parent_conversation_operation -or
+    [int64]$parentEvent.revision -ne [int64]$manifest.source.parent_conversation_revision -or
     [string]$parentEvent.payload.seed.operation_id -ne [string]$manifest.identity_binding.fork_operation_id) {
-    throw 'parent ForkPublished event fields do not match the identity binding.'
+    throw 'parent ForkPublished event identity or revision does not match the source binding.'
 }
 $expectedChildAuthority = $manifest.source.child_authority | ConvertTo-Json -Compress -Depth 20
 $observedChildAuthority = $parentEvent.payload.seed.child | ConvertTo-Json -Compress -Depth 20
@@ -384,6 +386,12 @@ if ($admission[0].parent -ne 1 -or $admission[0].child -ne 2 -or
     $publication[0].parent -ne 1 -or $publication[0].child -ne 2 -or
     $started[0].agent -ne 2 -or $completed[0].agent -ne 2) {
     throw 'real trace normalization labels do not match the declared task/agent witnesses.'
+}
+if ([int64]$admission[0].captured_generation -ne
+    [int64]$manifest.normalization.generation.finite_ordinal -or
+    [int64]$publication[0].captured_generation -ne
+    [int64]$manifest.normalization.generation.finite_ordinal) {
+    throw 'real trace captured generations do not match the source generation normalization.'
 }
 if ([int64]$admission[0].depth -ne [int64]$manifest.source.child_depth) {
     throw 'real trace child depth does not match the durable session witness.'

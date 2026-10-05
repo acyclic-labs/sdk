@@ -157,6 +157,29 @@ reachable expected counterexample is incomplete evidence. All four models are
 bounded safety models. They do not establish unbounded recursion, fairness,
 eventual completion, deadlock freedom, storage correctness, or Rust refinement.
 
+### Qualified property inventory
+
+The source-bound receipt is
+`checkpoint-formal-swarm-2026-10-05.json`. Its TLC logs are under
+`D:/graphcoder-builds/formal-evidence/formal-integration-revised4-20261005`
+and use the pinned `tla2tools-1.7.4.jar`, one worker, fingerprint index `0`,
+seed `1`, and a 512 MB heap. The qualified finite cases are:
+
+| Property family | Finite bound | Safe evidence | Required negative controls |
+| --- | --- | --- | --- |
+| Authority | four agents; directed parent map; three message and wait identities | `SwarmAuthority` | sibling/unauthorized and root self-target admission violate `DirectMessageAuthority` / `SelfMessageAuthority` |
+| Budget | five agents; depth two; total allocation three; two steps per agent | `SwarmBudget` | over-allocation, over-step, and over-depth violate their conservation/bound invariants |
+| Publication | one child; generations `0..1` | `SwarmPublication` | stale publication violates `PublicationAtCapturedGeneration` |
+| Message delivery | one durable message; delivery count `0..2` | `SwarmMessage` | duplicate and orphan delivery violate `AtMostOnce` / `DeliveredRequiresAdmission` |
+| Activation recovery | one operation; two owner identities | `ActivationRecovery` | dropping an admitted claim violates `AdmittedClaimRetained` |
+| Fork boundary | two selected children; three parent revisions | `ForkBoundary` | early dispatch and mutable capture violate their boundary invariants |
+| Integration and approval | four agents; root `1`; children `2,4`; grandchild `3`; generations `0..1`; explicit integrate/discard | `SwarmIntegration` | sibling integration, grandchild writeback, stale approval, and mismatched approval each reach an effect and violate the scoped invariant |
+
+These results establish finite transition safety for the model states and
+counterexamples. The real runtime bridge below is the separate evidence needed
+to show that one production journal execution emits an accepted trace for the
+same event adapter.
+
 ## Trace conformance adapter
 
 `check-trace.ps1` is a strict finite event adapter for future Harness event
@@ -196,8 +219,11 @@ the source run does not expose an independent retained-current witness.
 The manifest also retains canonical typed bytes for the admission seed,
 capture report, model publication, and inherited declaration. The checker
 re-parses those values from the durable admission envelope and binds parent
-step/task/prompt/agent fields, parent seed authority/revision, project
-generation, ModelStarted step/request digest, and completion output/digest.
+step/task/prompt/agent fields, parent conversation operation/revision, parent
+seed authority/revision, project generation, ModelStarted step/request digest,
+and completion output/digest. It also requires the normalized trace's captured
+generation to equal the source generation ordinal before passing the finite
+event reducer.
 The registry admission and completion retain raw envelope bytes; the current
 conversation and execution-journal APIs expose typed events, so those two
 source witnesses are recorded as canonical typed event bytes rather than
