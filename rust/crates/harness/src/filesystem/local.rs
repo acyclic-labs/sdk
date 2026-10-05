@@ -10,13 +10,13 @@ use crate::{
     executor::TurnOutput,
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     host_execution::{
-        ExecutionClaim, ExecutionReceipt, ExecutionReceiptKey, ExecutionReceiptRecord,
-        ExecutionApprovalVerifier, ExecutionReceiptStore, NativeExecutionProvider,
+        ExecutionApprovalVerifier, ExecutionClaim, ExecutionReceipt, ExecutionReceiptKey,
+        ExecutionReceiptRecord, ExecutionReceiptStore, NativeExecutionProvider,
     },
     model::{Model, ModelProvider},
-    tool::ToolRegistry,
     resources::ProviderRef,
     store::StreamAggregate,
+    tool::ToolRegistry,
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
 use acyclic_stream::{
@@ -473,7 +473,9 @@ impl LocalHarnessTools {
                 .tools
                 .get_version(&definition.name, &definition.revision)
                 .cloned()
-                .ok_or_else(|| Error::Storage("local tool registry lost selected revision".into()))?;
+                .ok_or_else(|| {
+                    Error::Storage("local tool registry lost selected revision".into())
+                })?;
             builder = builder.tool(tool)?;
             builder = builder.grant(format!("tool:call:{}", definition.name));
         }
@@ -546,7 +548,10 @@ impl PersistentLocalHarness {
     /// Project read/write capabilities are signed into the owner scope and
     /// pinned by the session descriptor; no model supplied reference can add
     /// project access.
-    #[allow(clippy::too_many_arguments, reason = "provider and authority boundaries remain explicit")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
     pub async fn from_providers_with_tools_and_project(
         model: Model,
         provider: Arc<dyn ModelProvider>,
@@ -659,7 +664,10 @@ impl PersistentLocalHarness {
 
     /// Composes a published child while pinning the stream provider used by
     /// its fork verifier to the surrounding local composition.
-    #[allow(clippy::too_many_arguments, reason = "provider identity is an explicit durable binding")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider identity is an explicit durable binding"
+    )]
     pub async fn from_published_fork_with_tools_and_stream_provider(
         model: Model,
         provider: Arc<dyn ModelProvider>,
@@ -748,7 +756,10 @@ impl PersistentLocalHarness {
     /// Opens a durable local session using an explicit authenticated
     /// filesystem provider identity for fresh descriptor creation. Reopens
     /// always use the provider pinned in the descriptor.
-    #[allow(clippy::too_many_arguments, reason = "provider identity is an explicit durable binding")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider identity is an explicit durable binding"
+    )]
     pub async fn open_with_tools_and_project_for_provider(
         root: impl AsRef<Path>,
         model: Model,
@@ -864,7 +875,10 @@ impl PersistentLocalHarness {
     /// conversation aggregate and filesystem volumes use the supplied
     /// provider instances.  This is required when a swarm resolver and its
     /// task harnesses share one authenticated local provider domain.
-    #[allow(clippy::too_many_arguments, reason = "provider identities are explicit durable bindings")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider identities are explicit durable bindings"
+    )]
     pub async fn open_with_tools_and_project_on_providers(
         root: impl AsRef<Path>,
         model: Model,
@@ -1026,7 +1040,10 @@ impl PersistentLocalHarness {
 
     /// Reads the current authoritative conversation projection for host
     /// adapters without starting a model worker.
-    pub async fn conversation_state(&self, limits: crate::conversation::Limits) -> Result<crate::conversation::ConversationState> {
+    pub async fn conversation_state(
+        &self,
+        limits: crate::conversation::Limits,
+    ) -> Result<crate::conversation::ConversationState> {
         self.storage.conversation_state(limits).await
     }
 
@@ -1095,7 +1112,8 @@ impl PersistentLocalHarness {
     /// callers cannot redirect it to a model-visible workspace path.
     pub fn execution_receipt_store(
         &self,
-    ) -> Result<Arc<FilesystemExecutionReceiptStore<LocalAuthorityBackend, LocalObjectBackend>>> {
+    ) -> Result<Arc<FilesystemExecutionReceiptStore<LocalAuthorityBackend, LocalObjectBackend>>>
+    {
         let (host, stream, write, maximum_bytes) = self.storage.execution_binding();
         Ok(Arc::new(FilesystemExecutionReceiptStore::new(
             stream,
@@ -1112,11 +1130,13 @@ impl PersistentLocalHarness {
         &self,
         approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
     ) -> Result<Arc<NativeExecutionProvider>> {
-        Ok(Arc::new(NativeExecutionProvider::native_with_receipt_store(
-            self.storage.content_verifier(),
-            self.execution_receipt_store()?,
-            approval_verifier,
-        )?))
+        Ok(Arc::new(
+            NativeExecutionProvider::native_with_receipt_store(
+                self.storage.content_verifier(),
+                self.execution_receipt_store()?,
+                approval_verifier,
+            )?,
+        ))
     }
 
     /// Creates the explicit effect registry used by the local host.
@@ -1124,8 +1144,8 @@ impl PersistentLocalHarness {
         &self,
         approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
     ) -> Result<EffectRegistry> {
-        let mut registry = EffectRegistry::default()
-            .with_result_resolver(self.storage.content_verifier());
+        let mut registry =
+            EffectRegistry::default().with_result_resolver(self.storage.content_verifier());
         registry.register(self.native_execution_provider(approval_verifier)?)?;
         Ok(registry)
     }
@@ -1384,7 +1404,14 @@ mod tests {
             assert_eq!(record.result, first);
             assert_eq!(record.receipt, receipt);
             assert_eq!(store.load_attempt(key.attempt_id).await?, Some(record));
-            assert!(session.storage().content_verifier().read(&first).await.is_err());
+            assert!(
+                session
+                    .storage()
+                    .content_verifier()
+                    .read(&first)
+                    .await
+                    .is_err()
+            );
         }
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())

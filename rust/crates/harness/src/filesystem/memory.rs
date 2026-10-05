@@ -7,8 +7,7 @@ use crate::{
     conversation::{
         Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, ConversationMessage,
         ConversationState, FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass,
-        VolumeOperation,
-        VolumeOwner, VolumeRef,
+        VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, Event, SchemaRegistry, Scope,
@@ -799,7 +798,10 @@ where
     /// alongside the agent-private volume. The caller must provide the exact
     /// typed capabilities for that project; this method does not derive or
     /// widen them from model content.
-    #[allow(clippy::too_many_arguments, reason = "provider and authority boundaries remain explicit")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
     pub(crate) async fn from_providers_with_reads(
         agent: AgentId,
         maximum_file_bytes: u64,
@@ -1485,10 +1487,7 @@ where
     /// Opens the existing authoritative conversation aggregate with its
     /// owner-bound verifier. Fork publishers use this path so a child issuer
     /// can never be mistaken for the parent's conversation authority.
-    pub async fn conversation_aggregate(
-        &self,
-        limits: Limits,
-    ) -> Result<StreamAggregate<P>> {
+    pub async fn conversation_aggregate(&self, limits: Limits) -> Result<StreamAggregate<P>> {
         self.open_conversation(limits).await
     }
 
