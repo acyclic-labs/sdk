@@ -14,7 +14,16 @@ import type {
   SelectDeploymentRequest, SelectDeploymentResponse, SubmitJobRequest, SubmitJobResponse,
   ErrorCode,
 } from "../generated/proto/workers/v1/workers_pb.js";
-import { WORKERS_METHODS, interpolateRustOwnedPath, type RustOwnedMethodMetadata } from "./generated-client.js";
+import type {
+  RustOwnedPublicCancelJobRequest, RustOwnedPublicCancelJobResponse,
+  RustOwnedPublicInspectJobRequest, RustOwnedPublicInspectJobResponse,
+  RustOwnedPublicInvokeDeploymentRequest, RustOwnedPublicInvokeResponse,
+  RustOwnedPublicInvokeVersionRequest,
+  RustOwnedPublicPublishVersionRequest, RustOwnedPublicPublishVersionResponse,
+  RustOwnedPublicSelectDeploymentRequest, RustOwnedPublicSelectDeploymentResponse,
+  RustOwnedPublicSubmitJobRequest, RustOwnedPublicSubmitJobResponse,
+} from "./generated-client.js";
+import { WORKERS_HANDSHAKE, WORKERS_METHODS, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
 import { validateWorkersContentLength, validateWorkersCredential, validateWorkersEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersResponseChunk, validateWorkersResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpWorkersOptions {
@@ -34,10 +43,12 @@ export class HttpWorkersClient {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
+  #handshake: Promise<void> | undefined;
 
   constructor(options: HttpWorkersOptions) {
     const endpoint = new URL(options.endpoint);
     validateWorkersEndpoint(options.endpoint);
+    validateRustOwnedCredential(WORKERS_METHODS.invokeDeployment, options.token);
     validateWorkersCredential(options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;
@@ -46,36 +57,38 @@ export class HttpWorkersClient {
     validateWorkersResponseLimit(this.#maximum);
   }
 
-  async publishVersion(request: PublishVersionRequest, signal?: AbortSignal): Promise<PublishVersionResponse> {
-    return fromJsonString(PublishVersionResponseSchema, await this.#post(WORKERS_METHODS.publishVersion, request, toJsonString(PublishVersionRequestSchema, request), signal));
+  async publishVersion(request: RustOwnedPublicPublishVersionRequest, signal?: AbortSignal): Promise<RustOwnedPublicPublishVersionResponse> {
+    return fromJsonString(PublishVersionResponseSchema, await this.#post(WORKERS_METHODS.publishVersion, request, toJsonString(PublishVersionRequestSchema, request), signal)) as RustOwnedPublicPublishVersionResponse;
   }
-  async selectDeployment(request: SelectDeploymentRequest, signal?: AbortSignal): Promise<SelectDeploymentResponse> {
-    return fromJsonString(SelectDeploymentResponseSchema, await this.#post(WORKERS_METHODS.selectDeployment, request, toJsonString(SelectDeploymentRequestSchema, request), signal));
+  async selectDeployment(request: RustOwnedPublicSelectDeploymentRequest, signal?: AbortSignal): Promise<RustOwnedPublicSelectDeploymentResponse> {
+    return fromJsonString(SelectDeploymentResponseSchema, await this.#post(WORKERS_METHODS.selectDeployment, request, toJsonString(SelectDeploymentRequestSchema, request), signal)) as RustOwnedPublicSelectDeploymentResponse;
   }
-  async submitJob(request: SubmitJobRequest, signal?: AbortSignal): Promise<SubmitJobResponse> {
-    return fromJsonString(SubmitJobResponseSchema, await this.#post(WORKERS_METHODS.submitJob, request, toJsonString(SubmitJobRequestSchema, request), signal));
+  async submitJob(request: RustOwnedPublicSubmitJobRequest, signal?: AbortSignal): Promise<RustOwnedPublicSubmitJobResponse> {
+    return fromJsonString(SubmitJobResponseSchema, await this.#post(WORKERS_METHODS.submitJob, request, toJsonString(SubmitJobRequestSchema, request), signal)) as RustOwnedPublicSubmitJobResponse;
   }
-  async inspectJob(request: InspectJobRequest, signal?: AbortSignal): Promise<InspectJobResponse> {
-    return fromJsonString(InspectJobResponseSchema, await this.#post(WORKERS_METHODS.inspectJob, request, toJsonString(InspectJobRequestSchema, request), signal));
+  async inspectJob(request: RustOwnedPublicInspectJobRequest, signal?: AbortSignal): Promise<RustOwnedPublicInspectJobResponse> {
+    return fromJsonString(InspectJobResponseSchema, await this.#post(WORKERS_METHODS.inspectJob, request, toJsonString(InspectJobRequestSchema, request), signal)) as RustOwnedPublicInspectJobResponse;
   }
-  async cancelJob(request: CancelJobRequest, signal?: AbortSignal): Promise<CancelJobResponse> {
-    return fromJsonString(CancelJobResponseSchema, await this.#post(WORKERS_METHODS.cancelJob, request, toJsonString(CancelJobRequestSchema, request), signal));
+  async cancelJob(request: RustOwnedPublicCancelJobRequest, signal?: AbortSignal): Promise<RustOwnedPublicCancelJobResponse> {
+    return fromJsonString(CancelJobResponseSchema, await this.#post(WORKERS_METHODS.cancelJob, request, toJsonString(CancelJobRequestSchema, request), signal)) as RustOwnedPublicCancelJobResponse;
   }
   /** Invokes exact immutable code bytes with ordinary HTTP request ambiguity. */
-  async invokeVersion(request: InvokeVersionRequest, signal?: AbortSignal): Promise<InvokeResponse> {
+  async invokeVersion(request: RustOwnedPublicInvokeVersionRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeResponse> {
     validateWorkersInvokeVersion(request.versionSha256, request.method);
-    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeVersion, request, toJsonString(InvokeVersionRequestSchema, request), signal));
+    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeVersion, request, toJsonString(InvokeVersionRequestSchema, request), signal)) as RustOwnedPublicInvokeResponse;
   }
   /** Resolves the alias once at ingress and reports the resolved digest/revision. */
-  async invokeDeployment(request: InvokeDeploymentRequest, signal?: AbortSignal): Promise<InvokeResponse> {
+  async invokeDeployment(request: RustOwnedPublicInvokeDeploymentRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeResponse> {
     validateWorkersInvokeDeployment(request.alias, request.method);
-    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeDeployment, request, toJsonString(InvokeDeploymentRequestSchema, request), signal));
+    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeDeployment, request, toJsonString(InvokeDeploymentRequestSchema, request), signal)) as RustOwnedPublicInvokeResponse;
   }
 
   async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {
+    const headers = { authorization: `Bearer ${this.#token}`, "content-type": "application/json" };
+    await this.#ensureHandshake(headers, signal);
     const response = await this.#fetcher(new URL(interpolateRustOwnedPath(method, request), `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
-      headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
+      headers,
       body,
       signal,
     });
@@ -93,6 +106,14 @@ export class HttpWorkersClient {
       }
     }
     return json;
+  }
+
+  async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
+    if (this.#handshake !== undefined) return this.#handshake;
+    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, WORKERS_HANDSHAKE, this.#maximum, signal)
+      .catch(error => { this.#handshake = undefined; throw error; });
+    this.#handshake = pending;
+    return pending;
   }
 }
 

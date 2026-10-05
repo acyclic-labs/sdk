@@ -3,7 +3,7 @@ import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
 import { WorkersService } from "../generated/proto/workers/v1/workers_pb.js";
-import { WORKERS_HANDSHAKE, WORKERS_REMOTE_POLICY, rustOwnedGrpcHandshakeRequest, validateRustOwnedGrpcHandshake } from "./generated-client.js";
+import { WORKERS_HANDSHAKE, WORKERS_REMOTE_POLICY, rustOwnedGrpcHandshakeRequest, validateRustOwnedGrpcHandshake, type RustOwnedWorkersPublicClient } from "./generated-client.js";
 import { validateWorkersCaCertificate, validateWorkersCredential, validateWorkersGrpcEndpoint, validateWorkersMessageLimit } from "./wasm-runtime.js";
 
 export interface WorkersGrpcOptions {
@@ -41,5 +41,5 @@ export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
     await handshake;
     return next(request);
   };
-  return createClient(WorkersService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls }));
+  return createClient(WorkersService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls })) as unknown as RustOwnedWorkersPublicClient;
 }

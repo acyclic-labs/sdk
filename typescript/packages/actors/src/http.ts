@@ -21,7 +21,17 @@ import type {
   UpdateActorRequest, UpdateActorResponse,
   ErrorCode,
 } from "../generated/proto/actors/v1/actors_pb.js";
-import { ACTORS_METHODS, interpolateRustOwnedPath, type RustOwnedMethodMetadata } from "./generated-client.js";
+import type {
+  RustOwnedPublicAddSubscriptionRequest, RustOwnedPublicAddSubscriptionResponse,
+  RustOwnedPublicCheckpointActorRequest, RustOwnedPublicCheckpointActorResponse,
+  RustOwnedPublicCreateActorRequest, RustOwnedPublicCreateActorResponse,
+  RustOwnedPublicInspectActorRequest, RustOwnedPublicInspectActorResponse,
+  RustOwnedPublicInvokeActorRequest, RustOwnedPublicInvokeActorResponse,
+  RustOwnedPublicRemoveSubscriptionRequest, RustOwnedPublicRemoveSubscriptionResponse,
+  RustOwnedPublicResumeSubscriptionRequest, RustOwnedPublicResumeSubscriptionResponse,
+  RustOwnedPublicUpdateActorRequest, RustOwnedPublicUpdateActorResponse,
+} from "./generated-client.js";
+import { ACTORS_HANDSHAKE, ACTORS_METHODS, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
 import { validateActorsContentLength, validateActorsCredential, validateActorsEndpoint, validateActorsInvoke, validateActorsResponseChunk, validateActorsResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpActorsOptions {
@@ -41,10 +51,12 @@ export class HttpActorsClient {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
+  #handshake: Promise<void> | undefined;
 
   constructor(options: HttpActorsOptions) {
     const endpoint = new URL(options.endpoint);
     validateActorsEndpoint(options.endpoint);
+    validateRustOwnedCredential(ACTORS_METHODS.createActor, options.token);
     validateActorsCredential(options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;
@@ -53,37 +65,39 @@ export class HttpActorsClient {
     validateActorsResponseLimit(this.#maximum);
   }
 
-  async createActor(request: CreateActorRequest, signal?: AbortSignal): Promise<CreateActorResponse> {
-    return fromJsonString(CreateActorResponseSchema, await this.#post(ACTORS_METHODS.createActor, request, toJsonString(CreateActorRequestSchema, request), signal));
+  async createActor(request: RustOwnedPublicCreateActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicCreateActorResponse> {
+    return fromJsonString(CreateActorResponseSchema, await this.#post(ACTORS_METHODS.createActor, request, toJsonString(CreateActorRequestSchema, request), signal)) as RustOwnedPublicCreateActorResponse;
   }
-  async updateActor(request: UpdateActorRequest, signal?: AbortSignal): Promise<UpdateActorResponse> {
-    return fromJsonString(UpdateActorResponseSchema, await this.#post(ACTORS_METHODS.updateActor, request, toJsonString(UpdateActorRequestSchema, request), signal));
+  async updateActor(request: RustOwnedPublicUpdateActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicUpdateActorResponse> {
+    return fromJsonString(UpdateActorResponseSchema, await this.#post(ACTORS_METHODS.updateActor, request, toJsonString(UpdateActorRequestSchema, request), signal)) as RustOwnedPublicUpdateActorResponse;
   }
-  async inspectActor(request: InspectActorRequest, signal?: AbortSignal): Promise<InspectActorResponse> {
-    return fromJsonString(InspectActorResponseSchema, await this.#post(ACTORS_METHODS.inspectActor, request, toJsonString(InspectActorRequestSchema, request), signal));
+  async inspectActor(request: RustOwnedPublicInspectActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicInspectActorResponse> {
+    return fromJsonString(InspectActorResponseSchema, await this.#post(ACTORS_METHODS.inspectActor, request, toJsonString(InspectActorRequestSchema, request), signal)) as RustOwnedPublicInspectActorResponse;
   }
-  async addSubscription(request: AddSubscriptionRequest, signal?: AbortSignal): Promise<AddSubscriptionResponse> {
-    return fromJsonString(AddSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.addSubscription, request, toJsonString(AddSubscriptionRequestSchema, request), signal));
+  async addSubscription(request: RustOwnedPublicAddSubscriptionRequest, signal?: AbortSignal): Promise<RustOwnedPublicAddSubscriptionResponse> {
+    return fromJsonString(AddSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.addSubscription, request, toJsonString(AddSubscriptionRequestSchema, request), signal)) as RustOwnedPublicAddSubscriptionResponse;
   }
-  async removeSubscription(request: RemoveSubscriptionRequest, signal?: AbortSignal): Promise<RemoveSubscriptionResponse> {
-    return fromJsonString(RemoveSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.removeSubscription, request, toJsonString(RemoveSubscriptionRequestSchema, request), signal));
+  async removeSubscription(request: RustOwnedPublicRemoveSubscriptionRequest, signal?: AbortSignal): Promise<RustOwnedPublicRemoveSubscriptionResponse> {
+    return fromJsonString(RemoveSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.removeSubscription, request, toJsonString(RemoveSubscriptionRequestSchema, request), signal)) as RustOwnedPublicRemoveSubscriptionResponse;
   }
-  async resumeSubscription(request: ResumeSubscriptionRequest, signal?: AbortSignal): Promise<ResumeSubscriptionResponse> {
-    return fromJsonString(ResumeSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.resumeSubscription, request, toJsonString(ResumeSubscriptionRequestSchema, request), signal));
+  async resumeSubscription(request: RustOwnedPublicResumeSubscriptionRequest, signal?: AbortSignal): Promise<RustOwnedPublicResumeSubscriptionResponse> {
+    return fromJsonString(ResumeSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.resumeSubscription, request, toJsonString(ResumeSubscriptionRequestSchema, request), signal)) as RustOwnedPublicResumeSubscriptionResponse;
   }
-  async checkpointActor(request: CheckpointActorRequest, signal?: AbortSignal): Promise<CheckpointActorResponse> {
-    return fromJsonString(CheckpointActorResponseSchema, await this.#post(ACTORS_METHODS.checkpointActor, request, toJsonString(CheckpointActorRequestSchema, request), signal));
+  async checkpointActor(request: RustOwnedPublicCheckpointActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicCheckpointActorResponse> {
+    return fromJsonString(CheckpointActorResponseSchema, await this.#post(ACTORS_METHODS.checkpointActor, request, toJsonString(CheckpointActorRequestSchema, request), signal)) as RustOwnedPublicCheckpointActorResponse;
   }
   /** Invocation is not a Stream append or a durable checkpoint. */
-  async invokeActor(request: InvokeActorRequest, signal?: AbortSignal): Promise<InvokeActorResponse> {
+  async invokeActor(request: RustOwnedPublicInvokeActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeActorResponse> {
     validateActorsInvoke(request.actorId, request.method);
-    return fromJsonString(InvokeActorResponseSchema, await this.#post(ACTORS_METHODS.invokeActor, request, toJsonString(InvokeActorRequestSchema, request), signal));
+    return fromJsonString(InvokeActorResponseSchema, await this.#post(ACTORS_METHODS.invokeActor, request, toJsonString(InvokeActorRequestSchema, request), signal)) as RustOwnedPublicInvokeActorResponse;
   }
 
   async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {
+    const headers = { authorization: `Bearer ${this.#token}`, "content-type": "application/json" };
+    await this.#ensureHandshake(headers, signal);
     const response = await this.#fetcher(new URL(interpolateRustOwnedPath(method, request), `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
-      headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
+      headers,
       body,
       signal,
     });
@@ -101,6 +115,14 @@ export class HttpActorsClient {
       }
     }
     return json;
+  }
+
+  async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
+    if (this.#handshake !== undefined) return this.#handshake;
+    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, ACTORS_HANDSHAKE, this.#maximum, signal)
+      .catch(error => { this.#handshake = undefined; throw error; });
+    this.#handshake = pending;
+    return pending;
   }
 }
 

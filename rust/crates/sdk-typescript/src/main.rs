@@ -238,6 +238,22 @@ fn lower_camel(name: &str) -> String {
     })
 }
 
+fn wire_field_name(name: &str) -> String {
+    let mut output = String::new();
+    let mut uppercase = false;
+    for character in name.chars() {
+        if character == '_' {
+            uppercase = true;
+        } else if uppercase {
+            output.extend(character.to_uppercase());
+            uppercase = false;
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
 fn descriptor_service<'a>(
     set: &'a FileDescriptorSet,
 ) -> Result<(&'a str, &'a ServiceDescriptorProto), Error> {
@@ -1058,6 +1074,140 @@ fn typescript_semantic_section(family: &str) -> String {
     output
 }
 
+/// Emit the public facade's actual request and response types.  The protobuf
+/// descriptors remain the wire contract, while this Rust-owned projection
+/// recursively replaces every mapped field with its nominal semantic type.
+/// Keeping the projection in generated-client.ts makes the public adapters
+/// consume the same source-owned types instead of maintaining a parallel
+/// TypeScript contract.
+fn typescript_public_types_section(
+    service: &ServiceMetadata,
+    family_path: &str,
+) -> String {
+    use acyclic_sdk_contract_wire::type_policy::{
+        semantic_type, PublicFieldDirection, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES,
+        WireValueKind,
+    };
+    let family = service.family.as_str();
+    let bindings = PUBLIC_FIELD_BINDINGS
+        .iter()
+        .filter(|binding| binding.family == family)
+        .collect::<Vec<_>>();
+    let mut messages = BTreeSet::new();
+    // The control handshake is emitted separately from the protocol schema
+    // above. It is an adapter concern, not part of the family public facade;
+    // keeping it out here also prevents a family schema from claiming the
+    // transport protocol's request/response messages as its own types.
+    for method in service.methods.iter().filter(|method| method.operation_id != "handshake") {
+        messages.insert(local_type(&method.request_type).to_owned());
+        messages.insert(local_type(&method.response_type).to_owned());
+    }
+    for method in service.grpc_methods.iter().filter(|method| method.rpc_name != "Handshake") {
+        messages.insert(local_type(&method.request_type).to_owned());
+        messages.insert(local_type(&method.response_type).to_owned());
+    }
+    for binding in &bindings {
+        if matches!(binding.direction, PublicFieldDirection::NestedMessage) {
+            messages.insert(binding.message.to_owned());
+        }
+    }
+    for route in PUBLIC_NESTED_ROUTES.iter().filter(|route| route.family == family) {
+        messages.insert(route.request_message.to_owned());
+        messages.insert(route.nested_message.to_owned());
+    }
+
+    let mut output = String::new();
+    output.push_str(&format!("import type * as RustWire from \"{family_path}\";\n\n"));
+    output.push_str("// Rust-owned public facade types. Generated from type_policy.rs; do not edit.\n\n");
+    output.push_str("export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };\n\n");
+
+    for message in messages {
+        let direct = bindings
+            .iter()
+            .filter(|binding| binding.message == message)
+            .collect::<Vec<_>>();
+        let nested = PUBLIC_NESTED_ROUTES
+            .iter()
+            .filter(|route| route.family == family && route.request_message == message)
+            .collect::<Vec<_>>();
+        let mut fields = Vec::new();
+        for binding in direct {
+            let field = wire_field_name(binding.wire_field);
+            let item = semantic_type(binding.semantic_type)
+                .expect("public binding must resolve to Rust semantic type");
+            let value = match item.wire_kind {
+                WireValueKind::String => format!("RustOwned{}", typescript_semantic_name(item.id).trim_start_matches("RustOwned")),
+                WireValueKind::Bytes => format!("RustOwned{}", typescript_semantic_name(item.id).trim_start_matches("RustOwned")),
+                WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => format!("RustOwned{}", typescript_semantic_name(item.id).trim_start_matches("RustOwned")),
+                WireValueKind::Boolean => "boolean".to_owned(),
+                WireValueKind::Message => format!("RustOwnedSemanticMessage<{}>", item.id.escape_default()),
+                WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => "unknown".to_owned(),
+            };
+            fields.push((field, value));
+        }
+        for route in nested {
+            let field = wire_field_name(route.nested_field);
+            fields.push((field, format!("RustOwnedPublic{}", route.nested_message)));
+        }
+        fields.sort_by(|left, right| left.0.cmp(&right.0));
+        fields.dedup_by(|left, right| left.0 == right.0);
+        let alias = format!("RustOwnedPublic{message}");
+        if fields.is_empty() {
+            output.push_str(&format!("export type {alias} = RustWire.{message};\n"));
+        } else {
+            let names = fields
+                .iter()
+                .map(|(field, _)| format!("{field:?}"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            output.push_str(&format!("export type {alias} = Omit<RustWire.{message}, {names}> & {{\n"));
+            for (field, value) in fields {
+                output.push_str(&format!("  readonly {field}: {value};\n"));
+            }
+            output.push_str("};\n");
+        }
+    }
+    output.push('\n');
+    output.push_str(&format!("export interface RustOwned{}PublicClient {{\n", title_case(family)));
+    let mut seen = BTreeSet::<String>::new();
+    let mut emit_method = |operation: &str, request_type: &str, response_type: &str, client_streaming: bool, server_streaming: bool| {
+        if !seen.insert(operation.to_owned()) { return; }
+        let result = if server_streaming {
+            format!("AsyncIterable<RustOwnedPublic{}>", local_type(response_type))
+        } else {
+            format!("Promise<RustOwnedPublic{}>", local_type(response_type))
+        };
+        let request = if client_streaming {
+            format!("AsyncIterable<RustOwnedPublic{}>", local_type(request_type))
+        } else {
+            format!("RustOwnedPublic{}", local_type(request_type))
+        };
+        output.push_str(&format!("  readonly {operation}: (request: {request}, signal?: AbortSignal) => {result};\n"));
+    };
+    for method in service.methods.iter().filter(|method| method.operation_id != "handshake") {
+        emit_method(&method.operation_id, &method.request_type, &method.response_type, method.client_streaming, method.server_streaming);
+    }
+    let public_grpc_methods = service
+        .grpc_methods
+        .iter()
+        .filter(|method| method.rpc_name != "Handshake")
+        .cloned()
+        .collect::<Vec<_>>();
+    for (method, operation) in public_grpc_methods.iter().zip(grpc_operation_keys(&public_grpc_methods)) {
+        emit_method(&operation, &method.request_type, &method.response_type, method.client_streaming, method.server_streaming);
+    }
+    output.push_str("}\n\n");
+    output
+}
+
+fn title_case(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 fn typescript_with_paths(
     service: &ServiceMetadata,
     family_path: &str,
@@ -1145,6 +1295,7 @@ fn typescript_with_paths(
         output.push('\n');
     }
     output.push_str(&typescript_semantic_section(&service.family));
+    output.push_str(&typescript_public_types_section(service, family_path));
     output.push_str("export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }\n\n");
     output.push_str("export interface RustOwnedMethodMetadata {\n  readonly operationId: string;\n  readonly rpc: string;\n  readonly docs: string;\n  readonly path: string;\n  readonly pathParameters: readonly string[];\n  readonly httpMethod: \"POST\";\n  readonly requestType: string;\n  readonly responseType: string;\n  readonly clientStreaming: boolean;\n  readonly serverStreaming: boolean;\n  readonly requestEncoding: \"protobuf-json\";\n  readonly responseEncoding: \"protobuf-json\";\n  readonly auth: \"bearer\";\n  readonly credentialPolicy: \"bearer-no-crlf\";\n  readonly responseLimitPolicy: \"bounded-cumulative-utf8\";\n  readonly requestFields: readonly RustOwnedFieldMetadata[];\n  readonly responseFields: readonly RustOwnedFieldMetadata[];\n}\n\n");
     if let Some(policy) = &service.remote_policy {
