@@ -2035,10 +2035,7 @@ impl SwarmBudget {
                 .get(&operation_id)
                 .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
             if reservation.dispatch_id.as_ref() != Some(dispatch_id)
-                || !matches!(
-                    reservation.state,
-                    SwarmReservationState::Active | SwarmReservationState::Reserved
-                )
+                || reservation.state != SwarmReservationState::Active
             {
                 return Err(Error::Conflict(
                     "Harness effect dispatch is not an active reservation".into(),
