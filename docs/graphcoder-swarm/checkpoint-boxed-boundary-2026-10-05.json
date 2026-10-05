@@ -1,0 +1,30 @@
+{
+  "source_commit": "88b88436e356767ec4cac450dda060b8245313d1",
+  "qualification_complete": false,
+  "platform": "Windows native",
+  "suite": "default_local_composition_runs_recursive_models_and_reopens_without_dispatch",
+  "exit": -1073741571,
+  "outcome": "stack overflow after verified boundary construction and explicit drops; caller clone not yet instrumented",
+  "artifacts": [
+    {
+      "path": "target/graphcoder-qualification/evidence/88b88436e/boxed-boundary/local_model_swarm-d3511dedf296d78f.exe",
+      "bytes": 32302080,
+      "sha256": "8ba2aa696e193d3ec2a214fe1be0451fc5ba70abdd9a4db0ce7b52bb61ac9ba0"
+    },
+    {
+      "path": "target/graphcoder-qualification/evidence/88b88436e/boxed-boundary/source.zip",
+      "bytes": 7644728,
+      "sha256": "f3d230fad79fcdbf96fabb0477b33c0db886730243bde81f9a09f0624b240a93"
+    },
+    {
+      "path": "target/graphcoder-qualification/evidence/88b88436e/boxed-boundary/swarm-exit.txt",
+      "bytes": 13,
+      "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"
+    },
+    {
+      "path": "target/graphcoder-qualification/evidence/88b88436e/boxed-boundary/swarm.log",
+      "bytes": 6084,
+      "sha256": "b9350871ca945931680df3ccb3aef6c031fb278e9af64221f07764db38de16ac"
+    }
+  ]
+}
