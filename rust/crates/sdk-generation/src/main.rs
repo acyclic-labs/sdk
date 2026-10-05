@@ -21,6 +21,12 @@ use std::process::{Command, Output, Stdio};
 use tar::Archive;
 
 mod installed_package_receipts;
+#[path = "bin/verify-rpc-observations.rs"]
+#[allow(dead_code)]
+mod canonical_rust_verifier;
+#[path = "observation_verifier.rs"]
+#[allow(dead_code)]
+mod observation_verifier;
 
 const GENERATION_SCHEMA: &str = "acyclic.sdk.generation.manifest.v1";
 const REQUEST_SCHEMA: &str = "acyclic.sdk.generation.request.v1";
@@ -6113,6 +6119,34 @@ fn validate_semantic_verifier(
     if verifier.get("method_count").and_then(Value::as_u64) != Some(order.len() as u64) {
         return None;
     }
+    let verifier_sha = generation_executable_sha256()?;
+    let expected_path = output.join(
+        expected_binding
+            .get("path")
+            .and_then(Value::as_str)?,
+    );
+    let observed_path = output.join(
+        observed_binding
+            .get("path")
+            .and_then(Value::as_str)?,
+    );
+    let direct = canonical_rust_verifier::verify_paths(
+        &expected_path,
+        &observed_path,
+        &expected.source_revision,
+        &verifier_sha,
+        false,
+    )
+    .ok()?;
+    if direct.get("schema").and_then(Value::as_str)
+        != Some("acyclic.sdk.rpd.rust-semantic-verifier.v1")
+        || direct.get("status").and_then(Value::as_str) != Some("passed")
+        || direct.get("qualification").and_then(Value::as_str) != Some("qualified")
+        || direct.get("expected_input_sha256").and_then(Value::as_str) != Some(expected_digest)
+        || direct.get("observed_input_sha256").and_then(Value::as_str) != Some(observed_digest)
+    {
+        return None;
+    }
     Some(order)
 }
 
@@ -7012,6 +7046,11 @@ fn compare_fresh_artifacts(
 
 fn hash_bytes(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn generation_executable_sha256() -> Option<String> {
+    let executable = env::current_exe().ok()?;
+    Some(hash_bytes(&fs::read(executable).ok()?))
 }
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CliError> {
     write_json_value(path, &serde_json::to_value(value)?)
@@ -8091,30 +8130,30 @@ mod tests {
         fs::write(&consumer, b"compiled-consumer-v1").expect("write consumer");
         let consumer_digest = hash_bytes(b"compiled-consumer-v1");
         let scenario = root.join("qualification/consumers/remote-scenario.json");
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"revision","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"list","shape":"unary","transport":"grpc","execution_mode":"remote","execution_step":0,"request_bytes_hex":"","request_sha256":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","response_bytes_hex":"00","checks":["invocation","transport","serialization"]}"#;
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"0000000000000000000000000000000000000000","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"/acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"remote","execution_step":0,"request_bytes_hex":"","request_sha256":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","response_bytes_hex":"","terminal_status":"ok","terminal_code":0,"checks":["invocation","transport","serialization"]}"#;
         fs::write(&scenario, scenario_bytes).expect("write scenario result");
         let scenario_digest = hash_bytes(scenario_bytes);
         let runtime_receipt = root.join("qualification/consumers/runtime-receipt.json");
         let runtime_bytes = format!(
-            r#"{{"schema":"acyclic.sdk.rpd.rust-live-receipt.v1","authority":{{"source_git_sha":"revision","source_file_hashes":{{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}}},"method_count":1,"methods":[{{"rpc":"list","execution_step":0,"status":"semantic_passed","request_bytes_hex":"","request_sha256":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","response_bytes_hex":"00","response_frames_sha256":["sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"]}}],"executed_package":{{"source_git_sha":"revision","source_file_hashes":{{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},"artifact_sha256":"{}"}}}}"#,
+            r#"{{"schema":"acyclic.sdk.rpd.rust-live-receipt.v1","authority":{{"source_git_sha":"0000000000000000000000000000000000000000","model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_file_hashes":{{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}}},"method_count":1,"methods":[{{"rpc":"/acyclic.actors.v1.ActorsService/CreateActor","family":"actors","package":"acyclic.actors.v1","service":"ActorsService","method":"CreateActor","client_streaming":false,"server_streaming":false,"execution_step":0,"status":"semantic_passed","request_bytes_hex":"","request_sha256":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","response_bytes_hex":"","response_frames_sha256":["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],"terminal_status":"ok","terminal_code":0}}],"executed_package":{{"source_git_sha":"0000000000000000000000000000000000000000","model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_file_hashes":{{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},"artifact_sha256":"{}","provenance":{{"source_git_sha":"0000000000000000000000000000000000000000","rust_model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","generator":{{"name":"fixture","version":"1"}},"generator_lock_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema_inputs_sha256":{{"fixture":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},"source_file_hashes":{{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}}}}}}}"#,
             consumer_digest
         )
         .into_bytes();
         fs::write(&runtime_receipt, &runtime_bytes).expect("write runtime receipt");
         let runtime_digest = hash_bytes(&runtime_bytes);
         let semantic_expected = root.join("qualification/consumers/rust-expected.json");
-        let semantic_expected_bytes = br#"{"schema":"acyclic.sdk.rpd.rust-authority-consumer-inventory.v1","complete":true,"method_count":1,"authority":{"source_git_sha":"revision","source_file_hashes":{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},"methods":[{"rpc":"list"}],"execution_plan":[{"rpc":"list"}]}"#;
+        let semantic_expected_bytes = br#"{"schema":"acyclic.sdk.rpd.rust-authority-consumer-inventory.v1","complete":true,"method_count":1,"authority":{"source_git_sha":"0000000000000000000000000000000000000000","model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_file_hashes":{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},"packages":{"rust":{"provenance":{"source_git_sha":"0000000000000000000000000000000000000000","rust_model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","generator":{"name":"fixture","version":"1"},"generator_lock_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema_inputs_sha256":{"fixture":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}},"methods":[{"family":"actors","package":"acyclic.actors.v1","service":"ActorsService","method":"CreateActor","path":"/acyclic.actors.v1.ActorsService/CreateActor","client_streaming":false,"server_streaming":false,"typed_request":{"empty_serialized_hex":"","response_base64":""},"terminal_status":"ok","terminal_code":0}],"execution_plan":[{"rpc":"/acyclic.actors.v1.ActorsService/CreateActor"}]}"#;
         fs::write(&semantic_expected, semantic_expected_bytes).expect("write semantic expected input");
         let semantic_expected_digest = hash_bytes(semantic_expected_bytes);
         let semantic_verifier = root.join("qualification/consumers/rust-semantic-verifier.json");
         let semantic_verifier_bytes = format!(
-            r#"{{"schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1","status":"passed","qualification":"qualified","source_git_sha":"revision","verifier_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","expected_input_sha256":"{}","observed_input_sha256":"{}","method_count":1,"semantic_comparisons":2,"failures":[]}}"#,
+            r#"{{"schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1","status":"passed","qualification":"qualified","source_git_sha":"0000000000000000000000000000000000000000","verifier_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","expected_input_sha256":"{}","observed_input_sha256":"{}","method_count":1,"semantic_comparisons":2,"failures":[]}}"#,
             semantic_expected_digest, runtime_digest
         ).into_bytes();
         fs::write(&semantic_verifier, &semantic_verifier_bytes).expect("write semantic verifier result");
         let semantic_verifier_digest = hash_bytes(&semantic_verifier_bytes);
         let expected = EvidenceExpectations {
-            source_revision: "revision".into(),
+            source_revision: "0000000000000000000000000000000000000000".into(),
             contract_digest:
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             artifact_digest:
@@ -8148,7 +8187,7 @@ mod tests {
             ],
         };
         let receipt_bytes = format!(
-            "{{\"schema\":\"acyclic.sdk.qualification.receipt.v1\",\"tool\":\"sdk-generation\",\"language\":\"rust\",\"capability\":\"remote\",\"source_revision\":\"revision\",\"contract_digest\":\"{}\",\"artifact_digest\":\"{}\",\"status\":\"passed\",\"exit_code\":0,\"suite\":\"smoke\",\"assertions\":1,\"consumer\":{{\"executed\":true,\"name\":\"fixture-consumer\",\"version\":\"1\",\"source_revision\":\"revision\",\"artifact_path\":\"qualification/consumers/remote.bin\",\"artifact_sha256\":\"{}\",\"runtime_receipt\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}},\"semantic_verifier\":{{\"path\":\"qualification/consumers/rust-semantic-verifier.json\",\"sha256\":\"{}\",\"expected_input\":{{\"path\":\"qualification/consumers/rust-expected.json\",\"sha256\":\"{}\"}},\"observed_input\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}}}},\"scenarios\":[{{\"family\":\"actors\",\"rpc\":\"list\",\"shape\":\"unary\",\"status\":\"passed\",\"output_path\":\"qualification/consumers/remote-scenario.json\",\"output_sha256\":\"{}\"}}]}},\"families\":[{{\"family\":\"actors\",\"methods\":[\"list\"],\"features\":[\"serialization\",\"transport\"],\"rpc_shapes\":[\"unary\"]}}]}}",
+            "{{\"schema\":\"acyclic.sdk.qualification.receipt.v1\",\"tool\":\"sdk-generation\",\"language\":\"rust\",\"capability\":\"remote\",\"source_revision\":\"0000000000000000000000000000000000000000\",\"contract_digest\":\"{}\",\"artifact_digest\":\"{}\",\"status\":\"passed\",\"exit_code\":0,\"suite\":\"smoke\",\"assertions\":1,\"consumer\":{{\"executed\":true,\"name\":\"fixture-consumer\",\"version\":\"1\",\"source_revision\":\"0000000000000000000000000000000000000000\",\"artifact_path\":\"qualification/consumers/remote.bin\",\"artifact_sha256\":\"{}\",\"runtime_receipt\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}},\"semantic_verifier\":{{\"path\":\"qualification/consumers/rust-semantic-verifier.json\",\"sha256\":\"{}\",\"expected_input\":{{\"path\":\"qualification/consumers/rust-expected.json\",\"sha256\":\"{}\"}},\"observed_input\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}}}},\"scenarios\":[{{\"family\":\"actors\",\"rpc\":\"/acyclic.actors.v1.ActorsService/CreateActor\",\"shape\":\"unary\",\"status\":\"passed\",\"output_path\":\"qualification/consumers/remote-scenario.json\",\"output_sha256\":\"{}\"}}]}},\"families\":[{{\"family\":\"actors\",\"methods\":[\"/acyclic.actors.v1.ActorsService/CreateActor\"],\"features\":[\"serialization\",\"transport\"],\"rpc_shapes\":[\"unary\"]}}]}}",
             expected.contract_digest, expected.artifact_digest, consumer_digest, runtime_digest,
             semantic_verifier_digest, semantic_expected_digest, runtime_digest, scenario_digest
         );
@@ -8161,6 +8200,32 @@ mod tests {
             &expected,
             &format!("case qualification/receipts/remote.json {digest}")
         ));
+        let verifier_sha = generation_executable_sha256().expect("generation executable hash");
+        let verifier_sha = verifier_sha
+            .strip_prefix("sha256:")
+            .expect("prefixed executable hash");
+        assert!(canonical_rust_verifier::verify_paths(
+            &semantic_expected,
+            &runtime_receipt,
+            "0000000000000000000000000000000000000000",
+            verifier_sha,
+            false,
+        )
+        .is_ok());
+        let forged_runtime = root.join("qualification/consumers/forged-runtime-receipt.json");
+        let forged_runtime_bytes = String::from_utf8(runtime_bytes.clone())
+            .expect("runtime receipt is UTF-8")
+            .replacen("\"response_bytes_hex\":\"\"", "\"response_bytes_hex\":\"01\"", 1);
+        fs::write(&forged_runtime, forged_runtime_bytes.as_bytes())
+            .expect("write forged runtime receipt");
+        assert!(canonical_rust_verifier::verify_paths(
+            &semantic_expected,
+            &forged_runtime,
+            "0000000000000000000000000000000000000000",
+            verifier_sha,
+            false,
+        )
+        .is_err());
         let relabeled_scenario = receipt_bytes.replace(&scenario_digest, &consumer_digest);
         fs::write(&receipt, relabeled_scenario.as_bytes())
             .expect("write relabeled scenario receipt");
@@ -8232,7 +8297,10 @@ mod tests {
             &expected,
             &format!("case {digest}")
         ));
-        let stale = receipt_bytes.replace("\"revision\"", "\"old-revision\"");
+        let stale = receipt_bytes.replace(
+            "\"0000000000000000000000000000000000000000\"",
+            "\"1111111111111111111111111111111111111111\"",
+        );
         fs::write(&receipt, stale.as_bytes()).expect("write stale receipt");
         assert!(!evidence_test_receipt(
             &root,
