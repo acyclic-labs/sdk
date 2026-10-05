@@ -6138,7 +6138,31 @@ fn apply_record(
             }
         }
         StoredEvent::ForkIssuerBinding { .. } => {}
-        StoredEvent::ForkActivationClaimed { .. } => {}
+        StoredEvent::ForkActivationClaimed { child, operation } => {
+            if child.into_bytes() == [0; 16] || operation.into_bytes() == [0; 16] {
+                return Err(Error::Conflict(
+                    "persisted child activation claim has an empty identity".into(),
+                ));
+            }
+            let request = requests.get(&child).ok_or_else(|| {
+                Error::Storage("persisted child activation claim has no admission".into())
+            })?;
+            if request.child_operation != operation {
+                return Err(Error::Conflict(
+                    "persisted child activation claim is bound to another operation".into(),
+                ));
+            }
+            if sessions.get(&child).is_some_and(|session| {
+                matches!(
+                    session.phase,
+                    LocalSessionPhase::Cancelled | LocalSessionPhase::Completed
+                )
+            }) {
+                return Err(Error::Conflict(
+                    "persisted child activation claim follows a terminal session".into(),
+                ));
+            }
+        }
         StoredEvent::ForkPrepared {
             parent,
             parent_operation,
@@ -6573,6 +6597,29 @@ mod tests {
             sessions.get(&child).map(|session| &session.phase),
             Some(&LocalSessionPhase::Completed)
         );
+        let claim_after_completion = apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            &mut admissions,
+            StoredRecord {
+                version: REGISTRY_VERSION,
+                event: StoredEvent::ForkActivationClaimed {
+                    child,
+                    operation: child_operation,
+                },
+            },
+        )
+        .expect_err("a completed child must reject a late activation claim");
+        assert!(matches!(
+            claim_after_completion,
+            Error::Conflict(message) if message.contains("terminal session")
+        ));
         apply_record(
             &mut sessions,
             &mut requests,
