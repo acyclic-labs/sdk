@@ -48,6 +48,44 @@ pub fn validate_hosted_generation_bounds(
     )
 }
 
+/// Validate the Rust-owned source lifecycle invariants before projection.
+pub fn validate_hosted_source_state(
+    state: u32,
+    reason: u32,
+    has_generation: bool,
+) -> Result<(), &'static str> {
+    if !(1..=5).contains(&state) || reason > 7 {
+        return Err("source state or invalidation reason is invalid");
+    }
+    let needs_reason = state == 3;
+    if needs_reason != (reason != 0) {
+        return Err("source state and invalidation reason do not match");
+    }
+    let needs_generation = state == 1 || state == 5;
+    if needs_generation != has_generation {
+        return Err("source generation does not match its state");
+    }
+    Ok(())
+}
+
+/// Validate a generation identity and its owning workspace identity.
+pub fn validate_hosted_generation_identity(
+    generation_id: &[u8],
+    owner_workspace_id: &[u8],
+    expected_workspace_id: &[u8],
+) -> Result<(), &'static str> {
+    if generation_id.len() != 32 {
+        return Err("generation identity has the wrong length");
+    }
+    if owner_workspace_id.len() != 16 || expected_workspace_id.len() != 16 {
+        return Err("workspace identity has the wrong length");
+    }
+    if owner_workspace_id != expected_workspace_id {
+        return Err("generation belongs to another workspace");
+    }
+    Ok(())
+}
+
 /// Convert a JavaScript number to a Rust `u32` without allowing wasm-bindgen's
 /// numeric coercion to wrap negative, fractional, non-finite, or overflowing
 /// inputs before the Rust-owned policy runs.
@@ -108,6 +146,33 @@ pub fn validate_hosted_generation_bounds_js(
     .map_err(invalid)
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = validateHostedSourceState)]
+pub fn validate_hosted_source_state_js(
+    state: f64,
+    reason: f64,
+    has_generation: bool,
+) -> Result<(), JsValue> {
+    let state = js_u32(state).map_err(invalid)?;
+    let reason = js_u32(reason).map_err(invalid)?;
+    validate_hosted_source_state(state, reason, has_generation).map_err(invalid)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = validateHostedGenerationIdentity)]
+pub fn validate_hosted_generation_identity_js(
+    generation_id: &[u8],
+    owner_workspace_id: &[u8],
+    expected_workspace_id: &[u8],
+) -> Result<(), JsValue> {
+    validate_hosted_generation_identity(
+        generation_id,
+        owner_workspace_id,
+        expected_workspace_id,
+    )
+    .map_err(invalid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +206,21 @@ mod tests {
         }
         assert_eq!(js_u32(0.0), Ok(0));
         assert_eq!(js_u32(u32::MAX as f64), Ok(u32::MAX));
+    }
+
+    #[test]
+    fn source_state_requires_matching_reason_and_generation() {
+        assert!(validate_hosted_source_state(1, 0, true).is_ok());
+        assert!(validate_hosted_source_state(3, 2, false).is_ok());
+        assert!(validate_hosted_source_state(3, 0, false).is_err());
+        assert!(validate_hosted_source_state(1, 0, false).is_err());
+        assert!(validate_hosted_source_state(2, 1, false).is_err());
+    }
+
+    #[test]
+    fn generation_identity_requires_exact_owner() {
+        assert!(validate_hosted_generation_identity(&[7; 32], &[1; 16], &[1; 16]).is_ok());
+        assert!(validate_hosted_generation_identity(&[7; 31], &[1; 16], &[1; 16]).is_err());
+        assert!(validate_hosted_generation_identity(&[7; 32], &[1; 16], &[2; 16]).is_err());
     }
 }
