@@ -107,8 +107,14 @@ const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 fn native_path_digest(paths: &[PathBuf]) -> Result<[u8; 32]> {
     let mut normalized = paths
         .iter()
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .collect::<Vec<_>>();
+        .map(|path| {
+            path.to_str()
+                .ok_or_else(|| {
+                    Error::Invalid("native writeback paths must be valid Unicode".into())
+                })
+                .map(|path| path.replace('\\', "/"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     normalized.sort();
     normalized.dedup();
     if normalized.is_empty() {
@@ -8452,6 +8458,23 @@ mod tests {
         let sibling = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         ensure_native_checkout_is_external(runtime.path(), sibling.path())?;
         Ok(())
+    }
+
+    #[cfg(all(
+        feature = "filesystem-local",
+        not(target_arch = "wasm32"),
+        unix
+    ))]
+    #[test]
+    fn native_path_digest_rejects_non_unicode_paths() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(OsString::from_vec(vec![b'n', 0xff]));
+        assert!(matches!(
+            native_path_digest(&[path]),
+            Err(Error::Invalid(message)) if message.contains("Unicode")
+        ));
     }
 
     /// Provider used by the activation recovery test. The underlying
