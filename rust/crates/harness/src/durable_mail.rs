@@ -2,16 +2,12 @@
 
 use crate::{
     Error, OperationId, Result, TaskId,
-    communication::message_endpoint_operation,
+    communication::{message_endpoint_operation, publish_control_record},
     conversation::{ContentResidencyVerifier, FileRef},
     runtime::{DurableTaskHost, read_granted},
     scheduler::InboxItem,
 };
-use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, IdempotencyOutcome, StreamClient, StreamError,
-    StreamProvider,
-};
-use bytes::Bytes;
+use acyclic_stream::{StreamClient, StreamError, StreamProvider};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -190,72 +186,5 @@ impl<P: StreamProvider> MailboxStore<P> {
             });
         }
         Ok(items)
-    }
-}
-
-/// Retains the existing control identity namespace and validates a reconciled
-/// append against its exact committed record before acknowledging success.
-pub(crate) async fn publish_control_record<P: StreamProvider>(
-    client: &StreamClient<P>,
-    stream: &acyclic_stream::Stream<P>,
-    kind: &str,
-    task: TaskId,
-    operation: OperationId,
-    bytes: &[u8],
-) -> Result<()> {
-    let identity = format!("harness/v2/{kind}/{task}/{operation}");
-    let key = StreamKey::new(Bytes::copy_from_slice(
-        blake3::hash(identity.as_bytes()).as_bytes(),
-    ))
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-    let outcome = match stream
-        .append_batch(vec![Bytes::copy_from_slice(bytes)], None, Some(key.clone()))
-        .await
-    {
-        Ok(outcome) => outcome,
-        Err(StreamError::Unavailable) => match client.inspect_idempotency(key).await {
-            Ok(Some(observation)) => match observation.outcome {
-                IdempotencyOutcome::Append(outcome) => outcome,
-                _ => {
-                    return Err(Error::Conflict(
-                        "control identity has another operation kind".into(),
-                    ));
-                }
-            },
-            Ok(None) | Err(_) => return Err(Error::Indeterminate(operation)),
-        },
-        Err(StreamError::IdempotencyMismatch) => {
-            return Err(Error::Conflict(
-                "control identity reused with different content".into(),
-            ));
-        }
-        Err(error) => return Err(Error::Storage(error.to_string())),
-    };
-    match outcome {
-        AppendOutcome::Committed(receipt) if receipt.end == receipt.start + 1 => {
-            let records = stream
-                .read(receipt.start, 1)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            let [record] = records.as_slice() else {
-                return Err(Error::Conflict(
-                    "control publication differs from its committed record".into(),
-                ));
-            };
-            if record.sequence != receipt.start
-                || record.commit_id != receipt.commit_id
-                || record.value.as_ref() != bytes
-            {
-                return Err(Error::Conflict(
-                    "control publication differs from its committed record".into(),
-                ));
-            }
-            Ok(())
-        }
-        AppendOutcome::Committed(_) => Err(Error::Storage("invalid control append receipt".into())),
-        AppendOutcome::TailConflict { .. } => Err(Error::Conflict(
-            "unconditional control append conflicted".into(),
-        )),
     }
 }
