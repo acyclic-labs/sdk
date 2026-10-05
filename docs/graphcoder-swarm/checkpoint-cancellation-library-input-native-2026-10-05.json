@@ -1,0 +1,56 @@
+{
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "scope": "Full Harness library and exact provider-input native regressions after default cancellation wiring. Includes generation-pinned references, physical corruption/deletion, immutable prefix conformance and captured provider requests. Recursive production runtime, parallel fault gate, installed and final acceptance remain separate.",
+  "exit_code": 0,
+  "suites": {
+    "rejection_conformance": {
+      "failed": 0,
+      "passed": 3,
+      "ignored": 0
+    },
+    "library": {
+      "failed": 0,
+      "passed": 370,
+      "ignored": 0
+    },
+    "frozen_conformance": {
+      "failed": 0,
+      "passed": 3,
+      "ignored": 0
+    },
+    "persistent_admission": {
+      "failed": 0,
+      "passed": 7,
+      "ignored": 0
+    }
+  },
+  "command": "cargo test -p acyclic-harness --features filesystem-local,test-support --lib --test persistent_model_input_admission_v3 --test model_input_conformance_v3 --test model_input_rejection_conformance_v3 -- --nocapture",
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\6d0b3d3c9\\cancellation-library-input\\default-cancellation-library-input.log",
+      "sha256": "e4a50d9e2bbb35b9009e2ec16bbd8751559aa944b4df58683d81195016f30b35"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\6d0b3d3c9\\cancellation-library-input\\acyclic_harness-a0e0b54a493c063d.exe",
+      "sha256": "b0eea0c59414e33210255216e66f54c1497c279be417a7e7eaf07c6babc7ee82"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\6d0b3d3c9\\cancellation-library-input\\model_input_conformance_v3-01bd8d857976bf1f.exe",
+      "sha256": "1e2639f89c0184e629feddad85f74d4a4e8799d77e1190b791e4f09883b066bd"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\6d0b3d3c9\\cancellation-library-input\\model_input_rejection_conformance_v3-52e7a356a9d9f22c.exe",
+      "sha256": "b04a7a0e70b599cb077a4cddca325ec8a9818c8474e22c19f5d858489bb365e2"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\6d0b3d3c9\\cancellation-library-input\\persistent_model_input_admission_v3-32296dede51fc4e9.exe",
+      "sha256": "eb0160845535449075a0393076bbc7e6c5651400e87164e710355d252395bf26"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\6d0b3d3c9\\cancellation-library-input\\source.zip",
+      "sha256": "a5a9972ef733637ede7c57dbe496e85ab6a89a03d216a2e359fa385930199ba9"
+    }
+  ],
+  "platform": "Windows native",
+  "source": "6d0b3d3c90f97baf7b936dfe9548400396867b9a"
+}
