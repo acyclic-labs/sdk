@@ -22,7 +22,8 @@ use acyclic_fs::{
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 
 /// Authenticated local project binding used by the default swarm composition.
 ///
@@ -33,6 +34,12 @@ pub struct LocalProjectWorkspaceTree<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     project: VolumeRef,
     workspace_id: WorkspaceId,
+    /// The compatibility repository may switch between SDK workspaces when
+    /// `branch`/`switch` commands are used. Keep the name registry in this
+    /// provider binding so every subsequent operation still resolves through
+    /// the typed Filesystem host. It is never a host-directory path map.
+    workspaces: Arc<RwLock<BTreeMap<WorkspaceId, String>>>,
+    active_workspace: Arc<RwLock<WorkspaceId>>,
 }
 
 impl<A, O> LocalProjectWorkspaceTree<A, O>
@@ -71,10 +78,15 @@ where
         let workspace_id = host
             .workspace_id(project.storage_name()?)
             .map_err(|error| Error::Invalid(error.to_string()))?;
+        let name = project.storage_name()?;
+        let mut workspaces = BTreeMap::new();
+        workspaces.insert(workspace_id, name);
         Ok(Self {
             host,
             project,
             workspace_id,
+            workspaces: Arc::new(RwLock::new(workspaces)),
+            active_workspace: Arc::new(RwLock::new(workspace_id)),
         })
     }
 
@@ -84,39 +96,72 @@ where
         &self.project
     }
 
+    fn active_id(&self) -> Result<WorkspaceId> {
+        self.active_workspace
+            .read()
+            .map(|id| *id)
+            .map_err(|_| Error::Storage("local Git workspace registry was poisoned".into()))
+    }
+
+    fn workspace_name(&self, id: WorkspaceId) -> Result<String> {
+        self.workspaces
+            .read()
+            .map_err(|_| Error::Storage("local Git workspace registry was poisoned".into()))?
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| Error::Unauthorized("Git action references an unknown workspace".into()))
+    }
+
+    fn register_workspace(&self, id: WorkspaceId, name: String) -> Result<()> {
+        self.workspaces
+            .write()
+            .map_err(|_| Error::Storage("local Git workspace registry was poisoned".into()))?
+            .entry(id)
+            .or_insert(name);
+        Ok(())
+    }
+
+    fn select_workspace(&self, id: WorkspaceId) -> Result<()> {
+        self.workspace_name(id)?;
+        *self
+            .active_workspace
+            .write()
+            .map_err(|_| Error::Storage("local Git workspace registry was poisoned".into()))? = id;
+        Ok(())
+    }
+
     async fn workspace(&self) -> Result<acyclic_fs::Workspace<A, O>> {
+        let id = self.active_id()?;
+        self.workspace_for(id).await
+    }
+
+    async fn workspace_for(&self, id: WorkspaceId) -> Result<acyclic_fs::Workspace<A, O>> {
+        let name = self.workspace_name(id)?;
         self.host
-            .open_workspace(&workspace_ref(
-                self.host.provider().clone(),
-                &self.project.storage_name()?,
-            )?)
+            .open_workspace(&workspace_ref(self.host.provider().clone(), &name)?)
             .await
     }
 
     async fn generation(&self, tree: GitTreeRef) -> Result<acyclic_fs::Generation<A, O>> {
-        if tree.workspace_id() != self.workspace_id {
-            return Err(Error::Unauthorized(
-                "Git action references a foreign project workspace".into(),
-            ));
-        }
+        let workspace = self.workspace_for(tree.workspace_id()).await?;
         let generation = GenerationRef::new(
             self.host.provider().clone(),
             tree.authored_generation().digest().into_bytes(),
             None,
         )?;
-        let workspace = self.workspace().await?;
         self.host.open_generation(&workspace, &generation).await
     }
 
     async fn resulting_tree(
         &self,
+        workspace_id: WorkspaceId,
         result: acyclic_fs::TransactionCommit<A, O>,
     ) -> Result<GitFilesystemResult> {
         match result {
             acyclic_fs::TransactionCommit::Committed(generation)
             | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => {
                 Ok(GitFilesystemResult::Applied {
-                    tree: Some(GitTreeRef::exact(self.workspace_id, generation.id())),
+                    tree: Some(GitTreeRef::exact(workspace_id, generation.id())),
                     tracked_paths: None,
                 })
             }
@@ -144,12 +189,11 @@ where
 
     fn current_tree<'a>(&'a self) -> BoxFuture<'a, Result<GitTreeRef>> {
         Box::pin(async move {
+            let active = self.active_id()?;
+            let name = self.workspace_name(active)?;
             let observation = self
                 .host
-                .resolve(&workspace_ref(
-                    self.host.provider().clone(),
-                    &self.project.storage_name()?,
-                )?)
+                .resolve(&workspace_ref(self.host.provider().clone(), &name)?)
                 .await?;
             let bytes: [u8; 32] = observation
                 .generation
@@ -158,7 +202,7 @@ where
                 .try_into()
                 .map_err(|_| Error::Invalid("Filesystem generation identity is invalid".into()))?;
             Ok(GitTreeRef::exact(
-                self.workspace_id,
+                active,
                 GenerationId::new(Digest::from_bytes(bytes)),
             ))
         })
@@ -267,7 +311,358 @@ where
                     )
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                    self.resulting_tree(committed).await
+                    self.resulting_tree(self.active_id()?, committed).await
+                }
+                GitFilesystemAction::ForkBranch {
+                    branch,
+                    source_tree,
+                    head: _,
+                    switch,
+                } => {
+                    let source_workspace = self.workspace_for(source_tree.workspace_id()).await?;
+                    let source = self.generation(*source_tree).await?;
+                    let forked = source_workspace
+                        .fork(
+                            branch,
+                            acyclic_fs::ForkOptions::from_generation(
+                                source,
+                                IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                            ),
+                        )
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    let workspace_id = forked.id();
+                    self.register_workspace(workspace_id, branch.clone())?;
+                    if *switch {
+                        self.select_workspace(workspace_id)?;
+                    }
+                    Ok(GitFilesystemResult::Forked { workspace_id })
+                }
+                GitFilesystemAction::SwitchWorkspace { workspace_id } => {
+                    self.select_workspace(*workspace_id)?;
+                    let workspace = self.workspace_for(*workspace_id).await?;
+                    let head = workspace
+                        .head()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    Ok(GitFilesystemResult::Applied {
+                        tree: Some(GitTreeRef::exact(*workspace_id, head.id())),
+                        tracked_paths: None,
+                    })
+                }
+                GitFilesystemAction::RestoreGeneration {
+                    tree,
+                    paths,
+                    expected_workspace_tree,
+                } => {
+                    let workspace_id = self.active_id()?;
+                    let workspace = self.workspace_for(workspace_id).await?;
+                    let current = workspace
+                        .head()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    if expected_workspace_tree.is_some_and(|expected| {
+                        expected != GitTreeRef::exact(workspace_id, current.id())
+                    }) {
+                        return Err(Error::Conflict(
+                            "Git restore workspace generation changed".into(),
+                        ));
+                    }
+                    let source = self.generation(*tree).await?;
+                    if let Some(paths) = paths {
+                        let result = workspace
+                            .restore_paths_from_with_permit(
+                                &source,
+                                &paths.iter().cloned().collect::<Vec<_>>(),
+                                current.id(),
+                                IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                                PublicationPermit::Unrestricted,
+                            )
+                            .await
+                            .map_err(|error| Error::Storage(error.to_string()))?;
+                        self.resulting_tree(workspace_id, result).await
+                    } else {
+                        let result = workspace
+                            .restore_generation_with_permit(
+                                &source,
+                                current.id(),
+                                IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                                PublicationPermit::Unrestricted,
+                            )
+                            .await
+                            .map_err(|error| Error::Storage(error.to_string()))?;
+                        let tree = match result {
+                            acyclic_fs::WorkspaceRestore::Restored(generation)
+                            | acyclic_fs::WorkspaceRestore::AlreadyRestored(generation)
+                            | acyclic_fs::WorkspaceRestore::Current(generation) => {
+                                GitTreeRef::exact(workspace_id, generation.id())
+                            }
+                            acyclic_fs::WorkspaceRestore::Stale(_) => {
+                                return Err(Error::Conflict(
+                                    "Git restore workspace generation changed".into(),
+                                ));
+                            }
+                            acyclic_fs::WorkspaceRestore::Fenced => {
+                                return Err(Error::Conflict(
+                                    "Git workspace writer was fenced".into(),
+                                ));
+                            }
+                            acyclic_fs::WorkspaceRestore::IdempotencyConflict => {
+                                return Err(Error::Conflict(
+                                    "Git operation identity was reused with different input".into(),
+                                ));
+                            }
+                        };
+                        Ok(GitFilesystemResult::Applied {
+                            tree: Some(tree),
+                            tracked_paths: None,
+                        })
+                    }
+                }
+                GitFilesystemAction::RestorePaths {
+                    tree,
+                    paths,
+                    expected_workspace_tree,
+                } => {
+                    let workspace_id = self.active_id()?;
+                    let workspace = self.workspace_for(workspace_id).await?;
+                    let current = workspace
+                        .head()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    if expected_workspace_tree.is_some_and(|expected| {
+                        expected != GitTreeRef::exact(workspace_id, current.id())
+                    }) {
+                        return Err(Error::Conflict(
+                            "Git restore workspace generation changed".into(),
+                        ));
+                    }
+                    let source = self.generation(*tree).await?;
+                    let result = workspace
+                        .restore_paths_from_with_permit(
+                            &source,
+                            paths,
+                            current.id(),
+                            IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                            PublicationPermit::Unrestricted,
+                        )
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    self.resulting_tree(workspace_id, result).await
+                }
+                GitFilesystemAction::ApplyCommit {
+                    base,
+                    source,
+                    paths,
+                    expected_workspace_tree,
+                    ..
+                } => {
+                    let workspace_id = self.active_id()?;
+                    let workspace = self.workspace_for(workspace_id).await?;
+                    let current = workspace
+                        .head()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    if expected_workspace_tree.is_some_and(|expected| {
+                        expected != GitTreeRef::exact(workspace_id, current.id())
+                    }) {
+                        return Err(Error::Conflict(
+                            "Git commit workspace generation changed".into(),
+                        ));
+                    }
+                    let base = match base {
+                        Some(tree) => Some(self.generation(*tree).await?),
+                        None => None,
+                    };
+                    let source = match source {
+                        Some(tree) => Some(self.generation(*tree).await?),
+                        None => None,
+                    };
+                    match workspace
+                        .apply_paths_from_with_permit(
+                            base.as_ref(),
+                            source.as_ref(),
+                            &paths.iter().cloned().collect::<Vec<_>>(),
+                            current.id(),
+                            IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                            PublicationPermit::Unrestricted,
+                        )
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?
+                    {
+                        acyclic_fs::WorkspacePathApply::Applied(generation)
+                        | acyclic_fs::WorkspacePathApply::AlreadyApplied(generation)
+                        | acyclic_fs::WorkspacePathApply::NoChanges(generation) => {
+                            Ok(GitFilesystemResult::Applied {
+                                tree: Some(GitTreeRef::exact(workspace_id, generation.id())),
+                                tracked_paths: Some(paths.clone()),
+                            })
+                        }
+                        acyclic_fs::WorkspacePathApply::Conflicted(_) => Err(Error::Conflict(
+                            "Git commit overlaps live workspace changes".into(),
+                        )),
+                        acyclic_fs::WorkspacePathApply::Stale(_) => Err(Error::Conflict(
+                            "Git commit workspace generation changed".into(),
+                        )),
+                        acyclic_fs::WorkspacePathApply::Fenced => {
+                            Err(Error::Conflict("Git workspace writer was fenced".into()))
+                        }
+                        acyclic_fs::WorkspacePathApply::IdempotencyConflict => {
+                            Err(Error::Conflict(
+                                "Git operation identity was reused with different input".into(),
+                            ))
+                        }
+                    }
+                }
+                GitFilesystemAction::Join {
+                    target_tree,
+                    source_workspace,
+                    source_tree,
+                    tracked_paths,
+                    ..
+                } => {
+                    let target_id = self.active_id()?;
+                    if target_tree.workspace_id() != target_id {
+                        return Err(Error::Conflict("Git join target workspace changed".into()));
+                    }
+                    let target = self.workspace_for(target_id).await?;
+                    let current = target
+                        .head()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    if GitTreeRef::exact(target_id, current.id()) != *target_tree {
+                        return Err(Error::Conflict("Git join target generation changed".into()));
+                    }
+                    let Some(source_tree) = source_tree else {
+                        return Ok(GitFilesystemResult::Applied {
+                            tree: Some(*target_tree),
+                            tracked_paths: Some(tracked_paths.clone()),
+                        });
+                    };
+                    let source = self.workspace_for(*source_workspace).await?;
+                    let source_generation = self.generation(*source_tree).await?;
+                    let source_head = source
+                        .head()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    if source_head.id() != source_generation.id() {
+                        return Err(Error::Conflict("Git join source generation changed".into()));
+                    }
+                    let outcome = source
+                        .join_into(&target)
+                        .plan()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?
+                        .apply(acyclic_fs::ApplyOptions {
+                            if_target: current.id(),
+                            idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        })
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    match outcome {
+                        acyclic_fs::JoinOutcome::Applied(application)
+                        | acyclic_fs::JoinOutcome::AlreadyApplied(application) => {
+                            Ok(GitFilesystemResult::Applied {
+                                tree: Some(GitTreeRef::exact(
+                                    target_id,
+                                    application.generation().id(),
+                                )),
+                                tracked_paths: Some(tracked_paths.clone()),
+                            })
+                        }
+                        acyclic_fs::JoinOutcome::NoChanges(generation) => {
+                            Ok(GitFilesystemResult::Applied {
+                                tree: Some(GitTreeRef::exact(target_id, generation.id())),
+                                tracked_paths: Some(tracked_paths.clone()),
+                            })
+                        }
+                        acyclic_fs::JoinOutcome::StaleTarget(_) => {
+                            Err(Error::Conflict("Git join target generation changed".into()))
+                        }
+                        acyclic_fs::JoinOutcome::Conflicted { .. } => {
+                            Err(Error::Conflict("Git join has unresolved conflicts".into()))
+                        }
+                        acyclic_fs::JoinOutcome::Fenced => {
+                            Err(Error::Conflict("Git workspace writer was fenced".into()))
+                        }
+                        acyclic_fs::JoinOutcome::IdempotencyConflict => Err(Error::Conflict(
+                            "Git operation identity was reused with different input".into(),
+                        )),
+                    }
+                }
+                GitFilesystemAction::Clean {
+                    dry_run,
+                    tree,
+                    tracked_paths,
+                } => {
+                    let generation = self.generation(*tree).await?;
+                    let entries = acyclic_fs::walk_git_tree(&generation, None, 100_000)
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    let mut removable = entries
+                        .iter()
+                        .filter(|entry| {
+                            !tracked_paths.iter().any(|tracked| {
+                                tracked == &entry.path
+                                    || tracked.starts_with(&format!("{}/", entry.path))
+                            })
+                        })
+                        .map(|entry| entry.path.clone())
+                        .collect::<Vec<_>>();
+                    removable.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
+                    if *dry_run {
+                        return Ok(GitFilesystemResult::Data {
+                            kind: "clean".into(),
+                            value: json!({ "paths": removable }),
+                        });
+                    }
+                    let workspace_id = self.active_id()?;
+                    let workspace = self.workspace_for(workspace_id).await?;
+                    let current = workspace
+                        .head()
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    if current.id() != generation.id() {
+                        return Err(Error::Conflict(
+                            "Git clean workspace generation changed".into(),
+                        ));
+                    }
+                    let mut transaction = workspace
+                        .begin_transaction_if_current(
+                            &current,
+                            IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        )
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    for path in removable {
+                        if transaction.remove(&format!("/{path}")).await.is_err() {
+                            continue;
+                        }
+                    }
+                    let committed = transaction
+                        .commit_with_permit(PublicationPermit::Unrestricted)
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    self.resulting_tree(workspace_id, committed).await
+                }
+                GitFilesystemAction::CheckIgnore { paths, tree } => {
+                    let generation = self.generation(*tree).await?;
+                    let policy = match generation.read("/.gitignore", 1024 * 1024).await {
+                        Ok(bytes) => acyclic_fs::GitIgnorePolicy::parse(
+                            std::str::from_utf8(&bytes)
+                                .map_err(|_| Error::Invalid(".gitignore is not UTF-8".into()))?,
+                        ),
+                        Err(_) => acyclic_fs::GitIgnorePolicy::default(),
+                    };
+                    let ignored = paths
+                        .iter()
+                        .filter(|path| !policy.eligible(path, false, false))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    Ok(GitFilesystemResult::Data {
+                        kind: "check-ignore".into(),
+                        value: json!({ "paths": ignored }),
+                    })
                 }
                 GitFilesystemAction::CaptureCommit {
                     workspace_tree,
@@ -291,7 +686,7 @@ where
                         ));
                     }
                     Ok(GitFilesystemResult::Captured {
-                        tree: GitTreeRef::exact(self.workspace_id, capture.generation.id()),
+                        tree: GitTreeRef::exact(self.active_id()?, capture.generation.id()),
                         tracked_paths: capture.tracked_paths,
                         proof: None,
                     })
