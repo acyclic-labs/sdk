@@ -1,7 +1,7 @@
 {
   "schema": "acyclic.sdk.stream.browser-transport-qualification.v1",
   "status": "passed",
-  "source_revision": "7689347794e7005b6d0a3bc7cb58a7d0a40db949",
+  "source_revision": "1823aeca55ac1ddbb3f327368952ece31da14ade",
   "source_files": {
     "rust/crates/stream/Cargo.toml": "sha256:de70037a1013aa6e4a77e61b1b062f256a5fb38f4758555d2d4242f3898248ef",
     "rust/crates/stream/src/http.rs": "sha256:939e8f290e03ea7741061cfb6cb33949e4f15d62ec19f02dc9141c4c2028e0e5"
