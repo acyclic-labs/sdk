@@ -85,18 +85,6 @@ impl FixtureUsage {
             .ok_or_else(|| Error::Conflict("fixture time measurement overflow".into()))?;
         Ok(())
     }
-
-    pub fn record_events(
-        &self,
-        dispatch: &ProviderDispatchContext,
-        started: Instant,
-        events: &[ModelEvent],
-    ) -> acyclic_harness::Result<()> {
-        for event in events {
-            self.record(dispatch, started, event)?;
-        }
-        Ok(())
-    }
 }
 
 impl SwarmUsageSource for FixtureUsage {
@@ -174,7 +162,6 @@ macro_rules! fixture_budget_methods {
             attempt: acyclic_harness::model::ModelAttempt,
             dispatch: ProviderDispatchContext,
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            let usage = self.usage.clone();
             Box::pin(async move {
                 if dispatch.operation_id != attempt.operation_id
                     || dispatch.request_digest != attempt.request_digest
@@ -183,11 +170,7 @@ macro_rules! fixture_budget_methods {
                         "fixture dispatch context does not match admitted attempt".into(),
                     ));
                 }
-                let started = std::time::Instant::now();
                 let events = self.reconcile_admitted(prepared, attempt).await?;
-                if let Some(events) = &events {
-                    usage.record_events(&dispatch, started, events)?;
-                }
                 Ok(events)
             })
         }
