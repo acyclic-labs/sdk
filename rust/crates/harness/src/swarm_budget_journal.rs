@@ -908,7 +908,7 @@ mod tests {
     use super::*;
     use crate::swarm_budget::{
         SwarmReservationState, SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptIssuer,
-        SwarmUsageSource,
+        SwarmUsageReceipt, SwarmUsageSource,
     };
     use acyclic_stream::{MemoryStream, StreamClient};
     use std::sync::Arc;
@@ -953,6 +953,22 @@ mod tests {
             _dispatch_id: &IdempotencyKey,
         ) -> Result<SwarmUsage> {
             Ok(self.0)
+        }
+    }
+
+    struct FailingSource;
+
+    impl SwarmUsageSource for FailingSource {
+        fn provider_identity(&self) -> &str {
+            "journal-failing-provider"
+        }
+
+        fn cumulative_usage(
+            &self,
+            operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+        ) -> Result<SwarmUsage> {
+            Err(Error::Indeterminate(operation_id))
         }
     }
 
@@ -1438,6 +1454,185 @@ mod tests {
             .await?;
         assert_eq!(retry.usage, SwarmUsage::default());
         assert_eq!(journal.usage()?.active_agents, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_usage_keeps_active_reservation_for_recovery() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let mut journal =
+            SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits()).await?;
+        let child = OperationId::new();
+        let resources = SwarmResourceRequest {
+            model_steps: 2,
+            output_bytes: 32,
+            execution_time_ms: 40,
+        };
+        journal
+            .reserve_child(child_request(child, "unknown-usage", 1, resources))
+            .await?;
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: child,
+            parent_operation_id: None,
+            completed_boundary_digest: [21; 32],
+            workspace_generation_digest: [22; 32],
+        })?;
+        let token = journal
+            .activate_verified_with_dispatch(
+                child,
+                owner.clone(),
+                IdempotencyKey::new("unknown-usage-dispatch")?,
+                publication,
+            )
+            .await?;
+        let before = journal.usage()?;
+        assert!(matches!(
+            journal.complete_from_source(&token, FailingSource()).await,
+            Err(Error::Indeterminate(operation)) if operation == child
+        ));
+        assert_eq!(journal.usage()?, before);
+        assert_eq!(
+            journal.reservation(child)?.expect("reservation").state,
+            SwarmReservationState::Active
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wrong_operation_or_dispatch_receipt_is_rejected_before_projection_mutation(
+    ) -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let mut journal =
+            SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits()).await?;
+        let child = OperationId::new();
+        let resources = SwarmResourceRequest {
+            model_steps: 2,
+            output_bytes: 32,
+            execution_time_ms: 40,
+        };
+        journal
+            .reserve_child(child_request(child, "wrong-operation", 1, resources))
+            .await?;
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: child,
+            parent_operation_id: None,
+            completed_boundary_digest: [23; 32],
+            workspace_generation_digest: [24; 32],
+        })?;
+        journal
+            .activate_verified_with_dispatch(
+                child,
+                owner.clone(),
+                IdempotencyKey::new("wrong-operation-dispatch")?,
+                publication,
+            )
+            .await?;
+        let before = journal.usage()?;
+        let forged_dispatch = SwarmUsageReceipt::new(
+            child,
+            IdempotencyKey::new("wrong-dispatch")?,
+            1,
+            SwarmUsage {
+                model_steps: 1,
+                output_bytes: 8,
+                execution_time_ms: 10,
+            },
+            "malicious-provider",
+        )?;
+        let forged_dispatch = VerifiedSwarmUsageReceipt::from_verified(forged_dispatch)?;
+        assert!(matches!(
+            journal
+                .report_usage_with_receipt(child, &owner, forged_dispatch)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let forged_operation = SwarmUsageReceipt::new(
+            OperationId::new(),
+            IdempotencyKey::new("wrong-operation-dispatch")?,
+            1,
+            SwarmUsage {
+                model_steps: 1,
+                output_bytes: 8,
+                execution_time_ms: 10,
+            },
+            "malicious-provider",
+        )?;
+        let forged_operation = VerifiedSwarmUsageReceipt::from_verified(forged_operation)?;
+        assert!(matches!(
+            journal
+                .report_usage_with_receipt(child, &owner, forged_operation)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(journal.usage()?, before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recursive_remaining_reservation_survives_restart_projection() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let limits = SwarmBudgetLimits {
+            max_active_agents: 4,
+            max_total_agents: 4,
+            max_recursion_depth: 2,
+            max_model_steps: 20,
+            max_output_bytes: 100,
+            max_execution_time_ms: 100,
+        };
+        SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits).await?;
+        let parent = OperationId::from_bytes([31; 16]);
+        let parent_resources = SwarmResourceRequest {
+            model_steps: 10,
+            output_bytes: 60,
+            execution_time_ms: 60,
+        };
+        let child_resources = SwarmResourceRequest {
+            model_steps: 4,
+            output_bytes: 30,
+            execution_time_ms: 30,
+        };
+        let mut journal = SwarmBudgetJournal::open(&client, session_id).await?;
+        journal
+            .reserve_child(child_request(
+                parent,
+                "recursive-parent",
+                1,
+                parent_resources,
+            ))
+            .await?;
+        let first_child = OperationId::from_bytes([32; 16]);
+        journal
+            .reserve_child(SwarmForkRequest {
+                operation_id: first_child,
+                parent_operation_id: Some(parent),
+                ..child_request(first_child, "recursive-first-child", 2, child_resources)
+            })
+            .await?;
+        drop(journal);
+
+        let mut reopened = SwarmBudgetJournal::open(&client, session_id).await?;
+        let second_child = OperationId::from_bytes([33; 16]);
+        let mut oversized = child_request(second_child, "recursive-oversized", 2, child_resources);
+        oversized.parent_operation_id = Some(parent);
+        oversized.resources.output_bytes = 31;
+        assert!(matches!(reopened.reserve_child(oversized).await, Err(Error::Conflict(_))));
+        assert_eq!(reopened.usage()?.reserved.output_bytes, 90);
+
+        reopened.cancel(first_child, &owner).await?;
+        drop(reopened);
+        let mut reopened = SwarmBudgetJournal::open(&client, session_id).await?;
+        let replacement = OperationId::from_bytes([34; 16]);
+        let mut replacement_request =
+            child_request(replacement, "recursive-replacement", 2, child_resources);
+        replacement_request.parent_operation_id = Some(parent);
+        reopened.reserve_child(replacement_request).await?;
+        assert_eq!(reopened.usage()?.reserved.output_bytes, 90);
         Ok(())
     }
 
