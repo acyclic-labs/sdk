@@ -1,235 +1,182 @@
-//! Production Git-facade merge publication recovery through a cold reopen.
+//! Typed Filesystem merge publication recovery through a cold reopen.
 #![cfg(feature = "filesystem-local")]
 
-use acyclic_fs::GitCommand;
-use acyclic_fs::{
-    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitTreeRef,
-    LocalCoreStateStore, LocalFs, LocalOptions, OperationId as FsOperationId, WorkspaceId,
+use acyclic_fs::{JoinOutcome, LocalCoreStateStore, LocalFs, LocalOptions};
+use acyclic_harness::conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
+use acyclic_harness::core::{
+    Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry,
 };
-use acyclic_harness::{
-    AgentId, Capabilities, Error, IdempotencyKey, Result,
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
-    filesystem::{FilesystemGitFacade, FilesystemHost, WorkspaceMutation, workspace_ref},
-    resources::{ProviderRef, WorkspaceRef},
+use acyclic_harness::filesystem::{
+    FilesystemGitFacade, FilesystemHost, ParentProjectController, WorkspaceMutation, workspace_ref,
 };
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use acyclic_harness::resources::ProviderRef;
+use acyclic_harness::{AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result};
+use std::sync::Arc;
 use tempfile::tempdir;
 
-struct PublishThenFailExecutor {
-    host: Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
-    workspace: WorkspaceRef,
-    workspace_id: WorkspaceId,
-    fail_after_publish: AtomicBool,
-    published: AtomicBool,
-    operations: Mutex<Vec<FsOperationId>>,
-}
-
-impl PublishThenFailExecutor {
-    fn new(
-        host: Arc<
-            FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
-        >,
-        workspace: WorkspaceRef,
-        workspace_id: WorkspaceId,
-    ) -> Self {
-        Self {
-            host,
-            workspace,
-            workspace_id,
-            fail_after_publish: AtomicBool::new(false),
-            published: AtomicBool::new(false),
-            operations: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn fail_after_publish_once(&self) {
-        self.fail_after_publish.store(true, Ordering::SeqCst);
-    }
-
-    fn operations(&self) -> Vec<FsOperationId> {
-        self.operations.lock().expect("operation lock").clone()
-    }
-}
-
-impl GitFilesystemExecutor for PublishThenFailExecutor {
-    type Error = acyclic_fs::LocalCoreStateStoreError;
-
-    async fn validate_workspace_tree(
-        &self,
-        _workspace_tree: GitTreeRef,
-    ) -> std::result::Result<(), Self::Error> {
-        Ok(())
-    }
-
-    async fn execute(
-        &self,
-        operation_id: FsOperationId,
-        action: &GitFilesystemAction,
-    ) -> std::result::Result<GitFilesystemResult, Self::Error> {
-        self.operations
-            .lock()
-            .expect("operation lock")
-            .push(operation_id);
-        let result = match action {
-            GitFilesystemAction::ForkBranch { .. } => GitFilesystemResult::Forked {
-                workspace_id: self.workspace_id,
-            },
-            GitFilesystemAction::Join { .. } | GitFilesystemAction::ApplyCommit { .. } => {
-                GitFilesystemResult::Applied {
-                    tree: Some(live_tree(self.workspace_id)),
-                    tracked_paths: Some(Default::default()),
-                }
-            }
-            _ => GitFilesystemResult::Applied {
-                tree: Some(live_tree(self.workspace_id)),
-                tracked_paths: None,
-            },
-        };
-        if matches!(action, GitFilesystemAction::Join { .. }) {
-            self.host
-                .apply(
-                    &self.workspace,
-                    None,
-                    &[WorkspaceMutation::PutFile {
-                        path: "/merge-publication.txt".into(),
-                        bytes: b"merge publication applied before result persistence".to_vec(),
-                    }],
-                    &IdempotencyKey::new("merge-publication-real-fs").map_err(|error| {
-                        acyclic_fs::LocalCoreStateStoreError::Io(std::io::Error::other(
-                            error.to_string(),
-                        ))
-                    })?,
-                )
-                .await
-                .map_err(|error| {
-                    acyclic_fs::LocalCoreStateStoreError::Io(std::io::Error::other(
-                        error.to_string(),
-                    ))
-                })?;
-        }
-        if self.fail_after_publish.swap(false, Ordering::SeqCst) {
-            self.published.store(true, Ordering::SeqCst);
-            return Err(acyclic_fs::LocalCoreStateStoreError::Integrity);
-        }
-        Ok(result)
-    }
-}
-
-fn live_tree(workspace_id: WorkspaceId) -> GitTreeRef {
-    GitTreeRef::exact(
-        workspace_id,
-        acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32])),
-    )
-}
-
-fn transition_facade(
-    store: LocalCoreStateStore,
-) -> Result<(FilesystemGitFacade<LocalCoreStateStore>, WorkspaceId)> {
-    let provider = ProviderRef::new("git-facade-production", "filesystem", "2")?;
-    let volume = VolumeRef::new(
-        provider,
-        "root-project",
-        VolumeClass::Project,
-        VolumeOwner::Project("root".into()),
-    )?;
-    let authority = Authority {
-        kind: AggregateKind::Conversation,
-        id: "root".into(),
-    };
-    let issuer = AuthorityIssuer::new("git-facade-production", [41; 32], authority);
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([42; 16]),
-        "root",
-        Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
-            "fork:publish".to_owned(),
-            "project:merge".to_owned(),
-        ]),
-    );
-    let workspace_id = WorkspaceId::from_bytes([43; 16]);
-    Ok((
-        FilesystemGitFacade::new(workspace_id, store, volume, issuer.verifier(), scope)?,
-        workspace_id,
-    ))
+fn bind_parent(
+    authority: Authority,
+    issuer: &AuthorityIssuer,
+    agent: AgentId,
+    scope: &acyclic_harness::core::Scope,
+) -> Result<Reducer> {
+    let mut reducer = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
+    reducer.apply(Command {
+        operation_id: OperationId::from_bytes([24; 16]),
+        idempotency_key: IdempotencyKey::new("bind-merge-parent")?,
+        expected_revision: 0,
+        scope: scope.clone(),
+        causal_parent: None,
+        action: Action::BindConversation { agent },
+    })?;
+    Ok(reducer)
 }
 
 #[tokio::test]
-async fn merge_publication_failure_reopens_and_replays_exact_operation() -> Result<()> {
+async fn typed_merge_publication_reopens_and_replays_exact_operation() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let provider = ProviderRef::new("git-facade-production", "filesystem", "2")?;
-    let host = Arc::new(FilesystemHost::new(
-        LocalFs::local(LocalOptions::new(directory.path().join("filesystem")))
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+    let filesystem_root = directory.path().join("filesystem");
+    let provider = ProviderRef::new("typed-merge-recovery", "filesystem", "2")?;
     let project = VolumeRef::new(
         provider.clone(),
         "root-project",
         VolumeClass::Project,
-        VolumeOwner::Project("merge-publication-recovery".into()),
+        VolumeOwner::Project("typed-merge-recovery".into()),
     )?;
-    host.create_volume(&project).await?;
-    let workspace = workspace_ref(project.provider().clone(), &project.storage_name()?)?;
-    let store_root = directory.path().join("control-plane");
-    let store = LocalCoreStateStore::new(&store_root);
-    let (facade, workspace_id) = transition_facade(store)?;
-    let executor = Arc::new(PublishThenFailExecutor::new(
-        host.clone(),
-        workspace.clone(),
-        workspace_id,
-    ));
-    facade
-        .run(
-            GitCommand::Branch {
-                create: Some("feature".into()),
-            },
-            live_tree(workspace_id),
-            executor.as_ref(),
+    let child = VolumeRef::new(
+        provider.clone(),
+        "child-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("typed-merge-recovery".into()),
+    )?;
+    let authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "typed-merge-parent".into(),
+    };
+    let agent = AgentId::from_bytes([22; 16]);
+    let issuer = AuthorityIssuer::new("typed-merge-recovery", [21; 32], authority.clone());
+    let scope = issuer.root_for_agent(
+        agent,
+        "typed-merge-parent",
+        Capabilities::new([
+            "conversation:bind".into(),
+            "fork:publish".into(),
+            "project:merge".into(),
+            project.capability(VolumeOperation::Read)?,
+            project.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let reducer = bind_parent(authority.clone(), &issuer, agent, &scope)?;
+
+    let host = Arc::new(FilesystemHost::new(
+        LocalFs::local(LocalOptions::new(filesystem_root.clone()))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        provider.clone(),
+    )?);
+    let parent_head = host.create_volume(&project).await?;
+    let facade = FilesystemGitFacade::new(
+        acyclic_fs::WorkspaceId::from_bytes([23; 16]),
+        LocalCoreStateStore::new(directory.path().join("control-plane")),
+        project.clone(),
+        issuer.verifier(),
+        scope.clone(),
+    )?;
+    let child_head = facade
+        .fork_project(
+            host.as_ref(),
+            &reducer,
+            &parent_head.generation,
+            &child,
+            &IdempotencyKey::new("typed-merge-fork")?,
         )
         .await?;
-    executor.fail_after_publish_once();
-    let merge_error = facade
-        .run(
-            GitCommand::Merge {
-                branch: "feature".into(),
-            },
-            live_tree(workspace_id),
-            executor.as_ref(),
-        )
-        .await
-        .err()
-        .ok_or_else(|| Error::Invalid("published merge failure was reported as complete".into()))?;
-    assert!(matches!(merge_error, Error::Storage(_)));
-    assert!(executor.published.load(Ordering::SeqCst));
+    host.apply(
+        &child_head.workspace,
+        Some(&child_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/merge-publication.txt".into(),
+            bytes: b"published by the typed workspace join".to_vec(),
+        }],
+        &IdempotencyKey::new("typed-merge-child-edit")?,
+    )
+    .await?;
+
+    let operation_id = OperationId::from_bytes([43; 16]);
+    let (source_generation, target_generation, target_authority_head) = {
+        let controller = ParentProjectController::new(
+            host.as_ref(),
+            &reducer,
+            &issuer.verifier(),
+            &scope,
+            project.clone(),
+        )?;
+        let plan = controller.prepare_project_merge(&child).await?;
+        let source_generation = host.generation_ref_id(plan.source_head())?;
+        let target_generation = host.generation_ref_id(plan.target_head())?;
+        let target_authority_head = plan.target_authority_head();
+        let outcome = controller.apply_project_merge(&plan, operation_id).await?;
+        assert!(matches!(outcome, JoinOutcome::Applied(_)));
+        // Model the crash window after the provider has committed the join but
+        // before the caller durably records the returned result.
+        drop(outcome);
+        (source_generation, target_generation, target_authority_head)
+    };
     assert_eq!(
-        host.read(&workspace, None, "/merge-publication.txt", 256)
+        host.read(&parent_head.workspace, None, "/merge-publication.txt", 256,)
             .await?
             .as_ref(),
-        b"merge publication applied before result persistence"
+        b"published by the typed workspace join"
     );
-    let before_restart = executor.operations();
-    assert_eq!(before_restart.len(), 2);
+    let first_result_generation = host.resolve(&parent_head.workspace).await?.generation;
 
     drop(facade);
-    let (reopened, _) = transition_facade(LocalCoreStateStore::new(&store_root))?;
-    let resumed = reopened
-        .resume(executor.as_ref())
-        .await?
-        .ok_or_else(|| Error::Invalid("published merge was not recoverable after reopen".into()))?;
-    assert!(matches!(
-        resumed,
-        acyclic_fs::GitCommandOutput::Committed(_)
-    ));
-    assert!(reopened.resume(executor.as_ref()).await?.is_none());
+    drop(reducer);
+    drop(host);
 
-    let operations = executor.operations();
-    assert_eq!(operations.len(), 3);
-    assert_eq!(operations[1], operations[2]);
+    let reopened_host = Arc::new(FilesystemHost::new(
+        LocalFs::local(LocalOptions::new(filesystem_root))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        provider.clone(),
+    )?);
+    let reopened_reducer = bind_parent(authority, &issuer, agent, &scope)?;
+    let reopened_controller = ParentProjectController::new(
+        reopened_host.as_ref(),
+        &reopened_reducer,
+        &issuer.verifier(),
+        &scope,
+        project.clone(),
+    )?;
+    let reopened_plan = reopened_controller
+        .prepare_project_merge_at(
+            &child,
+            &source_generation,
+            &target_generation,
+            target_authority_head,
+        )
+        .await?;
+    let replay = reopened_controller
+        .apply_project_merge(&reopened_plan, operation_id)
+        .await?;
+    assert!(matches!(replay, JoinOutcome::AlreadyApplied(_)));
+    let replayed_generation = reopened_host
+        .resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?)
+        .await?
+        .generation;
+    assert_eq!(replayed_generation, first_result_generation);
+    assert_eq!(
+        reopened_host
+            .read(
+                &workspace_ref(provider.clone(), &project.storage_name()?)?,
+                None,
+                "/merge-publication.txt",
+                256,
+            )
+            .await
+            .err(),
+        None,
+        "the recovered target must remain readable after replay"
+    );
     Ok(())
 }
