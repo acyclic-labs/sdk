@@ -1124,8 +1124,22 @@ fn descriptor_scala_value_at(field: &ResolvedRequestField, receiver: &str) -> St
     descriptor_scala_value(field, &[]).replacen("value", receiver, 1)
 }
 
+/// Nested semantic models are shared by request and response projections.
+/// Keep the inventory descriptor-derived in both directions so a request
+/// containing a message declared only on the input side still receives the
+/// same typed model as an equivalent response field.
+fn descriptor_nested_model_fields() -> Vec<ResolvedRequestField> {
+    let mut fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    fields.extend(
+        resolved_request_fields()
+            .expect("Rust request descriptors must resolve")
+            .into_iter(),
+    );
+    fields
+}
+
 fn render_java_nested_models(out: &mut String) {
-    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let fields = descriptor_nested_model_fields();
     for (family, message) in descriptor_nested_messages() {
         if !fields.iter().any(|field| field.family == family && field.message_path == message)
             && !message.ends_with(".Inference.Empty")
@@ -1175,7 +1189,7 @@ fn render_java_nested_models(out: &mut String) {
 }
 
 fn render_kotlin_nested_models(out: &mut String) {
-    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let fields = descriptor_nested_model_fields();
     for (family, message) in descriptor_nested_messages() {
         if !fields.iter().any(|field| field.family == family && field.message_path == message)
             && !message.ends_with(".Inference.Empty")
@@ -1221,7 +1235,7 @@ fn render_kotlin_nested_models(out: &mut String) {
 }
 
 fn render_scala_nested_models(out: &mut String) {
-    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let fields = descriptor_nested_model_fields();
     for (family, message) in descriptor_nested_messages() {
         if !fields.iter().any(|field| field.family == family && field.message_path == message)
             && !message.ends_with(".Inference.Empty")
