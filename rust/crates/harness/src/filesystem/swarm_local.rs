@@ -1498,7 +1498,10 @@ impl LocalModelForkPlans {
         &self,
         publication: ModelBatchPublication,
     ) -> Result<Vec<LocalModelForkPlan>> {
+        crate::stack_diagnostics::marker("fork-resolve-before-journal-refresh");
         self.refresh_journal_state().await?;
+        crate::stack_diagnostics::marker("fork-resolve-after-journal-refresh");
+        crate::stack_diagnostics::marker("fork-resolve-before-intents-lock");
         let mut intents = self
             .intents
             .lock()
@@ -1507,7 +1510,9 @@ impl LocalModelForkPlans {
             .filter(|intent| intent.publication_operation == Some(publication.operation_id))
             .cloned()
             .collect::<Vec<_>>();
+        crate::stack_diagnostics::marker("fork-resolve-after-intents-lock");
         let intent_order = self.intent_order.lock().await.clone();
+        crate::stack_diagnostics::marker("fork-resolve-after-order-lock");
         intents.sort_by_key(|intent| {
             let key = (intent.fork_operation, intent.child_operation);
             (
@@ -1517,7 +1522,9 @@ impl LocalModelForkPlans {
             )
         });
         if intents.is_empty() {
+            crate::stack_diagnostics::marker("fork-resolve-before-prepared-fallback");
             let prepared = self.get_for_publication(publication.operation_id).await;
+            crate::stack_diagnostics::marker("fork-resolve-after-prepared-fallback");
             if !prepared.is_empty() {
                 return Ok(prepared);
             }
@@ -1533,6 +1540,7 @@ impl LocalModelForkPlans {
             .filter(|(_, plan)| plan.publication_operation == publication.operation_id)
             .map(|(key, plan)| (*key, plan.clone()))
             .collect::<BTreeMap<_, _>>();
+        crate::stack_diagnostics::marker("fork-resolve-after-plan-lock");
         let resolver = self.resolver.clone();
         let mut plans = Vec::with_capacity(intents.len());
         for intent in intents {
@@ -1560,7 +1568,9 @@ impl LocalModelForkPlans {
             let resolver = resolver.clone().ok_or_else(|| {
                 Error::Unsupported("local model fork resolver is not bound".into())
             })?;
+            crate::stack_diagnostics::marker("fork-resolve-before-physical-resolve");
             let plan = resolver.resolve(intent, publication.clone()).await?;
+            crate::stack_diagnostics::marker("fork-resolve-after-physical-resolve");
             self.register(plan.clone()).await?;
             plans.push(plan);
         }
@@ -1785,7 +1795,10 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
     fn publish<'a>(&'a self, publication: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             crate::stack_diagnostics::marker("fork-publisher-enter");
+            crate::stack_diagnostics::marker("fork-publisher-before-digest");
             let publication_digest = crate::contract::canonical_json_digest(&publication)?;
+            crate::stack_diagnostics::marker("fork-publisher-after-digest");
+            crate::stack_diagnostics::marker("fork-publisher-before-completion-refresh");
             if let Some(completed) = self
                 .plans
                 .completed(publication.operation_id)
@@ -1798,20 +1811,30 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 }
                 return Ok(());
             }
+            crate::stack_diagnostics::marker("fork-publisher-after-completion-refresh");
             // The publisher is registered for every completed model batch;
             // most batches do not select the fork tool and must complete as a
             // durable no-op. A selected fork is still required to carry its
             // intent, so resolve_intents retains the fail-closed path.
-            if !self.plans.has_intent(publication.operation_id).await?
-                && self
+            crate::stack_diagnostics::marker("fork-publisher-before-has-intent");
+            let has_intent = self.plans.has_intent(publication.operation_id).await?;
+            crate::stack_diagnostics::marker("fork-publisher-after-has-intent");
+            let prepared_plans = if !has_intent {
+                crate::stack_diagnostics::marker("fork-publisher-before-prepared-refresh");
+                let prepared = self
                     .plans
                     .get_for_publication(publication.operation_id)
-                    .await
-                    .is_empty()
-            {
+                    .await;
+                crate::stack_diagnostics::marker("fork-publisher-after-prepared-refresh");
+                prepared
+            } else {
+                Vec::new()
+            };
+            if !has_intent && prepared_plans.is_empty() {
                 crate::stack_diagnostics::marker("fork-publisher-no-plans");
                 return Ok(());
             }
+            crate::stack_diagnostics::marker("fork-publisher-before-resolve");
             let plans = self.plans.resolve_intents(publication.clone()).await?;
             crate::stack_diagnostics::marker("fork-publisher-after-resolve");
             let swarm = self.target()?.ok_or_else(|| {

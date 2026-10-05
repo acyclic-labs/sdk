@@ -1330,7 +1330,9 @@ impl StockExecutor {
             publisher: identity,
             guarantee,
         };
+        crate::stack_diagnostics::marker("fork-publication-before-digest");
         let digest = crate::contract::canonical_json_digest(&publication)?;
+        crate::stack_diagnostics::marker("fork-publication-after-digest");
         let records = journal.replay(operation).await?;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::BatchPublicationStarted {
@@ -1362,6 +1364,7 @@ impl StockExecutor {
             };
         }
         if started.is_some() {
+            crate::stack_diagnostics::marker("fork-publication-before-reconcile");
             if publisher.reconcile(publication.clone()).await?.is_none() {
                 if guarantee != EffectGuarantee::IdempotentRetry {
                     return Err(Error::Indeterminate(publication.operation_id));
@@ -1377,6 +1380,7 @@ impl StockExecutor {
                 crate::stack_diagnostics::marker("fork-publication-complete-retry");
             }
         } else {
+            crate::stack_diagnostics::marker("fork-publication-before-start");
             let key = format!("model:{step}:publication");
             let file = stage_json(journal, operation, &key, &publication).await?;
             if !journal
