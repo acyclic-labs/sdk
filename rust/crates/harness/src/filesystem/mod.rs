@@ -26,8 +26,6 @@ use acyclic_fs::{
     PublicationReservation, TransactionCommit, Workspace, WorkspaceDirectoryPage, WorkspaceError,
     WorkspaceStat,
 };
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-use acyclic_fs::path::PortablePath;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -947,6 +945,8 @@ impl InternalContentClass {
 pub struct FilesystemHost<A, O> {
     filesystem: Fs<A, O>,
     provider: ProviderRef,
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    native_capture_boundary: Option<Arc<NativeCaptureBoundary>>,
 }
 
 impl<A, O> Clone for FilesystemHost<A, O> {
@@ -954,8 +954,86 @@ impl<A, O> Clone for FilesystemHost<A, O> {
         Self {
             filesystem: self.filesystem.clone(),
             provider: self.provider.clone(),
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            native_capture_boundary: self.native_capture_boundary.clone(),
         }
     }
+}
+
+/// Explicit host-owned roots that a native project capture may never overlap.
+///
+/// The boundary is configured by the local composition with its session root;
+/// no directory-name heuristic is used to classify user project content.
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeCaptureBoundary {
+    reserved_roots: Vec<std::path::PathBuf>,
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl NativeCaptureBoundary {
+    /// Binds one or more existing host-owned roots to the capture boundary.
+    pub fn new<I, P>(roots: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<std::path::Path>,
+    {
+        let mut reserved_roots = Vec::new();
+        for root in roots {
+            let canonical = std::fs::canonicalize(root.as_ref())
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            if !reserved_roots.contains(&canonical) {
+                reserved_roots.push(canonical);
+            }
+        }
+        if reserved_roots.is_empty() {
+            return Err(Error::Invalid(
+                "native capture boundary requires a host-owned root".into(),
+            ));
+        }
+        Ok(Self { reserved_roots })
+    }
+
+    fn validate_source_root(&self, source_root: &std::path::Path) -> Result<()> {
+        let source = std::fs::canonicalize(source_root)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if self
+            .reserved_roots
+            .iter()
+            .any(|reserved| native_path_overlaps(&source, reserved))
+        {
+            return Err(Error::Unauthorized(
+                "native capture overlaps host-owned session or runtime storage".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+fn native_path_overlaps(left: &std::path::Path, right: &std::path::Path) -> bool {
+    fn within(path: &std::path::Path, ancestor: &std::path::Path) -> bool {
+        let path = path.components().collect::<Vec<_>>();
+        let ancestor = ancestor.components().collect::<Vec<_>>();
+        path.len() >= ancestor.len()
+            && path
+                .iter()
+                .zip(ancestor.iter())
+                .all(|(left, right)| {
+                    #[cfg(windows)]
+                    {
+                        left.as_os_str()
+                            .to_string_lossy()
+                            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        left == right
+                    }
+                })
+    }
+
+    within(left, right) || within(right, left)
 }
 
 /// Provider-side proof for a parent-published project merge receipt.
@@ -1732,7 +1810,18 @@ impl<A, O> FilesystemHost<A, O> {
         Ok(Self {
             filesystem,
             provider,
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            native_capture_boundary: None,
         })
+    }
+
+    /// Restricts native project capture to source roots that do not overlap
+    /// explicitly configured host-owned storage.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub fn with_native_capture_boundary(mut self, boundary: NativeCaptureBoundary) -> Self {
+        self.native_capture_boundary = Some(Arc::new(boundary));
+        self
     }
 }
 
@@ -1925,7 +2014,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "native capture requires a project volume on this provider".into(),
             ));
         }
-        let excluded_paths = native_capture_boundary(&capture.source_root)?;
+        let boundary = self.native_capture_boundary.as_ref().ok_or_else(|| {
+            Error::Unauthorized(
+                "native capture requires an explicit host-owned boundary".into(),
+            )
+        })?;
+        boundary.validate_source_root(&capture.source_root)?;
         let observed = acyclic_fs::capture_root_identity(&capture.source_root)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if observed != capture.expected_root_identity {
@@ -1937,7 +2031,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             mode: SourceMode::Pinned,
             maximum_paths: capture.maximum_paths,
             maximum_extent_spans: capture.maximum_extent_spans,
-            excluded_paths,
             ..SourceOptions::default()
         };
         let checkout = HostCheckout::attach(
@@ -2640,55 +2733,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-const NATIVE_CAPTURE_RESERVED_PREFIXES: &[&str] = &[
-    "/history",
-    "/filesystem",
-    "/runtime",
-    "/.runtime",
-    "/session",
-    "/.session",
-    "/credentials",
-    "/credential",
-    "/secrets",
-    "/.credentials",
-    "/.secrets",
-];
-
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-fn native_capture_boundary(source_root: &std::path::Path) -> Result<Vec<PortablePath>> {
-    // A session root is identified by its two durable stores. Rejecting that
-    // root prevents history, private volumes, and execution records from
-    // becoming a project generation. Named host-owned children are excluded
-    // from every capture interval as an additional race-resistant fence.
-    let has_history = source_root.join("history").is_dir();
-    let has_filesystem = source_root.join("filesystem").is_dir();
-    if has_history && has_filesystem {
-        return Err(Error::Unauthorized(
-            "native capture root is a Harness session store".into(),
-        ));
-    }
-    if source_root.file_name().is_some_and(|name| {
-        let name = name.to_string_lossy();
-        NATIVE_CAPTURE_RESERVED_PREFIXES.iter().any(|prefix| {
-            prefix
-                .trim_start_matches('/')
-                .eq_ignore_ascii_case(name.as_ref())
-        })
-    }) {
-        return Err(Error::Unauthorized(
-            "native capture root is host-owned runtime or credential storage".into(),
-        ));
-    }
-    NATIVE_CAPTURE_RESERVED_PREFIXES
-        .iter()
-        .map(|prefix| {
-            PortablePath::parse(prefix, acyclic_fs::model::VolumeLimits::default())
-                .map_err(|error| Error::Invalid(error.to_string()))
-        })
-        .collect()
-}
-
 /// Creates the canonical provider-owned reference for a named workspace.
 pub fn workspace_ref(provider: ProviderRef, name: &str) -> Result<WorkspaceRef> {
     acyclic_fs::WorkspaceName::new(name).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -2759,32 +2803,17 @@ mod tests {
 
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     #[test]
-    fn native_capture_boundary_keeps_session_and_host_state_out_of_projects() -> Result<()> {
+    fn native_capture_boundary_requires_explicit_host_roots() -> Result<()> {
         let session_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        std::fs::create_dir(session_root.path().join("history"))
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        std::fs::create_dir(session_root.path().join("filesystem"))
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        let boundary = NativeCaptureBoundary::new([session_root.path()])?;
         assert!(matches!(
-            native_capture_boundary(session_root.path()),
+            boundary.validate_source_root(session_root.path()),
             Err(Error::Unauthorized(_))
         ));
 
         let project_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        for name in ["runtime", "session", "credentials", "secrets"] {
-            std::fs::create_dir(project_root.path().join(name))
-                .map_err(|error| Error::Storage(error.to_string()))?;
-        }
-        let excluded = native_capture_boundary(project_root.path())?;
-        for name in ["runtime", "session", "credentials", "secrets"] {
-            assert!(excluded.iter().any(|path| path.as_str() == format!("/{name}")));
-        }
-
-        let credentials_root = project_root.path().join("credentials");
-        assert!(matches!(
-            native_capture_boundary(&credentials_root),
-            Err(Error::Unauthorized(_))
-        ));
+        assert!(boundary.validate_source_root(project_root.path()).is_ok());
+        assert!(NativeCaptureBoundary::new(std::iter::empty::<&std::path::Path>()).is_err());
         Ok(())
     }
 
