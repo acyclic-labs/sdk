@@ -1336,5 +1336,15 @@
         157
       ]
     }
-  }
+  },
+  "rejections": [
+    {
+      "name": "unknown-tool-result",
+      "error_contains": "tool result names unknown tool missing-tool"
+    },
+    {
+      "name": "schema-invalid-tool-result",
+      "error_contains": "tool projection failed validation:"
+    }
+  ]
 }

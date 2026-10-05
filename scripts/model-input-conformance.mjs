@@ -17,6 +17,10 @@ const vector = JSON.parse(bytes(vectorPath));
 if (vector.version !== 3 || vector.children?.length !== 2 || vector.grandchild === undefined) {
   throw new Error("model-input-v3 must retain root, two sibling, and grandchild cases");
 }
+if (!Array.isArray(vector.rejections) || vector.rejections.length !== 2
+  || vector.rejections.some(entry => typeof entry.name !== "string" || typeof entry.error_contains !== "string")) {
+  throw new Error("model-input-v3 must retain its unknown-result and schema-result rejection cases");
+}
 for (const entry of [vector.root, ...vector.children, vector.grandchild]) {
   for (const field of ["request_json", "manifest_json", "request_digest", "binding_digest", "manifest_digest", "prefix_digest"]) {
     const value = entry.expected?.[field];
@@ -41,6 +45,49 @@ if (!packagedSourceCopies.some(([source, destination]) => source === modelInputV
   throw new Error("generated binding manifest does not package model-input-v3");
 }
 
+const runNative = process.argv.includes("--run-native");
+if (runNative) {
+  const cargo = process.env.ACYCLIC_CARGO_BIN || "cargo";
+  const native = spawnSync(cargo, [
+    "test", "--locked", "-p", "acyclic-harness", "--test", "model_input_conformance_v3",
+    "emit_native_model_input_v3_fixture", "--", "--nocapture",
+  ], { cwd: root, encoding: "utf8", windowsHide: true });
+  if (native.status !== 0) {
+    process.stderr.write(native.stdout ?? "");
+    process.stderr.write(native.stderr ?? "");
+    throw new Error(`native model-input fixture emission failed (${native.status ?? "unknown"})`);
+  }
+  const marker = (native.stdout ?? "").match(/MODEL_INPUT_NATIVE_FIXTURE_V3 (\{.*\})/);
+  if (marker === null) throw new Error("native model-input fixture emission produced no report");
+  const emitted = JSON.parse(marker[1]);
+  const expectedCases = [vector.root, ...vector.children, vector.grandchild].map((entry, index) => ({
+    name: entry.name ?? (index === 0 ? "root" : index === vector.children.length + 1 ? "grandchild" : "child"),
+    expected: entry.expected,
+  }));
+  if (emitted.version !== vector.version || emitted.cases?.length !== expectedCases.length) {
+    throw new Error("native model-input fixture report has the wrong version or case count");
+  }
+  for (const [index, expected] of expectedCases.entries()) {
+    const actual = emitted.cases[index];
+    if (actual?.name !== expected.name) throw new Error(`native model-input case name drift at ${index}`);
+    for (const field of ["request_json", "manifest_json", "request_digest", "binding_digest", "manifest_digest", "prefix_digest"]) {
+      if (JSON.stringify(actual[field]) !== JSON.stringify(expected.expected[field])) {
+        throw new Error(`native model-input ${field} drift at ${expected.name}`);
+      }
+    }
+  }
+  if (emitted.rejections?.length !== vector.rejections.length) {
+    throw new Error("native model-input rejection report has the wrong case count");
+  }
+  for (const [index, expected] of vector.rejections.entries()) {
+    const actual = emitted.rejections[index];
+    if (actual?.name !== expected.name || actual.kind !== "invalid"
+      || typeof actual.message !== "string" || !actual.message.startsWith(expected.error_contains)) {
+      throw new Error(`native model-input rejection drift at ${expected.name}`);
+    }
+  }
+}
+
 if (process.argv.includes("--run-typescript")) {
   const result = spawnSync("bun", ["test", "typescript/packages/harness/test/model-input-conformance-v3.test.ts"], {
     cwd: root,
@@ -57,6 +104,7 @@ const report = {
   native_test_sha256: sha256(bytes(nativeTestPath)),
   rejection_test_sha256: sha256(bytes(rejectionTestPath)),
   typescript_test_sha256: sha256(bytes(typescriptTestPath)),
+  native_executed: runNative,
   typescript_executed: process.argv.includes("--run-typescript"),
 };
 console.log(JSON.stringify(report));

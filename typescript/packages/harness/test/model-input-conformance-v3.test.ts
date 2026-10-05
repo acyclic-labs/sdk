@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { NativeContracts } from "../src/native-contracts.js";
 import type { NativeLimitsWire, NativeModelOptionPolicyWire } from "../src/native-contracts.js";
-import type { WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
+import { prepareModelRequest } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmModelLimitsInput, WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 
 const vector = JSON.parse(readFileSync(
   new URL("../../../../conformance/vectors/harness/model-input-v3.json", import.meta.url),
@@ -14,6 +15,7 @@ const vector = JSON.parse(readFileSync(
   root: Case;
   children: Case[];
   grandchild: Case;
+  rejections: RejectionCase[];
 };
 
 interface Case {
@@ -30,6 +32,11 @@ interface Expected {
   binding_digest: number[];
   manifest_digest: number[];
   prefix_digest: number[];
+}
+
+interface RejectionCase {
+  name: string;
+  error_contains: string;
 }
 
 const bytesEqual = (left: readonly number[] | Uint8Array, right: readonly number[] | Uint8Array): boolean =>
@@ -54,6 +61,7 @@ test("TypeScript consumes the native frozen model-input vector exactly", async (
     digest: vector.policy.identity.digest,
     schema: vector.policy.schema,
   };
+  const wasmLimits: WasmModelLimitsInput = { ...vector.limits };
   const admit = (entry: Case) => {
     const evidence = contracts.prepareModelRequest(entry.request, limits, policy);
     expect(evidence.requestJson).toBe(entry.expected.request_json);
@@ -93,4 +101,44 @@ test("TypeScript consumes the native frozen model-input vector exactly", async (
     new TextEncoder().encode(root.evidence.requestJson),
     contracts.encodeCanonicalJson(root.request),
   )).toBe(true);
+
+  const rejectionRequest = (name: string): WasmModelRequestWire => {
+    if (name === "unknown-tool-result") {
+      return {
+        ...vector.root.request,
+        messages: vector.root.request.messages.map((message, index) => index === 3
+          ? { ...message, content: {
+            kind: "tool_result" as const, call_id: "call-π", name: "missing-tool",
+            value: { bytes: 17, text: "résultat\r\n" },
+          } }
+          : message),
+      };
+    }
+    if (name === "schema-invalid-tool-result") {
+      return {
+        ...vector.root.request,
+        tools: vector.root.request.tools.map(tool => ({
+          ...tool,
+          model_output_schema: {
+            type: "object", properties: { accepted: { type: "boolean" } },
+            required: ["accepted"], additionalProperties: false,
+          } as const,
+        })),
+        messages: vector.root.request.messages.map((message, index) => index === 3
+          ? { ...message, content: {
+            kind: "tool_result" as const, call_id: "call-π", name: "read_file",
+            value: { accepted: "yes" },
+          } }
+          : message),
+      };
+    }
+    throw new Error(`unknown model-input rejection fixture ${name}`);
+  };
+  for (const rejection of vector.rejections) {
+    const request = rejectionRequest(rejection.name);
+    expect(() => prepareModelRequest(request, wasmLimits, policy))
+      .toThrow(rejection.error_contains);
+    expect(() => contracts.prepareModelRequest(request, limits, policy))
+      .toThrow(rejection.error_contains);
+  }
 });
