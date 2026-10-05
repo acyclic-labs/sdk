@@ -3160,7 +3160,10 @@ impl PersistentLocalSwarm {
             "swarm_policy": {
                 "maximum_depth": self.config.maximum_depth,
                 "maximum_children": self.config.maximum_children,
-                "budget": self.config.budget,
+                "budget": {
+                    "limits": self.config.budget.limits,
+                    "owner": self.config.budget.owner,
+                },
             },
         }))?;
         Ok((
