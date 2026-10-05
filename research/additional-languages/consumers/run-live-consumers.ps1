@@ -114,18 +114,30 @@ function Invoke-Required([string] $Command, [string[]] $Arguments, [string] $Lan
     $started.outputs[$Language] = Join-Path $OutputRoot "$Language-live-receipt.json"
 }
 
+function New-PackageArtifact([string] $Language, [string] $PackageRoot) {
+    $artifactRoot = Join-Path $OutputRoot 'artifacts'
+    New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
+    $artifact = Join-Path $artifactRoot "$Language-package.zip"
+    if (Test-Path -LiteralPath $artifact) { Remove-Item -LiteralPath $artifact -Force }
+    Compress-Archive -Path (Join-Path $PackageRoot '*') -DestinationPath $artifact -CompressionLevel Optimal
+    return [IO.Path]::GetFullPath($artifact)
+}
+
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($RubyPackageRoot) {
     Test-GeneratedPackage 'ruby' $RubyPackageRoot
-    Invoke-Required 'ruby' @($root + '\ruby_live.rb', '--package-root', $RubyPackageRoot, '--manifest', $manifestPath, '--endpoint', $Endpoint, '--timeout-ms', $TimeoutMs, '--output', (Join-Path $OutputRoot 'ruby-live-receipt.json')) 'ruby' $RubyPackageRoot $root
+    $rubyArtifact = New-PackageArtifact 'ruby' $RubyPackageRoot
+    Invoke-Required 'ruby' @($root + '\ruby_live.rb', '--package-root', $RubyPackageRoot, '--artifact-path', $rubyArtifact, '--manifest', $manifestPath, '--endpoint', $Endpoint, '--timeout-ms', $TimeoutMs, '--output', (Join-Path $OutputRoot 'ruby-live-receipt.json')) 'ruby' $RubyPackageRoot $root
 }
 if ($PhpPackageRoot) {
     Test-GeneratedPackage 'php' $PhpPackageRoot
-    Invoke-Required 'php' @($root + '\php_live.php', '--package-root', $PhpPackageRoot, '--manifest', $manifestPath, '--endpoint', $Endpoint, '--timeout-ms', $TimeoutMs, '--output', (Join-Path $OutputRoot 'php-live-receipt.json')) 'php' $PhpPackageRoot $root
+    $phpArtifact = New-PackageArtifact 'php' $PhpPackageRoot
+    Invoke-Required 'php' @($root + '\php_live.php', '--package-root', $PhpPackageRoot, '--artifact-path', $phpArtifact, '--manifest', $manifestPath, '--endpoint', $Endpoint, '--timeout-ms', $TimeoutMs, '--output', (Join-Path $OutputRoot 'php-live-receipt.json')) 'php' $PhpPackageRoot $root
 }
 if ($DartPackageRoot) {
     Test-GeneratedPackage 'dart' $DartPackageRoot
-    Invoke-Required 'dart' @('run', (Join-Path $root 'dart_live.dart'), '--manifest', $manifestPath, '--endpoint', $Endpoint, '--timeout-ms', $TimeoutMs, '--output', (Join-Path $OutputRoot 'dart-live-receipt.json')) 'dart' $DartPackageRoot $root
+    $dartArtifact = New-PackageArtifact 'dart' $DartPackageRoot
+    Invoke-Required 'dart' @('run', (Join-Path $root 'dart_live.dart'), '--package-root', $DartPackageRoot, '--artifact-path', $dartArtifact, '--manifest', $manifestPath, '--endpoint', $Endpoint, '--timeout-ms', $TimeoutMs, '--output', (Join-Path $OutputRoot 'dart-live-receipt.json')) 'dart' $DartPackageRoot $root
 }
 
 $started | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputRoot 'live-run.json')

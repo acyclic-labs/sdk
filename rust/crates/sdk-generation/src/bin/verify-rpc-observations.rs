@@ -1187,7 +1187,7 @@ mod tests {
         assert!(
             failures
                 .iter()
-                .any(|failure| { failure.contains("platform field runtime_triple differs") }),
+                .any(|failure| { failure.contains("native package target triple differs") }),
             "cross-platform native execution was accepted: {failures:?}"
         );
     }

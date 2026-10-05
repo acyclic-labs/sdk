@@ -16,6 +16,7 @@ function option(string $name, ?string $default = null): ?string {
 
 $packageRoot = option('--package-root');
 $manifestPath = option('--manifest');
+$artifactPath = option('--artifact-path');
 $endpoint = option('--endpoint', '127.0.0.1:50051');
 $output = option('--output', 'php-live-receipt.json');
 $timeoutMs = (int) option('--timeout-ms', '5000');
@@ -32,6 +33,23 @@ if (!is_file($autoload)) {
 require $autoload;
 $manifest = json_decode(file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
 $authority = $manifest['authority'];
+$packageProvenancePath = rtrim($packageRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'src/provenance.json';
+$packageProvenance = is_file($packageProvenancePath)
+    ? json_decode(file_get_contents($packageProvenancePath), true, 512, JSON_THROW_ON_ERROR)
+    : [];
+$artifactSha256 = $artifactPath !== null ? hash_file('sha256', $artifactPath) : null;
+$runtimePlatform = array_merge($packageProvenance['platform'] ?? [], [
+    'runtime_triple' => strtolower(PHP_OS_FAMILY . '-' . php_uname('m')),
+    'runtime_os' => strtolower(PHP_OS_FAMILY),
+    'runtime_arch' => strtolower(php_uname('m')),
+    'observed' => true,
+]);
+$executedPackage = array_merge($packageProvenance, [
+    'artifact_path' => $artifactPath !== null ? realpath($artifactPath) : null,
+    'artifact_sha256' => $artifactSha256,
+    'platform' => $runtimePlatform,
+    'provenance' => array_merge($packageProvenance, ['platform' => $runtimePlatform]),
+]);
 
 function phpClass(string $protoName): string {
     $parts = explode('.', ltrim($protoName, '.'));
@@ -213,6 +231,7 @@ $receipt = [
     'authority' => $authority,
     'endpoint' => $endpoint,
     'package_root' => realpath($packageRoot),
+    'executed_package' => $executedPackage,
     'method_count' => count($results),
     'passed' => count(array_filter($results, static fn(array $r): bool => ($r['status'] ?? '') === 'semantic_passed')),
     'transport_succeeded' => count(array_filter($results, static fn(array $r): bool => ($r['status'] ?? '') === 'transport_success_pending_semantics')),
