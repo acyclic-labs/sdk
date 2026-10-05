@@ -21,8 +21,8 @@ use crate::{
         SwarmUsageSource, VerifiedSwarmUsageReceipt,
     },
     tool::{
-        ModelToolContext, ToolInvocation, ToolRegistry, ToolRejectionFeedback, ToolResult,
-        validate_value,
+        ModelToolContext, ToolDefinition, ToolInvocation, ToolRegistry, ToolRejectionFeedback,
+        ToolResult, validate_value,
     },
 };
 use futures::{StreamExt as _, future::BoxFuture};
@@ -746,27 +746,24 @@ impl StockExecutor {
             .collect())
     }
 
-    fn project_replayed_tool_result(
-        &self,
-        tool: &crate::tool::Tool,
-        invocation: &ToolInvocation,
+    fn validate_persisted_tool_result(
+        definition: &ToolDefinition,
         result: &ToolResult,
-    ) -> Result<Value> {
-        validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
-        let projection = tool.projection.project(invocation, result)?;
+        projection: &Value,
+        limits: Limits,
+    ) -> Result<()> {
+        validate_value(&definition.output_schema, &result.value, "tool output")?;
         validate_value(
-            &tool.definition.model_output_schema,
-            &projection,
+            &definition.model_output_schema,
+            projection,
             "tool projection",
         )?;
-        if crate::contract::canonical_json_bytes(&projection)?.len() as u64
-            > self.limits.render_bytes
+        if crate::contract::canonical_json_bytes(projection)?.len() as u64
+            > limits.render_bytes
         {
-            return Err(Error::Invalid(
-                "tool projection exceeds render limit".into(),
-            ));
+            return Err(Error::Invalid("tool projection exceeds render limit".into()));
         }
-        Ok(projection)
+        Ok(())
     }
 
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
@@ -843,6 +840,17 @@ impl StockExecutor {
                 _ => {}
             }
         }
+        if let Some(max_step) = prepared_steps
+            .iter()
+            .chain(started_steps.iter())
+            .max()
+            .copied()
+        {
+            for next_step in 1..=max_step {
+                validate_prior_step_barrier(journal, &records, input.operation_id, next_step)
+                    .await?;
+            }
+        }
         let request_digest = self.request_digest(input)?;
         match records.first().map(|record| &record.event) {
             Some(ExecutionEvent::Started {
@@ -885,6 +893,7 @@ impl StockExecutor {
         prior_output_bytes: u64,
     ) -> Result<Vec<ModelEvent>> {
         let records = journal.replay(input.operation_id).await?;
+        validate_prior_step_barrier(journal, &records, input.operation_id, step).await?;
         let persisted_prepared = prepared_model_input(&records, step)?;
         let mut started = None;
         for record in &records {
@@ -1586,15 +1595,13 @@ impl StockExecutor {
                 ));
             }
             let result: ToolResult = load_json(journal, &result_ref).await?;
-            let projection = self.project_replayed_tool_result(tool, &invocation, &result)?;
-            let persisted_projection: Value = load_json(journal, &projection_ref).await?;
-            if crate::contract::canonical_json_bytes(&persisted_projection)?
-                != crate::contract::canonical_json_bytes(&projection)?
-            {
-                return Err(Error::Conflict(
-                    "completed tool projection differs from pinned projection".into(),
-                ));
-            }
+            let projection: Value = load_json(journal, &projection_ref).await?;
+            Self::validate_persisted_tool_result(
+                &tool.definition,
+                &result,
+                &projection,
+                self.limits,
+            )?;
             let message = ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -2263,6 +2270,196 @@ enum CompletedBatchToolOutcome {
     InvalidArguments(ToolRejectionFeedback),
 }
 
+fn event_step(event: &ExecutionEvent) -> Option<u32> {
+    match event {
+        ExecutionEvent::ModelInputPrepared { step, .. }
+        | ExecutionEvent::ToolBatchCompleted { step, .. }
+        | ExecutionEvent::BatchPublicationStarted { step, .. }
+        | ExecutionEvent::BatchPublicationCompleted { step, .. }
+        | ExecutionEvent::ModelStarted { step, .. }
+        | ExecutionEvent::Model { step, .. }
+        | ExecutionEvent::ToolAdmissionRejected { step, .. }
+        | ExecutionEvent::ToolStarted { step, .. }
+        | ExecutionEvent::ToolCompleted { step, .. }
+        | ExecutionEvent::ToolFailed { step, .. } => Some(*step),
+        ExecutionEvent::Started { .. } => None,
+    }
+}
+
+/// Enforces the completed-step barrier before a later model request can be
+/// prepared or started. Every earlier model exchange must be complete, all
+/// declared calls must have one terminal observation, and any publication
+/// admission must have a matching durable completion.
+async fn validate_prior_step_barrier(
+    journal: &dyn ExecutionJournal,
+    records: &[ExecutionRecord],
+    operation: OperationId,
+    next_step: u32,
+) -> Result<()> {
+    let next_boundary = records.iter().find_map(|record| match &record.event {
+        ExecutionEvent::ModelInputPrepared { step, .. }
+        | ExecutionEvent::ModelStarted { step, .. }
+            if *step >= next_step => Some(record.sequence),
+        _ => None,
+    });
+    for step in 0..next_step {
+        let mut calls = BTreeSet::new();
+        let mut model_completed = false;
+        let mut batch_completed = false;
+        let mut started_tools = BTreeSet::new();
+        let mut terminal_tools = BTreeSet::new();
+        let mut publication_state: Option<([u8; 32], bool)> = None;
+        for record in records {
+            if next_boundary.is_some_and(|boundary| record.sequence >= boundary)
+                && event_step(&record.event).is_some_and(|event_step| event_step < next_step)
+            {
+                return Err(Error::Conflict(
+                    "prior model step observation is interleaved after the next step boundary"
+                        .into(),
+                ));
+            }
+            match &record.event {
+                ExecutionEvent::Model {
+                    step: event_step,
+                    event,
+                } if *event_step == step => match load_json::<ModelEvent>(journal, event).await? {
+                    ModelEvent::ToolCall { call_id, .. } => {
+                        if !calls.insert(call_id) {
+                            return Err(Error::Storage(
+                                "prior model step declared a tool call more than once".into(),
+                            ));
+                        }
+                    }
+                    ModelEvent::Completed { .. } => {
+                        if model_completed {
+                            return Err(Error::Storage(
+                                "prior model step completed more than once".into(),
+                            ));
+                        }
+                        model_completed = true;
+                    }
+                    ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
+                },
+                ExecutionEvent::ToolStarted {
+                    step: event_step,
+                    call_id,
+                    ..
+                } if *event_step == step => {
+                    if !calls.contains(call_id) || !started_tools.insert(call_id.clone()) {
+                        return Err(Error::Storage(
+                            "prior tool admission is not bound to one model call".into(),
+                        ));
+                    }
+                }
+                ExecutionEvent::ToolAdmissionRejected {
+                    step: event_step,
+                    invocation,
+                    ..
+                } if *event_step == step => {
+                    let invocation = load_json::<ToolInvocation>(journal, invocation).await?;
+                    if !calls.contains(&invocation.call_id)
+                        || started_tools.contains(&invocation.call_id)
+                        || !terminal_tools.insert(invocation.call_id)
+                    {
+                        return Err(Error::Storage(
+                            "prior tool rejection is not a unique terminal call outcome".into(),
+                        ));
+                    }
+                }
+                ExecutionEvent::ToolCompleted {
+                    step: event_step,
+                    call_id,
+                    ..
+                }
+                | ExecutionEvent::ToolFailed {
+                    step: event_step,
+                    call_id,
+                    ..
+                } if *event_step == step => {
+                    if !calls.contains(call_id)
+                        || !started_tools.contains(call_id)
+                        || !terminal_tools.insert(call_id.clone())
+                    {
+                        return Err(Error::Storage(
+                            "prior tool outcome is not a unique terminal call outcome".into(),
+                        ));
+                    }
+                }
+                ExecutionEvent::ToolBatchCompleted {
+                    step: event_step, ..
+                } if *event_step == step => {
+                    if batch_completed {
+                        return Err(Error::Storage(
+                            "prior tool batch completed more than once".into(),
+                        ));
+                    }
+                    batch_completed = true;
+                }
+                ExecutionEvent::BatchPublicationStarted {
+                    step: event_step,
+                    publication,
+                } if *event_step == step => {
+                    if !batch_completed || publication_state.is_some() {
+                        return Err(Error::Storage(
+                            "prior batch publication is not uniquely admitted after its batch"
+                                .into(),
+                        ));
+                    }
+                    let publication_value =
+                        load_json::<ModelBatchPublication>(journal, publication).await?;
+                    if publication_value.parent_operation != operation
+                        || publication_value.step != step
+                        || publication_value.operation_id
+                            != (ModelToolContext {
+                                parent_operation: operation,
+                                step,
+                                task_id: None,
+                            })
+                            .publication_operation()
+                    {
+                        return Err(Error::Conflict(
+                            "prior batch publication is bound to another operation".into(),
+                        ));
+                    }
+                    publication_state = Some((
+                        crate::contract::canonical_json_digest(&publication_value)?,
+                        false,
+                    ));
+                }
+                ExecutionEvent::BatchPublicationCompleted {
+                    step: event_step,
+                    publication_digest,
+                } if *event_step == step => {
+                    let Some((expected, completed)) = publication_state.as_mut() else {
+                        return Err(Error::Storage(
+                            "prior batch publication completed without admission".into(),
+                        ));
+                    };
+                    if *completed || expected != publication_digest {
+                        return Err(Error::Conflict(
+                            "prior batch publication completion changed its admission".into(),
+                        ));
+                    }
+                    *completed = true;
+                }
+                _ => {}
+            }
+        }
+        if !model_completed {
+            return Err(Error::Indeterminate(operation));
+        }
+        if !calls.is_empty() {
+            if !batch_completed || calls.iter().any(|call_id| !terminal_tools.contains(call_id)) {
+                return Err(Error::Indeterminate(operation));
+            }
+        }
+        if publication_state.is_some_and(|(_, completed)| !completed) {
+            return Err(Error::Indeterminate(operation));
+        }
+    }
+    Ok(())
+}
+
 fn validate_invalid_argument_feedback(
     feedback: &ToolRejectionFeedback,
     invocation: &ToolInvocation,
@@ -2415,8 +2612,20 @@ async fn validate_completed_batch_exchange(
                         "tool completion changed the completed batch invocation".into(),
                     ));
                 }
-                let _: ToolResult = load_json(journal, result).await?;
+                let result: ToolResult = load_json(journal, result).await?;
                 let projection: Value = load_json(journal, projection).await?;
+                let definition = boundary
+                    .request
+                    .tools
+                    .iter()
+                    .find(|tool| tool.name == *name)
+                    .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
+                StockExecutor::validate_persisted_tool_result(
+                    definition,
+                    &result,
+                    &projection,
+                    limits,
+                )?;
                 if outcomes
                     .insert(call_id.clone(), CompletedBatchToolOutcome::Projection(projection))
                     .is_some()
@@ -2858,8 +3067,25 @@ pub(crate) async fn classify_terminal_failure(
                         "tool completion is bound to another invocation".into(),
                     ));
                 }
-                let _: ToolResult = load_json(journal, result).await?;
-                let _: Value = load_json(journal, projection).await?;
+                let result: ToolResult = load_json(journal, result).await?;
+                let projection: Value = load_json(journal, projection).await?;
+                let request = prepared_requests.get(step).ok_or_else(|| {
+                    Error::Storage(
+                        "tool completion has no pinned request while classifying terminal failure"
+                            .into(),
+                    )
+                })?;
+                let definition = request
+                    .tools
+                    .iter()
+                    .find(|tool| tool.name == *name)
+                    .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
+                StockExecutor::validate_persisted_tool_result(
+                    definition,
+                    &result,
+                    &projection,
+                    limits,
+                )?;
             }
             ExecutionEvent::ToolFailed { step, call_id, .. } => {
                 let key = (*step, call_id.clone());
@@ -4153,6 +4379,131 @@ mod tests {
         assert!(matches!(
             validate_invalid_argument_feedback(&wrong_schema, &invocation, &schema),
             Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prior_step_barrier_rejects_interleaved_late_tool_observations() -> Result<()> {
+        let journal = Journal::default();
+        let operation = OperationId::from_bytes([92; 16]);
+        let model_call = ModelEvent::ToolCall {
+            call_id: "call-a".into(),
+            name: "example.tool".into(),
+            arguments: json!({}),
+        };
+        let model_call_ref = stage_json(&journal, operation, "model:0:call", &model_call).await?;
+        journal
+            .append(
+                operation,
+                "model:0:call".into(),
+                ExecutionEvent::Model {
+                    step: 0,
+                    event: model_call_ref,
+                },
+            )
+            .await?;
+        let completed = ModelEvent::Completed {
+            metadata: Value::Null,
+        };
+        let completed_ref = stage_json(&journal, operation, "model:0:completed", &completed).await?;
+        journal
+            .append(
+                operation,
+                "model:0:completed".into(),
+                ExecutionEvent::Model {
+                    step: 0,
+                    event: completed_ref,
+                },
+            )
+            .await?;
+        let manifest = journal
+            .stage(
+                operation,
+                "model:1:manifest".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        let request = journal
+            .stage(
+                operation,
+                "model:1:request".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        journal
+            .append(
+                operation,
+                "model:1:prepared".into(),
+                ExecutionEvent::ModelInputPrepared {
+                    step: 1,
+                    manifest,
+                    request,
+                },
+            )
+            .await?;
+        let invocation = ToolInvocation::for_model_call(
+            operation,
+            0,
+            "call-a".into(),
+            "example.tool".into(),
+            json!({}),
+        );
+        let invocation_ref = stage_json(&journal, operation, "tool:0:invocation", &invocation).await?;
+        journal
+            .append(
+                operation,
+                "tool:0:started".into(),
+                ExecutionEvent::ToolStarted {
+                    step: 0,
+                    call_id: "call-a".into(),
+                    invocation: invocation_ref,
+                },
+            )
+            .await?;
+        let records = journal.replay(operation).await?;
+        assert!(matches!(
+            validate_prior_step_barrier(&journal, &records, operation, 1).await,
+            Err(Error::Conflict(message)) if message.contains("interleaved")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_tool_result_validation_rejects_schema_invalid_success() -> Result<()> {
+        let definition = ToolDefinition {
+            name: "example.tool".into(),
+            revision: "1".into(),
+            description: "test".into(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object", "required": ["ok"]}),
+            model_output_schema: json!({"type": "object", "required": ["shown"]}),
+        };
+        let result = ToolResult {
+            value: json!({"missing": true}),
+        };
+        assert!(matches!(
+            StockExecutor::validate_persisted_tool_result(
+                &definition,
+                &result,
+                &json!({"shown": true}),
+                Limits::default(),
+            ),
+            Err(Error::Invalid(_))
+        ));
+        let result = ToolResult {
+            value: json!({"ok": true}),
+        };
+        assert!(matches!(
+            StockExecutor::validate_persisted_tool_result(
+                &definition,
+                &result,
+                &json!({"wrong": true}),
+                Limits::default(),
+            ),
+            Err(Error::Invalid(_))
         ));
         Ok(())
     }
