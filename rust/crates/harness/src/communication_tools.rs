@@ -767,6 +767,7 @@ mod tests {
         let output = wait_output(WaitCompletion::Tasks {
             outcomes: vec![
                 (task(2), Outcome::Succeeded(json!({"ok": true}))),
+                (task(4), Outcome::Cancelled),
                 (
                     task(3),
                     Outcome::Indeterminate {
@@ -779,7 +780,8 @@ mod tests {
             serde_json::to_value(output).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(value["kind"], "tasks");
         assert_eq!(value["outcomes"][0]["task_id"], task(2).to_string());
-        assert_eq!(value["outcomes"][1]["status"], "indeterminate");
+        assert_eq!(value["outcomes"][1]["status"], "cancelled");
+        assert_eq!(value["outcomes"][2]["status"], "indeterminate");
         Ok(())
     }
 

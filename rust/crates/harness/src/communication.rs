@@ -1392,6 +1392,7 @@ mod tests {
     struct CommitThenUnavailable {
         inner: acyclic_stream::MemoryStream,
         fail_once: AtomicBool,
+        hide_idempotency: AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -1403,7 +1404,11 @@ mod tests {
             Option<acyclic_stream::IdempotencyObservation>,
             acyclic_stream::StreamError,
         > {
-            self.inner.inspect_idempotency(key).await
+            if self.hide_idempotency.load(Ordering::SeqCst) {
+                Ok(None)
+            } else {
+                self.inner.inspect_idempotency(key).await
+            }
         }
 
         async fn tail(
@@ -2625,6 +2630,7 @@ mod tests {
         let provider = Arc::new(CommitThenUnavailable {
             inner: acyclic_stream::MemoryStream::default(),
             fail_once: AtomicBool::new(true),
+            hide_idempotency: AtomicBool::new(false),
         });
         let stream = StreamClient::new(provider.clone());
         let store = StreamWaitStore::new(stream.clone());
@@ -2662,6 +2668,74 @@ mod tests {
         assert_eq!(event.request(), &request);
         assert_eq!(store.open(request).await?, None);
         assert_eq!(wait_stream.bounds().await?.tail, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_control_publications_commit_one_record() -> Result<()> {
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let client = StreamClient::new(provider);
+        let stream = client
+            .stream("harness/v2/test-concurrent-publication")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let bytes = crate::contract::canonical_json_bytes(&json!({
+            "schema_version": 1,
+            "kind": "concurrent",
+        }))?;
+        let first = publish_control_record(
+            &client,
+            &stream,
+            "test-concurrent",
+            task(1),
+            operation(51),
+            &bytes,
+        );
+        let second = publish_control_record(
+            &client,
+            &stream,
+            "test-concurrent",
+            task(1),
+            operation(51),
+            &bytes,
+        );
+        let (first, second) = tokio::join!(first, second);
+        first?;
+        second?;
+        assert_eq!(stream.bounds().await?.tail, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_control_publication_stays_indeterminate_without_replay() -> Result<()> {
+        let provider = Arc::new(CommitThenUnavailable {
+            inner: acyclic_stream::MemoryStream::default(),
+            fail_once: AtomicBool::new(true),
+            hide_idempotency: AtomicBool::new(true),
+        });
+        let client = StreamClient::new(provider);
+        let stream = client
+            .stream("harness/v2/test-unknown-publication")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let bytes = crate::contract::canonical_json_bytes(&json!({
+            "schema_version": 1,
+            "kind": "unknown",
+        }))?;
+        assert!(matches!(
+            publish_control_record(
+                &client,
+                &stream,
+                "test-unknown",
+                task(1),
+                operation(52),
+                &bytes,
+            )
+            .await,
+            Err(Error::Indeterminate(id)) if id == operation(52)
+        ));
+        // The append did commit, but the provider could not prove ownership
+        // of the result. The caller must reconcile before retrying; this path
+        // never fabricates success or emits a second append.
+        assert_eq!(stream.bounds().await?.tail, 1);
         Ok(())
     }
 
