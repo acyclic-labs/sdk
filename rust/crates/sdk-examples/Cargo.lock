@@ -50,6 +50,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tonic-web-wasm-client",
  "unicode-normalization",
  "uuid",
  "windows",
@@ -61,6 +62,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-sdk-contract-wire",
+ "acyclic-sdk-remote-web",
  "acyclic-stream",
  "blake3",
  "bytes",
@@ -90,9 +92,14 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-sdk-contract-wire",
+ "futures",
  "prost",
  "prost-build",
+ "prost-reflect",
  "prost-types",
+ "reqwest",
+ "serde_json",
  "sha2",
  "thiserror",
  "tonic",
@@ -106,8 +113,10 @@ dependencies = [
 name = "acyclic-machines"
 version = "0.2.0"
 dependencies = [
+ "acyclic-sdk-contract-wire",
  "async-trait",
  "futures",
+ "gloo-timers",
  "hex",
  "hyper-util",
  "prost",
@@ -122,7 +131,9 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tonic-web-wasm-client",
  "tower",
+ "url",
  "uuid",
 ]
 
@@ -143,6 +154,7 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+ "acyclic-sdk-contract-wire",
  "async-trait",
  "blake3",
  "bytes",
@@ -154,7 +166,10 @@ dependencies = [
  "js-sys",
  "libc",
  "prost",
+ "prost-reflect",
  "prost-types",
+ "reqwest",
+ "serde_json",
  "thiserror",
  "tokio",
  "tonic",
@@ -213,6 +228,26 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tonic-prost",
+]
+
+[[package]]
+name = "acyclic-sdk-remote-web"
+version = "0.1.0"
+dependencies = [
+ "acyclic-sdk-contract-wire",
+ "blake3",
+ "bytes",
+ "js-sys",
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tonic-web-wasm-client",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -230,6 +265,7 @@ dependencies = [
  "js-sys",
  "libc",
  "prost",
+ "prost-reflect",
  "protoc-bin-vendored",
  "reqwest",
  "serde",
@@ -242,9 +278,11 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tsify-next",
+ "url",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -1118,6 +1156,18 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "gloo-timers"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
  "wasm-bindgen",
 ]
 
@@ -2533,7 +2583,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
+ "wasm-streams 0.4.2",
  "web-sys",
  "webpki-roots",
 ]
@@ -3185,6 +3235,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonic-web-wasm-client"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "435bc48a5921927390c263ebf21c32f7e2aabbe04f3d2de0d75bddb50608c566"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "httparse",
+ "js-sys",
+ "pin-project",
+ "thiserror",
+ "tonic",
+ "tower-service",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-streams 0.7.0",
+ "web-sys",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3523,6 +3597,19 @@ name = "wasm-streams"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94ce9bdac782bbca70d6ac48a3ba18b873c848a706d6dc3bd9a03c1b96f04693"
 dependencies = [
  "futures-util",
  "js-sys",

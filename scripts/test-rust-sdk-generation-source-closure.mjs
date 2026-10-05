@@ -92,6 +92,7 @@ test("every generation binary declared by Cargo has a source file", () => {
     "sdk-generation",
     "sdk-platform-receipt",
     "sdk-stream-native-receipt",
+    "sdk-runtime-consumer",
     "verify-rpc-observations",
   ]);
   for (const entry of entries) {

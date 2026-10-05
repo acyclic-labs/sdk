@@ -5,13 +5,16 @@
       "name": "host-default",
       "packages": [
         { "package": "acyclic-actors", "target": "host", "features": [], "default_features": false },
+        { "package": "acyclic-conformance", "target": "host", "features": [], "default_features": true },
         { "package": "acyclic-fs", "target": "host", "features": ["default", "acyclic-objects/grpc", "acyclic-stream/grpc"] },
         { "package": "acyclic-harness", "target": "host", "features": [], "default_features": true },
+        { "package": "acyclic-harness-codex", "target": "host", "features": [], "default_features": true },
         { "package": "acyclic-inference", "target": "host", "features": ["default"] },
         { "package": "acyclic-inference-contract", "target": "host", "features": [], "default_features": false },
         { "package": "acyclic-machines", "target": "host", "features": ["default"] },
+        { "package": "acyclic-machines-daytona", "target": "host", "features": [], "default_features": true },
         { "package": "acyclic-native-runtime", "target": "host", "features": [], "default_features": false },
-        { "package": "acyclic-objects", "target": "host", "features": ["default"] },
+        { "package": "acyclic-objects", "target": "host", "features": ["default", "http"] },
         { "package": "acyclic-stream", "target": "host", "features": ["default"] },
         { "package": "acyclic-workers", "target": "host", "features": [], "default_features": false }
       ]
