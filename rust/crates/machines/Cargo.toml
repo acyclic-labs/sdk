@@ -39,7 +39,7 @@ uuid.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 hyper-util = { workspace = true }
 rustix = { workspace = true }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["codegen", "router"] }
 tonic-prost = { workspace = true }
 tower = { workspace = true }
 tokio = { version = "1.48.0", default-features = false, features = ["fs", "macros", "net", "time", "rt-multi-thread"] }

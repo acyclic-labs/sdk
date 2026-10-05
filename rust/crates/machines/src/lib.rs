@@ -23,7 +23,7 @@ use uuid::Uuid;
 #[cfg(not(target_arch = "wasm32"))]
 mod grpc;
 #[cfg(not(target_arch = "wasm32"))]
-pub use grpc::Tls;
+pub use grpc::{Tls, service::Service};
 
 /// Generated revision-one public transport. Service implementations consume this module;
 /// customer applications should use the checked types and handles in this crate.
@@ -1649,20 +1649,15 @@ impl MachinesProvider for SimulatedMachines {
             .ok_or_else(|| ProviderError::NotFound(operation.to_string()))
     }
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
         let value = state
             .operations
-            .get(&operation)
-            .copied()
+            .get_mut(&operation)
             .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
         if value.phase == OperationPhase::Pending {
-            Ok(OperationObservation {
-                id: operation,
-                phase: OperationPhase::Cancelled,
-            })
-        } else {
-            Ok(value)
+            value.phase = OperationPhase::Cancelled;
         }
+        Ok(*value)
     }
     async fn watch_operation(
         &self,
