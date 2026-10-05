@@ -2865,139 +2865,17 @@ impl PersistentLocalSwarm {
         json!({"type": "string", "maxLength": 65536})
     }
 
-    fn local_turn_output_schema() -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "attachments": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "file": {
-                                "type": "object",
-                                "properties": {
-                                    "volume": {
-                                        "type": "object",
-                                        "properties": {
-                                            "provider": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "namespace": {"type": "string"},
-                                                    "family": {"type": "string"},
-                                                    "version": {"type": "string"}
-                                                },
-                                                "required": ["namespace", "family", "version"],
-                                                "additionalProperties": false
-                                            },
-                                            "id": {"type": "string"},
-                                            "class": {
-                                                "enum": ["project", "agent_private", "session_shared"]
-                                            },
-                                            "owner": {
-                                                "oneOf": [
-                                                    {
-                                                        "type": "object",
-                                                        "properties": {
-                                                            "kind": {"const": "project"},
-                                                            "id": {"type": "string"}
-                                                        },
-                                                        "required": ["kind", "id"],
-                                                        "additionalProperties": false
-                                                    },
-                                                    {
-                                                        "type": "object",
-                                                        "properties": {
-                                                            "kind": {"const": "agent"},
-                                                            "id": {"type": "string", "format": "uuid"}
-                                                        },
-                                                        "required": ["kind", "id"],
-                                                        "additionalProperties": false
-                                                    },
-                                                    {
-                                                        "type": "object",
-                                                        "properties": {
-                                                            "kind": {"const": "session"},
-                                                            "id": {"type": "string"}
-                                                        },
-                                                        "required": ["kind", "id"],
-                                                        "additionalProperties": false
-                                                    }
-                                                ]
-                                            }
-                                        },
-                                        "required": ["provider", "id", "class", "owner"],
-                                        "additionalProperties": false
-                                    },
-                                    "path": {"type": "string"},
-                                    "version": {"type": "string"},
-                                    "descriptor": {
-                                        "type": "object",
-                                        "properties": {
-                                            "sha256": {
-                                                "type": "array",
-                                                "items": {"type": "integer", "minimum": 0, "maximum": 255},
-                                                "minItems": 32,
-                                                "maxItems": 32
-                                            },
-                                            "byte_length": {"type": "integer", "minimum": 0},
-                                            "media_type": {"type": "string"}
-                                        },
-                                        "required": ["sha256", "byte_length", "media_type"],
-                                        "additionalProperties": false
-                                    },
-                                    "display_name": {"type": "string"}
-                                },
-                                "required": ["volume", "path", "version", "descriptor", "display_name"],
-                                "additionalProperties": false
-                            },
-                            "label": {"type": ["string", "null"]}
-                        },
-                        "required": ["file", "label"],
-                        "additionalProperties": false
-                    }
-                },
-                "metadata": {
-                    "type": ["object", "array", "string", "number", "boolean", "null"]
-                },
-                "steps": {"type": "integer", "minimum": 0}
-            },
-            "required": ["text", "attachments", "metadata", "steps"],
-            "additionalProperties": false
-        })
-    }
-
-    fn local_tool_contract(
-        &self,
-        task: TaskId,
+    fn local_execution_contract(
         harness: &PersistentLocalHarness,
     ) -> Result<(Value, BTreeSet<String>)> {
-        let mut definitions = harness
-            .storage()
-            .default_tools(harness.bundle().limits())?
-            .definitions()?;
-        definitions.extend(self.bindings.tools_for(task)?.definitions()?);
-        definitions.sort_by(|left, right| {
-            (left.name.as_str(), left.revision.as_str())
-                .cmp(&(right.name.as_str(), right.revision.as_str()))
-        });
-        definitions.dedup_by(|left, right| {
-            left.name == right.name && left.revision == right.revision
-        });
-        let requirements = definitions
-            .iter()
-            .map(|definition| format!("tool:{}@{}", definition.name, definition.revision))
-            .chain([
-                "model".to_owned(),
-                "content".to_owned(),
-                "content:write".to_owned(),
-            ])
-            .collect();
+        let contract = harness
+            .bundle()
+            .execution_contract()
+            .cloned()
+            .ok_or_else(|| Error::Conflict("local stock executor contract is missing".into()))?;
         Ok((
-            serde_json::to_value(definitions)
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-            requirements,
+            contract,
+            harness.bundle().execution_requirements().clone(),
         ))
     }
 
@@ -3008,8 +2886,9 @@ impl PersistentLocalSwarm {
         tool_contract: &Value,
     ) -> Result<Capabilities> {
         let definitions = tool_contract
-            .as_array()
-            .ok_or_else(|| Error::Invalid("local tool contract is not an array".into()))?;
+            .get("tools")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Invalid("local execution contract has no tools".into()))?;
         let mut grants = vec![
             "model:generate".to_owned(),
             "mail:send".to_owned(),
@@ -3048,7 +2927,7 @@ impl PersistentLocalSwarm {
         }
         let session = self.session(task).await?;
         let harness = self.open_session(task).await?;
-        let (tool_contract, requirements) = self.local_tool_contract(task, &harness)?;
+        let (tool_contract, requirements) = Self::local_execution_contract(&harness)?;
         let machine_digest = crate::contract::canonical_json_digest(&json!({
             "model": self.config.model.clone(),
             "limits": harness.bundle().limits(),
@@ -3061,7 +2940,7 @@ impl PersistentLocalSwarm {
             "1",
             Value::String(prompt.to_owned()),
             Self::local_turn_input_schema(),
-            Self::local_turn_output_schema(),
+            crate::executor::turn_output_schema(),
             &requirements,
             &machine_digest,
             session.parent,
@@ -3107,7 +2986,7 @@ impl PersistentLocalSwarm {
                 ));
             }
         }
-        let (tool_contract, requirements) = self.local_tool_contract(task, parent_harness)?;
+        let (tool_contract, requirements) = Self::local_execution_contract(parent_harness)?;
         let machine_digest = crate::contract::canonical_json_digest(&json!({
             "model": self.config.model.clone(),
             "limits": parent_harness.bundle().limits(),
@@ -3120,7 +2999,7 @@ impl PersistentLocalSwarm {
             "1",
             Value::String(prompt.to_owned()),
             Self::local_turn_input_schema(),
-            Self::local_turn_output_schema(),
+            crate::executor::turn_output_schema(),
             &requirements,
             &machine_digest,
             Some(parent),
@@ -4036,7 +3915,7 @@ impl PersistentLocalSwarm {
         let parent = session.parent;
         let admission = self.admit_local_turn(task, operation, prompt).await?;
         let harness = self.open_session(task).await?;
-        self.verify_admitted_task(task, parent, &admission, &harness).await?;
+        self.verify_admitted_task(parent, &admission, &harness).await?;
         let max_steps = u32::try_from(
             self.config
                 .run_limits
@@ -4155,12 +4034,7 @@ impl PersistentLocalSwarm {
         let parent_session = self.session(request.parent).await?;
         let parent_admission = self.authenticated_admission(request.parent).await?;
         let parent_harness = self.open_session(request.parent).await?;
-        self.verify_admitted_task(
-            request.parent,
-            parent_session.parent,
-            &parent_admission,
-            &parent_harness,
-        )
+        self.verify_admitted_task(parent_session.parent, &parent_admission, &parent_harness)
             .await?;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         if let Some(existing) = self.requests.lock().await.get(&child)
@@ -4286,7 +4160,7 @@ impl PersistentLocalSwarm {
                 }
             };
         let child_admission = self.authenticated_admission(child).await?;
-        self.verify_admitted_task(child, Some(request.parent), &child_admission, &harness)
+        self.verify_admitted_task(Some(request.parent), &child_admission, &harness)
             .await?;
         self.sessions.lock().await.insert(child, harness.clone());
         self.prepare_child_turn(
@@ -4795,7 +4669,7 @@ impl PersistentLocalSwarm {
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
         let admission = self.authenticated_admission(child).await?;
-        self.verify_admitted_task(child, Some(request.parent), &admission, &harness)
+        self.verify_admitted_task(Some(request.parent), &admission, &harness)
             .await?;
         Ok(LocalChildActivation::Ready(Box::new(LocalChildTurn {
             request, stream, harness, bundle, admission, max_steps, cancelled,
@@ -5097,7 +4971,6 @@ impl PersistentLocalSwarm {
     /// parent, numeric limit, or run budget binding.
     async fn verify_admitted_task(
         &self,
-        task: TaskId,
         parent: Option<TaskId>,
         admission: &crate::runtime::TaskAdmissionRecord,
         harness: &PersistentLocalHarness,
@@ -5110,7 +4983,7 @@ impl PersistentLocalSwarm {
                 "local swarm task admission no longer matches its pinned owner binding".into(),
             ));
         }
-        let (tool_contract, requirements) = self.local_tool_contract(task, harness)?;
+        let (tool_contract, requirements) = Self::local_execution_contract(harness)?;
         let machine_digest = crate::contract::canonical_json_digest(&json!({
             "model": self.config.model.clone(),
             "limits": harness.bundle().limits(),
@@ -5123,7 +4996,7 @@ impl PersistentLocalSwarm {
             "1",
             admission.input.clone(),
             Self::local_turn_input_schema(),
-            Self::local_turn_output_schema(),
+            crate::executor::turn_output_schema(),
             &requirements,
             &machine_digest,
             parent,
