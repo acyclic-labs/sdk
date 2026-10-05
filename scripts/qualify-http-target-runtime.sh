@@ -548,10 +548,17 @@ applicable_ids = {item["qualification_id"] for item in applicable_operations}
 unknown_operations = sorted(set(operations) - applicable_ids)
 if unknown_operations:
     raise SystemExit("qualified operation is absent from the Rust operation plan: " + ", ".join(unknown_operations))
+unary_ids = {
+    item["qualification_id"]
+    for item in applicable_operations
+    if not item["streaming"].get("client", False) and not item["streaming"].get("server", False)
+}
+streaming_ids = sorted(applicable_ids - unary_ids)
+missing_unary = sorted(unary_ids - set(operations)) if fixture_roundtrip else sorted(unary_ids)
 payload = {
     "schema": "acyclic.sdk.http-target-runtime-qualification.v1",
     "target": target,
-    "status": "passed",
+    "status": "passed" if not missing_unary else "partial",
     "scope": "generated-rust-openapi-http-projection",
     "runtime": {"name": runtime},
     "source_revision": revision,
@@ -563,6 +570,8 @@ payload = {
     "qualified_operations": operations if fixture_roundtrip else [],
     "applicable_operations": applicable_operations,
     "applicable_operation_count": len(applicable_operations),
+    "unqualified_unary_operations": missing_unary,
+    "streaming_operations": streaming_ids,
     "coverage_note": "This receipt proves only the listed generated operation; it does not imply full service or family coverage.",
     "streaming": "not-applicable-to-http-projection",
     "native_grpc": "unqualified",
