@@ -1,0 +1,22 @@
+{
+  "schema": "acyclic.installed-wasm-qualification.v1",
+  "family": "inference",
+  "package": "@acyclic-labs/inference",
+  "packageVersion": "0.2.0",
+  "sourceRevision": "8df699516f5cda27cee5e20540aa94af34aee307",
+  "packageArtifact": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\.tmp-installed-inference-wasm\\acyclic-labs-inference-0.2.0.tgz",
+  "packageSha256": "ea29d0a2ad66690acaa5053ef1984de6f7e4d4b96f4ba0cf1212d7459600f5b7",
+  "wasmArtifact": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\typescript\\packages\\inference\\generated\\wasm\\acyclic_inference_wasm_bg.wasm",
+  "wasmSha256": "3fc5ee57845c07c160ff004edb07a91fa16de4d2cfcd405c7b46221cd52a6e9d",
+  "rustSource": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\rust\\crates\\inference\\src\\client.rs",
+  "rustSourceSha256": "8618b2fe70455bda69bef5353f850a955f4d9ea723d2ad7cebcd1dc029154900",
+  "consumer": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\.tmp-installed-inference-consumer",
+  "qualificationCommand": "bun qualify.mjs",
+  "symlinkFreeInstall": true,
+  "transport": "rust-wasm-http",
+  "handshakeFirst": true,
+  "operations": 14,
+  "watchEvents": 1,
+  "result": "passed",
+  "generatedAt": "2026-10-05T08:09:14.7974459Z"
+}
