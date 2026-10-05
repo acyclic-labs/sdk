@@ -7092,8 +7092,12 @@ fn apply_record(
 
 #[cfg(test)]
 mod tests {
-    #[path = "../../../../verification/real_harness_trace.rs"]
-    mod real_harness_trace;
+    mod real_harness_trace {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/verification/real_harness_trace.rs"
+        ));
+    }
 
     use super::*;
     use crate::context::ContextStage;
