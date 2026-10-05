@@ -255,4 +255,34 @@ mod tests {
         ));
         Ok(())
     }
+
+    #[tokio::test]
+    async fn keyed_revalidation_fences_a_concurrent_host_edit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        std::fs::write(root.path().join("tracked.txt"), b"before")?;
+        let fs = Fs::memory();
+        let checkout = HostCheckout::attach(
+            &fs,
+            "host-checkout-revalidation",
+            root.path(),
+            SourceOptions {
+                mode: SourceMode::Pinned,
+                ..SourceOptions::default()
+            },
+        )
+        .await?;
+        let approved = checkout.binding().await;
+        std::fs::write(root.path().join("tracked.txt"), b"concurrent")?;
+
+        let refreshed = checkout
+            .revalidate_with_key(IdempotencyKey::from_bytes([7; 16]))
+            .await?;
+        assert_ne!(refreshed.generation_id, approved.generation_id);
+        assert!(matches!(
+            checkout.prepare_publish(&approved).await,
+            Err(HostCheckoutError::StaleSource { .. })
+        ));
+        Ok(())
+    }
 }
