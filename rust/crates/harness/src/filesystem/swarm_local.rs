@@ -4163,6 +4163,8 @@ impl PersistentLocalSwarm {
         }
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         if let Some(checkout_path) = bindings.native_checkout_path.take() {
+            let checkout_path = std::fs::canonicalize(&checkout_path)
+                .map_err(|error| Error::Storage(format!("native checkout root: {error}")))?;
             ensure_native_checkout_is_external(&root, &checkout_path)?;
             let checkout = host
                 .attach_native_checkout(
