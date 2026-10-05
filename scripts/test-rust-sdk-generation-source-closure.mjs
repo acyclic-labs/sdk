@@ -308,3 +308,28 @@ test('additional language qualification independently regenerates canonical Rust
   assert.throws(() => assertIndependentCanonicalProducer(copied), /two Rust producer executions/);
   assert.throws(() => assertIndependentCanonicalProducer(workflow.replace(/export ACYCLIC_RUST_SOURCE_REVISION=.*\n/, '')), /ACYCLIC_RUST_SOURCE_REVISION/);
 });
+
+function assertGenerationModuleClosure(source, hasSource) {
+  const declarations = [...source.matchAll(/((?:#\[[^\n]*\]\s*\n)*)mod ([A-Za-z_][A-Za-z0-9_]*);/g)];
+  assert.ok(declarations.length > 0, 'generation entrypoint must declare its implementation modules');
+  for (const [, attributes, name] of declarations) {
+    const explicit = attributes.match(/#\[path = "([^"\n]+)"\]/)?.[1];
+    const candidates = explicit ? [explicit] : [`${name}.rs`, `${name}/mod.rs`];
+    assert.ok(candidates.some(hasSource), `generation module ${name} has no source: ${candidates.join(' or ')}`);
+  }
+}
+
+test('generation entrypoint implementation modules have a closed source set', () => {
+  const source = read('rust/crates/sdk-generation/src/main.rs');
+  assertGenerationModuleClosure(source, path => existsSync(join(root, 'rust/crates/sdk-generation/src', path)));
+});
+
+test('generation module closure rejects omitted explicit and conventional modules', () => {
+  const source = 'mod target_packaging;\n#[path = "observation_verifier.rs"]\n#[allow(dead_code)]\nmod observation_verifier;\n';
+  const paths = new Set(['target_packaging.rs', 'observation_verifier.rs']);
+  assertGenerationModuleClosure(source, path => paths.has(path));
+  for (const missing of paths) {
+    assert.throws(() => assertGenerationModuleClosure(source, path => paths.has(path) && path !== missing), /generation module .* has no source/);
+  }
+  assertGenerationModuleClosure('mod nested;\n', path => path === 'nested/mod.rs');
+});
