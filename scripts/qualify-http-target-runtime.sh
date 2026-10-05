@@ -145,18 +145,85 @@ EOF
 module QualificationMain exposing (main)
 
 import Api.Request.Default
-import Html exposing (Html, text)
+import Api
+import Api.Data exposing (..)
+import Browser
+import Html exposing (Html, div, text)
+import Html.Attributes exposing (attribute, id)
+import Http
 
-main : Html msg
+type alias Flags =
+    { basePath : String
+    , token : String
+    }
+
+type Model
+    = Loading
+    | Passed
+    | Failed String
+
+type Msg
+    = Finished (Result Http.Error AcyclicActorsV1CreateActorResponse)
+
+main : Program Flags Model Msg
 main =
-    text (Debug.toString Api.Request.Default.createActor)
+    Browser.element
+        { init = init
+        , update = update
+        , subscriptions = \_ -> Sub.none
+        , view = view
+        }
+
+init : Flags -> ( Model, Cmd Msg )
+init flags =
+    ( Loading
+    , Api.send Finished
+        (Api.withBasePath flags.basePath
+            (Api.Request.Default.createActor request flags.token))
+    )
+
+request : AcyclicActorsV1CreateActorRequest
+request =
+    { bindings = Nothing
+    , codeSha256 = Just "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+    , homeRegion = Just "qualification"
+    , idempotencyKey = Just "http-target-elm-qualification"
+    , limits = Just
+        { checkpointBytes = Just "1048576"
+        , handlerTimeoutMillis = Just "1000"
+        , memoryBytes = Just "1048576"
+        }
+    , subscriptions = Nothing
+    }
+
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg _ =
+    case msg of
+        Finished (Ok response) ->
+            case response.actor of
+                Just _ -> ( Passed, Cmd.none )
+                Nothing -> ( Failed "generated Elm client decoded an empty actor response", Cmd.none )
+
+        Finished (Err error) ->
+            ( Failed (Debug.toString error), Cmd.none )
+
+view : Model -> Html Msg
+view model =
+    case model of
+        Loading -> div [ id "elm-qualification" ] [ text "loading" ]
+        Passed -> div [ id "elm-qualification", attribute "data-result" "passed" ] [ text "passed" ]
+        Failed detail -> div [ id "elm-qualification", attribute "data-result" "failed" ] [ text detail ]
 EOF
       run_logged "elm-$(basename "$dir")" bash -c "cd \"$dir\" && elm make src/QualificationMain.elm --output=qualification.js"
+      if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
+        run_logged "elm-browser-$(basename "$dir")" node "$PWD/scripts/qualify-elm-browser.mjs" "$dir" "$ACYCLIC_FIXTURE_HTTP_ENDPOINT"
+      fi
     done
-    # Elm's generated Http client is browser-hosted. The release lane proves
-    # the generated package compiles; browser transport execution is covered
-    # by the website/browser lane rather than this headless job.
-    client_transport='not-run-elm-browser-http'
+    if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
+      client_transport='elm-generated-client-browser-fixture-roundtrip'
+    else
+      client_transport='not-run-fixture-endpoint-unset'
+    fi
     runtime='elm'
     ;;
   gdscript)
