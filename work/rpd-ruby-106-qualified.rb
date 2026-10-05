@@ -58,6 +58,10 @@ manifest.fetch("records").each_with_index do |record, index|
   stub = (stubs[service] ||= Helpers.service_class(service).new(ENDPOINT, :this_channel_is_insecure))
   request_class = Helpers.message_class(record.fetch("request_type"))
   request = request_class.decode(Base64.decode64(record.fetch("request_base64")))
+  request_frames = record.fetch("request_frames", []).map do |frame|
+    request_class.decode(Base64.decode64(frame.fetch("bytes_base64")))
+  end
+  request_frames = [request] if request_frames.empty?
   expected_frames = record.fetch("response_frames")
   expected_status = record.fetch("expected_status")
   expected_error = expected_status == "observed-status" && expected_frames.empty?
@@ -65,7 +69,7 @@ manifest.fetch("records").each_with_index do |record, index|
   begin
     client = Acyclic::Remote::Client.new(family: record.fetch("family"), runtime: :native, bearer_auth: record.fetch("family") != "machines", endpoint: "grpc://#{ENDPOINT}", invoker: lambda { |_operation, req, _transport|
       if CLIENT_STREAMING_RPCS.include?(rpc)
-        stub.public_send(ruby_method, [req])
+        stub.public_send(ruby_method, request_frames)
       elsif STREAMING_RPCS.include?(rpc)
         operation = stub.public_send(ruby_method, req, return_op: true)
         frames = []
