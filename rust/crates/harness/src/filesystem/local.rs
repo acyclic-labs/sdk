@@ -3,21 +3,25 @@ use super::{FilesystemForkVerifier, FilesystemHost, HarnessStorage};
 use crate::{
     AgentId, Capabilities, ConversationId, Error, OperationId, Result, SessionId, TaskId,
     conversation::{
-        ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+        ContentGrant, ContentResidencyVerifier, FileRef, Limits, VolumeClass,
+        VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer, Scope},
-    effects::EffectRegistry,
-    executor::{SwarmProviderAdmission, TurnOutput},
+    core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, EffectStatus, Scope},
+    durable_host::task_interaction_id,
+    effects::{EffectDispatch, EffectProvider, EffectRegistry},
+    executor::{ExecutionJournal, SwarmProviderAdmission, TurnOutput},
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     host_execution::{
-        ExecutionClaim, ExecutionClaimHandle, ExecutionReceipt, ExecutionReceiptKey,
-        ExecutionReceiptRecord, ExecutionReceiptStore, ExecutionResolutionCapability,
-        NativeExecutionProvider,
+        ExecutionApproval, ExecutionClaim, ExecutionClaimHandle, ExecutionEnvironment,
+        ExecutionReceipt, ExecutionReceiptKey, ExecutionReceiptRecord, ExecutionReceiptStore,
+        ExecutionResolutionCapability, ExecutionSpec, NativeExecutionProvider,
     },
+    interaction::{Interaction, InteractionOutcome},
     model::{Model, ModelProvider},
     resources::ProviderRef,
     store::StreamAggregate,
-    tool::ToolRegistry,
+    runtime::ToolContext,
+    tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
 use acyclic_stream::{
@@ -26,7 +30,9 @@ use acyclic_stream::{
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -1006,6 +1012,503 @@ impl LocalHarnessTools {
     }
 }
 
+const LOCAL_EXECUTION_TOOL: &str = "acyclic.shell";
+pub(super) const LOCAL_EXECUTION_CAPABILITY: &str = "tool:call:acyclic.shell";
+pub(super) const INTERACTION_ROUTE_CAPABILITY: &str = "interaction:route";
+const LOCAL_EXECUTION_PROVIDER: &str = "harness.native-execution.v1";
+const LOCAL_EXECUTION_KIND: &str = "host.process";
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalExecutionInput {
+    executable: String,
+    arguments: Vec<String>,
+    working_directory: String,
+    environment: ExecutionEnvironment,
+    timeout_ms: Option<u64>,
+    max_output_bytes: u32,
+}
+
+impl LocalExecutionInput {
+    fn spec(self) -> Result<ExecutionSpec> {
+        let spec = ExecutionSpec {
+            executable: self.executable,
+            arguments: self.arguments,
+            working_directory: self.working_directory,
+            environment: self.environment,
+            timeout_ms: self.timeout_ms,
+            max_output_bytes: self.max_output_bytes,
+        };
+        spec.validate()?;
+        Ok(spec)
+    }
+}
+
+/// Harness-owned adapter for exact approved local process execution.
+///
+/// The tool only opens an authenticated approval interaction and dispatches
+/// through the host execution provider. It never accepts an ambient command
+/// string, inherits the host environment, or manufactures an approval.
+struct LocalExecutionTool {
+    journal: Arc<dyn ExecutionJournal>,
+    provider: Arc<dyn EffectProvider>,
+    volume: VolumeRef,
+    session_id: SessionId,
+}
+
+/// Host-only request reader for the native provider. Execution journal refs
+/// live under `.system/execution`; they must never be opened through the
+/// model-facing private-content reader.
+struct ExecutionJournalRequestReader {
+    journal: Arc<dyn ExecutionJournal>,
+}
+
+impl ContentResidencyVerifier for ExecutionJournalRequestReader {
+    fn verify<'a>(
+        &'a self,
+        reference: &'a FileRef,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let bytes = self.journal.load(reference).await?;
+            reference.descriptor().verify(&bytes)
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        reference: &'a FileRef,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move {
+            let bytes = self.journal.load(reference).await?;
+            reference.descriptor().verify(&bytes)?;
+            Ok(bytes)
+        })
+    }
+}
+
+fn execution_request_key(operation_id: OperationId) -> String {
+    format!("native-execution-request:{operation_id}")
+}
+
+fn local_interaction_id(session_id: SessionId, operation_id: OperationId) -> crate::InteractionId {
+    let digest = blake3::hash(
+        &[
+            b"harness/local-execution-interaction:v1".as_slice(),
+            session_id.into_bytes().as_slice(),
+            operation_id.into_bytes().as_slice(),
+        ]
+        .concat(),
+    );
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    crate::InteractionId::from_bytes(bytes)
+}
+
+impl LocalExecutionTool {
+    fn definition() -> ToolDefinition {
+        ToolDefinition {
+            name: LOCAL_EXECUTION_TOOL.into(),
+            revision: "1".into(),
+            description: "Execute one exact absolute host command after owner approval".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "executable": {"type": "string", "minLength": 1},
+                    "arguments": {"type": "array", "items": {"type": "string"}},
+                    "working_directory": {"type": "string", "minLength": 1},
+                    "environment": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {"kind": {"const": "clear"}},
+                                "required": ["kind"],
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"const": "explicit"},
+                                    "variables": {"type": "object", "additionalProperties": {"type": "string"}}
+                                },
+                                "required": ["kind", "variables"],
+                                "additionalProperties": false
+                            }
+                        ]
+                    },
+                    "timeout_ms": {"type": ["integer", "null"], "minimum": 1},
+                    "max_output_bytes": {"type": "integer", "minimum": 1}
+                },
+                "required": ["executable", "arguments", "working_directory", "environment", "timeout_ms", "max_output_bytes"],
+                "additionalProperties": false
+            }),
+            output_schema: Self::output_schema(),
+            model_output_schema: Self::output_schema(),
+        }
+    }
+
+    fn output_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "operation_id": {"type": "string"},
+                "receipt": {
+                    "type": "object",
+                    "required": ["kind"],
+                    "properties": {"kind": {"type": "string"}},
+                    "additionalProperties": true
+                }
+            },
+            "required": ["operation_id", "receipt"],
+            "additionalProperties": false
+        })
+    }
+
+    fn attempt_id(operation_id: OperationId) -> crate::EffectAttemptId {
+        let digest = blake3::hash(
+            &[
+                b"harness/local-execution-attempt:v1".as_slice(),
+                operation_id.into_bytes().as_slice(),
+            ]
+            .concat(),
+        );
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&digest.as_bytes()[..16]);
+        crate::EffectAttemptId::from_bytes(bytes)
+    }
+
+    async fn stage_request(
+        &self,
+        operation_id: OperationId,
+        interaction_id: crate::InteractionId,
+        spec: ExecutionSpec,
+    ) -> Result<(FileRef, [u8; 32])> {
+        // The journal owns the host-only `.system/execution` path and its
+        // idempotency fence. The returned immutable ref still binds every
+        // request byte and is authenticated by the provider.
+        let mut approval = ExecutionApproval::approve_for(
+            self.session_id,
+            interaction_id,
+            operation_id,
+            spec,
+        )?;
+        let request_key = execution_request_key(operation_id);
+        let path = super::execution_journal::execution_content_path(operation_id, &request_key);
+        approval.bind_request_location(&self.volume, &path)?;
+        let bytes = serde_json::to_vec(&approval)
+            .map_err(|error| Error::Invalid(format!("execution approval is not serializable: {error}")))?;
+        let reference = self
+            .journal
+            .stage(
+                operation_id,
+                request_key,
+                bytes,
+                "application/json",
+            )
+            .await?;
+        let digest = crate::core::effect_request_digest(
+            LOCAL_EXECUTION_PROVIDER,
+            EffectGuarantee::AtMostOnce,
+            LOCAL_EXECUTION_KIND,
+            &reference,
+        )?;
+        Ok((reference, digest))
+    }
+
+    async fn execute_scoped(
+        &self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> Result<ToolResult> {
+        let task = context.task().durable_task_id().ok_or_else(|| {
+            Error::Unsupported("local host execution requires an admitted durable task".into())
+        })?;
+        let input: LocalExecutionInput = serde_json::from_value(invocation.arguments.clone())
+            .map_err(|error| Error::Invalid(format!("shell input is invalid: {error}")))?;
+        let spec = input.spec()?;
+        let interaction_id = task_interaction_id(task, invocation.operation_id);
+        let (request, request_digest) = self
+            .stage_request(invocation.operation_id, interaction_id, spec)
+            .await?;
+        let interaction = Interaction::approval(
+            "Approve this exact host executable, argv, working directory, and environment",
+            invocation.operation_id,
+            request_digest,
+        )?;
+        match context
+            .interact(invocation.operation_id, interaction)
+            .await?
+        {
+            InteractionOutcome::Indeterminate { .. } => {
+                Err(Error::Indeterminate(invocation.operation_id))
+            }
+            InteractionOutcome::Declined
+            | InteractionOutcome::Cancelled
+            | InteractionOutcome::Expired
+            | InteractionOutcome::Denied => Ok(ToolResult {
+                value: json!({
+                    "operation_id": invocation.operation_id.to_string(),
+                    "receipt": {"kind": "denied", "reason": "owner did not approve execution"}
+                }),
+            }),
+            InteractionOutcome::Approved => {
+                self.dispatch_approved(invocation.operation_id, request, request_digest)
+                    .await
+            }
+            InteractionOutcome::Answered { .. } => Err(Error::Conflict(
+                "execution approval resolved with a non-approval answer".into(),
+            )),
+        }
+    }
+
+    async fn execute_local(&self, invocation: ToolInvocation) -> Result<ToolResult> {
+        let input: LocalExecutionInput = serde_json::from_value(invocation.arguments.clone())
+            .map_err(|error| Error::Invalid(format!("shell input is invalid: {error}")))?;
+        let spec = input.spec()?;
+        let interaction_id = local_interaction_id(self.session_id, invocation.operation_id);
+        let (request, request_digest) = self
+            .stage_request(invocation.operation_id, interaction_id, spec)
+            .await?;
+        let interaction = Interaction::approval(
+            "Approve this exact host executable, argv, working directory, and environment",
+            invocation.operation_id,
+            request_digest,
+        )?;
+        self.journal
+            .open_interaction(interaction_id, interaction)
+            .await?;
+        let outcome = self
+            .journal
+            .interaction_outcome(interaction_id)
+            .await?
+            .unwrap_or(InteractionOutcome::Indeterminate {
+                operation_id: invocation.operation_id,
+            });
+        match outcome {
+            InteractionOutcome::Approved => {
+                self.dispatch_approved(invocation.operation_id, request, request_digest)
+                    .await
+            }
+            InteractionOutcome::Declined
+            | InteractionOutcome::Cancelled
+            | InteractionOutcome::Expired
+            | InteractionOutcome::Denied => Ok(ToolResult {
+                value: json!({
+                    "operation_id": invocation.operation_id.to_string(),
+                    "receipt": {"kind": "denied", "reason": "owner did not approve execution"}
+                }),
+            }),
+            InteractionOutcome::Indeterminate { .. } => {
+                Err(Error::Indeterminate(invocation.operation_id))
+            }
+            InteractionOutcome::Answered { .. } => Err(Error::Conflict(
+                "execution approval resolved with a non-approval answer".into(),
+            )),
+        }
+    }
+
+    async fn dispatch_approved(
+        &self,
+        operation_id: OperationId,
+        request: FileRef,
+        request_digest: [u8; 32],
+    ) -> Result<ToolResult> {
+        let dispatch = EffectDispatch {
+            provider: LOCAL_EXECUTION_PROVIDER.into(),
+            effect_id: crate::EffectId::from_bytes(operation_id.into_bytes()),
+            attempt_id: Self::attempt_id(operation_id),
+            effect_kind: LOCAL_EXECUTION_KIND.into(),
+            request,
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let observation = self.provider.dispatch(dispatch).await?;
+        self.observation_result(operation_id, observation).await
+    }
+
+    async fn observation_result(
+        &self,
+        operation_id: OperationId,
+        observation: crate::effects::EffectObservation,
+    ) -> Result<ToolResult> {
+        if observation.provider != LOCAL_EXECUTION_PROVIDER
+            || observation.effect_id != crate::EffectId::from_bytes(operation_id.into_bytes())
+            || observation.guarantee != EffectGuarantee::AtMostOnce
+        {
+            return Err(Error::Conflict(
+                "native execution observation is bound to a different effect".into(),
+            ));
+        }
+        let receipt = match observation.status {
+            EffectStatus::Succeeded { result }
+            | EffectStatus::FailedWithReceipt { result, .. } => {
+                let bytes = self.journal.load(&result).await?;
+                let receipt: ExecutionReceipt = serde_json::from_slice(&bytes).map_err(|error| {
+                    Error::Storage(format!("execution receipt is invalid: {error}"))
+                })?;
+                receipt.validate()?;
+                receipt
+            }
+            EffectStatus::Indeterminate | EffectStatus::Planned | EffectStatus::Dispatched => {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            EffectStatus::Failed { message } => {
+                return Err(Error::Storage(format!("native execution failed: {message}")));
+            }
+        };
+        Ok(ToolResult {
+            value: json!({
+                "operation_id": operation_id.to_string(),
+                "receipt": receipt,
+            }),
+        })
+    }
+
+    async fn reconcile_scoped(
+        &self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> Result<Option<ToolResult>> {
+        let task = context.task().durable_task_id().ok_or_else(|| {
+            Error::Unsupported("local host execution requires an admitted durable task".into())
+        })?;
+        let input: LocalExecutionInput = serde_json::from_value(invocation.arguments.clone())
+            .map_err(|error| Error::Invalid(format!("shell input is invalid: {error}")))?;
+        let spec = input.spec()?;
+        let interaction_id = task_interaction_id(task, invocation.operation_id);
+        let (_request, request_digest) = self
+            .stage_request(invocation.operation_id, interaction_id, spec)
+            .await?;
+        let attempt_id = Self::attempt_id(invocation.operation_id);
+        let Some(observation) = self.provider.reconcile(attempt_id).await? else {
+            // No receipt means dispatch has not produced an observable
+            // attempt yet. Re-open the exact durable approval ticket so an
+            // operator can resolve a pending request after restart. Once an
+            // attempt exists, the provider branch above is the only path.
+            return self.execute_scoped(context, invocation).await.map(Some);
+        };
+        if observation.attempt_id != attempt_id || observation.request_digest != request_digest {
+            return Err(Error::Conflict(
+                "native execution reconciliation is bound to a different request".into(),
+            ));
+        }
+        self.observation_result(invocation.operation_id, observation)
+            .await
+            .map(Some)
+    }
+
+    async fn reconcile_local(&self, invocation: ToolInvocation) -> Result<Option<ToolResult>> {
+        let input: LocalExecutionInput = serde_json::from_value(invocation.arguments.clone())
+            .map_err(|error| Error::Invalid(format!("shell input is invalid: {error}")))?;
+        let spec = input.spec()?;
+        let interaction_id = local_interaction_id(self.session_id, invocation.operation_id);
+        let (_request, request_digest) = self
+            .stage_request(invocation.operation_id, interaction_id, spec)
+            .await?;
+        let attempt_id = Self::attempt_id(invocation.operation_id);
+        let Some(observation) = self.provider.reconcile(attempt_id).await? else {
+            return self.execute_local(invocation).await.map(Some);
+        };
+        if observation.attempt_id != attempt_id || observation.request_digest != request_digest {
+            return Err(Error::Conflict(
+                "native execution reconciliation is bound to a different request".into(),
+            ));
+        }
+        self.observation_result(invocation.operation_id, observation)
+            .await
+            .map(Some)
+    }
+}
+
+impl ToolExecutor for LocalExecutionTool {
+    fn authorize(
+        &self,
+        scope: Option<&crate::runtime::RuntimeScope>,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
+        let scope = scope.ok_or_else(|| Error::Unauthorized("host execution requires scope".into()))?;
+        if !scope.grants().contains(INTERACTION_ROUTE_CAPABILITY) {
+            return Err(Error::Unauthorized(format!(
+                "host execution requires {INTERACTION_ROUTE_CAPABILITY}"
+            )));
+        }
+        let input: LocalExecutionInput = serde_json::from_value(invocation.arguments.clone())
+            .map_err(|error| Error::Invalid(format!("shell input is invalid: {error}")))?;
+        input.spec().map(|_| ())
+    }
+
+    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(self.execute_local(invocation))
+    }
+
+    fn execute_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(self.execute_scoped(context, invocation))
+    }
+
+    fn reconcile<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(self.reconcile_local(invocation))
+    }
+
+    fn reconcile_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(self.reconcile_scoped(context, invocation))
+    }
+}
+
+pub(super) fn local_execution_tool(storage: &DurableHarnessStorage) -> Result<Tool> {
+    let journal = storage.journal();
+    let request_reader = Arc::new(ExecutionJournalRequestReader {
+        journal: journal.clone(),
+    });
+    let (host, stream, read, write, maximum_bytes) = storage.execution_binding();
+    let receipt_store = Arc::new(FilesystemExecutionReceiptStore::new(
+        stream,
+        host,
+        storage.volume().clone(),
+        storage.session_id(),
+        storage.owner_scope(),
+        read,
+        write,
+        maximum_bytes,
+    )?);
+    let provider = NativeExecutionProvider::native_with_receipt_store(
+        request_reader,
+        receipt_store,
+        storage.execution_approval_verifier(),
+    )?;
+    Ok(Tool {
+        definition: LocalExecutionTool::definition(),
+        executor: Arc::new(LocalExecutionTool {
+            journal,
+            provider: Arc::new(provider),
+            volume: storage.volume().clone(),
+            session_id: storage.session_id(),
+        }),
+        projection: Arc::new(LocalExecutionToolProjection),
+    })
+}
+
+pub(super) fn register_local_execution_tool(
+    tools: &mut ToolRegistry,
+    storage: &DurableHarnessStorage,
+) -> Result<()> {
+    tools.register(local_execution_tool(storage)?)
+}
+
+struct LocalExecutionToolProjection;
+
+impl ToolProjection for LocalExecutionToolProjection {
+    fn project(&self, _invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+        Ok(result.value.clone())
+    }
+}
+
 fn default_local_bundle(
     storage: &DurableHarnessStorage,
     model: Model,
@@ -1013,14 +1516,18 @@ fn default_local_bundle(
     limits: Limits,
     extension: LocalHarnessTools,
 ) -> Result<crate::Harness> {
+    let mut tools = storage.default_tools(limits)?;
+    register_local_execution_tool(&mut tools, storage)?;
     let builder = storage
         .builder()
         .model(model, provider)
-        .tools(storage.default_tools(limits)?)
+        .tools(tools)
         .grant("model:generate")
         .grant("tool:call:acyclic.read_file")
         .grant("tool:call:acyclic.stage_file")
         .grant("tool:call:acyclic.list_files")
+        .grant(LOCAL_EXECUTION_CAPABILITY)
+        .grant(INTERACTION_ROUTE_CAPABILITY)
         .limits(limits);
     extension.install_into(builder)?.build()
 }
@@ -1985,6 +2492,43 @@ mod tests {
             Box::pin(async { Ok(None) })
         }
     }
+
+    #[test]
+    fn local_execution_contract_is_exact_and_closed() -> Result<()> {
+        let definition = LocalExecutionTool::definition();
+        definition.validate()?;
+        assert_eq!(definition.name, LOCAL_EXECUTION_TOOL);
+        assert_eq!(definition.revision, "1");
+        for field in [
+            "executable",
+            "arguments",
+            "working_directory",
+            "environment",
+            "timeout_ms",
+            "max_output_bytes",
+        ] {
+            assert!(definition.input_schema["required"]
+                .as_array()
+                .is_some_and(|required| required.iter().any(|value| value == field)));
+        }
+        assert_eq!(definition.input_schema["additionalProperties"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn local_execution_input_rejects_ambiguous_host_resolution() {
+        let input = serde_json::from_value::<LocalExecutionInput>(json!({
+            "executable": "echo",
+            "arguments": [],
+            "working_directory": ".",
+            "environment": {"kind": "clear"},
+            "timeout_ms": null,
+            "max_output_bytes": 1024,
+        }))
+        .expect("input shape is valid before exact spec admission");
+        assert!(input.spec().is_err());
+    }
+
     #[tokio::test]
     async fn denied_model_options_do_not_create_session_storage() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;

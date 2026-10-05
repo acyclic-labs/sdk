@@ -44,6 +44,12 @@ const MAX_FAILURE_BYTES: usize = 4096;
 const READER_GRACE: Duration = Duration::from_millis(250);
 const MAX_TIMEOUT_MS: u64 = i64::MAX as u64;
 
+#[cfg(test)]
+thread_local! {
+    static FORCE_NATIVE_TERMINATION_ERROR: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 /// Environment values admitted for a process.
 ///
 /// Both variants call `env_clear` before adding values.  There is intentionally
@@ -1096,14 +1102,19 @@ impl ExecutionRunner for NativeExecutionRunner {
         let stdout_thread = spawn_reader(stdout, Arc::clone(&remaining), Arc::clone(&overflow));
         let stderr_thread = spawn_reader(stderr, Arc::clone(&remaining), Arc::clone(&overflow));
         let termination;
+        let mut termination_error = None;
         loop {
             if overflow.load(Ordering::Acquire) {
-                let _ = child.terminate();
+                if let Err(error) = child.terminate() {
+                    termination_error = Some(format!("native process termination failed: {error}"));
+                }
                 termination = Termination::Overflow;
                 break;
             }
             if cancellation.is_cancelled() {
-                let _ = child.terminate();
+                if let Err(error) = child.terminate() {
+                    termination_error = Some(format!("native process termination failed: {error}"));
+                }
                 termination = Termination::Cancelled;
                 break;
             }
@@ -1129,14 +1140,24 @@ impl ExecutionRunner for NativeExecutionRunner {
                 });
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                let _ = child.terminate();
+                if let Err(error) = child.terminate() {
+                    termination_error = Some(format!("native process termination failed: {error}"));
+                }
                 termination = Termination::TimedOut;
                 break;
             }
             thread::sleep(Duration::from_millis(5));
         }
-        let stdout = receive_reader(&stdout_thread)?;
-        let stderr = receive_reader(&stderr_thread)?;
+        let stdout = receive_reader(&stdout_thread);
+        let stderr = receive_reader(&stderr_thread);
+        if let Some(reason) = termination_error {
+            // A failed tree signal leaves the external effect uncertain even
+            // when both output pipes have closed. Never publish timeout,
+            // cancellation, or overflow as a terminal result in that case.
+            return Ok(RunnerOutcome::Unknown { reason });
+        }
+        let stdout = stdout?;
+        let stderr = stderr?;
         if overflow.load(Ordering::Acquire) {
             return Err(Error::Invalid(
                 "approved process output exceeded its limit".into(),
@@ -1208,6 +1229,10 @@ impl ManagedChild {
     }
 
     fn terminate(&mut self) -> std::io::Result<()> {
+        #[cfg(test)]
+        if FORCE_NATIVE_TERMINATION_ERROR.with(|forced| forced.get()) {
+            return Err(std::io::Error::other("fault-injected termination failure"));
+        }
         match self {
             Self::Direct(child) => {
                 let _ = child.kill();
@@ -2510,7 +2535,11 @@ mod tests {
         fn run(&self, request: &ExecutionSpec) -> Result<RunnerOutcome> {
             let _ = NativeExecutionRunner.run(request)?;
             Err(Error::Storage(
-                "fault injected after child exit before receipt persistence".into(),
+                concat!(
+                    "native process termination failed: fault injected after child exit before ",
+                    "receipt persistence"
+                )
+                .into(),
             ))
         }
     }
@@ -2914,6 +2943,30 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn native_runner_reports_unknown_when_termination_fails_after_output_overflow() -> Result<()> {
+        let mut request = spec();
+        request.max_output_bytes = 1;
+        if cfg!(windows) {
+            request.arguments = vec!["/C".into(), "echo overflow".into()];
+        } else {
+            request.arguments = vec!["-c".into(), "printf overflow".into()];
+        }
+
+        let outcome = FORCE_NATIVE_TERMINATION_ERROR.with(|forced| {
+            forced.set(true);
+            let outcome = NativeExecutionRunner.run(&request);
+            forced.set(false);
+            outcome
+        })?;
+        assert!(matches!(
+            outcome,
+            RunnerOutcome::Unknown { ref reason }
+                if reason.contains("native process termination failed")
+        ));
+        Ok(())
+    }
+
     /// The direct Windows adapter must classify a parent that exits while a
     /// hidden descendant still owns the inherited output pipe as uncertain.
     /// The process-tree adapter owns descendants and has a separate cleanup
@@ -3208,7 +3261,11 @@ mod tests {
         assert_eq!(first.status, EffectStatus::Indeterminate);
         let receipt: ExecutionReceipt =
             serde_json::from_slice(content.staged.lock().unwrap().first().unwrap()).unwrap();
-        assert!(matches!(receipt, ExecutionReceipt::Unknown { .. }));
+        assert!(matches!(
+            receipt,
+            ExecutionReceipt::Unknown { ref reason }
+                if reason.contains("native process termination failed")
+        ));
 
         let restarted = NativeExecutionProvider::new(
             content.clone(),

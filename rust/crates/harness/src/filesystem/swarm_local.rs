@@ -5921,13 +5921,17 @@ impl PersistentLocalSwarm {
         harness: &PersistentLocalHarness,
         declaration: &LocalInheritedModelDeclaration,
     ) -> Result<crate::Harness> {
+        let mut tools = harness.storage().default_tools(self.config.limits)?;
+        super::local::register_local_execution_tool(&mut tools, harness.storage())?;
         let builder = harness.storage()
             .inherited_builder(declaration.boundary.clone(), declaration.suffix.clone(),
                 self.provider.clone(), self.config.limits)?
-            .tools(harness.storage().default_tools(self.config.limits)?)
+            .tools(tools)
             .grant("tool:call:acyclic.read_file")
             .grant("tool:call:acyclic.stage_file")
             .grant("tool:call:acyclic.list_files")
+            .grant(super::local::LOCAL_EXECUTION_CAPABILITY)
+            .grant(super::local::INTERACTION_ROUTE_CAPABILITY)
             .limits(self.config.limits);
         let mut tools = self.bindings.tools_for(task)?;
         if let Some(project) = self.project_for_task(task).await?
@@ -7632,6 +7636,122 @@ mod tests {
         usage: Arc<MockUsageSource>,
     }
 
+    struct ShellModel {
+        calls: AtomicUsize,
+        arguments: Value,
+    }
+
+    impl ModelProvider for ShellModel {
+        fn generate<'a>(
+            &'a self,
+            _prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Box::pin(futures::stream::iter([
+                    Ok(ModelEvent::Content {
+                        delta: "done".into(),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ]));
+            }
+            Box::pin(futures::stream::iter([
+                Ok(ModelEvent::ToolCall {
+                    call_id: "shell-call".into(),
+                    name: "acyclic.shell".into(),
+                    arguments: self.arguments.clone(),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            // The durable model attempt already contains its complete event
+            // stream. Returning an empty continuation lets the executor
+            // replay that stream and resolve its admitted tool batch without
+            // issuing a second model request.
+            Box::pin(async { Ok(Some(Vec::new())) })
+        }
+    }
+
+    fn shell_arguments(root: &Path) -> Value {
+        #[cfg(windows)]
+        let executable = std::env::var("ComSpec")
+            .unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+        #[cfg(not(windows))]
+        let executable = "/bin/sh".to_owned();
+        #[cfg(windows)]
+        let arguments: Vec<String> = vec![
+            "/C".into(),
+            "echo %HARNESS_SHELL_MARKER%>>launches.txt".into(),
+        ];
+        #[cfg(not(windows))]
+        let arguments = vec![
+            "-c".into(),
+            "printf %s \"$HARNESS_SHELL_MARKER\" >> launches.txt".into(),
+        ];
+        json!({
+            "executable": executable,
+            "arguments": arguments,
+            "working_directory": root.to_string_lossy(),
+            "environment": {
+                "kind": "explicit",
+                "variables": {"HARNESS_SHELL_MARKER": "approved"}
+            },
+            "timeout_ms": 10_000,
+            "max_output_bytes": 4096,
+        })
+    }
+
+    fn shell_arguments_with_output_overflow(root: &Path) -> Value {
+        let mut arguments = shell_arguments(root);
+        #[cfg(windows)]
+        let command = "echo %HARNESS_SHELL_MARKER%>>launches.txt & echo overflow";
+        #[cfg(not(windows))]
+        let command =
+            "printf %s \"$HARNESS_SHELL_MARKER\" >> launches.txt; printf overflow";
+        arguments["arguments"] = json!(if cfg!(windows) {
+            vec!["/C", command]
+        } else {
+            vec!["-c", command]
+        });
+        // The command writes its marker before producing output larger than
+        // this bound. NativeExecutionRunner therefore reports an unknown
+        // outcome after the real process has been terminated, exercising the
+        // durable operator-resolution fence without a fake provider.
+        arguments["max_output_bytes"] = json!(1);
+        arguments
+    }
+
+    async fn resolve_shell_approval(
+        swarm: &PersistentLocalSwarm,
+        task: TaskId,
+        approved: bool,
+    ) -> Result<()> {
+        let approvals = swarm.list_approvals(task).await?;
+        assert_eq!(approvals.len(), 1);
+        let id = InteractionId::parse(&approvals[0].ticket.id.to_string())?;
+        swarm.record_operator_approval(task, id, approved).await?;
+        let expected = if approved {
+            InteractionOutcome::Approved
+        } else {
+            InteractionOutcome::Declined
+        };
+        assert_eq!(
+            swarm
+                .resolve_recorded_operator_approval(task, id, approved)
+                .await?,
+            expected
+        );
+        Ok(())
+    }
+
     struct RecordingObserver {
         events: Mutex<Vec<LocalSwarmObservation>>,
     }
@@ -9278,6 +9398,167 @@ mod tests {
                 .await?,
             InteractionOutcome::Declined
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_runtime_shell_waits_for_approval_then_runs_once() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(ShellModel {
+            calls: AtomicUsize::new(0),
+            arguments: shell_arguments(root.path()),
+        });
+        let model = Model::new("mock", "shell-approval", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        let operation = OperationId::from_bytes([0xE1; 16]);
+        assert!(matches!(
+            swarm.run_root(operation, "run the approved shell command").await,
+            Err(Error::Indeterminate(id)) if id == operation
+        ));
+        assert!(!root.path().join("launches.txt").exists());
+        resolve_shell_approval(&swarm, task, true).await?;
+        let output = swarm
+            .run_root(operation, "run the approved shell command")
+            .await?;
+        assert_eq!(output.text, "done");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        let launches = std::fs::read_to_string(root.path().join("launches.txt"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(
+            launches.lines().map(str::trim).collect::<Vec<_>>(),
+            vec!["approved"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_runtime_shell_denial_is_durable_and_has_no_launch() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(ShellModel {
+            calls: AtomicUsize::new(0),
+            arguments: shell_arguments(root.path()),
+        });
+        let model = Model::new("mock", "shell-denial", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        let operation = OperationId::from_bytes([0xE2; 16]);
+        assert!(matches!(
+            swarm.run_root(operation, "run the denied shell command").await,
+            Err(Error::Indeterminate(id)) if id == operation
+        ));
+        assert!(!root.path().join("launches.txt").exists());
+        resolve_shell_approval(&swarm, task, false).await?;
+        let output = swarm
+            .run_root(operation, "run the denied shell command")
+            .await?;
+        assert_eq!(output.text, "done");
+        assert!(!root.path().join("launches.txt").exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_runtime_unknown_reopens_and_operator_resolution_never_reruns() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "shell-unknown", "1", json!({}))?;
+        let operation = OperationId::from_bytes([0xE3; 16]);
+        let pending_key;
+        {
+            let provider = Arc::new(ShellModel {
+                calls: AtomicUsize::new(0),
+                arguments: shell_arguments_with_output_overflow(root.path()),
+            });
+            let swarm = PersistentLocalSwarm::open_with_model(
+                root.path(),
+                model.clone(),
+                provider.clone(),
+                Limits::default(),
+            )
+            .await?;
+            let task = swarm.root_task().await?;
+            assert!(matches!(
+                swarm.run_root(operation, "run the uncertain shell command").await,
+                Err(Error::Indeterminate(id)) if id == operation
+            ));
+            assert!(!root.path().join("launches.txt").exists());
+            resolve_shell_approval(&swarm, task, true).await?;
+            assert!(matches!(
+                swarm.run_root(operation, "run the uncertain shell command").await,
+                Err(Error::Indeterminate(id)) if id == operation
+            ));
+            let launches = std::fs::read_to_string(root.path().join("launches.txt"))
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            assert_eq!(
+                launches.lines().map(str::trim).collect::<Vec<_>>(),
+                vec!["approved"]
+            );
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+            let harness = swarm.open_session(task).await?;
+            let store = harness.execution_receipt_store()?;
+            let resolution = harness.execution_resolution_capability()?;
+            let (_, _, _, resolver, _) = harness.storage().execution_binding();
+            let pending = store.pending_claims(&resolution, &resolver).await?;
+            assert_eq!(pending.len(), 1);
+            pending_key = pending[0].0.clone();
+        }
+
+        let reopened_provider = Arc::new(ShellModel {
+            calls: AtomicUsize::new(0),
+            arguments: shell_arguments_with_output_overflow(root.path()),
+        });
+        let reopened = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            reopened_provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let task = reopened.root_task().await?;
+        assert!(matches!(
+            reopened
+                .run_root(operation, "run the uncertain shell command")
+                .await,
+            Err(Error::Indeterminate(id)) if id == operation
+        ));
+        assert_eq!(reopened_provider.calls.load(Ordering::SeqCst), 0);
+        let launches = std::fs::read_to_string(root.path().join("launches.txt"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(
+            launches.lines().map(str::trim).collect::<Vec<_>>(),
+            vec!["approved"]
+        );
+
+        reopened
+            .open_session(task)
+            .await?
+            .resolve_unknown_execution(&pending_key, "operator reviewed after cold reopen")
+            .await?;
+        assert!(matches!(
+            reopened
+                .run_root(operation, "run the uncertain shell command")
+                .await,
+            Err(Error::Indeterminate(id)) if id == operation
+        ));
+        assert_eq!(reopened_provider.calls.load(Ordering::SeqCst), 0);
+        let launches = std::fs::read_to_string(root.path().join("launches.txt"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(
+            launches.lines().map(str::trim).collect::<Vec<_>>(),
+            vec!["approved"]
+        );
         Ok(())
     }
 }

@@ -27,6 +27,15 @@ use std::{collections::HashSet, sync::Arc};
 
 const MAX_RECORDS: u64 = 1_000_000;
 
+/// Returns the canonical host-only path for one idempotent execution payload.
+pub(crate) fn execution_content_path(
+    operation_id: OperationId,
+    idempotency_key: &str,
+) -> String {
+    let digest = blake3::hash(format!("{operation_id}:{idempotency_key}").as_bytes());
+    format!(".system/execution/{operation_id}/{}.json", digest.to_hex())
+}
+
 /// Hidden metadata linking a model-visible rejection to the authoritative
 /// execution journal that produced it. The visible envelope is never trusted
 /// as the source of evidence on a later turn.
@@ -880,6 +889,7 @@ where
                 ));
             }
             let digest = blake3::hash(format!("{operation_id}:{idempotency_key}").as_bytes());
+            let path = execution_content_path(operation_id, &idempotency_key);
             let key = IdempotencyKey::new(format!("journal-{}", digest.to_hex()))?;
             let grant = ContentGrant::verify(
                 &self.verifier,
@@ -891,7 +901,7 @@ where
                 .put_internal_content(
                     &self.volume,
                     &grant,
-                    &format!(".system/execution/{operation_id}/{}.json", digest.to_hex()),
+                    &path,
                     &bytes,
                     media_type,
                     "execution.json",

@@ -52,7 +52,7 @@ struct BatchCancellation {
     group_id: crate::GroupId,
 }
 
-fn task_interaction_id(task_id: TaskId, operation_id: OperationId) -> InteractionId {
+pub(crate) fn task_interaction_id(task_id: TaskId, operation_id: OperationId) -> InteractionId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness/v2/task-interaction\0");
     hasher.update(&task_id.into_bytes());
