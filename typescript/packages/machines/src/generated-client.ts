@@ -29,10 +29,14 @@ export type RustOwnedMachinePageLimit = RustOwnedSemanticNumber<"machine_page_li
 export function makeRustOwnedMachinePageLimit(value: number): RustOwnedMachinePageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 256) throw new RangeError("value exceeds its item limit"); return value as RustOwnedMachinePageLimit; }
 export type RustOwnedOperationId = RustOwnedSemanticBytes<"operation_id">;
 export function makeRustOwnedOperationId(value: Uint8Array): RustOwnedOperationId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedOperationId; }
+export type RustOwnedSha256Digest = RustOwnedSemanticBytes<"sha256_digest">;
+export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
 
 export const MACHINES_PUBLIC_FIELD_BINDINGS = [
   { family: "machines", field: "image", semanticType: "immutable_image", module: "machines", message: "CreateMachineRequest", wireField: "image", direction: "request", rules: ["Immutable"] },
   { family: "machines", field: "image", semanticType: "immutable_image", module: "machines", message: "QualifyImageRequest", wireField: "image", direction: "request", rules: ["Immutable"] },
+  { family: "machines", field: "managed_digest", semanticType: "sha256_digest", module: "machines", message: "Image", wireField: "managed_digest", direction: "nested_message", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "machines", field: "custom_digest", semanticType: "sha256_digest", module: "machines", message: "Image", wireField: "custom_digest", direction: "nested_message", rules: ["FixedLength(32)", "Sha256Digest"] },
   { family: "machines", field: "idempotency_key", semanticType: "idempotency_key_message", module: "machines", message: "CreateMachineRequest", wireField: "idempotency_key", direction: "request", rules: ["NonEmpty", "FixedLength(16)"] },
   { family: "machines", field: "machine_id", semanticType: "machine_id", module: "machines", message: "InspectMachineRequest", wireField: "machine", direction: "request", rules: ["NonEmpty", "FixedLength(16)"] },
   { family: "machines", field: "checkpoint_id", semanticType: "checkpoint_id", module: "machines", message: "InspectCheckpointRequest", wireField: "checkpoint", direction: "request", rules: ["NonEmpty", "FixedLength(16)"] },
@@ -70,6 +74,10 @@ export type RustOwnedPublicForkAdmission = RustWire.ForkAdmission;
 export type RustOwnedPublicForkCheckpointRequest = RustWire.ForkCheckpointRequest;
 export type RustOwnedPublicForkMachineAdmission = RustWire.ForkMachineAdmission;
 export type RustOwnedPublicForkMachineRequest = RustWire.ForkMachineRequest;
+export type RustOwnedPublicImage = Omit<RustWire.Image, "customDigest" | "managedDigest"> & {
+  readonly customDigest: RustOwnedSha256Digest;
+  readonly managedDigest: RustOwnedSha256Digest;
+};
 export type RustOwnedPublicImageQualification = RustWire.ImageQualification;
 export type RustOwnedPublicInspectCheckpointRequest = Omit<RustWire.InspectCheckpointRequest, "checkpoint"> & {
   readonly checkpoint: RustOwnedCheckpointId;
