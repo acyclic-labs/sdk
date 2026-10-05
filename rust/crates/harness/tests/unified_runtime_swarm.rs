@@ -24,6 +24,10 @@ use std::sync::{
 };
 use tempfile::tempdir;
 
+#[path = "swarm_provider_support.rs"]
+mod swarm_provider_support;
+use swarm_provider_support::FixtureUsage;
+
 fn id(byte: u8) -> OperationId {
     OperationId::from_bytes([byte; 16])
 }
@@ -108,6 +112,7 @@ struct UnifiedProvider {
     child_a: OperationId,
     child_b: OperationId,
     grandchild: OperationId,
+    usage: Arc<FixtureUsage>,
 }
 
 impl UnifiedProvider {
@@ -131,6 +136,7 @@ impl UnifiedProvider {
             child_a,
             child_b,
             grandchild,
+            usage: FixtureUsage::new("harness.test.unified-runtime-swarm"),
         })
     }
 
@@ -140,6 +146,8 @@ impl UnifiedProvider {
 }
 
 impl ModelProvider for UnifiedProvider {
+    fixture_budget_methods!();
+
     fn generate<'a>(
         &'a self,
         prepared: acyclic_harness::model_input::PreparedModelInput,
@@ -655,6 +663,20 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
             "publish both direct child projects through the model Git facade",
         )
         .await?;
+
+    // The production provider boundary must settle measured usage for every
+    // dispatch and release every child reservation, including after the
+    // explicit merge turns.  The root lease remains alive, while the three
+    // completed descendants leave no reserved budget behind.
+    let budget = swarm.budget_journal().lock().await.usage()?;
+    assert_eq!(budget.total_agents, 4);
+    assert_eq!(budget.active_agents, 1);
+    assert!(budget.consumed.model_steps > 0);
+    assert!(budget.consumed.output_bytes > 0);
+    assert_eq!(budget.reserved.model_steps, 0);
+    assert_eq!(budget.reserved.output_bytes, 0);
+    assert_eq!(budget.reserved.execution_time_ms, 0);
+
     let requests = provider.requests();
     for (task, call_id) in [
         (None, "root-git-commit"),
