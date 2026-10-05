@@ -39,8 +39,6 @@ on:
         required: false
         default: true
         type: boolean
-  release:
-    types: [published]
 
 permissions:
   contents: read

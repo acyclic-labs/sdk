@@ -31,7 +31,7 @@ const standaloneProjects = path => path.startsWith("arena/") || path.startsWith(
 
 // Pull requests retain the security preflight and these two repository-level
 // checks. Platform packaging and browser/native downstream lanes qualify on
-// main, schedule, release, or explicit dispatch runs.
+// release or explicitly forced dispatch runs.
 export const pullRequestCoreLanes = new Set(["gate", "policy"]);
 
 // Each predicate returns true for paths the lane can never observe.
@@ -74,11 +74,11 @@ export function laneKeys(lanes, entries) {
 // Decides each lane's fate. `marker(lane)` returns the run that recorded the
 // lane's fingerprint, if any; `retained(runId, prefix)` names the artifact that
 // run still retains, or "".
-export function chooseLanes(lanes, { force, mainPush, pullRequest = false, trusted, marker, retained }) {
+export function chooseLanes(lanes, { force, mainPush, pullRequest = false, coreOnly = false, trusted, marker, retained }) {
   const matrix = [];
   const reused = {};
   for (const lane of lanes) {
-    if (pullRequest && !pullRequestCoreLanes.has(lane.lane)) continue;
+    if ((pullRequest || coreOnly) && !pullRequestCoreLanes.has(lane.lane)) continue;
     // Source-bound artifacts record the commit they were built from, and
     // releases require that commit to be the main commit being released.
     if (force || (mainPush && lane.source_bound)) {
@@ -191,6 +191,7 @@ function select() {
     force,
     mainPush,
     pullRequest,
+    coreOnly: !force,
     trusted,
     marker: recordedMarker,
     retained: retainedArtifact,

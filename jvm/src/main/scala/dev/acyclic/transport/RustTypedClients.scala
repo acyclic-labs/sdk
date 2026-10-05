@@ -2,6 +2,8 @@
 // Client signatures and request construction originate in Rust type_policy.rs.
 package dev.acyclic.transport
 
+import scala.collection.JavaConverters._
+
 /** Typed blocking client calls generated from Rust-owned request bindings. */
 object RustTypedClientsScala {
 

@@ -14,9 +14,18 @@ foreach ($required in @($AuthorityManifest, $Request)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required source-bound input is missing: $required" }
 }
 $authority = Get-Content -LiteralPath $AuthorityManifest -Raw | ConvertFrom-Json
-if ($authority.schema -ne 'acyclic.sdk.examples.source-authority.v1' -or [string]::IsNullOrWhiteSpace([string]$authority.source_revision) -or [string]::IsNullOrWhiteSpace([string]$authority.source_sha256)) { throw 'Rust source authority manifest is incomplete' }
+if ($authority.schema -ne 'acyclic.sdk.rust-authority.v1' -or
+    $authority.authority -ne 'rust' -or
+    [string]::IsNullOrWhiteSpace([string]$authority.source_git_sha) -or
+    [string]$authority.source_git_sha -notmatch '^[0-9a-fA-F]{40}$' -or
+    [string]::IsNullOrWhiteSpace([string]$authority.source_revision) -or
+    [string]$authority.source_revision -notmatch '^[0-9a-fA-F]{64}$' -or
+    @($authority.source_files).Count -eq 0 -or
+    @($authority.families).Count -ne $families.Count) { throw 'Rust source authority manifest is incomplete' }
+$sourceGitSha = ([string]$authority.source_git_sha).ToLowerInvariant()
+$sourceModelDigest = ([string]$authority.source_revision).ToLowerInvariant()
 $requestDocument = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
-if (-not [string]::IsNullOrWhiteSpace([string]$requestDocument.source.revision) -and [string]$requestDocument.source.revision -ne [string]$authority.source_revision) { throw 'Rust source authority revision does not match producer request' }
+if (-not [string]::IsNullOrWhiteSpace([string]$requestDocument.source.revision) -and [string]$requestDocument.source.revision -ne $sourceGitSha) { throw 'Rust source authority Git revision does not match producer request' }
 $stage = Join-Path $OutputRoot 'openapi'
 foreach ($family in $families) { if (-not (Test-Path -LiteralPath (Join-Path $stage "$family.json") -PathType Leaf)) { throw "Rust OpenAPI projection is missing: $family" } }
 $mappingDocument = Get-Content -LiteralPath (Join-Path $stage 'actors.json') -Raw | ConvertFrom-Json
@@ -47,8 +56,9 @@ $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant
 [ordered]@{
     schema = 'acyclic.sdk.openapi.http-producer-receipt.v1'
     target = $TargetId
-    source_revision = [string]$authority.source_revision
-    source_sha256 = [string]$authority.source_sha256
+    source_revision = $sourceGitSha
+    source_git_sha = $sourceGitSha
+    model_digest = $sourceModelDigest
     generator = [ordered]@{ name = "OpenAPI Generator $TargetId"; version = '7.25.0'; jar_sha256 = $jarSha256 }
     families = $families
     archive = [ordered]@{ path = [IO.Path]::GetFileName($zip); sha256 = $hash; bytes = (Get-Item -LiteralPath $zip).Length }

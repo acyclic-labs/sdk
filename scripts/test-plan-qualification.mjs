@@ -29,7 +29,7 @@ test("every lane names a known input set and a Blacksmith runner", () => {
 });
 
 test("the Windows helper waits for the planner and cannot provision on an ordinary PR", () => {
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
   const job = workflow.slice(workflow.indexOf("\n  windows:\n"));
   const runsOn = job.match(/\n {4}runs-on: (\S+)\n/)?.[1];
   const windows = lanes.find(lane => lane.lane === "windows");
@@ -40,7 +40,7 @@ test("the Windows helper waits for the planner and cannot provision on an ordina
 });
 
 test("release events force the full downstream qualification path", () => {
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
   assert.match(workflow, /\n  release:\n    types: \[published\]/);
   assert.match(workflow, /github\.event_name == 'release'/);
 });
@@ -139,4 +139,55 @@ test("forced runs execute every lane", () => {
   });
   assert.equal(matrix.length, lanes.length);
   assert.deepEqual(reused, {});
+});
+
+// Routine pushes and non-forced dispatches must never schedule downstream
+// packaging merely because their caches are empty.
+test("routine core-only runs never schedule downstream checks without cache markers", () => {
+  for (const mainPush of [false, true]) {
+    const { matrix, reused } = chooseLanes(lanes, {
+      force: false, mainPush, coreOnly: true, trusted: null,
+      marker: () => null, retained: () => "",
+    });
+    assert.deepEqual(matrix.map(lane => lane.lane).sort(), ["gate", "policy"]);
+    assert.deepEqual(reused, {});
+  }
+});
+
+test("full hosted qualification requires release or explicit force", () => {
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
+  assert.doesNotMatch(workflow, /^  schedule:/m);
+  assert.match(workflow, /force:[\s\S]*?default: false/);
+  const downstream = workflow.slice(workflow.indexOf("\n  rust_source:"));
+  assert.doesNotMatch(downstream, /if: github.event_name == 'release' \|\| github.event_name == 'workflow_dispatch'/);
+  assert.match(downstream, /inputs\.force/);
+});
+
+test("reusable package qualification does not duplicate central release runs", () => {
+  const names = ["additional-language-qualification.yml", "python-go-release-qualification.yml", "http-target-release-qualification.yml", "dotnet-native-rid-manual.yml", "embedded-abi-release.yml"];
+  for (const name of names) {
+    const workflow = readFileSync(`.github/workflows/${name}`, "utf8").replaceAll("\r\n", "\n");
+    assert.doesNotMatch(workflow, /^  (release|push):/m, name);
+    assert.match(workflow, /^  workflow_call:/m, name);
+    assert.match(workflow, /^  workflow_dispatch:/m, name);
+  }
+});
+
+
+test("native embedded consumers share one aggregate package build", () => {
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
+  assert.doesNotMatch(workflow, /^  (rust_embedded|dotnet_embedded):/m);
+  assert.equal((workflow.match(/uses: \.\/\.github\/workflows\/embedded-native-packaging\.yml/g) ?? []).length, 1);
+  const aggregate = readFileSync(".github/workflows/embedded-native-packaging.yml", "utf8");
+  assert.match(aggregate, /qualify-embedded-abi-installed/);
+  assert.match(aggregate, /abi-installed-consumer/);
+});
+
+test("routine checks avoid full coverage and workspace qualification", () => {
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  assert.match(script, /gate\)\n    if \[\[ "\$\{FORCE:-false\}" != true/);
+  assert.match(script, /cargo test -p acyclic-sdk-contract-wire --locked --lib --bins/);
+  assert.match(script, /coverage_instrumented.*false/);
+  assert.match(script, /cargo clippy -p acyclic-sdk-contract-wire --all-targets --locked/);
+  assert.match(script, /cargo llvm-cov --workspace --all-features/);
 });
