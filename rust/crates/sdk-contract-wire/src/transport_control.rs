@@ -142,6 +142,9 @@ pub fn generate_control_bindings(
                 .out_dir(output)
                 .build_client(client)
                 .build_server(server)
+                .build_transport(
+                    std::env::var("CARGO_CFG_TARGET_ARCH").map_or(true, |arch| arch != "wasm32"),
+                )
                 .compile_fds_with_config(descriptor, config)?;
         }
     }
