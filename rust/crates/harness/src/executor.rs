@@ -7299,4 +7299,143 @@ mod tests {
         assert_eq!(second_entry.sequence, 1);
         Ok(())
     }
+
+    #[derive(Default)]
+    struct NeverEndingProvider {
+        generate_calls: AtomicUsize,
+        reconcile_calls: AtomicUsize,
+    }
+
+    impl ModelProvider for NeverEndingProvider {
+        fn supports_dispatch_context(&self) -> bool {
+            true
+        }
+
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            self.generate_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(stream::pending())
+        }
+
+        fn generate_with_dispatch<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+            _: crate::model::ProviderDispatchContext,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            self.generate_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(stream::pending())
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+            futures::future::pending().boxed()
+        }
+
+        fn reconcile_admitted_with_dispatch<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+            _: ModelAttempt,
+            _: crate::model::ProviderDispatchContext,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+            futures::future::pending().boxed()
+        }
+    }
+
+    struct DeadlineBudget {
+        operation_id: OperationId,
+    }
+
+    impl SwarmProviderAdmission for DeadlineBudget {
+        fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+            Ok(SwarmUsage::default())
+        }
+
+        fn admit_output_bytes(&mut self, _: u64) -> Result<SwarmUsage> {
+            Ok(SwarmUsage::default())
+        }
+
+        fn admit_execution_time_ms(&mut self, _: u64) -> Result<SwarmUsage> {
+            Ok(SwarmUsage::default())
+        }
+
+        fn remaining_execution_time_ms(&self) -> Option<u64> {
+            Some(20)
+        }
+
+        fn provider_dispatch_context(
+            &self,
+            step: u32,
+            request_digest: [u8; 32],
+        ) -> Result<crate::model::ProviderDispatchContext> {
+            Ok(crate::model::ProviderDispatchContext {
+                operation_id: self.operation_id,
+                step,
+                request_digest,
+                dispatch_id: crate::IdempotencyKey::new("deadline-test-dispatch")?,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn budgeted_provider_deadline_covers_stream_and_reconcile_without_redispatch()
+    -> Result<()> {
+        let provider = Arc::new(NeverEndingProvider::default());
+        let executor = StockExecutor::new(
+            Model::new("example", "deadline", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_tool_authority(
+            RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?,
+            None,
+        )?;
+        let operation_id = OperationId::from_bytes([0xD1; 16]);
+        let input = TurnInput {
+            operation_id,
+            input: ModelContent::Text("deadline".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let journal = Journal::default();
+        let mut first_budget = DeadlineBudget { operation_id };
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            executor.execute_with_provider_budget(input.clone(), &journal, &mut first_budget),
+        )
+        .await
+        .map_err(|_| Error::Conflict("provider stream deadline did not fire".into()))?;
+        assert!(matches!(
+            first,
+            Err(Error::Indeterminate(observed)) if observed == operation_id
+        ));
+        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 0);
+        assert!(journal
+            .replay(operation_id)
+            .await?
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { step: 0, .. })));
+
+        let mut retry_budget = DeadlineBudget { operation_id };
+        let retry = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            executor.execute_with_provider_budget(input, &journal, &mut retry_budget),
+        )
+        .await
+        .map_err(|_| Error::Conflict("provider reconcile deadline did not fire".into()))?;
+        assert!(matches!(
+            retry,
+            Err(Error::Indeterminate(observed)) if observed == operation_id
+        ));
+        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
 }
