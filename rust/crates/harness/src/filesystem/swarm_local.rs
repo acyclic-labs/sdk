@@ -143,6 +143,30 @@ fn local_operator_issuer_from_descriptor_key(secret: [u8; 32]) -> Result<Authori
     ))
 }
 
+/// Keep the host checkout physically separate from Harness' durable runtime.
+///
+/// The runtime contains journals, credentials, and private task state. A
+/// native checkout is a host-owned publication boundary, so allowing either
+/// path to contain the other would make capture or writeback able to address
+/// runtime state accidentally. Canonicalizing both existing paths also makes
+/// this check reject aliases such as `..` and junction-resolved paths.
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+fn ensure_native_checkout_is_external(runtime_root: &Path, checkout: &Path) -> Result<()> {
+    let runtime_root = std::fs::canonicalize(runtime_root)
+        .map_err(|error| Error::Storage(format!("cannot resolve local runtime root: {error}")))?;
+    let checkout = std::fs::canonicalize(checkout)
+        .map_err(|error| Error::Storage(format!("cannot resolve native checkout: {error}")))?;
+    if runtime_root == checkout
+        || runtime_root.starts_with(&checkout)
+        || checkout.starts_with(&runtime_root)
+    {
+        return Err(Error::Conflict(
+            "native checkout cannot overlap Harness runtime storage".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// A spawned child turn remains owned by its activation future. Dropping the
 /// activation must cancel the child task instead of detaching a model worker
 /// that can continue dispatching effects after its caller has gone away.
@@ -3796,6 +3820,7 @@ impl PersistentLocalSwarm {
         }
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         if let Some(checkout_path) = bindings.native_checkout_path.take() {
+            ensure_native_checkout_is_external(&root, &checkout_path)?;
             let checkout = host
                 .attach_native_checkout(
                     format!("native-checkout-{}", project.storage_name()?),
@@ -7786,6 +7811,22 @@ mod tests {
             local_operator_issuer_from_descriptor_key([0; 32]),
             Err(Error::Conflict(message)) if message.contains("zero")
         ));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_checkout_cannot_overlap_runtime_storage() -> Result<()> {
+        let runtime = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let nested = runtime.path().join("checkout");
+        std::fs::create_dir_all(&nested).map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            ensure_native_checkout_is_external(runtime.path(), &nested),
+            Err(Error::Conflict(message)) if message.contains("overlap")
+        ));
+
+        let sibling = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        ensure_native_checkout_is_external(runtime.path(), sibling.path())?;
         Ok(())
     }
 
