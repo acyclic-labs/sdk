@@ -2479,16 +2479,25 @@ pub fn audit_generated_public_surfaces(
                     Some("public JVM response getter exposes an opaque message wrapper")
                 }
                 "jvm"
-                    if jvm_raw_public_wire_record(line)
-                        || (((line.contains("public acyclic.") && line.contains("()"))
-                            || line.contains("public java.util.List<acyclic.")
-                            || line.contains("public com.google.protobuf.ByteString"))
-                            && !line.contains("toWire")) =>
+                    if jvm_erased_semantic_identity(line) => {
+                    Some("JVM semantic identity is erased to protobuf Message")
+                }
+                "jvm"
+                    if jvm_erased_known_oneof(line) => {
+                    Some("JVM known oneof payload is erased to ByteString")
+                }
+                "jvm"
+                    if jvm_raw_open_enum(line) => {
+                    Some("JVM enum projection exposes only an untyped raw integer")
+                }
+                "jvm" if jvm_raw_public_accessor(line) || jvm_raw_public_wire_record(line) =>
                     Some("public JVM response getter exposes a raw protobuf message"),
                 "swift" if line.contains("public let wire: RustWireMessage") => {
                     Some("public Swift wrapper exposes an opaque RustWireMessage")
                 }
-                "cpp" if line.contains("Wire { RustWireMessage wire;") => {
+                "cpp"
+                    if line.contains("RustWireMessage wire;") && !line.contains("private:") =>
+                {
                     Some("public C++ wrapper exposes an opaque RustWireMessage")
                 }
                 "csharp" if csharp_raw_public_wire_record(line) => {
@@ -2643,6 +2652,71 @@ fn jvm_opaque_message_projection(line: &str) -> bool {
     line.contains("RustSemanticTypes.WireMessage")
         || line.contains("RustSemanticTypesKotlin.WireMessage")
         || line.contains("RustSemanticTypesScala.WireMessage")
+}
+
+fn jvm_raw_public_accessor(line: &str) -> bool {
+    for declaration in line.split(['}', ';']) {
+        let Some(public_start) = declaration.find("public ") else {
+            continue;
+        };
+        let public = &declaration[public_start..];
+        let Some(open) = public.find('(') else {
+            continue;
+        };
+        let signature = &public[..open];
+        if signature.contains("toWire") || signature.contains("fromWire") {
+            continue;
+        }
+        if signature.contains("public acyclic.")
+            || signature.contains("public inference.")
+            || signature.contains("public java.util.List<acyclic.")
+            || signature.contains("public java.util.List<inference.")
+        {
+            return true;
+        }
+    }
+    for declaration in line.split(['}', ';']) {
+        if let Some(kotlin_start) = declaration.find("fun ") {
+            let kotlin = &declaration[kotlin_start..];
+            if !kotlin.contains("toWire") && !kotlin.contains("fromWire") {
+                if let Some(colon) = kotlin.find(':') {
+                    let result = &kotlin[colon + 1..];
+                    if result.contains("acyclic.") || result.contains("inference.") {
+                        return true;
+                    }
+                }
+            }
+        }
+        if let Some(scala_start) = declaration.find("def ") {
+            let scala = &declaration[scala_start..];
+            if !scala.contains("toWire") && !scala.contains("fromWire") {
+                if let Some(colon) = scala.find(':') {
+                    let result = &scala[colon + 1..];
+                    if result.contains("acyclic.") || result.contains("inference.") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn jvm_erased_semantic_identity(line: &str) -> bool {
+    line.contains("IdempotencyKey") && line.contains("com.google.protobuf.Message")
+}
+
+fn jvm_erased_known_oneof(line: &str) -> bool {
+    (line.contains("record Known(")
+        || line.contains("data class Known")
+        || line.contains("case class Known"))
+        && line.contains("ByteString")
+}
+
+fn jvm_raw_open_enum(line: &str) -> bool {
+    line.contains("record WireEnum(int value)")
+        || line.contains("data class WireEnum(val value: Int)")
+        || line.contains("case class WireEnum(value: Int)")
 }
 
 /// Check that each generated facade contains the Rust-owned type features
@@ -2807,6 +2881,9 @@ fn surface_language(path: &Path) -> Option<&'static str> {
     } else if name == "RustTypedResponses.java"
         || name == "RustTypedResponses.kt"
         || name == "RustTypedResponses.scala"
+        || name == "RustSemanticTypes.java"
+        || name == "RustSemanticTypes.kt"
+        || name == "RustSemanticTypes.scala"
     {
         Some("jvm")
     } else if name == "RustTypedClients.swift" {
@@ -3018,9 +3095,31 @@ mod tests {
         .expect("csharp fixture");
         fs::write(
             root.join("jvm").join("RustTypedResponses.java"),
-            "public record ObjectResponse(acyclic.objects.v2.Objects.ObjectInfo value) { public RustSemanticTypes.WireMessage metadata() { return RustSemanticTypes.WireMessage.of(value.getMetadata()); } }\n",
+            "public record ObjectResponse(acyclic.objects.v2.Objects.ObjectInfo value) { public RustSemanticTypes.WireMessage metadata() { return RustSemanticTypes.WireMessage.of(value.getMetadata()); } public acyclic.objects.v2.Objects.ObjectInfo nested() { return value.getObject(); } public java.util.List<acyclic.objects.v2.Objects.Part> parts() { return value.getPartsList(); } public acyclic.objects.v2.Objects.ObjectInfo toWire() { return value; } }\npublic record IdempotencyKey(com.google.protobuf.Message value) {}\npublic record Known(com.google.protobuf.ByteString payload) {}\npublic record WireEnum(int value) {}\n",
         )
         .expect("jvm fixture");
+        fs::write(
+            root.join("jvm").join("RustTypedResponses.kt"),
+            "class ObjectResponse { fun toWire(): acyclic.objects.v2.Objects.ObjectInfo = value; fun nested(): acyclic.objects.v2.Objects.ObjectInfo = value }\n",
+        )
+        .expect("kotlin fixture");
+        fs::write(
+            root.join("jvm").join("RustTypedResponses.scala"),
+            "final class ObjectResponse { def toWire: acyclic.objects.v2.Objects.ObjectInfo = value; def nested: acyclic.objects.v2.Objects.ObjectInfo = value }\n",
+        )
+        .expect("scala fixture");
+        fs::create_dir_all(root.join("swift")).expect("swift fixture directory");
+        fs::write(
+            root.join("swift").join("RustTypedClients.swift"),
+            "public struct ObjectResponse { public let wire: RustWireMessage }\n",
+        )
+        .expect("swift fixture");
+        fs::create_dir_all(root.join("cpp").join("include")).expect("cpp fixture directory");
+        fs::write(
+            root.join("cpp").join("include").join("rust_typed_clients.hpp"),
+            "struct ObjectResponse { RustWireMessage wire; };\n",
+        )
+        .expect("cpp fixture");
 
         let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
         assert!(findings.iter().any(|finding| {
@@ -3030,6 +3129,26 @@ mod tests {
         assert!(findings.iter().any(|finding| {
             finding.language == "jvm"
                 && finding.reason == "public JVM response getter exposes an opaque message wrapper"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "jvm"
+                && finding.reason == "JVM semantic identity is erased to protobuf Message"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "jvm"
+                && finding.reason == "JVM known oneof payload is erased to ByteString"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "jvm"
+                && finding.reason == "JVM enum projection exposes only an untyped raw integer"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "swift"
+                && finding.reason == "public Swift wrapper exposes an opaque RustWireMessage"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "cpp"
+                && finding.reason == "public C++ wrapper exposes an opaque RustWireMessage"
         }));
         let _ = fs::remove_dir_all(root);
     }
