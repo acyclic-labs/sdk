@@ -85,6 +85,58 @@ test("generated WASM model admission requires complete tool-call/result pairings
   expect(() => prepareModelRequest(mismatched, modelLimits(), null)).toThrow("tool result is not paired");
 });
 
+test("raw WASM and the TypeScript facade reject unknown and schema-invalid tool results", () => {
+  const request = modelRequest();
+  const limits = {
+    ...DEFAULT_LIMITS,
+    file_bytes: BigInt(DEFAULT_LIMITS.file_bytes),
+    path_bytes: BigInt(DEFAULT_LIMITS.path_bytes),
+    attachments: BigInt(DEFAULT_LIMITS.attachments),
+    render_bytes: BigInt(DEFAULT_LIMITS.render_bytes),
+    model_steps: BigInt(DEFAULT_LIMITS.model_steps),
+    model_events_per_step: BigInt(DEFAULT_LIMITS.model_events_per_step),
+    tool_calls_per_step: BigInt(DEFAULT_LIMITS.tool_calls_per_step),
+    context_messages: BigInt(DEFAULT_LIMITS.context_messages),
+  } satisfies NativeLimitsWire;
+  // Establish a valid control through both entry points first, so each
+  // rejection below proves the intended admission rule rather than an import,
+  // ABI, or limits failure.
+  expect(() => prepareModelRequest(request, modelLimits(), null)).not.toThrow();
+  expect(() => contracts.prepareModelRequest(request, limits, null)).not.toThrow();
+  const unknownResult = {
+    ...request,
+    messages: request.messages.map((message, index) => index === 2
+      ? { ...message, content: {
+        kind: "tool_result" as const, call_id: "fork-1", name: "missing-tool", value: { accepted: true },
+      } }
+      : message),
+  };
+  expect(() => prepareModelRequest(unknownResult, modelLimits(), null))
+    .toThrow("tool result names unknown tool missing-tool");
+  expect(() => contracts.prepareModelRequest(unknownResult, limits, null))
+    .toThrow("tool result names unknown tool missing-tool");
+
+  const schemaInvalid = {
+    ...request,
+    tools: request.tools.map(tool => ({
+      ...tool,
+      model_output_schema: {
+        type: "object", properties: { accepted: { type: "boolean" } },
+        required: ["accepted"], additionalProperties: false,
+      } as const,
+    })),
+    messages: request.messages.map((message, index) => index === 2
+      ? { ...message, content: {
+        kind: "tool_result" as const, call_id: "fork-1", name: "fork", value: { accepted: "yes" },
+      } }
+      : message),
+  };
+  expect(() => prepareModelRequest(schemaInvalid, modelLimits(), null))
+    .toThrow("tool projection failed validation");
+  expect(() => contracts.prepareModelRequest(schemaInvalid, limits, null))
+    .toThrow("tool projection failed validation");
+});
+
 test("generated WASM model admission captures canonical request bytes and manifest identity", () => {
   const request = modelRequest();
   const prepared = prepareModelRequest(request, modelLimits(), null) as {
