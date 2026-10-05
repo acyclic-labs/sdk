@@ -447,11 +447,17 @@ struct RuntimeGitSwarmProvider {
     child_fork_sent: AtomicBool,
     merge_child: AtomicBool,
     merge_root: AtomicBool,
+    commit_root: AtomicBool,
+    rebase_root: AtomicBool,
+    reset_root: AtomicBool,
     continue_root: AtomicBool,
     abort_root: AtomicBool,
     reject_root_merge: AtomicBool,
     merge_child_sent: AtomicBool,
     merge_root_sent: AtomicBool,
+    commit_root_sent: AtomicBool,
+    rebase_root_sent: AtomicBool,
+    reset_root_sent: AtomicBool,
     abort_merge_sent: AtomicBool,
     continue_sent: AtomicBool,
     abort_sent: AtomicBool,
@@ -467,11 +473,17 @@ impl RuntimeGitSwarmProvider {
             child_fork_sent: AtomicBool::new(false),
             merge_child: AtomicBool::new(false),
             merge_root: AtomicBool::new(false),
+            commit_root: AtomicBool::new(false),
+            rebase_root: AtomicBool::new(false),
+            reset_root: AtomicBool::new(false),
             continue_root: AtomicBool::new(false),
             abort_root: AtomicBool::new(false),
             reject_root_merge: AtomicBool::new(false),
             merge_child_sent: AtomicBool::new(false),
             merge_root_sent: AtomicBool::new(false),
+            commit_root_sent: AtomicBool::new(false),
+            rebase_root_sent: AtomicBool::new(false),
+            reset_root_sent: AtomicBool::new(false),
             abort_merge_sent: AtomicBool::new(false),
             continue_sent: AtomicBool::new(false),
             abort_sent: AtomicBool::new(false),
@@ -539,6 +551,48 @@ impl ModelProvider for RuntimeGitSwarmProvider {
                     call_id: "runtime-merge-grandchild".into(),
                     name: "acyclic.git".into(),
                     arguments: json!({"argv": ["merge", "grandchild"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if root
+            && self.commit_root.load(Ordering::SeqCst)
+            && !self.commit_root_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-commit-root".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["commit", "-m", "runtime baseline"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if root
+            && self.rebase_root.load(Ordering::SeqCst)
+            && !self.rebase_root_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-rebase-root".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["rebase", "child"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if root
+            && self.reset_root.load(Ordering::SeqCst)
+            && !self.reset_root_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-reset-root".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["reset", "--hard", "HEAD"]}),
                 }),
                 Ok(ModelEvent::Completed {
                     metadata: json!({}),
@@ -747,7 +801,7 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
     let model = Model::new("mock", "git-default-runtime", "1", json!({}))?;
     let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
         directory.path(),
-        model,
+        model.clone(),
         provider.clone(),
         Limits::default(),
     )
@@ -848,10 +902,82 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
     )
     .await?;
 
+    let child_workspace = workspace_ref(host.provider().clone(), &child_project.storage_name()?)?;
+
+    // Exercise the default model-facing commit and rebase routes before
+    // creating the conflict fixture. These commands still resolve to the
+    // authenticated direct-parent Filesystem join.
+    let root_head = host.resolve(&root_workspace).await?;
+    host.apply(
+        &root_workspace,
+        Some(&root_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/runtime-baseline.txt".into(),
+            bytes: b"baseline".to_vec(),
+        }],
+        &acyclic_harness::IdempotencyKey::new("runtime-root-baseline")?,
+    )
+    .await?;
+    provider.commit_root.store(true, Ordering::SeqCst);
+    swarm
+        .run_root(
+            OperationId::from_bytes([0xE9; 16]),
+            "commit the runtime baseline",
+        )
+        .await?;
+    let child_head = host.resolve(&child_workspace).await?;
+    host.apply(
+        &child_workspace,
+        Some(&child_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/runtime-rebase.txt".into(),
+            bytes: b"rebased child change".to_vec(),
+        }],
+        &acyclic_harness::IdempotencyKey::new("runtime-child-rebase-edit")?,
+    )
+    .await?;
+    provider.rebase_root.store(true, Ordering::SeqCst);
+    swarm
+        .run_root(
+            OperationId::from_bytes([0xEA; 16]),
+            "rebase the root onto the child workspace",
+        )
+        .await?;
+    assert_eq!(
+        host.read(&root_workspace, None, "/runtime-rebase.txt", 1_024)
+            .await?,
+        b"rebased child change"[..]
+    );
+
+    // A hard reset is the explicit discard operation. Mutating a tracked
+    // path after the rebase must be undone by the typed reset action.
+    let root_head = host.resolve(&root_workspace).await?;
+    host.apply(
+        &root_workspace,
+        Some(&root_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/runtime-baseline.txt".into(),
+            bytes: b"dirty baseline".to_vec(),
+        }],
+        &acyclic_harness::IdempotencyKey::new("runtime-root-dirty-edit")?,
+    )
+    .await?;
+    provider.reset_root.store(true, Ordering::SeqCst);
+    swarm
+        .run_root(
+            OperationId::from_bytes([0xEB; 16]),
+            "discard the dirty tracked workspace edit",
+        )
+        .await?;
+    assert_eq!(
+        host.read(&root_workspace, None, "/runtime-baseline.txt", 1_024)
+            .await?,
+        b"baseline"[..]
+    );
+
     // Make the direct child/root merge genuinely conflicted. Both workspaces
     // still descend from the same empty generation, so the existing
     // Filesystem three-way join must leave a durable pending transition.
-    let child_workspace = workspace_ref(host.provider().clone(), &child_project.storage_name()?)?;
     let child_head = host.resolve(&child_workspace).await?;
     host.apply(
         &child_workspace,
@@ -895,9 +1021,30 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
             .is_err()
     );
 
-    // The failed model turn leaves the compatibility transition durable. A
-    // fresh model turn can resolve the workspace and explicitly continue it;
-    // it does not replay or guess the failed join.
+    // The failed model turn leaves the compatibility transition durable. Drop
+    // the swarm and reopen it before continuing, proving that recovery uses
+    // the persisted transition rather than replaying the failed join.
+    let resumed_provider = RuntimeGitSwarmProvider::new(child_operation, grandchild_operation);
+    resumed_provider
+        .root_fork_sent
+        .store(true, Ordering::SeqCst);
+    resumed_provider
+        .child_fork_sent
+        .store(true, Ordering::SeqCst);
+    resumed_provider
+        .merge_root_sent
+        .store(true, Ordering::SeqCst);
+    resumed_provider.continue_root.store(true, Ordering::SeqCst);
+    drop(swarm);
+    let provider = resumed_provider;
+    let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+        directory.path(),
+        model.clone(),
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+
     let root_head = host.resolve(&root_workspace).await?;
     host.apply(
         &root_workspace,
