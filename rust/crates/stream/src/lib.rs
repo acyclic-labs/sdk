@@ -678,6 +678,15 @@ impl<P: StreamProvider> StreamClient<P> {
     }
 }
 
+#[cfg(feature = "local")]
+impl StreamClient<LocalStream> {
+    /// Waits for deferred local mutations retained after caller cancellation.
+    /// Owners should await this before releasing an exclusive local root.
+    pub async fn drain(&self) {
+        self.provider.drain().await;
+    }
+}
+
 #[cfg(feature = "grpc")]
 impl StreamClient<grpc::Client> {
     /// Connects the high-level API to an authenticated managed or customer-hosted endpoint.
