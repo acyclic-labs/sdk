@@ -58,29 +58,29 @@ export class HttpWorkersClient {
   }
 
   async publishVersion(request: RustOwnedPublicPublishVersionRequest, signal?: AbortSignal): Promise<RustOwnedPublicPublishVersionResponse> {
-    return fromJsonString(PublishVersionResponseSchema, await this.#post(WORKERS_METHODS.publishVersion, request, toJsonString(PublishVersionRequestSchema, request), signal)) as RustOwnedPublicPublishVersionResponse;
+    return fromJsonString(PublishVersionResponseSchema, await this.#post(WORKERS_METHODS.publishVersion, request, toJsonString(PublishVersionRequestSchema, request), signal)) as unknown as RustOwnedPublicPublishVersionResponse;
   }
   async selectDeployment(request: RustOwnedPublicSelectDeploymentRequest, signal?: AbortSignal): Promise<RustOwnedPublicSelectDeploymentResponse> {
-    return fromJsonString(SelectDeploymentResponseSchema, await this.#post(WORKERS_METHODS.selectDeployment, request, toJsonString(SelectDeploymentRequestSchema, request), signal)) as RustOwnedPublicSelectDeploymentResponse;
+    return fromJsonString(SelectDeploymentResponseSchema, await this.#post(WORKERS_METHODS.selectDeployment, request, toJsonString(SelectDeploymentRequestSchema, request), signal)) as unknown as RustOwnedPublicSelectDeploymentResponse;
   }
   async submitJob(request: RustOwnedPublicSubmitJobRequest, signal?: AbortSignal): Promise<RustOwnedPublicSubmitJobResponse> {
-    return fromJsonString(SubmitJobResponseSchema, await this.#post(WORKERS_METHODS.submitJob, request, toJsonString(SubmitJobRequestSchema, request), signal)) as RustOwnedPublicSubmitJobResponse;
+    return fromJsonString(SubmitJobResponseSchema, await this.#post(WORKERS_METHODS.submitJob, request, toJsonString(SubmitJobRequestSchema, request), signal)) as unknown as RustOwnedPublicSubmitJobResponse;
   }
   async inspectJob(request: RustOwnedPublicInspectJobRequest, signal?: AbortSignal): Promise<RustOwnedPublicInspectJobResponse> {
-    return fromJsonString(InspectJobResponseSchema, await this.#post(WORKERS_METHODS.inspectJob, request, toJsonString(InspectJobRequestSchema, request), signal)) as RustOwnedPublicInspectJobResponse;
+    return fromJsonString(InspectJobResponseSchema, await this.#post(WORKERS_METHODS.inspectJob, request, toJsonString(InspectJobRequestSchema, request), signal)) as unknown as RustOwnedPublicInspectJobResponse;
   }
   async cancelJob(request: RustOwnedPublicCancelJobRequest, signal?: AbortSignal): Promise<RustOwnedPublicCancelJobResponse> {
-    return fromJsonString(CancelJobResponseSchema, await this.#post(WORKERS_METHODS.cancelJob, request, toJsonString(CancelJobRequestSchema, request), signal)) as RustOwnedPublicCancelJobResponse;
+    return fromJsonString(CancelJobResponseSchema, await this.#post(WORKERS_METHODS.cancelJob, request, toJsonString(CancelJobRequestSchema, request), signal)) as unknown as RustOwnedPublicCancelJobResponse;
   }
   /** Invokes exact immutable code bytes with ordinary HTTP request ambiguity. */
   async invokeVersion(request: RustOwnedPublicInvokeVersionRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeResponse> {
     validateWorkersInvokeVersion(request.versionSha256, request.method);
-    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeVersion, request, toJsonString(InvokeVersionRequestSchema, request), signal)) as RustOwnedPublicInvokeResponse;
+    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeVersion, request, toJsonString(InvokeVersionRequestSchema, request), signal)) as unknown as RustOwnedPublicInvokeResponse;
   }
   /** Resolves the alias once at ingress and reports the resolved digest/revision. */
   async invokeDeployment(request: RustOwnedPublicInvokeDeploymentRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeResponse> {
     validateWorkersInvokeDeployment(request.alias, request.method);
-    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeDeployment, request, toJsonString(InvokeDeploymentRequestSchema, request), signal)) as RustOwnedPublicInvokeResponse;
+    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeDeployment, request, toJsonString(InvokeDeploymentRequestSchema, request), signal)) as unknown as RustOwnedPublicInvokeResponse;
   }
 
   async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {

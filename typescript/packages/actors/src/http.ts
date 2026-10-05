@@ -66,30 +66,30 @@ export class HttpActorsClient {
   }
 
   async createActor(request: RustOwnedPublicCreateActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicCreateActorResponse> {
-    return fromJsonString(CreateActorResponseSchema, await this.#post(ACTORS_METHODS.createActor, request, toJsonString(CreateActorRequestSchema, request), signal)) as RustOwnedPublicCreateActorResponse;
+    return fromJsonString(CreateActorResponseSchema, await this.#post(ACTORS_METHODS.createActor, request, toJsonString(CreateActorRequestSchema, request), signal)) as unknown as RustOwnedPublicCreateActorResponse;
   }
   async updateActor(request: RustOwnedPublicUpdateActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicUpdateActorResponse> {
-    return fromJsonString(UpdateActorResponseSchema, await this.#post(ACTORS_METHODS.updateActor, request, toJsonString(UpdateActorRequestSchema, request), signal)) as RustOwnedPublicUpdateActorResponse;
+    return fromJsonString(UpdateActorResponseSchema, await this.#post(ACTORS_METHODS.updateActor, request, toJsonString(UpdateActorRequestSchema, request), signal)) as unknown as RustOwnedPublicUpdateActorResponse;
   }
   async inspectActor(request: RustOwnedPublicInspectActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicInspectActorResponse> {
-    return fromJsonString(InspectActorResponseSchema, await this.#post(ACTORS_METHODS.inspectActor, request, toJsonString(InspectActorRequestSchema, request), signal)) as RustOwnedPublicInspectActorResponse;
+    return fromJsonString(InspectActorResponseSchema, await this.#post(ACTORS_METHODS.inspectActor, request, toJsonString(InspectActorRequestSchema, request), signal)) as unknown as RustOwnedPublicInspectActorResponse;
   }
   async addSubscription(request: RustOwnedPublicAddSubscriptionRequest, signal?: AbortSignal): Promise<RustOwnedPublicAddSubscriptionResponse> {
-    return fromJsonString(AddSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.addSubscription, request, toJsonString(AddSubscriptionRequestSchema, request), signal)) as RustOwnedPublicAddSubscriptionResponse;
+    return fromJsonString(AddSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.addSubscription, request, toJsonString(AddSubscriptionRequestSchema, request), signal)) as unknown as RustOwnedPublicAddSubscriptionResponse;
   }
   async removeSubscription(request: RustOwnedPublicRemoveSubscriptionRequest, signal?: AbortSignal): Promise<RustOwnedPublicRemoveSubscriptionResponse> {
-    return fromJsonString(RemoveSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.removeSubscription, request, toJsonString(RemoveSubscriptionRequestSchema, request), signal)) as RustOwnedPublicRemoveSubscriptionResponse;
+    return fromJsonString(RemoveSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.removeSubscription, request, toJsonString(RemoveSubscriptionRequestSchema, request), signal)) as unknown as RustOwnedPublicRemoveSubscriptionResponse;
   }
   async resumeSubscription(request: RustOwnedPublicResumeSubscriptionRequest, signal?: AbortSignal): Promise<RustOwnedPublicResumeSubscriptionResponse> {
-    return fromJsonString(ResumeSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.resumeSubscription, request, toJsonString(ResumeSubscriptionRequestSchema, request), signal)) as RustOwnedPublicResumeSubscriptionResponse;
+    return fromJsonString(ResumeSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.resumeSubscription, request, toJsonString(ResumeSubscriptionRequestSchema, request), signal)) as unknown as RustOwnedPublicResumeSubscriptionResponse;
   }
   async checkpointActor(request: RustOwnedPublicCheckpointActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicCheckpointActorResponse> {
-    return fromJsonString(CheckpointActorResponseSchema, await this.#post(ACTORS_METHODS.checkpointActor, request, toJsonString(CheckpointActorRequestSchema, request), signal)) as RustOwnedPublicCheckpointActorResponse;
+    return fromJsonString(CheckpointActorResponseSchema, await this.#post(ACTORS_METHODS.checkpointActor, request, toJsonString(CheckpointActorRequestSchema, request), signal)) as unknown as RustOwnedPublicCheckpointActorResponse;
   }
   /** Invocation is not a Stream append or a durable checkpoint. */
   async invokeActor(request: RustOwnedPublicInvokeActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeActorResponse> {
     validateActorsInvoke(request.actorId, request.method);
-    return fromJsonString(InvokeActorResponseSchema, await this.#post(ACTORS_METHODS.invokeActor, request, toJsonString(InvokeActorRequestSchema, request), signal)) as RustOwnedPublicInvokeActorResponse;
+    return fromJsonString(InvokeActorResponseSchema, await this.#post(ACTORS_METHODS.invokeActor, request, toJsonString(InvokeActorRequestSchema, request), signal)) as unknown as RustOwnedPublicInvokeActorResponse;
   }
 
   async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {

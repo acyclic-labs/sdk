@@ -945,7 +945,7 @@ fn typescript_semantic_section(family: &str) -> String {
     output.push_str("export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };\n");
     output.push_str("export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };\n");
     output.push_str("export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };\n\n");
-    output.push_str("export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: \"request\" | \"response\" | \"nested_message\"; readonly rules: readonly string[]; }\n\n");
+    output.push_str("export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: \"request\" | \"response\" | \"nested_message\" | \"embedded_only\"; readonly rules: readonly string[]; }\n\n");
     for id in semantic_ids {
         let item =
             semantic_type(id).expect("every public binding resolves to a Rust semantic type");
@@ -1036,6 +1036,7 @@ fn typescript_semantic_section(family: &str) -> String {
             PublicFieldDirection::Request => "request",
             PublicFieldDirection::Response => "response",
             PublicFieldDirection::NestedMessage => "nested_message",
+            PublicFieldDirection::EmbeddedOnly => "embedded_only",
         };
         let rules = semantic_type(binding.semantic_type)
             .expect("semantic binding")
