@@ -1633,10 +1633,7 @@ impl ControlPlane {
             self.mounts
                 .get(agent_id)
                 .ok_or_else(|| "subagent mount is unavailable".to_owned())?
-                .sync_route_with_permit(
-                    route_name(root_id).as_bytes(),
-                    lease.publication_permit(),
-                )
+                .sync_route_with_permit(route_name(root_id).as_bytes(), lease.publication_permit())
                 .await
                 .map_err(display)?;
             lazy_workspace = self.lazy_workspace_root(route, root_id).await?;
@@ -1700,12 +1697,17 @@ impl ControlPlane {
         // barrier failure, and would make the subsequent abort impossible.
         // Successful non-transition commands can still coalesce a parent
         // advance before closing their operation window.
-        let local_abort = matches!(
+        let local_transition = matches!(
             argv.as_slice(),
             [command, option]
-                if matches!(command.as_str(), "merge" | "rebase") && option == "--abort"
+                if matches!(command.as_str(), "merge" | "rebase")
+                    && matches!(option.as_str(), "--continue" | "--abort")
         );
-        let reconcile_parent = command.as_ref().is_ok_and(Option::is_some) && !local_abort;
+        let read_only = matches!(
+            argv.first().map(String::as_str),
+            Some("status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore")
+        );
+        let reconcile_parent = command.as_ref().is_ok_and(Option::is_some) && !local_transition;
         let observed: Result<(), String> = if reconcile_parent {
             let parent_head = parent.head().await.map(|generation| generation.id());
             match parent_head {
@@ -1733,16 +1735,18 @@ impl ControlPlane {
                     acyclic_fs::WorkspaceRebase::Conflicted {
                         conflicts,
                         truncated,
-                    } => {
+                    } if !local_transition && !read_only => {
                         return Err(format!(
                             "Git barrier close reported {} conflict(s); truncated={truncated}",
                             conflicts.len()
                         ));
                     }
-                    acyclic_fs::WorkspaceRebase::Fenced => {
+                    acyclic_fs::WorkspaceRebase::Fenced if !local_transition && !read_only => {
                         return Err("Git barrier close was fenced".to_owned());
                     }
-                    acyclic_fs::WorkspaceRebase::IdempotencyConflict => {
+                    acyclic_fs::WorkspaceRebase::IdempotencyConflict
+                        if !local_transition && !read_only =>
+                    {
                         return Err("Git barrier close reused an operation identity".to_owned());
                     }
                     _ => {}

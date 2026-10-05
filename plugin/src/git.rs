@@ -139,7 +139,10 @@ impl PluginGitExecutor<'_> {
                         .await
                         .map_err(display)?
                         .is_some_and(|pending| {
-                            matches!(pending.mutation, acyclic_fs::GitPendingMutation::Join { .. })
+                            matches!(
+                                pending.mutation,
+                                acyclic_fs::GitPendingMutation::Join { .. }
+                            )
                         })
                     {
                         return Ok(());
@@ -1236,7 +1239,9 @@ impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
 pub(crate) fn git_transition_command(argv: &[String]) -> bool {
     matches!(
         argv,
-        [command, option] if command == "merge" && matches!(option.as_str(), "--continue" | "--abort")
+        [command, option]
+            if matches!(command.as_str(), "merge" | "rebase")
+                && matches!(option.as_str(), "--continue" | "--abort")
     ) || argv.first().is_some_and(|command| command == "add")
 }
 
