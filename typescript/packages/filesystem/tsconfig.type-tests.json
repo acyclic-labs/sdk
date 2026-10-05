@@ -5,5 +5,10 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "test/wasm-contract-types.test.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "test/wasm-contract-types.test.ts",
+    "test/git-compat-contract-types.test.ts"
+  ]
 }
