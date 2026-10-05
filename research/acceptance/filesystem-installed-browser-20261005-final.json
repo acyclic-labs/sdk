@@ -1,0 +1,27 @@
+{
+  "schema": "acyclic.acceptance.v1",
+  "kind": "filesystem-installed-browser",
+  "status": "passed",
+  "captured_at": "2026-10-05",
+  "source_revision": "a90bcfceafa2e408d1b753066282b6465764638c",
+  "artifact": {
+    "bindings_sha256": "8ccc2d39fe4782aece30db874a6b30b389e39a5445a84c42fe9fa4253615ee16",
+    "wasm_bg_sha256": "d6ff0238b0eb2d4b5cd2da86ed69c163d5fe14bcb206e16b071d4a1513253ff7",
+    "js_sha256": "593a2590b318de7ef791f06e1ac7fe1cc51cb6a673c6cd8dee15533941ebb454"
+  },
+  "source_hashes": {
+    "filesystem_wasm_lib_sha256": "8d7d0683f683b1141766fabdb4b999baaa3ab81ecdca595137a93c66f522131f"
+  },
+  "command": "wasm-bindgen --target web; node work/qualify-filesystem-installed-final.mjs",
+  "evidence": {
+    "stream": "one export chunk, 36 bytes",
+    "bound_peer_closed": true,
+    "cumulative_bound": "response exceeds configured bound",
+    "redirect": "rejected by missing content-type response",
+    "edge": "Microsoft Edge headless",
+    "custom_ca": "custom CA certificates are unavailable in browser transport",
+    "cancel": "zero bytes",
+    "transport": "Rust filesystem WASM installed package via BrowserFilesystemClient",
+    "handshake": "contractVersion=1, request=4096, response=1024, mutations=100, pageItems=100"
+  }
+}
