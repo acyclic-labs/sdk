@@ -70,9 +70,22 @@ def resolve(product_root: Path) -> dict:
     if len(current_sources) != len(set(current_sources)):
         raise ValueError("Rust authority manifest repeats a family source")
     authority = authority_methods(document)
+    # The control-plane schema is emitted beside the family contracts, but it
+    # is deliberately outside `families` in the Rust authority manifest.  Its
+    # handshake RPC must therefore never be counted as an archived family RPC
+    # (or passed to a downstream family generator).  Read the identity from
+    # the manifest instead of hard-coding a path so a future versioned control
+    # plane remains unambiguous.
+    control_source = (
+        document.get("control_plane", {}).get("source")
+        if isinstance(document.get("control_plane"), dict)
+        else None
+    )
+    control_source = str(control_source).replace("\\", "/") if control_source else None
     proto_paths = sorted(
         path for path in product_root.rglob("*.proto")
         if "/validation/" not in path.as_posix()
+        and path.relative_to(product_root).as_posix() != control_source
     )
     by_relative = {path.relative_to(product_root).as_posix(): path for path in proto_paths}
     missing = sorted(set(current_sources) - set(by_relative))
@@ -102,6 +115,7 @@ def resolve(product_root: Path) -> dict:
         "all_rpc_count": len(discovered),
         "current_rpc_identities": current_methods,
         "archived_rpc_identities": archived_methods,
+        "control_proto_path": control_source,
     }
 
 
