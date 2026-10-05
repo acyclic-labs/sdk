@@ -723,7 +723,6 @@ pub fn filesystem_service_doc(name: &str) -> Option<&'static str> {
 }
 
 #[rustfmt::skip]
-
 pub const FILESYSTEM_METHOD_DOCS: &[ContractDoc] = &[
     ContractDoc { name: "Handshake", text: "Negotiates protocol identity and Filesystem capabilities." },
     ContractDoc { name: "CreateWorkspace", text: "Creates a named workspace." },
@@ -938,7 +937,10 @@ fn render_message(out: &mut String, message: &DescriptorProto, indent: usize) {
         }
     }
     for field in &message.field {
-        if field.oneof_index.is_none() {
+        // Proto3 optional fields use synthetic oneofs in descriptors. They
+        // are ordinary fields in the rendered source and must not be
+        // omitted alongside user-authored oneof members.
+        if field.oneof_index.is_none() || field.proto3_optional.unwrap_or(false) {
             if let Some(entry) = map_entry_for(message, field) {
                 render_map_field(out, field, entry, indent + 2);
             } else {
