@@ -193,6 +193,15 @@ not manufacture a cross-stream total order. Task identities map to finite
 agent labels and the first observed project generation maps to ordinal zero
 only at this adapter boundary. The trace omits current-generation claims when
 the source run does not expose an independent retained-current witness.
+The manifest also retains canonical typed bytes for the admission seed,
+capture report, model publication, and inherited declaration. The checker
+re-parses those values from the durable admission envelope and binds parent
+step/task/prompt/agent fields, parent seed authority/revision, project
+generation, ModelStarted step/request digest, and completion output/digest.
+The registry admission and completion retain raw envelope bytes; the current
+conversation and execution-journal APIs expose typed events, so those two
+source witnesses are recorded as canonical typed event bytes rather than
+claimed raw storage envelopes.
 
 The ignored exporter requires an explicit output path so ordinary test runs do
 not write artifacts. Use the named qualification gate, which runs the
@@ -212,3 +221,10 @@ reader or signed artifact supplies the source witness, this is self-reported
 integrity evidence rather than external provenance. The export does not claim
 Rust refinement, unbounded recursion, liveness, approval handling, aggregate
 budget exhaustion, or OS confinement.
+The named gate requires a clean tracked and untracked source worktree, binds
+both the commit and tree object, and records the workspace manifest and lockfile
+digests as the build closure. It also mutates representative source fields and
+requires the semantic checker to reject every mutation. There is no production
+causal publication negative case because the current APIs expose independent
+registry, conversation, and child-journal orderings without an authenticated
+cross-stream causal witness; the gate does not invent one.

@@ -17,9 +17,34 @@ foreach ($name in @(
     'parent_conversation_operation',
     'child_execution_model_started_sequence',
     'child_execution_operation',
+    'child_execution_model_started_step',
+    'child_execution_model_started_request_digest_hex',
     'root_task',
     'child_task',
+    'child_depth',
     'child_authority',
+    'parent_step',
+    'task',
+    'prompt',
+    'child_agent',
+    'seed',
+    'seed_canonical_bytes_hex',
+    'seed_sha256',
+    'seed_digest',
+    'report',
+    'report_canonical_bytes_hex',
+    'report_sha256',
+    'publication',
+    'publication_canonical_bytes_hex',
+    'publication_sha256',
+    'declaration',
+    'declaration_canonical_bytes_hex',
+    'declaration_sha256',
+    'parent_seed_authority',
+    'parent_seed_revision',
+    'completion_output',
+    'completion_output_ref',
+    'completion_output_digest',
     'admission_record_bytes_hex',
     'completion_record_bytes_hex',
     'parent_event_canonical_bytes_hex',
@@ -50,6 +75,12 @@ foreach ($name in @('trace_path', 'trace_sha256')) {
 }
 foreach ($name in @(
     'source_commit',
+    'source_tree',
+    'source_clean',
+    'workspace_manifest_path',
+    'workspace_manifest_sha256',
+    'lockfile_path',
+    'lockfile_sha256',
     'exporter_source_path',
     'exporter_source_sha256',
     'binary_path',
@@ -90,7 +121,20 @@ $observedCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $manifest.provenance.source_commit -ne $observedCommit) {
     throw 'real trace provenance is not bound to the current source commit.'
 }
+$observedTree = (& git -C $repoRoot show -s --format=%T HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $manifest.provenance.source_tree -ne $observedTree) {
+    throw 'real trace provenance is not bound to the current source tree.'
+}
+if ($manifest.provenance.source_clean -ne $true) {
+    throw 'real trace provenance was not produced from a clean source worktree.'
+}
+$status = (& git -C $repoRoot status --porcelain --untracked-files=all)
+if ($LASTEXITCODE -ne 0 -or -not [string]::IsNullOrWhiteSpace(($status -join "`n"))) {
+    throw 'real trace qualification requires a clean tracked and untracked source worktree.'
+}
 foreach ($entry in @(
+    @{ Path = $manifest.provenance.workspace_manifest_path; Digest = $manifest.provenance.workspace_manifest_sha256; Name = 'workspace manifest' },
+    @{ Path = $manifest.provenance.lockfile_path; Digest = $manifest.provenance.lockfile_sha256; Name = 'lockfile' },
     @{ Path = $manifest.provenance.exporter_source_path; Digest = $manifest.provenance.exporter_source_sha256; Name = 'exporter source' },
     @{ Path = $manifest.provenance.binary_path; Digest = $manifest.provenance.binary_sha256; Name = 'test binary' },
     @{ Path = $manifest.provenance.real_checker_path; Digest = $manifest.provenance.real_checker_sha256; Name = 'real checker' },
@@ -109,6 +153,27 @@ function ParseCanonicalJson([string]$Hex, [string]$Name) {
     $bytes = DecodeHex $Hex $Name
     try { return ([System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json) }
     catch { throw "$Name canonical bytes are not valid JSON." }
+}
+
+function CompactJson($Value) {
+    if ($null -eq $Value) { return 'null' }
+    return ($Value | ConvertTo-Json -Compress -Depth 100)
+}
+
+function RequireJsonEqual($Observed, $Expected, [string]$Name) {
+    if ((CompactJson $Observed) -ne (CompactJson $Expected)) {
+        throw "$Name does not match its authoritative source value."
+    }
+}
+
+function JsonByteArrayHex($Value, [string]$Name) {
+    if ($null -eq $Value) { throw "$Name is missing." }
+    try {
+        $bytes = [byte[]]@($Value | ForEach-Object { [byte]$_ })
+        return (Hex $bytes)
+    } catch {
+        throw "$Name is not a byte array."
+    }
 }
 
 $admissionRecord = ParseCanonicalJson ([string]$manifest.source.admission_record_bytes_hex) 'admission record'
@@ -134,6 +199,42 @@ if ([string]$admissionMessage.parent -ne [string]$manifest.source.root_task -or
     [string]$admissionMessage.child -ne [string]$manifest.source.child_task) {
     throw 'admission record task authorities do not match the source binding.'
 }
+if ([int64]$admissionMessage.parent_step -ne [int64]$manifest.source.parent_step -or
+    [string]$admissionMessage.task -ne [string]$manifest.source.task -or
+    [string]$admissionMessage.prompt -ne [string]$manifest.source.prompt -or
+    [string]$admissionMessage.child_agent -ne [string]$manifest.source.child_agent) {
+    throw 'admission record task, step, prompt, or child agent fields do not match the source binding.'
+}
+
+$admissionSeed = $admissionMessage.seed
+$admissionReport = $admissionMessage.report
+$admissionPublication = $admissionMessage.publication
+$admissionDeclaration = $admissionMessage.declaration
+if ($null -eq $admissionSeed -or $null -eq $admissionReport -or
+    $null -eq $admissionPublication -or $null -eq $admissionDeclaration) {
+    throw 'admission record omitted a required typed seed, report, publication, or declaration.'
+}
+$seedCanonical = ParseCanonicalJson ([string]$manifest.source.seed_canonical_bytes_hex) 'seed'
+$reportCanonical = ParseCanonicalJson ([string]$manifest.source.report_canonical_bytes_hex) 'report'
+$publicationCanonical = ParseCanonicalJson ([string]$manifest.source.publication_canonical_bytes_hex) 'publication'
+$declarationCanonical = ParseCanonicalJson ([string]$manifest.source.declaration_canonical_bytes_hex) 'declaration'
+RequireJsonEqual $admissionSeed $seedCanonical 'admission seed'
+RequireJsonEqual $admissionReport $reportCanonical 'admission report'
+RequireJsonEqual $admissionPublication $publicationCanonical 'admission publication'
+RequireJsonEqual $admissionDeclaration $declarationCanonical 'admission declaration'
+RequireJsonEqual $manifest.source.seed $seedCanonical 'manifest seed'
+RequireJsonEqual $manifest.source.report $reportCanonical 'manifest report'
+RequireJsonEqual $manifest.source.publication $publicationCanonical 'manifest publication'
+RequireJsonEqual $manifest.source.declaration $declarationCanonical 'manifest declaration'
+if ((JsonByteArrayHex $admissionMessage.seed_digest 'admission seed digest') -ne
+    (JsonByteArrayHex $manifest.source.seed_digest 'manifest seed digest')) {
+    throw 'admission seed digest does not match the source binding.'
+}
+if ([string]$admissionPublication.operation_id -ne [string]$manifest.identity_binding.publication_operation_id -or
+    [string]$admissionPublication.parent_operation -ne [string]$manifest.source.root_operation -or
+    [int64]$admissionPublication.step -ne [int64]$manifest.source.parent_step) {
+    throw 'admission publication operation, parent, or step does not match the source binding.'
+}
 
 $completionRecord = ParseCanonicalJson ([string]$manifest.source.completion_record_bytes_hex) 'completion record'
 if ($null -eq $completionRecord.event -or [string]$completionRecord.event.kind -ne 'fork_completed') {
@@ -144,6 +245,12 @@ if ($null -eq $completionMessage -or
     [string]$completionMessage.child -ne [string]$manifest.source.child_task -or
     [string]$completionMessage.operation -ne [string]$manifest.identity_binding.child_operation_id) {
     throw 'completion record operation does not match the child operation binding.'
+}
+RequireJsonEqual $completionMessage.output $manifest.source.completion_output 'completion output'
+RequireJsonEqual $completionMessage.output_ref $manifest.source.completion_output_ref 'completion output reference'
+RequireJsonEqual $completionMessage.output_digest $manifest.source.completion_output_digest 'completion output digest'
+if ($null -eq $completionMessage.output_digest) {
+    throw 'completion record has no durable output digest.'
 }
 
 $parentEvent = ParseCanonicalJson ([string]$manifest.source.parent_event_canonical_bytes_hex) 'parent event'
@@ -162,11 +269,33 @@ if ([string]$parentEvent.payload.seed.child.kind -ne [string]$manifest.source.ch
     [string]$parentEvent.payload.seed.child.id -ne [string]$manifest.source.child_authority.id) {
     throw 'parent ForkPublished child authority fields do not match the source binding.'
 }
+RequireJsonEqual $parentEvent.payload.seed $seedCanonical 'parent ForkPublished seed'
+RequireJsonEqual $parentEvent.payload.seed.parent $manifest.source.parent_seed_authority 'parent ForkPublished parent authority'
+if ([int64]$parentEvent.payload.seed.parent_revision -ne [int64]$manifest.source.parent_seed_revision) {
+    throw 'parent ForkPublished parent revision does not match the source binding.'
+}
 
 $childModelEvent = ParseCanonicalJson ([string]$manifest.source.child_model_event_canonical_bytes_hex) 'child model event'
 if ([string]$childModelEvent.kind -ne 'model_started') {
     throw 'child source event is not ModelStarted.'
 }
+if ([int64]$childModelEvent.step -ne [int64]$manifest.source.child_execution_model_started_step) {
+    throw 'child ModelStarted step does not match the source binding.'
+}
+if ((JsonByteArrayHex $childModelEvent.request_digest 'child ModelStarted request digest') -ne
+    ([string]$manifest.source.child_execution_model_started_request_digest_hex).ToLowerInvariant()) {
+    throw 'child ModelStarted request digest does not match the source binding.'
+}
+$projectCaptures = @($reportCanonical.captures | Where-Object {
+    $_.kind -eq 'captured' -and $null -ne $_.value -and
+    $null -ne $_.value.revision -and $_.value.revision.kind -eq 'project'
+})
+if ($projectCaptures.Count -ne 1) {
+    throw 'fork report does not contain exactly one captured project generation.'
+}
+RequireJsonEqual $projectCaptures[0].value.revision.reference.generation `
+    $manifest.normalization.generation.raw_captured_generation `
+    'captured project generation'
 
 $traceBytes = [System.IO.File]::ReadAllBytes($tracePathResolved)
 if ([System.IO.Path]::GetFullPath([string]$manifest.trace_binding.trace_path) -ne $tracePathResolved) {
@@ -180,6 +309,17 @@ foreach ($record in @(
     @{ Bytes = $manifest.source.completion_record_bytes_hex; Digest = $manifest.source.completion_record_sha256; Name = 'completion record' },
     @{ Bytes = $manifest.source.parent_event_canonical_bytes_hex; Digest = $manifest.source.parent_event_sha256; Name = 'parent event' },
     @{ Bytes = $manifest.source.child_model_event_canonical_bytes_hex; Digest = $manifest.source.child_model_event_sha256; Name = 'child model event' }
+)) {
+    $recordBytes = DecodeHex ([string]$record.Bytes) $record.Name
+    if ($record.Digest -ne (Sha256Hex $recordBytes)) {
+        throw "$($record.Name) digest does not match its canonical bytes."
+    }
+}
+foreach ($record in @(
+    @{ Bytes = $manifest.source.seed_canonical_bytes_hex; Digest = $manifest.source.seed_sha256; Name = 'seed' },
+    @{ Bytes = $manifest.source.report_canonical_bytes_hex; Digest = $manifest.source.report_sha256; Name = 'report' },
+    @{ Bytes = $manifest.source.publication_canonical_bytes_hex; Digest = $manifest.source.publication_sha256; Name = 'publication' },
+    @{ Bytes = $manifest.source.declaration_canonical_bytes_hex; Digest = $manifest.source.declaration_sha256; Name = 'declaration' }
 )) {
     $recordBytes = DecodeHex ([string]$record.Bytes) $record.Name
     if ($record.Digest -ne (Sha256Hex $recordBytes)) {
@@ -202,6 +342,22 @@ if ($admission[0].fork_operation_id -ne $manifest.identity_binding.fork_operatio
     $started[0].child_operation_id -ne $manifest.identity_binding.child_operation_id -or
     $completed[0].child_operation_id -ne $manifest.identity_binding.child_operation_id) {
     throw 'real trace event identities do not match the authenticated source binding.'
+}
+if ($completed[0].outcome_durable -ne $true) {
+    throw 'real completion trace does not assert a durable outcome.'
+}
+if ($admission[0].parent -ne 1 -or $admission[0].child -ne 2 -or
+    $publication[0].parent -ne 1 -or $publication[0].child -ne 2 -or
+    $started[0].agent -ne 2 -or $completed[0].agent -ne 2) {
+    throw 'real trace normalization labels do not match the declared task/agent witnesses.'
+}
+if ([int64]$admission[0].depth -ne [int64]$manifest.source.child_depth) {
+    throw 'real trace child depth does not match the durable session witness.'
+}
+if ([string]$manifest.normalization.task_ids.'1' -ne [string]$manifest.source.root_task -or
+    [string]$manifest.normalization.task_ids.'2' -ne [string]$manifest.source.child_task -or
+    [string]$manifest.normalization.agent_ids.'2' -ne [string]$manifest.source.child_agent) {
+    throw 'real trace normalization maps do not match the durable identity witnesses.'
 }
 if ($manifest.identity_binding.parent_event_operation_id -ne $manifest.identity_binding.fork_operation_id -or
     $manifest.identity_binding.completion_operation_id -ne $manifest.identity_binding.child_operation_id) {

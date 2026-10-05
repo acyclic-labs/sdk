@@ -118,6 +118,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex_bytes(&Sha256::digest(bytes))
 }
 
+fn canonical_json_hex<T: serde::Serialize>(value: &T) -> Result<String> {
+    Ok(hex_bytes(&crate::contract::canonical_json_bytes(value)?))
+}
+
 fn file_sha256(path: &Path) -> Result<String> {
     let bytes = fs::read(path).map_err(|error| Error::Storage(error.to_string()))?;
     Ok(sha256_hex(&bytes))
@@ -125,6 +129,13 @@ fn file_sha256(path: &Path) -> Result<String> {
 
 fn verification_provenance() -> Result<Value> {
     let verification = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("verification");
+    let repo_root = verification
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| Error::Storage("formal verification path has no repository root".into()))?
+        .to_path_buf();
     let executable = env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
     let source = verification.join("real_harness_trace.rs");
     let checker = verification.join("check-real-trace.ps1");
@@ -132,6 +143,14 @@ fn verification_provenance() -> Result<Value> {
     let qualification = verification.join("qualify-real-trace.ps1");
     Ok(json!({
         "source_commit": env::var("GRAPHCODER_REAL_TRACE_SOURCE_COMMIT").ok(),
+        "source_tree": env::var("GRAPHCODER_REAL_TRACE_SOURCE_TREE").ok(),
+        "source_clean": env::var("GRAPHCODER_REAL_TRACE_SOURCE_CLEAN")
+            .ok()
+            .and_then(|value| value.parse::<bool>().ok()),
+        "workspace_manifest_path": repo_root.join("Cargo.toml"),
+        "workspace_manifest_sha256": file_sha256(&repo_root.join("Cargo.toml"))?,
+        "lockfile_path": repo_root.join("Cargo.lock"),
+        "lockfile_sha256": file_sha256(&repo_root.join("Cargo.lock"))?,
         "exporter_source_path": source,
         "exporter_source_sha256": file_sha256(&source)?,
         "binary_path": executable,
@@ -172,6 +191,16 @@ fn operation_digest(event: &ExecutionEvent) -> Option<String> {
                 .map(|byte| format!("{byte:02x}"))
                 .collect(),
         ),
+        _ => None,
+    }
+}
+
+fn model_started_projection(event: &ExecutionEvent) -> Option<(u32, String)> {
+    match event {
+        ExecutionEvent::ModelStarted {
+            step,
+            request_digest,
+        } => Some((*step, hex_bytes(request_digest))),
         _ => None,
     }
 }
@@ -223,6 +252,11 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         report,
         publication,
         admission_record_bytes,
+        task,
+        prompt,
+        child_agent,
+        seed,
+        declaration,
     ) = events
         .iter()
         .find_map(|(sequence, event, record_bytes)| match event {
@@ -236,6 +270,11 @@ async fn export_real_trace(path: &Path) -> Result<()> {
                 fork_operation,
                 report,
                 publication,
+                declaration,
+                task,
+                prompt,
+                child_agent,
+                seed,
                 ..
             } => Some((
                 *sequence,
@@ -250,6 +289,11 @@ async fn export_real_trace(path: &Path) -> Result<()> {
                 report.clone(),
                 publication.clone(),
                 record_bytes.clone(),
+                task.clone(),
+                prompt.clone(),
+                child_agent.clone(),
+                seed.clone(),
+                declaration.clone(),
             )),
             StoredEvent::ForkAdmitted {
                 parent,
@@ -261,6 +305,11 @@ async fn export_real_trace(path: &Path) -> Result<()> {
                 fork_operation,
                 report,
                 publication,
+                declaration,
+                task,
+                prompt,
+                child_agent,
+                seed,
                 ..
             } => Some((
                 *sequence,
@@ -275,6 +324,11 @@ async fn export_real_trace(path: &Path) -> Result<()> {
                 report.clone(),
                 publication.clone(),
                 record_bytes.clone(),
+                task.clone(),
+                prompt.clone(),
+                child_agent.clone(),
+                seed.clone(),
+                declaration.clone(),
             )),
             _ => None,
         })
@@ -304,6 +358,9 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     }
     let report =
         report.ok_or_else(|| Error::Storage("real admission omitted fork report".into()))?;
+    let seed = seed.ok_or_else(|| Error::Storage("real admission omitted fork seed".into()))?;
+    let declaration = declaration
+        .ok_or_else(|| Error::Storage("real admission omitted fork declaration".into()))?;
     let (generation, raw_generation) = generation_projection(&report)?;
 
     let parent_harness = swarm.open_session(root_task).await?;
@@ -325,6 +382,15 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         .ok_or_else(|| {
             Error::Storage("parent conversation has no matching ForkPublished event".into())
         })?;
+    let publication_seed = match &publication_event.payload {
+        crate::core::EventPayload::ForkPublished { seed } => seed.as_ref().clone(),
+        _ => unreachable!("matching ForkPublished event changed payload"),
+    };
+    if publication_seed != seed {
+        return Err(Error::Conflict(
+            "parent ForkPublished seed differs from durable fork admission".into(),
+        ));
+    }
     let publication_revision = publication_event.revision;
     let publication_event_operation = publication_event.operation_id;
     let publication_event_bytes = crate::contract::canonical_json_bytes(publication_event)?;
@@ -344,20 +410,45 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         .ok_or_else(|| Error::Storage("real child journal has no ModelStarted record".into()))?;
     let model_sequence = model_record.sequence;
     let model_digest = operation_digest(&model_record.event);
+    let (model_step, model_request_digest) = model_started_projection(&model_record.event)
+        .ok_or_else(|| Error::Storage("real child ModelStarted projection disappeared".into()))?;
     let model_record_bytes = crate::contract::canonical_json_bytes(&model_record.event)?;
-    let (completion_sequence, completion_operation, completion_record_bytes) = events
+    let (
+        completion_sequence,
+        completion_operation,
+        completion_record_bytes,
+        completion_output,
+        completion_output_ref,
+        completion_output_digest,
+    ) = events
         .iter()
         .find_map(|(sequence, event, record_bytes)| match event {
             StoredEvent::ForkCompleted {
                 child: completed_child,
                 operation,
+                output,
+                output_ref,
+                output_digest,
                 ..
-            } if *completed_child == child_task && *operation == child_operation => {
-                Some((*sequence, *operation, record_bytes.clone()))
-            }
+            } if *completed_child == child_task && *operation == child_operation => Some((
+                *sequence,
+                *operation,
+                record_bytes.clone(),
+                output.clone(),
+                output_ref.clone(),
+                *output_digest,
+            )),
             _ => None,
         })
         .ok_or_else(|| Error::Storage("real registry has no ForkCompleted record".into()))?;
+
+    if completion_output_digest.is_none()
+        || (completion_output.is_none() && completion_output_ref.is_none())
+    {
+        return Err(Error::Storage(
+            "real completion has no durable output and digest".into(),
+        ));
+    }
 
     let trace = vec![
         json!({
@@ -411,6 +502,8 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "child_execution_operation": child_operation,
             "child_execution_model_started_sequence": model_sequence,
             "child_execution_model_started_request_digest": model_digest,
+            "child_execution_model_started_step": model_step,
+            "child_execution_model_started_request_digest_hex": model_request_digest,
             "admission_record_bytes_hex": admission_record_bytes,
             "admission_record_sha256": sha256_hex(&hex_decode(&admission_record_bytes)?),
             "parent_event_canonical_bytes_hex": hex_bytes(&publication_event_bytes),
@@ -421,13 +514,36 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "completion_record_sha256": sha256_hex(&hex_decode(&completion_record_bytes)?),
             "root_task": root_task,
             "child_task": child_task,
+            "child_depth": child_session.depth,
             "child_authority": child_authority,
+            "parent_step": parent_step,
+            "task": task,
+            "prompt": prompt,
+            "child_agent": child_agent,
+            "seed": seed,
+            "seed_canonical_bytes_hex": canonical_json_hex(&seed)?,
+            "seed_sha256": sha256_hex(&crate::contract::canonical_json_bytes(&seed)?),
+            "seed_digest": fork_seed_digest(&seed)?,
+            "report": report,
+            "report_canonical_bytes_hex": canonical_json_hex(&report)?,
+            "report_sha256": sha256_hex(&crate::contract::canonical_json_bytes(&report)?),
+            "publication": publication,
+            "publication_canonical_bytes_hex": canonical_json_hex(&publication)?,
+            "publication_sha256": sha256_hex(&crate::contract::canonical_json_bytes(&publication)?),
+            "declaration": declaration,
+            "declaration_canonical_bytes_hex": canonical_json_hex(&declaration)?,
+            "declaration_sha256": sha256_hex(&crate::contract::canonical_json_bytes(&declaration)?),
             "root_operation": root_operation,
             "fork_operation": fork_operation,
             "publication_operation": publication.operation_id,
             "publication_parent_operation": publication.parent_operation,
-            "publication_step": parent_step,
-            "completion_operation": completion_operation
+            "publication_step": publication.step,
+            "parent_seed_authority": publication_seed.parent,
+            "parent_seed_revision": publication_seed.parent_revision,
+            "completion_operation": completion_operation,
+            "completion_output": completion_output,
+            "completion_output_ref": completion_output_ref,
+            "completion_output_digest": completion_output_digest
         },
         "identity_binding": {
             "fork_operation_id": fork_operation,
@@ -450,7 +566,8 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "source_chronology_is_not_projected": true
         },
         "normalization": {
-            "agent_ids": {"1": root_task, "2": child_task},
+            "task_ids": {"1": root_task, "2": child_task},
+            "agent_ids": {"2": child_agent},
             "generation": {
                 "finite_ordinal": generation,
                 "raw_captured_generation": raw_generation,
