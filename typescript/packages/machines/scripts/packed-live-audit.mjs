@@ -76,10 +76,13 @@ try {
   if (JSON.stringify(serviceMethods) !== JSON.stringify(expectedServiceMethods)) {
     throw new Error(`native service method set mismatch: ${serviceMethods.join(",")}`);
   }
-  if (generatedClient.MACHINES_OPERATIONS === undefined ||
-      Object.keys(generatedClient.MACHINES_OPERATIONS).length !== 19 ||
-      generatedClient.MACHINES_SOURCE?.modeledOperations !== 19) {
-    throw new Error("generated Machines operation metadata does not contain 19 operations");
+  const modeledRpcs = generatedClient.MACHINES_OPERATIONS === undefined
+    ? []
+    : Object.values(generatedClient.MACHINES_OPERATIONS).map((operation) => operation.rpc).sort();
+  if (modeledRpcs.length !== 19 ||
+      generatedClient.MACHINES_SOURCE?.modeledOperations !== 19 ||
+      JSON.stringify(modeledRpcs) !== JSON.stringify([...expectedRpcs].sort())) {
+    throw new Error("generated Machines operation metadata does not match the Rust fixture RPC identities");
   }
 
   const request = (key) => ({
@@ -125,7 +128,8 @@ try {
     forked.machines?.[0]?.id,
     liveFork.children?.[0]?.id,
   ].filter((id) => id !== undefined);
-  if (childIds.length > 0) await provider.destroyMachine(childIds[0], idempotencyKey("live-destroy-child"));
+  if (childIds.length === 0) throw new Error("Rust fixture did not return a child machine for destroyMachine qualification");
+  await provider.destroyMachine(childIds[0], idempotencyKey("live-destroy-child"));
   const destroyedCheckpoint = await provider.destroyCheckpoint(checkpointId, idempotencyKey("live-destroy-checkpoint"));
   if (destroyedCheckpoint.kind !== "checkpoint-destroyed") throw new Error(`destroyCheckpoint outcome mismatch: ${destroyedCheckpoint.kind}`);
 
@@ -175,4 +179,5 @@ try {
   await fs.rm(tempRoot, { recursive: true, force: true });
 }
 console.log(JSON.stringify(result));
+
 
