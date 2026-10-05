@@ -695,10 +695,16 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
         publication: ModelBatchPublication,
     ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
         Box::pin(async move {
+            crate::stack_diagnostics::marker("fork-physical-enter");
             intent.validate()?;
+            crate::stack_diagnostics::marker("fork-physical-after-intent-validate");
             let swarm = self.target()?;
+            crate::stack_diagnostics::marker("fork-physical-after-target");
+            crate::stack_diagnostics::marker("fork-physical-before-parent-open");
             let parent_harness = swarm.open_session(intent.parent).await?;
+            crate::stack_diagnostics::marker("fork-physical-after-parent-open");
             let parent_session = swarm.session(intent.parent).await?;
+            crate::stack_diagnostics::marker("fork-physical-after-parent-session");
             if parent_session.depth >= swarm.config.maximum_depth {
                 return Err(Error::Unauthorized(
                     "local swarm depth limit exceeded".into(),
@@ -712,14 +718,17 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 .filter(|session| session.parent == Some(intent.parent))
                 .map(|session| session.task)
                 .collect::<BTreeSet<_>>();
+            crate::stack_diagnostics::marker("fork-physical-after-existing-tasks");
             let existing_children = existing_task_ids.len();
             let pending_children = if let Some(plans) = swarm.bindings.model_fork_plans.as_ref() {
+                crate::stack_diagnostics::marker("fork-physical-before-pending-children");
                 plans
                     .pending_for_parent(intent.parent, &existing_task_ids)
                     .await?
             } else {
                 0
             };
+            crate::stack_diagnostics::marker("fork-physical-after-pending-children");
             if existing_children + pending_children > swarm.config.maximum_children {
                 return Err(Error::Unauthorized(
                     "local swarm child limit exceeded".into(),
@@ -729,6 +738,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 Error::Unauthorized("local fork resolver has no durable host secret".into())
             })?;
             let storage = parent_harness.storage();
+            crate::stack_diagnostics::marker("fork-physical-before-boundary");
             let inherited = swarm.declarations.lock().await.get(&intent.parent).cloned();
             let verified = match inherited {
                 Some(declaration) => {
