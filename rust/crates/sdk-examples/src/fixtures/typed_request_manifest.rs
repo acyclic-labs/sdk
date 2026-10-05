@@ -2115,7 +2115,50 @@ fn haskell_lower_first(value: &str) -> String {
 
 fn haskell_bytes(encoded: &str) -> Result<String, String> {
     let bytes = decode_base64(encoded)?;
-    Ok(format!("BS.pack [{}]", bytes.iter().map(|byte| byte.to_string()).collect::<Vec<_>>().join(",")))
+    if bytes.is_empty() {
+        return Ok("BS.empty".to_owned());
+    }
+    const LITERAL_CHUNK_SIZE: usize = 1024;
+    const REPEAT_THRESHOLD: usize = 4;
+    let mut pieces = Vec::new();
+    let mut literal = Vec::with_capacity(LITERAL_CHUNK_SIZE);
+    let mut flush_literal = |literal: &mut Vec<u8>, pieces: &mut Vec<String>| {
+        if !literal.is_empty() {
+            pieces.push(format!(
+                "BS.pack [{}]",
+                literal
+                    .drain(..)
+                    .map(|byte| byte.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+    };
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let mut end = index + 1;
+        while end < bytes.len() && bytes[end] == byte {
+            end += 1;
+        }
+        let run_length = end - index;
+        if run_length >= REPEAT_THRESHOLD {
+            flush_literal(&mut literal, &mut pieces);
+            pieces.push(format!("BS.replicate {run_length} {byte}"));
+        } else {
+            literal.extend_from_slice(&bytes[index..end]);
+            if literal.len() >= LITERAL_CHUNK_SIZE {
+                flush_literal(&mut literal, &mut pieces);
+            }
+        }
+        index = end;
+    }
+    flush_literal(&mut literal, &mut pieces);
+    if pieces.len() == 1 {
+        Ok(pieces.into_iter().next().expect("one byte expression"))
+    } else {
+        Ok(format!("BS.concat [{}]", pieces.join(",")))
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
