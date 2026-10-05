@@ -1,0 +1,27 @@
+{
+  "tests_executed": 0,
+  "suite": "integrated Harness test compilation",
+  "exit": 101,
+  "qualification_complete": false,
+  "compiler_errors": 6,
+  "outcome": "workspace tools integration: duplicate module, missing module import, shared host and project moved before adapter binding",
+  "source_commit": "8564a2038d13167bd59e0a91228d8948ef0b45f3",
+  "artifacts": [
+    {
+      "bytes": 5,
+      "path": "target/graphcoder-qualification/evidence/8564a2038/integrated-check/exit.txt",
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95"
+    },
+    {
+      "bytes": 7718291,
+      "path": "target/graphcoder-qualification/evidence/8564a2038/integrated-check/source.zip",
+      "sha256": "4285e171cc19863da95bc3af9b69b2516c9565800cca0d6eb412a5dda012bb1c"
+    },
+    {
+      "bytes": 6845,
+      "path": "target/graphcoder-qualification/evidence/8564a2038/integrated-check/check.log",
+      "sha256": "6ca06aa28458639bb89be9562dfbcf8e30554cc5e25e81cff69ae573a07131ac"
+    }
+  ],
+  "platform": "Windows Rust"
+}
