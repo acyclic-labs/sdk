@@ -7,8 +7,8 @@
 //! lifecycle and integration effects still go through typed SDK operations.
 
 use super::super::merge::{
-    ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan,
-    ProjectMergeReceipt, ProjectMergeVerifier,
+    ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan, ProjectMergeReceipt,
+    ProjectMergeVerifier,
 };
 use super::{
     ParentMergePlan, ParentProjectController, ProjectMergeRecovery, ProjectMergeRecoveryEntry,
@@ -57,6 +57,10 @@ pub struct RootWritebackApproval {
     source_generation: GenerationRef,
     expected_target_generation: GenerationRef,
     scope_id: String,
+    child: Option<Authority>,
+    source_project: Option<VolumeRef>,
+    path_digest: Option<[u8; 32]>,
+    action_digest: [u8; 32],
 }
 
 impl RootWritebackApproval {
@@ -87,13 +91,127 @@ impl RootWritebackApproval {
         }
         source_generation.validate()?;
         expected_target_generation.validate()?;
-        Ok(Self {
+        let mut approval = Self {
             operation_id,
             target_project,
             source_generation,
             expected_target_generation,
             scope_id: scope.id().to_owned(),
-        })
+            child: None,
+            source_project: None,
+            path_digest: None,
+            action_digest: [0; 32],
+        };
+        approval.action_digest = approval.compute_action_digest()?;
+        Ok(approval)
+    }
+
+    /// Issues an approval bound to one authenticated child authority.
+    pub fn issue_for_child(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        target_project: VolumeRef,
+        child_project: VolumeRef,
+        child: Authority,
+        operation_id: OperationId,
+        source_generation: GenerationRef,
+        expected_target_generation: GenerationRef,
+    ) -> Result<Self> {
+        if child_project.provider() != target_project.provider()
+            || child_project.class() != VolumeClass::Project
+        {
+            return Err(Error::Invalid(
+                "root writeback child project is inconsistent".into(),
+            ));
+        }
+        let mut approval = Self::issue(
+            verifier,
+            scope,
+            target_project,
+            operation_id,
+            source_generation,
+            expected_target_generation,
+        )?;
+        approval.child = Some(child);
+        approval.source_project = Some(child_project);
+        approval.action_digest = approval.compute_action_digest()?;
+        Ok(approval)
+    }
+
+    /// Issues a root approval whose action is bound to an exact host path set.
+    pub fn issue_with_paths(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        target_project: VolumeRef,
+        operation_id: OperationId,
+        source_generation: GenerationRef,
+        expected_target_generation: GenerationRef,
+        paths: &[std::path::PathBuf],
+    ) -> Result<Self> {
+        Self::issue(
+            verifier,
+            scope,
+            target_project,
+            operation_id,
+            source_generation,
+            expected_target_generation,
+        )?
+        .with_path_set(paths)
+    }
+
+    /// Issues a child approval whose action is bound to an exact host path set.
+    pub fn issue_for_child_with_paths(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        target_project: VolumeRef,
+        child_project: VolumeRef,
+        child: Authority,
+        operation_id: OperationId,
+        source_generation: GenerationRef,
+        expected_target_generation: GenerationRef,
+        paths: &[std::path::PathBuf],
+    ) -> Result<Self> {
+        Self::issue_for_child(
+            verifier,
+            scope,
+            target_project,
+            child_project,
+            child,
+            operation_id,
+            source_generation,
+            expected_target_generation,
+        )?
+        .with_path_set(paths)
+    }
+
+    fn compute_action_digest(&self) -> Result<[u8; 32]> {
+        crate::contract::canonical_json_digest(&serde_json::json!({
+            "format": "acyclic.root-writeback-action.v2",
+            "operation": self.operation_id,
+            "target_project": self.target_project,
+            "source_generation": self.source_generation,
+            "expected_target_generation": self.expected_target_generation,
+            "scope": self.scope_id,
+            "child": self.child,
+            "source_project": self.source_project,
+            "path_digest": self.path_digest,
+        }))
+    }
+
+    /// Binds the approval to the canonical digest of an exact path set.
+    pub fn with_path_set(mut self, paths: &[std::path::PathBuf]) -> Result<Self> {
+        let mut normalized = paths
+            .iter()
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect::<Vec<_>>();
+        normalized.sort();
+        normalized.dedup();
+        if normalized.is_empty() {
+            return Err(Error::Invalid("root writeback path set is empty".into()));
+        }
+        self.path_digest = Some(crate::contract::canonical_json_digest(&normalized)?);
+        self.action_digest = self.compute_action_digest()?;
+        Ok(self)
     }
 
     /// Stable operation identity bound by the approval.
@@ -106,6 +224,30 @@ impl RootWritebackApproval {
     #[must_use]
     pub fn scope_id(&self) -> &str {
         &self.scope_id
+    }
+
+    /// Exact source generation bound by this approval.
+    #[must_use]
+    pub const fn source_generation(&self) -> &GenerationRef {
+        &self.source_generation
+    }
+
+    /// Exact target generation bound by this approval.
+    #[must_use]
+    pub const fn expected_target_generation(&self) -> &GenerationRef {
+        &self.expected_target_generation
+    }
+
+    /// Child authority bound by a child writeback approval, when present.
+    #[must_use]
+    pub fn child(&self) -> Option<&Authority> {
+        self.child.as_ref()
+    }
+
+    /// Digest of the immutable action, including the optional path set.
+    #[must_use]
+    pub const fn action_digest(&self) -> &[u8; 32] {
+        &self.action_digest
     }
 
     /// Parent project bound to this approval.
@@ -806,8 +948,9 @@ impl<S> FilesystemGitFacade<S> {
             )
             .await?;
         match outcome {
-            ProjectJoinOutcome::Applied(receipt)
-            | ProjectJoinOutcome::AlreadyApplied(receipt) => Ok(receipt),
+            ProjectJoinOutcome::Applied(receipt) | ProjectJoinOutcome::AlreadyApplied(receipt) => {
+                Ok(receipt)
+            }
             ProjectJoinOutcome::NoChanges(_)
             | ProjectJoinOutcome::StaleTarget(_)
             | ProjectJoinOutcome::Conflicted { .. }
@@ -932,13 +1075,18 @@ impl<S> FilesystemGitFacade<S> {
         if let Some(receipt) = &entry.receipt {
             return Ok(receipt.clone());
         }
-        let approval = RootWritebackApproval {
+        let mut approval = RootWritebackApproval {
             operation_id: entry.intent.operation_id,
             target_project: entry.intent.target_project.clone(),
             source_generation: entry.intent.source_generation.clone(),
             expected_target_generation: entry.intent.expected_target_generation.clone(),
             scope_id: entry.intent.approval_scope_id.clone(),
+            child: Some(entry.intent.child.clone()),
+            source_project: Some(entry.intent.source_project.clone()),
+            path_digest: None,
+            action_digest: [0; 32],
         };
+        approval.action_digest = approval.compute_action_digest()?;
         self.verify_root_writeback(
             &RootWritebackRequest::new(approval, self.scope.clone()),
             &entry.intent.source_generation,

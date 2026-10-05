@@ -10,15 +10,16 @@ use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool,
     FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
     LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
-    PersistentLocalHarness, workspace_ref,
+    ParentMergePlan, PersistentLocalHarness, ProjectMergeRecovery, ProjectMergeRecoveryEntry,
+    RootWritebackApproval, RootWritebackRequest, workspace_ref,
 };
 use crate::{
     AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
-    conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
+    conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, EffectGuarantee, Reducer, SchemaRegistry, Scope},
     executor::{
         ExecutionEvent, SwarmProviderBoundary, SwarmRootProviderBoundary,
         TerminalFailureState, TurnOutput,
@@ -50,7 +51,7 @@ use crate::{
 };
 use acyclic_fs::{
     GitFilesystemAction, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
-    LocalOptions,
+    LocalOptions, WorkspaceId,
 };
 use acyclic_stream::{
     AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError, StreamProvider,
@@ -363,6 +364,8 @@ pub struct LocalSwarmBindings {
     /// Concrete local provider allocator. When supplied without an explicit
     /// plan index, the swarm builds one durable index around this resolver.
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
+    pub operator_authority: Option<AuthorityVerifier>,
+    operator_issuer: Option<AuthorityIssuer>,
     /// Optional host-only observation sink for lazy qualification metrics.
     pub observer: Option<Arc<dyn LocalSwarmObserver>>,
     /// Authenticated provider measurement source used for durable receipt
@@ -385,6 +388,8 @@ impl LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
+            operator_authority: None,
+            operator_issuer: None,
             observer: None,
             budget_usage_source: None,
         }
@@ -415,6 +420,19 @@ impl LocalSwarmBindings {
         resolver: Arc<LocalFilesystemForkResolver>,
     ) -> Self {
         self.filesystem_fork_resolver = Some(resolver);
+        self
+    }
+
+    #[must_use]
+    pub fn with_operator_authority(mut self, authority: AuthorityVerifier) -> Self {
+        self.operator_authority = Some(authority);
+        self
+    }
+
+    #[must_use]
+    pub fn with_operator_issuer(mut self, issuer: AuthorityIssuer) -> Self {
+        self.operator_authority = Some(issuer.verifier());
+        self.operator_issuer = Some(issuer);
         self
     }
 
@@ -2557,6 +2575,7 @@ struct StoredRecord {
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 enum StoredEvent {
     Session(StoredSession),
+    AuthorityBinding { identity: [u8; 32], audience: Authority },
     /// Canonical owner admission for one local task turn. The value is kept
     /// in canonical form so recovery validates the same runtime record that
     /// the execution boundary consumed.
@@ -2731,6 +2750,7 @@ pub struct PersistentLocalSwarm {
     config: LocalSwarmConfig,
     provider: Arc<dyn ModelProvider>,
     bindings: LocalSwarmBindings,
+    operator_authority: Option<AuthorityVerifier>,
     model_fork_publisher: Option<Arc<LocalModelForkPublisher>>,
     registry: StreamClient<LocalStream>,
     budget_journal: Arc<Mutex<SwarmBudgetJournal<LocalStream>>>,
@@ -2769,6 +2789,70 @@ pub struct PersistentLocalSwarm {
     /// with the exact ticket binding so a public resolve request cannot swap
     /// an operation or action digest between the private decision and commit.
     operator_choices: Mutex<BTreeMap<String, LocalOperatorChoice>>,
+}
+
+struct LocalRootWritebackContext {
+    host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    facade: FilesystemGitFacade<LocalCoreStateStore>,
+    parent: Reducer,
+    root_project: VolumeRef,
+    scope: Scope,
+    verifier: AuthorityVerifier,
+}
+
+impl LocalRootWritebackContext {
+    fn child_approval(&self, child: Authority, child_project: VolumeRef, operation: OperationId,
+        source: GenerationRef, target: GenerationRef) -> Result<RootWritebackApproval> {
+        RootWritebackApproval::issue_for_child(&self.verifier, &self.scope, self.root_project.clone(),
+            child_project, child, operation, source, target)
+    }
+    fn root_approval(&self, operation: OperationId, source: GenerationRef, target: GenerationRef)
+        -> Result<RootWritebackApproval> {
+        RootWritebackApproval::issue(&self.verifier, &self.scope, self.root_project.clone(),
+            operation, source, target)
+    }
+}
+
+pub struct LocalApprovedRootWriteback {
+    context: LocalRootWritebackContext,
+    request: RootWritebackRequest,
+    child: Authority,
+    child_project: VolumeRef,
+    root_only: bool,
+}
+
+impl LocalApprovedRootWriteback {
+    #[must_use]
+    pub const fn root_project(&self) -> &VolumeRef { &self.context.root_project }
+
+    pub async fn prepare_merge_plan(&self) -> Result<ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>> {
+        if self.root_only { return Err(Error::Invalid("root-task writeback has no child merge plan".into())); }
+        self.context.facade.prepare_project_merge_for_child(self.context.host.as_ref(), &self.context.parent,
+            &self.child, &self.child_project).await
+    }
+
+    pub async fn apply_with_receipt(&self, plan: &ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage) -> Result<crate::merge::ProjectMergeReceipt> {
+        if self.root_only { return Err(Error::Invalid("root-task writeback has no child merge receipt".into())); }
+        self.context.facade.apply_root_writeback_plan_for_child_with_receipt(&self.request,
+            self.context.host.as_ref(), &self.context.parent, self.child.clone(), &self.child_project,
+            plan, BTreeMap::new(), notice).await
+    }
+
+    pub async fn apply_with_recovery(&self, plan: &ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage, recovery: &ProjectMergeRecovery<'_>) -> Result<crate::merge::ProjectMergeReceipt> {
+        if self.root_only { return Err(Error::Invalid("root-task writeback has no child merge receipt".into())); }
+        self.context.facade.apply_root_writeback_plan_for_child_with_recovery(&self.request,
+            self.context.host.as_ref(), &self.context.parent, self.child.clone(), &self.child_project,
+            plan, BTreeMap::new(), notice, recovery).await
+    }
+
+    pub async fn recover_receipt(&self, entry: &ProjectMergeRecoveryEntry) -> Result<crate::merge::ProjectMergeReceipt> {
+        self.context.facade.recover_root_writeback_receipt(self.context.host.as_ref(), &self.context.parent, entry).await
+    }
+
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId { self.request.approval.operation_id() }
 }
 
 impl PersistentLocalSwarm {
@@ -3087,6 +3171,15 @@ impl PersistentLocalSwarm {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         let records = load_records_at(&stream, initial_tail).await?;
+        let persisted_authority = persisted_operator_authority(&records)?;
+        let supplied_authority = bindings.operator_authority.clone();
+        if let (Some((identity, audience)), Some(authority)) = (&persisted_authority, &supplied_authority)
+            && (identity != &authority.identity_digest()? || audience != authority.audience()) {
+            return Err(Error::Unauthorized("configured operator authority differs from pinned binding".into()));
+        }
+        if persisted_authority.is_some() && supplied_authority.is_none() {
+            return Err(Error::Unauthorized("swarm requires its operator authority on reopen".into()));
+        }
         let mut sessions = BTreeMap::new();
         let mut requests = BTreeMap::new();
         let mut seeds = BTreeMap::new();
@@ -3122,15 +3215,21 @@ impl PersistentLocalSwarm {
                 operation: None,
                 phase: LocalSessionPhase::Ready,
             };
+            let root_tail = if let Some(authority) = supplied_authority.as_ref() {
+                append_record_at(&stream, StoredEvent::AuthorityBinding {
+                    identity: authority.identity_digest()?, audience: authority.audience().clone(),
+                }, initial_tail).await?;
+                initial_tail.checked_add(1).ok_or_else(|| Error::Storage("swarm registry sequence overflow".into()))?
+            } else { initial_tail };
             match append_record_at(
                 &stream,
                 StoredEvent::Session(root_session.clone().into()),
-                initial_tail,
+                root_tail,
             )
             .await
             {
                 Ok(()) => {
-                    registry_tail = initial_tail
+                    registry_tail = root_tail
                         .checked_add(1)
                         .ok_or_else(|| Error::Storage("swarm registry sequence overflow".into()))?;
                     sessions.insert(root_task, root_session);
@@ -3249,6 +3348,7 @@ impl PersistentLocalSwarm {
             registry_refresh: Mutex::new(()),
             sessions: Mutex::new(opened),
             operator_choices: Mutex::new(BTreeMap::new()),
+            operator_authority: supplied_authority,
         };
         swarm.observe(LocalSwarmObservation::HarnessOpened { task: root_task });
         Ok(swarm)
@@ -3356,6 +3456,13 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
     ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_with_bindings(root, model, provider, limits, LocalSwarmBindings::default()).await
+    }
+
+    pub async fn open_shared_with_model_and_recursive_filesystem_with_bindings(
+        root: impl AsRef<Path>, model: Model, provider: Arc<dyn ModelProvider>, limits: Limits,
+        bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let root = root.as_ref().to_path_buf();
@@ -3377,7 +3484,7 @@ impl PersistentLocalSwarm {
             root.clone(),
             config,
             provider.clone(),
-            LocalSwarmBindings::default(),
+            bindings,
         )
         .await?;
         swarm.git_store = Some(Arc::new(
@@ -3426,6 +3533,76 @@ impl PersistentLocalSwarm {
         communication.bind(Arc::downgrade(&swarm))?;
         swarm.ensure_root_owner_admission(root_task).await?;
         Ok(swarm)
+    }
+
+    pub async fn open_shared_with_model_and_recursive_filesystem_with_operator_authority(
+        root: impl AsRef<Path>, model: Model, provider: Arc<dyn ModelProvider>, limits: Limits,
+        issuer: AuthorityIssuer,
+    ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_with_bindings(
+            root, model, provider, limits, LocalSwarmBindings::default().with_operator_issuer(issuer),
+        ).await
+    }
+
+    pub async fn open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings(
+        _root: impl AsRef<Path>, _model: Model, _provider: Arc<dyn ModelProvider>, _limits: Limits,
+        _project: VolumeRef, _checkout: impl AsRef<Path>, _bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
+        Err(Error::Unsupported("native checkout composition requires the host Filesystem bridge".into()))
+    }
+
+    pub async fn open_shared_with_model_and_recursive_filesystem_at_checkout_with_operator_authority(
+        _root: impl AsRef<Path>, _model: Model, _provider: Arc<dyn ModelProvider>, _limits: Limits,
+        _project: VolumeRef, _checkout: impl AsRef<Path>, _issuer: AuthorityIssuer, _bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
+        Err(Error::Unsupported("native checkout composition requires the host Filesystem bridge".into()))
+    }
+
+    async fn root_writeback_context(&self, scope: &Scope, child_project: &VolumeRef) -> Result<LocalRootWritebackContext> {
+        let verifier = self.operator_authority.clone().ok_or_else(|| Error::Unauthorized("root writeback requires an operator authority".into()))?;
+        verifier.verify(scope)?;
+        if !scope.capabilities().contains(super::ROOT_WRITEBACK_CAPABILITY) { return Err(Error::Unauthorized("operator scope lacks project:writeback".into())); }
+        let root_project = self.config.project.clone().ok_or_else(|| Error::Unsupported("local swarm has no root project".into()))?;
+        if root_project.class() != VolumeClass::Project || child_project.class() != VolumeClass::Project || root_project.provider() != child_project.provider() { return Err(Error::Invalid("root writeback projects are inconsistent".into())); }
+        let store = self.git_store.clone().ok_or_else(|| Error::Unsupported("local swarm has no Git facade state".into()))?;
+        let root_task = self.root_task().await?;
+        let harness = self.open_session(root_task).await?;
+        let digest = crate::contract::canonical_json_digest(&("acyclic.local-root-writeback-workspace.v1", &root_project, root_task))?;
+        let mut workspace = [0; 16]; workspace.copy_from_slice(&digest[..16]);
+        let facade = FilesystemGitFacade::new(WorkspaceId::from_bytes(workspace), (*store).clone(), root_project.clone(), verifier.clone(), scope.clone())?;
+        let parent = harness.conversation_aggregate(self.config.limits).await?.reducer().clone();
+        Ok(LocalRootWritebackContext { host: self.filesystem_host.clone(), facade, parent, root_project, scope: scope.clone(), verifier })
+    }
+
+    async fn approved_interaction(&self, task: TaskId, id: InteractionId) -> Result<LocalSwarmApproval> {
+        let approval = self.list_approvals(task).await?.into_iter().find(|item| item.ticket.id == id).ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
+        if !matches!(approval.resolution.as_ref().map(|r| &r.outcome), Some(InteractionOutcome::Approved)) { return Err(Error::Unauthorized("root writeback requires a durably approved interaction".into())); }
+        if approval.ticket.approval.is_none() { return Err(Error::Invalid("root writeback interaction has no exact approval binding".into())); }
+        Ok(approval)
+    }
+
+    pub async fn issue_approved_root_writeback(&self, task: TaskId, interaction: InteractionId, scope: &Scope, child: Authority, child_project: &VolumeRef, source: GenerationRef, target: GenerationRef) -> Result<LocalApprovedRootWriteback> {
+        if task != self.root_task().await? { return Err(Error::Unauthorized("root writeback must be issued by the root task".into())); }
+        let approval = self.approved_interaction(task, interaction).await?;
+        let binding = approval.ticket.approval.ok_or_else(|| Error::Invalid("root writeback approval binding missing".into()))?;
+        let context = self.root_writeback_context(scope, child_project).await?;
+        let typed = context.child_approval(child.clone(), child_project.clone(), binding.operation_id, source, target)?;
+        if typed.action_digest() != &binding.action_digest { return Err(Error::Conflict("operator approval does not match exact root writeback".into())); }
+        Ok(LocalApprovedRootWriteback { context, request: RootWritebackRequest::new(typed, scope.clone()), child, child_project: child_project.clone(), root_only: false })
+    }
+
+    pub async fn issue_host_approved_root_writeback(&self, task: TaskId, interaction: InteractionId, child: Authority, child_project: &VolumeRef, source: GenerationRef, target: GenerationRef) -> Result<LocalApprovedRootWriteback> {
+        let issuer = self.bindings.operator_issuer.clone().ok_or_else(|| Error::Unauthorized("root writeback requires a host supplied operator issuer".into()))?;
+        let root = self.config.project.clone().ok_or_else(|| Error::Unsupported("local swarm has no root project".into()))?;
+        let scope = issuer.root(format!("root-writeback:{task}:{interaction}"), Capabilities::new([super::ROOT_WRITEBACK_CAPABILITY.to_owned(), root.capability(VolumeOperation::Read)?, root.capability(VolumeOperation::Write)?, child_project.capability(VolumeOperation::Read)?]));
+        self.issue_approved_root_writeback(task, interaction, &scope, child, child_project, source, target).await
+    }
+
+    /// Root-task publication requires the native checkout bridge to supply a
+    /// distinct physical target generation. Refuse an ambiguous same-head
+    /// request instead of manufacturing an approval that could be replayed.
+    pub async fn issue_host_approved_root_task_writeback(&self, _task: TaskId, _interaction: InteractionId) -> Result<LocalApprovedRootWriteback> {
+        Err(Error::Unsupported("root-task writeback requires a bound native checkout".into()))
     }
 
     /// Returns the stable root task without opening any child session.
@@ -6701,6 +6878,22 @@ async fn append_record_at<P: StreamProvider>(
     }
 }
 
+fn persisted_operator_authority(records: &[StoredRecord]) -> Result<Option<([u8; 32], Authority)>> {
+    let mut binding = None;
+    for record in records {
+        let StoredEvent::AuthorityBinding { identity, audience } = &record.event else { continue };
+        if identity == &[0; 32] || audience.id.is_empty() {
+            return Err(Error::Conflict("persisted operator authority binding is invalid".into()));
+        }
+        let next = (*identity, audience.clone());
+        if let Some(existing) = &binding && existing != &next {
+            return Err(Error::Conflict("operator authority binding changed in registry".into()));
+        }
+        binding = Some(next);
+    }
+    Ok(binding)
+}
+
 fn apply_record(
     sessions: &mut BTreeMap<TaskId, LocalSwarmSession>,
     requests: &mut BTreeMap<TaskId, LocalForkRequest>,
@@ -6736,6 +6929,11 @@ fn apply_record(
                 }
             }
             sessions.insert(next.task, next);
+        }
+        StoredEvent::AuthorityBinding { identity, audience } => {
+            if identity == [0; 32] || audience.id.is_empty() {
+                return Err(Error::Conflict("persisted operator authority binding is invalid".into()));
+            }
         }
         StoredEvent::TaskAdmitted { task, admission } => {
             let admission = crate::runtime::TaskAdmissionRecord::from_canonical_value(admission)?;
