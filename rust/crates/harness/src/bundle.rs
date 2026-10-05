@@ -32,6 +32,10 @@ const CODING_TOOLS: &[(&str, &str)] = &[
         "Read and mutate the durable workspace filesystem.",
     ),
     (
+        "acyclic.git",
+        "Inspect and mutate the caller's workspace through the typed acyclic Git facade.",
+    ),
+    (
         "acyclic.edit",
         "Apply bounded structured edits to workspace files.",
     ),
@@ -1059,6 +1063,14 @@ mod tests {
         });
         let registry = coding_tools(host)?;
         assert_eq!(registry.definitions()?.len(), CODING_TOOLS.len());
+        assert_eq!(
+            registry
+                .get("acyclic.git")
+                .ok_or_else(|| Error::NotFound("acyclic.git".into()))?
+                .definition
+                .revision,
+            "1"
+        );
         for &(name, _) in CODING_TOOLS {
             let tool = registry
                 .get(name)
