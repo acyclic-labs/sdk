@@ -7,20 +7,23 @@
 //! requests, tool-result pairing, durable communication, and real per-child
 //! project volumes after the recursive run.
 
-use acyclic_fs::{Fs, GitBranch, GitCompatState, LocalCoreStateStore, LocalOptions, WorkspaceId};
-use acyclic_harness::conversation::{VolumeClass, VolumeOwner, VolumeRef};
+use acyclic_fs::{
+    Fs, GitBranch, GitCompatState, GitCompatStore, LocalCoreStateStore, LocalOptions, WorkspaceId,
+};
+use acyclic_harness::conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef};
 use acyclic_harness::filesystem::PersistentLocalSwarm;
 use acyclic_harness::fork::ResourceRevision;
 use acyclic_harness::model::{
     Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest,
+    ProviderDispatchContext,
 };
 use acyclic_harness::resources::ProviderRef;
-use acyclic_harness::{Error, Limits, OperationId, Result};
-use futures::{stream, stream::BoxStream};
-use serde_json::{json, Value};
+use acyclic_harness::{Error, OperationId, Result};
+use futures::{StreamExt as _, future::BoxFuture, stream, stream::BoxStream};
+use serde_json::{Value, json};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 use tempfile::tempdir;
 
@@ -543,10 +546,11 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
     let provider = UnifiedProvider::new(child_a, child_b, grandchild);
     let model = Model::new("mock", "unified-runtime-swarm", "1", json!({}))?;
     let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
+    let filesystem = Fs::local(LocalOptions::new(directory.path().join("filesystem")))
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
     let host = Arc::new(acyclic_harness::filesystem::FilesystemHost::new(
-        Fs::local(LocalOptions::new(directory.path().join("filesystem")))
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?,
+        filesystem.clone(),
         filesystem_provider.clone(),
     )?);
     let root_project = VolumeRef::new(
@@ -640,16 +644,16 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
     // commits below are produced by model-facing Git calls.  The subsequent
     // merge calls are issued by the child and root model turns, so the typed
     // facade remains the sole publication path.
-    let child_a_workspace_id = host
+    let child_a_workspace_id = filesystem
         .workspace_id(child_a_project.storage_name()?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let child_b_workspace_id = host
+    let child_b_workspace_id = filesystem
         .workspace_id(child_b_project.storage_name()?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let grandchild_workspace_id = host
+    let grandchild_workspace_id = filesystem
         .workspace_id(grandchild_project.storage_name()?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let root_workspace_id = host
+    let root_workspace_id = filesystem
         .workspace_id(root_project.storage_name()?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     install_git_branch(
@@ -780,18 +784,21 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
             .await?,
         b"grandchild authored this exact note"
     );
-    assert!(host
-        .read(&child_b_workspace, None, "/child-a-note.txt", 1_024)
-        .await
-        .is_err());
-    assert!(host
-        .read(&child_b_workspace, None, "/grandchild-note.txt", 1_024)
-        .await
-        .is_err());
-    assert!(host
-        .read(&grandchild_workspace, None, "/child-b-note.txt", 1_024)
-        .await
-        .is_err());
+    assert!(
+        host.read(&child_b_workspace, None, "/child-a-note.txt", 1_024)
+            .await
+            .is_err()
+    );
+    assert!(
+        host.read(&child_b_workspace, None, "/grandchild-note.txt", 1_024)
+            .await
+            .is_err()
+    );
+    assert!(
+        host.read(&grandchild_workspace, None, "/child-b-note.txt", 1_024)
+            .await
+            .is_err()
+    );
     for (path, expected) in [
         ("/root-note.txt", "root authored this exact note"),
         ("/child-a-note.txt", "child A authored this exact note"),
