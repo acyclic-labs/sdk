@@ -9544,6 +9544,22 @@ mod tests {
         ));
         let message = OperationId::from_bytes([0xDB; 16]);
         swarm.admit_message(parent, child, message, payload.clone()).await?;
+        let changed_payload = source
+            .storage()
+            .stage(
+                OperationId::from_bytes([0xDD; 16]),
+                "system/test-message-changed.txt",
+                b"changed message",
+                "text/plain",
+                "message-changed.txt",
+            )
+            .await?;
+        assert!(matches!(
+            swarm
+                .admit_message(parent, child, message, changed_payload)
+                .await,
+            Err(Error::Conflict(_))
+        ));
         assert!(matches!(
             swarm
                 .admit_message(parent, sibling, message, payload.clone())
@@ -9552,6 +9568,10 @@ mod tests {
         ));
         let timer = OperationId::from_bytes([0xDC; 16]);
         swarm.admit_timer(child, timer, 10_000).await?;
+        assert!(matches!(
+            swarm.admit_timer(child, timer, 10_001).await,
+            Err(Error::Conflict(_))
+        ));
         swarm.cancel(child).await?;
         swarm.admit_message(parent, child, message, payload).await?;
         swarm.admit_timer(child, timer, 10_000).await?;
