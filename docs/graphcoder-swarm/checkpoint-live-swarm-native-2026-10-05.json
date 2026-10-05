@@ -1,0 +1,22 @@
+{
+  "source_commit": "7fb3b1e99d5926f9039c6350f7a877780fcf18a2",
+  "platform": "Windows native",
+  "archive": "D:/graphcoder-builds/root-qualification-artifacts/7fb3b1e99/live-swarm-first-run",
+  "source_archive_sha256": "7c6e7533e63e2ff354547e6b17e4587eb6e532f6814b178f6ab845a55825eac5",
+  "native_log_sha256": "abdbf946387744d285b5b5b4e73b11971184c82f8e4b8f8507e26cfd653a3889",
+  "fault_log_sha256": "f743adc90a37799a450a7e29d8549ac7e87fa7db1e9b51bf098f8bfc748e23df",
+  "results": {
+    "harness_lib": {"passed": 389, "failed": 0, "ignored": 0},
+    "local_model_swarm": {"passed": 3, "failed": 2, "ignored": 0},
+    "local_swarm_faults": {"passed": 2, "failed": 4, "ignored": 0}
+  },
+  "executables_sha256": {
+    "acyclic_harness-012f082794ae6c50.exe": "03cc2b0a2600d22317d0b350568515229d1da239185612720fa67139dfd4d89c",
+    "local_model_swarm-2a4724405f2fc4cd.exe": "b5c2031be31e1bfae4c8f7fed34c8ec731c5cfec0e404159bf33f485378d29fa",
+    "local_swarm_faults-f5ff69a39607b16d.exe": "eb028246a091446703ab08634f8c27fb54004fdf0d47f06432eeead465fb2be6"
+  },
+  "passed_scenario": "Two overlapping children, recursive grandchild, durable messages/waits, actual request digest and inherited prefix assertions, and restart replay.",
+  "unmet": ["Cancellation fixture rejects an admitted tool", "Depth fixture still expects pre-scheduler behavior", "Cancellation fault owner timeout", "Live and precompletion recovery hit stale parent boundary", "Prepared failure fixture assumes an independently completing child remains incomplete"],
+  "execution": "Cargo session 50735 terminated 101. Cargo stopped before faults; retained same-source fault executable was run separately in session 3251, which terminated 101. All archives and executable digests were recorded before source changes.",
+  "completion": false
+}
