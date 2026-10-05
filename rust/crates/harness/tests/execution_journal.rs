@@ -1328,20 +1328,21 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         ContextPipeline::default().with(Arc::new(InjectUnpairedResult)),
         ToolRegistry::default(),
     );
-    assert!(matches!(
-        orphan_executor
-            .execute(
-                TurnInput {
-                    operation_id: orphan_operation,
-                    input: ModelContent::Text("ordinary input".into()),
-                    selected_context: None,
-                    max_steps: 1,
-                },
-                &journal,
-            )
-            .await,
-        Err(Error::Invalid(_))
-    ));
+    let orphan_result = orphan_executor
+        .execute(
+            TurnInput {
+                operation_id: orphan_operation,
+                input: ModelContent::Text("ordinary input".into()),
+                selected_context: None,
+                max_steps: 1,
+            },
+            &journal,
+        )
+        .await;
+    assert!(
+        matches!(&orphan_result, Err(Error::Invalid(_))),
+        "orphan context must fail before model admission; actual result: {orphan_result:?}"
+    );
     assert!(
         model
             .0
