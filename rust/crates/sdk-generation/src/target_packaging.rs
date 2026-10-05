@@ -73,7 +73,10 @@ pub fn sanitize_generated_package(
     if !package_root.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("generated package root is not a directory: {}", package_root.display()),
+            format!(
+                "generated package root is not a directory: {}",
+                package_root.display()
+            ),
         ));
     }
     let mut removed = Vec::new();
@@ -102,7 +105,10 @@ pub fn write_deterministic_archive(
     if !archiver.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("deterministic archive writer is missing: {}", archiver.display()),
+            format!(
+                "deterministic archive writer is missing: {}",
+                archiver.display()
+            ),
         ));
     }
     let archive = target_output.join(format!("acyclic-http-{target_id}-0.1.0.zip"));

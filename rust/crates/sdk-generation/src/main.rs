@@ -20,14 +20,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use tar::Archive;
 
-mod installed_package_receipts;
-mod target_packaging;
 #[path = "bin/verify-rpc-observations.rs"]
 #[allow(dead_code)]
 mod canonical_rust_verifier;
+mod installed_package_receipts;
 #[path = "observation_verifier.rs"]
 #[allow(dead_code)]
 mod observation_verifier;
+mod target_packaging;
 
 const GENERATION_SCHEMA: &str = "acyclic.sdk.generation.manifest.v1";
 const REQUEST_SCHEMA: &str = "acyclic.sdk.generation.request.v1";
@@ -449,9 +449,27 @@ fn parse_args() -> Result<Args, CliError> {
                         CliError::new("--platform-receipt requires a path")
                     })?))
             }
-            "--source-sha" => source_sha = Some(values.next().ok_or_else(|| CliError::new("--source-sha requires a value"))?),
-            "--qualification-action" => qualification_action = Some(values.next().ok_or_else(|| CliError::new("--qualification-action requires a value"))?),
-            "--asset" => asset = Some(values.next().ok_or_else(|| CliError::new("--asset requires a value"))?),
+            "--source-sha" => {
+                source_sha = Some(
+                    values
+                        .next()
+                        .ok_or_else(|| CliError::new("--source-sha requires a value"))?,
+                )
+            }
+            "--qualification-action" => {
+                qualification_action = Some(
+                    values
+                        .next()
+                        .ok_or_else(|| CliError::new("--qualification-action requires a value"))?,
+                )
+            }
+            "--asset" => {
+                asset = Some(
+                    values
+                        .next()
+                        .ok_or_else(|| CliError::new("--asset requires a value"))?,
+                )
+            }
             "--help" | "-h" => {
                 return Err(CliError::new(
                     "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
@@ -867,25 +885,50 @@ fn package_manifest(source_root: &Path, output: &Path) -> Result<(), CliError> {
         )));
     }
     let native_artifact = require_package_file(&native_files[0])?;
-    require_archive_entry(&filesystem_archive, "package/generated/wasm/acyclic_fs_wasm_bg.wasm")?;
-    require_archive_entry(&filesystem_archive, "package/generated/wasm/acyclic_fs_wasm.js")?;
-    require_archive_entry(&harness_archive, "package/generated/wasm/acyclic_harness_wasm_bg.wasm")?;
-    require_archive_entry(&harness_archive, "package/generated/wasm/acyclic_harness_wasm.js")?;
+    require_archive_entry(
+        &filesystem_archive,
+        "package/generated/wasm/acyclic_fs_wasm_bg.wasm",
+    )?;
+    require_archive_entry(
+        &filesystem_archive,
+        "package/generated/wasm/acyclic_fs_wasm.js",
+    )?;
+    require_archive_entry(
+        &harness_archive,
+        "package/generated/wasm/acyclic_harness_wasm_bg.wasm",
+    )?;
+    require_archive_entry(
+        &harness_archive,
+        "package/generated/wasm/acyclic_harness_wasm.js",
+    )?;
     let filesystem_checksums = verify_package_checksums(&filesystem, output)?;
     let native_checksums = verify_package_checksums(&native, output)?;
     let harness_checksums = verify_package_checksums(&harness, output)?;
-    let native_name = native_artifact.file_name().and_then(OsStr::to_str).unwrap_or_default();
-    if native_checksums.get("files").and_then(Value::as_object).is_none_or(|files| !files.contains_key(native_name)) {
-        return Err(CliError::new("native artifact is not represented by native/SHA256SUMS"));
+    let native_name = native_artifact
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
+    if native_checksums
+        .get("files")
+        .and_then(Value::as_object)
+        .is_none_or(|files| !files.contains_key(native_name))
+    {
+        return Err(CliError::new(
+            "native artifact is not represented by native/SHA256SUMS",
+        ));
     }
     let source_commit_path = require_package_file(&filesystem.join("SOURCE_COMMIT"))?;
     let source_revision = fs::read_to_string(&source_commit_path)?.trim().to_owned();
     if !is_commit_revision(&source_revision) {
-        return Err(CliError::new(format!("invalid filesystem SOURCE_COMMIT: {source_revision}")));
+        return Err(CliError::new(format!(
+            "invalid filesystem SOURCE_COMMIT: {source_revision}"
+        )));
     }
     let harness_commit_path = require_package_file(&harness.join("SOURCE_COMMIT"))?;
     if fs::read_to_string(&harness_commit_path)?.trim() != source_revision {
-        return Err(CliError::new("filesystem and Harness package revisions differ"));
+        return Err(CliError::new(
+            "filesystem and Harness package revisions differ",
+        ));
     }
     let filesystem_consumer = package_consumer_receipt(
         &filesystem,
@@ -957,13 +1000,20 @@ fn package_manifest(source_root: &Path, output: &Path) -> Result<(), CliError> {
 }
 
 fn require_package_file(path: &Path) -> Result<PathBuf, CliError> {
-    if !path.is_file() { return Err(CliError::new(format!("required package artifact is missing: {}", path.display()))); }
+    if !path.is_file() {
+        return Err(CliError::new(format!(
+            "required package artifact is missing: {}",
+            path.display()
+        )));
+    }
     Ok(path.to_owned())
 }
 
 fn package_artifact(path: &Path, root: &Path) -> Result<Value, CliError> {
     let bytes = fs::read(path)?;
-    Ok(json!({"path": relative_or_absolute(path, root), "sha256": hash_bytes(&bytes), "bytes": bytes.len()}))
+    Ok(
+        json!({"path": relative_or_absolute(path, root), "sha256": hash_bytes(&bytes), "bytes": bytes.len()}),
+    )
 }
 
 fn require_archive_entry(path: &Path, expected: &str) -> Result<(), CliError> {
@@ -973,21 +1023,41 @@ fn require_archive_entry(path: &Path, expected: &str) -> Result<(), CliError> {
     for entry in archive.entries()? {
         let entry = entry?;
         let name = entry.path()?.to_string_lossy().replace('\\', "/");
-        if name == expected || name.ends_with(&format!("/{expected}")) { return Ok(()); }
+        if name == expected || name.ends_with(&format!("/{expected}")) {
+            return Ok(());
+        }
     }
-    Err(CliError::new(format!("package archive {} is missing {expected}", path.display())))
+    Err(CliError::new(format!(
+        "package archive {} is missing {expected}",
+        path.display()
+    )))
 }
 
 fn verify_package_checksums(directory: &Path, root: &Path) -> Result<Value, CliError> {
     let sums = require_package_file(&directory.join("SHA256SUMS"))?;
     let mut files = serde_json::Map::new();
-    for line in fs::read_to_string(&sums)?.lines().filter(|line| !line.trim().is_empty()) {
-        let (digest, name) = line.split_once("  ").ok_or_else(|| CliError::new(format!("invalid SHA256SUMS entry in {}", sums.display())))?;
-        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) { return Err(CliError::new(format!("invalid checksum in {}", sums.display()))); }
+    for line in fs::read_to_string(&sums)?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        let (digest, name) = line.split_once("  ").ok_or_else(|| {
+            CliError::new(format!("invalid SHA256SUMS entry in {}", sums.display()))
+        })?;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(CliError::new(format!(
+                "invalid checksum in {}",
+                sums.display()
+            )));
+        }
         let file = require_package_file(&directory.join(name))?;
         let actual = hash_bytes(&fs::read(&file)?);
         let expected = format!("sha256:{}", digest.to_ascii_lowercase());
-        if actual != expected { return Err(CliError::new(format!("SHA256SUMS mismatch for {}", file.display()))); }
+        if actual != expected {
+            return Err(CliError::new(format!(
+                "SHA256SUMS mismatch for {}",
+                file.display()
+            )));
+        }
         files.insert(name.to_owned(), Value::String(expected));
     }
     Ok(json!({"manifest": package_artifact(&sums, root)?, "files": files}))
@@ -1003,18 +1073,32 @@ fn package_consumer_receipt(
 ) -> Result<Value, CliError> {
     let receipt_path = require_package_file(&directory.join("installed-consumer-receipt.json"))?;
     let receipt: Value = read_json(&receipt_path)?;
-    if receipt.get("schema").and_then(Value::as_str) != Some("acyclic.sdk.installed-package-qualification.v1")
+    if receipt.get("schema").and_then(Value::as_str)
+        != Some("acyclic.sdk.installed-package-qualification.v1")
         || receipt.get("status").and_then(Value::as_str) != Some("passed")
         || receipt.get("package").and_then(Value::as_str) != Some(family)
         || receipt.get("source_revision").and_then(Value::as_str) != Some(source_revision)
-        || receipt.pointer("/consumer/status").and_then(Value::as_str) != Some("passed") {
-        return Err(CliError::new(format!("invalid installed {family} consumer receipt")));
+        || receipt.pointer("/consumer/status").and_then(Value::as_str) != Some("passed")
+    {
+        return Err(CliError::new(format!(
+            "invalid installed {family} consumer receipt"
+        )));
     }
-    let archive_name = archive.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    let archive_name = archive
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
     if receipt.pointer("/archive/name").and_then(Value::as_str) != Some(archive_name)
-        || receipt.pointer("/archive/sha256").and_then(Value::as_str) != Some(&hash_bytes(&fs::read(archive)?))
-        || receipt.pointer("/archive/wasm_entry").and_then(Value::as_str) != Some(wasm_entry) {
-        return Err(CliError::new(format!("installed {family} consumer receipt is not bound to its archive")));
+        || receipt.pointer("/archive/sha256").and_then(Value::as_str)
+            != Some(&hash_bytes(&fs::read(archive)?))
+        || receipt
+            .pointer("/archive/wasm_entry")
+            .and_then(Value::as_str)
+            != Some(wasm_entry)
+    {
+        return Err(CliError::new(format!(
+            "installed {family} consumer receipt is not bound to its archive"
+        )));
     }
     Ok(json!({"status":"passed", "receipt": package_artifact(&receipt_path, root)?}))
 }
@@ -1029,9 +1113,13 @@ fn typescript_qualification(
     archive_path: Option<&Path>,
 ) -> Result<(), CliError> {
     let assets = typescript_assets(source_root)?;
-    let source_sha = source_sha.ok_or_else(|| CliError::new("typescript qualification requires --source-sha"))?;
-    if !is_commit_revision(source_sha) || source_sha.chars().any(|value| value.is_ascii_uppercase()) {
-        return Err(CliError::new("source commit must be a full lowercase Git object ID"));
+    let source_sha = source_sha
+        .ok_or_else(|| CliError::new("typescript qualification requires --source-sha"))?;
+    if !is_commit_revision(source_sha) || source_sha.chars().any(|value| value.is_ascii_uppercase())
+    {
+        return Err(CliError::new(
+            "source commit must be a full lowercase Git object ID",
+        ));
     }
     match action {
         "create" => {
@@ -1043,74 +1131,176 @@ fn typescript_qualification(
                 let bytes = fs::read(&path)?;
                 packages.push(json!({"asset":asset,"name":name,"version":version,"sha256":format!("{:x}", Sha256::digest(&bytes)),"size":bytes.len()}));
             }
-            let observed = fs::read_dir(output)?.filter_map(Result::ok).filter_map(|entry| {
-                let path = entry.path();
-                if path.extension().and_then(OsStr::to_str) == Some("tgz") {
-                    path.file_name().map(|name| name.to_string_lossy().into_owned())
-                } else {
-                    None
-                }
-            }).collect::<BTreeSet<_>>();
-            let expected = packages.iter().filter_map(|item| item.get("asset").and_then(Value::as_str).map(str::to_owned)).collect::<BTreeSet<_>>();
-            if expected != observed { return Err(CliError::new("qualification output does not contain exactly the public npm archives")); }
+            let observed = fs::read_dir(output)?
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if path.extension().and_then(OsStr::to_str) == Some("tgz") {
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+            let expected = packages
+                .iter()
+                .filter_map(|item| item.get("asset").and_then(Value::as_str).map(str::to_owned))
+                .collect::<BTreeSet<_>>();
+            if expected != observed {
+                return Err(CliError::new(
+                    "qualification output does not contain exactly the public npm archives",
+                ));
+            }
             let receipt = json!({"revision":1,"source_commit":source_sha,"packages":packages});
             let path = output.join("QUALIFICATION.json");
-            if path.exists() { return Err(CliError::new("qualification receipt already exists")); }
+            if path.exists() {
+                return Err(CliError::new("qualification receipt already exists"));
+            }
             write_json_value(&path, &receipt)?;
             print_json(&json!({"status":"passed","path":path}))
         }
         "verify" => {
-            let receipt_path = receipt_path.ok_or_else(|| CliError::new("verify requires --receipt PATH"))?;
-            let archive_path = archive_path.ok_or_else(|| CliError::new("verify requires --platform-receipt ARCHIVE"))?;
-            let asset_name = asset_name.ok_or_else(|| CliError::new("verify requires --asset NAME"))?;
+            let receipt_path =
+                receipt_path.ok_or_else(|| CliError::new("verify requires --receipt PATH"))?;
+            let archive_path = archive_path
+                .ok_or_else(|| CliError::new("verify requires --platform-receipt ARCHIVE"))?;
+            let asset_name =
+                asset_name.ok_or_else(|| CliError::new("verify requires --asset NAME"))?;
             let receipt: Value = read_json(receipt_path)?;
-            let object = receipt.as_object().ok_or_else(|| CliError::new("qualification receipt schema is invalid"))?;
+            let object = receipt
+                .as_object()
+                .ok_or_else(|| CliError::new("qualification receipt schema is invalid"))?;
             let mut keys = object.keys().cloned().collect::<Vec<_>>();
             keys.sort();
-            if keys != ["packages", "revision", "source_commit"] || receipt.get("revision").and_then(Value::as_u64) != Some(1) || receipt.get("source_commit").and_then(Value::as_str) != Some(source_sha) {
+            if keys != ["packages", "revision", "source_commit"]
+                || receipt.get("revision").and_then(Value::as_u64) != Some(1)
+                || receipt.get("source_commit").and_then(Value::as_str) != Some(source_sha)
+            {
                 return Err(CliError::new("qualification receipt schema is invalid"));
             }
-            let package_values = receipt.get("packages").and_then(Value::as_array).ok_or_else(|| CliError::new("qualification receipt schema is invalid"))?;
-            if package_values.len() != assets.len() { return Err(CliError::new("qualification receipt schema is invalid")); }
+            let package_values = receipt
+                .get("packages")
+                .and_then(Value::as_array)
+                .ok_or_else(|| CliError::new("qualification receipt schema is invalid"))?;
+            if package_values.len() != assets.len() {
+                return Err(CliError::new("qualification receipt schema is invalid"));
+            }
             let mut observed = BTreeSet::new();
             for item in package_values {
-                let item = item.as_object().ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
-                let mut keys = item.keys().cloned().collect::<Vec<_>>(); keys.sort();
-                if keys != ["asset", "name", "sha256", "size", "version"] { return Err(CliError::new("qualification receipt package is invalid")); }
-                let asset = item.get("asset").and_then(Value::as_str).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
-                let name = item.get("name").and_then(Value::as_str).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
-                let version = item.get("version").and_then(Value::as_str).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
-                let digest = item.get("sha256").and_then(Value::as_str).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
-                let size = item.get("size").and_then(Value::as_u64).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
-                if !is_lower_hex_digest(digest) || size == 0 || !observed.insert(format!("{asset}\0{name}\0{version}")) { return Err(CliError::new("qualification receipt package is invalid")); }
+                let item = item
+                    .as_object()
+                    .ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let mut keys = item.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                if keys != ["asset", "name", "sha256", "size", "version"] {
+                    return Err(CliError::new("qualification receipt package is invalid"));
+                }
+                let asset = item
+                    .get("asset")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let name = item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let version = item
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let digest = item
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let size = item
+                    .get("size")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                if !is_lower_hex_digest(digest)
+                    || size == 0
+                    || !observed.insert(format!("{asset}\0{name}\0{version}"))
+                {
+                    return Err(CliError::new("qualification receipt package is invalid"));
+                }
             }
-            let expected = assets.iter().map(|(slug,name,version)| format!("acyclic-labs-{slug}-{version}\0{name}\0{version}")).collect::<BTreeSet<_>>();
-            if expected != observed { return Err(CliError::new("qualification receipt does not identify the public npm packages")); }
-            let entry = package_values.iter().find(|item| item.get("asset").and_then(Value::as_str) == Some(asset_name)).ok_or_else(|| CliError::new("archive is absent from the qualification receipt"))?;
+            let expected = assets
+                .iter()
+                .map(|(slug, name, version)| {
+                    format!("acyclic-labs-{slug}-{version}\0{name}\0{version}")
+                })
+                .collect::<BTreeSet<_>>();
+            if expected != observed {
+                return Err(CliError::new(
+                    "qualification receipt does not identify the public npm packages",
+                ));
+            }
+            let entry = package_values
+                .iter()
+                .find(|item| item.get("asset").and_then(Value::as_str) == Some(asset_name))
+                .ok_or_else(|| CliError::new("archive is absent from the qualification receipt"))?;
             let bytes = fs::read(archive_path)?;
             let digest = format!("{:x}", Sha256::digest(&bytes));
-            if entry.get("sha256").and_then(Value::as_str) != Some(digest.as_str()) || entry.get("size").and_then(Value::as_u64) != Some(bytes.len() as u64) { return Err(CliError::new("archive bytes differ from the qualified artifact")); }
+            if entry.get("sha256").and_then(Value::as_str) != Some(digest.as_str())
+                || entry.get("size").and_then(Value::as_u64) != Some(bytes.len() as u64)
+            {
+                return Err(CliError::new(
+                    "archive bytes differ from the qualified artifact",
+                ));
+            }
             print_json(&json!({"status":"passed","asset":asset_name}))
         }
-        _ => Err(CliError::new("typescript qualification action must be create or verify")),
+        _ => Err(CliError::new(
+            "typescript qualification action must be create or verify",
+        )),
     }
 }
 
 fn is_lower_hex_digest(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn typescript_assets(source_root: &Path) -> Result<Vec<(String, String, String)>, CliError> {
     let registry: Value = read_json(&source_root.join("release/npm-packages.json"))?;
-    let entries = registry.as_array().ok_or_else(|| CliError::new("release/npm-packages.json must be an array"))?;
+    let entries = registry
+        .as_array()
+        .ok_or_else(|| CliError::new("release/npm-packages.json must be an array"))?;
     let mut assets = Vec::new();
-    for entry in entries.iter().filter(|entry| entry.get("source").and_then(Value::as_str) == Some("typescript")) {
-        let slug = entry.get("slug").and_then(Value::as_str).ok_or_else(|| CliError::new("TypeScript package registry entry is missing slug"))?;
-        let directory = entry.get("directory").and_then(Value::as_str).ok_or_else(|| CliError::new("TypeScript package registry entry is missing directory"))?;
-        let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| CliError::new("TypeScript package registry entry is missing name"))?;
-        let manifest: Value = read_json(&source_root.join("typescript/packages").join(directory).join("package.json"))?;
-        if manifest.get("name").and_then(Value::as_str) != Some(name) { return Err(CliError::new(format!("release identity differs for {directory}"))); }
-        let version = manifest.get("version").and_then(Value::as_str).ok_or_else(|| CliError::new(format!("package {directory} has no version")))?;
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.get("source").and_then(Value::as_str) == Some("typescript"))
+    {
+        let slug = entry
+            .get("slug")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("TypeScript package registry entry is missing slug"))?;
+        let directory = entry
+            .get("directory")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CliError::new("TypeScript package registry entry is missing directory")
+            })?;
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("TypeScript package registry entry is missing name"))?;
+        let manifest: Value = read_json(
+            &source_root
+                .join("typescript/packages")
+                .join(directory)
+                .join("package.json"),
+        )?;
+        if manifest.get("name").and_then(Value::as_str) != Some(name) {
+            return Err(CliError::new(format!(
+                "release identity differs for {directory}"
+            )));
+        }
+        let version = manifest
+            .get("version")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new(format!("package {directory} has no version")))?;
         assets.push((slug.to_owned(), name.to_owned(), version.to_owned()));
     }
     Ok(assets)
@@ -3780,19 +3970,21 @@ fn run_generated_type_audit(
         .output();
     match process {
         Ok(process) => {
-            let report = serde_json::from_slice::<Value>(&process.stdout).ok().map(|mut report| {
-                if let Some(object) = report.as_object_mut() {
-                    object.insert(
-                        "source".into(),
-                        json!({
-                            "revision": source.revision,
-                            "digest": source.digest,
-                            "dirty": source.dirty,
-                        }),
-                    );
-                }
-                report
-            });
+            let report = serde_json::from_slice::<Value>(&process.stdout)
+                .ok()
+                .map(|mut report| {
+                    if let Some(object) = report.as_object_mut() {
+                        object.insert(
+                            "source".into(),
+                            json!({
+                                "revision": source.revision,
+                                "digest": source.digest,
+                                "dirty": source.dirty,
+                            }),
+                        );
+                    }
+                    report
+                });
             let result = tool_result(
                 spec.id,
                 spec.required,
@@ -6519,7 +6711,10 @@ fn artifact_binding_bytes(
         return None;
     }
     let bytes = fs::read(output.join(path_text)).ok()?;
-    let artifact = expected.artifacts.iter().find(|artifact| artifact.path == path_text)?;
+    let artifact = expected
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.path == path_text)?;
     if artifact.sha256 != digest
         || artifact.bytes != bytes.len() as u64
         || hash_bytes(&bytes) != digest
@@ -6561,7 +6756,8 @@ fn validate_semantic_verifier(
     ]
     .iter()
     .find_map(|key| consumer.get(*key))?;
-    let (_verifier_path, verifier_bytes) = artifact_binding_bytes(output, expected, binding, "semantic verifier")?;
+    let (_verifier_path, verifier_bytes) =
+        artifact_binding_bytes(output, expected, binding, "semantic verifier")?;
     let verifier: Value = serde_json::from_slice(&verifier_bytes).ok()?;
     if verifier.get("schema").and_then(Value::as_str)
         != Some("acyclic.sdk.rpd.rust-semantic-verifier.v1")
@@ -6569,33 +6765,67 @@ fn validate_semantic_verifier(
         || verifier.get("qualification").and_then(Value::as_str) != Some("qualified")
         || verifier.get("source_git_sha").and_then(Value::as_str)
             != Some(expected.source_revision.as_str())
-        || verifier.get("verifier_sha256").and_then(Value::as_str).is_none_or(|digest| !is_sha256(digest))
-        || verifier.get("failures").and_then(Value::as_array).is_none_or(|failures| !failures.is_empty())
-        || verifier.get("semantic_comparisons").and_then(Value::as_u64).is_none_or(|count| count == 0)
+        || verifier
+            .get("verifier_sha256")
+            .and_then(Value::as_str)
+            .is_none_or(|digest| !is_sha256(digest))
+        || verifier
+            .get("failures")
+            .and_then(Value::as_array)
+            .is_none_or(|failures| !failures.is_empty())
+        || verifier
+            .get("semantic_comparisons")
+            .and_then(Value::as_u64)
+            .is_none_or(|count| count == 0)
     {
         return None;
     }
     let binding_object = binding.as_object()?;
     let expected_binding = binding_object.get("expected_input")?;
     let observed_binding = binding_object.get("observed_input")?;
-    let (_expected_path, expected_bytes) = artifact_binding_bytes(output, expected, expected_binding, "semantic expected input")?;
-    let (observed_path, observed_bytes) = artifact_binding_bytes(output, expected, observed_binding, "semantic observed input")?;
+    let (_expected_path, expected_bytes) = artifact_binding_bytes(
+        output,
+        expected,
+        expected_binding,
+        "semantic expected input",
+    )?;
+    let (observed_path, observed_bytes) = artifact_binding_bytes(
+        output,
+        expected,
+        observed_binding,
+        "semantic observed input",
+    )?;
     let expected_digest = expected_binding.get("sha256").and_then(Value::as_str)?;
     let observed_digest = observed_binding.get("sha256").and_then(Value::as_str)?;
-    if verifier.get("expected_input_sha256").and_then(Value::as_str) != Some(expected_digest)
-        || verifier.get("observed_input_sha256").and_then(Value::as_str) != Some(observed_digest)
-        || verifier.get("method_count").and_then(Value::as_u64).is_none()
+    if verifier
+        .get("expected_input_sha256")
+        .and_then(Value::as_str)
+        != Some(expected_digest)
+        || verifier
+            .get("observed_input_sha256")
+            .and_then(Value::as_str)
+            != Some(observed_digest)
+        || verifier
+            .get("method_count")
+            .and_then(Value::as_u64)
+            .is_none()
     {
         return None;
     }
-    if observed_path != receipt_path || observed_digest != receipt_digest || observed_bytes != receipt_bytes {
+    if observed_path != receipt_path
+        || observed_digest != receipt_digest
+        || observed_bytes != receipt_bytes
+    {
         return None;
     }
     let expected_manifest: Value = serde_json::from_slice(&expected_bytes).ok()?;
     if expected_manifest.get("schema").and_then(Value::as_str)
         != Some("acyclic.sdk.rpd.rust-authority-consumer-inventory.v1")
         || expected_manifest.get("complete").and_then(Value::as_bool) != Some(true)
-        || expected_manifest.get("authority").and_then(|authority| authority.get("source_git_sha")).and_then(Value::as_str)
+        || expected_manifest
+            .get("authority")
+            .and_then(|authority| authority.get("source_git_sha"))
+            .and_then(Value::as_str)
             != Some(expected.source_revision.as_str())
     {
         return None;
@@ -6605,16 +6835,8 @@ fn validate_semantic_verifier(
         return None;
     }
     let verifier_sha = generation_executable_sha256()?;
-    let expected_path = output.join(
-        expected_binding
-            .get("path")
-            .and_then(Value::as_str)?,
-    );
-    let observed_path = output.join(
-        observed_binding
-            .get("path")
-            .and_then(Value::as_str)?,
-    );
+    let expected_path = output.join(expected_binding.get("path").and_then(Value::as_str)?);
+    let observed_path = output.join(observed_binding.get("path").and_then(Value::as_str)?);
     let direct = canonical_rust_verifier::verify_paths(
         &expected_path,
         &observed_path,
@@ -6676,7 +6898,9 @@ fn validate_runtime_receipt(
     {
         return None;
     }
-    let source_hashes = authority.get("source_file_hashes").and_then(Value::as_object)?;
+    let source_hashes = authority
+        .get("source_file_hashes")
+        .and_then(Value::as_object)?;
     if source_hashes.is_empty()
         || source_hashes
             .values()
@@ -6691,10 +6915,7 @@ fn validate_runtime_receipt(
         .and_then(Value::as_object)?;
     if package.get("source_git_sha").and_then(Value::as_str)
         != Some(expected.source_revision.as_str())
-        || package
-            .get("source_file_hashes")
-            .and_then(Value::as_object)
-            != Some(source_hashes)
+        || package.get("source_file_hashes").and_then(Value::as_object) != Some(source_hashes)
     {
         return None;
     }
@@ -6770,9 +6991,9 @@ fn validate_runtime_receipt(
             let digests = digests.as_array()?;
             if digests.len() != response_bytes.len()
                 || digests.iter().zip(&response_bytes).any(|(digest, bytes)| {
-                    digest.as_str().is_none_or(|digest| {
-                        !is_sha256(digest) || hash_bytes(bytes) != digest
-                    })
+                    digest
+                        .as_str()
+                        .is_none_or(|digest| !is_sha256(digest) || hash_bytes(bytes) != digest)
                 })
             {
                 return None;
@@ -6857,8 +7078,7 @@ fn consumer_scenario_inventory(
     }) {
         return None;
     }
-    let runtime_evidence =
-        validate_runtime_receipt(output, consumer, expected, declared_digest)?;
+    let runtime_evidence = validate_runtime_receipt(output, consumer, expected, declared_digest)?;
     let scenarios = consumer.get("scenarios")?.as_array()?;
     let mut inventory: BTreeMap<(String, String), ConsumerScenario> = BTreeMap::new();
     for (scenario_index, scenario) in scenarios.iter().enumerate() {
@@ -6999,9 +7219,7 @@ fn consumer_scenario_inventory(
     }
     if scenarios.len() != runtime_evidence.len()
         || runtime_evidence.keys().any(|step| *step >= scenarios.len())
-        || inventory
-            .keys()
-            .any(|(family, _rpc)| family.is_empty())
+        || inventory.keys().any(|(family, _rpc)| family.is_empty())
     {
         return None;
     }
@@ -8630,14 +8848,16 @@ mod tests {
         let runtime_digest = hash_bytes(&runtime_bytes);
         let semantic_expected = root.join("qualification/consumers/rust-expected.json");
         let semantic_expected_bytes = br#"{"schema":"acyclic.sdk.rpd.rust-authority-consumer-inventory.v1","complete":true,"method_count":1,"authority":{"source_git_sha":"0000000000000000000000000000000000000000","model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_file_hashes":{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},"packages":{"rust":{"provenance":{"source_git_sha":"0000000000000000000000000000000000000000","rust_model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","generator":{"name":"fixture","version":"1"},"generator_lock_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema_inputs_sha256":{"fixture":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}},"methods":[{"family":"actors","package":"acyclic.actors.v1","service":"ActorsService","method":"CreateActor","path":"/acyclic.actors.v1.ActorsService/CreateActor","client_streaming":false,"server_streaming":false,"typed_request":{"empty_serialized_hex":"","response_base64":""},"terminal_status":"ok","terminal_code":0}],"execution_plan":[{"rpc":"/acyclic.actors.v1.ActorsService/CreateActor"}]}"#;
-        fs::write(&semantic_expected, semantic_expected_bytes).expect("write semantic expected input");
+        fs::write(&semantic_expected, semantic_expected_bytes)
+            .expect("write semantic expected input");
         let semantic_expected_digest = hash_bytes(semantic_expected_bytes);
         let semantic_verifier = root.join("qualification/consumers/rust-semantic-verifier.json");
         let semantic_verifier_bytes = format!(
             r#"{{"schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1","status":"passed","qualification":"qualified","source_git_sha":"0000000000000000000000000000000000000000","verifier_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","expected_input_sha256":"{}","observed_input_sha256":"{}","method_count":1,"semantic_comparisons":2,"failures":[]}}"#,
             semantic_expected_digest, runtime_digest
         ).into_bytes();
-        fs::write(&semantic_verifier, &semantic_verifier_bytes).expect("write semantic verifier result");
+        fs::write(&semantic_verifier, &semantic_verifier_bytes)
+            .expect("write semantic verifier result");
         let semantic_verifier_digest = hash_bytes(&semantic_verifier_bytes);
         let expected = EvidenceExpectations {
             source_revision: "0000000000000000000000000000000000000000".into(),
@@ -8675,8 +8895,14 @@ mod tests {
         };
         let receipt_bytes = format!(
             "{{\"schema\":\"acyclic.sdk.qualification.receipt.v1\",\"tool\":\"sdk-generation\",\"language\":\"rust\",\"capability\":\"remote\",\"source_revision\":\"0000000000000000000000000000000000000000\",\"contract_digest\":\"{}\",\"artifact_digest\":\"{}\",\"status\":\"passed\",\"exit_code\":0,\"suite\":\"smoke\",\"assertions\":1,\"consumer\":{{\"executed\":true,\"name\":\"fixture-consumer\",\"version\":\"1\",\"source_revision\":\"0000000000000000000000000000000000000000\",\"artifact_path\":\"qualification/consumers/remote.bin\",\"artifact_sha256\":\"{}\",\"runtime_receipt\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}},\"semantic_verifier\":{{\"path\":\"qualification/consumers/rust-semantic-verifier.json\",\"sha256\":\"{}\",\"expected_input\":{{\"path\":\"qualification/consumers/rust-expected.json\",\"sha256\":\"{}\"}},\"observed_input\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}}}},\"scenarios\":[{{\"family\":\"actors\",\"rpc\":\"/acyclic.actors.v1.ActorsService/CreateActor\",\"shape\":\"unary\",\"status\":\"passed\",\"output_path\":\"qualification/consumers/remote-scenario.json\",\"output_sha256\":\"{}\"}}]}},\"families\":[{{\"family\":\"actors\",\"methods\":[\"/acyclic.actors.v1.ActorsService/CreateActor\"],\"features\":[\"serialization\",\"transport\"],\"rpc_shapes\":[\"unary\"]}}]}}",
-            expected.contract_digest, expected.artifact_digest, consumer_digest, runtime_digest,
-            semantic_verifier_digest, semantic_expected_digest, runtime_digest, scenario_digest
+            expected.contract_digest,
+            expected.artifact_digest,
+            consumer_digest,
+            runtime_digest,
+            semantic_verifier_digest,
+            semantic_expected_digest,
+            runtime_digest,
+            scenario_digest
         );
         fs::write(&receipt, receipt_bytes.as_bytes()).expect("write receipt");
         let digest = hash_bytes(receipt_bytes.as_bytes());
@@ -8691,28 +8917,36 @@ mod tests {
         let verifier_sha = verifier_sha
             .strip_prefix("sha256:")
             .expect("prefixed executable hash");
-        assert!(canonical_rust_verifier::verify_paths(
-            &semantic_expected,
-            &runtime_receipt,
-            "0000000000000000000000000000000000000000",
-            verifier_sha,
-            false,
-        )
-        .is_ok());
+        assert!(
+            canonical_rust_verifier::verify_paths(
+                &semantic_expected,
+                &runtime_receipt,
+                "0000000000000000000000000000000000000000",
+                verifier_sha,
+                false,
+            )
+            .is_ok()
+        );
         let forged_runtime = root.join("qualification/consumers/forged-runtime-receipt.json");
         let forged_runtime_bytes = String::from_utf8(runtime_bytes.clone())
             .expect("runtime receipt is UTF-8")
-            .replacen("\"response_bytes_hex\":\"\"", "\"response_bytes_hex\":\"01\"", 1);
+            .replacen(
+                "\"response_bytes_hex\":\"\"",
+                "\"response_bytes_hex\":\"01\"",
+                1,
+            );
         fs::write(&forged_runtime, forged_runtime_bytes.as_bytes())
             .expect("write forged runtime receipt");
-        assert!(canonical_rust_verifier::verify_paths(
-            &semantic_expected,
-            &forged_runtime,
-            "0000000000000000000000000000000000000000",
-            verifier_sha,
-            false,
-        )
-        .is_err());
+        assert!(
+            canonical_rust_verifier::verify_paths(
+                &semantic_expected,
+                &forged_runtime,
+                "0000000000000000000000000000000000000000",
+                verifier_sha,
+                false,
+            )
+            .is_err()
+        );
         let relabeled_scenario = receipt_bytes.replace(&scenario_digest, &consumer_digest);
         fs::write(&receipt, relabeled_scenario.as_bytes())
             .expect("write relabeled scenario receipt");
