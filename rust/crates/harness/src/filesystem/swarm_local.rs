@@ -343,6 +343,17 @@ pub trait LocalSwarmObserver: Send + Sync {
     fn observe(&self, observation: LocalSwarmObservation);
 }
 
+/// Host-only checkpoint between durable child-seed preparation and child
+/// activation. The default composition leaves this unset. Implementations
+/// may use it for an owner-controlled interruption or approval boundary; it
+/// never contributes content to a model request.
+pub trait LocalForkPublicationGate: Send + Sync {
+    /// Observe the exact durable publication before any child model worker is
+    /// admitted. Returning an error leaves the publication recoverable by its
+    /// stable operation identity.
+    fn before_child_activation(&self, publication: &ModelBatchPublication) -> Result<()>;
+}
+
 /// Owner authenticated services shared by every local session.
 ///
 /// Child sessions receive the same tool executors and durable wait store, but
@@ -357,6 +368,9 @@ pub struct LocalSwarmBindings {
     pub cancellation: Option<Arc<dyn crate::communication_tools::WaitCancellationSource>>,
     /// Owner mediated publication of completed model/tool batches.
     pub model_batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
+    /// Optional host-only checkpoint after all child seeds are durable and
+    /// before any child model worker is admitted.
+    pub publication_gate: Option<Arc<dyn LocalForkPublicationGate>>,
     /// Owner-prepared model fork plans made available to the authenticated
     /// model-facing fork tool.
     pub model_fork_plans: Option<Arc<LocalModelForkPlans>>,
@@ -383,6 +397,7 @@ impl LocalSwarmBindings {
             wait_store,
             cancellation,
             model_batch_publisher: None,
+            publication_gate: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
             observer: None,
@@ -397,6 +412,17 @@ impl LocalSwarmBindings {
         publisher: Arc<dyn crate::batch_publication::ModelBatchPublisher>,
     ) -> Self {
         self.model_batch_publisher = Some(publisher);
+        self
+    }
+
+    /// Adds a host-only interruption or approval checkpoint before child
+    /// activation. It is outside model-input construction.
+    #[must_use]
+    pub fn with_publication_gate(
+        mut self,
+        gate: Arc<dyn LocalForkPublicationGate>,
+    ) -> Self {
+        self.publication_gate = Some(gate);
         self
     }
 
@@ -1755,6 +1781,7 @@ impl LocalModelForkPlans {
 /// path, including recursive child publishers.
 pub struct LocalModelForkPublisher {
     plans: Arc<LocalModelForkPlans>,
+    gate: Option<Arc<dyn LocalForkPublicationGate>>,
     target: Arc<StdMutex<Option<Weak<PersistentLocalSwarm>>>>,
 }
 
@@ -1802,9 +1829,13 @@ impl LocalModelForkPublisher {
         swarm.finish_child_turn(&stream, child, request.child_operation, &harness, output).await
     }
 
-    fn new(plans: Arc<LocalModelForkPlans>) -> Self {
+    fn new(
+        plans: Arc<LocalModelForkPlans>,
+        gate: Option<Arc<dyn LocalForkPublicationGate>>,
+    ) -> Self {
         Self {
             plans,
+            gate,
             target: Arc::new(StdMutex::new(None)),
         }
     }
@@ -1970,6 +2001,9 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                     .await?;
                 crate::stack_diagnostics::marker("fork-publisher-after-seed");
                 prepared.push((plan, seed));
+            }
+            if let Some(gate) = &self.gate {
+                gate.before_child_activation(&publication)?;
             }
             // Every child is now durably admitted and bound to the parent
             // aggregate. Only after that barrier may a child model dispatch.
@@ -3063,7 +3097,10 @@ impl PersistentLocalSwarm {
             };
         let model_fork_publisher = if let Some(plans) = bindings.model_fork_plans.clone() {
             if bindings.model_batch_publisher.is_none() {
-                let publisher = Arc::new(LocalModelForkPublisher::new(plans));
+                let publisher = Arc::new(LocalModelForkPublisher::new(
+                    plans,
+                    bindings.publication_gate.clone(),
+                ));
                 bindings.model_batch_publisher = Some(publisher.clone());
                 Some(publisher)
             } else {
@@ -3398,7 +3435,10 @@ impl PersistentLocalSwarm {
         );
         let plans = Arc::new(LocalModelForkPlans::new().with_resolver(resolver.clone()));
         plans.bind_journal(swarm.registry.clone()).await?;
-        let publisher = Arc::new(LocalModelForkPublisher::new(plans.clone()));
+        let publisher = Arc::new(LocalModelForkPublisher::new(
+            plans.clone(),
+            swarm.bindings.publication_gate.clone(),
+        ));
         let communication = Arc::new(communication_host::SwarmCommunicationHost::new(stream.clone()));
         let waits = Arc::new(crate::communication::StreamWaitStore::new(stream.clone()));
         let budget_usage_source = swarm.bindings.budget_usage_source.clone();
