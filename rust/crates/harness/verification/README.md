@@ -170,3 +170,28 @@ stale publication. These fixtures prove the adapter's own behavior; no
 production Harness event trace is claimed as evidence. To claim implementation
 conformance, a production test must export the same event fields from the real
 journal and run this adapter against that trace.
+
+### Real Harness trace export
+
+`real_harness_trace.rs` is a test-only exporter included beneath the local
+swarm tests. It runs the real Filesystem-backed `PersistentLocalSwarm` with a
+deterministic mock provider, then joins the durable swarm registry's
+`ForkAdmitted`/`ForkCompleted` records with the child's authenticated
+execution-journal `ModelStarted` record. It writes a normalized four-event
+trace and a provenance manifest containing source stream sequences, operation
+identities, and the raw opaque project generation. Task identities map to
+finite agent labels and the first observed project generation maps to ordinal
+zero only at this adapter boundary.
+
+The ignored test requires an explicit output path so ordinary test runs do not
+write artifacts:
+
+```powershell
+$env:GRAPHCODER_REAL_TRACE_PATH = 'D:/evidence/real-harness-trace.json'
+cargo test -p acyclic-harness --features filesystem-local swarm_local::tests::real_harness_trace::exports_real_harness_trace_for_canonical_checker -- --ignored --exact
+./check-real-trace.ps1 -TracePath D:/evidence/real-harness-trace.json -ManifestPath D:/evidence/real-harness-trace.manifest.json
+```
+
+The result is runtime conformance evidence for this bounded trace only. The
+export does not claim Rust refinement, unbounded recursion, liveness, or OS
+confinement.

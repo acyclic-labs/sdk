@@ -5368,6 +5368,8 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[path = "../../../verification/real_harness_trace.rs"]
+    mod real_harness_trace;
     use crate::interaction::Interaction;
     use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
