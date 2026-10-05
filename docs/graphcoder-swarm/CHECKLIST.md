@@ -64,3 +64,5 @@ The historical source, logs, and native binaries were indexed by
 checkpoint-canonical-admission-native-2026-10-05.json before the external artifact
 loss. That index does not prove the lost files remain available. Earlier passing
 receipts do not qualify the current source or the full matrix.
+
+Source 62cead7bb passes all nine native model-input conformance and rejection tests, with raw logs, pinned source archive and executables retained in this worktree. This does not qualify WASM parity, installed artifacts or the full matrix. Source 584ecaf75 recursive execution fails remaining session resource allocation. Source 60a7b04b9 process-tree Cargo execution passes three tests, but replay of its copied executable fails one cleanup readiness case; the intermittent cleanup gate remains open.

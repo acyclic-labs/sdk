@@ -1,0 +1,44 @@
+{
+  "source_commit": "62cead7bb11baf85a4ab5243226991543d187e5b",
+  "failed": 0,
+  "artifacts": [
+    {
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "path": "target/graphcoder-qualification/evidence/62cead7bb/model-input-conformance/exit.txt",
+      "bytes": 3
+    },
+    {
+      "sha256": "59befb7d3bffa15435c224c7b4bb56062a6f67e31aa4c36f16efc2ad9071e517",
+      "path": "target/graphcoder-qualification/evidence/62cead7bb/model-input-conformance/model_input_conformance_v3-f32eb9c9e382bfa3.exe",
+      "bytes": 11304448
+    },
+    {
+      "sha256": "031128ddd6dd73b60c4ed36a9c5c90f4b1648f986078b3b73a42ee988b8e7cc2",
+      "path": "target/graphcoder-qualification/evidence/62cead7bb/model-input-conformance/model_input_rejection_conformance_v1-961093f6e708c593.exe",
+      "bytes": 10280448
+    },
+    {
+      "sha256": "867879f5a938da290d9e105482c17995f35785429045b83f54318a1a3acf4402",
+      "path": "target/graphcoder-qualification/evidence/62cead7bb/model-input-conformance/model_input_rejection_conformance_v3-8ebb6200228f1164.exe",
+      "bytes": 27110400
+    },
+    {
+      "sha256": "91f6a2fb7144b9ee8282c2f2a28448285c371b7bcd0d706af933a4387f7d4198",
+      "path": "target/graphcoder-qualification/evidence/62cead7bb/model-input-conformance/source.zip",
+      "bytes": 7748371
+    },
+    {
+      "sha256": "b146f9a6eaa50eb5fd784c97844c268be5c1bd376e4a4732686893ea739b8090",
+      "path": "target/graphcoder-qualification/evidence/62cead7bb/model-input-conformance/test.log",
+      "bytes": 25988
+    }
+  ],
+  "passed": 9,
+  "platform": "Windows",
+  "tests_executed": 9,
+  "qualification_complete": false,
+  "skipped": 0,
+  "suite": "native-model-input-conformance",
+  "exit": 0,
+  "outcome": "All three native suites pass. Fresh WASM parity, installed artifacts, recursive swarm, process cleanup and the full matrix remain open."
+}
