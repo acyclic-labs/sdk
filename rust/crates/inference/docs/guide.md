@@ -16,9 +16,9 @@ acyclic-inference = { path = "../inference", version = "=0.2.0" }
 ```
 
 The `examples/inference-capability-discovery.rs` example uses the same
-dependency declaration. To query a provider, supply `INFERENCE_ENDPOINT`,
-`INFERENCE_API_KEY`, and `INFERENCE_CA_PEM`; a caller uses `Inference::connect`
-and the typed client methods through the default dependency declaration.
+dependency declaration. To query a provider, supply `INFERENCE_ENDPOINT` and
+`INFERENCE_API_KEY`; a caller uses `client::Client::connect` and the typed
+client methods through the default dependency declaration.
 
 The package declaration is owned by `rust/crates/inference/Cargo.toml` and
 pins version `0.2.0`; the workspace requires Rust `1.98`. Its default build
@@ -30,7 +30,7 @@ it does not change wire fields, options, or handshake bytes.
 
 ## Capability, error, and service policy
 
-`Inference::models` is the capability discovery surface. It returns the
+`client::Client::list` is the capability discovery surface. It returns the
 service-provided `ModelCapability` records, including execution profiles,
 context/output bounds, features, retention profiles, and idle-KV profiles.
 Those values describe the execution profiles, bounds, features, retention
@@ -47,10 +47,11 @@ and recovery methods.
 
 The model contains five gRPC services and 14 RPC methods. The
 `http_codec::routes` inventory lists the descriptor-derived HTTP paths and
-methods. `Inference::connect` selects the default tonic gRPC transport over
-authenticated HTTPS/TLS. The HTTP adapter applies the JSON mapping, while the
-provider supplies authentication authority, billing, and deployment policy.
-Browser HTTP/JSON selection is a separate runtime policy.
+methods. `client::Client::connect` selects the best authenticated transport for
+the target, verifies the Rust-owned handshake, and exposes the same typed
+methods on native and browser targets. The HTTP adapter applies the JSON
+mapping, while the provider supplies authentication authority, billing, and
+deployment policy.
 
 ## Build a bounded local contract check
 
@@ -77,8 +78,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 Capability discovery has a source-owned companion at
-`examples/inference-capability-discovery.rs`. It calls `Inference::models` and
-prints the model and policy records returned by the authenticated provider.
+`examples/inference-capability-discovery.rs`. It calls `client::Client::list`
+and prints the model records returned by the authenticated provider.
 
 The codec uses paths relative to `/v1/inference/`, enforces the crate's JSON
 and protobuf byte ceilings, rejects unknown fields and trailing JSON, and
@@ -128,8 +129,8 @@ by 19 legacy data pages. The Rust source maps those topics to concrete APIs:
 
 | Legacy topic family | Rust authority |
 | --- | --- |
-| `overview` | `README.md`, `Inference::connect`, `Inference::context` |
-| `quickstart` | `README.md`, `Inference::connect`, `examples/inference-capability-discovery.rs` |
+| `overview` | `README.md`, `client::Client::connect`, `Inference::context` |
+| `quickstart` | `README.md`, `client::Client::connect`, `examples/inference-capability-discovery.rs` |
 | `contexts` | `Context`, `ContextMutation`, `wire::ContextView` |
 | `editing` | `Context::edit`, `ContextMutation`, `wire::Edit` |
 | `forks` | `Context::fork`, `ContextMutation`, `wire::MutateContextRequest` |
@@ -137,18 +138,19 @@ by 19 legacy data pages. The Rust source maps those topics to concrete APIs:
 | `operations` | Typed operation builders, operation identities, `Inference::recover_run` |
 | `retention` | `Retention`, `RetainWarm`, `WarmContext` |
 | `kv` | `WarmView::idle_kv`, `wire::IdleKvPolicy` |
-| `models` | `Inference::models`, `wire::ModelCapability` |
+| `models` | `client::Client::list`, `wire::ModelCapability` |
 | `reasoning` | `wire::ModelCapability.execution_profile`, model feature records |
-| `anthropic` | `Inference::models`, provider model identifiers and capability records |
-| `openai` | `Inference::models`, provider model identifiers and capability records |
+| `anthropic` | `client::Client::list`, provider model identifiers and capability records |
+| `openai` | `client::Client::list`, provider model identifiers and capability records |
 | `billing` | Model capability records and provider policy returned with discovery |
-| `security` | `Inference::connect`, trusted CA input, `validate_customer_wire` |
+| `security` | `client::Client::connect`, `connect_with_ca`, `validate_customer_wire` |
 | `structured-output` | Generated `wire` messages and `validate_customer_wire` |
 | `tools` | Typed request builders, model feature records, and wire validation |
 | `transfer` | `Context::transfer`, `ContextMutation`, model profile identity |
 | `reference` | Generated `wire` modules, `http_codec::routes`, `decode_http_request`, `encode_http_response` |
 
-This table maps each legacy topic to its Rust authority. `Inference::connect`
-validates the supplied HTTPS endpoint and caller CA material, while the selected
-provider supplies model access, authentication, billing, and service policy.
+This table maps each legacy topic to its Rust authority. `client::Client::connect`
+validates the endpoint and authenticated Rust-owned handshake, while the
+selected provider supplies model access, authentication, billing, and service
+policy.
 

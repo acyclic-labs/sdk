@@ -84,16 +84,40 @@ impl Client {
     /// Native callers try mTLS gRPC first and automatically use HTTP/JSON if
     /// the gRPC channel cannot be established. Browser callers use HTTP/JSON;
     /// browser trust configuration remains owned by the browser.
-    pub async fn connect(endpoint: &str, token: &str, ca_pem: &[u8]) -> Result<Self, Error> {
-        Self::connect_with_limit(endpoint, token, ca_pem, crate::MAXIMUM_HTTP_JSON_BYTES).await
+    pub async fn connect(endpoint: &str, token: &str) -> Result<Self, Error> {
+        Self::connect_with_limit(endpoint, token, crate::MAXIMUM_HTTP_JSON_BYTES).await
     }
 
-    /// Connect with an explicit bounded HTTP response size.
-    pub async fn connect_with_limit(
+    /// Connect with an explicit private native CA certificate.
+    pub async fn connect_with_ca(
         endpoint: &str,
         token: &str,
         ca_pem: &[u8],
+    ) -> Result<Self, Error> {
+        Self::connect_with_limit_and_ca(
+            endpoint,
+            token,
+            crate::MAXIMUM_HTTP_JSON_BYTES,
+            ca_pem,
+        )
+        .await
+    }
+
+    /// Connect with an explicit bounded HTTP response size using platform trust.
+    pub async fn connect_with_limit(
+        endpoint: &str,
+        token: &str,
         maximum_response_bytes: usize,
+    ) -> Result<Self, Error> {
+        Self::connect_with_limit_and_ca(endpoint, token, maximum_response_bytes, &[]).await
+    }
+
+    /// Connect with an explicit response bound and private native CA certificate.
+    pub async fn connect_with_limit_and_ca(
+        endpoint: &str,
+        token: &str,
+        maximum_response_bytes: usize,
+        ca_pem: &[u8],
     ) -> Result<Self, Error> {
 #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
         {
@@ -126,8 +150,19 @@ impl Client {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = ca_pem;
-            let client = crate::http::Client::new(endpoint, token, maximum_response_bytes)?;
+            // Browser trust is owned by the browser. The HTTP layer rejects a
+            // caller-provided CA here instead of silently ignoring it.
+            let client = crate::http::Client::new_with_ca(
+                endpoint,
+                token,
+                maximum_response_bytes,
+                (!ca_pem.is_empty()).then_some(ca_pem),
+            )?;
+            if !client.verify_handshake().await? {
+                return Err(Error::Configuration(
+                    "endpoint has no compatible Inference transport".into(),
+                ));
+            }
             Ok(Self {
                 backend: Backend::Http(client),
             })

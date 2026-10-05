@@ -79,7 +79,7 @@ async fn native_client_verifies_authenticated_tls_grpc_before_selection() {
             .await
             .unwrap();
     });
-    let client = client::Client::connect(&endpoint, "fixture-token", certificate_pem.as_bytes())
+    let client = client::Client::connect_with_ca(&endpoint, "fixture-token", certificate_pem.as_bytes())
         .await
         .unwrap();
     assert_eq!(client.transport(), client::Transport::Grpc);
@@ -166,7 +166,7 @@ async fn default_client_verifies_http_then_executes_all_fourteen_operations() {
         15,
     )
     .await;
-    let client = client::Client::connect(&endpoint, "fixture-token", &[])
+    let client = client::Client::connect(&endpoint, "fixture-token")
         .await
         .unwrap();
     assert_eq!(client.transport(), client::Transport::Http);
@@ -196,7 +196,7 @@ async fn default_client_verifies_http_then_executes_all_fourteen_operations() {
 #[tokio::test]
 async fn incompatible_http_identity_stops_before_any_application_call() {
     let (endpoint, server) = endpoint(200, "substituted-descriptor".into(), 1).await;
-    assert!(client::Client::connect(&endpoint, "fixture-token", &[])
+    assert!(client::Client::connect(&endpoint, "fixture-token")
         .await
         .is_err());
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
@@ -209,7 +209,7 @@ async fn incompatible_http_identity_stops_before_any_application_call() {
 #[tokio::test]
 async fn failed_http_auth_stops_before_any_application_call() {
     let (endpoint, server) = endpoint(401, control::archived_descriptor_digest(BindingFamily::Inference), 1).await;
-    assert!(client::Client::connect(&endpoint, "fixture-token", &[])
+    assert!(client::Client::connect(&endpoint, "fixture-token")
         .await
         .is_err());
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
