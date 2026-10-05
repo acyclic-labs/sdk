@@ -6012,23 +6012,6 @@ fn runtime_method_rpc(value: &Value) -> Option<&str> {
         .filter(|rpc| !rpc.is_empty())
 }
 
-fn authority_rpc_order(output: &Path) -> Option<Vec<String>> {
-    let authority: Value = read_json(&output.join("wire/rust-authority.json")).ok()?;
-    let families = authority.get("families")?.as_array()?;
-    let mut order = Vec::new();
-    for family in families {
-        let methods = family.get("rpc_methods")?.as_array()?;
-        for method in methods {
-            let rpc = method.get("rpc").and_then(Value::as_str)?.trim();
-            if rpc.is_empty() || order.iter().any(|existing| existing == rpc) {
-                return None;
-            }
-            order.push(rpc.to_owned());
-        }
-    }
-    (!order.is_empty()).then_some(order)
-}
-
 fn artifact_binding_bytes(
     output: &Path,
     expected: &EvidenceExpectations,
@@ -6223,16 +6206,6 @@ fn validate_runtime_receipt(
             .any(|(method, expected_rpc)| runtime_method_rpc(method) != Some(expected_rpc.as_str()))
     {
         return None;
-    }
-    if let Some(expected_order) = authority_rpc_order(output) {
-        if methods.len() != expected_order.len()
-            || methods
-                .iter()
-                .zip(expected_order)
-                .any(|(method, expected_rpc)| runtime_method_rpc(method) != Some(expected_rpc.as_str()))
-        {
-            return None;
-        }
     }
     let mut evidence = BTreeMap::new();
     for (index, method) in methods.iter().enumerate() {
