@@ -2,20 +2,25 @@ package dev.acyclic.consumer
 
 import acyclic.actors.v1.Actors
 import acyclic.actors.v1.ActorsServiceGrpcKt
+import acyclic.actors.v1.ActorsServiceGrpc
 import acyclic.stream.v2.Stream
 import acyclic.stream.v2.StreamServiceGrpcKt
+import acyclic.stream.v2.StreamServiceGrpc
 import acyclic.filesystem.v2.Filesystem
 import acyclic.harness.v2.Harness
 import acyclic.machines.v1.Machines
 import acyclic.objects.v2.Objects
 import acyclic.protocol.v1.Protocol
 import acyclic.workers.v1.Workers
+import dev.acyclic.transport.RustTypedClientsKotlin
+import dev.acyclic.transport.RustTypedRequestsKotlin
 import inference.customer.v1.Inference
 import io.grpc.inprocess.InProcessChannelBuilder
 import io.grpc.inprocess.InProcessServerBuilder
 import io.grpc.ManagedChannelBuilder
 import io.grpc.Status
 import io.grpc.StatusException
+import com.google.protobuf.ByteString
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
@@ -30,6 +35,8 @@ import kotlin.test.assertTrue
 import kotlin.test.assertContentEquals
 import java.security.MessageDigest
 import java.util.Base64
+import java.nio.file.Files
+import java.nio.file.Path
 
 class KotlinTransportConsumerTest {
   @Test
@@ -171,24 +178,37 @@ class KotlinTransportConsumerTest {
   @Test
   fun installedJarExercisesRustFixtureUnaryStreamAndCancellation() = runBlocking {
     val endpoint = System.getenv("ACYCLIC_FIXTURE_ENDPOINT")
-    if (endpoint.isNullOrBlank()) return@runBlocking
+    val fixtureRootValue = System.getenv("ACYCLIC_RUST_FIXTURE_ROOT")
+    if (endpoint.isNullOrBlank() || fixtureRootValue.isNullOrBlank()) return@runBlocking
+    val fixtureRoot = Path.of(fixtureRootValue).let { path ->
+      if (Files.isRegularFile(path)) path.parent else path
+    }
+    fun requestBytes(relative: String): ByteArray = Files.readAllBytes(fixtureRoot.resolve(relative))
     val target = endpoint.removePrefix("http://").removePrefix("https://")
     val channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build()
     try {
-      val request = Actors.CreateActorRequest.newBuilder()
-        .setCodeSha256(com.google.protobuf.ByteString.copyFrom(ByteArray(32) { (it + 1).toByte() }))
-        .setHomeRegion("fixture")
-        .setIdempotencyKey("kotlin-fixture")
-        .setLimits(Actors.ActorLimits.newBuilder().setMemoryBytes(Long.MAX_VALUE))
-        .build()
+      val actorBytes = requestBytes("fixtures/actors-create-unary-v1/request.bin")
+      val request = Actors.CreateActorRequest.parseFrom(actorBytes)
+      assertContentEquals(actorBytes, request.toByteArray(), "Rust actor request changed during typed decode")
       val actors = ActorsServiceGrpcKt.ActorsServiceCoroutineStub(channel)
-      assertEquals("fixture-actor", actors.createActor(request).actor.actorId)
+      val actorResponse = actors.createActor(request)
+      assertTrue(actorResponse.hasActor(), "Rust fixture returned no actor")
+      assertContentEquals(request.codeSha256.toByteArray(), actorResponse.actor.codeSha256.toByteArray())
 
       val stream = StreamServiceGrpcKt.StreamServiceCoroutineStub(channel)
+      val appendBytes = requestBytes("fixtures/stream-append-read-v2/append-request.bin")
+      val appendRequest = Stream.AppendRequest.parseFrom(appendBytes)
+      assertContentEquals(appendBytes, appendRequest.toByteArray(), "Rust append request changed during typed decode")
+      val readBytes = requestBytes("fixtures/stream-append-read-v2/read-request.bin")
+      val readRequest = Stream.ReadRequest.parseFrom(readBytes)
+      assertContentEquals(readBytes, readRequest.toByteArray(), "Rust read request changed during typed decode")
+      val appended = stream.append(appendRequest)
+      val replayed = stream.append(appendRequest)
+      assertEquals(appended, replayed, "Rust stream idempotency replay mismatch")
       var received = false
       val first = CompletableDeferred<Unit>()
       val job = launch {
-        stream.read(Stream.ReadRequest.newBuilder().setPath("fixture/events").setLimit(16).build())
+        stream.read(readRequest)
           .collect { received = true; first.complete(Unit) }
       }
       first.await()
@@ -196,6 +216,103 @@ class KotlinTransportConsumerTest {
       assertTrue(received, "Rust fixture did not produce a streamed record")
     } finally {
       channel.shutdownNow()
+    }
+  }
+
+  @Test
+  fun installedJarExercisesRustTypedFacadeAgainstFixture() = runBlocking {
+    val endpoint = System.getenv("ACYCLIC_FIXTURE_ENDPOINT")
+    if (endpoint.isNullOrBlank()) return@runBlocking
+    val target = endpoint.removePrefix("http://").removePrefix("https://")
+    val channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build()
+    try {
+      val actors = ActorsServiceGrpc.newBlockingStub(channel)
+      val actorRequest = RustTypedRequestsKotlin.ActorsActorsCreateActorRequest(
+        Actors.CreateActorRequest.newBuilder()
+          .setHomeRegion("fixture")
+          .setIdempotencyKey("kotlin-typed-facade-create")
+          .setCodeSha256(ByteString.copyFrom(ByteArray(32) { 1 }))
+          .setLimits(Actors.ActorLimits.newBuilder()
+            .setHandlerTimeoutMillis(1_000)
+            .setMemoryBytes(1_048_576)
+            .setCheckpointBytes(4_096))
+          .build(),
+      )
+      val actorResponse = RustTypedClientsKotlin.actorsActorsCreateActor(actors, actorRequest)
+      assertTrue(actorResponse.hasActor(), "typed Rust response did not expose actor presence")
+      assertEquals("fixture-actor", actorResponse.actorActorId().value)
+      assertEquals("fixture", actorResponse.actor().homeRegion)
+
+      val stream = StreamServiceGrpc.newBlockingStub(channel)
+      val appendWire = Stream.AppendRequest.newBuilder()
+        .setPath("fixture/kotlin-typed-facade")
+        .setIfTail(0)
+        .setIdempotencyKey(ByteString.copyFromUtf8("kotlin-typed-facade-append"))
+        .addRecords(ByteString.copyFromUtf8("typed-first"))
+        .build()
+      val appendRequest = RustTypedRequestsKotlin.StreamStreamAppendRequest(appendWire)
+      assertEquals("fixture/kotlin-typed-facade", appendRequest.path().value)
+      assertTrue(appendRequest.hasIfTail())
+      assertEquals("kotlin-typed-facade-append", appendRequest.idempotencyKey().value.toStringUtf8())
+      val committed = RustTypedClientsKotlin.streamStreamAppend(stream, appendRequest)
+      assertTrue(committed.hasCommitted(), "typed Rust stream response did not expose committed presence")
+      assertEquals(1L, committed.committed().tail)
+      assertEquals(32, committed.committedCommitId().value.size(), "commit identity must be a Rust-owned digest")
+
+      val replay = RustTypedClientsKotlin.streamStreamAppend(stream, appendRequest)
+      assertEquals(committed.toWire(), replay.toWire(), "Rust typed facade changed idempotent replay")
+      val mismatch = appendWire.toBuilder()
+        .clearRecords().addRecords(ByteString.copyFromUtf8("typed-different"))
+        .build()
+      try {
+        RustTypedClientsKotlin.streamStreamAppend(
+          stream,
+          RustTypedRequestsKotlin.StreamStreamAppendRequest(mismatch),
+        )
+        error("Rust fixture accepted typed idempotency mismatch")
+      } catch (error: io.grpc.StatusRuntimeException) {
+        assertEquals(Status.Code.FAILED_PRECONDITION, error.status.code)
+      }
+
+      val firstFollowRecord = CompletableDeferred<Unit>()
+      val followJob = launch {
+        StreamServiceGrpcKt.StreamServiceCoroutineStub(channel)
+          .follow(Stream.FollowRequest.newBuilder()
+            .setPath("fixture/kotlin-typed-facade")
+            .setFrom(0)
+            .build())
+          .collect { firstFollowRecord.complete(Unit) }
+      }
+      firstFollowRecord.await()
+      followJob.cancelAndJoin()
+      assertTrue(followJob.isCancelled, "Rust fixture follow stream did not cancel")
+
+      val secondWire = appendWire.toBuilder()
+        .setIfTail(1)
+        .clearRecords().addRecords(ByteString.copyFromUtf8("typed-second"))
+        .setIdempotencyKey(ByteString.copyFromUtf8("kotlin-typed-facade-recovery"))
+        .build()
+      val resumed = RustTypedClientsKotlin.streamStreamAppend(
+        stream,
+        RustTypedRequestsKotlin.StreamStreamAppendRequest(secondWire),
+      )
+      assertTrue(resumed.hasCommitted(), "typed Rust recovery append was not committed")
+      assertEquals(2L, resumed.committed().tail)
+
+      val readRequest = RustTypedRequestsKotlin.StreamStreamReadRequest(
+        Stream.ReadRequest.newBuilder()
+          .setPath("fixture/kotlin-typed-facade")
+          .setFrom(1)
+          .setLimit(1)
+          .build(),
+      )
+      val read = RustTypedClientsKotlin.streamStreamRead(stream, readRequest)
+      assertTrue(read.hasNext(), "typed Rust stream response iterator was empty")
+      val record = read.next()
+      assertEquals(1L, record.record().sequence)
+    } finally {
+      channel.shutdownNow()
+      channel.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
     }
   }
 }
