@@ -3,6 +3,7 @@
 require "fileutils"
 require "json"
 require "digest"
+require "rbconfig"
 
 ROOT = File.expand_path("..", __dir__)
 OUT = File.join(__dir__, "generated")
@@ -316,6 +317,7 @@ end
 
 root_prefix = "#{ROOT.tr('\\', '/')}/"
 lock_path = File.join(__dir__, "generator.lock.json")
+runtime_triple = RbConfig::CONFIG.fetch("host", RUBY_PLATFORM)
 provenance = {
   "generator" => lock,
   "source_revision" => ENV.fetch("GIT_COMMIT", "unknown"),
@@ -329,6 +331,11 @@ provenance = {
   "authority_manifest_schema" => authority && authority["schema"],
   "authority_source_revision" => authority && authority["source_revision"],
   "authority_exporter" => authority && authority["exporter"],
+  "platform" => {
+    "execution_scope" => "portable",
+    "target_triple" => "portable",
+    "build_host_triple" => runtime_triple
+  },
   "rust_family_goldens" => rust_family_goldens,
   "type_policy" => type_policy_metadata,
   "generated_files" => Dir[File.join(OUT, "**", "*.rb")].sort.map { |path| path.tr('\\', '/').delete_prefix(root_prefix) }

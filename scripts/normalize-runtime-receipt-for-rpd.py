@@ -5,7 +5,9 @@ This module performs schema adaptation only. The Rust sdk-generation verifier
 remains the authority for RPC identity, protobuf semantics, frame order, and
 terminal status. Missing bytes, frame sequences, numeric status codes, or an
 installed package whose bytes do not match the Rust inventory are rejected
-here so the adapter cannot manufacture qualification evidence.
+here so the adapter cannot manufacture qualification evidence. Platform
+provenance is copied from the generated package and the actual consumer
+runtime probe; native target and runtime triples must agree.
 """
 from __future__ import annotations
 
@@ -56,6 +58,47 @@ def normalized_digest(value: Any, label: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError(f"{label} must be a SHA-256 digest")
     return digest
+
+
+def validate_platform_provenance(
+    expected_package: dict[str, Any],
+    binding: dict[str, Any],
+    language: str,
+) -> None:
+    expected_provenance = expected_package.get("provenance")
+    if not isinstance(expected_provenance, dict):
+        expected_provenance = expected_package
+    observed_provenance = binding.get("provenance")
+    if not isinstance(observed_provenance, dict):
+        observed_provenance = binding
+    expected_platform = expected_provenance.get("platform")
+    observed_platform = observed_provenance.get("platform")
+    if not isinstance(expected_platform, dict):
+        raise ValueError(f"{language}: Rust package platform provenance is missing")
+    if not isinstance(observed_platform, dict):
+        raise ValueError(f"{language}: executed package platform provenance is missing")
+    fields = ("execution_scope", "target_triple", "build_host_triple")
+    for field in fields:
+        expected_value = expected_platform.get(field)
+        observed_value = observed_platform.get(field)
+        if not isinstance(expected_value, str) or not expected_value:
+            raise ValueError(f"{language}: platform provenance field {field} is missing")
+        if not isinstance(observed_value, str) or not observed_value:
+            raise ValueError(f"{language}: platform provenance field {field} is missing")
+        if observed_value != expected_value:
+            raise ValueError(
+                f"{language}: executed package platform field {field} differs from the Rust producer"
+            )
+    for field in ("runtime_triple", "runtime_os", "runtime_arch"):
+        if not isinstance(observed_platform.get(field), str) or not observed_platform[field]:
+            raise ValueError(f"{language}: observed platform provenance field {field} is missing")
+    if observed_platform.get("observed") is not True:
+        raise ValueError(f"{language}: platform provenance is not backed by an observed runtime probe")
+    scope = observed_platform["execution_scope"]
+    if scope not in {"native", "portable"}:
+        raise ValueError(f"{language}: platform execution_scope must be native or portable")
+    if scope == "native" and observed_platform["target_triple"] != observed_platform["runtime_triple"]:
+        raise ValueError(f"{language}: native package target triple differs from the runtime triple")
 
 
 def authority_binding(inventory: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
@@ -174,6 +217,7 @@ def executed_package_binding(
     actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if actual_digest != declared_digest:
         raise ValueError(f"{language}: executed package artifact bytes do not match artifact_sha256")
+    validate_platform_provenance(expected_package, binding, language)
     return binding
 
 

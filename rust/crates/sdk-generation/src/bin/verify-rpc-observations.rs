@@ -218,14 +218,7 @@ fn validate_platform_provenance(
         ));
         return;
     };
-    for field in [
-        "execution_scope",
-        "target_triple",
-        "build_host_triple",
-        "runtime_triple",
-        "runtime_os",
-        "runtime_arch",
-    ] {
+    for field in ["execution_scope", "target_triple", "build_host_triple"] {
         let expected_value = expected_platform.get(field).and_then(Value::as_str);
         let observed_value = observed_platform.get(field).and_then(Value::as_str);
         if expected_value.is_none() || observed_value.is_none() {
@@ -238,9 +231,18 @@ fn validate_platform_provenance(
             ));
         }
     }
-    if expected_platform.get("observed").and_then(Value::as_bool) != Some(true)
-        || observed_platform.get("observed").and_then(Value::as_bool) != Some(true)
-    {
+    for field in ["runtime_triple", "runtime_os", "runtime_arch"] {
+        if observed_platform
+            .get(field)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            failures.push(format!(
+                "{language}: observed platform provenance field {field} is missing"
+            ));
+        }
+    }
+    if observed_platform.get("observed").and_then(Value::as_bool) != Some(true) {
         failures.push(format!(
             "{language}: platform provenance is not backed by an observed runtime probe"
         ));
