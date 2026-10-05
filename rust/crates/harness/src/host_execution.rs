@@ -1366,13 +1366,15 @@ struct AttemptCleanup {
 
 impl AttemptCleanup {
     fn release_active(&self) {
-        if let Ok(mut active) = self.active.lock() {
-            if active
-                .get(&self.key.operation_id)
-                .is_some_and(|(_, attempt, _)| *attempt == self.key.attempt_id)
-            {
-                active.remove(&self.key.operation_id);
-            }
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .get(&self.key.operation_id)
+            .is_some_and(|(_, attempt, _)| *attempt == self.key.attempt_id)
+        {
+            active.remove(&self.key.operation_id);
         }
     }
 
