@@ -463,9 +463,16 @@ request <- AcyclicActorsV1CreateActorRequest$new(
 response <- api$CreateActorWithHttpInfo(request)
 stopifnot(response$status_code >= 200, response$status_code < 300)
 stopifnot(!is.null(response$content))
+actor_id <- response$content$actor$actorId
+stopifnot(!is.null(actor_id), nzchar(actor_id))
+inspect_request <- AcyclicActorsV1InspectActorRequest$new(actorId = actor_id)
+inspect_response <- api$InspectActorWithHttpInfo(inspect_request)
+stopifnot(inspect_response$status_code >= 200, inspect_response$status_code < 300)
+stopifnot(!is.null(inspect_response$content$actor$actorId))
 EOF
       run_logged r-transport env ACYCLIC_R_LIBRARY="$library_dir" ACYCLIC_FIXTURE_HTTP_ENDPOINT="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" Rscript "$transport_dir/qualification.R"
       client_transport='r-generated-client-fixture-roundtrip'
+      client_operations='actors.create_actor,actors.inspect_actor'
     else
       client_transport='not-run-fixture-endpoint-unset'
     fi
