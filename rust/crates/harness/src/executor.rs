@@ -21,8 +21,8 @@ use crate::{
         SwarmUsageSource, VerifiedSwarmUsageReceipt,
     },
     tool::{
-        ModelToolContext, ToolDefinition, ToolInvocation, ToolRegistry, ToolRejectionFeedback,
-        ToolResult, validate_value,
+        ModelToolContext, PostClaimFailureDisposition, ToolDefinition, ToolInvocation,
+        ToolRegistry, ToolRejectionFeedback, ToolResult, validate_value,
     },
 };
 use futures::{StreamExt as _, future::BoxFuture};
@@ -1857,19 +1857,24 @@ impl StockExecutor {
                     Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
                     }
-                    Err(_) => {
-                        self.record_tool_failure(
-                            journal,
-                            operation_id,
-                            step,
-                            &invocation.call_id,
-                            ToolFailureKind::ExecutorRejected,
-                        )
-                        .await?;
-                        return Err(Error::Invalid(
-                            ToolFailureKind::ExecutorRejected.message().into(),
-                        ));
-                    }
+                    Err(error) => match tool.executor.classify_post_claim_error(&error) {
+                        PostClaimFailureDisposition::KnownRejection => {
+                            self.record_tool_failure(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation.call_id,
+                                ToolFailureKind::ExecutorRejected,
+                            )
+                            .await?;
+                            return Err(Error::Invalid(
+                                ToolFailureKind::ExecutorRejected.message().into(),
+                            ));
+                        }
+                        PostClaimFailureDisposition::Indeterminate => {
+                            return Err(Error::Indeterminate(operation_id));
+                        }
+                    },
                 }
             } else {
                 match tool
@@ -1881,19 +1886,24 @@ impl StockExecutor {
                     Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
                     }
-                    Err(_) => {
-                        self.record_tool_failure(
-                            journal,
-                            operation_id,
-                            step,
-                            &invocation.call_id,
-                            ToolFailureKind::ExecutorRejected,
-                        )
-                        .await?;
-                        return Err(Error::Invalid(
-                            ToolFailureKind::ExecutorRejected.message().into(),
-                        ));
-                    }
+                    Err(error) => match tool.executor.classify_post_claim_error(&error) {
+                        PostClaimFailureDisposition::KnownRejection => {
+                            self.record_tool_failure(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation.call_id,
+                                ToolFailureKind::ExecutorRejected,
+                            )
+                            .await?;
+                            return Err(Error::Invalid(
+                                ToolFailureKind::ExecutorRejected.message().into(),
+                            ));
+                        }
+                        PostClaimFailureDisposition::Indeterminate => {
+                            return Err(Error::Indeterminate(operation_id));
+                        }
+                    },
                 }
             };
             if validate_value(&tool.definition.output_schema, &result.value, "tool output").is_err()
@@ -3837,7 +3847,7 @@ mod tests {
             async move {
                 context.validate_invocation(&invocation)?;
                 self.executions.lock().unwrap().push((context, invocation));
-                Err(Error::Storage("lost tool admission response".into()))
+                Err(Error::Conflict("effect completed before reply was lost".into()))
             }
             .boxed()
         }
