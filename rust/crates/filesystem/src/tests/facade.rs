@@ -11695,3 +11695,111 @@ fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Er
     assert!(group.work.bytes_hashed > budget.bytes_hashed);
     Ok(())
 }
+
+/// Rewriting an existing file whole (truncate, extend, write from staged content, the shape
+/// native capture gives every changed regular file) depends on the file's complete record
+/// through its `Resize`. Its content-range dependencies on the old bytes add nothing to that
+/// proof, and when the file is larger than `maximum_read_bytes` they cannot be captured at all:
+/// every later publication of a workspace holding a file over 16 MiB failed with
+/// `ContentRangeTooLarge`.
+#[test]
+fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let mut limited = config();
+    limited.limits.maximum_read_bytes = 8;
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([231; 16]),
+        limited,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let file = path("large")?;
+    let stage = |checkout: &Checkout<_, _>, body: &'static [u8]| {
+        let mut source = std::io::Cursor::new(Bytes::from_static(body));
+        poll_ready(checkout.stage_content(&mut source, 64, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("staging blocked")?
+            .map(|staged| staged.value)
+            .map_err(|failure| format!("staging failed: {:?}", failure.error))
+    };
+
+    let mut first = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("first checkout blocked")??
+    .value;
+    let original = stage(&first, b"0123456789abcdef0123456789abcdef")?;
+    poll_ready(first.apply_authored_transaction(
+        vec![AuthoredMutation::CreateFileFromContent {
+            path: file.clone(),
+            content: original,
+            metadata: empty_metadata(),
+            file_id: None,
+        }],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("create blocked")??;
+    poll_ready(first.commit(
+        OperationId::from_bytes([231; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("first commit blocked")??;
+
+    let mut second = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second checkout blocked")??
+    .value;
+    let replacement = stage(&second, b"ZYXWVUTSRQPONMLKzyxwvutsrqponmlk")?;
+    poll_ready(second.apply_authored_transaction(
+        vec![
+            AuthoredMutation::Resize {
+                path: file.clone(),
+                logical_bytes: 0,
+            },
+            AuthoredMutation::Resize {
+                path: file.clone(),
+                logical_bytes: 32,
+            },
+            AuthoredMutation::WriteFromContent {
+                path: file.clone(),
+                offset: 0,
+                content: replacement,
+            },
+        ],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("rewrite blocked")?
+    .map_err(|failure| format!("whole-file rewrite refused: {:?}", failure.error))?;
+    poll_ready(second.commit(
+        OperationId::from_bytes([232; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second commit blocked")??;
+    let head = poll_ready(second.read_file_range(
+        &file,
+        ByteRange {
+            offset: 24,
+            length: 8,
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("read blocked")??
+    .value;
+    assert_eq!(head.bytes, Bytes::from_static(b"rqponmlk"));
+    Ok(())
+}
