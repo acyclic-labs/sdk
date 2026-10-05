@@ -1263,6 +1263,11 @@
     },
     {
       "id": "clojure",
+      "producer": {
+        "program": "pwsh",
+        "args": ["-NoProfile", "-File", "{source_root}/scripts/run-language-producer.ps1", "-TargetId", "clojure", "-SourceRoot", "{source_root}", "-WireRoot", "{wire_root}", "-AuthorityManifest", "{authority_manifest}", "-OutputRoot", "{output_root}", "-TargetOutput", "{target_output}", "-Request", "{request}"],
+        "output": "package"
+      },
       "kind": "language",
       "language_family": "JVM",
       "status": "http-only",
@@ -1368,6 +1373,11 @@
     },
     {
       "id": "elm",
+      "producer": {
+        "program": "pwsh",
+        "args": ["-NoProfile", "-File", "{source_root}/scripts/run-language-producer.ps1", "-TargetId", "elm", "-SourceRoot", "{source_root}", "-WireRoot", "{wire_root}", "-AuthorityManifest", "{authority_manifest}", "-OutputRoot", "{output_root}", "-TargetOutput", "{target_output}", "-Request", "{request}"],
+        "output": "package"
+      },
       "kind": "language",
       "language_family": "Elm",
       "status": "http-only",
@@ -1409,6 +1419,11 @@
     },
     {
       "id": "gdscript",
+      "producer": {
+        "program": "pwsh",
+        "args": ["-NoProfile", "-File", "{source_root}/scripts/run-language-producer.ps1", "-TargetId", "gdscript", "-SourceRoot", "{source_root}", "-WireRoot", "{wire_root}", "-AuthorityManifest", "{authority_manifest}", "-OutputRoot", "{output_root}", "-TargetOutput", "{target_output}", "-Request", "{request}"],
+        "output": "package"
+      },
       "kind": "language",
       "language_family": "Godot",
       "status": "http-only",
@@ -1971,4 +1986,3 @@
   ],
   "catalogued_at": "2026-10-03"
 }
-
