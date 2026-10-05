@@ -24,7 +24,7 @@ function workspaceMembers(cargo) {
   return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
 }
 
-function directManifestDependencies(cargo) {
+function directManifestDependencies(cargo, includeOptional = false) {
   const dependencies = new Map();
   let section = "";
   for (const line of cargo.split(/\r?\n/)) {
@@ -37,9 +37,9 @@ function directManifestDependencies(cargo) {
       section = header[1];
       continue;
     }
-    if (!/(^|\.)dependencies$/.test(section)) continue;
+    if (!/(^|[.-])dependencies$/.test(section)) continue;
     const entry = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$/);
-    if (!entry || /optional\s*=\s*true/.test(entry[2])) continue;
+    if (!entry || (!includeOptional && /optional\s*=\s*true/.test(entry[2]))) continue;
     const packageOverride = entry[2].match(/package\s*=\s*"([^"]+)"/);
     dependencies.set(entry[1], packageOverride?.[1] ?? entry[1]);
   }
@@ -332,4 +332,34 @@ test('generation module closure rejects omitted explicit and conventional module
     assert.throws(() => assertGenerationModuleClosure(source, path => paths.has(path) && path !== missing), /generation module .* has no source/);
   }
   assertGenerationModuleClosure('mod nested;\n', path => path === 'nested/mod.rs');
+});
+
+function assertStandaloneRootLockEdges(manifest, lock) {
+  const name = packageName(manifest);
+  const declared = new Set(directManifestDependencies(manifest, true).values());
+  const locked = lockPackages(lock).get(name);
+  assert.ok(locked, `${name} must occur in its standalone lockfile`);
+  for (const dependency of locked) {
+    assert.ok(declared.has(dependency), `${name} lockfile dependency ${dependency} has no manifest declaration`);
+  }
+}
+
+test('standalone generator root lock edges have matching manifest declarations', () => {
+  for (const entry of readdirSync(join(root, 'rust/crates'), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const base = `rust/crates/${entry.name}`;
+    if (!existsSync(join(root, base, 'Cargo.toml'))) continue;
+    const manifest = read(`${base}/Cargo.toml`);
+    if (!/^\[workspace\]\s*$/m.test(manifest)) continue;
+    assert.ok(existsSync(join(root, base, 'Cargo.lock')), `${base} must retain its standalone lockfile`);
+    assertStandaloneRootLockEdges(manifest, read(`${base}/Cargo.lock`));
+  }
+});
+
+test('standalone lock closure rejects an omitted manifest dependency', () => {
+  const base = 'rust/crates/sdk-embedded-prototype';
+  const manifest = read(`${base}/Cargo.toml`);
+  const changed = manifest.replace(/^prost\s*=.*\r?\n/m, '');
+  assert.notEqual(changed, manifest, 'negative control must remove the actual prost dependency');
+  assert.throws(() => assertStandaloneRootLockEdges(changed, read(`${base}/Cargo.lock`)), /dependency prost has no manifest declaration/);
 });
