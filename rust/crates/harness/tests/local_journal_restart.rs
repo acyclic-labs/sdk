@@ -13,6 +13,12 @@ const ROOT_ENV: &str = "ACYCLIC_HARNESS_LOCAL_JOURNAL_ROOT";
 const OPERATION: OperationId = OperationId::from_bytes([209; 16]);
 const AGENT: AgentId = AgentId::from_bytes([210; 16]);
 
+fn retry_digest(key: &str) -> String {
+    blake3::hash(format!("{OPERATION}:{key}").as_bytes())
+        .to_hex()
+        .to_string()
+}
+
 #[tokio::test]
 async fn local_harness_journal_survives_process_restart()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -53,8 +59,8 @@ async fn local_harness_journal_survives_process_restart()
                 assert_eq!(records.len(), 2);
                 assert_eq!(records[0].sequence, 1);
                 assert_eq!(records[1].sequence, 2);
-                assert_eq!(records[0].idempotency_key, "operation-start");
-                assert_eq!(records[1].idempotency_key, "operation-cancelled");
+                assert_eq!(records[0].idempotency_key, retry_digest("operation-start"));
+                assert_eq!(records[1].idempotency_key, retry_digest("operation-cancelled"));
                 assert!(matches!(
                     records[1].event,
                     ExecutionEvent::ToolFailed { .. }
