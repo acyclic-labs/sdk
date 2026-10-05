@@ -1732,6 +1732,7 @@ impl StockExecutor {
         step: u32,
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
+        mut budget: Option<&mut dyn SwarmProviderAdmission>,
     ) -> Result<Option<ToolRejectionFeedback>> {
         let records = journal.replay(operation_id).await?;
         invocation.validate()?;
@@ -2102,12 +2103,30 @@ impl StockExecutor {
                 task_id: self.authenticated_task,
             };
             tool_context.validate_invocation(&invocation)?;
+            let effect_started = self.execution_clock.now_unix_millis();
+            let effect_deadline = budget
+                .as_deref()
+                .and_then(|budget| budget.remaining_execution_time_ms())
+                .map(|remaining_ms| {
+                    if remaining_ms == 0 {
+                        return Err(Error::Indeterminate(operation_id));
+                    }
+                    tokio::time::Instant::now()
+                        .checked_add(std::time::Duration::from_millis(remaining_ms))
+                        .ok_or(Error::Indeterminate(operation_id))
+                })
+                .transpose()?;
             let result = if claimed {
-                match tool
+                let execution = tool
                     .executor
-                    .execute_in_model_batch(tool_context, invocation.clone())
-                    .await
-                {
+                    .execute_in_model_batch(tool_context, invocation.clone());
+                let outcome = match effect_deadline {
+                    Some(deadline) => tokio::time::timeout_at(deadline, execution)
+                        .await
+                        .map_err(|_| Error::Indeterminate(operation_id))?,
+                    None => execution.await,
+                };
+                match outcome {
                     Ok(result) => result,
                     Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
@@ -2132,11 +2151,16 @@ impl StockExecutor {
                     },
                 }
             } else {
-                match tool
+                let reconciliation = tool
                     .executor
-                    .reconcile_in_model_batch(tool_context, invocation.clone())
-                    .await
-                {
+                    .reconcile_in_model_batch(tool_context, invocation.clone());
+                let outcome = match effect_deadline {
+                    Some(deadline) => tokio::time::timeout_at(deadline, reconciliation)
+                        .await
+                        .map_err(|_| Error::Indeterminate(operation_id))?,
+                    None => reconciliation.await,
+                };
+                match outcome {
                     Ok(Some(result)) => result,
                     Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
@@ -2161,6 +2185,12 @@ impl StockExecutor {
                     },
                 }
             };
+            admit_effect_elapsed(
+                &mut budget,
+                self.execution_clock.as_ref(),
+                effect_started,
+                operation_id,
+            )?;
             if validate_value(&tool.definition.output_schema, &result.value, "tool output").is_err()
             {
                 self.record_tool_failure(
@@ -2467,6 +2497,7 @@ impl StockExecutor {
                             step,
                             invocation,
                             &mut prior_messages,
+                            budget.as_deref_mut(),
                         )
                         .await?
                     {
@@ -3653,6 +3684,19 @@ fn elapsed_provider_delta(
         .ok_or(Error::Indeterminate(operation_id))
 }
 
+fn admit_effect_elapsed(
+    budget: &mut Option<&mut dyn SwarmProviderAdmission>,
+    clock: &dyn UnixMillisClock,
+    started_at_ms: u64,
+    operation_id: OperationId,
+) -> Result<()> {
+    if let Some(budget) = budget.as_deref_mut() {
+        let elapsed_ms = elapsed_provider_time(clock, started_at_ms, operation_id)?;
+        budget.admit_execution_time_ms(elapsed_ms)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3882,6 +3926,10 @@ mod tests {
     }
 
     impl ModelProvider for FakeModel {
+        fn supports_dispatch_context(&self) -> bool {
+            true
+        }
+
         fn generate<'a>(
             &'a self,
             prepared: crate::model_input::PreparedModelInput,
@@ -3913,6 +3961,14 @@ mod tests {
                 ]
             };
             Box::pin(stream::iter(events))
+        }
+
+        fn generate_with_dispatch<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+            _: crate::model::ProviderDispatchContext,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            self.generate(prepared)
         }
 
         fn reconcile<'a>(
@@ -4167,6 +4223,37 @@ mod tests {
 
         fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             async { Ok(None) }.boxed()
+        }
+    }
+
+    struct HangingTool;
+
+    impl crate::tool::ToolExecutor for HangingTool {
+        fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+            futures::future::pending().boxed()
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            futures::future::pending().boxed()
+        }
+
+        fn execute_in_model_batch<'a>(
+            &'a self,
+            _: ModelToolContext,
+            _: ToolInvocation,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            futures::future::pending().boxed()
+        }
+
+        fn reconcile_in_model_batch<'a>(
+            &'a self,
+            _: ModelToolContext,
+            _: ToolInvocation,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            futures::future::pending().boxed()
         }
     }
 
@@ -5378,6 +5465,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn budgeted_hanging_tool_times_out_without_terminal_receipt() -> Result<()> {
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Hanging test tool".into(),
+                input_schema: json!({"type": "object"}),
+                output_schema: json!({"type": "object"}),
+                model_output_schema: json!({"type": "object"}),
+            },
+            executor: Arc::new(HangingTool),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model,
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["model:generate", "tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let operation_id = OperationId::from_bytes([0xE1; 16]);
+        let input = TurnInput {
+            operation_id,
+            input: ModelContent::Text("hang".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        let journal = Journal::default();
+        let mut budget = DeadlineBudget { operation_id };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            executor.execute_with_provider_budget(input, &journal, &mut budget),
+        )
+        .await
+        .map_err(|_| Error::Conflict("tool deadline did not fire".into()))?;
+        assert!(matches!(result, Err(Error::Indeterminate(observed)) if observed == operation_id));
+        let records = journal.replay(operation_id).await?;
+        assert!(records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ToolStarted { step: 0, .. }
+        )));
+        assert!(!records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ToolCompleted { step: 0, .. }
+                | ExecutionEvent::ToolFailed { step: 0, .. }
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         let model = Arc::new(FakeModel {
             calls: AtomicUsize::new(0),
@@ -5609,6 +5757,7 @@ mod tests {
                     0,
                     changed_call,
                     &mut replay_context,
+                    None,
                 )
                 .await,
             Err(Error::Conflict(_))
@@ -6256,7 +6405,7 @@ mod tests {
         let mut prior = Vec::new();
         assert!(matches!(
             executor
-                .resolve_tool_call(&journal, operation, 0, invocation, &mut prior)
+                .resolve_tool_call(&journal, operation, 0, invocation, &mut prior, None)
                 .await,
             Err(Error::Conflict(message)) if message.contains("feedback changed")
         ));
