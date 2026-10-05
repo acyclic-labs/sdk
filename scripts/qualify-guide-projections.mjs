@@ -129,6 +129,41 @@ function artifact(root, pattern) {
   return allFiles(searchRoot).find((path) => expression.test(relative(root, path).replaceAll("\\", "/"))) ?? null;
 }
 
+// Locate Rust manifests without descending into build targets. The install
+// archive needs every workspace manifest for Cargo's workspace resolver, but
+// only the selected crate's source and its local path-dependency closure.
+function rustManifestDirs(root) {
+  const dirs = [];
+  const pending = [root];
+  while (pending.length) {
+    const current = pending.pop();
+    if (!existsSync(current)) continue;
+    if (existsSync(join(current, "Cargo.toml"))) dirs.push(current);
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      if (entry.isDirectory() && !["target", ".git"].includes(entry.name)) pending.push(join(current, entry.name));
+    }
+  }
+  return dirs;
+}
+
+function rustPathDependencyClosure(root) {
+  const closure = [];
+  const visited = new Set();
+  const pending = [root];
+  while (pending.length) {
+    const current = resolve(pending.pop());
+    if (visited.has(current) || !existsSync(join(current, "Cargo.toml"))) continue;
+    visited.add(current);
+    closure.push(current);
+    const manifest = readFileSync(join(current, "Cargo.toml"), "utf8");
+    for (const match of manifest.matchAll(/path\s*=\s*"([^"]+)"/g)) {
+      const dependency = resolve(current, match[1]);
+      if (existsSync(join(dependency, "Cargo.toml"))) pending.push(dependency);
+    }
+  }
+  return closure;
+}
+
 function extension(language) {
   return ({ rust: ".rs", python: ".py", typescript: ".ts", go: ".go", java: ".java", csharp: ".cs", ruby: ".rb", dart: ".dart", php: ".php" })[language];
 }
@@ -192,24 +227,36 @@ function prepare(language, packageArtifact, directory) {
     if (!packageVersion) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package version" };
     const packageCache = join(output, "cargo-packages");
     const bundleSource = join(packageCache, "workspace-source");
-    const archive = join(packageCache, `${packageName}-${packageVersion}.tar`);
+    const packageManifest = join(packageCache, `${packageName}-${packageVersion}.manifest.json`);
     mkdirSync(packageCache, { recursive: true });
     let packaged = { command: "", exitCode: 0, stdout: "", stderr: "" };
-    if (!existsSync(archive)) {
+    if (!existsSync(packageManifest)) {
       mkdirSync(bundleSource, { recursive: true });
-      cpSync(join(repo, "rust"), join(bundleSource, "rust"), { recursive: true, filter: (path) => !/(^|[\\/])(target|\.git)([\\/]|$)/i.test(path) });
+      const workspaceCrates = rustManifestDirs(join(repo, "rust", "crates"));
+      for (const crateDir of workspaceCrates) {
+        const destination = join(bundleSource, relative(repo, crateDir));
+        mkdirSync(destination, { recursive: true });
+        cpSync(join(crateDir, "Cargo.toml"), join(destination, "Cargo.toml"));
+      }
+      for (const crateDir of rustPathDependencyClosure(packageRoot)) {
+        const destination = join(bundleSource, relative(repo, crateDir));
+        cpSync(crateDir, destination, { recursive: true, filter: (path) => !/(^|[\\/])(target|\.git)([\\/]|$)/i.test(path) });
+      }
       cpSync(join(repo, "Cargo.toml"), join(bundleSource, "Cargo.toml"));
       cpSync(join(repo, "Cargo.lock"), join(bundleSource, "Cargo.lock"));
-      packaged = command(process.env.SDK_TAR_BIN ?? "tar", ["-cf", archive, "-C", bundleSource, "."], directory);
-      if (packaged.exitCode !== 0) return { status: "install-failed", install: packaged, environment: {} };
+      const files = allFiles(bundleSource).map((path) => ({
+        path: relative(bundleSource, path).replaceAll("\\", "/"),
+        sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
+      })).sort((left, right) => left.path.localeCompare(right.path));
+      writeFileSync(packageManifest, `${JSON.stringify({ schema: "acyclic.sdk.rust-package-bundle.v1", package: packageName, version: packageVersion, files }, null, 2)}\n`);
+      packaged = { command: `internal rust package staging ${packageManifest}`, exitCode: 0, stdout: `staged ${files.length} immutable source files\n`, stderr: "" };
     }
     const packageInstall = join(directory, "installed-package");
     mkdirSync(packageInstall, { recursive: true });
-    const extracted = command(process.env.SDK_TAR_BIN ?? "tar", ["-xf", archive, "-C", packageInstall], directory);
-    if (extracted.exitCode !== 0) return { status: "install-failed", install: extracted, environment: {} };
+    cpSync(bundleSource, packageInstall, { recursive: true });
     const installedRoot = join(packageInstall, relative(repo, packageRoot));
     writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
-    return { status: "installed", packageArtifact: archive, install: { ...extracted, command: packaged.command ? `${packaged.command} && ${extracted.command}` : extracted.command, stdout: `${packaged.stdout}${extracted.stdout}`, stderr: `${packaged.stderr}${extracted.stderr}` }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
+    return { status: "installed", packageArtifact: packageManifest, install: { ...packaged, command: `${packaged.command} && internal rust package install ${packageInstall}`, stdout: packaged.stdout, stderr: packaged.stderr }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
   }
 
   if (language === "python" && packageArtifact.endsWith(".whl")) {
@@ -361,7 +408,13 @@ if (manifestCommand.exitCode !== 0) {
   process.exit(manifestCommand.exitCode);
 }
 const parsedProjections = JSON.parse(manifestCommand.stdout);
-const projections = Array.isArray(parsedProjections) ? parsedProjections : [parsedProjections];
+const allProjections = Array.isArray(parsedProjections) ? parsedProjections : [parsedProjections];
+const languageFilter = args.get("--language");
+const scenarioFilter = args.get("--scenario");
+const projections = allProjections.filter((projection) =>
+  (!languageFilter || projection.language === languageFilter) &&
+  (!scenarioFilter || projection.scenario_id === scenarioFilter),
+);
 const sourceDigests = [...new Set(projections.map((projection) => projection.source_sha256).filter(Boolean))];
 const sourceSha256 = sourceDigests.length === 1 ? sourceDigests[0] : null;
 const sourceGitRevisions = [...new Set(projections.map((projection) => projection.source_git_revision).filter(Boolean))];
