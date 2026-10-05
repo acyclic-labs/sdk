@@ -21,8 +21,13 @@ use std::{
 #[derive(Default)]
 pub struct FixtureUsage {
     provider: String,
-    usage: Mutex<BTreeMap<(OperationId, String), SwarmUsage>>,
-    elapsed_samples_ms: Mutex<BTreeMap<(OperationId, String), u64>>,
+    usage: Mutex<BTreeMap<(OperationId, String), FixtureMeasurement>>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct FixtureMeasurement {
+    usage: SwarmUsage,
+    elapsed_sample_ms: u64,
 }
 
 impl FixtureUsage {
@@ -30,7 +35,6 @@ impl FixtureUsage {
         Arc::new(Self {
             provider: provider.into(),
             usage: Mutex::new(BTreeMap::new()),
-            elapsed_samples_ms: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -41,11 +45,12 @@ impl FixtureUsage {
             .lock()
             .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
         let entry = usage.entry(key.clone()).or_default();
-        entry.model_steps = entry.model_steps.saturating_add(1);
-        self.elapsed_samples_ms
-            .lock()
-            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?
-            .insert(key, 0);
+        entry.usage.model_steps = entry
+            .usage
+            .model_steps
+            .checked_add(1)
+            .ok_or_else(|| Error::Conflict("fixture model-step measurement overflow".into()))?;
+        entry.elapsed_sample_ms = 0;
         Ok(())
     }
 
@@ -57,23 +62,27 @@ impl FixtureUsage {
     ) -> acyclic_harness::Result<()> {
         let bytes = canonical_json_bytes(event)?.len() as u64;
         let key = (dispatch.operation_id, dispatch.dispatch_id.0.clone());
-        let elapsed = started.elapsed().as_millis() as u64;
-        let mut samples = self
-            .elapsed_samples_ms
-            .lock()
-            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
-        let previous = samples.get(&key).copied().unwrap_or(0);
-        samples.insert(key.clone(), elapsed);
-        drop(samples);
+        let elapsed = u64::try_from(started.elapsed().as_millis())
+            .map_err(|_| Error::Conflict("fixture elapsed measurement overflow".into()))?;
         let mut usage = self
             .usage
             .lock()
             .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
         let entry = usage.entry(key).or_default();
-        entry.output_bytes = entry.output_bytes.saturating_add(bytes);
-        entry.execution_time_ms = entry
+        entry.usage.output_bytes = entry
+            .usage
+            .output_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| Error::Conflict("fixture output measurement overflow".into()))?;
+        let delta = elapsed
+            .checked_sub(entry.elapsed_sample_ms)
+            .ok_or_else(|| Error::Conflict("fixture elapsed measurement regressed".into()))?;
+        entry.elapsed_sample_ms = elapsed;
+        entry.usage.execution_time_ms = entry
+            .usage
             .execution_time_ms
-            .saturating_add(elapsed.saturating_sub(previous));
+            .checked_add(delta)
+            .ok_or_else(|| Error::Conflict("fixture time measurement overflow".into()))?;
         Ok(())
     }
 
@@ -106,7 +115,7 @@ impl SwarmUsageSource for FixtureUsage {
             .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
         usage
             .get(&(operation_id, dispatch_id.0.clone()))
-            .copied()
+            .map(|measurement| measurement.usage)
             .ok_or_else(|| Error::NotFound("fixture usage receipt".into()))
     }
 }
@@ -150,8 +159,12 @@ macro_rules! fixture_budget_methods {
             let stream = self.generate(prepared);
             let usage = self.usage.clone();
             Box::pin(stream.map(move |event| {
-                swarm_provider_support::record_result(&usage, &dispatch, started, &event)?;
-                Ok(event)
+                if let Err(error) =
+                    swarm_provider_support::record_result(&usage, &dispatch, started, &event)
+                {
+                    return Err(error);
+                }
+                event
             }))
         }
 
@@ -171,7 +184,6 @@ macro_rules! fixture_budget_methods {
                     ));
                 }
                 let started = std::time::Instant::now();
-                self.usage.begin(&dispatch)?;
                 let events = self.reconcile_admitted(prepared, attempt).await?;
                 if let Some(events) = &events {
                     usage.record_events(&dispatch, started, events)?;
