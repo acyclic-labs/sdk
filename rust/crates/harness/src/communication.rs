@@ -2039,6 +2039,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_send_rejects_fenced_recipient_before_host_effect() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        Arc::get_mut(&mut host)
+            .expect("test host has one owner")
+            .fenced
+            .insert(task(2));
+        let communication = DurableCommunication::new(host.clone());
+        assert!(matches!(
+            communication
+                .send(MessageRequest {
+                    sender: task(1),
+                    recipient: task(2),
+                    message_id: operation(39),
+                    target: MessageTarget::Child,
+                    payload: payload()?,
+                })
+                .await,
+            Err(Error::Conflict(message)) if message.contains("fenced")
+        ));
+        assert!(host.sent.lock().expect("test lock").is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn durable_send_replays_exact_commit_before_fence() -> Result<()> {
         let mut host = host(BTreeMap::new())?;
         let committed = payload()?;
