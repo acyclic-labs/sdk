@@ -27,10 +27,19 @@ $env:ACYCLIC_FIXTURE_ENDPOINT = $Endpoint
 $env:ACYCLIC_TYPED_REQUEST_MANIFEST = $Manifest
 $env:ACYCLIC_SOURCE_GIT_REVISION = $sourceSha
 $env:ACYCLIC_SCALA_OBSERVATION_FILE = Join-Path $OutputRoot 'scala-typed-observations.json'
+$env:ACYCLIC_SCALA_TYPED_FACADE_OBSERVATION_FILE = Join-Path $OutputRoot 'scala-typed-facade-observation.json'
 $run = Join-Path ([IO.Path]::GetTempPath()) ('acyclic-scala-typed-' + [Guid]::NewGuid().ToString('N'))
 $scala = Join-Path $run 'scala'
 New-Item -ItemType Directory -Path (Join-Path $scala 'src/main/scala/acyclic/installed') -Force | Out-Null
+$installedJar = Join-Path $PackageRoot 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar'
+if (-not (Test-Path -LiteralPath $installedJar)) { throw "installed JVM artifact is missing: $installedJar" }
+# The Rust-owned Scala facade is compiled for the artifact's pinned Scala ABI.
+# Put the exact installed jar on the temporary consumer classpath so this lane
+# exercises the installed package surface rather than SDK source files.
+New-Item -ItemType Directory -Path (Join-Path $scala 'lib') -Force | Out-Null
+Copy-Item -LiteralPath $installedJar -Destination (Join-Path $scala 'lib') -Force
 $build = Get-Content -Raw -LiteralPath (Join-Path $SdkRoot 'research/acceptance/scala-full-typed-build.sbt')
+$build = $build.Replace('scalaVersion := "2.13.16"', 'scalaVersion := "2.12.17"')
 $wireUri = $WireRoot.Replace('\','/')
 $build = $build.Replace('file("proto/', 'file("' + $wireUri + '/')
 $build = $build.Replace('file("rust/', 'file("' + $SdkRoot.Replace('\','/') + '/rust/')
