@@ -1430,7 +1430,7 @@ fn render_ruby_shapes() -> String {
           end
           type_name = field["type_name"].to_s.sub(/^\./, "")
           next if type_name.empty?
-          if field["repeated"] && field_value.is_a?(Array)
+          if field["repeated"] && (field_value.is_a?(Array) || (field_value.respond_to?(:each) && !field_value.is_a?(Hash) && !field_value.is_a?(String)))
             field_value.each { |item| validate_nested!(fields, type_name, item, seen.dup, depth + 1) }
           else
             validate_nested!(fields, type_name, field_value, seen.dup, depth + 1)
