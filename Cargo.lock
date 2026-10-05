@@ -255,6 +255,7 @@ dependencies = [
  "js-sys",
  "prost",
  "prost-reflect",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
