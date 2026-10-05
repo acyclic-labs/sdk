@@ -1657,6 +1657,17 @@ impl LocalModelForkPlans {
             ));
         }
         self.refresh_journal_state().await?;
+        if !self
+            .intents
+            .lock()
+            .await
+            .values()
+            .any(|intent| intent.publication_operation == Some(operation))
+        {
+            return Err(Error::Conflict(
+                "model fork publication completion has no durable fork intent".into(),
+            ));
+        }
         if let Some(existing) = self.completed.lock().await.get(&operation).copied() {
             if existing != digest {
                 return Err(Error::Conflict(
@@ -7904,9 +7915,15 @@ mod tests {
         let second = LocalModelForkPlans::new();
         first.bind_journal(client.clone()).await?;
         second.bind_journal(client.clone()).await?;
-        let operation = OperationId::from_bytes([8; 16]);
+        let intent = test_fork_intent(8);
+        let operation = intent.publication_operation.expect("test intent publication");
         let digest = [9; 32];
 
+        assert!(matches!(
+            first.mark_completed(operation, digest).await,
+            Err(Error::Conflict(message)) if message.contains("no durable fork intent")
+        ));
+        first.record_intent(intent).await?;
         first.mark_completed(operation, digest).await?;
         assert_eq!(second.completed(operation).await?, Some(digest));
         second.mark_completed(operation, digest).await?;
