@@ -196,8 +196,9 @@ fn render_ruby() -> String {
         let request = message_class(&method.input_message);
         let response = message_class(&method.output_message);
         let request_type = if method.client_streaming { format!("Array[{}]", request) } else { request.clone() };
+        let request_check = if method.client_streaming { format!("request.is_a?(Array) && request.all? {{ |item| item.is_a?({request}) }}") } else { format!("request.is_a?({request})") };
         let result = if method.server_streaming { format!("value.map {{ |item| {}.new(**(item.respond_to?(:to_h) ? item.to_h : item)) }}", response) } else { format!("{}.new(**(value.respond_to?(:to_h) ? value.to_h : value))", response) };
-        out.push_str(&format!("          def {}(request)\n            raise TypeError, \"expected {}\" unless request.is_a?({}){}\n            value = @call.call({:?}, request.respond_to?(:to_wire) ? request.to_wire : request)\n            {}\n          end\n", rpc_method_name(&method), request_type, request, if method.client_streaming { " || (request.is_a?(Array) && request.all? { |item| item.is_a?(".to_owned() + &request + ") })" } else { String::new() }, method.rpc, result));
+        out.push_str(&format!("          def {}(request)\n            raise TypeError, \"expected {}\" unless {}\n            value = @call.call({:?}, request.respond_to?(:to_wire) ? request.to_wire : request)\n            {}\n          end\n", rpc_method_name(&method), request_type, request_check, method.rpc, result));
     }
     out.push_str("        end\n  end\nend\n");
     out
