@@ -4,15 +4,14 @@
 //! this facade construct readonly semantic values and call typed production
 //! methods; conversion to protobuf happens inside the generated adapter.
 
-use std::collections::{BTreeMap, BTreeSet};
 use prost_types::field_descriptor_proto::Type as FieldType;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
-    resolved_operation_rules, resolved_request_fields, resolved_rpc_methods, semantic_type,
-    operation_enforcement, OperationEnforcement, PublicFieldBinding,
-    PublicFieldDirection,
-    ResolvedRequestField, SemanticRule, WireValueKind,
-    PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, SEMANTIC_TYPES, WIRE_UNION_VARIANTS,
+    OperationEnforcement, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
+    PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule, WIRE_UNION_VARIANTS,
+    WireValueKind, operation_enforcement, resolved_operation_rules, resolved_request_fields,
+    resolved_rpc_methods, semantic_type,
 };
 
 pub const CSHARP_TYPED_PATH: &str = "dotnet/RustTypedClients.cs";
@@ -110,8 +109,7 @@ fn validate_rust_field_resolution() {
         assert!(
             found,
             "Rust semantic binding {}.{} is absent from the resolved request graph",
-            binding.family,
-            binding.field
+            binding.family, binding.field
         );
     }
 }
@@ -145,7 +143,10 @@ fn render_semantic_types(out: &mut String) {
                 out.push_str(&format!("public readonly record struct {ty}\n{{\n    public {ty}(ulong value)\n    {{\n        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));\n{max_check_constructor}        Value = value;\n    }}\n    public ulong Value {{ get; }}\n    internal ulong ToWire()\n    {{\n        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));\n{max_check_wire}        return Value;\n    }}\n}}\n\n"));
             }
             WireValueKind::SignedInteger => {
-                let positive = item.rules.iter().any(|rule| matches!(rule, SemanticRule::StrictlyPositive));
+                let positive = item
+                    .rules
+                    .iter()
+                    .any(|rule| matches!(rule, SemanticRule::StrictlyPositive));
                 let check = positive.then(|| "        if (Value <= 0) throw new ArgumentOutOfRangeException(nameof(Value));\n").unwrap_or_default();
                 out.push_str(&format!("public readonly record struct {ty}(long Value)\n{{\n    internal long ToWire()\n    {{\n{check}        return Value;\n    }}\n}}\n\n"));
             }
@@ -192,7 +193,10 @@ fn render_unions(out: &mut String) {
         if !emitted.insert(union.union) {
             continue;
         }
-        out.push_str(&format!("public abstract record {}(string Tag, ByteString Payload)\n{{\n", union.union));
+        out.push_str(&format!(
+            "public abstract record {}(string Tag, ByteString Payload)\n{{\n",
+            union.union
+        ));
         out.push_str(&format!(
             "    public sealed record {}(string Tag, ByteString Payload) : {}(Tag, Payload);\n",
             upper(union.variant),
@@ -372,11 +376,12 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
             Some(kind) if kind == FieldType::Float as i32 => "float".to_owned(),
             Some(kind) if kind == FieldType::Double as i32 => "double".to_owned(),
             Some(kind) if kind == FieldType::Enum as i32 => "int".to_owned(),
-            Some(kind)
-                if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 =>
-            {
+            Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
                 qualified_fq_message(
-                    field.type_name.as_deref().unwrap_or("google.protobuf.Message"),
+                    field
+                        .type_name
+                        .as_deref()
+                        .unwrap_or("google.protobuf.Message"),
                     family,
                 )
             }
@@ -477,13 +482,14 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
         return format!("        wire.{property}.AddRange({property});\n");
     }
     if message {
-        return format!(
-            "        if ({property} is not null) wire.{property} = {property};\n"
-        );
+        return format!("        if ({property} is not null) wire.{property} = {property};\n");
     }
     if field.wire_type == Some(FieldType::Enum as i32) {
         let enum_type = qualified_fq_message(
-            field.type_name.as_deref().unwrap_or("google.protobuf.NullValue"),
+            field
+                .type_name
+                .as_deref()
+                .unwrap_or("google.protobuf.NullValue"),
             family,
         );
         return format!("        wire.{property} = ({enum_type}){property};\n");
@@ -519,7 +525,9 @@ fn csharp_wire_assignment(module: &str, binding: &PublicFieldBinding) -> Option<
             _ => None,
         };
         if let Some(message) = message {
-            return Some(format!("        wire.{property} = new Acyclic.Machines.V1.{message} {{ Value = {value}.ToWire() }};\n"));
+            return Some(format!(
+                "        wire.{property} = new Acyclic.Machines.V1.{message} {{ Value = {value}.ToWire() }};\n"
+            ));
         }
     }
     let line = match semantic.wire_kind {
@@ -562,6 +570,12 @@ fn render_object_stream(out: &mut String) {
 fn render_object_info_response(out: &mut String) {
     out.push_str(
         "public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, Acyclic.Objects.V2.ObjectMetadata Metadata, Google.Protobuf.WellKnownTypes.Timestamp LastModified, Acyclic.Objects.V2.ObjectInfo Wire)\n{\n    internal static ObjectsObjectInfo FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(\n        string.IsNullOrEmpty(message.Etag) ? null : new OpaqueText(message.Etag),\n        message.Size,\n        message.Metadata,\n        message.LastModified,\n        message);\n}\n\n",
+    );
+    // PutObject is client-streaming, so expose the semantic ObjectInfo response
+    // through an adapter while preserving the generated call lifecycle and raw
+    // request stream. The ObjectInfo.etag binding remains Rust-owned above.
+    out.push_str(
+        "public sealed class ObjectsPutObjectStream : IDisposable\n{\n    private readonly AsyncClientStreamingCall<Acyclic.Objects.V2.PutObjectRequest, Acyclic.Objects.V2.ObjectInfo> _inner;\n    internal ObjectsPutObjectStream(AsyncClientStreamingCall<Acyclic.Objects.V2.PutObjectRequest, Acyclic.Objects.V2.ObjectInfo> inner) => _inner = inner;\n    public IClientStreamWriter<Acyclic.Objects.V2.PutObjectRequest> RequestStream => _inner.RequestStream;\n    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;\n    public Task<ObjectsObjectInfo> ResponseAsync => MapResponseAsync(_inner.ResponseAsync);\n    public Status GetStatus() => _inner.GetStatus();\n    public Metadata GetTrailers() => _inner.GetTrailers();\n    public void Dispose() => _inner.Dispose();\n    private static async Task<ObjectsObjectInfo> MapResponseAsync(Task<Acyclic.Objects.V2.ObjectInfo> response) => ObjectsObjectInfo.FromWire(await response.ConfigureAwait(false));\n}\n\n",
     );
 }
 
@@ -646,14 +660,55 @@ fn render_operation_validation_policy(out: &mut String) {
                 throw new ArgumentException($"{validation} must contain a nonzero value", nameof(value));
             return;
         }
-        if (unwrapped is IConvertible number && number.ToInt64(System.Globalization.CultureInfo.InvariantCulture) == 0)
-            throw new ArgumentException($"{validation} must be nonzero", nameof(value));
+        if (unwrapped is IConvertible number)
+        {
+            if (number.ToInt64(System.Globalization.CultureInfo.InvariantCulture) == 0)
+                throw new ArgumentException($"{validation} must be nonzero", nameof(value));
+            return;
+        }
+        throw new ArgumentException($"{validation} requires a supported Rust identity value", nameof(value));
     }
 
-    private static void RequireSelectedMessage(string validation, object? value)
+    private static void RequireFilesystemMutations(string validation, object? value)
     {
-        if (value is not IMessage message || message.CalculateSize() == 0)
-            throw new ArgumentException($"{validation} requires a selected non-empty wire value", nameof(value));
+        if (value is Acyclic.Filesystem.V2.Mutation mutation)
+        {
+            if (mutation.MutationCase == Acyclic.Filesystem.V2.Mutation.MutationOneofCase.None)
+                throw new ArgumentException($"{validation} requires a selected mutation", nameof(value));
+            return;
+        }
+        if (value is System.Collections.IEnumerable sequence)
+        {
+            foreach (var item in sequence)
+            {
+                if (item is not Acyclic.Filesystem.V2.Mutation selected
+                    || selected.MutationCase == Acyclic.Filesystem.V2.Mutation.MutationOneofCase.None)
+                    throw new ArgumentException($"{validation} requires selected filesystem mutation arms", nameof(value));
+            }
+            return;
+        }
+        throw new ArgumentException($"{validation} requires filesystem mutation values", nameof(value));
+    }
+
+    private static void RequirePreconditions(object? value)
+    {
+        // Rust objects::request::preconditions accepts an omitted condition.
+        if (value is null) return;
+        if (value is not Acyclic.Objects.V2.Preconditions preconditions)
+            throw new ArgumentException("preconditions.atomic requires Objects.V2.Preconditions", nameof(value));
+        switch (preconditions.ConditionCase)
+        {
+            case Acyclic.Objects.V2.Preconditions.ConditionOneofCase.IfAbsent:
+                if (!preconditions.IfAbsent) throw new ArgumentException("preconditions.atomic requires if_absent=true", nameof(value));
+                return;
+            case Acyclic.Objects.V2.Preconditions.ConditionOneofCase.IfMatch:
+                var etag = preconditions.IfMatch;
+                if (string.IsNullOrEmpty(etag) || etag.Length > 8192 || etag.Contains('\r') || etag.Contains('\n') || etag.Contains('\0'))
+                    throw new ArgumentException("preconditions.atomic requires a valid If-Match ETag", nameof(value));
+                return;
+            default:
+                throw new ArgumentException("preconditions.atomic requires if_absent=true or a valid If-Match ETag", nameof(value));
+        }
     }
 
     internal static void ValidateClientPolicy(string validation, object? value)
@@ -670,11 +725,17 @@ fn render_operation_validation_policy(out: &mut String) {
                 if (value is not ImmutableImage) throw new ArgumentException($"{validation} requires an immutable image variant", nameof(value));
                 break;
             case "mutation.oneof":
-                RequireSelectedMessage(validation, value);
+                RequireFilesystemMutations(validation, value);
                 break;
             case "protocol.version.exact":
-                if (value is IMessage protocol)
+                // Filesystem handshake uses protocol.v1 ProtocolIdentity.version == "1".
+                if (value is Acyclic.Protocol.V1.ProtocolIdentity identity)
                 {
+                    if (identity.Version != "1") throw new ArgumentOutOfRangeException(nameof(value), validation);
+                }
+                else if (value is IMessage protocol)
+                {
+                    // Keep the Machines ProtocolVersion rule distinct: major 1, minor <= 1.
                     var major = protocol.Descriptor.FindFieldByName("major")?.Accessor.GetValue(protocol);
                     var minor = protocol.Descriptor.FindFieldByName("minor")?.Accessor.GetValue(protocol);
                     if (major is not IConvertible majorValue || minor is not IConvertible minorValue
@@ -700,7 +761,7 @@ fn render_operation_validation_policy(out: &mut String) {
                 if (RequireNumber(validation, value) <= 0 || RequireNumber(validation, value) > 1024) throw new ArgumentOutOfRangeException(nameof(value), validation);
                 break;
             case "preconditions.atomic":
-                RequireSelectedMessage(validation, value);
+                RequirePreconditions(value);
                 break;
             case "expected_configuration_revision.non_negative":
                 if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
@@ -721,22 +782,20 @@ fn render_operation_validation_policy(out: &mut String) {
                     RequireNonzero(validation, value);
                     break;
                 }
-                if (validation.EndsWith(".length_16", StringComparison.Ordinal) && RequireLength(validation, value) != 16)
-                    throw new ArgumentException($"{validation} must have length 16", nameof(value));
-                if (validation.EndsWith(".length_32", StringComparison.Ordinal) && RequireLength(validation, value) != 32)
-                    throw new ArgumentException($"{validation} must have length 32", nameof(value));
-                if (validation.EndsWith(".positive", StringComparison.Ordinal) && RequireNumber(validation, value) <= 0)
-                    throw new ArgumentOutOfRangeException(nameof(value), validation);
-                if (validation.EndsWith(".valid", StringComparison.Ordinal)
-                    || validation.EndsWith(".bounded", StringComparison.Ordinal)
-                    || validation.EndsWith(".supported", StringComparison.Ordinal)
-                    || validation.EndsWith(".exact", StringComparison.Ordinal)
-                    || validation.EndsWith(".preserving", StringComparison.Ordinal)
-                    || validation.EndsWith(".monotonic", StringComparison.Ordinal))
+                if (validation.EndsWith(".length_16", StringComparison.Ordinal))
                 {
-                    RequirePresent(validation, value);
+                    if (RequireLength(validation, value) != 16) throw new ArgumentException($"{validation} must have length 16", nameof(value));
                     break;
                 }
+                if (validation.EndsWith(".length_32", StringComparison.Ordinal))
+                {
+                    if (RequireLength(validation, value) != 32) throw new ArgumentException($"{validation} must have length 32", nameof(value));
+                    break;
+                }
+                if (validation.EndsWith(".positive", StringComparison.Ordinal) && RequireNumber(validation, value) <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), validation);
+                // Rust-owned rules without an explicit C# AST projection fail closed.
+
                 throw new NotSupportedException($"Rust policy '{validation}' has no C# client projection");
         }
     }
@@ -750,7 +809,14 @@ fn render_clients(out: &mut String) {
     let methods = resolved_rpc_methods()
         .expect("Rust RPC identities must resolve before C# client generation");
     for family in [
-        "actors", "workers", "objects", "stream", "inference", "machines", "filesystem", "harness",
+        "actors",
+        "workers",
+        "objects",
+        "stream",
+        "inference",
+        "machines",
+        "filesystem",
+        "harness",
     ] {
         render_family_client(out, family, &methods);
     }
@@ -778,7 +844,9 @@ fn render_family_client(
         let service_field = lower_camel(service.trim_end_matches("Service"));
         out.push_str(&format!(
             "    private readonly {}.{}.{service}Client _{};\n",
-            qualified_namespace(family), service, service_field
+            qualified_namespace(family),
+            service,
+            service_field
         ));
     }
     out.push_str(&format!("    public {client_name}("));
@@ -789,7 +857,9 @@ fn render_family_client(
         let service_field = lower_camel(service.trim_end_matches("Service"));
         out.push_str(&format!(
             "{}.{}.{service}Client {}",
-            qualified_namespace(family), service, service_field
+            qualified_namespace(family),
+            service,
+            service_field
         ));
     }
     out.push_str(")\n    {\n");
@@ -802,16 +872,17 @@ fn render_family_client(
         let service_field = lower_camel(method.service.trim_end_matches("Service"));
         let input = qualified_fq_message(&method.input_message, family);
         let output = qualified_fq_message(&method.output_message, family);
-        let semantic_model = resolved_request_fields()
-            .ok()
-            .and_then(|fields| {
-                let short = method.input_message.rsplit('.').next().unwrap_or_default();
-                fields.iter().any(|field| {
+        let semantic_model = resolved_request_fields().ok().and_then(|fields| {
+            let short = method.input_message.rsplit('.').next().unwrap_or_default();
+            fields
+                .iter()
+                .any(|field| {
                     field.family == family
                         && field.root_message == method.input_message
                         && field.message_path == field.root_message
                         && field.semantic_type.is_some()
-                }).then(|| full_request_model_name(family, short))
+                })
+                .then(|| full_request_model_name(family, short))
         });
         let public_input = semantic_model.as_deref().unwrap_or(&input);
         let request_expr = if semantic_model.is_some() {
@@ -852,6 +923,9 @@ fn render_family_client(
             )),
             ("machines", "Create") => out.push_str(&format!(
                 "    public {output} Create({public_input} request, {args}) => _{service_field}.Create({request_expr}, headers, deadline, cancellationToken);\n"
+            )),
+            ("objects", "PutObject") => out.push_str(&format!(
+                "    public ObjectsPutObjectStream PutObject({args}) => new(_{service_field}.PutObject(headers, deadline, cancellationToken));\n"
             )),
             _ if method.client_streaming && method.server_streaming => out.push_str(&format!(
                 "    public AsyncDuplexStreamingCall<{input}, {output}> {}({args}) => _{service_field}.{}(headers, deadline, cancellationToken);\n",
@@ -1028,7 +1102,7 @@ fn upper(value: &str) -> String {
 mod tests {
     use super::{generate_csharp_type_policy_tests, generate_csharp_typed_facade};
     use crate::type_policy::{
-        PublicFieldDirection, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, SEMANTIC_TYPES,
+        PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldDirection, SEMANTIC_TYPES,
         WIRE_UNION_VARIANTS,
     };
 
@@ -1094,20 +1168,27 @@ mod tests {
         assert!(source.contains("FrameOneofCase"));
         assert!(source.contains("record Unknown"));
         assert!(source.contains("ObjectsGetObjectStream"));
+        assert!(source.contains("public sealed class ObjectsPutObjectStream"));
+        assert!(source.contains("Task<ObjectsObjectInfo> ResponseAsync"));
     }
 
     #[test]
     fn csharp_bounded_unsigned_types_validate_default_struct_values() {
         let (_, source) = generate_csharp_typed_facade();
-        assert!(source.contains(
-            "if (Value > 1000) throw new ArgumentOutOfRangeException(nameof(Value));"
-        ));
-        assert!(source.contains(
-            "if (Value > 1024) throw new ArgumentOutOfRangeException(nameof(Value));"
-        ));
-        assert!(source.contains(
-            "if (Value > 256) throw new ArgumentOutOfRangeException(nameof(Value));"
-        ));
+        assert!(
+            source.contains(
+                "if (Value > 1000) throw new ArgumentOutOfRangeException(nameof(Value));"
+            )
+        );
+        assert!(
+            source.contains(
+                "if (Value > 1024) throw new ArgumentOutOfRangeException(nameof(Value));"
+            )
+        );
+        assert!(
+            source
+                .contains("if (Value > 256) throw new ArgumentOutOfRangeException(nameof(Value));")
+        );
     }
 
     #[test]
@@ -1115,9 +1196,7 @@ mod tests {
         let (_, source) = generate_csharp_typed_facade();
         for message in ["MachineId", "CheckpointId", "OperationId"] {
             assert!(
-                source.contains(&format!(
-                    "new Acyclic.Machines.V1.{message} {{ Value ="
-                )),
+                source.contains(&format!("new Acyclic.Machines.V1.{message} {{ Value =")),
                 "machine identifier wrapper {message} missing"
             );
         }
@@ -1132,12 +1211,16 @@ mod tests {
     #[test]
     fn csharp_qualification_fixtures_are_generated() {
         let outputs = generate_csharp_type_policy_tests();
-        assert!(outputs
-            .iter()
-            .any(|(path, _)| *path == "dotnet/consumer/RustTypedFacadeConsumer.cs"));
-        assert!(outputs
-            .iter()
-            .any(|(path, _)| path.ends_with("RustTypedFacadeNegative.cs.txt")));
+        assert!(
+            outputs
+                .iter()
+                .any(|(path, _)| *path == "dotnet/consumer/RustTypedFacadeConsumer.cs")
+        );
+        assert!(
+            outputs
+                .iter()
+                .any(|(path, _)| path.ends_with("RustTypedFacadeNegative.cs.txt"))
+        );
     }
 
     #[test]
@@ -1185,14 +1268,23 @@ mod tests {
     #[test]
     fn csharp_clients_cover_every_rust_owned_family_and_rpc() {
         let (_, source) = generate_csharp_typed_facade();
-        let methods = crate::type_policy::resolved_rpc_methods()
-            .expect("Rust RPC identities must resolve");
+        let methods =
+            crate::type_policy::resolved_rpc_methods().expect("Rust RPC identities must resolve");
         assert_eq!(methods.len(), 106);
         for family in [
-            "actors", "workers", "objects", "stream", "inference", "machines", "filesystem",
+            "actors",
+            "workers",
+            "objects",
+            "stream",
+            "inference",
+            "machines",
+            "filesystem",
             "harness",
         ] {
-            assert!(source.contains(&format!("public sealed class {}Client", super::upper(family))));
+            assert!(source.contains(&format!(
+                "public sealed class {}Client",
+                super::upper(family)
+            )));
         }
         for method in methods {
             assert!(
@@ -1221,13 +1313,18 @@ mod tests {
             .expect("Rust request descriptors must resolve");
         let roots = fields
             .iter()
-            .filter(|field| field.message_path == field.root_message && field.semantic_type.is_some())
+            .filter(|field| {
+                field.message_path == field.root_message && field.semantic_type.is_some()
+            })
             .map(|field| (field.family.as_str(), field.root_message.as_str()))
             .collect::<std::collections::BTreeSet<_>>();
         for (family, root) in roots {
             let message = root.rsplit('.').next().unwrap_or(root);
             let model = format!("Rust{}{}", super::upper(family), message);
-            assert!(source.contains(&format!("record {model}")), "missing {model}");
+            assert!(
+                source.contains(&format!("record {model}")),
+                "missing {model}"
+            );
             for field in fields.iter().filter(|field| {
                 field.family == family
                     && field.root_message == root

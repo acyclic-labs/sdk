@@ -19,7 +19,7 @@
 //! to the open wire representation; it must never discard an unknown value.
 
 use prost::Message;
-use prost_types::{field_descriptor_proto::Type as FieldType, DescriptorProto, FileDescriptorSet};
+use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto::Type as FieldType};
 
 use crate::family_registry::{FAMILY_VIEWS, FamilyModel};
 
@@ -89,7 +89,10 @@ pub enum OperationRule {
     BucketMustBeEmpty,
     /// Multipart completion requires strictly increasing part numbers within
     /// the native Rust provider's hard bound.
-    OrderedParts { max_items: u32, max_part_number: u32 },
+    OrderedParts {
+        max_items: u32,
+        max_part_number: u32,
+    },
     /// Optional preconditions are an atomic oneof with validated payloads.
     AtomicPrecondition,
     /// Every stream record is bounded by the canonical Rust wire limit.
@@ -499,9 +502,11 @@ fn semantic_binding_compatible(
         WireValueKind::Bytes => {
             matches!(wire, FieldType::Bytes)
                 || (matches!(wire, FieldType::Message | FieldType::Group)
-                    && matches!(semantic.rust_name, "MachineId" | "CheckpointId" | "OperationId")
-                    && type_name
-                        .and_then(|name| name.rsplit('.').next())
+                    && matches!(
+                        semantic.rust_name,
+                        "MachineId" | "CheckpointId" | "OperationId"
+                    )
+                    && type_name.and_then(|name| name.rsplit('.').next())
                         == Some(semantic.rust_name))
         }
         WireValueKind::Boolean => matches!(wire, FieldType::Bool),
@@ -629,13 +634,19 @@ fn validation_constraint(
         )
     {
         let Some(semantic_id) = semantic_type_id else {
-            return vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())];
+            return vec![ResolvedValidationConstraint::Unresolved(
+                validation.to_owned(),
+            )];
         };
         let Some(semantic) = semantic_type(semantic_id) else {
-            return vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())];
+            return vec![ResolvedValidationConstraint::Unresolved(
+                validation.to_owned(),
+            )];
         };
         if semantic.rules.is_empty() {
-            return vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())];
+            return vec![ResolvedValidationConstraint::Unresolved(
+                validation.to_owned(),
+            )];
         }
         return semantic
             .rules
@@ -676,13 +687,28 @@ fn validation_constraint(
         })
         .unwrap_or_else(|| {
             let cross_field_suffixes = [
-                "bounded", "exact", "identity", "matches", "required", "valid", "supported",
-                "proven", "declared", "preserving", "contiguous", "monotonic", "capability",
+                "bounded",
+                "exact",
+                "identity",
+                "matches",
+                "required",
+                "valid",
+                "supported",
+                "proven",
+                "declared",
+                "preserving",
+                "contiguous",
+                "monotonic",
+                "capability",
             ];
             if cross_field_suffixes.contains(&suffix) {
-                vec![ResolvedValidationConstraint::CrossField(validation.to_owned())]
+                vec![ResolvedValidationConstraint::CrossField(
+                    validation.to_owned(),
+                )]
             } else {
-                vec![ResolvedValidationConstraint::Unresolved(validation.to_owned())]
+                vec![ResolvedValidationConstraint::Unresolved(
+                    validation.to_owned(),
+                )]
             }
         })
 }
@@ -693,9 +719,7 @@ fn validation_constraint(
 /// wrapper without losing state, oneof, ordering, or capability meaning.
 fn operation_rule(validation: &str) -> Option<OperationRule> {
     match validation {
-        "scope.capability.operation_cancel" => {
-            Some(OperationRule::Capability("operation:cancel"))
-        }
+        "scope.capability.operation_cancel" => Some(OperationRule::Capability("operation:cancel")),
         "scope.capability.operation_observe" => {
             Some(OperationRule::Capability("operation:observe"))
         }
@@ -740,9 +764,10 @@ pub fn operation_target(validation: &'static str) -> OperationTarget {
         "delivery.identity.preserving" => {
             ("delivery.identity", OperationEnforcement::ResponseInvariant)
         }
-        "admission.identity.matches" => {
-            ("admission.identity", OperationEnforcement::ResponseInvariant)
-        }
+        "admission.identity.matches" => (
+            "admission.identity",
+            OperationEnforcement::ResponseInvariant,
+        ),
         "protocol.identity.exact" | "protocol.version.exact" => {
             ("protocol", OperationEnforcement::ClientLocal)
         }
@@ -751,9 +776,15 @@ pub fn operation_target(validation: &'static str) -> OperationTarget {
         }
         "join.plan_identity.matches" => ("join.plan_identity", OperationEnforcement::ClientLocal),
         "workspace.selector.required" => ("workspace.selector", OperationEnforcement::ClientLocal),
-        "workspace.reference.required" => ("workspace.reference", OperationEnforcement::ClientLocal),
-        "generation.reference.required" => ("generation.reference", OperationEnforcement::ClientLocal),
-        "generation.references.required" => ("generation.references", OperationEnforcement::ClientLocal),
+        "workspace.reference.required" => {
+            ("workspace.reference", OperationEnforcement::ClientLocal)
+        }
+        "generation.reference.required" => {
+            ("generation.reference", OperationEnforcement::ClientLocal)
+        }
+        "generation.references.required" => {
+            ("generation.references", OperationEnforcement::ClientLocal)
+        }
         "owner.required" => ("owner", OperationEnforcement::ClientLocal),
         "scope.required" => ("scope", OperationEnforcement::ClientLocal),
         "required_capability.nonempty" | "required_capability.supported" => {
@@ -767,13 +798,15 @@ pub fn operation_target(validation: &'static str) -> OperationTarget {
         }
         "mutation.oneof" => ("mutation", OperationEnforcement::ClientLocal),
         "transaction.bounded" => ("transaction", OperationEnforcement::ClientLocal),
-        "preconditions.atomic" => ("preconditions", OperationEnforcement::ClientLocal),
+        // The shape is checked locally when available; atomic state admission is provider-owned.
+        "preconditions.atomic" => ("preconditions", OperationEnforcement::ProviderState),
         "upload.completion_frame" => ("upload.completion_frame", OperationEnforcement::ClientLocal),
         "part_number.positive" => ("part_number", OperationEnforcement::ClientLocal),
         "limit.max_stream_items" => ("limit", OperationEnforcement::ClientLocal),
-        "expected_configuration_revision.non_negative" => {
-            ("expected_configuration_revision", OperationEnforcement::ClientLocal)
-        }
+        "expected_configuration_revision.non_negative" => (
+            "expected_configuration_revision",
+            OperationEnforcement::ClientLocal,
+        ),
         "image.immutable_digest" => ("image", OperationEnforcement::ClientLocal),
         "source.present" => ("source", OperationEnforcement::ClientLocal),
         "maximum_output.positive" => ("maximum_output", OperationEnforcement::ClientLocal),
@@ -798,7 +831,8 @@ pub fn operation_target(validation: &'static str) -> OperationTarget {
             || validation.ends_with(".exact")
             || validation.ends_with(".preserving")
             || validation.ends_with(".contiguous")
-            || validation.ends_with(".monotonic") => {
+            || validation.ends_with(".monotonic") =>
+        {
             (validation, OperationEnforcement::ClientLocal)
         }
         _ => (validation, OperationEnforcement::Unsupported),
@@ -845,7 +879,6 @@ pub fn operation_enforcement(validation: &str) -> OperationEnforcement {
         | "operation.idempotency_key.16_bytes"
         | "mutation.oneof"
         | "transaction.bounded"
-        | "preconditions.atomic"
         | "upload.completion_frame"
         | "part_number.positive"
         | "limit.max_stream_items"
@@ -874,7 +907,10 @@ pub fn operation_enforcement(validation: &str) -> OperationEnforcement {
             || validation.ends_with(".exact")
             || validation.ends_with(".preserving")
             || validation.ends_with(".contiguous")
-            || validation.ends_with(".monotonic") => OperationEnforcement::ClientLocal,
+            || validation.ends_with(".monotonic") =>
+        {
+            OperationEnforcement::ClientLocal
+        }
         _ => OperationEnforcement::Unsupported,
     }
 }
@@ -2352,37 +2388,49 @@ mod tests {
                 profile.unknown_values
             );
         }
-        assert!(SEMANTIC_TYPES.iter().any(|item| item
-            .rules
-            .contains(&SemanticRule::PreserveUnknownEnum)
-            || item.wire_kind == WireValueKind::Enum));
-        assert!(SEMANTIC_TYPES
-            .iter()
-            .any(|item| item.rules.contains(&SemanticRule::PreserveUnknownOneof)));
+        assert!(SEMANTIC_TYPES.iter().any(|item| {
+            item.rules.contains(&SemanticRule::PreserveUnknownEnum)
+                || item.wire_kind == WireValueKind::Enum
+        }));
+        assert!(
+            SEMANTIC_TYPES
+                .iter()
+                .any(|item| item.rules.contains(&SemanticRule::PreserveUnknownOneof))
+        );
     }
 
     #[test]
     fn stronger_than_rust_constraints_are_in_the_rust_model() {
-        assert!(semantic_type("version_sha256")
-            .expect("digest")
-            .rules
-            .contains(&SemanticRule::FixedLength(32)));
-        assert!(semantic_type("page_limit")
-            .expect("page limit")
-            .rules
-            .contains(&SemanticRule::MaxItems(1000)));
-        assert!(semantic_type("machine_page_limit")
-            .expect("machine page limit")
-            .rules
-            .contains(&SemanticRule::MaxItems(MACHINE_PAGE_LIMIT_MAX)));
-        assert!(semantic_type("machine_event_page_limit")
-            .expect("machine event page limit")
-            .rules
-            .contains(&SemanticRule::MaxItems(MACHINE_EVENT_PAGE_LIMIT_MAX)));
-        assert!(semantic_type("oneof_arm")
-            .expect("oneof")
-            .rules
-            .contains(&SemanticRule::ExactOneof));
+        assert!(
+            semantic_type("version_sha256")
+                .expect("digest")
+                .rules
+                .contains(&SemanticRule::FixedLength(32))
+        );
+        assert!(
+            semantic_type("page_limit")
+                .expect("page limit")
+                .rules
+                .contains(&SemanticRule::MaxItems(1000))
+        );
+        assert!(
+            semantic_type("machine_page_limit")
+                .expect("machine page limit")
+                .rules
+                .contains(&SemanticRule::MaxItems(MACHINE_PAGE_LIMIT_MAX))
+        );
+        assert!(
+            semantic_type("machine_event_page_limit")
+                .expect("machine event page limit")
+                .rules
+                .contains(&SemanticRule::MaxItems(MACHINE_EVENT_PAGE_LIMIT_MAX))
+        );
+        assert!(
+            semantic_type("oneof_arm")
+                .expect("oneof")
+                .rules
+                .contains(&SemanticRule::ExactOneof)
+        );
     }
 
     #[test]
@@ -2511,11 +2559,19 @@ mod tests {
         let requests = resolved_request_fields().expect("all request graphs resolve");
         let responses = resolved_response_fields().expect("all response graphs resolve");
         assert!(methods.len() >= 106, "RPC inventory is unexpectedly small");
-        assert!(requests.len() >= 600, "request field inventory is unexpectedly small");
-        assert!(responses.len() >= 600, "response field inventory is unexpectedly small");
-        assert!(methods
-            .iter()
-            .any(|method| method.input_message.ends_with("ListModelsRequest")));
+        assert!(
+            requests.len() >= 600,
+            "request field inventory is unexpectedly small"
+        );
+        assert!(
+            responses.len() >= 600,
+            "response field inventory is unexpectedly small"
+        );
+        assert!(
+            methods
+                .iter()
+                .any(|method| method.input_message.ends_with("ListModelsRequest"))
+        );
         for field in requests.iter().chain(responses.iter()) {
             assert!(!field.family.is_empty());
             assert!(!field.rpc.is_empty());
@@ -2542,11 +2598,16 @@ mod tests {
                     && field.field == "limit"
             })
             .expect("ListMachinesRequest.limit is present");
-        assert_eq!(machines.semantic_type.as_deref(), Some("machine_page_limit"));
-        assert!(machines
-            .validation_rules
-            .iter()
-            .any(|rule| rule == "page_limit.bounded"));
+        assert_eq!(
+            machines.semantic_type.as_deref(),
+            Some("machine_page_limit")
+        );
+        assert!(
+            machines
+                .validation_rules
+                .iter()
+                .any(|rule| rule == "page_limit.bounded")
+        );
         assert!(machines.validation_constraints.iter().any(|constraint| {
             matches!(constraint, ResolvedValidationConstraint::CrossField(rule) if rule == "page_limit.bounded")
         }));
@@ -2559,11 +2620,16 @@ mod tests {
                     && field.field == "limit"
             })
             .expect("EventsRequest.limit is present");
-        assert_eq!(events.semantic_type.as_deref(), Some("machine_event_page_limit"));
-        assert!(events
-            .validation_rules
-            .iter()
-            .any(|rule| rule == "page_limit.bounded"));
+        assert_eq!(
+            events.semantic_type.as_deref(),
+            Some("machine_event_page_limit")
+        );
+        assert!(
+            events
+                .validation_rules
+                .iter()
+                .any(|rule| rule == "page_limit.bounded")
+        );
 
         let identity = requests
             .iter()
@@ -2575,17 +2641,27 @@ mod tests {
             .expect("InspectMachineRequest.machine is present");
         assert_eq!(identity.semantic_type.as_deref(), Some("machine_id"));
         assert!(identity.validation_constraints.iter().any(|constraint| {
-            matches!(constraint, ResolvedValidationConstraint::Rule(SemanticRule::FixedLength(16)))
+            matches!(
+                constraint,
+                ResolvedValidationConstraint::Rule(SemanticRule::FixedLength(16))
+            )
         }));
         assert!(!identity.validation_constraints.iter().any(|constraint| {
-            matches!(constraint, ResolvedValidationConstraint::Rule(SemanticRule::StrictlyPositive))
+            matches!(
+                constraint,
+                ResolvedValidationConstraint::Rule(SemanticRule::StrictlyPositive)
+            )
         }));
     }
 
     #[test]
     fn resolver_reuses_unambiguous_machine_wrapper_semantics_across_requests() {
         let requests = resolved_request_fields().expect("all request graphs resolve");
-        for request in ["CheckpointMachineRequest", "MachineMutationRequest", "RecoverRequest"] {
+        for request in [
+            "CheckpointMachineRequest",
+            "MachineMutationRequest",
+            "RecoverRequest",
+        ] {
             let field = requests
                 .iter()
                 .find(|field| {
@@ -2594,9 +2670,15 @@ mod tests {
                         && field.field == "idempotency_key"
                 })
                 .unwrap_or_else(|| panic!("{request}.idempotency_key is present"));
-            assert_eq!(field.semantic_type.as_deref(), Some("idempotency_key_message"));
+            assert_eq!(
+                field.semantic_type.as_deref(),
+                Some("idempotency_key_message")
+            );
             assert!(field.validation_constraints.iter().any(|constraint| {
-                matches!(constraint, ResolvedValidationConstraint::Rule(SemanticRule::FixedLength(16)))
+                matches!(
+                    constraint,
+                    ResolvedValidationConstraint::Rule(SemanticRule::FixedLength(16))
+                )
             }));
         }
     }
@@ -2623,8 +2705,16 @@ mod tests {
         assert!(rules.iter().any(|rule| rule.contains("BucketMustBeEmpty")));
         assert!(rules.iter().any(|rule| rule.contains("OrderedParts")));
         assert!(rules.iter().any(|rule| rule.contains("AtomicPrecondition")));
-        assert!(rules.iter().any(|rule| rule.contains("MaxRecordBytes(65536)")));
-        assert!(rules.iter().any(|rule| rule.contains("MaxCommandBytes(1056768)")));
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.contains("MaxRecordBytes(65536)"))
+        );
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.contains("MaxCommandBytes(1056768)"))
+        );
     }
 
     #[test]
@@ -2646,15 +2736,25 @@ mod tests {
         assert!(rules.iter().any(|rule| {
             rule.family == "stream"
                 && rule.validation == "records.max_bytes"
-                && matches!(rule.rule, OperationRule::MaxRecordBytes(STREAM_MAX_RECORD_BYTES))
+                && matches!(
+                    rule.rule,
+                    OperationRule::MaxRecordBytes(STREAM_MAX_RECORD_BYTES)
+                )
         }));
-        assert!(rules.iter().all(|rule| !rule.rpc.is_empty() && !rule.validation.is_empty()));
+        assert!(
+            rules
+                .iter()
+                .all(|rule| !rule.rpc.is_empty() && !rule.validation.is_empty())
+        );
     }
 
     #[test]
     fn every_rust_operation_policy_has_a_target_and_enforcement_boundary() {
         let rules = resolved_operation_rules();
-        assert!(rules.len() >= 200, "all Rust-authored operation validations must be inventoried");
+        assert!(
+            rules.len() >= 200,
+            "all Rust-authored operation validations must be inventoried"
+        );
         assert!(rules.iter().all(|rule| !rule.target.path.is_empty()));
         assert!(
             rules
@@ -2673,16 +2773,16 @@ mod tests {
                 && rule.target.enforcement == OperationEnforcement::ClientLocal
         }));
         assert!(rules.iter().any(|rule| {
-            rule.validation == "object.key.non_empty"
-                && rule.target.path == "object.key"
+            rule.validation == "object.key.non_empty" && rule.target.path == "object.key"
         }));
         assert!(rules.iter().any(|rule| {
-            rule.validation == "request_identity.nonzero"
-                && rule.target.path == "request_identity"
+            rule.validation == "request_identity.nonzero" && rule.target.path == "request_identity"
         }));
-        assert!(rules.iter().any(|rule| {
-            rule.validation == "action.present" && rule.target.path == "action"
-        }));
+        assert!(
+            rules.iter().any(|rule| {
+                rule.validation == "action.present" && rule.target.path == "action"
+            })
+        );
         assert!(rules.iter().any(|rule| {
             rule.validation == "idempotency_key.non_empty_utf8"
                 && rule.target.enforcement == OperationEnforcement::ClientLocal
@@ -2700,22 +2800,20 @@ mod tests {
 
     #[test]
     fn rpc_matching_accepts_descriptor_leading_slash_without_erasing_rules() {
-        assert_eq!(canonical_rpc_identity("/acyclic.machines.v1.MachinesService/Events"), "acyclic.machines.v1.MachinesService/Events");
+        assert_eq!(
+            canonical_rpc_identity("/acyclic.machines.v1.MachinesService/Events"),
+            "acyclic.machines.v1.MachinesService/Events"
+        );
         let view = crate::family_registry::family_view("machines").expect("Machines family");
-        assert!(operation_policy_for_rpc(
-            view,
-            "/acyclic.machines.v1.MachinesService/Events"
-        )
-        .is_some());
+        assert!(
+            operation_policy_for_rpc(view, "/acyclic.machines.v1.MachinesService/Events").is_some()
+        );
     }
 
     #[test]
     fn unknown_validation_suffix_is_explicitly_unresolved() {
-        let constraints = validation_constraint(
-            "request.future_rule",
-            Some(FieldType::String as i32),
-            None,
-        );
+        let constraints =
+            validation_constraint("request.future_rule", Some(FieldType::String as i32), None);
         assert!(matches!(
             constraints.as_slice(),
             [ResolvedValidationConstraint::Unresolved(rule)] if rule == "request.future_rule"
