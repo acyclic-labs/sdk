@@ -2787,6 +2787,38 @@ mod tests {
     }
 
     #[test]
+    fn execution_environment_rejects_invalid_keys_values_and_bounds() -> Result<()> {
+        let mut empty_key = BTreeMap::new();
+        empty_key.insert(String::new(), "value".into());
+        assert!(matches!(
+            ExecutionEnvironment::explicit(empty_key),
+            Err(Error::Invalid(message)) if message.contains("environment")
+        ));
+
+        let mut equals_key = BTreeMap::new();
+        equals_key.insert("KEY=INVALID".into(), "value".into());
+        assert!(ExecutionEnvironment::explicit(equals_key).is_err());
+
+        let mut nul_key = BTreeMap::new();
+        nul_key.insert("KEY\0INVALID".into(), "value".into());
+        assert!(ExecutionEnvironment::explicit(nul_key).is_err());
+
+        let mut nul_value = BTreeMap::new();
+        nul_value.insert("KEY".into(), "value\0invalid".into());
+        assert!(ExecutionEnvironment::explicit(nul_value).is_err());
+
+        let mut oversized_entry = BTreeMap::new();
+        oversized_entry.insert("KEY".into(), "x".repeat(MAX_ARGUMENT_BYTES));
+        assert!(ExecutionEnvironment::explicit(oversized_entry).is_err());
+
+        let too_many = (0..=MAX_ENVIRONMENT_ENTRIES)
+            .map(|index| (format!("KEY_{index}"), "value".into()))
+            .collect();
+        assert!(ExecutionEnvironment::explicit(too_many).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn timeout_and_unknown_reasons_are_bounded_without_unicode_corruption() -> Result<()> {
         let mut request = spec();
         request.timeout_ms = Some(u64::MAX);
