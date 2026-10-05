@@ -6227,7 +6227,12 @@ fn apply_record(
             let phase = sessions
                 .get(&child)
                 .map(|session| session.phase.clone())
-                .filter(|phase| matches!(phase, LocalSessionPhase::Cancelled))
+                .filter(|phase| {
+                    matches!(
+                        phase,
+                        LocalSessionPhase::Cancelled | LocalSessionPhase::Completed
+                    )
+                })
                 .unwrap_or(LocalSessionPhase::Activating);
             sessions.insert(
                 child,
@@ -6473,6 +6478,117 @@ mod tests {
             .await?
             .expect("deterministic denial should be replayable");
         assert_eq!(recovered.value, result.value);
+        Ok(())
+    }
+
+    #[test]
+    fn late_duplicate_fork_preparation_cannot_reopen_completed_child() -> Result<()> {
+        let parent = TaskId::from_bytes([0xE1; 16]);
+        let child = TaskId::from_bytes([0xE2; 16]);
+        let parent_operation = OperationId::from_bytes([0xE3; 16]);
+        let child_operation = OperationId::from_bytes([0xE4; 16]);
+        let mut sessions = std::collections::BTreeMap::from([(
+            parent,
+            LocalSwarmSession {
+                task: parent,
+                parent: None,
+                depth: 0,
+                task_description: "root".into(),
+                operation: Some(parent_operation),
+                phase: LocalSessionPhase::Ready,
+            },
+        )]);
+        let mut requests = std::collections::BTreeMap::new();
+        let mut seeds = std::collections::BTreeMap::new();
+        let mut reports = std::collections::BTreeMap::new();
+        let mut publications = std::collections::BTreeMap::new();
+        let mut declarations = std::collections::BTreeMap::new();
+        let mut outcomes = std::collections::BTreeMap::new();
+        let mut completion_refs = std::collections::BTreeMap::new();
+        let mut admissions = std::collections::BTreeMap::new();
+        let prepared = StoredRecord {
+            version: REGISTRY_VERSION,
+            event: StoredEvent::ForkPrepared {
+                parent,
+                parent_operation,
+                parent_step: 0,
+                child,
+                child_operation,
+                fork_operation: None,
+                child_authority: None,
+                child_agent: None,
+                task: "child".into(),
+                prompt: "continue".into(),
+                seed: None,
+                seed_digest: None,
+                report: None,
+                publication: None,
+                declaration: None,
+                rebind_proof: None,
+            },
+        };
+        apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            &mut admissions,
+            prepared.clone(),
+        )?;
+        assert_eq!(
+            sessions.get(&child).map(|session| &session.phase),
+            Some(&LocalSessionPhase::Activating)
+        );
+        apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            &mut admissions,
+            StoredRecord {
+                version: REGISTRY_VERSION,
+                event: StoredEvent::ForkCompleted {
+                    child,
+                    operation: child_operation,
+                    output: Some(crate::executor::TurnOutput {
+                        text: "done".into(),
+                        attachments: Vec::new(),
+                        metadata: Value::Null,
+                        steps: 1,
+                    }),
+                    output_ref: None,
+                    output_digest: None,
+                },
+            },
+        )?;
+        assert_eq!(
+            sessions.get(&child).map(|session| &session.phase),
+            Some(&LocalSessionPhase::Completed)
+        );
+        apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            &mut admissions,
+            prepared,
+        )?;
+        assert_eq!(
+            sessions.get(&child).map(|session| &session.phase),
+            Some(&LocalSessionPhase::Completed)
+        );
         Ok(())
     }
 
