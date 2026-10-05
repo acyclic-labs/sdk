@@ -127,6 +127,18 @@ fn upper_camel(value: &str) -> String {
         .collect()
 }
 
+fn scala_identifier(value: String) -> String {
+    match value.as_str() {
+        "abstract" | "case" | "catch" | "class" | "def" | "do" | "else" | "extends"
+        | "false" | "final" | "finally" | "for" | "forSome" | "if" | "implicit"
+        | "import" | "lazy" | "match" | "new" | "null" | "object" | "override"
+        | "package" | "private" | "protected" | "return" | "sealed" | "super"
+        | "this" | "throw" | "trait" | "try" | "true" | "type" | "val" | "var"
+        | "while" | "with" | "yield" => format!("`{value}`"),
+        _ => value,
+    }
+}
+
 fn request_method_name(module: &str, message: &str) -> String {
     let base = message.strip_suffix("Request").unwrap_or(message);
     format!("{}{}", module.replace('.', ""), base)
@@ -585,9 +597,10 @@ fn descriptor_field_expression(field: &ResolvedRequestField, chain: &[ResolvedRe
     expression.push_str(".get");
     expression.push_str(&upper_camel(&field.field));
     if field.label == Some(FieldLabel::Repeated as i32) {
-        expression.push_str("List");
         if field.wire_type == Some(FieldType::Enum as i32) {
-            expression.push_str("Value");
+            expression.push_str("ValueList");
+        } else {
+            expression.push_str("List");
         }
     } else if field.wire_type == Some(FieldType::Enum as i32) {
         expression.push_str("Value");
@@ -696,7 +709,7 @@ fn render_kotlin_descriptor_projection(out: &mut String, method: &crate::type_po
 fn render_scala_descriptor_projection(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
     for (field, chain) in descriptor_projected_fields(method, request) {
         let suffix = descriptor_field_suffix(&field, &chain);
-        let method_name = suffix[..1].to_lowercase() + &suffix[1..];
+        let method_name = scala_identifier(suffix[..1].to_lowercase() + &suffix[1..]);
         out.push_str(" def ");
         out.push_str(&method_name);
         out.push_str(": ");

@@ -369,7 +369,13 @@ fn collect_reachable_fields(
         let Some(field_name) = field.name.as_deref() else {
             continue;
         };
-        let semantic_type_id = semantic_binding_for_field(family, message_path, field_name);
+        let semantic_type_id = semantic_binding_for_field(
+            family,
+            message_path,
+            field_name,
+            field.r#type,
+            field.type_name.as_deref(),
+        );
         output.push(ResolvedRequestField {
             family: family.to_owned(),
             rpc: rpc.to_owned(),
@@ -434,7 +440,13 @@ fn is_known_external_message(name: &str) -> bool {
     name.starts_with("google.protobuf.")
 }
 
-fn semantic_binding_for_field(family: &str, message_path: &str, field: &str) -> Option<String> {
+fn semantic_binding_for_field(
+    family: &str,
+    message_path: &str,
+    field: &str,
+    wire_type: Option<i32>,
+    type_name: Option<&str>,
+) -> Option<String> {
     let message = message_path.rsplit('.').next().unwrap_or(message_path);
     if let Some(semantic_type) = PUBLIC_FIELD_BINDINGS
         .iter()
@@ -443,7 +455,9 @@ fn semantic_binding_for_field(family: &str, message_path: &str, field: &str) -> 
         })
         .map(|binding| binding.semantic_type.to_owned())
     {
-        return Some(semantic_type);
+        if semantic_binding_compatible(&semantic_type, wire_type, type_name) {
+            return Some(semantic_type);
+        }
     }
 
     // A semantic field mapping is reusable across every protobuf message in a
@@ -459,9 +473,54 @@ fn semantic_binding_for_field(family: &str, message_path: &str, field: &str) -> 
         .map(|binding| binding.semantic_type)
         .collect::<std::collections::BTreeSet<_>>();
     if candidates.len() == 1 {
-        candidates.into_iter().next().map(str::to_owned)
+        candidates
+            .into_iter()
+            .find(|candidate| semantic_binding_compatible(candidate, wire_type, type_name))
+            .map(str::to_owned)
     } else {
         None
+    }
+}
+
+fn semantic_binding_compatible(
+    semantic_id: &str,
+    wire_type: Option<i32>,
+    type_name: Option<&str>,
+) -> bool {
+    let Some(semantic) = semantic_type(semantic_id) else {
+        return false;
+    };
+    let Some(wire) = wire_type.and_then(|kind| FieldType::try_from(kind).ok()) else {
+        return false;
+    };
+    match semantic.wire_kind {
+        WireValueKind::Message => matches!(wire, FieldType::Message | FieldType::Group),
+        WireValueKind::String => matches!(wire, FieldType::String),
+        WireValueKind::Bytes => {
+            matches!(wire, FieldType::Bytes)
+                || (matches!(wire, FieldType::Message | FieldType::Group)
+                    && matches!(semantic.rust_name, "MachineId" | "CheckpointId" | "OperationId")
+                    && type_name
+                        .and_then(|name| name.rsplit('.').next())
+                        == Some(semantic.rust_name))
+        }
+        WireValueKind::Boolean => matches!(wire, FieldType::Bool),
+        WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => matches!(
+            wire,
+            FieldType::Int32
+                | FieldType::Sint32
+                | FieldType::Sfixed32
+                | FieldType::Uint32
+                | FieldType::Fixed32
+                | FieldType::Int64
+                | FieldType::Sint64
+                | FieldType::Sfixed64
+                | FieldType::Uint64
+                | FieldType::Fixed64
+        ),
+        WireValueKind::Enum => matches!(wire, FieldType::Enum),
+        WireValueKind::Timestamp => matches!(wire, FieldType::Message | FieldType::Group),
+        WireValueKind::Oneof => false,
     }
 }
 
