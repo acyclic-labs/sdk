@@ -726,7 +726,7 @@ fn python_public_field_models() -> String {
     for binding in PUBLIC_FIELD_BINDINGS {
         let item = semantic_type(binding.semantic_type).expect("public field semantic type");
         let class_name = python_public_binding_name(binding);
-        let field_name = python_field_identifier(binding.family, binding.field);
+        let field_name = snake_case(binding.field);
         let module = format!("{}_pb2", binding.module);
         let function = snake_case(item.id);
         let annotation = python_public_binding_annotation(binding, item);
