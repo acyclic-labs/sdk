@@ -32,7 +32,9 @@ foreach ($targetName in $targets) {
       # cdylib output. .NET RID assets must be dynamically loadable, so use
       # the pinned musl linker with a dynamic musl CRT exactly as the embedded
       # producer does.
-      $env:RUSTFLAGS = (($savedRustFlags + " -C target-feature=-crt-static").Trim())
+      # Ubuntu's musl wrapper exposes libgcc_s only through its private specs;
+      # link compiler support statically while keeping musl itself dynamic.
+      $env:RUSTFLAGS = (($savedRustFlags + " -C target-feature=-crt-static -C link-arg=-static-libgcc").Trim())
       $targetEnv = $targetName.ToUpperInvariant().Replace('-', '_')
       $savedLinkerVariable = "CARGO_TARGET_${targetEnv}_LINKER"
       $savedLinkerValue = [Environment]::GetEnvironmentVariable($savedLinkerVariable, "Process")
