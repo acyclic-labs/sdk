@@ -44,6 +44,22 @@ pub struct ResolvedRequestField {
     pub proto3_optional: bool,
 }
 
+/// Rust-owned operation identity retained alongside the field inventory.
+///
+/// Empty request messages are valid operations, so consumers must enumerate
+/// this model rather than inferring the RPC set from resolved fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedRpcMethod {
+    pub family: String,
+    pub rpc: String,
+    pub service: String,
+    pub method: String,
+    pub input_message: String,
+    pub output_message: String,
+    pub client_streaming: bool,
+    pub server_streaming: bool,
+}
+
 /// Resolve every reachable request field from the single Rust contract model.
 ///
 /// A fresh vector is returned so generators can sort or group fields without
@@ -62,18 +78,52 @@ pub fn resolved_response_fields() -> Result<Vec<ResolvedRequestField>, String> {
     resolve_rpc_fields(false)
 }
 
-fn resolve_rpc_fields(request: bool) -> Result<Vec<ResolvedRequestField>, String> {
-    let mut files = Vec::new();
+/// Resolve every RPC identity, including methods with empty request messages.
+pub fn resolved_rpc_methods() -> Result<Vec<ResolvedRpcMethod>, String> {
+    let files = rust_descriptor_files()?;
+    let mut methods = Vec::new();
     for family in FAMILY_VIEWS {
-        let descriptor = match family.model {
-            FamilyModel::ContractSpec(_) | FamilyModel::Filesystem(_) | FamilyModel::Harness(_) => {
-                family.model.descriptor()
-            }
+        let Some(file) = files.iter().find(|file| {
+            file.package.as_deref() == Some(family.package())
+                && file.name.as_deref() == Some(family.file_name())
+        }) else {
+            return Err(format!(
+                "{} Rust descriptor file {} is missing",
+                family.name,
+                family.file_name()
+            ));
         };
-        let set = FileDescriptorSet::decode(descriptor.as_slice())
-            .map_err(|error| format!("{} descriptor decode failed: {error}", family.name))?;
-        files.extend(set.file);
+        for service in &file.service {
+            let service_name = service.name.as_deref().unwrap_or_default();
+            for method in &service.method {
+                let method_name = method.name.as_deref().unwrap_or_default();
+                let input_message = method
+                    .input_type
+                    .as_deref()
+                    .ok_or_else(|| format!("{} method {method_name} has no input", family.name))?;
+                let output_message = method
+                    .output_type
+                    .as_deref()
+                    .ok_or_else(|| format!("{} method {method_name} has no output", family.name))?;
+                methods.push(ResolvedRpcMethod {
+                    family: family.name.to_owned(),
+                    rpc: format!("{}.{}/{}", family.package(), service_name, method_name),
+                    service: service_name.to_owned(),
+                    method: method_name.to_owned(),
+                    input_message: input_message.trim_start_matches('.').to_owned(),
+                    output_message: output_message.trim_start_matches('.').to_owned(),
+                    client_streaming: method.client_streaming.unwrap_or(false),
+                    server_streaming: method.server_streaming.unwrap_or(false),
+                });
+            }
+        }
     }
+    methods.sort_by(|left, right| left.rpc.cmp(&right.rpc));
+    Ok(methods)
+}
+
+fn resolve_rpc_fields(request: bool) -> Result<Vec<ResolvedRequestField>, String> {
+    let files = rust_descriptor_files()?;
 
     let mut messages = std::collections::BTreeMap::<String, DescriptorProto>::new();
     for file in &files {
@@ -151,6 +201,21 @@ fn resolve_rpc_fields(request: bool) -> Result<Vec<ResolvedRequestField>, String
     });
     fields.dedup();
     Ok(fields)
+}
+
+fn rust_descriptor_files() -> Result<Vec<prost_types::FileDescriptorProto>, String> {
+    let mut files = Vec::new();
+    for family in FAMILY_VIEWS {
+        let descriptor = match family.model {
+            FamilyModel::ContractSpec(_) | FamilyModel::Filesystem(_) | FamilyModel::Harness(_) => {
+                family.model.descriptor()
+            }
+        };
+        let set = FileDescriptorSet::decode(descriptor.as_slice())
+            .map_err(|error| format!("{} descriptor decode failed: {error}", family.name))?;
+        files.extend(set.file);
+    }
+    Ok(files)
 }
 
 fn collect_messages(
@@ -1843,10 +1908,15 @@ mod tests {
 
     #[test]
     fn descriptor_field_inventory_is_complete_and_fail_closed() {
+        let methods = resolved_rpc_methods().expect("all RPC identities resolve");
         let requests = resolved_request_fields().expect("all request graphs resolve");
         let responses = resolved_response_fields().expect("all response graphs resolve");
+        assert!(methods.len() >= 106, "RPC inventory is unexpectedly small");
         assert!(requests.len() >= 600, "request field inventory is unexpectedly small");
         assert!(responses.len() >= 600, "response field inventory is unexpectedly small");
+        assert!(methods
+            .iter()
+            .any(|method| method.input_message.ends_with("ListModelsRequest")));
         for field in requests.iter().chain(responses.iter()) {
             assert!(!field.family.is_empty());
             assert!(!field.rpc.is_empty());
