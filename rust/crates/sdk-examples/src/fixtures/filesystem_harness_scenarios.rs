@@ -190,7 +190,7 @@ where
     // scenario exercises the real create response and then carries its
     // returned identity through subsequent calls.
     let create = fs_wire::CreateWorkspaceRequest {
-        name: "scenario".into(),
+        name: "scenario-control".into(),
         profile: fs_wire::FilesystemProfile::Portable as i32,
         operation: Some(fs_wire::OperationOptions {
             idempotency_key: vec![0x11; 16],
@@ -205,7 +205,6 @@ where
         .clone()
         .ok_or_else(|| Status::internal("create response omitted workspace"))?;
     let created_ref = workspace_ref(&created_workspace)?;
-    let created_head = head_ref(&created_workspace)?;
     state.insert("created_workspace_id", b64(&created_ref.workspace_id));
     output.push(evidence(
         "filesystem",
@@ -539,8 +538,27 @@ where
         "acyclic.filesystem.v2.RetainGenerationRequest",
         "acyclic.filesystem.v2.RetainGenerationResponse"
     );
+    // Build the transfer source in a Rust-owned setup step that is deliberately
+    // absent from the ordered consumer plan. Replaying the plan against one
+    // long-lived service must leave this destination name uncreated so Import
+    // can publish its authority exactly once.
+    let transfer_create = fs_wire::CreateWorkspaceRequest {
+        name: "scenario-export".into(),
+        profile: fs_wire::FilesystemProfile::Portable as i32,
+        operation: Some(fs_wire::OperationOptions {
+            idempotency_key: vec![0x12; 16],
+        }),
+    };
+    let transfer_workspace = service
+        .create_workspace(Request::new(transfer_create))
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or_else(|| Status::internal("transfer source omitted workspace"))?;
+    let transfer_ref = workspace_ref(&transfer_workspace)?;
+    let transfer_head = head_ref(&transfer_workspace)?;
     let export_request = fs_wire::ExportRequest {
-        generation: Some(created_head),
+        generation: Some(transfer_head),
         after: Vec::new(),
         maximum_objects: 32,
         maximum_bytes: 1024 * 1024,
@@ -602,7 +620,7 @@ where
     let import_chunks: Vec<_> = exported_chunks
         .iter()
         .map(|chunk| fs_wire::ImportChunk {
-            workspace: Some(created_ref.clone()),
+            workspace: Some(transfer_ref.clone()),
             operation_id: operation_id.clone(),
             cursor: chunk.cursor.clone(),
             object_id: chunk.object_id.clone(),
