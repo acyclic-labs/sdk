@@ -130,6 +130,8 @@ enum Operation {
     Qualify,
     QualifyEmbedded,
     Inventory,
+    PackageManifest,
+    TypescriptQualification,
 }
 
 #[derive(Debug)]
@@ -141,6 +143,9 @@ struct Args {
     evidence: Option<PathBuf>,
     package_root: Option<PathBuf>,
     platform_receipt: Option<PathBuf>,
+    source_sha: Option<String>,
+    qualification_action: Option<String>,
+    asset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,6 +362,16 @@ fn run() -> Result<(), CliError> {
             args.platform_receipt.as_deref(),
         ),
         Operation::Inventory => inventory_command(&source_root, &output),
+        Operation::PackageManifest => package_manifest(&source_root, &output),
+        Operation::TypescriptQualification => typescript_qualification(
+            &source_root,
+            &output,
+            args.qualification_action.as_deref().unwrap_or_default(),
+            args.receipt.as_deref(),
+            args.source_sha.as_deref(),
+            args.asset.as_deref(),
+            args.platform_receipt.as_deref(),
+        ),
     }
 }
 
@@ -370,14 +385,16 @@ fn parse_args() -> Result<Args, CliError> {
         Some("qualify") => Operation::Qualify,
         Some("qualify-embedded") => Operation::QualifyEmbedded,
         Some("inventory") => Operation::Inventory,
+        Some("package-manifest") => Operation::PackageManifest,
+        Some("typescript-qualification") => Operation::TypescriptQualification,
         Some(other) => {
             return Err(CliError::new(format!(
-                "unknown operation {other}; expected generate, check, drift, seal, qualify, qualify-embedded, or inventory"
+                "unknown operation {other}; expected generate, check, drift, seal, qualify, qualify-embedded, inventory, package-manifest, or typescript-qualification"
             )));
         }
         None => {
             return Err(CliError::new(
-                "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
             ));
         }
     };
@@ -387,6 +404,9 @@ fn parse_args() -> Result<Args, CliError> {
     let mut evidence = None;
     let mut package_root = None;
     let mut platform_receipt = None;
+    let mut source_sha = None;
+    let mut qualification_action = None;
+    let mut asset = None;
     while let Some(flag) = values.next() {
         match flag.as_str() {
             "--source-root" => {
@@ -427,9 +447,12 @@ fn parse_args() -> Result<Args, CliError> {
                         CliError::new("--platform-receipt requires a path")
                     })?))
             }
+            "--source-sha" => source_sha = Some(values.next().ok_or_else(|| CliError::new("--source-sha requires a value"))?),
+            "--qualification-action" => qualification_action = Some(values.next().ok_or_else(|| CliError::new("--qualification-action requires a value"))?),
+            "--asset" => asset = Some(values.next().ok_or_else(|| CliError::new("--asset requires a value"))?),
             "--help" | "-h" => {
                 return Err(CliError::new(
-                    "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                    "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
                 ));
             }
             other => return Err(CliError::new(format!("unknown argument {other}"))),
@@ -443,6 +466,9 @@ fn parse_args() -> Result<Args, CliError> {
         evidence,
         package_root,
         platform_receipt,
+        source_sha,
+        qualification_action,
+        asset,
     })
 }
 
@@ -815,6 +841,277 @@ fn qualify(source_root: &Path, output: &Path, package_root: Option<&Path>) -> Re
         ));
     }
     Ok(())
+}
+
+/// Build the embedded package qualification index from package bytes and
+/// receipts.  This is intentionally Rust-owned so archive membership,
+/// checksum files, source revisions, and installed-consumer evidence use the
+/// same generator binary as the rest of the qualification lane.
+fn package_manifest(source_root: &Path, output: &Path) -> Result<(), CliError> {
+    let filesystem = output.join("filesystem");
+    let native = output.join("native");
+    let harness = output.join("harness");
+    let filesystem_archive = require_package_file(&filesystem.join("acyclic-fs.tgz"))?;
+    let harness_archive = require_package_file(&harness.join("acyclic-harness.tgz"))?;
+    let native_files = fs::read_dir(&native)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(OsStr::to_str) == Some("node"))
+        .collect::<Vec<_>>();
+    if native_files.len() != 1 {
+        return Err(CliError::new(format!(
+            "expected exactly one native filesystem artifact, found {}",
+            native_files.len()
+        )));
+    }
+    let native_artifact = require_package_file(&native_files[0])?;
+    require_archive_entry(&filesystem_archive, "package/generated/wasm/acyclic_fs_wasm_bg.wasm")?;
+    require_archive_entry(&filesystem_archive, "package/generated/wasm/acyclic_fs_wasm.js")?;
+    require_archive_entry(&harness_archive, "package/generated/wasm/acyclic_harness_wasm_bg.wasm")?;
+    require_archive_entry(&harness_archive, "package/generated/wasm/acyclic_harness_wasm.js")?;
+    let filesystem_checksums = verify_package_checksums(&filesystem, output)?;
+    let native_checksums = verify_package_checksums(&native, output)?;
+    let harness_checksums = verify_package_checksums(&harness, output)?;
+    let native_name = native_artifact.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    if native_checksums.get("files").and_then(Value::as_object).is_none_or(|files| !files.contains_key(native_name)) {
+        return Err(CliError::new("native artifact is not represented by native/SHA256SUMS"));
+    }
+    let source_commit_path = require_package_file(&filesystem.join("SOURCE_COMMIT"))?;
+    let source_revision = fs::read_to_string(&source_commit_path)?.trim().to_owned();
+    if !is_commit_revision(&source_revision) {
+        return Err(CliError::new(format!("invalid filesystem SOURCE_COMMIT: {source_revision}")));
+    }
+    let harness_commit_path = require_package_file(&harness.join("SOURCE_COMMIT"))?;
+    if fs::read_to_string(&harness_commit_path)?.trim() != source_revision {
+        return Err(CliError::new("filesystem and Harness package revisions differ"));
+    }
+    let filesystem_consumer = package_consumer_receipt(
+        &filesystem,
+        "filesystem",
+        &filesystem_archive,
+        "package/generated/wasm/acyclic_fs_wasm_bg.wasm",
+        output,
+        &source_revision,
+    )?;
+    let harness_consumer = package_consumer_receipt(
+        &harness,
+        "harness",
+        &harness_archive,
+        "package/generated/wasm/acyclic_harness_wasm_bg.wasm",
+        output,
+        &source_revision,
+    )?;
+    let embedded_root = source_root.join("research/acceptance/embedded");
+    let embedded_names = [
+        "release-abi-20261004.json",
+        "central-qualification-20261004.json",
+        "release-abi-generation-evidence.json",
+    ];
+    let embedded_dir = output.join("embedded");
+    let mut embedded = Vec::new();
+    for name in embedded_names {
+        let source = embedded_root.join(name);
+        if source.is_file() {
+            fs::create_dir_all(&embedded_dir)?;
+            let destination = embedded_dir.join(name);
+            fs::copy(&source, &destination)?;
+            embedded.push(package_artifact(&destination, output)?);
+        }
+    }
+    let manifest = json!({
+        "schema": "acyclic.sdk.package.qualification.v1",
+        "status": "passed",
+        "source_revision": source_revision,
+        "artifacts": {
+            "filesystem": {
+                "archive": package_artifact(&filesystem_archive, output)?,
+                "checksums": filesystem_checksums,
+                "rust_source_commit": package_artifact(&source_commit_path, output)?,
+                "wasm": {"archive_entries": ["package/generated/wasm/acyclic_fs_wasm_bg.wasm", "package/generated/wasm/acyclic_fs_wasm.js"]}
+            },
+            "native": {"package": package_artifact(&native_artifact, output)?, "checksums": native_checksums},
+            "harness": {
+                "archive": package_artifact(&harness_archive, output)?,
+                "checksums": harness_checksums,
+                "conformance": package_artifact(&require_package_file(&harness.join("CONFORMANCE-EVIDENCE.json"))?, output)?,
+                "rust_source_commit": package_artifact(&harness_commit_path, output)?,
+                "wasm": {"archive_entries": ["package/generated/wasm/acyclic_harness_wasm_bg.wasm", "package/generated/wasm/acyclic_harness_wasm.js"]}
+            }
+        },
+        "consumers": {
+            "filesystem_js_wasm": filesystem_consumer,
+            "filesystem_rust_archive": {"status":"passed", "check":"scripts/check-filesystem-package.sh"},
+            "harness_js_wasm": harness_consumer,
+            "harness_rust_archive": {"status":"passed", "check":"scripts/check-harness-package.sh"}
+        },
+        "embedded": {
+            "status": if embedded.len() == 3 { "recorded" } else { "not-produced-by-package-lane" },
+            "source_evidence": embedded
+        }
+    });
+    let path = output.join("package-qualification.json");
+    write_json_value(&path, &manifest)?;
+    print_json(&json!({"status":"passed", "path":path, "source_revision":source_revision}))
+}
+
+fn require_package_file(path: &Path) -> Result<PathBuf, CliError> {
+    if !path.is_file() { return Err(CliError::new(format!("required package artifact is missing: {}", path.display()))); }
+    Ok(path.to_owned())
+}
+
+fn package_artifact(path: &Path, root: &Path) -> Result<Value, CliError> {
+    let bytes = fs::read(path)?;
+    Ok(json!({"path": relative_or_absolute(path, root), "sha256": hash_bytes(&bytes), "bytes": bytes.len()}))
+}
+
+fn require_archive_entry(path: &Path, expected: &str) -> Result<(), CliError> {
+    let file = File::open(path)?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = Archive::new(decoder);
+    for entry in archive.entries()? {
+        let entry = entry?;
+        let name = entry.path()?.to_string_lossy().replace('\\', "/");
+        if name == expected || name.ends_with(&format!("/{expected}")) { return Ok(()); }
+    }
+    Err(CliError::new(format!("package archive {} is missing {expected}", path.display())))
+}
+
+fn verify_package_checksums(directory: &Path, root: &Path) -> Result<Value, CliError> {
+    let sums = require_package_file(&directory.join("SHA256SUMS"))?;
+    let mut files = serde_json::Map::new();
+    for line in fs::read_to_string(&sums)?.lines().filter(|line| !line.trim().is_empty()) {
+        let (digest, name) = line.split_once("  ").ok_or_else(|| CliError::new(format!("invalid SHA256SUMS entry in {}", sums.display())))?;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) { return Err(CliError::new(format!("invalid checksum in {}", sums.display()))); }
+        let file = require_package_file(&directory.join(name))?;
+        let actual = hash_bytes(&fs::read(&file)?);
+        let expected = format!("sha256:{}", digest.to_ascii_lowercase());
+        if actual != expected { return Err(CliError::new(format!("SHA256SUMS mismatch for {}", file.display()))); }
+        files.insert(name.to_owned(), Value::String(expected));
+    }
+    Ok(json!({"manifest": package_artifact(&sums, root)?, "files": files}))
+}
+
+fn package_consumer_receipt(
+    directory: &Path,
+    family: &str,
+    archive: &Path,
+    wasm_entry: &str,
+    root: &Path,
+    source_revision: &str,
+) -> Result<Value, CliError> {
+    let receipt_path = require_package_file(&directory.join("installed-consumer-receipt.json"))?;
+    let receipt: Value = read_json(&receipt_path)?;
+    if receipt.get("schema").and_then(Value::as_str) != Some("acyclic.sdk.installed-package-qualification.v1")
+        || receipt.get("status").and_then(Value::as_str) != Some("passed")
+        || receipt.get("package").and_then(Value::as_str) != Some(family)
+        || receipt.get("source_revision").and_then(Value::as_str) != Some(source_revision)
+        || receipt.pointer("/consumer/status").and_then(Value::as_str) != Some("passed") {
+        return Err(CliError::new(format!("invalid installed {family} consumer receipt")));
+    }
+    let archive_name = archive.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    if receipt.pointer("/archive/name").and_then(Value::as_str) != Some(archive_name)
+        || receipt.pointer("/archive/sha256").and_then(Value::as_str) != Some(&hash_bytes(&fs::read(archive)?))
+        || receipt.pointer("/archive/wasm_entry").and_then(Value::as_str) != Some(wasm_entry) {
+        return Err(CliError::new(format!("installed {family} consumer receipt is not bound to its archive")));
+    }
+    Ok(json!({"status":"passed", "receipt": package_artifact(&receipt_path, root)?}))
+}
+
+fn typescript_qualification(
+    source_root: &Path,
+    output: &Path,
+    action: &str,
+    receipt_path: Option<&Path>,
+    source_sha: Option<&str>,
+    asset_name: Option<&str>,
+    archive_path: Option<&Path>,
+) -> Result<(), CliError> {
+    let assets = typescript_assets(source_root)?;
+    let source_sha = source_sha.ok_or_else(|| CliError::new("typescript qualification requires --source-sha"))?;
+    if !is_commit_revision(source_sha) || source_sha.chars().any(|value| value.is_ascii_uppercase()) {
+        return Err(CliError::new("source commit must be a full lowercase Git object ID"));
+    }
+    match action {
+        "create" => {
+            fs::create_dir_all(output)?;
+            let mut packages = Vec::new();
+            for (slug, name, version) in &assets {
+                let asset = format!("acyclic-labs-{slug}-{version}.tgz");
+                let path = require_package_file(&output.join(&asset))?;
+                let bytes = fs::read(&path)?;
+                packages.push(json!({"asset":asset,"name":name,"version":version,"sha256":format!("{:x}", Sha256::digest(&bytes)),"size":bytes.len()}));
+            }
+            let observed = fs::read_dir(output)?.filter_map(Result::ok).filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(OsStr::to_str) == Some("tgz") {
+                    path.file_name().map(|name| name.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            }).collect::<BTreeSet<_>>();
+            let expected = packages.iter().filter_map(|item| item.get("asset").and_then(Value::as_str).map(str::to_owned)).collect::<BTreeSet<_>>();
+            if expected != observed { return Err(CliError::new("qualification output does not contain exactly the public npm archives")); }
+            let receipt = json!({"revision":1,"source_commit":source_sha,"packages":packages});
+            let path = output.join("QUALIFICATION.json");
+            if path.exists() { return Err(CliError::new("qualification receipt already exists")); }
+            write_json_value(&path, &receipt)?;
+            print_json(&json!({"status":"passed","path":path}))
+        }
+        "verify" => {
+            let receipt_path = receipt_path.ok_or_else(|| CliError::new("verify requires --receipt PATH"))?;
+            let archive_path = archive_path.ok_or_else(|| CliError::new("verify requires --platform-receipt ARCHIVE"))?;
+            let asset_name = asset_name.ok_or_else(|| CliError::new("verify requires --asset NAME"))?;
+            let receipt: Value = read_json(receipt_path)?;
+            let object = receipt.as_object().ok_or_else(|| CliError::new("qualification receipt schema is invalid"))?;
+            let mut keys = object.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            if keys != ["packages", "revision", "source_commit"] || receipt.get("revision").and_then(Value::as_u64) != Some(1) || receipt.get("source_commit").and_then(Value::as_str) != Some(source_sha) {
+                return Err(CliError::new("qualification receipt schema is invalid"));
+            }
+            let package_values = receipt.get("packages").and_then(Value::as_array).ok_or_else(|| CliError::new("qualification receipt schema is invalid"))?;
+            if package_values.len() != assets.len() { return Err(CliError::new("qualification receipt schema is invalid")); }
+            let mut observed = BTreeSet::new();
+            for item in package_values {
+                let item = item.as_object().ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let mut keys = item.keys().cloned().collect::<Vec<_>>(); keys.sort();
+                if keys != ["asset", "name", "sha256", "size", "version"] { return Err(CliError::new("qualification receipt package is invalid")); }
+                let asset = item.get("asset").and_then(Value::as_str).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let name = item.get("name").and_then(Value::as_str).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let version = item.get("version").and_then(Value::as_str).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let digest = item.get("sha256").and_then(Value::as_str).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                let size = item.get("size").and_then(Value::as_u64).ok_or_else(|| CliError::new("qualification receipt package is invalid"))?;
+                if !is_lower_hex_digest(digest) || size == 0 || !observed.insert(format!("{asset}\0{name}\0{version}")) { return Err(CliError::new("qualification receipt package is invalid")); }
+            }
+            let expected = assets.iter().map(|(slug,name,version)| format!("acyclic-labs-{slug}-{version}\0{name}\0{version}")).collect::<BTreeSet<_>>();
+            if expected != observed { return Err(CliError::new("qualification receipt does not identify the public npm packages")); }
+            let entry = package_values.iter().find(|item| item.get("asset").and_then(Value::as_str) == Some(asset_name)).ok_or_else(|| CliError::new("archive is absent from the qualification receipt"))?;
+            let bytes = fs::read(archive_path)?;
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            if entry.get("sha256").and_then(Value::as_str) != Some(digest.as_str()) || entry.get("size").and_then(Value::as_u64) != Some(bytes.len() as u64) { return Err(CliError::new("archive bytes differ from the qualified artifact")); }
+            print_json(&json!({"status":"passed","asset":asset_name}))
+        }
+        _ => Err(CliError::new("typescript qualification action must be create or verify")),
+    }
+}
+
+fn is_lower_hex_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn typescript_assets(source_root: &Path) -> Result<Vec<(String, String, String)>, CliError> {
+    let registry: Value = read_json(&source_root.join("release/npm-packages.json"))?;
+    let entries = registry.as_array().ok_or_else(|| CliError::new("release/npm-packages.json must be an array"))?;
+    let mut assets = Vec::new();
+    for entry in entries.iter().filter(|entry| entry.get("source").and_then(Value::as_str) == Some("typescript")) {
+        let slug = entry.get("slug").and_then(Value::as_str).ok_or_else(|| CliError::new("TypeScript package registry entry is missing slug"))?;
+        let directory = entry.get("directory").and_then(Value::as_str).ok_or_else(|| CliError::new("TypeScript package registry entry is missing directory"))?;
+        let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| CliError::new("TypeScript package registry entry is missing name"))?;
+        let manifest: Value = read_json(&source_root.join("typescript/packages").join(directory).join("package.json"))?;
+        if manifest.get("name").and_then(Value::as_str) != Some(name) { return Err(CliError::new(format!("release identity differs for {directory}"))); }
+        let version = manifest.get("version").and_then(Value::as_str).ok_or_else(|| CliError::new(format!("package {directory} has no version")))?;
+        assets.push((slug.to_owned(), name.to_owned(), version.to_owned()));
+    }
+    Ok(assets)
 }
 
 /// Qualify the Rust-owned embedded boundary without routing it through the
@@ -3268,6 +3565,8 @@ fn operation_name(operation: Operation) -> &'static str {
         Operation::Qualify => "qualify",
         Operation::QualifyEmbedded => "qualify-embedded",
         Operation::Inventory => "inventory",
+        Operation::PackageManifest => "package-manifest",
+        Operation::TypescriptQualification => "typescript-qualification",
     }
 }
 
@@ -4527,7 +4826,9 @@ fn tool_command(
             | Operation::Seal
             | Operation::Qualify
             | Operation::QualifyEmbedded
-            | Operation::Inventory => "packages-check",
+            | Operation::Inventory
+            | Operation::PackageManifest
+            | Operation::TypescriptQualification => "packages-check",
         };
         return Some(vec![
             cargo_program(),
@@ -4557,7 +4858,9 @@ fn tool_command(
             | Operation::Seal
             | Operation::Qualify
             | Operation::QualifyEmbedded
-            | Operation::Inventory => "all-check",
+            | Operation::Inventory
+            | Operation::PackageManifest
+            | Operation::TypescriptQualification => "all-check",
         };
         return Some(vec![
             cargo_program(),
