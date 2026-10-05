@@ -334,6 +334,8 @@ pub enum LocalSwarmObservation {
     WorkspaceFile { task: TaskId, bytes: usize },
     /// A cold task harness was opened.
     HarnessOpened { task: TaskId },
+    /// A parent conversation aggregate was hydrated for an actual Git join.
+    ParentAggregateHydrated { task: TaskId, children: usize },
     /// A model worker was about to be dispatched for a task.
     ModelWorkerStarted { task: TaskId },
 }
@@ -3032,9 +3034,14 @@ impl PersistentLocalSwarm {
                 "parent aggregate authority changed during Git binding".into(),
             ));
         }
+        let child_count = seeds.len();
         for seed in seeds {
             self.register_project_child(&seed, parent.reducer()).await?;
         }
+        self.observe(LocalSwarmObservation::ParentAggregateHydrated {
+            task: parent_task,
+            children: child_count,
+        });
         Ok(())
     }
 
