@@ -5,10 +5,12 @@
 //! This module keeps the reader task joinable and gives the host adapter a
 //! platform cancellation primitive before it joins the task.
 
+#![allow(unsafe_code, reason = "native pipe and event APIs require raw handles")]
+
 use std::{
     io::{self, Read},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    thread::{self, JoinHandle},
+    sync::mpsc::{Receiver, RecvTimeoutError},
+    thread::JoinHandle,
     time::Duration,
 };
 
@@ -134,32 +136,6 @@ where
         io::ErrorKind::Unsupported,
         "interruptible native output readers are unavailable on this platform",
     ))
-}
-
-fn run_reader<R, F>(mut reader: R, sender: Sender<io::Result<Vec<u8>>>, mut consume: F)
-where
-    R: Read,
-    F: FnMut(&[u8]) -> bool,
-{
-    let result = (|| {
-        let mut bytes = Vec::new();
-        let mut buffer = [0_u8; 8192];
-        loop {
-            let read = reader.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            let chunk = buffer
-                .get(..read)
-                .ok_or_else(|| io::Error::other("process reader returned an invalid length"))?;
-            if !consume(chunk) {
-                break;
-            }
-            bytes.extend_from_slice(chunk);
-        }
-        Ok(bytes)
-    })();
-    let _ = sender.send(result);
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
