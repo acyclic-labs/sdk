@@ -146,9 +146,9 @@ export const WORKERS_OPERATIONS = {
 
 export const WORKERS_SOURCE = { family: "workers", rustCrate: "acyclic-workers", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::workers::workers_descriptor", descriptorSha256: "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128", sourceContentSha256: "61e0b4c0d91acb3343699b43bc4de57a54f7e75a69fb2782dd6fd0b921093fca", sourceModelSha256: "61e0b4c0d91acb3343699b43bc4de57a54f7e75a69fb2782dd6fd0b921093fca", handshakeRoute: "/v1/sdk/workers/handshake", handshakeVersion: "acyclic.workers.v1", handshakeDescriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8", modeledOperations: 7, httpProjection: true } as const;
 
-export const WORKERS_HANDSHAKE = { route: "/v1/sdk/workers/handshake", version: "acyclic.workers.v1", descriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8" } as const;
+export const WORKERS_HANDSHAKE = { family: "workers", route: "/v1/sdk/workers/handshake", version: "acyclic.workers.v1", descriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8" } as const;
 
-export interface RustOwnedHandshakeMetadata { readonly route: string; readonly version: string; readonly descriptorDigest: string; }
+export interface RustOwnedHandshakeMetadata { readonly family: string; readonly route: string; readonly version: string; readonly descriptorDigest: string; }
 
 /** Builds the Rust-owned control-plane request used by native gRPC adapters. */
 export function rustOwnedGrpcHandshakeRequest(handshake: RustOwnedHandshakeMetadata, family: string) {
@@ -167,7 +167,7 @@ export function validateRustOwnedGrpcHandshake(response: { readonly protocol?: {
 export async function negotiateRustOwnedEndpoint(fetcher: typeof fetch, endpoint: URL | string, headers: HeadersInit, handshake: RustOwnedHandshakeMetadata, maximumResponseBytes = 64 * 1024, signal?: AbortSignal): Promise<void> {
   const requestHeaders = new Headers(headers);
   requestHeaders.set("content-type", "application/json");
-  const request = create(HandshakeRequestSchema, { protocol: create(ProtocolIdentitySchema, { version: handshake.version, descriptorDigest: handshake.descriptorDigest }), required: create(CapabilitySetSchema) });
+  const request = create(HandshakeRequestSchema, { protocol: create(ProtocolIdentitySchema, { version: handshake.version, descriptorDigest: handshake.descriptorDigest }), required: create(CapabilitySetSchema, { capabilities: [create(CapabilitySchema, { name: handshake.family, version: handshake.version })] }) });
   const response = await fetcher(new URL(handshake.route, endpoint), { method: "POST", redirect: "error", headers: requestHeaders, body: toJsonString(HandshakeRequestSchema, request), ...(signal === undefined ? {} : { signal }) });
   const text = await readRustOwnedHandshakeBody(response, maximumResponseBytes);
   if (!response.ok) throw new Error(`Rust-owned endpoint handshake failed with HTTP ${response.status}: ${text || "empty response"}`);
@@ -175,6 +175,8 @@ export async function negotiateRustOwnedEndpoint(fetcher: typeof fetch, endpoint
   try { parsed = fromJsonString(HandshakeResponseSchema, text); } catch (error) { throw new Error(`Rust-owned endpoint handshake returned malformed JSON: ${error instanceof Error ? error.message : String(error)}`); }
   const identity = parsed.protocol;
   if (identity === undefined || identity.version !== handshake.version || identity.descriptorDigest !== handshake.descriptorDigest) throw new Error("Rust-owned endpoint handshake identity mismatch");
+  const capabilities = parsed.supported?.capabilities ?? [];
+  if (!capabilities.some(capability => capability.name === handshake.family && capability.version === handshake.version)) throw new Error("Rust-owned endpoint handshake capability mismatch");
 }
 
 async function readRustOwnedHandshakeBody(response: Response, maximum: number): Promise<string> {
