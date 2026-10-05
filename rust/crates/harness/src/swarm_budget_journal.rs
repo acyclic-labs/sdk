@@ -1000,6 +1000,7 @@ mod tests {
             (
                 "total",
                 SwarmBudgetLimits {
+                    max_active_agents: 2,
                     max_total_agents: 2,
                     ..base_limits
                 },
