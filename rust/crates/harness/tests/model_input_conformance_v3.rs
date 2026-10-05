@@ -365,11 +365,12 @@ async fn reopened_prefix_replays_child_bytes_after_parent_changes() -> Result<()
         "content": "parent changed after persisted fork"
     }))
     .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-    let _changed_parent = PreparedModelInput::prepare_with_policy(
+    let changed_parent = PreparedModelInput::prepare_with_policy(
         changed_parent,
         vector.limits,
         Some(&vector.policy),
     )?;
+    assert!(prefix.verify(&changed_parent).is_err());
 
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(CapturingProvider {
@@ -393,5 +394,46 @@ async fn reopened_prefix_replays_child_bytes_after_parent_changes() -> Result<()
         captured[0],
         vector.children[0].expected.request_json.as_bytes()
     );
+    Ok(())
+}
+
+#[test]
+fn prefix_admission_rejects_duplicate_reordered_and_revised_tools() -> Result<()> {
+    let vector = parse_vector();
+    let root = prepare(&vector.root, vector.limits, &vector.policy)?;
+    let prefix = FrozenModelPrefix::capture(&root, vector.root.prefix_message_count)?;
+
+    let mut duplicate = vector.root.request.clone();
+    duplicate.tools.push(duplicate.tools[0].clone());
+    assert!(matches!(
+        PreparedModelInput::prepare_with_policy(duplicate, vector.limits, Some(&vector.policy)),
+        Err(acyclic_harness::Error::Invalid(message))
+            if message.contains("duplicate model tool definition")
+    ));
+
+    let mut extra = vector.root.request.tools[0].clone();
+    extra.name = "unused_tool".into();
+    extra.revision = "unused-tool-1".into();
+    let mut reordered = vector.root.request.clone();
+    reordered.tools.insert(0, extra);
+    let reordered = PreparedModelInput::prepare_with_policy(
+        reordered,
+        vector.limits,
+        Some(&vector.policy),
+    )?;
+    assert_ne!(root.manifest().request_digest, reordered.manifest().request_digest);
+    assert_ne!(root.manifest().binding_digest, reordered.manifest().binding_digest);
+    assert!(prefix.verify(&reordered).is_err());
+
+    let mut revised = vector.root.request.clone();
+    revised.tools[0].revision = "read-file-8".into();
+    let revised = PreparedModelInput::prepare_with_policy(
+        revised,
+        vector.limits,
+        Some(&vector.policy),
+    )?;
+    assert_ne!(root.manifest().request_digest, revised.manifest().request_digest);
+    assert_ne!(root.manifest().binding_digest, revised.manifest().binding_digest);
+    assert!(prefix.verify(&revised).is_err());
     Ok(())
 }
