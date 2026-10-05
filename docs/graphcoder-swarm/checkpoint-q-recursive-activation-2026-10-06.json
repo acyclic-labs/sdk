@@ -1,0 +1,41 @@
+{
+  "kind": "failed-native-recursive-checkpoint",
+  "source_commit": "a1b591bdde810879d4b14d9d2a3fc0b746c8f022",
+  "platform": "Windows native",
+  "suite": "local_model_swarm::default_local_composition_runs_recursive_models_and_reopens_without_dispatch",
+  "features": [
+    "test-support",
+    "native-process-tree"
+  ],
+  "build_jobs": 1,
+  "stack_override": false,
+  "exit_code": 101,
+  "tests": {
+    "failed": 1,
+    "passed": 0,
+    "filtered": 5,
+    "ignored": 0
+  },
+  "evidence_directory": "target/graphcoder-qualification/a1b591bdd-recursive",
+  "artifacts": [
+    {
+      "path": "local_model_swarm.exe",
+      "sha256": "39c94c0663531617d596fc52338cf26b35185a4bc3384710140786f3d98042d1"
+    },
+    {
+      "path": "native.log",
+      "sha256": "ac6c43e2f311a9774e2b5300b07e3fd86408ef13c2f0a03bd6de3e4e03af4061"
+    },
+    {
+      "path": "source.tar",
+      "sha256": "0f91b39a5e824a028d6e195488bb5d4516428823ae98b2a63ed1d699c77159c9"
+    }
+  ],
+  "observations": [
+    "Both child preparations and the fork publication complete.",
+    "Child workers enter model-step execution.",
+    "Root execution fails with Indeterminate for operation f0f0f0f0-f0f0-f0f0-f0f0-f0f0f0f0f0f0."
+  ],
+  "qualification": "failed",
+  "remaining_gate": "Trace and repair the uncertain root execution outcome without weakening model input or budget admission, then rerun recursive integration and recovery."
+}
