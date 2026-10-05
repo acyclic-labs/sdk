@@ -4,12 +4,20 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, stream};
 use prost::Message;
-use reqwest::{
-    Client, Url,
-    header::{AUTHORIZATION, HeaderValue},
-};
+#[cfg(not(target_arch = "wasm32"))]
+use reqwest::{Client, header::AUTHORIZATION};
 use serde_json::Value;
 use std::{collections::VecDeque, time::Duration};
+use url::Url;
+
+#[cfg(target_arch = "wasm32")]
+use js_sys::{Function, Promise, Reflect, Uint8Array};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(target_arch = "wasm32")]
+use web_sys::{ReadableStreamDefaultReader, Request, RequestInit, RequestMode};
 
 /// Invalid endpoint, bearer token, CA, or response bound.
 #[derive(Debug, thiserror::Error)]
@@ -19,11 +27,57 @@ pub struct ConnectError;
 /// Bounded authenticated HTTP provider. Mutations are never automatically retried.
 #[derive(Clone)]
 pub struct HttpStream {
+    #[cfg(not(target_arch = "wasm32"))]
     client: Client,
     endpoint: Url,
-    authorization: HeaderValue,
+    authorization: String,
     maximum: usize,
 }
+
+#[cfg(target_arch = "wasm32")]
+struct BrowserResponse {
+    status: u16,
+    url: String,
+    content_type: Option<String>,
+    content_length: Option<u64>,
+    body: Vec<u8>,
+}
+
+#[cfg(target_arch = "wasm32")]
+struct BrowserAbortGuard {
+    global: JsValue,
+    controller: web_sys::AbortController,
+    timer_id: JsValue,
+    _timer: Closure<dyn FnMut()>,
+    abort_on_drop: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserAbortGuard {
+    fn clear_timer(&self) {
+        if let Ok(value) = Reflect::get(&self.global, &JsValue::from_str("clearTimeout")) {
+            if let Ok(clear_timeout) = value.dyn_into::<Function>() {
+                let _ = clear_timeout.call1(&self.global, &self.timer_id);
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        self.clear_timer();
+        self.abort_on_drop = false;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for BrowserAbortGuard {
+    fn drop(&mut self) {
+        self.clear_timer();
+        if self.abort_on_drop {
+            self.controller.abort();
+        }
+    }
+}
+
 impl HttpStream {
     /// Creates an HTTPS client; loopback HTTP is permitted for local test servers.
     pub fn new(
@@ -54,13 +108,12 @@ impl HttpStream {
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
-        let mut authorization =
-            HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
-        authorization.set_sensitive(true);
+        if token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+            return Err(ConnectError);
+        }
+        let authorization = format!("Bearer {token}");
         #[cfg(not(target_arch = "wasm32"))]
         let mut client = Client::builder();
-        #[cfg(target_arch = "wasm32")]
-        let client = Client::builder();
         #[cfg(not(target_arch = "wasm32"))]
         {
             client = client.timeout(Duration::from_secs(30));
@@ -74,7 +127,7 @@ impl HttpStream {
                 return Err(ConnectError);
             }
             #[cfg(target_arch = "wasm32")]
-            let _ = ca;
+            return Err(ConnectError);
             #[cfg(not(target_arch = "wasm32"))]
             {
                 client = client.add_root_certificate(
@@ -83,11 +136,130 @@ impl HttpStream {
             }
         }
         Ok(Self {
+            #[cfg(not(target_arch = "wasm32"))]
             client: client.build().map_err(|_| ConnectError)?,
             endpoint,
             authorization,
             maximum,
         })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn browser_fetch(
+        &self,
+        url: &Url,
+        method: &str,
+        body: Option<&[u8]>,
+        accept: Option<&str>,
+        content_type: Option<&str>,
+        timeout_ms: i32,
+    ) -> Result<BrowserResponse, String> {
+        let init = RequestInit::new();
+        init.set_method(method);
+        init.set_mode(RequestMode::Cors);
+        init.set_redirect(web_sys::RequestRedirect::Error);
+        let controller = web_sys::AbortController::new().map_err(js_error)?;
+        init.set_signal(Some(&controller.signal()));
+        if let Some(body) = body {
+            let bytes = Uint8Array::from(body);
+            init.set_body(&JsValue::from(bytes));
+        }
+        let request = Request::new_with_str_and_init(url.as_str(), &init).map_err(js_error)?;
+        request
+            .headers()
+            .set("authorization", &self.authorization)
+            .map_err(js_error)?;
+        if let Some(accept) = accept {
+            request.headers().set("accept", accept).map_err(js_error)?;
+        }
+        if let Some(content_type) = content_type {
+            request
+                .headers()
+                .set("content-type", content_type)
+                .map_err(js_error)?;
+        }
+        let global = js_sys::global();
+        let fetch = Reflect::get(&global, &JsValue::from_str("fetch"))
+            .map_err(js_error)?
+            .dyn_into::<Function>()
+            .map_err(|_| "global fetch unavailable".to_owned())?;
+        let timer = {
+            let controller = controller.clone();
+            Closure::wrap(Box::new(move || controller.abort()) as Box<dyn FnMut()>)
+        };
+        let set_timeout = Reflect::get(&global, &JsValue::from_str("setTimeout"))
+            .map_err(js_error)?
+            .dyn_into::<Function>()
+            .map_err(|_| "global setTimeout unavailable".to_owned())?;
+        let timer_id = set_timeout
+            .call2(
+                &global,
+                timer.as_ref().unchecked_ref(),
+                &JsValue::from_f64(timeout_ms as f64),
+            )
+            .map_err(js_error)?;
+        let mut guard = BrowserAbortGuard {
+            global: global.clone().into(),
+            controller,
+            timer_id,
+            _timer: timer,
+            abort_on_drop: true,
+        };
+        let promise = fetch
+            .call1(&global, &request)
+            .map_err(js_error)?
+            .dyn_into::<Promise>()
+            .map_err(|_| "global fetch returned a non-promise value".to_owned())?;
+        let result = async {
+            let response = JsFuture::from(promise)
+                .await
+                .map_err(js_error)?
+                .dyn_into::<web_sys::Response>()
+                .map_err(|_| "browser fetch returned a non-response value".to_owned())?;
+            let content_length = response
+                .headers()
+                .get("content-length")
+                .map_err(js_error)?
+                .and_then(|value| value.parse().ok());
+            let content_type = response.headers().get("content-type").map_err(js_error)?;
+            let mut body = Vec::new();
+            if let Some(stream) = response.body() {
+                let reader = stream
+                    .get_reader()
+                    .dyn_into::<ReadableStreamDefaultReader>()
+                    .map_err(|_| "browser response reader unavailable".to_owned())?;
+                loop {
+                    let result = JsFuture::from(reader.read()).await.map_err(js_error)?;
+                    let done = Reflect::get(&result, &JsValue::from_str("done"))
+                        .map_err(js_error)?
+                        .as_bool()
+                        .unwrap_or(false);
+                    if done {
+                        break;
+                    }
+                    let value =
+                        Reflect::get(&result, &JsValue::from_str("value")).map_err(js_error)?;
+                    let chunk = Uint8Array::new(&value);
+                    if chunk.length() as usize > self.maximum.saturating_sub(body.len()) {
+                        let _ = reader.cancel();
+                        return Err("browser response exceeds configured bound".to_owned());
+                    }
+                    body.extend_from_slice(&chunk.to_vec());
+                }
+            }
+            Ok(BrowserResponse {
+                status: response.status(),
+                url: response.url(),
+                content_type,
+                content_length,
+                body,
+            })
+        }
+        .await;
+        if result.is_ok() {
+            guard.finish();
+        }
+        result
     }
     /// Prove the canonical contract before selecting this transport.
     ///
@@ -105,53 +277,82 @@ impl HttpStream {
             .endpoint
             .join(route.trim_start_matches('/'))
             .map_err(|_| malformed())?;
-        let response = self
-            .client
-            .get(url.clone())
-            .timeout(Duration::from_secs(10))
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("accept", "application/json")
-            .send()
-            .await
-            .map_err(|error| ConnectError::Transport(error.to_string()))?;
-        if response.url() != &url {
+        #[cfg(not(target_arch = "wasm32"))]
+        let (status, final_url, content_type, content_length, bytes) = {
+            let response = self
+                .client
+                .get(url.clone())
+                .timeout(Duration::from_secs(10))
+                .header(AUTHORIZATION, self.authorization.as_str())
+                .header("accept", "application/json")
+                .send()
+                .await
+                .map_err(|error| ConnectError::Transport(error.to_string()))?;
+            let status = response.status().as_u16();
+            let final_url = response.url().clone();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let content_length = response.content_length();
+            let maximum = self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+            if matches!(status, 404 | 405) {
+                return Ok(false);
+            }
+            if !response.status().is_success() {
+                return Err(ConnectError::HttpStatus(status));
+            }
+            if content_length.is_some_and(|length| length > maximum as u64) {
+                return Err(malformed());
+            }
+            let mut bytes = Vec::new();
+            let mut chunks = response.bytes_stream();
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk.map_err(|error| ConnectError::Transport(error.to_string()))?;
+                if chunk.len() > maximum.saturating_sub(bytes.len()) {
+                    return Err(malformed());
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            (status, final_url, content_type, content_length, bytes)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let (status, final_url, content_type, content_length, bytes) = {
+            let response = self
+                .browser_fetch(&url, "GET", None, Some("application/json"), None, 10_000)
+                .await
+                .map_err(ConnectError::Transport)?;
+            let status = response.status;
+            let final_url = response.url;
+            let content_type = response.content_type;
+            let content_length = response.content_length;
+            let bytes = response.body;
+            if matches!(status, 404 | 405) {
+                return Ok(false);
+            }
+            if !(200..300).contains(&status) {
+                return Err(ConnectError::HttpStatus(status));
+            }
+            (status, final_url, content_type, content_length, bytes)
+        };
+        if final_url.as_str() != url.as_str() {
             return Err(malformed());
         }
-        let status = response.status().as_u16();
         if matches!(status, 404 | 405) {
             return Ok(false);
         }
-        if !response.status().is_success() {
-            return Err(ConnectError::HttpStatus(status));
-        }
-        if !response
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
-            })
-        {
+        if !content_type.as_deref().is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+        }) {
             return Err(malformed());
         }
         let maximum = self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
-        if response
-            .content_length()
-            .is_some_and(|length| length > maximum as u64)
-        {
+        if content_length.is_some_and(|length| length > maximum as u64) || bytes.len() > maximum {
             return Err(malformed());
-        }
-        let mut bytes = Vec::new();
-        let mut chunks = response.bytes_stream();
-        while let Some(chunk) = chunks.next().await {
-            let chunk = chunk.map_err(|error| ConnectError::Transport(error.to_string()))?;
-            if chunk.len() > maximum.saturating_sub(bytes.len()) {
-                return Err(malformed());
-            }
-            bytes.extend_from_slice(&chunk);
         }
         let pool = DescriptorPool::decode(
             acyclic_sdk_contract_wire::protocol::protocol_descriptor().as_slice(),
@@ -185,37 +386,20 @@ impl HttpStream {
             .join(&format!("v1/stream/{route}"))
             .map_err(|_| StreamError::Unavailable)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let mut response = self
-            .client
-            .post(url)
-            .timeout(Duration::from_secs(30))
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|_| StreamError::Unavailable)?;
-        #[cfg(target_arch = "wasm32")]
-        let response = self
-            .client
-            .post(url)
-            .timeout(Duration::from_secs(30))
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|_| StreamError::Unavailable)?;
-        let success = response.status().is_success();
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.maximum as u64)
-        {
-            return Err(StreamError::Unavailable);
-        }
-        let mut body = Vec::new();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        let (success, content_length, body) = {
+            let mut response = self
+                .client
+                .post(url)
+                .timeout(Duration::from_secs(30))
+                .header(AUTHORIZATION, self.authorization.as_str())
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await
+                .map_err(|_| StreamError::Unavailable)?;
+            let success = response.status().is_success();
+            let content_length = response.content_length();
+            let mut body = Vec::new();
             while let Some(chunk) = response
                 .chunk()
                 .await
@@ -226,17 +410,31 @@ impl HttpStream {
                 }
                 body.extend_from_slice(&chunk);
             }
-        }
+            (success, content_length, body)
+        };
         #[cfg(target_arch = "wasm32")]
-        {
-            let bytes = response
-                .bytes()
+        let (success, content_length, body) = {
+            let response = self
+                .browser_fetch(
+                    &url,
+                    "POST",
+                    Some(body.as_bytes()),
+                    None,
+                    Some("application/json"),
+                    30_000,
+                )
                 .await
                 .map_err(|_| StreamError::Unavailable)?;
-            if bytes.len() > self.maximum {
-                return Err(StreamError::Unavailable);
-            }
-            body.extend_from_slice(&bytes);
+            (
+                (200..300).contains(&response.status),
+                response.content_length,
+                response.body,
+            )
+        };
+        if content_length.is_some_and(|length| length > self.maximum as u64)
+            || body.len() > self.maximum
+        {
+            return Err(StreamError::Unavailable);
         }
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
@@ -589,6 +787,12 @@ impl StreamProvider for HttpStream {
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
     value.as_str().ok_or(StreamError::Unavailable)
 }
+
+#[cfg(target_arch = "wasm32")]
+fn js_error(error: JsValue) -> String {
+    error.as_string().unwrap_or_else(|| format!("{error:?}"))
+}
+
 fn parse_u64(value: &Value) -> Result<u64, StreamError> {
     parse_string(value)?
         .parse()

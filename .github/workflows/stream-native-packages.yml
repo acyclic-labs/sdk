@@ -64,7 +64,7 @@ jobs:
           wire="$RUNNER_TEMP/rust-wire"
           out="$RUNNER_TEMP/rust-typescript"
           cargo run --locked --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --bin sdk-contract-wire -- generate --out "$wire"
-          cargo run --locked --manifest-path rust/crates/sdk-typescript/Cargo.toml -- packages-write "$GITHUB_WORKSPACE" "$out" "$wire"
+          cargo run --locked --manifest-path rust/crates/sdk-typescript/Cargo.toml --bin sdk-typescript -- packages-write "$GITHUB_WORKSPACE" "$out" "$wire"
           node scripts/build-stream-wasm.mjs "$out/typescript/packages/stream/generated/wasm"
           test -s "$out/typescript/packages/stream/generated/wasm/acyclic_stream_wasm_bg.wasm"
 
@@ -249,6 +249,45 @@ jobs:
           mkdir -p "$NPM_CACHE"
           cd "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}"
           npm pack --ignore-scripts --offline --cache "$NPM_CACHE" --pack-destination "$STREAM_NATIVE_OUTPUT"
+
+      - name: Generate the Rust-owned Stream qualification requirement
+        if: matrix.native_runtime
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-receipt-target
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          metadata="$STREAM_NATIVE_OUTPUT/qualification/stream-qualification-requirement.json"
+          mkdir -p "$(dirname "$metadata")"
+          cargo run --locked --offline \
+            --manifest-path rust/crates/sdk-generation/Cargo.toml \
+            --bin sdk-stream-native-receipt -- metadata \
+            --source-revision "$SOURCE_REVISION" \
+            --output "$metadata"
+          test -s "$metadata"
+          test -s "$GITHUB_WORKSPACE/rust/crates/sdk-contract-wire/tests/fixtures/stream-v2.descriptor.bin"
+
+      - name: Collect Rust-owned native package proof
+        if: matrix.native_runtime
+        shell: bash
+        env:
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          package_root="$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}"
+          archive=$(find "$STREAM_NATIVE_OUTPUT" -maxdepth 1 -name '*.tgz' -type f | head -n 1)
+          test -n "$archive"
+          node scripts/collect-stream-native-proof.mjs \
+            --package-root "$package_root" \
+            --archive "$archive" \
+            --target "${{ matrix.package_target }}" \
+            --source-revision "$SOURCE_REVISION" \
+            --qualification-metadata "$STREAM_NATIVE_OUTPUT/qualification/stream-qualification-requirement.json" \
+            --stream-descriptor "$GITHUB_WORKSPACE/rust/crates/sdk-contract-wire/tests/fixtures/stream-v2.descriptor.bin" \
+            --output "$STREAM_NATIVE_OUTPUT/qualification/${{ matrix.package_target }}.package-proof.json"
 
       - name: Run the full ten-RPC native Stream consumer
         if: matrix.native_runtime

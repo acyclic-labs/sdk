@@ -1,0 +1,52 @@
+{
+  "schema": "acyclic.sdk.stream.browser-transport-qualification.v1",
+  "status": "passed",
+  "source_revision": "7689347794e7005b6d0a3bc7cb58a7d0a40db949",
+  "source_files": {
+    "rust/crates/stream/Cargo.toml": "sha256:de70037a1013aa6e4a77e61b1b062f256a5fb38f4758555d2d4242f3898248ef",
+    "rust/crates/stream/src/http.rs": "sha256:939e8f290e03ea7741061cfb6cb33949e4f15d62ec19f02dc9141c4c2028e0e5"
+  },
+  "artifact": {
+    "wasm": "work/stream-browser-qualification-package/stream_browser_qualification_bg.wasm",
+    "wasm_sha256": "sha256:76a4cb91e9f3523f5e95bd7e04834838d853f6e058c680e3804358982fa81540",
+    "loader": "work/stream-browser-qualification-package/stream_browser_qualification.js",
+    "loader_sha256": "sha256:4d2c19a2e910c6c234a9daeee6e1ea024a66ef8edd0a3f81da4131f9701b337",
+    "build": "cargo build --offline --manifest-path work/stream-browser-qualification/Cargo.toml --target wasm32-unknown-unknown --release --target-dir work/stream-browser-qualification-target-2"
+  },
+  "runtime": {
+    "browser": "Microsoft Edge",
+    "execution": "Rust WASM initialized in a worker from transferred bytes; the Rust adapter uses globalThis.fetch",
+    "runner": "work/stream-browser-qualification2.mjs",
+    "runner_sha256": "sha256:afb01ca31b32ecf2a23516ddd049f597fbffe7eec87e6fabe7b657c239f6f6e3",
+    "harness_sources": {
+      "work/stream-browser-qualification/Cargo.toml": "sha256:c4768a6161367f9ce5371ef06432c54020ca2aa802d3b3f715a4e8649a73f35e",
+      "work/stream-browser-qualification/src/lib.rs": "sha256:b9f8bf8c9e8cc81dc91e37e5f6e41ca02cfe55ad3d2f44ed2fda211a367e0983",
+      "work/stream-browser-qualification/index.html": "sha256:fdf0a61169e6cd592c1094cee520cbeb917d36b7f1f1379481b3a7aba14ab31b",
+      "work/stream-browser-qualification/worker.mjs": "sha256:cfe53b563d86fa2838863d8981a945f32128ad49c473739b6f560bae5dffd9813"
+    },
+    "log": "work/stream-browser-final-pass.log",
+    "log_sha256": "sha256:f4907fc14ed6e081993e7d25efa0978c83891a0dffa50ca5e45e128c9788f1d0"
+  },
+  "observations": {
+    "no_headers": "error:Stream contract negotiation failed: invalid control handshake response",
+    "recovery_first": "error:stream unavailable",
+    "recovery_second": "tail:7",
+    "dropped_future": "cancelled",
+    "deadline": "error:Stream transport probe failed: JsValue(AbortError: signal is aborted without reason ...)",
+    "worker": "handshake:true",
+    "server": {
+      "cancel_seen": true,
+      "cancel_closed": true,
+      "recovery_requests": 2,
+      "deadline_seen": true,
+      "deadline_closed": true
+    }
+  },
+  "capabilities": [
+    "invalid-control-handshake-rejected",
+    "stream-recovery",
+    "dropped-future-aborts-fetch-and-closes-peer",
+    "deadline-aborts-fetch-and-closes-peer",
+    "worker-global-fetch"
+  ]
+}

@@ -5,6 +5,7 @@
 //! Rust tool owns the acceptance boundary: it binds the archive, loader,
 //! provenance, and every public Stream RPC scenario to one source revision.
 
+use acyclic_sdk_contract_wire::stream::{STREAM, STREAM_SERVICE, stream_descriptor};
 use flate2::read::GzDecoder;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -26,18 +27,8 @@ const REQUIRED_CHECKS: &[&str] = &[
     "cancellation",
     "recovery",
 ];
-const REQUIRED_RPCS: &[&str] = &[
-    "acyclic.stream.v2.StreamService/Append",
-    "acyclic.stream.v2.StreamService/Read",
-    "acyclic.stream.v2.StreamService/Children",
-    "acyclic.stream.v2.StreamService/InspectIdempotency",
-    "acyclic.stream.v2.StreamService/Commit",
-    "acyclic.stream.v2.StreamService/ReadCommit",
-    "acyclic.stream.v2.StreamService/ChildrenPage",
-    "acyclic.stream.v2.StreamService/Follow",
-    "acyclic.stream.v2.StreamService/Fork",
-    "acyclic.stream.v2.StreamService/Tail",
-];
+const QUALIFICATION_METADATA_SCHEMA: &str =
+    "acyclic.sdk.stream.native.qualification-requirement.v1";
 
 fn main() {
     if let Err(error) = run() {
@@ -48,7 +39,11 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
-    if args.next().as_deref() != Some("verify") {
+    let command = args.next().ok_or_else(usage)?;
+    if command == "metadata" {
+        return write_metadata(args);
+    }
+    if command != "verify" {
         return Err(usage());
     }
     let mut values = BTreeMap::new();
@@ -80,6 +75,57 @@ fn run() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     println!("{}", output.display());
     Ok(())
+}
+
+fn write_metadata<I>(args: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = String>,
+{
+    // Keep the qualification inventory beside the Rust contract model. JS
+    // collectors may hash and package this document, but they cannot author
+    // or expand the required RPC set.
+    let mut values = BTreeMap::new();
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        let key = flag.strip_prefix("--").ok_or_else(usage)?.to_owned();
+        let value = args.next().ok_or_else(usage)?;
+        values.insert(key, value);
+    }
+    let source_revision = required(&values, "source-revision")?;
+    if source_revision.len() != 40 || !source_revision.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("source revision must be an immutable 40-character Git OID".into());
+    }
+    let output = PathBuf::from(required(&values, "output")?);
+    let required_rpcs = required_rpcs();
+    let descriptor = stream_descriptor();
+    let metadata = json!({
+        "schema": QUALIFICATION_METADATA_SCHEMA,
+        "source_revision": source_revision,
+        "family": "stream",
+        "package": STREAM.package,
+        "service": STREAM_SERVICE.name,
+        "required_rpcs": required_rpcs,
+        "descriptor_sha256": hash_bytes(&descriptor),
+        "source": "acyclic-sdk-contract-wire::stream",
+    });
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(
+        &output,
+        serde_json::to_vec_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    println!("{}", output.display());
+    Ok(())
+}
+
+fn required_rpcs() -> Vec<String> {
+    STREAM_SERVICE
+        .methods
+        .iter()
+        .map(|method| format!("{}.{}/{}", STREAM.package, STREAM_SERVICE.name, method.name))
+        .collect()
 }
 
 fn verify(
@@ -170,6 +216,7 @@ fn verify(
         .get("scenarios")
         .and_then(Value::as_array)
         .ok_or_else(|| "installed consumer scenarios are missing".to_owned())?;
+    let required_rpcs = required_rpcs();
     let mut observed = BTreeSet::new();
     let scenario_root = scenario_path
         .parent()
@@ -182,7 +229,8 @@ fn verify(
             .get("rpc")
             .and_then(Value::as_str)
             .ok_or_else(|| "scenario RPC is missing".to_owned())?;
-        if !REQUIRED_RPCS.contains(&rpc) || !observed.insert(rpc.to_owned()) {
+        if !required_rpcs.iter().any(|required| required == rpc) || !observed.insert(rpc.to_owned())
+        {
             return Err(format!(
                 "unexpected or duplicate Stream RPC scenario: {rpc}"
             ));
@@ -225,7 +273,7 @@ fn verify(
             return Err(format!("scenario output hash differs: {rpc}"));
         }
     }
-    let required: BTreeSet<String> = REQUIRED_RPCS.iter().map(|rpc| (*rpc).to_owned()).collect();
+    let required: BTreeSet<String> = required_rpcs.into_iter().collect();
     if observed != required {
         return Err(format!(
             "Stream scenario inventory is incomplete: {observed:?}"
@@ -464,24 +512,25 @@ fn required<'a>(values: &'a BTreeMap<String, String>, key: &str) -> Result<&'a s
 }
 
 fn usage() -> String {
-    "usage: sdk-stream-native-receipt verify --provenance PATH --package-root PATH --scenario PATH --archive PATH --source-revision REV --output PATH".into()
+    "usage: sdk-stream-native-receipt verify --provenance PATH --package-root PATH --scenario PATH --archive PATH --source-revision REV --output PATH | metadata --source-revision REV --output PATH".into()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{REQUIRED_CHECKS, REQUIRED_RPCS, hash_bytes};
+    use super::{REQUIRED_CHECKS, hash_bytes, required_rpcs};
     use std::collections::BTreeSet;
 
     #[test]
     fn native_gate_requires_the_complete_stream_surface() {
-        assert_eq!(REQUIRED_RPCS.len(), 10);
+        let required_rpcs = required_rpcs();
+        assert_eq!(required_rpcs.len(), 10);
         assert_eq!(
-            REQUIRED_RPCS.iter().copied().collect::<BTreeSet<_>>().len(),
-            REQUIRED_RPCS.len()
+            required_rpcs.iter().collect::<BTreeSet<_>>().len(),
+            required_rpcs.len()
         );
-        assert!(REQUIRED_RPCS.iter().any(|rpc| rpc.ends_with("/Follow")));
+        assert!(required_rpcs.iter().any(|rpc| rpc.ends_with("/Follow")));
         assert!(
-            REQUIRED_RPCS
+            required_rpcs
                 .iter()
                 .any(|rpc| rpc.ends_with("/InspectIdempotency"))
         );
