@@ -22,14 +22,13 @@ use futures::{StreamExt as _, future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::{
+    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
     sync::{
-        Arc,
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    collections::BTreeMap,
     time::Instant,
 };
 use tempfile::tempdir;
@@ -566,6 +565,77 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     let seed = seed.ok_or_else(|| Error::Storage("real admission omitted fork seed".into()))?;
     let declaration = declaration
         .ok_or_else(|| Error::Storage("real admission omitted fork declaration".into()))?;
+    let publication_digest = crate::contract::canonical_json_digest(&publication)?;
+    let (
+        publication_completion_sequence,
+        publication_completion_operation,
+        publication_completion_digest,
+        publication_completion_record_bytes,
+    ) = events
+        .iter()
+        .find_map(|(sequence, event, record_bytes)| match event {
+            StoredEvent::ForkPublicationCompleted { operation, digest }
+                if *operation == publication.operation_id =>
+            {
+                Some((*sequence, *operation, *digest, record_bytes.clone()))
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            Error::Storage(
+                "real registry has no ForkPublicationCompleted receipt for the publication".into(),
+            )
+        })?;
+    if publication_completion_digest != publication_digest {
+        return Err(Error::Conflict(
+            "ForkPublicationCompleted digest differs from the authenticated publication".into(),
+        ));
+    }
+    if publication_completion_operation != publication.operation_id {
+        return Err(Error::Conflict(
+            "ForkPublicationCompleted operation differs from the authenticated publication".into(),
+        ));
+    }
+    // Reopen the owner completion index from the same registry and submit the
+    // exact receipt again. This is the production replay path: the existing
+    // operation/digest must be accepted without appending a second receipt.
+    let replay_plans = LocalModelForkPlans::new();
+    replay_plans.bind_journal(swarm.registry.clone()).await?;
+    if replay_plans.completed(publication.operation_id).await? != Some(publication_digest) {
+        return Err(Error::Conflict(
+            "reopened completion index lost the publication receipt".into(),
+        ));
+    }
+    replay_plans
+        .mark_completed(publication.operation_id, publication_digest)
+        .await?;
+    let replayed_events = registry_events(&registry).await?;
+    let replay_count = replayed_events
+        .iter()
+        .filter(|(_, event, _)| {
+            matches!(
+                event,
+                StoredEvent::ForkPublicationCompleted { operation, digest }
+                    if *operation == publication.operation_id && *digest == publication_digest
+            )
+        })
+        .count();
+    if replay_count != 1 {
+        return Err(Error::Conflict(
+            "same-digest publication replay appended a duplicate receipt".into(),
+        ));
+    }
+    let substitution_rejected = matches!(
+        replay_plans
+            .mark_completed(publication.operation_id, [0xA5; 32])
+            .await,
+        Err(Error::Conflict(_))
+    );
+    if !substitution_rejected {
+        return Err(Error::Conflict(
+            "publication replay accepted a substituted digest".into(),
+        ));
+    }
     let (generation, raw_generation) = generation_projection(&report)?;
 
     let parent_harness = swarm.open_session(root_task).await?;
@@ -721,6 +791,8 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "kind": "workspace_published",
             "fork_operation_id": fork_operation.to_string(),
             "publication_operation_id": publication.operation_id.to_string(),
+            "publication_completion_sequence": publication_completion_sequence,
+            "publication_completion_digest": hex_bytes(&publication_completion_digest),
             "parent": 1,
             "child": 2,
             "captured_generation": generation
@@ -757,6 +829,14 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "parent_conversation_event": "ForkPublished",
             "parent_conversation_revision": publication_revision,
             "parent_conversation_operation": publication_event_operation,
+            "publication_completion_sequence": publication_completion_sequence,
+            "publication_completion_operation": publication_completion_operation,
+            "publication_completion_digest": publication_completion_digest,
+            "publication_completion_record_bytes_hex": publication_completion_record_bytes,
+            "publication_completion_record_sha256": sha256_hex(&hex_decode(&publication_completion_record_bytes)?),
+            "publication_completion_replay_count": replay_count,
+            "publication_completion_replay_same_digest": true,
+            "publication_completion_replay_substitution_rejected": substitution_rejected,
             "child_execution_operation": child_operation,
             "child_execution_model_started_sequence": model_sequence,
             "child_execution_model_started_request_digest": model_digest,
@@ -819,13 +899,14 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     let identity_binding = json!({
         "fork_operation_id": fork_operation,
         "publication_operation_id": publication.operation_id,
+        "publication_completion_operation_id": publication_completion_operation,
         "child_operation_id": child_operation,
         "parent_event_operation_id": publication_event_operation,
         "completion_operation_id": completion_operation
     });
     let ordering = json!({
         "basis": "causal projection across independently ordered durable streams",
-        "registry": "registry sequence orders ForkPrepared and ForkCompleted",
+        "registry": "registry sequence orders ForkPrepared, ForkPublicationCompleted, and ForkCompleted",
         "parent_conversation": "conversation revision identifies ForkPublished",
         "child_execution": "child journal sequence identifies ModelStarted",
         "cross_stream_sequences_compared": false,
@@ -842,6 +923,7 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     });
     let assumptions = json!([
         "The trace is one real local Filesystem-backed Harness run using a deterministic mock provider.",
+        "The publication completion receipt was reopened by operation identity and replayed with the same digest; the replay must not append a second receipt, and a substituted digest is rejected.",
         "Task and opaque generation identities are normalized only at the adapter boundary.",
         "Current project generation is not independently observed by this trace, so publication freshness is not claimed.",
         "This trace does not prove approval handling, aggregate budget exhaustion, Rust refinement, liveness, OS confinement, or a total order across streams."

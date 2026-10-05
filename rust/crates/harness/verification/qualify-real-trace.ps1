@@ -55,6 +55,7 @@ $traceMutations = @(
     @{ Name = 'trace-missing-completion'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'agent_completed' }) } },
     @{ Name = 'trace-corrupt-agent'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'model_started') { $event.agent = 3 } }; @($events) } },
     @{ Name = 'trace-corrupt-capture'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'fork_admitted') { $event.captured_generation = 1 } }; @($events) } },
+    @{ Name = 'trace-corrupt-publication-completion'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'workspace_published') { $event.publication_completion_digest = ('0' * 64) } }; @($events) } },
     @{ Name = 'trace-duplicate-model-start'; Apply = {
         param($events)
         $copy = @($events)
@@ -119,6 +120,10 @@ $mutations = @(
     @{ Name = 'seed-digest'; Apply = { param($m) $m.source.seed_digest = @(0..31) } },
     @{ Name = 'report'; Apply = { param($m) $m.source.report_sha256 = ('0' * 64) } },
     @{ Name = 'publication'; Apply = { param($m) $m.source.publication.operation_id = '00000000-0000-0000-0000-000000000000' } },
+    @{ Name = 'publication-completion-operation'; Apply = { param($m) $m.source.publication_completion_operation = '00000000-0000-0000-0000-000000000000' } },
+    @{ Name = 'publication-completion-digest'; Apply = { param($m) $m.source.publication_completion_digest = @(0..31) } },
+    @{ Name = 'publication-completion-record'; Apply = { param($m) $m.source.publication_completion_record_bytes_hex = "20$($m.source.publication_completion_record_bytes_hex)" } },
+    @{ Name = 'publication-completion-replay'; Apply = { param($m) $m.source.publication_completion_replay_count = 2 } },
     @{ Name = 'declaration'; Apply = { param($m) $m.source.declaration.suffix = @() } },
     @{ Name = 'generation'; Apply = { param($m) $m.normalization.generation.raw_captured_generation = $null } },
     @{ Name = 'generation-ordinal'; Apply = { param($m) $m.normalization.generation.finite_ordinal = 1 } },

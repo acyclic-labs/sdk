@@ -2,11 +2,12 @@
 
 This is a finite TLA+ safety model of one stable activation operation with two
 possible owners. It checks admission before dispatch, claim retention when the
-journal is unavailable, durable results before success, and cancellation before
-success. A crash after dispatch marks the effect indeterminate and retains the
-claim for reconciliation; a proven pre-dispatch fatal result closes the turn
-with a failed terminal outcome. Recovery enters reconciliation instead of
-starting a fresh provider attempt.
+journal is unavailable, durable results before success, and cancellation
+linearization before success. A crash after dispatch marks the effect
+indeterminate and retains the claim for reconciliation; a proven pre-dispatch
+fatal result closes the turn with a failed terminal outcome. Recovery enters
+reconciliation instead of starting a fresh provider attempt and cannot create a
+second dispatch.
 
 `ActivationRecovery.cfg` must finish without an invariant violation.
 `ActivationRecoveryUnsafe.cfg` deliberately enables the rejected claim-release
@@ -148,9 +149,14 @@ files do not depend on symbolic function expressions:
   captures the parent's generation at fork and checks that publication uses
   that captured generation. `SwarmPublicationUnsafeStale.cfg` enables a stale
   publication and must violate `PublicationAtCapturedGeneration`.
-* `SwarmMessage.tla` has one durable message identity and delivery count `0..2`.
-  It checks admission before delivery and at-most-once delivery. Duplicate and
-  orphan-delivery configurations each have their own expected counterexample.
+* `SwarmMessage.tla` has one durable message identity, delivery count `0..2`,
+  and a publication count `0..2`. It checks admission before delivery,
+  cancellation before delivery, at-most-once delivery, and at-most-once
+  publication after recovery. Duplicate, orphan, post-cancellation, and
+  publication-replay configurations each have their own expected
+  counterexample. Cancellation is modeled as a durable linearization before
+  the first delivery; stopping an already-running host process remains outside
+  this finite model.
 
 Run an individual family through the same pinned runner, for example:
 
@@ -212,7 +218,8 @@ journal and run this adapter against that trace.
 swarm tests. It runs the real Filesystem-backed `PersistentLocalSwarm` with a
 deterministic mock provider, then projects the current durable records:
 `ForkPrepared` (with `ForkAdmitted` retained only for legacy read
-compatibility), the parent conversation's `ForkPublished`, the child's
+compatibility), the parent conversation's `ForkPublished`, the registry's
+`ForkPublicationCompleted` receipt and same-digest replay, the child's
 authenticated execution-journal `ModelStarted`, and `ForkCompleted`. It
 writes a normalized four-event trace and a provenance manifest containing
 source stream sequences, distinct fork/publication/child operation identities,
@@ -270,6 +277,44 @@ cross-stream causal witness; the gate does not invent one.
 The checker also requires the qualification environment's Python `blake3`
 package to independently recompute the SDK's BLAKE3 seed digest over the exact
 canonical seed bytes; SHA-256 remains the artifact-integrity digest.
+
+### Runtime correspondence and refinement obligations
+
+The finite lifecycle models deliberately name the linearization points that
+the runtime must preserve, while leaving the runtime responsible for the
+larger event payloads and storage protocol:
+
+| Model transition | Current Harness boundary | What is still an obligation |
+| --- | --- | --- |
+| `Admit` | A durable `ForkPrepared` record plus the child budget reservation; for communication, both endpoint scopes must pass `require_new_mutation` before `DurableCommunication::send` dispatches. | The source must prove that the reservation, authority, and endpoint fences describe the same operation identity. The model does not prove the Rust journal or CAS implementation. |
+| `Cancel` | `ForkCancelled` is appended with registry CAS before the in-memory projection, live cancellation source, and communication host are signalled. | Cancellation before dispatch must prevent a later admission; cancellation after dispatch may only stop/observe the running host operation. The model linearizes the durable decision and does not claim that an already-running OS process is stopped. |
+| `Deliver` | `DurableCommunication::send` validates direct parent/child authority, replays an exact retained `(sender, recipient, message_id, payload)` on a fenced retry, and otherwise publishes through the durable host; inbox validation enforces ordered, unique deliveries. | A production trace must bind the message identity and body to the retained operation and show that a changed retry is rejected. The bounded model has one message and no storage bytes. |
+| `Publish` / `RecoverPublish` | Fork publication records are appended with CAS as `ForkPublicationCompleted`; replay accepts the same operation and digest and rejects a changed digest. Child activation uses the retained claim and execution journal, and an unresolved claim is not redispatched. | Recovery must reconcile the same publication or model attempt, not create a new identity. The model does not cover object-store corruption, provider semantics, or every publication stream. |
+| `Dispatch` / result recovery | `ModelStarted` is the durable execution-journal admission; provider-owned usage is required before child dispatch and completion settles from that usage source. | A conformance run must show the operation, model step, request digest, and provider usage witness are authenticated together. The model only bounds one dispatch and one terminal result. |
+
+These rows are refinement obligations, not a Rust refinement proof. In
+particular, TLC does not establish that an arbitrary Rust schedule reaches the
+model transition, that independent registry/conversation/execution streams
+have a total order, that a host process is confined or stopped, or that a
+provider's unknown outcome is safe to retry. A runtime qualification must
+export authoritative journal witnesses for each applicable row and reject
+missing, reordered, or identity-mutated witnesses. The current real-trace
+exporter covers a bounded fork admission, parent-conversation publication,
+`ForkPublicationCompleted` registry receipt, same-digest reopen/replay, model
+start, and completion path. The replay reuses the authenticated publication
+operation and digest, proves that no second receipt is appended, and checks
+that a substituted digest is rejected. Cancellation races, message delivery,
+approval/writeback, and aggregate budget exhaustion remain separate gates.
+The registry sequence only proves that the receipt follows its admission; the
+child completion may race with receipt publication after scheduling and is not
+treated as a fabricated cross-event chronology.
+
+The cancellation model's `CancelledNeverDelivered` and activation model's
+`CancellationBeforeAdmissionHasNoDispatch` therefore apply only to their
+declared linearization boundary. They must not be read as a claim that a live
+provider call can be rolled back. Likewise `AtMostOncePublication` is about a
+durable publication identity and digest, not a claim that the external effect
+itself was observed unless the source journal contains that observation.
 
 ## Direct-parent integration and root approval model
 
