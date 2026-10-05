@@ -225,9 +225,11 @@
   ],
   "evidence": {
     "manifest": "Rust executable fixture manifest complete with 106 records and no missing RPCs",
-    "positive_rule": "passed requires public client.call, actual gRPC response, and exact response frame SHA256",
+    "positive_rule": "passed requires public client.call, actual gRPC response, and exact response frame SHA256; semantic classification additionally decodes returned protobuf fields in Rust manifest order",
     "negative_rule": "observed-status cases pass only on expected non-OK gRPC outcome",
-    "limitations": "Ruby package currently reaches 81/106 exact response outcomes; remaining mismatches and non-OK results are retained as failures",
+    "semantic_classification": "research/acceptance/ruby-php-dart/qualification/ruby-installed-106-semantic-classification-20261005.json",
+    "dynamic_identity_rule": "Only job_id and upload_id differ while all stable fields agree; compare these returned IDs through the ordered Rust transcript before follow-on requests",
+    "limitations": "Ruby package currently reaches 81/106 exact response outcomes; 2 identity-only differences, 7 state or fixture differences, 2 response-shape differences, and 14 request, stream, or follow-on failures remain evidence-backed findings",
     "no_claim": "This receipt does not qualify Ruby for the 106-operation release gate"
   }
 }

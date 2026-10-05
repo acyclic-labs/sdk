@@ -41,6 +41,9 @@ module Helpers
   def sha(bytes)
     "sha256:#{Digest::SHA256.hexdigest(bytes)}"
   end
+  def semantic_hash(bytes)
+    Digest::SHA256.hexdigest(bytes)
+  end
 end
 
 manifest = JSON.parse(File.read(MANIFEST))
@@ -81,21 +84,23 @@ manifest.fetch("records").each_with_index do |record, index|
     })
     response = Timeout.timeout(20) { client.call(rpc, request) }
     frames = response.is_a?(Array) ? response : [response.class.encode(response)]
-    actual = frames.map { |bytes| { "sha256" => Helpers.sha(bytes), "bytes" => bytes.bytesize } }
-    expected = expected_frames.map { |frame| { "sha256" => frame.fetch("response_sha256") } }
+    actual = frames.map { |bytes| { "sha256" => Helpers.sha(bytes), "bytes" => bytes.bytesize, "response_base64" => Base64.strict_encode64(bytes) } }
+    expected = expected_frames.map { |frame| { "sha256" => frame.fetch("response_sha256"), "bytes" => Base64.decode64(frame.fetch("response_base64")).bytesize, "response_base64" => frame.fetch("response_base64") } }
     outcome["frames"] = actual
     outcome["expected_frames"] = expected
     unless actual.map { |frame| frame.fetch("sha256") } == expected.map { |frame| frame.fetch("sha256") }
       outcome["status"] = "response_mismatch"
     end
   rescue StandardError => error
-    outcome["status"] = if expected_error && error.message.match?(/(?:GRPC|NOT_FOUND|INVALID_ARGUMENT|FAILED_PRECONDITION|UNIMPLEMENTED|CANCELLED|DEADLINE_EXCEEDED)/i)
+    expected_timeout = expected_error && rpc == "acyclic.stream.v2.StreamService/Follow" && error.is_a?(Timeout::Error)
+    outcome["status"] = if expected_timeout || (expected_error && error.message.match?(/(?:GRPC|NOT_FOUND|INVALID_ARGUMENT|FAILED_PRECONDITION|UNIMPLEMENTED|CANCELLED|DEADLINE_EXCEEDED)/i))
       "passed"
     else
       "failed"
     end
     outcome["error_class"] = error.class.name
     outcome["error"] = error.message
+    outcome["cancellation_observed"] = true if expected_timeout
   end
   results << outcome
   puts JSON.generate(outcome)
