@@ -159,7 +159,10 @@ pub enum LocalStreamError {
 /// their frames one at a time, in one order, but flush together (group commit): the flush runs
 /// outside the visibility lock, so mutations on independent paths, and readers, do not queue
 /// behind it. A mutation is acknowledged, and a read returns state, only once every frame it
-/// could have observed is durable. Startup installs the
+/// could have observed is durable, except frames of mutations made under
+/// [`deferring_durability`]: those are visible once written, and reach the device only with a
+/// later flush, so state a read returns may still include them and be lost to power loss.
+/// Startup installs the
 /// snapshot and replays every complete frame after it through the same bounded [`MemoryStream`]
 /// state machine used by conformance. A torn final frame is removed; corruption in a complete
 /// frame fails closed. Once the journal is half full, the whole state is written as a new
@@ -636,14 +639,16 @@ impl LocalStream {
     /// Returns once every frame through `sequence` is durable: group commit.
     /// One caller at a time flushes every frame written so far, on a blocking
     /// thread and outside visibility; the rest wait for it and flush again
-    /// only for frames written after it began.
+    /// only for frames written after it began. A poisoned store fails every
+    /// wait, even for frames already durable, so no result observed before
+    /// the poison is returned after it.
     async fn await_durable(&self, sequence: u64) -> Result<(), StreamError> {
         let mut synced = self.inner.synced.subscribe();
         loop {
+            self.check_available()?;
             if *synced.borrow_and_update() >= sequence {
                 return Ok(());
             }
-            self.check_available()?;
             let lead = {
                 let mut journal = self
                     .inner
@@ -1814,6 +1819,30 @@ mod tests {
             }
             Ok::<_, Box<dyn std::error::Error>>(())
         })
+    }
+
+    /// Once the store is poisoned, waiting for a frame fails even when that
+    /// frame was already durable, so a read that observed state before a
+    /// concurrent flush failed does not report success after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_poisoned_store_fails_waits_for_frames_already_durable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        provider.commit(keyed_commit("durable", 0)?).await?;
+        let required = provider.inner.journal.required()?;
+        assert_eq!(required, 1);
+        provider.await_durable(required).await?;
+        provider.inner.poison();
+        assert_eq!(
+            provider.await_durable(required).await,
+            Err(StreamError::Unavailable)
+        );
+        assert_eq!(
+            provider.tail(StreamPath::new("durable")?).await,
+            Err(StreamError::Unavailable)
+        );
+        Ok(())
     }
 
     /// Many writers commit concurrently to their own paths, some joined by a
