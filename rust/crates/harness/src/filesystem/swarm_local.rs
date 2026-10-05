@@ -5024,10 +5024,10 @@ impl PersistentLocalSwarm {
         Ok(events)
     }
 
-    /// Replays the bounded, credential-free executor journal for one task
-    /// operation. This is a host diagnostic view: records contain only
-    /// durable lifecycle observations, digests, and private artifact refs;
-    /// callers must use the authenticated file API to inspect an artifact.
+    /// Replays an executor journal for native qualification diagnostics.
+    /// This full replay is deliberately unavailable in production builds;
+    /// applications use the paginated history APIs instead.
+    #[cfg(feature = "test-support")]
     pub async fn read_execution_journal(
         &self,
         task: TaskId,
