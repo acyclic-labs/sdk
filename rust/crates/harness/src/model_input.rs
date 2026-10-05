@@ -1456,6 +1456,21 @@ mod tests {
     }
 
     #[test]
+    fn context_message_bound_rejects_without_truncation() -> Result<()> {
+        let mut input = request()?;
+        input.messages = vec![text("message"); 3];
+        let limits = Limits {
+            context_messages: 2,
+            ..Limits::default()
+        };
+        assert!(matches!(
+            PreparedModelInput::prepare(input, limits),
+            Err(Error::Invalid(message)) if message == "model context count is invalid"
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn input_limits_measure_utf8_bytes_without_truncation() -> Result<()> {
         let mut input = request()?;
         input.messages = vec![text("😀")];
