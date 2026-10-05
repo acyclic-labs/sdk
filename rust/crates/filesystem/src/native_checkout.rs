@@ -413,6 +413,7 @@ mod tests {
         let root = tempdir()?;
         std::fs::write(root.path().join("approved.txt"), b"before")?;
         std::fs::write(root.path().join("user.txt"), b"before")?;
+        std::fs::write(root.path().join("user-delete.txt"), b"before")?;
         let fs = Fs::memory();
         let checkout = HostCheckout::attach(
             &fs,
@@ -461,6 +462,24 @@ mod tests {
             .await?;
         assert_eq!(replay, first);
         assert_eq!(std::fs::read(root.path().join("user.txt"))?, b"user-change");
+
+        // A deletion outside the approved path set is also user-owned and
+        // must survive a later retry of the approved publication.
+        std::fs::remove_file(root.path().join("user-delete.txt"))?;
+        let deletion_retry = checkout
+            .restore_paths_after_revalidation(
+                &generation,
+                &approved,
+                IdempotencyKey::from_bytes([10; 16]),
+                &[PathBuf::from("approved.txt")],
+                HostPathReplacement::Atomic,
+                &options,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(deletion_retry.outcomes.len(), 1);
+        assert!(!root.path().join("user-delete.txt").exists());
         Ok(())
     }
 }
