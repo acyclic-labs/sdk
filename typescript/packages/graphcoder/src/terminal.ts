@@ -27,6 +27,24 @@ function words(line: string): string[] {
   return values.length === 1 && values[0] === "" ? [] : values;
 }
 
+/** Returns the text after `count` whitespace separated tokens without
+ * normalizing the caller's content. Prompts and message bodies are model
+ * input, so interior and trailing whitespace must survive the terminal
+ * adapter exactly as entered. */
+function tailAfterWords(line: string, count: number): string | undefined {
+  let offset = 0;
+  for (let token = 0; token < count; token += 1) {
+    while (offset < line.length && /\s/u.test(line[offset]!)) offset += 1;
+    if (offset >= line.length) return undefined;
+    while (offset < line.length && !/\s/u.test(line[offset]!)) offset += 1;
+    if (token + 1 === count) {
+      if (offset >= line.length) return undefined;
+      return line.slice(offset + 1);
+    }
+  }
+  return undefined;
+}
+
 function stateProjection(state: GraphCoderUiState): Record<string, unknown> {
   return {
     sessions: state.sessions,
@@ -65,7 +83,7 @@ export class GraphCoderTerminal {
     const command = parts[0];
     if (command === undefined || command === "") return;
     if (command === "help") {
-      writeLine(this.#io, { ok: true, commands: ["list [cursor]", "start <operation> <prompt>", "open <id>", "resume <id>", "activity [cursor]", "messages [cursor]", "approvals [cursor]", "approve <id> <yes|no>", "message <sender> <recipient> <body>", "cancel", "changes", "diff <path>", "file <path>", "writeback <operation> <generation> <yes|no>", "quit"] });
+      writeLine(this.#io, { ok: true, commands: ["list [cursor]", "start <operation> <prompt>", "input <operation> <prompt>", "open <id>", "resume <id>", "activity [cursor]", "messages [cursor]", "approvals [cursor]", "approve <id> <yes|no>", "message <sender> <recipient> <body>", "cancel", "changes", "diff <path>", "file <path>", "writeback <operation> <generation> <yes|no>", "quit"] });
       return;
     }
     if (command === "quit" || command === "exit") {
@@ -79,9 +97,17 @@ export class GraphCoderTerminal {
     }
     if (command === "start") {
       const operationId = parts[1];
-      const prompt = parts.slice(2).join(" ");
-      if (operationId === undefined || prompt.trim() === "") throw new GraphCoderError("invalid_input", "start requires <operation> <prompt>");
+      const prompt = tailAfterWords(line, 2);
+      if (operationId === undefined || prompt === undefined || prompt.trim() === "") throw new GraphCoderError("invalid_input", "start requires <operation> <prompt>");
       await this.#ui.dispatch({ kind: "start_session", operationId, prompt });
+      writeLine(this.#io, { ok: true, value: stateProjection(this.#ui.state()) });
+      return;
+    }
+    if (command === "input") {
+      const operationId = parts[1];
+      const prompt = tailAfterWords(line, 2);
+      if (operationId === undefined || prompt === undefined || prompt.trim() === "") throw new GraphCoderError("invalid_input", "input requires <operation> <prompt>");
+      await this.#ui.dispatch({ kind: "input_session", operationId, prompt });
       writeLine(this.#io, { ok: true, value: stateProjection(this.#ui.state()) });
       return;
     }
@@ -111,7 +137,7 @@ export class GraphCoderTerminal {
     if (command === "message") {
       const sender = parts[1];
       const recipient = parts[2];
-      const body = line.trim().split(/\s+/u).slice(3).join(" ");
+      const body = tailAfterWords(line, 3) ?? "";
       if (sender === undefined || recipient === undefined || body === "") throw new GraphCoderError("invalid_input", "message requires <sender> <recipient> <body>");
       await this.#ui.dispatch({ kind: "send_message", senderId: agentId(sender), recipientId: agentId(recipient), body });
       writeLine(this.#io, { ok: true, value: this.#ui.state().messages.at(-1) });

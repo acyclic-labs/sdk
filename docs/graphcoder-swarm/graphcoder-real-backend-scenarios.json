@@ -22,6 +22,7 @@
       "writeback {{writeback_operation_id}} {{workspace_generation}} yes",
       "cancel",
       "resume {{session_id}}",
+      "input input-after-reopen follow-up  after completion",
       "cancel"
     ],
     "pty_commands": [
@@ -36,6 +37,7 @@
       "writeback {{writeback_operation_id}} {{workspace_generation}} yes",
       "cancel",
       "resume {{session_id}}",
+      "input input-after-reopen follow-up  after completion",
       "cancel",
       "quit"
     ],
@@ -52,7 +54,7 @@
       "change generation and unified diff",
       "file media type and bytes",
       "writeback applied only with matching operation and generation",
-      "cancellation and resume state transitions",
+      "cancellation, resume, and fresh input state transitions",
       "interactive prompt and clean quit"
     ]
   },
