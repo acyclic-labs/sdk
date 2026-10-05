@@ -923,12 +923,13 @@ fn typescript_semantic_name(id: &str) -> String {
     format!("RustOwned{name}")
 }
 
-fn typescript_semantic_section(family: &str) -> String {
+fn typescript_semantic_section(service: &ServiceMetadata) -> String {
     use acyclic_sdk_contract_wire::type_policy::PUBLIC_NESTED_ROUTES;
     use acyclic_sdk_contract_wire::{
         PUBLIC_FIELD_BINDINGS, PublicFieldDirection, SemanticRule, WIRE_UNION_VARIANTS,
         WireValueKind, semantic_type,
     };
+    let family = service.family.as_str();
     let bindings = PUBLIC_FIELD_BINDINGS
         .iter()
         .filter(|binding| binding.family == family)
@@ -1073,21 +1074,57 @@ fn typescript_semantic_section(family: &str) -> String {
         output.push_str(&format!("  {{ operation: {:?}, requestMessage: {:?}, nestedMessage: {:?}, nestedField: {:?}, semanticField: {:?}, clientAttribute: {:?}, rpc: {:?}, response: {:?}, fields: [{}] }},\n", route.operation, route.request_message, route.nested_message, route.nested_field, route.semantic_field, route.client_attribute, route.rpc, route.response, fields));
     }
     output.push_str("] as const;\n\n");
-    let wire_type = |kind: WireValueKind| match kind {
-        WireValueKind::String => "string",
-        WireValueKind::Bytes => "Uint8Array",
-        WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => "number",
-        WireValueKind::Boolean => "boolean",
-        WireValueKind::Message => "object",
-        WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => "unknown",
+    // The open compatibility union is still Rust-owned, but its `known` arm
+    // must consume the actual descriptor-backed messages for this service.
+    // Emitting `value: object` here erases the Rust descriptor inventory at
+    // the consumer boundary and lets a known payload silently become an
+    // arbitrary object.  The unknown arm remains opaque bytes so newer
+    // senders stay forward-compatible.
+    let message_types = service
+        .methods
+        .iter()
+        .flat_map(|method| [method.request_type.as_str(), method.response_type.as_str()])
+        .chain(
+            service
+                .grpc_methods
+                .iter()
+                .flat_map(|method| [method.request_type.as_str(), method.response_type.as_str()]),
+        )
+        .collect::<BTreeSet<_>>();
+    let known_message_types = message_types
+        .iter()
+        .map(|qualified| local_type(qualified))
+        .collect::<Vec<_>>();
+    let known_message_payload = if known_message_types.is_empty() {
+        "never".to_owned()
+    } else {
+        known_message_types.join(" | ")
     };
+    output.push_str(&format!(
+        "export type RustOwnedKnownWireMessage = {known_message_payload};\n\n"
+    ));
     let union_variants = WIRE_UNION_VARIANTS
         .iter()
         .map(|variant| {
+            let payload = if variant.tag == "known" {
+                "RustOwnedKnownWireMessage".to_owned()
+            } else {
+                match variant.payload_wire_kind {
+                    WireValueKind::String => "string".to_owned(),
+                    WireValueKind::Bytes => "Uint8Array".to_owned(),
+                    WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => {
+                        "number".to_owned()
+                    }
+                    WireValueKind::Boolean => "boolean".to_owned(),
+                    WireValueKind::Message => "never".to_owned(),
+                    WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => {
+                        "unknown".to_owned()
+                    }
+                }
+            };
             format!(
-                "  {{ readonly kind: {:?}; readonly value: {} }}",
+                "  {{ readonly kind: {:?}; readonly value: {payload} }}",
                 variant.tag,
-                wire_type(variant.payload_wire_kind)
             )
         })
         .collect::<Vec<_>>()
@@ -1318,7 +1355,7 @@ fn typescript_with_paths(
         }
         output.push('\n');
     }
-    output.push_str(&typescript_semantic_section(&service.family));
+    output.push_str(&typescript_semantic_section(service));
     output.push_str(&typescript_public_types_section(service, family_path));
     output.push_str("export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }\n\n");
     output.push_str("export interface RustOwnedMethodMetadata {\n  readonly operationId: string;\n  readonly rpc: string;\n  readonly docs: string;\n  readonly path: string;\n  readonly pathParameters: readonly string[];\n  readonly httpMethod: \"POST\";\n  readonly requestType: string;\n  readonly responseType: string;\n  readonly clientStreaming: boolean;\n  readonly serverStreaming: boolean;\n  readonly requestEncoding: \"protobuf-json\";\n  readonly responseEncoding: \"protobuf-json\";\n  readonly auth: \"bearer\";\n  readonly credentialPolicy: \"bearer-no-crlf\";\n  readonly responseLimitPolicy: \"bounded-cumulative-utf8\";\n  readonly requestFields: readonly RustOwnedFieldMetadata[];\n  readonly responseFields: readonly RustOwnedFieldMetadata[];\n}\n\n");
