@@ -2564,6 +2564,15 @@ enum StoredEvent {
         task: TaskId,
         admission: Value,
     },
+    /// Owner-journal admission for a message publication. This is the
+    /// lifecycle CAS that orders a send against cancellation; the mailbox
+    /// remains the only user-visible publication stream.
+    MessageAdmitted {
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: FileRef,
+    },
     /// Atomically records the selected child and host issuer binding.
     ForkIntentSelected {
         intent: LocalForkIntent,
@@ -4467,11 +4476,16 @@ impl PersistentLocalSwarm {
                 });
             }
         }
-        // Fence cancelled or failed senders before staging bytes. Completed
-        // tasks remain eligible for an explicit new user turn, while the
-        // durable host still rechecks both endpoints at publication time.
-        sender_scope.require_new_mutation()?;
-        recipient_scope.require_new_mutation()?;
+        // Generic hosts fence before staging. The local host also supports
+        // replaying a previously journal-admitted message after cancellation;
+        // its owner CAS and mailbox publication path decide whether this is
+        // a recovery or a new mutation.
+        if (sender_scope.accepts_new_mutations && recipient_scope.accepts_new_mutations)
+            || !host.supports_admitted_message_recovery()
+        {
+            sender_scope.require_new_mutation()?;
+            recipient_scope.require_new_mutation()?;
+        }
         // The sender owns the explicit source. The communication host checks
         // sender read authority and transfers it into recipient-private storage
         // before publishing the inbox record.
@@ -4502,6 +4516,120 @@ impl PersistentLocalSwarm {
             message_id,
             payload,
         })
+    }
+
+    /// Wins the lifecycle journal CAS for one message before the host stages
+    /// recipient-owned content. An existing identical admission is recoverable and
+    /// may finish after cancellation; a cancellation that wins the same
+    /// registry tail prevents a new admission.
+    pub(crate) async fn admit_message(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: FileRef,
+    ) -> Result<bool> {
+        if sender.into_bytes() == [0; 16]
+            || recipient.into_bytes() == [0; 16]
+            || message_id.into_bytes() == [0; 16]
+            || sender == recipient
+        {
+            return Err(Error::Invalid("message admission identity is invalid".into()));
+        }
+        payload.validate()?;
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        if self
+            .find_message_admission(sender, recipient, message_id, &payload)
+            .await?
+        {
+            return Ok(true);
+        }
+        let sender_session = self.session(sender).await?;
+        let recipient_session = self.session(recipient).await?;
+        if !matches!(
+            sender_session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) || !matches!(
+            recipient_session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) {
+            return Err(Error::Conflict(
+                "message admission lost the lifecycle cancellation race".into(),
+            ));
+        }
+        let event = StoredEvent::MessageAdmitted {
+            sender,
+            recipient,
+            message_id,
+            payload: payload.clone(),
+        };
+        match append_record_at(&registry, event, observed_tail).await {
+            Ok(()) => {
+                *self.registry_tail.lock().await = observed_tail
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                Ok(true)
+            }
+            Err(error) => {
+                if self.refresh_registry_state().await.is_ok() {
+                    match self
+                        .find_message_admission(sender, recipient, message_id, &payload)
+                        .await
+                    {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if matches!(error, Error::Conflict(_)) {
+                    return Err(Error::Conflict(
+                        "message admission lost its durable lifecycle race".into(),
+                    ));
+                }
+                Err(Error::Indeterminate(message_id))
+            }
+        }
+    }
+
+    async fn find_message_admission(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: &FileRef,
+    ) -> Result<bool> {
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        for record in load_records(&registry).await? {
+            if let StoredEvent::MessageAdmitted {
+                sender: candidate_sender,
+                recipient: candidate_recipient,
+                message_id: candidate_message,
+                payload: candidate_payload,
+            } = record.event
+                && candidate_sender == sender
+                && candidate_recipient == recipient
+                && candidate_message == message_id
+            {
+                if candidate_payload != *payload {
+                    return Err(Error::Conflict(
+                        "message identity was reused with another payload".into(),
+                    ));
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Reads a bounded durable inbox page for a task.
@@ -6751,6 +6879,36 @@ fn apply_record(
                 ));
             }
             admissions.insert(task, admission);
+        }
+        StoredEvent::MessageAdmitted {
+            sender,
+            recipient,
+            message_id,
+            payload,
+        } => {
+            if sender.into_bytes() == [0; 16]
+                || recipient.into_bytes() == [0; 16]
+                || message_id.into_bytes() == [0; 16]
+                || sender == recipient
+            {
+                return Err(Error::Conflict(
+                    "persisted message admission identity is invalid".into(),
+                ));
+            }
+            payload.validate()?;
+            let sender_session = sessions
+                .get(&sender)
+                .ok_or_else(|| Error::Storage("message admission sender is missing".into()))?;
+            let recipient_session = sessions
+                .get(&recipient)
+                .ok_or_else(|| Error::Storage("message admission recipient is missing".into()))?;
+            if sender_session.parent != Some(recipient)
+                && recipient_session.parent != Some(sender)
+            {
+                return Err(Error::Conflict(
+                    "message admission endpoints are not direct parent and child".into(),
+                ));
+            }
         }
         StoredEvent::ForkIntent { intent } => {
             intent.validate()?;
@@ -9137,6 +9295,87 @@ mod tests {
         assert_eq!(reopened.open_session(task).await?.signing_key(), first_key);
         assert!(reopened.bindings.filesystem_fork_resolver.is_some());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn message_admission_orders_cancellation_in_owner_registry() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
+        });
+        let model = Model::new("mock", "message-admission", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider,
+            Limits::default(),
+        )
+        .await?;
+        let parent = swarm.root_task().await?;
+        let child = TaskId::from_bytes([0xD8; 16]);
+        let child_operation = OperationId::from_bytes([0xD9; 16]);
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let tail = match registry.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        append_record_at(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: child,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "message child".into(),
+                operation: Some(child_operation),
+                phase: StoredPhase::Ready,
+            }),
+            tail,
+        )
+        .await?;
+        let mut admission = swarm.authenticated_admission(parent).await?;
+        admission.operation_id = child_operation;
+        admission.parent = Some(parent);
+        swarm.persist_local_admission(child, admission).await?;
+        swarm.refresh_registry_state().await?;
+        let source = swarm.open_session(parent).await?;
+        let payload = source
+            .storage()
+            .stage(
+                OperationId::from_bytes([0xDA; 16]),
+                "system/test-message.txt",
+                b"message",
+                "text/plain",
+                "message.txt",
+            )
+            .await?;
+        let message = OperationId::from_bytes([0xDB; 16]);
+        assert!(swarm.admit_message(parent, child, message, payload.clone()).await?);
+        swarm.cancel(child).await?;
+        assert!(swarm.admit_message(parent, child, message, payload).await?);
+        let records = load_records(&registry).await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::MessageAdmitted {
+                        sender,
+                        recipient,
+                        message_id,
+                        ..
+                    } if sender == parent && recipient == child && message_id == message
+                ))
+                .count(),
+            1
+        );
         Ok(())
     }
 
