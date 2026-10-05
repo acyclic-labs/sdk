@@ -394,7 +394,7 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
         )
     } else if family == "objects" {
         format!(
-            "const response = await client.putObject((async function* () {{ yield create({request}Schema, {{ frame: {{ case: \"header\", value: {{ bucket: {{ name: \"guide\" }}, objectKey: \"hello.txt\" }} }} }}); yield create({request}Schema, {{ frame: {{ case: \"body\", value: new TextEncoder().encode(\"hello\") }} }}); yield create({request}Schema, {{ frame: {{ case: \"complete\", value: true }} }}); }})());",
+            "const response = await client.putObject((async function* () {{ yield create({request}Schema, {{ frame: {{ case: \"header\", value: {{ bucket: {{ name: \"default\" }}, objectKey: \"hello.txt\" }} }} }}); yield create({request}Schema, {{ frame: {{ case: \"body\", value: new TextEncoder().encode(\"hello\") }} }}); yield create({request}Schema, {{ frame: {{ case: \"complete\", value: true }} }}); }})());",
             request = request,
         )
     } else if family == "inference" {
@@ -423,7 +423,7 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
                 )
             } else if family == "objects" {
                 format!(
-                    "response = client.{method}(iter([{module}_pb2.{request}(header={module}_pb2.PutObjectHeader(bucket={module}_pb2.BucketRef(name=\"guide\"), object_key=\"hello.txt\")), {module}_pb2.{request}(body=b\"hello\"), {module}_pb2.{request}(complete=True)]))",
+                    "response = client.{method}(iter([{module}_pb2.{request}(header={module}_pb2.PutObjectHeader(bucket={module}_pb2.BucketRef(name=\"default\"), object_key=\"hello.txt\")), {module}_pb2.{request}(body=b\"hello\"), {module}_pb2.{request}(complete=True)]))",
                     method = method,
                     module = module,
                     request = request,
@@ -442,6 +442,13 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
                     request = request,
                     version = harness_protocol_version,
                     digest = harness_protocol_digest,
+                    method = method,
+                )
+            } else if family == "machines" {
+                format!(
+                    "request = {module}_pb2.{request}(protocol={module}_pb2.ProtocolVersion(major=1, minor=1))\nresponse = client.{method}(request)",
+                    module = module,
+                    request = request,
                     method = method,
                 )
             } else {
@@ -488,6 +495,12 @@ print(response)"#,
             };
             let ts_call = if family == "harness" {
                 format!("const response = await client.{method}({harness_request});", method = method_camel, harness_request = harness_request)
+            } else if family == "machines" {
+                format!(
+                    "const response = await client.{method}(create({request}Schema, {{ protocol: {{ major: 1, minor: 1 }} }}));",
+                    method = method_camel,
+                    request = request,
+                )
             } else {
                 ts_call
             };
@@ -524,7 +537,7 @@ console.log(response);"#,
                 format!(
                     r#"stream, err := client.PutObject(ctx)
     if err != nil {{ panic(err) }}
-     if err := stream.Send(&generated.PutObjectRequest{{Frame: &generated.PutObjectRequest_Header{{Header: &generated.PutObjectHeader{{Bucket: &generated.BucketRef{{Name: "guide"}}, ObjectKey: "hello.txt"}}}}}}); err != nil {{ panic(err) }}
+     if err := stream.Send(&generated.PutObjectRequest{{Frame: &generated.PutObjectRequest_Header{{Header: &generated.PutObjectHeader{{Bucket: &generated.BucketRef{{Name: "default"}}, ObjectKey: "hello.txt"}}}}}}); err != nil {{ panic(err) }}
      if err := stream.Send(&generated.PutObjectRequest{{Frame: &generated.PutObjectRequest_Body{{Body: []byte("hello")}}}}); err != nil {{ panic(err) }}
      if err := stream.Send(&generated.PutObjectRequest{{Frame: &generated.PutObjectRequest_Complete{{Complete: true}}}}); err != nil {{ panic(err) }}
     response, err := stream.CloseAndRecv()"#
@@ -606,7 +619,7 @@ func main() {{
         public void onError(Throwable error) {{ result.completeExceptionally(error); }}
         public void onCompleted() {{ }}
       }});
-       requestObserver.onNext({package_type}.PutObjectRequest.newBuilder().setHeader({package_type}.PutObjectHeader.newBuilder().setBucket({package_type}.BucketRef.newBuilder().setName("guide")).setObjectKey("hello.txt")).build());
+       requestObserver.onNext({package_type}.PutObjectRequest.newBuilder().setHeader({package_type}.PutObjectHeader.newBuilder().setBucket({package_type}.BucketRef.newBuilder().setName("default")).setObjectKey("hello.txt")).build());
        requestObserver.onNext({package_type}.PutObjectRequest.newBuilder().setBody(com.google.protobuf.ByteString.copyFromUtf8("hello")).build());
       requestObserver.onNext({package_type}.PutObjectRequest.newBuilder().setComplete(true).build());
       requestObserver.onCompleted();
@@ -676,7 +689,7 @@ public final class GuideSnippet {{
             } else if family == "objects" {
                 format!(
                     r#"using var call = client.PutObject();
-     await call.RequestStream.WriteAsync(new {request} {{ Header = new PutObjectHeader {{ Bucket = new BucketRef {{ Name = "guide" }}, ObjectKey = "hello.txt" }} }});
+     await call.RequestStream.WriteAsync(new {request} {{ Header = new PutObjectHeader {{ Bucket = new BucketRef {{ Name = "default" }}, ObjectKey = "hello.txt" }} }});
      await call.RequestStream.WriteAsync(new {request} {{ Body = ByteString.CopyFromUtf8("hello") }});
     await call.RequestStream.WriteAsync(new {request} {{ Complete = true }});
     await call.RequestStream.CompleteAsync();
@@ -736,7 +749,7 @@ Console.WriteLine(response);"#,
             } else if family == "objects" {
                 format!(
                     r#"response = client.{method_snake}([
-  Acyclic::{package_type}::{version_type}::{request}.new(header: Acyclic::{package_type}::{version_type}::PutObjectHeader.new(bucket: Acyclic::{package_type}::{version_type}::BucketRef.new(name: "guide"), object_key: "hello.txt")),
+  Acyclic::{package_type}::{version_type}::{request}.new(header: Acyclic::{package_type}::{version_type}::PutObjectHeader.new(bucket: Acyclic::{package_type}::{version_type}::BucketRef.new(name: "default"), object_key: "hello.txt")),
   Acyclic::{package_type}::{version_type}::{request}.new(body: "hello"),
   Acyclic::{package_type}::{version_type}::{request}.new(complete: true)
 ])"#,
@@ -799,7 +812,7 @@ puts response"#,
             } else if family == "objects" {
                 format!(
                     r#"final response = await client.{method_camel}(Stream.fromIterable([
-    generated.{request}()..header = (generated.PutObjectHeader()..bucket = (generated.BucketRef()..name = "guide")..objectKey = "hello.txt"),
+    generated.{request}()..header = (generated.PutObjectHeader()..bucket = (generated.BucketRef()..name = "default")..objectKey = "hello.txt"),
     generated.{request}()..body = utf8.encode("hello"),
     generated.{request}()..complete = true,
   ]));"#,
