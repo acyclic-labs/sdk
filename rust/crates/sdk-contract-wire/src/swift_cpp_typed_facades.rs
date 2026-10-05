@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
-    PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldDirection, SEMANTIC_TYPES,
-    SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, field_semantic_type, resolved_request_fields,
-    resolved_response_fields, resolved_rpc_methods, semantic_type,
+    PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldDirection, ResolvedRequestField,
+    SEMANTIC_TYPES, SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, field_semantic_type,
+    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, semantic_type,
 };
 use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
 
@@ -693,8 +693,7 @@ fn swift_wire_type(field: &crate::type_policy::ResolvedRequestField) -> String {
         }
         Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
             descriptor_type_name(field)
-                .map(|name| format!("std::shared_ptr<{name}>"))
-                .unwrap_or_else(|| "std::shared_ptr<RustWireMessage>".into())
+                .unwrap_or_else(|| "RustWireMessage".into())
         }
         _ => "Data".into(),
     }
@@ -770,6 +769,74 @@ fn cpp_field_type(
         format!("std::optional<{value}>")
     } else {
         value
+    }
+}
+
+fn response_oneof_groups() -> BTreeMap<(String, String), Vec<ResolvedRequestField>> {
+    let mut groups = BTreeMap::<(String, String), Vec<ResolvedRequestField>>::new();
+    for field in resolved_response_fields()
+        .expect("Rust response descriptors must resolve")
+        .into_iter()
+        .filter(|field| field.oneof_name.is_some() && !field.proto3_optional)
+    {
+        groups
+            .entry((field.message_path.clone(), field.oneof_name.clone().unwrap()))
+            .or_default()
+            .push(field);
+    }
+    for members in groups.values_mut() {
+        members.sort_by_key(|field| field.number);
+        members.dedup_by(|left, right| left.field == right.field && left.number == right.number);
+    }
+    groups
+}
+
+fn response_oneof_name(field: &ResolvedRequestField, oneof: &str) -> String {
+    let message = field.message_path.rsplit('.').next().unwrap_or("Message");
+    format!("{}{}{}Choice", camel(&field.family), camel(message), camel(oneof))
+}
+
+fn cpp_oneof_arm_type(field: &ResolvedRequestField) -> String {
+    let ty = cpp_field_type(field, PublicFieldDirection::Response);
+    ty.strip_prefix("std::optional<")
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(&ty)
+        .to_owned()
+}
+
+fn render_swift_oneof_models(out: &mut String) {
+    for ((_message, oneof), members) in response_oneof_groups() {
+        let Some(first) = members.first() else { continue };
+        let name = response_oneof_name(first, &oneof);
+        out.push_str(&format!("public enum {name}: Sendable {{\n"));
+        for field in members {
+            let value_type = swift_field_type(&field, PublicFieldDirection::Response)
+                .trim_end_matches('?')
+                .to_owned();
+            out.push_str(&format!(" case {}({value_type})\n", camel(&field.field)));
+        }
+        out.push_str(" case none\n case unknown(rawTag: Int32, payload: Data)\n}\n\n");
+    }
+}
+
+fn render_cpp_oneof_models(out: &mut String) {
+    for ((_message, oneof), members) in response_oneof_groups() {
+        let Some(first) = members.first() else { continue };
+        let name = response_oneof_name(first, &oneof);
+        let mut alternatives = Vec::new();
+        for field in members {
+            let arm = format!("{name}{}", camel(&field.field));
+            let value_type = cpp_oneof_arm_type(&field);
+            out.push_str(&format!("struct {arm} {{ {value_type} value; }};\n"));
+            alternatives.push(arm);
+        }
+        let unknown = format!("{name}Unknown");
+        out.push_str(&format!("struct {unknown} {{ std::int32_t raw_tag; std::vector<std::uint8_t> payload; }};\n"));
+        alternatives.push(unknown);
+        let none = format!("{name}None");
+        out.push_str(&format!("struct {none} {{}};\n"));
+        alternatives.push(none);
+        out.push_str(&format!("using {name}Value = std::variant<{}>;\n\n", alternatives.join(", ")));
     }
 }
 
@@ -878,7 +945,11 @@ fn render_swift() -> String {
     for name in ordinary_enums {
         out.push_str(&format!("public struct {name}: Sendable {{ public let raw: Int32; public init(raw: Int32) {{ self.raw = raw }}; public init(_ value: RustWireEnum) {{ self.raw = value.raw }} }}\n"));
     }
-    out.push_str("\npublic enum WireChoice: Sendable { case known(tag: String, payload: Data); case unknown(rawTag: Int32, payload: Data) }\n\n");
+    render_swift_oneof_models(&mut out);
+    // A known arm is a decoded Rust-owned message view.  Only the open
+    // unknown arm is allowed to remain raw bytes; keeping a known payload as
+    // `RustWireMessage` prevents the public API from erasing it to `Data`.
+    out.push_str("\npublic enum WireChoice: Sendable { case known(tag: String, payload: RustWireMessage); case unknown(rawTag: Int32, payload: Data) }\n\n");
     for ((module, message), fields) in request_groups() {
         let name = format!(
             "{}{}Request",
@@ -1181,6 +1252,7 @@ fn render_cpp() -> String {
     for name in ordinary_enums {
         out.push_str(&format!("struct {name} {{ std::int32_t raw; explicit {name}(std::int32_t value) : raw(value) {{}} explicit {name}(RustWireEnum value) : raw(value.raw) {{}} }};\n"));
     }
+    render_cpp_oneof_models(&mut out);
     let mut seen = BTreeSet::new();
     for item in SEMANTIC_TYPES {
         if !seen.insert(item.rust_name) || item.wire_kind != WireValueKind::Message {
@@ -1204,7 +1276,9 @@ fn render_cpp() -> String {
         }
     }
     let _ = WIRE_UNION_VARIANTS;
-    out.push_str("struct KnownOneof { std::string tag; std::vector<std::uint8_t> payload; };\nstruct UnknownOneof { std::int32_t raw_tag; std::vector<std::uint8_t> payload; };\nusing WireChoice = std::variant<KnownOneof, UnknownOneof>;\n\n");
+    // Known arms carry a decoded Rust-owned message view.  Preserve raw bytes
+    // only for the open unknown arm so future wire values remain lossless.
+    out.push_str("struct KnownOneof { std::string tag; RustWireMessage payload; };\nstruct UnknownOneof { std::int32_t raw_tag; std::vector<std::uint8_t> payload; };\nusing WireChoice = std::variant<KnownOneof, UnknownOneof>;\n\n");
     for ((module, message), fields) in request_groups() {
         let name = format!(
             "{}{}Request",
@@ -1328,7 +1402,7 @@ fn render_cpp() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::generate_swift_cpp_typed_facades;
+    use super::{generate_swift_cpp_typed_facades, CPP_TYPED_PATH, SWIFT_TYPED_PATH};
     #[test]
     fn emits_nominal_clients_and_open_unions() {
         let files = generate_swift_cpp_typed_facades();
@@ -1347,5 +1421,18 @@ mod tests {
                 .iter()
                 .any(|(_, source)| source.contains("WireChoice"))
         );
+        let swift = files
+            .iter()
+            .find(|(path, _)| *path == SWIFT_TYPED_PATH)
+            .map(|(_, source)| source)
+            .expect("Swift facade must be generated");
+        assert!(swift.contains("case known(tag: String, payload: RustWireMessage)"));
+        assert!(!swift.contains("std::shared_ptr"));
+        let cpp = files
+            .iter()
+            .find(|(path, _)| *path == CPP_TYPED_PATH)
+            .map(|(_, source)| source)
+            .expect("C++ facade must be generated");
+        assert!(cpp.contains("struct KnownOneof { std::string tag; RustWireMessage payload; }"));
     }
 }
