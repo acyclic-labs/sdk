@@ -2045,6 +2045,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .revalidate_with_key(filesystem_key(idempotency_key))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
+        // Recheck the canonical source root after the native attachment and
+        // reconciliation. This closes the interval in which a path alias or
+        // reparse-point swap could replace the initially checked project root
+        // with one of the explicitly reserved host roots.
+        boundary.validate_source_root(&binding.source_root)?;
         let generation = self.generation_ref_id(binding.generation_id)?;
         self.retain_generation(
             &workspace_ref(self.provider.clone(), &project.storage_name()?)?,
@@ -2812,6 +2817,10 @@ mod tests {
         ));
 
         let project_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        for name in ["runtime", "session", "credentials", "secrets"] {
+            std::fs::create_dir(project_root.path().join(name))
+                .map_err(|error| Error::Storage(error.to_string()))?;
+        }
         assert!(boundary.validate_source_root(project_root.path()).is_ok());
         assert!(NativeCaptureBoundary::new(std::iter::empty::<&std::path::Path>()).is_err());
         Ok(())
