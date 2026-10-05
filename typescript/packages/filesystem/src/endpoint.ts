@@ -1,14 +1,20 @@
-/** Accepts encrypted service URLs and explicit loopback-only development URLs. */
+import { validateFilesystemEndpoint } from "./remote-web.js";
+
+/** Parse a service URL before the Rust-owned endpoint policy runs. */
 export function secureServiceEndpoint(value: string, invalid: (message: string) => Error): URL {
   let endpoint: URL;
   try { endpoint = new URL(value); }
   catch { throw invalid("endpoint is not a valid absolute URL"); }
-  const loopback = endpoint.hostname === "localhost" || endpoint.hostname === "127.0.0.1" || endpoint.hostname === "[::1]" || endpoint.hostname === "::1";
-  if (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) {
-    throw invalid("endpoint must use HTTPS or loopback HTTP");
-  }
-  if (!endpoint.hostname || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
-    throw invalid("endpoint must not contain credentials, query, or fragment");
+  return endpoint;
+}
+
+/** Parse and validate a service URL through the canonical Rust policy. */
+export async function rustOwnedServiceEndpoint(value: string, invalid: (message: string) => Error): Promise<URL> {
+  const endpoint = secureServiceEndpoint(value, invalid);
+  try {
+    await validateFilesystemEndpoint(value);
+  } catch {
+    throw invalid("endpoint must use HTTPS or loopback HTTP without credentials, query, or fragment");
   }
   return endpoint;
 }
