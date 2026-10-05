@@ -14,7 +14,7 @@ defmodule Acyclic.GeneratedRuntimeReceipt do
     lines = File.read!(path) |> String.split("\n", trim: true) |> Enum.filter(fn value -> String.starts_with?(value, rpc <> "#") end)
     case lines do
       [] -> [fallback]
-      values -> values |> Enum.sort_by(fn value -> value |> String.split("\t", parts: 2) |> hd() |> String.split("#") |> List.last() |> String.to_integer() end) |> Enum.map(fn value -> value |> String.split("\t", parts: 2) |> List.last() |> Base.decode64!() |> decode_request(module) end)
+      values -> values |> Enum.sort_by(fn value -> value |> String.split("\t", parts: 2) |> hd() |> String.split("#") |> Enum.drop(1) |> Enum.map(&String.to_integer/1) end) |> Enum.map(fn value -> value |> String.split("\t", parts: 2) |> List.last() |> Base.decode64!() |> decode_request(module) end)
     end
   end
   def send_client_frames(stream, request_module, requests) do
