@@ -1342,7 +1342,7 @@ pub struct NativeExecutionProvider {
     active: Arc<
         Mutex<BTreeMap<OperationId, (ExecutionReceiptKey, EffectAttemptId, ExecutionCancellation)>>,
     >,
-    cancel_jobs: Mutex<BTreeMap<OperationId, tokio::task::JoinHandle<()>>>,
+    cancel_jobs: Mutex<BTreeMap<OperationId, (EffectAttemptId, tokio::task::JoinHandle<()>)>>,
     provider_id: String,
 }
 
@@ -1573,16 +1573,22 @@ impl NativeExecutionProvider {
                 .cancel_jobs
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            jobs.retain(|_, job| !job.is_finished());
-            if jobs.contains_key(&operation_id) {
-                return true;
+            jobs.retain(|_, (_, job)| !job.is_finished());
+            if let Some((attempt_id, job)) = jobs.remove(&operation_id) {
+                if attempt_id == key.attempt_id {
+                    jobs.insert(operation_id, (attempt_id, job));
+                    return true;
+                }
+                // The operation identity was reused for a fresh attempt.
+                // Never let an older persistence job fence the new receipt.
+                job.abort();
             }
             let job = runtime.spawn(async move {
                 if store.request_cancel(&key).await.is_ok() {
                     cancellation.mark_durable();
                 }
             });
-            jobs.insert(operation_id, job);
+            jobs.insert(operation_id, (key.attempt_id, job));
         }
         true
     }
@@ -1603,7 +1609,7 @@ impl NativeExecutionProvider {
         };
         cancellation.cancel();
         if let Ok(mut jobs) = self.cancel_jobs.lock() {
-            if let Some(job) = jobs.remove(&operation_id) {
+            if let Some((_, job)) = jobs.remove(&operation_id) {
                 job.abort();
             }
         }
