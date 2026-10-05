@@ -133,10 +133,30 @@ jobs:
             -TargetOutput "$RUNNER_TEMP/http-target/${{ matrix.target }}" \
             -Request "$RUNNER_TEMP/http-target-request.json"
 
+      - name: Start the Rust-owned HTTP fixture for generated-client transport
+        if: matrix.target == 'nim'
+        shell: bash
+        run: |
+          cargo run --locked \
+            --manifest-path rust/crates/sdk-examples/Cargo.toml \
+            --bin fixture-server -- \
+            --port 18080 --grpc-port 18081 \
+            >"$RUNNER_TEMP/http-fixture.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/http-fixture.pid"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/http-fixture.log"
+          exit 1
+
       - name: Compile and install the generated package
         shell: bash
         env:
           ACYCLIC_RUST_SOURCE_REVISION: ${{ inputs.ref || github.sha }}
+          ACYCLIC_FIXTURE_HTTP_ENDPOINT: ${{ matrix.target == 'nim' && 'http://127.0.0.1:18080' || '' }}
         run: |
           archive="$(find "$RUNNER_TEMP/http-target/${{ matrix.target }}" -maxdepth 1 -type f -name '*.zip' -print -quit)"
           test -n "$archive"
@@ -145,6 +165,18 @@ jobs:
             "$RUNNER_TEMP/http-target/${{ matrix.target }}/generated" \
             "$RUNNER_TEMP/http-target/${{ matrix.target }}/runtime" \
             "$archive"
+
+      - name: Stop the Rust-owned HTTP fixture
+        if: always() && matrix.target == 'nim'
+        shell: bash
+        run: |
+          curl --fail --silent --request POST http://127.0.0.1:18080/shutdown >/dev/null || true
+          if [[ -s "$RUNNER_TEMP/http-fixture.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/http-fixture.pid")" 2>/dev/null || true
+          fi
+          if [[ -s "$RUNNER_TEMP/http-fixture.log" ]]; then
+            cat "$RUNNER_TEMP/http-fixture.log"
+          fi
 
       - name: Upload runtime qualification receipt
         if: always()

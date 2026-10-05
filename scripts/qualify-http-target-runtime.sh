@@ -134,6 +134,40 @@ EOF
       [[ -n "$main" ]] || { echo "no Nim entrypoint beside $project" >&2; exit 1; }
       run_logged "nim-$(basename "$(dirname "$project")")" nim check "$main"
     done
+    if [[ -n "${ACYCLIC_FIXTURE_HTTP_ENDPOINT:-}" ]]; then
+      # The request and call below are generated-client code. The fixture is
+      # Rust-owned, so this proves JSON serialization, route selection, and
+      # response decoding without introducing a handwritten protocol client.
+      transport_dir="$output_root/nim-transport"
+      mkdir -p "$transport_dir"
+      cat >"$transport_dir/qualification.nim" <<'EOF'
+import httpclient, options, os
+import acyclic_actors_nim
+import acyclic_actors_nim/apis/api_default
+import acyclic_actors_nim/models/model_acyclic_actors_v1_create_actor_request
+import acyclic_actors_nim/models/model_acyclic_actors_v1_actor_limits
+import acyclic_actors_nim/models/model_byte_array
+
+let client = newHttpClient()
+let request = AcyclicActorsV1CreateActorRequest(
+  codeSha256: some(toByteArray("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")),
+  homeRegion: some("qualification"),
+  idempotencyKey: some("http-target-nim-qualification"),
+  limits: some(AcyclicActorsV1ActorLimits(
+    checkpointBytes: some("1048576"),
+    handlerTimeoutMillis: some("1000"),
+    memoryBytes: some("1048576"))))
+let (decoded, response) = createActor(client, request)
+if response.code.int < 200 or response.code.int >= 300:
+  quit("Rust fixture rejected generated Nim request: " & $response.code, 1)
+if decoded.isNone:
+  quit("generated Nim client did not decode the Rust fixture response", 1)
+EOF
+      run_logged nim-transport env ACYCLIC_BASE_URL="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" nim c -r --hints:off --path:"$package_root/actors" "$transport_dir/qualification.nim"
+      client_transport='nim-generated-client-fixture-roundtrip'
+    else
+      client_transport='not-run-fixture-endpoint-unset'
+    fi
     runtime='nim/nimble'
     ;;
   r)
@@ -149,9 +183,9 @@ EOF
   *) echo "unsupported HTTP target: $target" >&2; exit 2 ;;
 esac
 
-python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" "$archive_sha256" <<'PY'
+python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" "$archive_sha256" "${client_transport:-not-run}" <<'PY'
 import json, pathlib, sys
-path, target, runtime, revision, archive, archive_sha256 = sys.argv[1:]
+path, target, runtime, revision, archive, archive_sha256, client_transport = sys.argv[1:]
 payload = {
     "schema": "acyclic.sdk.http-target-runtime-qualification.v1",
     "target": target,
@@ -162,6 +196,7 @@ payload = {
     "archive": archive or None,
     "archive_sha256": archive_sha256 or None,
     "installed_from_archive": bool(archive),
+    "client_transport": client_transport,
     "streaming": "not-applicable-to-http-projection",
     "native_grpc": "unqualified",
 }
