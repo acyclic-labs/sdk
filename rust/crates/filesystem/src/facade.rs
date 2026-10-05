@@ -6937,6 +6937,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     exact_regions.push(known_region);
                 }
             }
+            subsume_record_dependencies(&mut exact_regions);
             let captured = capture_known_dependencies_async(
                 &self.volume.fs.inner.objects,
                 self.volume.config,
@@ -13527,6 +13528,35 @@ fn exact_mutation_regions(
         }
     }
     regions
+}
+
+/// Drops the byte-level regions of every file whose complete record the same batch already
+/// depends on.
+///
+/// A [`DependencyRegion::FileRecord`] proof authenticates the whole record, payload included, so
+/// it already fails if any of that file's bytes or its length changed; a content range, length
+/// or sparse-seek region of the same file adds nothing. They are not merely redundant: a content
+/// range is proved by reading its bytes, and a whole-file rewrite (`Resize` to zero, `Resize`,
+/// then one write of the new body, as native capture records every changed regular file) asks
+/// for a range as long as the old file, which a file larger than `maximum_read_bytes` cannot
+/// supply.
+fn subsume_record_dependencies(regions: &mut Vec<(Option<FileRecord>, DependencyRegion)>) {
+    let records = regions
+        .iter()
+        .filter_map(|(_, region)| match region {
+            DependencyRegion::FileRecord(file_id) => Some(*file_id),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if records.is_empty() {
+        return;
+    }
+    regions.retain(|(_, region)| match region {
+        DependencyRegion::ContentRange { file_id, .. }
+        | DependencyRegion::FileLength(file_id)
+        | DependencyRegion::SparseSeek { file_id, .. } => !records.contains(file_id),
+        _ => true,
+    });
 }
 
 fn regular_range_regions(
