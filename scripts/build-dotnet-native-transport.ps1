@@ -34,11 +34,17 @@ foreach ($targetName in $targets) {
       # producer does.
       # Ubuntu's musl wrapper exposes libgcc_s only through its private specs;
       # link compiler support statically while keeping musl itself dynamic.
-      $gccArchive = (& musl-gcc -print-file-name=libgcc.a 2>$null).Trim()
-      if (-not $gccArchive -or -not (Test-Path -LiteralPath $gccArchive -PathType Leaf)) {
-        throw "The runner GCC installation did not expose libgcc.a for $targetName"
+      $searchLine = (& musl-gcc -print-search-dirs 2>$null | Where-Object { $_ -like 'libraries: *' } | Select-Object -First 1)
+      $searchRoots = @()
+      if ($searchLine) {
+        $searchRoots = @(($searchLine -replace '^libraries:\s*=', '').Split([IO.Path]::PathSeparator) | Where-Object { $_ })
       }
-      $gccLibraryDirectory = Split-Path -Parent $gccArchive
+      $gccLibraryDirectory = $searchRoots |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_ 'libgcc.a') -PathType Leaf } |
+        Select-Object -First 1
+      if (-not $gccLibraryDirectory) {
+        throw "The musl GCC installation did not expose libgcc.a for $targetName"
+      }
       $env:RUSTFLAGS = (($savedRustFlags + " -C target-feature=-crt-static -C link-arg=-static-libgcc -C link-arg=-L$gccLibraryDirectory").Trim())
       $targetEnv = $targetName.ToUpperInvariant().Replace('-', '_')
       $savedLinkerVariable = "CARGO_TARGET_${targetEnv}_LINKER"
