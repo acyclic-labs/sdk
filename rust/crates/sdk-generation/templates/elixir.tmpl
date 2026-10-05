@@ -47,7 +47,7 @@ defmodule Acyclic.GeneratedRuntimeReceipt do
   end
   def obs(rpc, shape, request_bytes, responses, status, execution, error \\ nil, request_frames \\ nil) do
     response_hashes = Enum.map(responses, fn bytes -> "sha256:" <> hex(:crypto.hash(:sha256, bytes)) end)
-    %{"family" => rpc |> String.split(".") |> List.first(), "rpc" => rpc, "shape" => to_string(shape), "execution" => execution, "status" => status, "terminal_status" => terminal_status(status, execution), "terminal_code" => status, "request_base64" => base64(request_bytes), "request_frames_base64" => Enum.map(request_frames || [request_bytes], &base64/1), "request_sha256" => "sha256:" <> hex(:crypto.hash(:sha256, request_bytes)), "response_sha256" => List.first(response_hashes), "response_frames" => length(response_hashes), "response_frame_base64" => Enum.map(responses, &base64/1), "response_frame_sha256" => response_hashes, "error" => if(error, do: inspect(error), else: nil)}
+    %{"rpc" => rpc, "shape" => to_string(shape), "execution" => execution, "status" => status, "terminal_status" => terminal_status(status, execution), "terminal_code" => status, "request_base64" => base64(request_bytes), "request_frames_base64" => Enum.map(request_frames || [request_bytes], &base64/1), "request_sha256" => "sha256:" <> hex(:crypto.hash(:sha256, request_bytes)), "response_sha256" => List.first(response_hashes), "response_frames" => length(response_hashes), "response_frame_base64" => Enum.map(responses, &base64/1), "response_frame_sha256" => response_hashes, "error" => if(error, do: inspect(error), else: nil)}
   end
   def json_observation(observation) do
     status = if is_integer(observation["status"]), do: Integer.to_string(observation["status"]), else: "null"
@@ -59,7 +59,7 @@ defmodule Acyclic.GeneratedRuntimeReceipt do
   def json_observation_with_bytes(observation) do
     frame_bytes = observation["response_frame_base64"] |> Enum.map(fn value -> "\"" <> json_escape(value) <> "\"" end) |> Enum.join(",")
     request_frame_bytes = observation["request_frames_base64"] |> Enum.map(fn value -> "\"" <> json_escape(value) <> "\"" end) |> Enum.join(",")
-    fields = ",\"family\":\"" <> json_escape(observation["family"]) <> "\",\"request_base64\":\"" <> observation["request_base64"] <> "\",\"response_frame_base64\":[" <> frame_bytes <> "],"
+    fields = ",\"request_base64\":\"" <> observation["request_base64"] <> "\",\"response_frame_base64\":[" <> frame_bytes <> "],"
     json_observation(observation) |> String.replace(~r/,\"response_frames\":([0-9]+),/, ",\"response_frame_count\":\\1,") |> String.replace(",\"request_sha256\":" , fields <> "\"request_sha256\":") |> String.replace(",\"request_base64\":\"", ",\"request_frames_base64\":[" <> request_frame_bytes <> "],\"request_base64\":\"")
   end
   def write_receipt(path, observations) do
