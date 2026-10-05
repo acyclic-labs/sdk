@@ -188,10 +188,16 @@ request = AcyclicActorsHttp::AcyclicActorsV1CreateActorRequest.new(
 response = client.create.actor(request)
 abort "Rust fixture rejected generated Crystal request: #{response.status}" unless response.success?
 abort "generated Crystal client did not decode the Rust fixture response" if response.value.actor.nil?
+inspect_request = AcyclicActorsHttp::AcyclicActorsV1InspectActorRequest.new(
+  actor_id: response.value.actor.actor_id)
+inspect_response = client.inspect.actor(inspect_request)
+abort "Rust fixture rejected generated Crystal inspect request: #{inspect_response.status}" unless inspect_response.success?
+abort "generated Crystal client did not decode the inspect response" if inspect_response.value.actor.nil?
 EOF
       cp "$crystal_root/qualification.cr" "$transport_dir/qualification.cr"
       run_logged crystal-transport bash -c "cd \"$crystal_root\" && ACYCLIC_FIXTURE_HTTP_ENDPOINT=\"$ACYCLIC_FIXTURE_HTTP_ENDPOINT\" crystal run --path lib qualification.cr"
       client_transport='crystal-generated-client-fixture-roundtrip'
+      client_operations='actors.create_actor,actors.inspect_actor'
     else
       client_transport='not-run-fixture-endpoint-unset'
     fi
