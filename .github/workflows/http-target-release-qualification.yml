@@ -1,0 +1,154 @@
+name: HTTP target release qualification
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: http-target-release-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ada, clojure, crystal, elm, gdscript, nim, r]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Java for the pinned OpenAPI generator
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17.0.14'
+          cache: maven
+
+      - name: Set up Ada
+        if: matrix.target == 'ada'
+        uses: alire-project/setup-alire@fc4c8ce471aa30b3af0d39ce15add1ee9eaf28f2 # v6.0.0
+        with:
+          version: '2.1.1'
+          toolchain: gnat_native gprbuild
+
+      - name: Set up Clojure
+        if: matrix.target == 'clojure'
+        uses: DeLaGuardo/setup-clojure@05cb4bfdf57855f122e75b71e45224775cdfc4a0 # 9.5
+        with:
+          cli: '1.11.1.1413'
+          lein: '2.11.2'
+
+      - name: Set up Crystal
+        if: matrix.target == 'crystal'
+        uses: crystal-lang/install-crystal@1c205ae5a68a01840aeb518ae48990452f336560 # v1.9.3
+        with:
+          crystal: '1.15.1'
+          shards: '0.18.0'
+
+      - name: Set up Elm tooling
+        if: matrix.target == 'elm'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/elm-tools"
+          cat >"$RUNNER_TEMP/elm-tools/elm-tooling.json" <<'EOF'
+          {"tools":{"elm":"0.19.1"}}
+          EOF
+      - name: Install pinned Elm compiler
+        if: matrix.target == 'elm'
+        uses: mpizenberg/elm-tooling-action@42b35515baa7f0a340b1082ba0a473a4a1209425 # v2.1.0
+        with:
+          elm-tooling-dir: ${{ runner.temp }}/elm-tools
+          cache-key: elm-http-target-${{ hashFiles('rust/crates/sdk-contract-wire/src/**/*.rs') }}
+
+      - name: Set up Godot
+        if: matrix.target == 'gdscript'
+        uses: solarlabyrinth/action-setup-godot@d9f6c080367bc8e35dd623433be29e9f59f53a87 # v3
+        with:
+          version: '4.4.1-stable'
+          csharp: false
+          name: godot
+          export-templates: false
+
+      - name: Set up Nim
+        if: matrix.target == 'nim'
+        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
+        with:
+          nim-version: '2.2.4'
+
+      - name: Set up R
+        if: matrix.target == 'r'
+        uses: r-lib/actions/setup-r@929c772977a3a13c8733b363bf5a2f685c25dd91 # v2.9.0
+        with:
+          r-version: '4.4.2'
+          use-public-rspm: true
+
+      - name: Bind the Java executable to its observed hash
+        shell: bash
+        run: |
+          java_path="$(command -v java)"
+          echo "ACYCLIC_JAVA=$java_path" >> "$GITHUB_ENV"
+          echo "ACYCLIC_JAVA_SHA256=$(sha256sum "$java_path" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Generate Rust-owned products
+        shell: bash
+        run: |
+          cargo run --locked --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --bin sdk-contract-wire -- \
+            generate --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/rust-products"
+          cargo run --locked --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --bin sdk-contract-wire -- \
+            generate-products --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/rust-products"
+          test -s "$RUNNER_TEMP/rust-products/rust-authority.json"
+          printf '{"source":{"revision":"%s"}}\n' "$(git rev-parse HEAD)" > "$RUNNER_TEMP/http-target-request.json"
+
+      - name: Generate the selected HTTP package from Rust authority
+        shell: bash
+        env:
+          ACYCLIC_RUST_GENERATION_ENTRYPOINT: '1'
+        run: |
+          mkdir -p "$RUNNER_TEMP/http-target"
+          pwsh -NoProfile -File scripts/run-language-producer.ps1 \
+            -TargetId '${{ matrix.target }}' \
+            -SourceRoot "$GITHUB_WORKSPACE" \
+            -WireRoot "$RUNNER_TEMP/rust-products" \
+            -AuthorityManifest "$RUNNER_TEMP/rust-products/rust-authority.json" \
+            -OutputRoot "$RUNNER_TEMP/http-target" \
+            -TargetOutput "$RUNNER_TEMP/http-target/${{ matrix.target }}" \
+            -Request "$RUNNER_TEMP/http-target-request.json"
+
+      - name: Compile and install the generated package
+        shell: bash
+        env:
+          ACYCLIC_RUST_SOURCE_REVISION: ${{ inputs.ref || github.sha }}
+        run: |
+          bash scripts/qualify-http-target-runtime.sh \
+            '${{ matrix.target }}' \
+            "$RUNNER_TEMP/http-target/${{ matrix.target }}/generated" \
+            "$RUNNER_TEMP/http-target/${{ matrix.target }}/runtime"
+
+      - name: Upload runtime qualification receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: http-target-${{ matrix.target }}-qualification
+          path: ${{ runner.temp }}/http-target/${{ matrix.target }}
