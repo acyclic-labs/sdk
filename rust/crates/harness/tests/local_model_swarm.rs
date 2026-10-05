@@ -1257,7 +1257,6 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream() 
         limits,
     )
     .await?;
-    provider.bind_swarm(&reopened);
     assert_eq!(reopened.session(child_task).await?.phase, LocalSessionPhase::Cancelled);
     // The fresh host must recover the exact committed mailbox record before
     // the cancelled recipient's lifecycle fence. A changed body with the
