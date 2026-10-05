@@ -440,7 +440,9 @@ const sourceGitRevision = sourceGitRevisions.length === 1 ? sourceGitRevisions[0
 // Rust emits the source closure digest in every projection. It is the
 // authoritative identity for an archive or dirty checkout; Git HEAD is not
 // sufficient because it can describe a different tree than the producer.
-const sourceRevision = sourceSha256 ? `source-sha256:${sourceSha256}` : null;
+const sourceRevision = sourceSha256
+  ? `source-sha256:${sourceSha256.replace(/^sha256:/, "")}`
+  : null;
 const receipts = [];
 const fixture = args.has("--execute") && !process.env.FIXTURE_GRPC_ADDRESS ? await startFixture() : null;
 if (args.has("--execute") && !process.env.FIXTURE_GRPC_ADDRESS && !fixture) {
