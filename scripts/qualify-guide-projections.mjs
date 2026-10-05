@@ -412,6 +412,14 @@ const summary = {
   failed: receipts.filter((receipt) => receipt.status.endsWith("failed")).length,
   receipts,
 };
+const hasSuccessfulCommand = (value) => value && value.exitCode === 0 && typeof value.command === "string" && value.command.length > 0 && !/artifact present/i.test(value.command);
+const everyReceiptHasEvidence = receipts.every((receipt) =>
+  receipt.install_status === "installed" &&
+  hasSuccessfulCommand(receipt.install) &&
+  hasSuccessfulCommand(receipt.compile) &&
+  (!args.has("--execute") || (receipt.status === "executed" && hasSuccessfulCommand(receipt.execution))),
+);
+summary.evidence_complete = everyReceiptHasEvidence;
 writeFileSync(join(output, "qualification.json"), `${JSON.stringify(summary, null, 2)}\n`);
 console.log(JSON.stringify({ ...summary, receipts: undefined }, null, 2));
-if (args.has("--strict") && (summary.artifact_missing > 0 || summary.failed > 0 || summary.projection_count !== 54 || !sourceRevision || !sourceSha256 || projections.some((projection) => projection.source_sha256 !== sourceSha256))) process.exit(1);
+if (args.has("--strict") && (summary.artifact_missing > 0 || summary.failed > 0 || summary.projection_count !== 54 || !sourceRevision || !sourceSha256 || !everyReceiptHasEvidence || projections.some((projection) => projection.source_sha256 !== sourceSha256))) process.exit(1);
