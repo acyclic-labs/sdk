@@ -107,11 +107,19 @@ jobs:
         if: matrix.language != 'lua-remote'
         run: python3 -m pip install --disable-pip-version-check --no-cache-dir grpcio==1.66.2 protobuf==5.27.5
 
+      - name: Build Rust fixture server
+        if: matrix.language != 'lua-remote'
+        run: |
+          cargo build --locked \
+            --manifest-path rust/crates/sdk-examples/Cargo.toml \
+            --bin fixture-server
+          test -x rust/crates/sdk-examples/target/debug/fixture-server
+
       - name: Start Rust fixture server
         if: matrix.language != 'lua-remote'
         shell: bash
         run: |
-          cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- --port 18080 --grpc-port 18081 >"$RUNNER_TEMP/fixture-server.log" 2>&1 &
+          rust/crates/sdk-examples/target/debug/fixture-server --port 18080 --grpc-port 18081 >"$RUNNER_TEMP/fixture-server.log" 2>&1 &
           echo $! >"$RUNNER_TEMP/fixture-server.pid"
           for _ in $(seq 1 60); do
             if (echo >/dev/tcp/127.0.0.1/18081) >/dev/null 2>&1; then exit 0; fi
