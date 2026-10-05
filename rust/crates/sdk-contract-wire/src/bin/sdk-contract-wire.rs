@@ -227,6 +227,7 @@ fn type_policy_json() -> Vec<u8> {
                     PublicFieldDirection::Request => "request",
                     PublicFieldDirection::Response => "response",
                     PublicFieldDirection::NestedMessage => "nested_message",
+                    PublicFieldDirection::EmbeddedOnly => "embedded_only",
                 },
             })
         })
