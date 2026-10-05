@@ -246,9 +246,9 @@ impl<T> TaskHandle<T> {
         }
     }
 
-    /// Waits for a terminal outcome while retaining ownership of the handle.
-    pub async fn wait(&mut self) -> Outcome<T> {
-        // Keep the JoinHandle inside `self` while awaiting it. If this wait
+    /// Waits for a terminal outcome.
+    pub async fn result(mut self) -> Outcome<T> {
+        // Keep the JoinHandle inside `self` while awaiting it. If this result
         // future is dropped while pending, `TaskHandle`'s destructor still
         // sees the handle and aborts the worker instead of detaching it.
         let Some(join) = self.join.as_mut() else {
@@ -263,11 +263,6 @@ impl<T> TaskHandle<T> {
                 message: error.to_string(),
             },
         }
-    }
-
-    /// Waits for a terminal outcome and releases the handle.
-    pub async fn result(mut self) -> Outcome<T> {
-        self.wait().await
     }
 }
 
@@ -430,13 +425,6 @@ mod tests {
         let handle = TaskGroup::new(1).spawn(std::future::pending::<u64>()).await;
         handle.cancel();
         assert_eq!(handle.result().await, Outcome::Cancelled);
-    }
-
-    #[tokio::test]
-    async fn cancelled_worker_can_be_joined_while_handle_is_retained() {
-        let mut handle = TaskGroup::new(1).spawn(std::future::pending::<u64>()).await;
-        handle.cancel();
-        assert_eq!(handle.wait().await, Outcome::Cancelled);
     }
 
     #[tokio::test]

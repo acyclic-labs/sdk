@@ -4493,41 +4493,31 @@ impl PersistentLocalSwarm {
         max_steps: u32,
         mut cancelled: tokio::sync::watch::Receiver<bool>,
     ) -> Result<TurnOutput> {
-        // Keep a heap poll boundary for recursive model/tool work while the
-        // TaskGroup handle retains cancellation and join ownership. The outer
-        // worker must not poll the large turn future inline, and dropping an
-        // inner JoinHandle must not detach provider cleanup.
-        let group = crate::live::TaskGroup::new(1);
-        let mut child_task = group
-            .spawn(Self::run_child_turn(harness, bundle, request, max_steps))
-            .await;
+        // Keep a heap poll boundary for recursive model/tool work. The outer
+        // worker registry remains the single owner and join boundary, so
+        // cancellation cannot leave a second task detached from provider
+        // cleanup.
+        let child_task = Self::run_child_turn(harness, bundle, request, max_steps);
+        tokio::pin!(child_task);
         tokio::select! {
-            outcome = child_task.wait() => match outcome {
-                crate::Outcome::Succeeded(result) => result,
-                crate::Outcome::Failed { message } => Err(Error::Storage(message)),
-                crate::Outcome::Cancelled => Err(Error::Conflict("child turn was cancelled".into())),
-                crate::Outcome::Indeterminate { operation_id } => Err(Error::Indeterminate(operation_id)),
-            },
+            result = &mut child_task => result,
             result = cancellation_requested(&mut cancelled) => {
-                child_task.cancel();
-                // The worker registry owns this outer future, but this inner
-                // boundary must also be joined before the caller reads or
-                // publishes the child's provider state.
-                let _ = child_task.wait().await;
                 result.and_then(|()| Err(Error::Conflict("child activation was cancelled".into())))
             },
         }
     }
 
-    async fn run_child_turn(
+    fn run_child_turn(
         harness: Arc<PersistentLocalHarness>,
         bundle: crate::Harness,
         request: LocalForkRequest,
         max_steps: u32,
-    ) -> Result<TurnOutput> {
-        harness
-            .run_with_bundle(&bundle, request.child_operation, &request.prompt, max_steps)
-            .await
+    ) -> BoxFuture<'static, Result<TurnOutput>> {
+        Box::pin(async move {
+            harness
+                .run_with_bundle(&bundle, request.child_operation, &request.prompt, max_steps)
+                .await
+        })
     }
 
     fn inherited_task_bundle(
