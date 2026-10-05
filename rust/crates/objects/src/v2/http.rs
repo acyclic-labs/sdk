@@ -192,7 +192,10 @@ impl HttpObjects {
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?;
         authorization.set_sensitive(true);
+        #[cfg(not(target_arch = "wasm32"))]
         let mut transport = Client::builder();
+        #[cfg(target_arch = "wasm32")]
+        let transport = Client::builder();
         #[cfg(not(target_arch = "wasm32"))]
         {
             transport = transport
