@@ -1,7 +1,7 @@
 //! Fully replaceable turn execution and the stock streaming model/tool loop.
 
 use crate::{
-    Error, InteractionId, OperationId, Result, TaskId,
+    Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     context::{ContextInput, ContextPipeline},
     conversation::{Attachment, FileRef, Limits, VolumeClass},
@@ -506,6 +506,26 @@ pub trait SwarmProviderAdmission: Send {
             "provider budget does not persist Harness effect time".into(),
         ))
     }
+    /// Queues a measured effect with its exact retry identity. The owning
+    /// journal persists this after execution and before issuing the receipt.
+    fn record_harness_effect(
+        &mut self,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        let _ = effect_id;
+        self.record_harness_effect_time_ms(elapsed_ms)
+    }
+    /// Drains effects measured by this dispatch for journal persistence.
+    fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
+        Vec::new()
+    }
+    /// Returns the operation and dispatch identity needed by the journal.
+    fn dispatch_identity(&self) -> Result<(OperationId, IdempotencyKey)> {
+        Err(Error::Unsupported(
+            "provider budget has no durable dispatch identity".into(),
+        ))
+    }
     /// Returns whether generic Harness effects may be dispatched under this
     /// budget.  Unsupported sources are rejected before their effect claim.
     fn supports_harness_effect_time(&self) -> bool {
@@ -559,6 +579,27 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     /// this exact child dispatch identity.
     pub fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
         self.context.record_harness_effect_time_ms(elapsed_ms)
+    }
+
+    /// Queues a measured effect under its exact durable identity.
+    pub fn record_harness_effect(
+        &mut self,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        self.context.record_harness_effect(effect_id, elapsed_ms)
+    }
+
+    /// Drains measured effects for journal persistence.
+    pub fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
+        self.context.take_harness_effects()
+    }
+
+    /// Returns the exact operation and dispatch identities for journal
+    /// settlement.
+    #[must_use]
+    pub fn dispatch_identity(&self) -> (OperationId, &IdempotencyKey) {
+        self.context.dispatch_identity()
     }
 
     /// Returns whether generic Harness effects have durable time measurement.
@@ -631,6 +672,23 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
         Self::record_harness_effect_time_ms(self, elapsed_ms)
     }
 
+    fn record_harness_effect(
+        &mut self,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        Self::record_harness_effect(self, effect_id, elapsed_ms)
+    }
+
+    fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
+        Self::take_harness_effects(self)
+    }
+
+    fn dispatch_identity(&self) -> Result<(OperationId, IdempotencyKey)> {
+        let (operation, dispatch) = Self::dispatch_identity(self);
+        Ok((operation, dispatch.clone()))
+    }
+
     fn supports_harness_effect_time(&self) -> bool {
         Self::supports_harness_effect_time(self)
     }
@@ -680,6 +738,27 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
     /// the canonical root dispatch identity.
     pub fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
         self.context.record_harness_effect_time_ms(elapsed_ms)
+    }
+
+    /// Queues a measured effect under its exact durable identity.
+    pub fn record_harness_effect(
+        &mut self,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        self.context.record_harness_effect(effect_id, elapsed_ms)
+    }
+
+    /// Drains measured effects for journal persistence.
+    pub fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
+        self.context.take_harness_effects()
+    }
+
+    /// Returns the exact root operation and dispatch identities for journal
+    /// settlement.
+    #[must_use]
+    pub fn dispatch_identity(&self) -> (OperationId, &IdempotencyKey) {
+        self.context.dispatch_identity()
     }
 
     /// Returns whether generic Harness effects have durable time measurement.
@@ -735,6 +814,23 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmRootProviderBoundary<S
 
     fn record_harness_effect_time_ms(&mut self, elapsed_ms: u64) -> Result<()> {
         Self::record_harness_effect_time_ms(self, elapsed_ms)
+    }
+
+    fn record_harness_effect(
+        &mut self,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        Self::record_harness_effect(self, effect_id, elapsed_ms)
+    }
+
+    fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
+        Self::take_harness_effects(self)
+    }
+
+    fn dispatch_identity(&self) -> Result<(OperationId, IdempotencyKey)> {
+        let (operation, dispatch) = Self::dispatch_identity(self);
+        Ok((operation, dispatch.clone()))
     }
 
     fn supports_harness_effect_time(&self) -> bool {
@@ -2254,6 +2350,10 @@ impl StockExecutor {
                     self.execution_clock.as_ref(),
                     effect_started,
                     operation_id,
+                    IdempotencyKey::new(format!(
+                        "tool:{step}:{}",
+                        invocation.call_id
+                    ))?,
                 )?;
             }
             if validate_value(&tool.definition.output_schema, &result.value, "tool output").is_err()
@@ -3754,11 +3854,12 @@ fn admit_effect_elapsed(
     clock: &dyn UnixMillisClock,
     started_at_ms: u64,
     operation_id: OperationId,
+    effect_id: IdempotencyKey,
 ) -> Result<()> {
     if let Some(budget) = budget.as_deref_mut() {
         let elapsed_ms = elapsed_provider_time(clock, started_at_ms, operation_id)?;
         if elapsed_ms != 0 {
-            budget.record_harness_effect_time_ms(elapsed_ms)?;
+            budget.record_harness_effect(effect_id, elapsed_ms)?;
         }
         budget.admit_execution_time_ms(elapsed_ms)?;
     }

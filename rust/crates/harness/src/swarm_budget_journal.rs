@@ -227,6 +227,51 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.budget.root_dispatch_id()
     }
 
+    /// Persists one host-measured generic Harness effect under the exact
+    /// operation, provider dispatch, and effect identity. The budget
+    /// projection makes retries idempotent before the next receipt is issued.
+    pub async fn record_harness_effect_time_ms(
+        &mut self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        if !projected.record_harness_effect(
+            operation_id,
+            owner,
+            &dispatch_id,
+            &effect_id,
+            elapsed_ms,
+        )? {
+            return Ok(());
+        }
+        self.commit(
+            SwarmBudgetEvent::HarnessEffectMeasured {
+                operation_id,
+                owner: owner.clone(),
+                dispatch_id,
+                effect_id,
+                elapsed_ms,
+            },
+            operation_id,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Returns unsettled host-measured effect time for one dispatch.
+    pub fn pending_harness_effect_time(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+    ) -> Result<u64> {
+        self.budget
+            .pending_harness_effect_time(operation_id, dispatch_id)
+    }
+
     /// Reloads all committed records from the provider's current tail.
     pub async fn refresh(&mut self) -> Result<()> {
         let events = read_events(&self.stream).await?;
@@ -489,7 +534,11 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     ) -> Result<SwarmForkReservation> {
         let owner = token.owner().clone();
         let mut context = self.usage_context(token, source)?;
-        let receipt = context.issue_usage_receipt()?;
+        let pending = self.pending_harness_effect_time(
+            token.operation_id(),
+            token.required_dispatch_id()?,
+        )?;
+        let receipt = context.issue_usage_receipt_with_harness_effect_time_ms(pending)?;
         self.report_usage_with_receipt(token.operation_id(), &owner, receipt)
             .await
     }
@@ -605,7 +654,9 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 "root usage cursor changed while binding provider source".into(),
             ));
         }
-        let receipt = context.issue_usage_receipt()?;
+        let (operation_id, dispatch_id) = context.dispatch_identity();
+        let pending = self.pending_harness_effect_time(operation_id, dispatch_id)?;
+        let receipt = context.issue_usage_receipt_with_harness_effect_time_ms(pending)?;
         self.report_root_usage_with_receipt(owner, receipt).await
     }
 
@@ -1179,6 +1230,55 @@ mod tests {
                 assert_eq!(usage.reserved, SwarmUsage::default(), "{dimension} parent budget");
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn harness_effect_measurement_replays_and_is_not_double_charged() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("effect-worker", 0)?;
+        let dispatch_id = IdempotencyKey::new("effect-root-dispatch")?;
+        SwarmBudgetJournal::start_with_root_dispatch(
+            &client,
+            session_id,
+            owner.clone(),
+            limits(),
+            dispatch_id.clone(),
+        )
+        .await?;
+        let effect_id = IdempotencyKey::new("tool:0:approved-shell")?;
+        let mut journal = SwarmBudgetJournal::open(&client, session_id).await?;
+        journal
+            .record_harness_effect_time_ms(
+                session_id,
+                &owner,
+                dispatch_id.clone(),
+                effect_id.clone(),
+                37,
+            )
+            .await?;
+        assert_eq!(journal.usage()?.consumed.execution_time_ms, 37);
+        journal
+            .record_harness_effect_time_ms(
+                session_id,
+                &owner,
+                dispatch_id,
+                effect_id,
+                37,
+            )
+            .await?;
+        assert_eq!(journal.usage()?.consumed.execution_time_ms, 37);
+
+        drop(journal);
+        let mut reopened = SwarmBudgetJournal::open(&client, session_id).await?;
+        assert_eq!(reopened.usage()?.consumed.execution_time_ms, 37);
+        let mut context = reopened.root_usage_context(FixedSource(SwarmUsage::default()))?;
+        let receipt = context.issue_usage_receipt()?;
+        reopened
+            .report_root_usage_with_receipt(&owner, receipt)
+            .await?;
+        assert_eq!(reopened.usage()?.consumed.execution_time_ms, 37);
         Ok(())
     }
 

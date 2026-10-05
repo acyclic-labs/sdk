@@ -21,7 +21,8 @@ use crate::{
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::{
-        ExecutionEvent, SwarmProviderBoundary, SwarmRootProviderBoundary,
+        ExecutionEvent, SwarmProviderAdmission, SwarmProviderBoundary,
+        SwarmRootProviderBoundary,
         TerminalFailureState, TurnOutput,
     },
     fork::{
@@ -2018,6 +2019,7 @@ impl LocalModelForkPublisher {
         let swarm = owner.upgrade().ok_or_else(|| {
             Error::Conflict("local child owner was dropped before budget settlement".into())
         })?;
+        swarm.persist_harness_effects(&mut provider_budget).await?;
         swarm.complete_child_budget(&budget_token).await?;
         let swarm = owner.upgrade().ok_or_else(|| {
             Error::Conflict("local child owner was dropped before outcome publication".into())
@@ -5413,6 +5415,7 @@ impl PersistentLocalSwarm {
             },
             output = run => output,
         };
+        self.persist_harness_effects(&mut provider_budget).await?;
         // Settle measured root usage even when model/tool execution returns an
         // error or cancellation wins the select. Otherwise a provider receipt
         // observed before cancellation would be lost across the next turn.
@@ -5429,6 +5432,30 @@ impl PersistentLocalSwarm {
         // idempotent while rejecting a different operation key.
         self.complete_session(task, operation).await?;
         Ok(output)
+    }
+
+    async fn persist_harness_effects(
+        &self,
+        budget: &mut dyn SwarmProviderAdmission,
+    ) -> Result<()> {
+        let measurements = budget.take_harness_effects();
+        if measurements.is_empty() {
+            return Ok(());
+        }
+        let (operation_id, dispatch_id) = budget.dispatch_identity()?;
+        let mut journal = self.budget_journal.lock().await;
+        for (effect_id, elapsed_ms) in measurements {
+            journal
+                .record_harness_effect_time_ms(
+                    operation_id,
+                    &self.config.budget.owner,
+                    dispatch_id.clone(),
+                    effect_id,
+                    elapsed_ms,
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     /// Rejects the legacy boundary-only fork entry point.
@@ -6298,6 +6325,7 @@ impl PersistentLocalSwarm {
             harness.clone(), bundle, admission, request.clone(), budget_token.clone(),
             max_steps, cancelled, &mut provider_budget,
         ).await;
+        self.persist_harness_effects(&mut provider_budget).await?;
         self.complete_child_budget(&budget_token).await?;
         self.finish_child_turn(&stream, child, request.child_operation, &harness, child_result).await
     }
@@ -7989,23 +8017,13 @@ mod tests {
 
         fn record_harness_effect_time_ms(
             &self,
-            operation_id: OperationId,
-            dispatch_id: &IdempotencyKey,
-            elapsed_ms: u64,
+            _operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+            _elapsed_ms: u64,
         ) -> Result<()> {
-            let mut usage = self
-                .usage
-                .lock()
-                .map_err(|_| Error::Conflict("mock usage lock poisoned".into()))?;
-            let entry = usage
-                .get_mut(&(operation_id, dispatch_id.0.clone()))
-                .ok_or_else(|| Error::Indeterminate(operation_id))?;
-            entry.usage.execution_time_ms = entry
-                .usage
-                .execution_time_ms
-                .checked_add(elapsed_ms)
-                .ok_or_else(|| Error::Conflict("mock Harness time measurement overflow".into()))?;
-            Ok(())
+            Err(Error::Unsupported(
+                "mock provider does not own Harness effect persistence".into(),
+            ))
         }
     }
 

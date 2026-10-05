@@ -564,13 +564,26 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
 
     /// Reads provider counters and issues the next verified durable receipt.
     pub fn issue(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issue_with_harness_effect_time_ms(0)
+    }
+
+    /// Reads provider counters and adds the exact Harness effect time that
+    /// was durably recorded for this dispatch before issuing the receipt.
+    pub fn issue_with_harness_effect_time_ms(
+        &mut self,
+        harness_effect_time_ms: u64,
+    ) -> Result<VerifiedSwarmUsageReceipt> {
         let sequence = self
             .sequence
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))?;
-        let usage = self
+        let mut usage = self
             .source
             .cumulative_usage(self.operation_id, &self.dispatch_id)?;
+        usage.execution_time_ms = usage
+            .execution_time_ms
+            .checked_add(harness_effect_time_ms)
+            .ok_or_else(|| Error::Conflict("Harness effect time usage overflow".into()))?;
         if let Some(limits) = self.limits {
             if usage.model_steps > limits.model_steps
                 || usage.output_bytes > limits.output_bytes
@@ -612,6 +625,18 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
     #[must_use]
     pub fn supports_harness_effect_time(&self) -> bool {
         self.source.supports_harness_effect_time()
+    }
+
+    /// Returns the exact provider dispatch identity bound to this issuer.
+    #[must_use]
+    pub fn dispatch_id(&self) -> &IdempotencyKey {
+        &self.dispatch_id
+    }
+
+    /// Returns the operation identity bound to this issuer.
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId {
+        self.operation_id
     }
 
     /// Returns transport provenance authenticated by this provider issuer.
@@ -663,6 +688,8 @@ pub struct SwarmDispatchContext<S> {
     token: SwarmDispatchToken,
     limiter: SwarmUsageLimiter,
     issuer: SwarmUsageReceiptIssuer<S>,
+    harness_effects: Vec<(IdempotencyKey, u64)>,
+    journal_bound_effects: bool,
 }
 
 impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
@@ -674,7 +701,15 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
             token,
             limiter,
             issuer,
+            harness_effects: Vec::new(),
+            journal_bound_effects: true,
         })
+    }
+
+    fn new_with_harness_effects(token: SwarmDispatchToken, source: S) -> Result<Self> {
+        let mut context = Self::new(token, source)?;
+        context.journal_bound_effects = true;
+        Ok(context)
     }
 
     /// Restores a provider dispatch from the last durable cumulative receipt.
@@ -693,6 +728,8 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
             token,
             limiter,
             issuer,
+            harness_effects: Vec::new(),
+            journal_bound_effects: true,
         })
     }
 
@@ -745,16 +782,61 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         self.issuer.issue()
     }
 
+    /// Issues a receipt after merging the journal's pending Harness effect
+    /// measurement into the provider cumulative usage.
+    pub fn issue_usage_receipt_with_harness_effect_time_ms(
+        &mut self,
+        elapsed_ms: u64,
+    ) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issuer.issue_with_harness_effect_time_ms(elapsed_ms)
+    }
+
     /// Persists host-measured time spent by a generic Harness effect under
     /// this exact child dispatch identity.
     pub fn record_harness_effect_time_ms(&self, elapsed_ms: u64) -> Result<()> {
-        self.issuer.record_harness_effect_time_ms(elapsed_ms)
+        let _ = elapsed_ms;
+        Err(Error::Unsupported(
+            "Harness effect identity is required for durable measurement".into(),
+        ))
+    }
+
+    /// Queues one exact Harness effect for the owning journal to persist
+    /// before the next provider receipt is issued.
+    pub fn record_harness_effect(
+        &mut self,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        if !self.supports_harness_effect_time() {
+            return Err(Error::Unsupported(
+                "usage source does not support journal-bound Harness effects".into(),
+            ));
+        }
+        if elapsed_ms == 0 {
+            return Ok(());
+        }
+        self.harness_effects.push((effect_id, elapsed_ms));
+        Ok(())
+    }
+
+    /// Drains measurements after the executor has stopped dispatching
+    /// effects. The caller persists them through the budget journal before
+    /// issuing a cumulative provider receipt.
+    pub fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
+        std::mem::take(&mut self.harness_effects)
     }
 
     /// Returns whether this dispatch can durably retain Harness effect time.
     #[must_use]
     pub fn supports_harness_effect_time(&self) -> bool {
-        self.issuer.supports_harness_effect_time()
+        self.journal_bound_effects || self.issuer.supports_harness_effect_time()
+    }
+
+    /// Returns the exact operation and dispatch identities for journal
+    /// settlement.
+    #[must_use]
+    pub fn dispatch_identity(&self) -> (OperationId, &IdempotencyKey) {
+        (self.issuer.operation_id(), self.issuer.dispatch_id())
     }
 
     /// Returns the latest provider measurement accepted by this context.
@@ -792,11 +874,30 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
 pub struct SwarmRootDispatchContext<S> {
     limiter: SwarmUsageLimiter,
     issuer: SwarmUsageReceiptIssuer<S>,
+    harness_effects: Vec<(IdempotencyKey, u64)>,
+    journal_bound_effects: bool,
 }
 
 impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     fn new(limiter: SwarmUsageLimiter, issuer: SwarmUsageReceiptIssuer<S>) -> Self {
-        Self { limiter, issuer }
+        Self {
+            limiter,
+            issuer,
+            harness_effects: Vec::new(),
+            journal_bound_effects: false,
+        }
+    }
+
+    fn new_with_harness_effects(
+        limiter: SwarmUsageLimiter,
+        issuer: SwarmUsageReceiptIssuer<S>,
+    ) -> Self {
+        Self {
+            limiter,
+            issuer,
+            harness_effects: Vec::new(),
+            journal_bound_effects: true,
+        }
     }
 
     /// Returns transport provenance for the root provider adapter.
@@ -837,17 +938,59 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
         self.issuer.issue()
     }
 
+    /// Issues a root receipt after merging the journal's pending Harness
+    /// effect measurement into provider cumulative usage.
+    pub fn issue_usage_receipt_with_harness_effect_time_ms(
+        &mut self,
+        elapsed_ms: u64,
+    ) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issuer.issue_with_harness_effect_time_ms(elapsed_ms)
+    }
+
     /// Persists host-measured time spent by a generic Harness effect under
     /// the canonical root dispatch identity.
     pub fn record_harness_effect_time_ms(&self, elapsed_ms: u64) -> Result<()> {
-        self.issuer.record_harness_effect_time_ms(elapsed_ms)
+        let _ = elapsed_ms;
+        Err(Error::Unsupported(
+            "Harness effect identity is required for durable measurement".into(),
+        ))
+    }
+
+    /// Queues one exact Harness effect for journal persistence.
+    pub fn record_harness_effect(
+        &mut self,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        if !self.supports_harness_effect_time() {
+            return Err(Error::Unsupported(
+                "usage source does not support journal-bound Harness effects".into(),
+            ));
+        }
+        if elapsed_ms == 0 {
+            return Ok(());
+        }
+        self.harness_effects.push((effect_id, elapsed_ms));
+        Ok(())
+    }
+
+    /// Drains measurements for persistence before the next root receipt.
+    pub fn take_harness_effects(&mut self) -> Vec<(IdempotencyKey, u64)> {
+        std::mem::take(&mut self.harness_effects)
     }
 
     /// Returns whether this root dispatch can durably retain Harness effect
     /// time.
     #[must_use]
     pub fn supports_harness_effect_time(&self) -> bool {
-        self.issuer.supports_harness_effect_time()
+        self.journal_bound_effects || self.issuer.supports_harness_effect_time()
+    }
+
+    /// Returns the exact root operation and dispatch identities for journal
+    /// settlement.
+    #[must_use]
+    pub fn dispatch_identity(&self) -> (OperationId, &IdempotencyKey) {
+        (self.issuer.operation_id(), self.issuer.dispatch_id())
     }
 
     /// Returns the latest provider measurement accepted by this context.
@@ -1145,6 +1288,17 @@ pub enum SwarmBudgetEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dispatch_id: Option<IdempotencyKey>,
     },
+    /// Retains host-measured time for one exact generic Harness effect until
+    /// the next authenticated provider receipt settles it.  The event is
+    /// keyed by operation, dispatch, and effect identity so a retry cannot
+    /// charge the same native tool or fork publication twice.
+    HarnessEffectMeasured {
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    },
     /// Adds cumulative measured usage to a live child.
     UsageReported {
         /// Child operation identity.
@@ -1304,7 +1458,7 @@ impl SwarmDispatchToken {
 
     /// Creates the complete provider dispatch boundary before model work.
     pub fn usage_context<S: SwarmUsageSource>(&self, source: S) -> Result<SwarmDispatchContext<S>> {
-        SwarmDispatchContext::new(self.clone(), source)
+        SwarmDispatchContext::new_with_harness_effects(self.clone(), source)
     }
 
     /// Restores the complete provider dispatch boundary from a durable cursor.
@@ -1345,6 +1499,7 @@ struct SwarmBudgetState {
     root_dispatch_id: Option<IdempotencyKey>,
     reservations: BTreeMap<OperationId, SwarmForkReservation>,
     idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
+    harness_effects: BTreeMap<(OperationId, IdempotencyKey, IdempotencyKey), u64>,
 }
 
 /// Thread-safe, atomically updated budget projection for one session.
@@ -1401,6 +1556,7 @@ impl SwarmBudget {
                 root_dispatch_id,
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
+                harness_effects: BTreeMap::new(),
             })),
         })
     }
@@ -1547,7 +1703,7 @@ impl SwarmBudget {
             cursor,
             limits,
         )?;
-        Ok(SwarmRootDispatchContext::new(limiter, issuer))
+        Ok(SwarmRootDispatchContext::new_with_harness_effects(limiter, issuer))
     }
 
     /// Atomically admits one child. Persist the corresponding
@@ -1848,6 +2004,91 @@ impl SwarmBudget {
         update_root_usage(&mut state, owner, usage, receipt)
     }
 
+    /// Records one authenticated Harness effect measurement in the same
+    /// projection as reservations and provider usage. Replaying the exact
+    /// event is idempotent; a changed measurement for the same effect is a
+    /// conflict rather than a second charge.
+    pub(crate) fn record_harness_effect(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: &IdempotencyKey,
+        effect_id: &IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<bool> {
+        if elapsed_ms == 0 {
+            return Err(Error::Invalid(
+                "Harness effect measurement must be positive".into(),
+            ));
+        }
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        if operation_id == state.session_id {
+            if state.root_dispatch_id.as_ref() != Some(dispatch_id) {
+                return Err(Error::Conflict(
+                    "Harness effect dispatch is not the canonical root lease".into(),
+                ));
+            }
+        } else {
+            let reservation = state
+                .reservations
+                .get(&operation_id)
+                .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+            if reservation.dispatch_id.as_ref() != Some(dispatch_id)
+                || !matches!(
+                    reservation.state,
+                    SwarmReservationState::Active | SwarmReservationState::Reserved
+                )
+            {
+                return Err(Error::Conflict(
+                    "Harness effect dispatch is not an active reservation".into(),
+                ));
+            }
+        }
+        let key = (operation_id, dispatch_id.clone(), effect_id.clone());
+        match state.harness_effects.get(&key) {
+            Some(existing) if *existing == elapsed_ms => Ok(false),
+            Some(_) => Err(Error::Conflict(
+                "Harness effect measurement changed during retry".into(),
+            )),
+            None => {
+                let next = state
+                    .usage
+                    .consumed
+                    .execution_time_ms
+                    .checked_add(elapsed_ms)
+                    .ok_or_else(|| Error::Conflict("Harness effect time exhausted".into()))?;
+                if next
+                    .checked_add(state.usage.reserved.execution_time_ms)
+                    .is_none_or(|value| value > state.limits.max_execution_time_ms)
+                {
+                    return Err(Error::Conflict(
+                        "Harness effect exceeds remaining swarm execution budget".into(),
+                    ));
+                }
+                state.usage.consumed.execution_time_ms = next;
+                state.harness_effects.insert(key, elapsed_ms);
+                Ok(true)
+            }
+        }
+    }
+
+    /// Returns the sum of unsettled Harness effect measurements for one
+    /// authenticated operation and dispatch.
+    pub(crate) fn pending_harness_effect_time(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+    ) -> Result<u64> {
+        let _ = (operation_id, dispatch_id);
+        // Measurements are charged atomically when their journal event is
+        // appended. They are retained in `harness_effects` only as the
+        // replay/idempotency history, so a later provider receipt must not
+        // add them a second time.
+        Ok(0)
+    }
+
+
     /// Cancels a child and releases active/unconsumed resources without refunding consumed usage.
     pub fn cancel(
         &self,
@@ -1947,6 +2188,21 @@ impl SwarmBudget {
                 dispatch_id,
             } => self
                 .activate_with_dispatch(operation_id, owner, publication, dispatch_id)
+                .map(|_| ()),
+            SwarmBudgetEvent::HarnessEffectMeasured {
+                operation_id,
+                owner,
+                dispatch_id,
+                effect_id,
+                elapsed_ms,
+            } => self
+                .record_harness_effect(
+                    operation_id,
+                    &owner,
+                    &dispatch_id,
+                    &effect_id,
+                    elapsed_ms,
+                )
                 .map(|_| ()),
             SwarmBudgetEvent::UsageReported {
                 operation_id,
@@ -2650,75 +2906,6 @@ mod tests {
                 .pop()
                 .ok_or_else(|| Error::Storage("measurement source exhausted".into()))
         }
-    }
-
-    #[derive(Default)]
-    struct HarnessMeasuredSource {
-        usage: Mutex<SwarmUsage>,
-    }
-
-    impl SwarmUsageSource for HarnessMeasuredSource {
-        fn provider_identity(&self) -> &str {
-            "local-provider-with-harness-effects"
-        }
-
-        fn supports_harness_effect_time(&self) -> bool {
-            true
-        }
-
-        fn cumulative_usage(
-            &self,
-            _operation_id: OperationId,
-            _dispatch_id: &IdempotencyKey,
-        ) -> Result<SwarmUsage> {
-            Ok(*self
-                .usage
-                .lock()
-                .map_err(|_| Error::Storage("measurement source lock poisoned".into()))?)
-        }
-
-        fn record_harness_effect_time_ms(
-            &self,
-            _operation_id: OperationId,
-            _dispatch_id: &IdempotencyKey,
-            elapsed_ms: u64,
-        ) -> Result<()> {
-            let mut usage = self
-                .usage
-                .lock()
-                .map_err(|_| Error::Storage("measurement source lock poisoned".into()))?;
-            usage.execution_time_ms = usage
-                .execution_time_ms
-                .checked_add(elapsed_ms)
-                .ok_or_else(|| Error::Conflict("Harness time measurement overflow".into()))?;
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn harness_effect_time_is_included_in_the_next_authenticated_receipt() -> Result<()> {
-        let operation_id = id(19);
-        let dispatch_id = IdempotencyKey::new("harness-effect-dispatch")?;
-        let source = Arc::new(HarnessMeasuredSource::default());
-        let mut issuer = SwarmUsageReceiptIssuer::new(source.clone(), operation_id, dispatch_id.clone())?;
-        issuer.record_harness_effect_time_ms(37)?;
-        let receipt = issuer.issue()?.into_receipt();
-        assert_eq!(receipt.operation_id, operation_id);
-        assert_eq!(receipt.usage.execution_time_ms, 37);
-
-        // Reopening from the durable cursor must retain the trusted Harness
-        // measurement and must not charge the same effect a second time.
-        let mut reopened = SwarmUsageReceiptIssuer::resume(
-            source,
-            operation_id,
-            dispatch_id,
-            receipt.sequence,
-            Some(receipt.usage),
-        )?;
-        let replay = reopened.issue()?.into_receipt();
-        assert_eq!(replay.sequence, 2);
-        assert_eq!(replay.usage.execution_time_ms, 37);
-        Ok(())
     }
 
     #[test]
