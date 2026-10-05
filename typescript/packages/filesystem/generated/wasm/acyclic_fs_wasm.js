@@ -1087,6 +1087,83 @@ export class BrowserCheckout {
 if (Symbol.dispose) BrowserCheckout.prototype[Symbol.dispose] = BrowserCheckout.prototype.free;
 
 /**
+ * Authenticated Rust-owned Filesystem grpc-web client for browser WASM.
+ *
+ * This client uses the generated FilesystemService contract directly. It
+ * retains negotiated bounds for every later request and exposes streamed
+ * exports through Rust futures; dropping a stream cancels its fetch.
+ */
+export class BrowserFilesystemClient {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(BrowserFilesystemClient.prototype);
+        obj.__wbg_ptr = ptr;
+        BrowserFilesystemClientFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrowserFilesystemClientFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_browserfilesystemclient_free(ptr, 0);
+    }
+    /**
+     * Sends a typed cancellation request encoded by the Rust contract.
+     * @param {Uint8Array} request
+     * @returns {Promise<Uint8Array>}
+     */
+    cancel(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserfilesystemclient_cancel(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Returns negotiated capability limits to JavaScript.
+     * @returns {any}
+     */
+    capabilities() {
+        const ret = wasm.browserfilesystemclient_capabilities(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Connects from JavaScript using the Rust-owned authenticated handshake.
+     * @param {string} endpoint
+     * @param {string} bearer_token
+     * @param {bigint} maximum_request_bytes
+     * @param {bigint} maximum_response_bytes
+     * @returns {Promise<BrowserFilesystemClient>}
+     */
+    static connect(endpoint, bearer_token, maximum_request_bytes, maximum_response_bytes) {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(bearer_token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserfilesystemclient_connect(ptr0, len0, ptr1, len1, maximum_request_bytes, maximum_response_bytes);
+        return ret;
+    }
+    /**
+     * Collects a typed export stream into encoded chunks.
+     * @param {Uint8Array} request
+     * @returns {Promise<Array<any>>}
+     */
+    export(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserfilesystemclient_export(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+}
+if (Symbol.dispose) BrowserFilesystemClient.prototype[Symbol.dispose] = BrowserFilesystemClient.prototype.free;
+
+/**
  * Browser-safe handle backed by the canonical Rust engine.
  */
 export class BrowserFs {
@@ -1601,6 +1678,122 @@ export class BrowserGitCompatRepository {
     }
 }
 if (Symbol.dispose) BrowserGitCompatRepository.prototype[Symbol.dispose] = BrowserGitCompatRepository.prototype.free;
+
+/**
+ * Authenticated Rust-owned Harness gRPC-Web client for browser WASM.
+ *
+ * Harness has no HTTP/JSON projection. Browser consumers use the same
+ * generated protobuf service through gRPC-Web, with all protocol checks
+ * and operation-control semantics retained in Rust.
+ */
+export class BrowserHarnessClient {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(BrowserHarnessClient.prototype);
+        obj.__wbg_ptr = ptr;
+        BrowserHarnessClientFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrowserHarnessClientFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_browserharnessclient_free(ptr, 0);
+    }
+    /**
+     * Cancels an encoded Rust Harness operation request.
+     * @param {Uint8Array} request
+     * @returns {Promise<Uint8Array>}
+     */
+    cancel(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_cancel(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Returns the negotiated Harness protocol identity.
+     * @returns {any}
+     */
+    capabilities() {
+        const ret = wasm.browserharnessclient_capabilities(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Connects from JavaScript using the Rust-owned authenticated
+     * handshake and gRPC-Web adapter with Rust-owned safe bounds.
+     * @param {string} endpoint
+     * @param {string} bearer_token
+     * @returns {Promise<BrowserHarnessClient>}
+     */
+    static connect(endpoint, bearer_token) {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(bearer_token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_connect(ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * Connects with explicit request and response bounds.
+     * @param {string} endpoint
+     * @param {string} bearer_token
+     * @param {bigint} maximum_request_bytes
+     * @param {bigint} maximum_response_bytes
+     * @returns {Promise<BrowserHarnessClient>}
+     */
+    static connectWithLimits(endpoint, bearer_token, maximum_request_bytes, maximum_response_bytes) {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(bearer_token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_connectWithLimits(ptr0, len0, ptr1, len1, maximum_request_bytes, maximum_response_bytes);
+        return ret;
+    }
+    /**
+     * Observes an encoded Rust Harness operation request.
+     * @param {Uint8Array} request
+     * @returns {Promise<Uint8Array>}
+     */
+    observe(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_observe(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Collects a bounded replay page into encoded deliveries. The Rust
+     * API remains streaming for callers that need a live follow stream.
+     * @param {Uint8Array} request
+     * @returns {Promise<Array<any>>}
+     */
+    replay(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_replay(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Submits an encoded Rust Harness command and returns its encoded
+     * admission. The protobuf bytes preserve the generated wire types.
+     * @param {Uint8Array} request
+     * @returns {Promise<Uint8Array>}
+     */
+    submit(request) {
+        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserharnessclient_submit(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+}
+if (Symbol.dispose) BrowserHarnessClient.prototype[Symbol.dispose] = BrowserHarnessClient.prototype.free;
 
 /**
  * One immutable, side-effect-free workspace join plan.
@@ -2655,6 +2848,383 @@ export class BrowserWorkspaceContextRegistry {
 if (Symbol.dispose) BrowserWorkspaceContextRegistry.prototype[Symbol.dispose] = BrowserWorkspaceContextRegistry.prototype.free;
 
 /**
+ * Rust-owned state machine for the polling form of hosted HTTP follow.
+ * The JavaScript boundary supplies only fetch and timer primitives.
+ */
+export class HttpFollowCursor {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        HttpFollowCursorFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_httpfollowcursor_free(ptr, 0);
+    }
+    /**
+     * @param {string} response_json
+     */
+    acceptRead(response_json) {
+        const ptr0 = passStringToWasm0(response_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.httpfollowcursor_acceptRead(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {string} response_json
+     */
+    acceptTail(response_json) {
+        const ptr0 = passStringToWasm0(response_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.httpfollowcursor_acceptTail(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    close() {
+        wasm.httpfollowcursor_close(this.__wbg_ptr);
+    }
+    /**
+     * @returns {boolean}
+     */
+    isClosed() {
+        const ret = wasm.httpfollowcursor_isClosed(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * @param {Uint8Array} input
+     */
+    constructor(input) {
+        const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.httpfollowcursor_new(ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0] >>> 0;
+        HttpFollowCursorFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * @returns {number}
+     */
+    pollDelayMillis() {
+        const ret = wasm.httpfollowcursor_pollDelayMillis(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Uint8Array}
+     */
+    readRequest() {
+        const ret = wasm.httpfollowcursor_readRequest(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @returns {boolean}
+     */
+    shouldPoll() {
+        const ret = wasm.httpfollowcursor_shouldPoll(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * @returns {Uint8Array}
+     */
+    tailRequest() {
+        const ret = wasm.httpfollowcursor_tailRequest(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+}
+if (Symbol.dispose) HttpFollowCursor.prototype[Symbol.dispose] = HttpFollowCursor.prototype.free;
+
+class IntoUnderlyingByteSource {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        IntoUnderlyingByteSourceFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_intounderlyingbytesource_free(ptr, 0);
+    }
+    /**
+     * @returns {number}
+     */
+    get autoAllocateChunkSize() {
+        const ret = wasm.intounderlyingbytesource_autoAllocateChunkSize(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    cancel() {
+        const ptr = this.__destroy_into_raw();
+        wasm.intounderlyingbytesource_cancel(ptr);
+    }
+    /**
+     * @param {ReadableByteStreamController} controller
+     * @returns {Promise<any>}
+     */
+    pull(controller) {
+        const ret = wasm.intounderlyingbytesource_pull(this.__wbg_ptr, controller);
+        return ret;
+    }
+    /**
+     * @param {ReadableByteStreamController} controller
+     */
+    start(controller) {
+        wasm.intounderlyingbytesource_start(this.__wbg_ptr, controller);
+    }
+    /**
+     * @returns {ReadableStreamType}
+     */
+    get type() {
+        const ret = wasm.intounderlyingbytesource_type(this.__wbg_ptr);
+        return __wbindgen_enum_ReadableStreamType[ret];
+    }
+}
+if (Symbol.dispose) IntoUnderlyingByteSource.prototype[Symbol.dispose] = IntoUnderlyingByteSource.prototype.free;
+
+class IntoUnderlyingSink {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        IntoUnderlyingSinkFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_intounderlyingsink_free(ptr, 0);
+    }
+    /**
+     * @param {any} reason
+     * @returns {Promise<any>}
+     */
+    abort(reason) {
+        const ptr = this.__destroy_into_raw();
+        const ret = wasm.intounderlyingsink_abort(ptr, reason);
+        return ret;
+    }
+    /**
+     * @returns {Promise<any>}
+     */
+    close() {
+        const ptr = this.__destroy_into_raw();
+        const ret = wasm.intounderlyingsink_close(ptr);
+        return ret;
+    }
+    /**
+     * @param {any} chunk
+     * @returns {Promise<any>}
+     */
+    write(chunk) {
+        const ret = wasm.intounderlyingsink_write(this.__wbg_ptr, chunk);
+        return ret;
+    }
+}
+if (Symbol.dispose) IntoUnderlyingSink.prototype[Symbol.dispose] = IntoUnderlyingSink.prototype.free;
+
+class IntoUnderlyingSource {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        IntoUnderlyingSourceFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_intounderlyingsource_free(ptr, 0);
+    }
+    cancel() {
+        const ptr = this.__destroy_into_raw();
+        wasm.intounderlyingsource_cancel(ptr);
+    }
+    /**
+     * @param {ReadableStreamDefaultController} controller
+     * @returns {Promise<any>}
+     */
+    pull(controller) {
+        const ret = wasm.intounderlyingsource_pull(this.__wbg_ptr, controller);
+        return ret;
+    }
+}
+if (Symbol.dispose) IntoUnderlyingSource.prototype[Symbol.dispose] = IntoUnderlyingSource.prototype.free;
+
+/**
+ * One Rust-backed live follow cursor.
+ *
+ * `next` releases the state lock before awaiting the stream, so `close` can
+ * always signal a pending call and promptly release its cursor.
+ */
+export class WasmFollow {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmFollow.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmFollowFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmFollowFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmfollow_free(ptr, 0);
+    }
+    /**
+     * Cancels the cursor and wakes any pending `next` call.
+     */
+    close() {
+        wasm.wasmfollow_close(this.__wbg_ptr);
+    }
+    /**
+     * Waits for one record. Returns `null` after close or stream termination.
+     * @returns {Uint8Array | null}
+     */
+    next() {
+        const ret = wasm.wasmfollow_next(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmFollow.prototype[Symbol.dispose] = WasmFollow.prototype.free;
+
+/**
+ * Stateful browser provider backed by the canonical Rust memory provider.
+ *
+ * Unary operations use `dispatch(operation, request_bytes)` and return the
+ * corresponding protobuf response bytes. `read` and `children` return arrays
+ * of encoded stream response messages because protobuf streams have no single
+ * finite response envelope.
+ */
+export class WasmMemoryStream {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmMemoryStreamFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmmemorystream_free(ptr, 0);
+    }
+    /**
+     * Lists one fixed-snapshot child page, returning encoded `ChildrenResponse` messages.
+     * @param {Uint8Array} input
+     * @returns {Uint8Array[]}
+     */
+    children(input) {
+        const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmmemorystream_children(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Executes one finite unary operation over canonical protobuf bytes.
+     * @param {string} operation
+     * @param {Uint8Array} input
+     * @returns {Promise<Uint8Array>}
+     */
+    dispatch(operation, input) {
+        const ptr0 = passStringToWasm0(operation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmmemorystream_dispatch(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    constructor() {
+        const ret = wasm.wasmmemorystream_new();
+        this.__wbg_ptr = ret >>> 0;
+        WasmMemoryStreamFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Opens a live follow cursor backed by the canonical provider.
+     * @param {Uint8Array} input
+     * @returns {Promise<WasmFollow>}
+     */
+    open_follow(input) {
+        const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmmemorystream_open_follow(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Reads one bounded page, returning encoded `ReadResponse` messages.
+     * @param {Uint8Array} input
+     * @returns {Uint8Array[]}
+     */
+    read(input) {
+        const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmmemorystream_read(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmMemoryStream.prototype[Symbol.dispose] = WasmMemoryStream.prototype.free;
+
+/**
+ * Type-only bridge for the complete Rust-owned Stream error-code contract.
+ * @param {StreamErrorCode} value
+ * @returns {StreamErrorCode}
+ */
+export function __streamErrorCodeContract(value) {
+    const ret = wasm.__streamErrorCodeContract(value);
+    return ret;
+}
+
+/**
+ * Advances the cumulative byte count for a hosted response. The caller may
+ * read chunks natively, but Rust owns overflow and configured-bound policy.
+ * @param {bigint} total
+ * @param {bigint} chunk
+ * @param {bigint} maximum
+ * @returns {bigint}
+ */
+export function consumeHttpResponseBytes(total, chunk, maximum) {
+    const ret = wasm.consumeHttpResponseBytes(total, chunk, maximum);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return BigInt.asUintN(64, ret[0]);
+}
+
+/**
+ * Validate and project one hosted HTTP JSON success response into the public
+ * JavaScript shape. Rust owns the scalar widths and tagged response schema:
+ * decimal uint64 strings become `bigint`, base64 bytes become `Uint8Array`,
+ * and token timestamps become `Date` values before the value crosses the
+ * browser boundary.
+ * @param {string} route
+ * @param {string} response_json
+ * @returns {unknown}
+ */
+export function decodeHttpResponse(route, response_json) {
+    const ptr0 = passStringToWasm0(route, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(response_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.decodeHttpResponse(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Decodes a versioned merge-candidate envelope to its canonical payload.
  * @param {string} value_json
  * @returns {string}
@@ -2781,6 +3351,49 @@ export function decodePublicationJson(value_json) {
         return getStringFromWasm0(ptr2, len2);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Returns the canonical default cumulative hosted response bound.
+ * @returns {bigint}
+ */
+export function defaultHttpResponseBytes() {
+    const ret = wasm.defaultHttpResponseBytes();
+    return BigInt.asUintN(64, ret);
+}
+
+/**
+ * Encode one protobuf request into the hosted Stream HTTP JSON shape.
+ *
+ * Protobuf remains the only request contract crossing from TypeScript into
+ * Rust.  Rust owns the conversion of uint64 values and opaque bytes to the
+ * decimal and base64 spellings required by the hosted API, keeping the HTTP
+ * adapter from maintaining a second scalar conversion table.
+ * @param {string} route
+ * @param {Uint8Array} input
+ * @returns {string}
+ */
+export function encodeHttpRequest(route, input) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(route, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.encodeHttpRequest(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 
@@ -2915,6 +3528,57 @@ export function encodePublicationJson(value_json) {
 }
 
 /**
+ * Return whether a code can be emitted by this WASM adapter.
+ *
+ * Keeping this validator beside the Rust error mapping prevents the TypeScript adapter from
+ * maintaining a second, potentially stale list of base Stream error codes.
+ * @param {string} value
+ * @returns {boolean}
+ */
+export function is_stream_error_code(value) {
+    const ptr0 = passStringToWasm0(value, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.is_stream_error_code(ptr0, len0);
+    return ret !== 0;
+}
+
+/**
+ * Validates one hosted read page and returns its canonical follow cursor.
+ * @param {string} response_json
+ * @param {bigint} from
+ * @returns {bigint}
+ */
+export function nextHttpFollowCursor(response_json, from) {
+    const ptr0 = passStringToWasm0(response_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.nextHttpFollowCursor(ptr0, len0, from);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return BigInt.asUintN(64, ret[0]);
+}
+
+/**
+ * Normalize and encode canonical protobuf bytes for one commit request.
+ *
+ * The returned bytes use the same deterministic ordering as the in-memory
+ * provider. Validation failures are thrown as stable error codes.
+ * @param {Uint8Array} input
+ * @returns {Uint8Array}
+ */
+export function normalizeCommitRequest(input) {
+    const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.normalizeCommitRequest(ptr0, len0);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+
+/**
  * Opens transactional browser storage with explicit `IndexedDB` or OPFS immutable objects.
  *
  * # Errors
@@ -2943,6 +3607,591 @@ export function openMemoryFs(options) {
         throw takeFromExternrefTable0(ret[1]);
     }
     return BrowserFs.__wrap(ret[0]);
+}
+
+/**
+ * Validates and projects one gRPC read response. Rust owns protobuf decoding,
+ * record bounds, commit identity width, and request-relative contiguity.
+ * @param {Uint8Array} input
+ * @param {bigint} expected
+ * @returns {unknown}
+ */
+export function projectGrpcReadResponse(input, expected) {
+    const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.projectGrpcReadResponse(ptr0, len0, expected);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Decode one unary memory-provider response from canonical protobuf bytes
+ * into the public JavaScript result shape. Rust owns the response oneofs,
+ * scalar widths, copied byte buffers, and camelCase projection at this
+ * boundary; TypeScript keeps only request adaptation and cursor lifecycle.
+ * @param {string} operation
+ * @param {Uint8Array} input
+ * @returns {unknown}
+ */
+export function projectMemoryResponse(operation, input) {
+    const ptr0 = passStringToWasm0(operation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.projectMemoryResponse(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Project a hosted HTTP error code onto the public Stream error vocabulary.
+ *
+ * The hosted API may report either the Rust-owned wire code or a public alias.
+ * Unknown values and a commit-only alias on another route return no value.
+ * @param {string} raw
+ * @param {string} route
+ * @returns {string | undefined}
+ */
+export function publicHttpErrorCode(raw, route) {
+    const ptr0 = passStringToWasm0(raw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(route, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.publicHttpErrorCode(ptr0, len0, ptr1, len1);
+    let v3;
+    if (ret[0] !== 0) {
+        v3 = getStringFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    }
+    return v3;
+}
+
+/**
+ * Validate canonical protobuf bytes for one append request.
+ *
+ * The empty string means that the request passed the same domain validators as
+ * the in-memory provider. Otherwise this returns one stable error code.
+ * @param {Uint8Array} input
+ * @returns {string}
+ */
+export function validateAppendRequest(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validateAppendRequest(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validates the bearer credential shared by the native and browser Stream
+ * clients. The empty string means success; failures use a stable Rust-owned
+ * invalid-argument boundary consumed by generated facades.
+ * @param {string} token
+ * @returns {string}
+ */
+export function validateBearerToken(token) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validateBearerToken(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validates request-relative child-page semantics through the canonical Rust
+ * provider rules before a public page reaches a TypeScript caller.
+ * @param {Uint8Array} request
+ * @param {Uint8Array} response
+ */
+export function validateChildrenPageResponse(request, response) {
+    const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(response, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validateChildrenPageResponse(ptr0, len0, ptr1, len1);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates request-relative gRPC identities through the canonical wire
+ * model. The adapter supplies only the expected identity bytes.
+ * @param {string} operation
+ * @param {Uint8Array} input
+ * @param {Uint8Array} expected
+ */
+export function validateGrpcResponseIdentity(operation, input, expected) {
+    const ptr0 = passStringToWasm0(operation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(expected, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.validateGrpcResponseIdentity(ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {number} maximum_generations
+ * @param {number} maximum_changes
+ * @param {number} maximum_conflicts
+ * @param {number} maximum_page_items
+ */
+export function validateHostedGenerationBounds(maximum_generations, maximum_changes, maximum_conflicts, maximum_page_items) {
+    const ret = wasm.validateHostedGenerationBounds(maximum_generations, maximum_changes, maximum_conflicts, maximum_page_items);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {Uint8Array} generation_id
+ * @param {Uint8Array} owner_workspace_id
+ * @param {Uint8Array} expected_workspace_id
+ */
+export function validateHostedGenerationIdentity(generation_id, owner_workspace_id, expected_workspace_id) {
+    const ptr0 = passArray8ToWasm0(generation_id, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(owner_workspace_id, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(expected_workspace_id, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.validateHostedGenerationIdentity(ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {number} value
+ * @param {number} maximum
+ */
+export function validateHostedPageBound(value, maximum) {
+    const ret = wasm.validateHostedPageBound(value, maximum);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {number} state
+ * @param {number} reason
+ * @param {boolean} has_generation
+ */
+export function validateHostedSourceState(state, reason, has_generation) {
+    const ret = wasm.validateHostedSourceState(state, reason, has_generation);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {number} mutation_count
+ * @param {number} maximum_mutations
+ * @param {number} maximum_conflicts
+ * @param {number} maximum_page_items
+ */
+export function validateHostedTransactionBounds(mutation_count, maximum_mutations, maximum_conflicts, maximum_page_items) {
+    const ret = wasm.validateHostedTransactionBounds(mutation_count, maximum_mutations, maximum_conflicts, maximum_page_items);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates the endpoint policy shared by native and browser HTTP clients.
+ * HTTPS is required for hosted endpoints; HTTP is allowed only for loopback
+ * fixture servers. The return value is empty for a valid endpoint.
+ * @param {string} endpoint
+ * @returns {string}
+ */
+export function validateHttpEndpoint(endpoint) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validateHttpEndpoint(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validate a hosted read page against the request cursor captured by the
+ * caller. Rust owns record shape and cursor contiguity; the HTTP adapter only
+ * supplies the response text and its request-relative starting position.
+ * @param {string} response_json
+ * @param {bigint} from
+ */
+export function validateHttpReadResponse(response_json, from) {
+    const ptr0 = passStringToWasm0(response_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validateHttpReadResponse(ptr0, len0, from);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validate one hosted HTTP JSON success response using the same path, width,
+ * identity, and tagged-union rules as the canonical Stream domain.
+ *
+ * The HTTP adapter keeps its intentionally simple JSON representation (u64
+ * values are decimal strings and opaque bytes are base64). This entry point
+ * validates that representation using the same Rust projection used by
+ * `decodeHttpResponse`, without crossing a second scalar schema boundary.
+ * @param {string} route
+ * @param {string} response_json
+ */
+export function validateHttpResponse(route, response_json) {
+    const ptr0 = passStringToWasm0(route, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(response_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validateHttpResponse(ptr0, len0, ptr1, len1);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validate one caller retry identity through the canonical Stream model.
+ * @param {Uint8Array} input
+ * @returns {string}
+ */
+export function validateIdempotencyKey(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validateIdempotencyKey(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validate one canonical Stream path using the same parser used by every
+ * provider and wire decoder.
+ *
+ * The empty string means success; failures use the stable Stream error code
+ * consumed by the TypeScript adapter.
+ * @param {string} path
+ * @returns {string}
+ */
+export function validatePath(path) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validatePath(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validate one remote endpoint using the shared Rust policy.
+ * @param {string} endpoint
+ */
+export function validateRemoteWebEndpoint(endpoint) {
+    const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validateRemoteWebEndpoint(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates an encoded Filesystem handshake response and returns the
+ * canonical negotiated capabilities. Keeping decoding and admission in
+ * this Rust boundary prevents hosted TypeScript clients from re-owning
+ * protocol identity or capability validation.
+ * @param {Uint8Array} response
+ * @returns {Uint8Array}
+ */
+export function validateRemoteWebFilesystemHandshake(response) {
+    const ptr0 = passArray8ToWasm0(response, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validateRemoteWebFilesystemHandshake(ptr0, len0);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+
+/**
+ * Validate one remote gRPC endpoint using the shared Rust policy.
+ * @param {string} endpoint
+ */
+export function validateRemoteWebGrpcEndpoint(endpoint) {
+    const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validateRemoteWebGrpcEndpoint(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validate one canonical protobuf request at the browser boundary.
+ *
+ * `kind` is deliberately a small closed set so callers cannot accidentally
+ * select a different validator after adding a new wire message. The empty
+ * string means success; failures use the same stable codes as the append and
+ * commit entry points.
+ * @param {string} kind
+ * @param {Uint8Array} input
+ * @returns {string}
+ */
+export function validateRequest(kind, input) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.validateRequest(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Validate one JavaScript representation of a canonical Stream sequence.
+ *
+ * JavaScript passes the decimal spelling of its `bigint`; Rust owns the
+ * unsigned 64-bit range accepted by every Stream wire field.
+ * @param {string} value
+ * @returns {string}
+ */
+export function validateSequence(value) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(value, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validateSequence(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validates the Rust Actors invoke request admission rules.
+ * @param {string} actor_id
+ * @param {string} method
+ */
+export function validate_actors_invoke(actor_id, method) {
+    const ptr0 = passStringToWasm0(actor_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_actors_invoke(ptr0, len0, ptr1, len1);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validate the opaque commit identity used by Stream responses and requests.
+ * The empty string means success; malformed identities use the canonical
+ * invalid-argument boundary consumed by generated facades.
+ * @param {Uint8Array} input
+ * @returns {string}
+ */
+export function validate_commit_id(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validate_commit_id(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validates the optional native TLS CA certificate before it reaches the
+ * platform gRPC adapter.
+ * @param {string} certificate
+ */
+export function validate_remote_web_ca_certificate(certificate) {
+    const ptr0 = passStringToWasm0(certificate, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_remote_web_ca_certificate(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Checks an HTTP content-length without first narrowing it through a JS number.
+ * @param {string} content_length
+ * @param {bigint} maximum
+ */
+export function validate_remote_web_content_length(content_length, maximum) {
+    const ptr0 = passStringToWasm0(content_length, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_remote_web_content_length(ptr0, len0, maximum);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validate one remote bearer credential using the shared Rust policy.
+ * @param {string} token
+ */
+export function validate_remote_web_credential(token) {
+    const ptr0 = passStringToWasm0(token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_remote_web_credential(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates the HTTPS or loopback-HTTP endpoint shared by Actors and Workers.
+ * @param {string} endpoint
+ */
+export function validate_remote_web_endpoint(endpoint) {
+    const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_remote_web_endpoint(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates the HTTPS endpoint required by native gRPC transports.
+ * @param {string} endpoint
+ */
+export function validate_remote_web_grpc_endpoint(endpoint) {
+    const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_remote_web_grpc_endpoint(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates the configured native gRPC message bound.
+ * @param {bigint} maximum
+ */
+export function validate_remote_web_message_limit(maximum) {
+    const ret = wasm.validate_remote_web_message_limit(maximum);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Advances a cumulative response byte count under the caller's configured bound.
+ * @param {bigint} observed
+ * @param {bigint} chunk
+ * @param {bigint} maximum
+ * @returns {bigint}
+ */
+export function validate_remote_web_response_chunk(observed, chunk, maximum) {
+    const ret = wasm.validate_remote_web_response_chunk(observed, chunk, maximum);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return BigInt.asUintN(64, ret[0]);
+}
+
+/**
+ * Validates the configured cumulative response bound.
+ * @param {bigint} maximum
+ */
+export function validate_remote_web_response_limit(maximum) {
+    const ret = wasm.validate_remote_web_response_limit(maximum);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates the Rust Workers invoke-deployment path and request admission rules.
+ * @param {string} alias
+ * @param {string} method
+ */
+export function validate_workers_invoke_deployment(alias, method) {
+    const ptr0 = passStringToWasm0(alias, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_workers_invoke_deployment(ptr0, len0, ptr1, len1);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates the Rust Workers invoke-version path and request admission rules.
+ * @param {Uint8Array} version_sha256
+ * @param {string} method
+ */
+export function validate_workers_invoke_version(version_sha256, method) {
+    const ptr0 = passArray8ToWasm0(version_sha256, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(method, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_workers_invoke_version(ptr0, len0, ptr1, len1);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
 }
 
 function __wbg_get_imports() {
@@ -3046,6 +4295,12 @@ function __wbg_get_imports() {
         __wbg__wbg_cb_unref_3c3b4f651835fbcb: function(arg0) {
             arg0._wbg_cb_unref();
         },
+        __wbg_abort_5ee4083ce26e0b01: function(arg0) {
+            arg0.abort();
+        },
+        __wbg_abort_7a67cb8f9383baa1: function(arg0, arg1) {
+            arg0.abort(arg1);
+        },
         __wbg_abort_cfab06d16d2d33a6: function() { return handleError(function (arg0) {
             arg0.abort();
         }, arguments); },
@@ -3053,9 +4308,16 @@ function __wbg_get_imports() {
             const ret = arg0.add(arg1, arg2);
             return ret;
         }, arguments); },
+        __wbg_append_c015600138ae60bb: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+            arg0.append(getStringFromWasm0(arg1, arg2), getStringFromWasm0(arg3, arg4));
+        }, arguments); },
         __wbg_arrayBuffer_7bba74066875530e: function(arg0) {
             const ret = arg0.arrayBuffer();
             return ret;
+        },
+        __wbg_body_9a25d64338506fbe: function(arg0) {
+            const ret = arg0.body;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
         __wbg_bound_88db1072ea68e901: function() { return handleError(function (arg0, arg1, arg2, arg3) {
             const ret = IDBKeyRange.bound(arg0, arg1, arg2 !== 0, arg3 !== 0);
@@ -3069,12 +4331,20 @@ function __wbg_get_imports() {
             const ret = BrowserCheckout.__wrap(arg0);
             return ret;
         },
+        __wbg_browserfilesystemclient_new: function(arg0) {
+            const ret = BrowserFilesystemClient.__wrap(arg0);
+            return ret;
+        },
         __wbg_browserfs_new: function(arg0) {
             const ret = BrowserFs.__wrap(arg0);
             return ret;
         },
         __wbg_browsergeneration_new: function(arg0) {
             const ret = BrowserGeneration.__wrap(arg0);
+            return ret;
+        },
+        __wbg_browserharnessclient_new: function(arg0) {
+            const ret = BrowserHarnessClient.__wrap(arg0);
             return ret;
         },
         __wbg_browserjoinplan_new: function(arg0) {
@@ -3097,6 +4367,22 @@ function __wbg_get_imports() {
             const ret = BrowserWorkspace.__wrap(arg0);
             return ret;
         },
+        __wbg_buffer_a77cc90da4bdb503: function(arg0) {
+            const ret = arg0.buffer;
+            return ret;
+        },
+        __wbg_byobRequest_41018d4f78e8364a: function(arg0) {
+            const ret = arg0.byobRequest;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_byteLength_f5c761c4472de41b: function(arg0) {
+            const ret = arg0.byteLength;
+            return ret;
+        },
+        __wbg_byteOffset_7cd0c9f7e573845c: function(arg0) {
+            const ret = arg0.byteOffset;
+            return ret;
+        },
         __wbg_call_7f2987183bb62793: function() { return handleError(function (arg0, arg1) {
             const ret = arg0.call(arg1);
             return ret;
@@ -3105,10 +4391,28 @@ function __wbg_get_imports() {
             const ret = arg0.call(arg1, arg2);
             return ret;
         }, arguments); },
+        __wbg_cancel_8314206ca10b9605: function(arg0) {
+            const ret = arg0.cancel();
+            return ret;
+        },
+        __wbg_catch_32d296b856e661d9: function(arg0, arg1) {
+            const ret = arg0.catch(arg1);
+            return ret;
+        },
+        __wbg_clearTimeout_fa0abacb8606b0a7: function(arg0) {
+            const ret = clearTimeout(arg0);
+            return ret;
+        },
         __wbg_close_37e34297940956fd: function(arg0) {
             const ret = arg0.close();
             return ret;
         },
+        __wbg_close_9998ebb2f4515c42: function() { return handleError(function (arg0) {
+            arg0.close();
+        }, arguments); },
+        __wbg_close_a7c33e895baeb773: function() { return handleError(function (arg0) {
+            arg0.close();
+        }, arguments); },
         __wbg_commit_e9c1332714c53826: function() { return handleError(function (arg0) {
             arg0.commit();
         }, arguments); },
@@ -3120,10 +4424,17 @@ function __wbg_get_imports() {
             const ret = arg0.createWritable();
             return ret;
         },
+        __wbg_create_afd4db08c8ba3078: function(arg0) {
+            const ret = Object.create(arg0);
+            return ret;
+        },
         __wbg_done_547d467e97529006: function(arg0) {
             const ret = arg0.done;
             return ret;
         },
+        __wbg_enqueue_bb06efec8458a81a: function() { return handleError(function (arg0, arg1) {
+            arg0.enqueue(arg1);
+        }, arguments); },
         __wbg_entries_616b1a459b85be0b: function(arg0) {
             const ret = Object.entries(arg0);
             return ret;
@@ -3132,6 +4443,14 @@ function __wbg_get_imports() {
             const ret = arg0.error;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         }, arguments); },
+        __wbg_fetch_37b5c90ecd638071: function(arg0, arg1) {
+            const ret = fetch(arg0, arg1);
+            return ret;
+        },
+        __wbg_fetch_a920260d19124083: function(arg0, arg1, arg2) {
+            const ret = arg0.fetch(arg1, arg2);
+            return ret;
+        },
         __wbg_from_741da0f916ab74aa: function(arg0) {
             const ret = Array.from(arg0);
             return ret;
@@ -3159,9 +4478,17 @@ function __wbg_get_imports() {
         __wbg_getRandomValues_3f44b700395062e5: function() { return handleError(function (arg0, arg1) {
             globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
         }, arguments); },
-        __wbg_getRandomValues_696b3d8d7a0bb3f9: function() { return handleError(function (arg0, arg1) {
+        __wbg_getRandomValues_85bb9ec093ba4400: function() { return handleError(function (arg0, arg1) {
             globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
         }, arguments); },
+        __wbg_getReader_bf34f92ee19c42b4: function() { return handleError(function (arg0) {
+            const ret = arg0.getReader();
+            return ret;
+        }, arguments); },
+        __wbg_getTime_f6ac312467f7cf09: function(arg0) {
+            const ret = arg0.getTime();
+            return ret;
+        },
         __wbg_get_4848e350b40afc16: function(arg0, arg1) {
             const ret = arg0[arg1 >>> 0];
             return ret;
@@ -3170,6 +4497,10 @@ function __wbg_get_imports() {
             const ret = arg0.get(arg1);
             return ret;
         }, arguments); },
+        __wbg_get_done_46f064515323cd59: function(arg0) {
+            const ret = arg0.done;
+            return isLikeNone(ret) ? 0xFFFFFF : ret ? 1 : 0;
+        },
         __wbg_get_ed0642c4b9d31ddf: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;
@@ -3182,12 +4513,24 @@ function __wbg_get_imports() {
             const ret = arg0[arg1 >>> 0];
             return ret;
         },
+        __wbg_get_value_28b7deb73d356d88: function(arg0) {
+            const ret = arg0.value;
+            return ret;
+        },
         __wbg_get_with_ref_key_6412cf3094599694: function(arg0, arg1) {
             const ret = arg0[arg1];
             return ret;
         },
         __wbg_global_e30ac0b7684506d0: function(arg0) {
             const ret = arg0.global;
+            return ret;
+        },
+        __wbg_has_3ec5c22db2e5237a: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.has(arg0, arg1);
+            return ret;
+        }, arguments); },
+        __wbg_headers_e08dcb5aa09b9a63: function(arg0) {
+            const ret = arg0.headers;
             return ret;
         },
         __wbg_indexedDB_065ce3ad400579e3: function() { return handleError(function (arg0) {
@@ -3378,10 +4721,22 @@ function __wbg_get_imports() {
             const ret = arg0.navigator;
             return ret;
         },
+        __wbg_new_0f6d2ddfe083319b: function(arg0) {
+            const ret = new Date(arg0);
+            return ret;
+        },
+        __wbg_new_3a112826a89cb962: function() { return handleError(function () {
+            const ret = new Headers();
+            return ret;
+        }, arguments); },
         __wbg_new_4f9fafbb3909af72: function() {
             const ret = new Object();
             return ret;
         },
+        __wbg_new_9abbf7148481485e: function() { return handleError(function () {
+            const ret = new AbortController();
+            return ret;
+        }, arguments); },
         __wbg_new_a560378ea1240b14: function(arg0) {
             const ret = new Uint8Array(arg0);
             return ret;
@@ -3405,7 +4760,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_(a, state0.b, arg0, arg1);
+                        return wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -3416,6 +4771,14 @@ function __wbg_get_imports() {
                 state0.a = 0;
             }
         },
+        __wbg_new_with_byte_offset_and_length_6bfc75833d6170c8: function(arg0, arg1, arg2) {
+            const ret = new Uint8Array(arg0, arg1 >>> 0, arg2 >>> 0);
+            return ret;
+        },
+        __wbg_new_with_str_and_init_f663b6d334baa878: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = new Request(getStringFromWasm0(arg0, arg1), arg2);
+            return ret;
+        }, arguments); },
         __wbg_new_with_u8_array_sequence_2ae9f5628c4df63c: function() { return handleError(function (arg0) {
             const ret = new Blob(arg0);
             return ret;
@@ -3428,7 +4791,7 @@ function __wbg_get_imports() {
             const ret = arg0.next();
             return ret;
         }, arguments); },
-        __wbg_now_5b0efd3371c42a23: function() { return handleError(function () {
+        __wbg_now_2ef92f9e3342b41f: function() { return handleError(function () {
             const ret = Date.now();
             return ret;
         }, arguments); },
@@ -3466,18 +4829,35 @@ function __wbg_get_imports() {
         __wbg_queueMicrotask_df5a6dac26d818f3: function(arg0) {
             queueMicrotask(arg0);
         },
+        __wbg_read_316bf844c93a6ccc: function(arg0) {
+            const ret = arg0.read();
+            return ret;
+        },
         __wbg_readyState_accbdf425c074d9c: function(arg0) {
             const ret = arg0.readyState;
             return (__wbindgen_enum_IdbRequestReadyState.indexOf(ret) + 1 || 3) - 1;
+        },
+        __wbg_releaseLock_b12f7593852f4c01: function(arg0) {
+            arg0.releaseLock();
         },
         __wbg_resolve_0a79de24e9d2267b: function(arg0) {
             const ret = Promise.resolve(arg0);
             return ret;
         },
+        __wbg_respond_87b5b47cbc9ee0b7: function() { return handleError(function (arg0, arg1) {
+            arg0.respond(arg1 >>> 0);
+        }, arguments); },
         __wbg_result_452c1006fc727317: function() { return handleError(function (arg0) {
             const ret = arg0.result;
             return ret;
         }, arguments); },
+        __wbg_setTimeout_9c23a5767d86152f: function(arg0, arg1) {
+            const ret = setTimeout(arg0, arg1);
+            return ret;
+        },
+        __wbg_set_16a9c1a07b3d38ec: function(arg0, arg1, arg2) {
+            arg0.set(getArrayU8FromWasm0(arg1, arg2));
+        },
         __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
             arg0[arg1] = arg2;
         },
@@ -3488,11 +4868,35 @@ function __wbg_get_imports() {
             const ret = Reflect.set(arg0, arg1, arg2);
             return ret;
         }, arguments); },
+        __wbg_set_aa391f3af1ff0e9c: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+            arg0.set(getStringFromWasm0(arg1, arg2), getStringFromWasm0(arg3, arg4));
+        }, arguments); },
+        __wbg_set_body_a304d09cb50cefbe: function(arg0, arg1) {
+            arg0.body = arg1;
+        },
+        __wbg_set_cache_cc687e2b96e9608c: function(arg0, arg1) {
+            arg0.cache = __wbindgen_enum_RequestCache[arg1];
+        },
         __wbg_set_create_0654e513e8ccb2be: function(arg0, arg1) {
             arg0.create = arg1 !== 0;
         },
         __wbg_set_create_4b5cddb7e7c14744: function(arg0, arg1) {
             arg0.create = arg1 !== 0;
+        },
+        __wbg_set_credentials_7693e63055f5e838: function(arg0, arg1) {
+            arg0.credentials = __wbindgen_enum_RequestCredentials[arg1];
+        },
+        __wbg_set_headers_6ab1105e542834e2: function(arg0, arg1) {
+            arg0.headers = arg1;
+        },
+        __wbg_set_integrity_0dcf8feff0f7e4d3: function(arg0, arg1, arg2) {
+            arg0.integrity = getStringFromWasm0(arg1, arg2);
+        },
+        __wbg_set_method_1971272fe557e972: function(arg0, arg1, arg2) {
+            arg0.method = getStringFromWasm0(arg1, arg2);
+        },
+        __wbg_set_mode_d1b643087602281a: function(arg0, arg1) {
+            arg0.mode = __wbindgen_enum_RequestMode[arg1];
         },
         __wbg_set_name_ab9c98596fd7310a: function(arg0, arg1, arg2) {
             arg0.name = getStringFromWasm0(arg1, arg2);
@@ -3515,6 +4919,22 @@ function __wbg_get_imports() {
         __wbg_set_onupgradeneeded_d7e8e03a1999bf5d: function(arg0, arg1) {
             arg0.onupgradeneeded = arg1;
         },
+        __wbg_set_redirect_1d6df2c80bf90934: function(arg0, arg1) {
+            arg0.redirect = __wbindgen_enum_RequestRedirect[arg1];
+        },
+        __wbg_set_referrer_c0d0ce1b4c972d99: function(arg0, arg1, arg2) {
+            arg0.referrer = getStringFromWasm0(arg1, arg2);
+        },
+        __wbg_set_referrer_policy_48f3f15e75682149: function(arg0, arg1) {
+            arg0.referrerPolicy = __wbindgen_enum_ReferrerPolicy[arg1];
+        },
+        __wbg_set_signal_8564a226c5c6853c: function(arg0, arg1) {
+            arg0.signal = arg1;
+        },
+        __wbg_signal_9172c3282bfba2f5: function(arg0) {
+            const ret = arg0.signal;
+            return ret;
+        },
         __wbg_size_7306c9406e13bf29: function(arg0) {
             const ret = arg0.size;
             return ret;
@@ -3534,6 +4954,10 @@ function __wbg_get_imports() {
         __wbg_static_accessor_WINDOW_59fd959c540fe405: function() {
             const ret = typeof window === 'undefined' ? null : window;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_status_44ecb0ac1da253f4: function(arg0) {
+            const ret = arg0.status;
+            return ret;
         },
         __wbg_storage_8f8e63186ec77353: function(arg0) {
             const ret = arg0.storage;
@@ -3583,56 +5007,74 @@ function __wbg_get_imports() {
             const ret = arg0.value;
             return ret;
         },
+        __wbg_view_066479053a371038: function(arg0) {
+            const ret = arg0.view;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_wasmfollow_new: function(arg0) {
+            const ret = WasmFollow.__wrap(arg0);
+            return ret;
+        },
         __wbg_write_fc53b37dcc29642e: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = arg0.write(getArrayU8FromWasm0(arg1, arg2));
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 975, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1348, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 812, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_Event__Event______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 968, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 20, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 1011, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_Event__Event______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 811, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 17, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsValue___true_);
             return ret;
         },
-        __wbindgen_cast_0000000000000005: function(arg0) {
+        __wbindgen_cast_0000000000000005: function(arg0, arg1) {
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1010, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_);
+            return ret;
+        },
+        __wbindgen_cast_0000000000000006: function(arg0, arg1) {
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 918, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_);
+            return ret;
+        },
+        __wbindgen_cast_0000000000000007: function(arg0) {
             // Cast intrinsic for `F64 -> Externref`.
             const ret = arg0;
             return ret;
         },
-        __wbindgen_cast_0000000000000006: function(arg0) {
+        __wbindgen_cast_0000000000000008: function(arg0) {
             // Cast intrinsic for `I64 -> Externref`.
             const ret = arg0;
             return ret;
         },
-        __wbindgen_cast_0000000000000007: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000009: function(arg0, arg1) {
             // Cast intrinsic for `Ref(Slice(U8)) -> NamedExternref("Uint8Array")`.
             const ret = getArrayU8FromWasm0(arg0, arg1);
             return ret;
         },
-        __wbindgen_cast_0000000000000008: function(arg0, arg1) {
+        __wbindgen_cast_000000000000000a: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
             return ret;
         },
-        __wbindgen_cast_0000000000000009: function(arg0) {
+        __wbindgen_cast_000000000000000b: function(arg0) {
             // Cast intrinsic for `U64 -> Externref`.
             const ret = BigInt.asUintN(64, arg0);
             return ret;
         },
-        __wbindgen_cast_000000000000000a: function(arg0, arg1) {
+        __wbindgen_cast_000000000000000c: function(arg0, arg1) {
             var v0 = getArrayU8FromWasm0(arg0, arg1).slice();
             wasm.__wbindgen_free(arg0, arg1 * 1, 1);
             // Cast intrinsic for `Vector(U8) -> Externref`.
@@ -3655,30 +5097,38 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_(arg0, arg1) {
-    wasm.wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_(arg0, arg1);
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_(arg0, arg1) {
+    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_(arg0, arg1);
 }
 
-function wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_Event__Event______true_(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_Event__Event______true_(arg0, arg1, arg2);
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_(arg0, arg1) {
+    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_(arg0, arg1);
 }
 
-function wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_(arg0, arg1, arg2);
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_(arg0, arg1, arg2);
+}
+
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_Event__Event______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_Event__Event______true_(arg0, arg1, arg2);
+}
+
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_(arg0, arg1, arg2);
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsValue___true_(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsValue___true_(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_(arg0, arg1, arg2, arg3) {
-    wasm.wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_(arg0, arg1, arg2, arg3);
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_(arg0, arg1, arg2, arg3) {
+    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_(arg0, arg1, arg2, arg3);
 }
 
 
@@ -3686,12 +5136,33 @@ const __wbindgen_enum_IdbRequestReadyState = ["pending", "done"];
 
 
 const __wbindgen_enum_IdbTransactionMode = ["readonly", "readwrite", "versionchange", "readwriteflush", "cleanup"];
+
+
+const __wbindgen_enum_ReadableStreamType = ["bytes"];
+
+
+const __wbindgen_enum_ReferrerPolicy = ["", "no-referrer", "no-referrer-when-downgrade", "origin", "origin-when-cross-origin", "unsafe-url", "same-origin", "strict-origin", "strict-origin-when-cross-origin"];
+
+
+const __wbindgen_enum_RequestCache = ["default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"];
+
+
+const __wbindgen_enum_RequestCredentials = ["omit", "same-origin", "include"];
+
+
+const __wbindgen_enum_RequestMode = ["same-origin", "no-cors", "cors", "navigate"];
+
+
+const __wbindgen_enum_RequestRedirect = ["follow", "error", "manual"];
 const BrowserChangeSetFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserchangeset_free(ptr >>> 0, 1));
 const BrowserCheckoutFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browsercheckout_free(ptr >>> 0, 1));
+const BrowserFilesystemClientFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_browserfilesystemclient_free(ptr >>> 0, 1));
 const BrowserFsFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserfs_free(ptr >>> 0, 1));
@@ -3701,6 +5172,9 @@ const BrowserGenerationFinalization = (typeof FinalizationRegistry === 'undefine
 const BrowserGitCompatRepositoryFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browsergitcompatrepository_free(ptr >>> 0, 1));
+const BrowserHarnessClientFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_browserharnessclient_free(ptr >>> 0, 1));
 const BrowserJoinPlanFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserjoinplan_free(ptr >>> 0, 1));
@@ -3725,6 +5199,24 @@ const BrowserWorkspaceFinalization = (typeof FinalizationRegistry === 'undefined
 const BrowserWorkspaceContextRegistryFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserworkspacecontextregistry_free(ptr >>> 0, 1));
+const HttpFollowCursorFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_httpfollowcursor_free(ptr >>> 0, 1));
+const IntoUnderlyingByteSourceFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_intounderlyingbytesource_free(ptr >>> 0, 1));
+const IntoUnderlyingSinkFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_intounderlyingsink_free(ptr >>> 0, 1));
+const IntoUnderlyingSourceFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_intounderlyingsource_free(ptr >>> 0, 1));
+const WasmFollowFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmfollow_free(ptr >>> 0, 1));
+const WasmMemoryStreamFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmmemorystream_free(ptr >>> 0, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
