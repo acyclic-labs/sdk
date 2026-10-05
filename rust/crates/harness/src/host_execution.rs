@@ -1342,7 +1342,24 @@ pub struct NativeExecutionProvider {
     active: Arc<
         Mutex<BTreeMap<OperationId, (ExecutionReceiptKey, EffectAttemptId, ExecutionCancellation)>>,
     >,
+    cancel_jobs: Mutex<BTreeMap<OperationId, tokio::task::JoinHandle<()>>>,
     provider_id: String,
+}
+
+impl Drop for NativeExecutionProvider {
+    fn drop(&mut self) {
+        // Cancellation persistence jobs are provider-owned. Dropping the
+        // JoinHandle alone would detach the Tokio task, allowing it to use
+        // the receipt store after this provider has gone away. Abort every
+        // outstanding job while the provider still owns the registry.
+        let mut jobs = self
+            .cancel_jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (_, job) in jobs.drain() {
+            job.abort();
+        }
+    }
 }
 
 /// Shared ownership state for one admitted native attempt.
@@ -1358,7 +1375,6 @@ struct AttemptCleanup {
     >,
     key: ExecutionReceiptKey,
     cancellation: ExecutionCancellation,
-    receipt_store: Option<Arc<dyn ExecutionReceiptStore>>,
     owner_alive: std::sync::atomic::AtomicBool,
     runner_started_flag: std::sync::atomic::AtomicBool,
     runner_alive: std::sync::atomic::AtomicBool,
@@ -1382,22 +1398,13 @@ impl AttemptCleanup {
         if !self.owner_alive.swap(false, Ordering::AcqRel) {
             return;
         }
+        // A dropped dispatch has no async owner that can await a durable
+        // cancellation write. Keep the host claim pending instead of
+        // starting a detached cleanup thread: Pending is the restart fence
+        // for an unknown external outcome. Callers that need a terminal
+        // cancellation record must use `cancel_and_persist` before dropping
+        // the dispatch future.
         self.cancellation.cancel();
-        if let Some(store) = self.receipt_store.as_ref().map(Arc::clone) {
-            let key = self.key.clone();
-            let cancellation = self.cancellation.clone();
-            thread::spawn(move || {
-                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                else {
-                    return;
-                };
-                if runtime.block_on(store.request_cancel(&key)).is_ok() {
-                    cancellation.mark_durable();
-                }
-            });
-        }
         if !self.runner_started_flag.load(Ordering::Acquire)
             || !self.runner_alive.load(Ordering::Acquire)
         {
@@ -1488,6 +1495,7 @@ impl NativeExecutionProvider {
             runner,
             approval_verifier,
             active: Arc::new(Mutex::new(BTreeMap::new())),
+            cancel_jobs: Mutex::new(BTreeMap::new()),
             provider_id: "harness.native-execution.v1".into(),
         })
     }
@@ -1508,6 +1516,7 @@ impl NativeExecutionProvider {
             runner,
             approval_verifier,
             active: Arc::new(Mutex::new(BTreeMap::new())),
+            cancel_jobs: Mutex::new(BTreeMap::new()),
             provider_id: "harness.native-execution.v1".into(),
         })
     }
@@ -1544,7 +1553,8 @@ impl NativeExecutionProvider {
     /// Requests cancellation of a currently running operation.
     ///
     /// This compatibility entry point signals the process immediately and
-    /// schedules the matching durable cancellation intent. Call
+    /// schedules the matching durable cancellation intent on the current
+    /// runtime when one is available. Call
     /// [`Self::cancel_and_persist`] when the caller must observe persistence
     /// before proceeding.
     pub fn cancel(&self, operation_id: OperationId) -> bool {
@@ -1556,17 +1566,23 @@ impl NativeExecutionProvider {
         };
         cancellation.cancel();
         if let Some(store) = self.receipt_store.as_ref().map(Arc::clone) {
-            thread::spawn(move || {
-                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                else {
-                    return;
-                };
-                if runtime.block_on(store.request_cancel(&key)).is_ok() {
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return true;
+            };
+            let mut jobs = self
+                .cancel_jobs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            jobs.retain(|_, job| !job.is_finished());
+            if jobs.contains_key(&operation_id) {
+                return true;
+            }
+            let job = runtime.spawn(async move {
+                if store.request_cancel(&key).await.is_ok() {
                     cancellation.mark_durable();
                 }
             });
+            jobs.insert(operation_id, job);
         }
         true
     }
@@ -1586,6 +1602,11 @@ impl NativeExecutionProvider {
             (key, cancellation)
         };
         cancellation.cancel();
+        if let Ok(mut jobs) = self.cancel_jobs.lock() {
+            if let Some(job) = jobs.remove(&operation_id) {
+                job.abort();
+            }
+        }
         if let Some(store) = &self.receipt_store {
             store.request_cancel(&key).await?;
             cancellation.mark_durable();
@@ -1891,7 +1912,6 @@ impl NativeExecutionProvider {
                 active: Arc::clone(&self.active),
                 key: key.clone(),
                 cancellation: cancellation.clone(),
-                receipt_store: self.receipt_store.as_ref().map(Arc::clone),
                 owner_alive: std::sync::atomic::AtomicBool::new(true),
                 runner_started_flag: std::sync::atomic::AtomicBool::new(false),
                 runner_alive: std::sync::atomic::AtomicBool::new(true),
@@ -3540,14 +3560,14 @@ mod tests {
                     .lock()
                     .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
                     .is_empty();
-                let cancellation_recorded = store
+                let claim_pending = store
                     .state
                     .lock()
                     .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
-                    .cancellation_requested
+                    .pending
                     .iter()
                     .any(|key| key.operation_id == operation);
-                if active_empty && cancellation_recorded {
+                if active_empty && claim_pending {
                     break Ok::<(), Error>(());
                 }
                 tokio::task::yield_now().await;
@@ -3555,14 +3575,6 @@ mod tests {
         })
         .await
         .map_err(|_| Error::Storage("dropped dispatch left an active attempt".into()))??;
-        let state = store
-            .state
-            .lock()
-            .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?;
-        assert!(state
-            .cancellation_requested
-            .iter()
-            .any(|key| key.operation_id == operation));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
