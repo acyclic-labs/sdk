@@ -381,8 +381,50 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         if journal.phase == MaterializationPhase::RolledBack {
             return Ok(journal);
         }
+        let reconcile_in_flight = matches!(
+            journal.phase,
+            MaterializationPhase::Applying | MaterializationPhase::RollingBack
+        );
         journal.phase = MaterializationPhase::RollingBack;
         journal = self.persist(journal).await?;
+        // A process can stop after the backend mutates the current edit but
+        // before the progress CAS records it in `applied`. Reconcile that
+        // uncounted edit first; otherwise rollback would mark an operation
+        // complete while leaving an interrupted rename or postimage behind.
+        if reconcile_in_flight {
+            let index = usize::try_from(journal.applied)
+                .map_err(|_| MaterializationError::IncompatibleJournal)?;
+            if let Some(edit) = journal.plan.edits.get(index) {
+                let preimage = journal
+                    .preimages
+                    .get(index)
+                    .ok_or(MaterializationError::IncompatibleJournal)?;
+                match self
+                    .backend
+                    .observe(edit, preimage)
+                    .await
+                    .map_err(MaterializationError::Backend)?
+                {
+                    MaterializationObservation::Postimage
+                    | MaterializationObservation::Interrupted => {
+                        self.backend
+                            .restore(edit, preimage)
+                            .await
+                            .map_err(MaterializationError::Backend)?;
+                    }
+                    MaterializationObservation::Preimage => {}
+                    // The journal only proves that this edit was selected,
+                    // not that an unobservable backend started it. Do not
+                    // overwrite an unknown physical state during rollback.
+                    MaterializationObservation::Unverified => {
+                        return Err(MaterializationError::ExternalMutation);
+                    }
+                    MaterializationObservation::Diverged => {
+                        return Err(MaterializationError::ExternalMutation);
+                    }
+                }
+            }
+        }
         while journal.restored < journal.applied {
             let index = journal
                 .applied
@@ -2352,6 +2394,66 @@ mod tests {
             .restore(edit, &preimage)
             .await
             .expect("restore interrupted install");
+        assert_eq!(
+            std::fs::read(root.join("file.txt")).expect("restored live"),
+            b"before"
+        );
+        assert!(!backup.join("file.txt").exists());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_tree_backend_recovery_rolls_back_unrecorded_interrupted_install() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        let target = operation.join("target");
+        let backup = operation.join("backup");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&target).expect("target");
+        std::fs::create_dir_all(&backup).expect("backup");
+        std::fs::write(root.join("file.txt"), b"before").expect("before");
+        std::fs::write(target.join("file.txt"), b"after").expect("after");
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+        let plan = backend
+            .plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["file.txt".to_owned()],
+            )
+            .expect("plan");
+        let edit = &plan.edits[0];
+        let preimage = backend.capture(edit).await.expect("capture");
+        let store = MemoryMaterializationJournalStore::default();
+        store
+            .compare_and_swap(
+                plan.operation_id,
+                0,
+                MaterializationJournal {
+                    version: JOURNAL_VERSION,
+                    revision: 1,
+                    plan: plan.clone(),
+                    preimages: vec![preimage],
+                    phase: MaterializationPhase::Applying,
+                    applied: 0,
+                    restored: 0,
+                },
+            )
+            .await
+            .expect("journal applying plan");
+
+        // Crash after the live binding moved to backup, before the progress
+        // CAS could record the edit as applied.
+        std::fs::rename(root.join("file.txt"), backup.join("file.txt"))
+            .expect("simulate interrupted rename");
+        let recovered = JournaledMaterializer::new(store, backend)
+            .recover(plan.operation_id, MaterializationRecovery::RollBack)
+            .await
+            .expect("recover")
+            .expect("journal");
+        assert_eq!(recovered.phase, MaterializationPhase::RolledBack);
         assert_eq!(
             std::fs::read(root.join("file.txt")).expect("restored live"),
             b"before"
