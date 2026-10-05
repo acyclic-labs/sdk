@@ -2731,7 +2731,8 @@ mod tests {
             .await
             .expect("physical apply");
 
-        let recovered = JournaledMaterializer::new(store, backend)
+        let materializer = JournaledMaterializer::new(store, backend);
+        let recovered = materializer
             .recover(plan.operation_id, MaterializationRecovery::Complete)
             .await
             .expect("recover")
@@ -2739,6 +2740,16 @@ mod tests {
         assert_eq!(recovered.phase, MaterializationPhase::Applied);
         assert_eq!(
             std::fs::read(root.join("file.txt")).expect("after remains"),
+            b"after"
+        );
+        let retried = materializer
+            .recover(plan.operation_id, MaterializationRecovery::Complete)
+            .await
+            .expect("replay recover")
+            .expect("replayed journal");
+        assert_eq!(retried.phase, MaterializationPhase::Applied);
+        assert_eq!(
+            std::fs::read(root.join("file.txt")).expect("after remains on replay"),
             b"after"
         );
     }
