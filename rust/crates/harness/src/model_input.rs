@@ -1441,15 +1441,17 @@ mod tests {
     fn aggregate_limit_does_not_silently_truncate() -> Result<()> {
         let mut input = request()?;
         input.messages = vec![text(&"x".repeat(1024)); 3];
-        assert!(PreparedModelInput::prepare(
-            input,
-            Limits {
-                file_bytes: 2048,
-                render_bytes: 2048,
-                ..Limits::default()
-            }
-        )
-        .is_err());
+        assert!(matches!(
+            PreparedModelInput::prepare(
+                input,
+                Limits {
+                    file_bytes: 2048,
+                    render_bytes: 2048,
+                    ..Limits::default()
+                }
+            ),
+            Err(Error::Invalid(message)) if message == "aggregate model request exceeds byte limit"
+        ));
         Ok(())
     }
 
