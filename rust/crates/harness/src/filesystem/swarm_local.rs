@@ -4480,19 +4480,18 @@ impl PersistentLocalSwarm {
         max_steps: u32,
         mut cancelled: tokio::sync::watch::Receiver<bool>,
     ) -> Result<TurnOutput> {
-        let child_task = AbortOnDrop::new(tokio::spawn(Self::run_child_turn(
-            harness, bundle, request, max_steps,
-        )));
+        // The worker registry already owns and joins this future. Running the
+        // model turn directly avoids a second JoinHandle whose Drop path can
+        // abort and detach the inner task before its provider cleanup has
+        // finished.
+        let child_task = Self::run_child_turn(harness, bundle, request, max_steps);
         tokio::pin!(child_task);
         tokio::select! {
-            result = &mut child_task => result
-                .map_err(|error| Error::Storage(format!("child turn task failed: {error}")))
-                .and_then(|result| result),
+            result = &mut child_task => result,
             result = cancellation_requested(&mut cancelled) => {
-                // Join before the owner examines the journal: abort alone
-                // could leave the writer racing recovery.
-                child_task.as_ref().get_ref().handle.abort();
-                let _ = (&mut child_task).await;
+                // Dropping the pinned worker future cancels it under the
+                // registry's ownership. The enclosing worker remains the
+                // join boundary for all cleanup that the future owns.
                 result.and_then(|()| Err(Error::Conflict("child activation was cancelled".into())))
             },
         }
