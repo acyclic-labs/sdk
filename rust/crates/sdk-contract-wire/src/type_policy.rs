@@ -1355,6 +1355,12 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
         rules: UUID_BYTES,
     },
     SemanticType {
+        id: "workspace_id",
+        rust_name: "WorkspaceId",
+        wire_kind: WireValueKind::Bytes,
+        rules: UUID_BYTES,
+    },
+    SemanticType {
         id: "checkpoint_id",
         rust_name: "CheckpointId",
         wire_kind: WireValueKind::Bytes,
@@ -2506,6 +2512,18 @@ pub fn audit_generated_public_surfaces(
                 "csharp" if csharp_timestamp_precision_loss(line) => {
                     Some("C# timestamp projection can lose protobuf nanosecond precision")
                 }
+                "haskell" if haskell_raw_semantic_identity(line) => {
+                    Some("Haskell semantic identity is erased to raw ByteString")
+                }
+                "haskell" if haskell_public_constructor_exposure(line) => {
+                    Some("Haskell semantic wrapper exposes a bypassable raw constructor")
+                }
+                "haskell" if haskell_erased_known_oneof(line) => {
+                    Some("Haskell known oneof payload is erased to ByteString")
+                }
+                "haskell" if haskell_raw_open_enum(line) => {
+                    Some("Haskell enum projection exposes only an untyped raw integer")
+                }
                 _ => None,
             };
             if let Some(reason) = reason {
@@ -2634,6 +2652,33 @@ fn csharp_raw_public_wire_record(line: &str) -> bool {
 
 fn csharp_timestamp_precision_loss(line: &str) -> bool {
     line.contains("DateTimeOffset") && line.contains("ToDateTimeOffset()")
+}
+
+fn haskell_raw_semantic_identity(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    (trimmed.starts_with("type IdempotencyKey") || trimmed.starts_with("type Image"))
+        && trimmed.contains("ByteString")
+}
+
+fn haskell_public_constructor_exposure(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    ["IdempotencyKey", "Image", "WireEnum", "KnownOneof"]
+        .iter()
+        .any(|name| trimmed.contains(&format!("{name}(..)")))
+}
+
+fn haskell_erased_known_oneof(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    (trimmed.starts_with("data KnownOneof")
+        || trimmed.starts_with("newtype KnownOneof")
+        || trimmed.contains("KnownOneof {"))
+        && trimmed.contains("ByteString")
+}
+
+fn haskell_raw_open_enum(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("type WireEnum")
+        && (trimmed.contains("Int") || trimmed.contains("Word"))
 }
 
 fn jvm_raw_public_wire_record(line: &str) -> bool {
@@ -2819,6 +2864,12 @@ fn required_type_feature_markers(language: &str) -> &'static [(&'static str, &'s
             ("Unknown", "Dart facade lacks an open unknown-value projection"),
             ("IdempotencyKey", "Dart facade lacks a nominal semantic identity"),
         ],
+        "haskell" => &[
+            ("Unknown", "Haskell facade lacks an open unknown-value projection"),
+            ("Maybe", "Haskell facade lacks explicit optional presence representation"),
+            ("IdempotencyKey", "Haskell facade lacks a nominal semantic identity"),
+            ("KnownOneof", "Haskell facade lacks a discriminated oneof projection"),
+        ],
         _ => &[],
     }
 }
@@ -2898,6 +2949,13 @@ fn surface_language(path: &Path) -> Option<&'static str> {
         Some("php")
     } else if name == "generated_typed.dart" {
         Some("dart")
+    } else if name == "RustTypedClients.hs"
+        || name == "RustSemanticTypes.hs"
+        || name == "generated_typed.hs"
+        || name == "RustTypedClients.lhs"
+        || name == "RustSemanticTypes.lhs"
+    {
+        Some("haskell")
     } else {
         None
     }
@@ -3088,6 +3146,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("csharp")).expect("audit fixture directory");
         fs::create_dir_all(root.join("jvm")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("haskell-positive")).expect("audit fixture directory");
         fs::write(
             root.join("csharp").join("RustTypedClients.cs"),
             "public sealed record ObjectInfo(DateTimeOffset? LastModified);\nmessage.LastModified?.ToDateTimeOffset();\n",
@@ -3108,6 +3167,16 @@ mod tests {
             "final class ObjectResponse { def toWire: acyclic.objects.v2.Objects.ObjectInfo = value; def nested: acyclic.objects.v2.Objects.ObjectInfo = value }\n",
         )
         .expect("scala fixture");
+        fs::write(
+            root.join("RustSemanticTypes.hs"),
+            "module Raw (IdempotencyKey(..), WireEnum(..)) where\ntype IdempotencyKey = ByteString\ndata KnownOneof = KnownOneof { payload :: ByteString }\ntype WireEnum = Int32\n",
+        )
+        .expect("haskell fixture");
+        fs::write(
+            root.join("haskell-positive").join("RustSemanticTypes.hs"),
+            "module RustSemanticTypes (IdempotencyKey, WireEnum, KnownOneof) where\nnewtype IdempotencyKey = IdempotencyKey ByteString\ndata KnownOneof = KnownOneof (ValidatedPayload)\nnewtype WireEnum = WireEnum Int32\n",
+        )
+        .expect("haskell positive fixture");
         fs::create_dir_all(root.join("swift")).expect("swift fixture directory");
         fs::write(
             root.join("swift").join("RustTypedClients.swift"),
@@ -3142,6 +3211,27 @@ mod tests {
             finding.language == "jvm"
                 && finding.reason == "JVM enum projection exposes only an untyped raw integer"
         }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "haskell"
+                && finding.reason == "Haskell semantic identity is erased to raw ByteString"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "haskell"
+                && finding.reason == "Haskell known oneof payload is erased to ByteString"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "haskell"
+                && finding.reason == "Haskell enum projection exposes only an untyped raw integer"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "haskell"
+                && finding.reason == "Haskell semantic wrapper exposes a bypassable raw constructor"
+        }));
+        assert!(findings
+            .iter()
+            .filter(|finding| finding.path.contains("haskell-positive"))
+            .next()
+            .is_none(), "opaque validated Haskell newtypes should pass");
         assert!(findings.iter().any(|finding| {
             finding.language == "swift"
                 && finding.reason == "public Swift wrapper exposes an opaque RustWireMessage"
