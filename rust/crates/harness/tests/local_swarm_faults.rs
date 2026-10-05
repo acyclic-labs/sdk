@@ -60,6 +60,9 @@ enum FaultWindow {
     // exercising it.
     AfterPreparedSeed = 3,
     BeforeCompletion = 4,
+    /// The provider persisted a complete model event, then disconnected
+    /// before the executor could persist the turn result.
+    AfterExecutionBeforePersistence = 5,
 }
 
 impl FaultWindow {
@@ -69,6 +72,7 @@ impl FaultWindow {
             2 => Self::AfterIntent,
             3 => Self::AfterPreparedSeed,
             4 => Self::BeforeCompletion,
+            5 => Self::AfterExecutionBeforePersistence,
             _ => Self::None,
         }
     }
@@ -435,6 +439,22 @@ impl ModelProvider for ForkFaultProvider {
                         "simulated disconnect after child dispatch".into(),
                     )),
                 ]));
+            }
+            if child_fault == FaultWindow::AfterExecutionBeforePersistence
+                && !self.child_a_failed.swap(true, Ordering::SeqCst)
+            {
+                // The complete model event is durably observed by Harness,
+                // then the provider disconnects before the enclosing turn can
+                // persist its terminal result. Recovery must reconcile this
+                // exact admitted attempt instead of redispatching it.
+                return Box::pin(stream::iter(
+                    ordinary()
+                        .into_iter()
+                        .map(Ok::<ModelEvent, Error>)
+                        .chain([Err(Error::Storage(
+                            "simulated disconnect after model completion".into(),
+                        ))]),
+                ));
             }
         }
 
@@ -1076,6 +1096,102 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
     assert_eq!(provider.requests_matching("child task: child-b").len(), 1);
     provider.assert_request_digests();
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_execution_disconnect_replays_child_result_without_duplicate_dispatch() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (host, stream, project) = local_project(directory.path(), true).await?;
+    let child_a = operation(0xA7);
+    let child_b = operation(0xB7);
+    let provider = ForkFaultProvider::new(child_a, child_b);
+    provider.set_child_a_fault(FaultWindow::AfterExecutionBeforePersistence);
+    let swarm = open_swarm(
+        directory.path(),
+        provider.clone(),
+        host.clone(),
+        stream.clone(),
+        project.clone(),
+    )
+    .await?;
+    let root_operation = operation(0x07);
+    let initial = swarm
+        .run_root(root_operation, "recover a child after model completion")
+        .await?;
+    assert_eq!(initial.text, "ordinary completion");
+    wait_for_dispatches(&provider, 4).await?;
+    let durable_prefix = provider.serialized();
+    assert_eq!(durable_prefix.len(), 4);
+    for child in [child_a, child_b] {
+        assert!(swarm.published_seed(task(child)).await.is_ok());
+        assert!(swarm.prepared_report(task(child)).await.is_ok());
+    }
+    assert!(matches!(
+        swarm.outcome(task(child_a)).await,
+        Err(Error::NotFound(_))
+    ));
+    drop(swarm);
+    drop(host);
+    drop(stream);
+    drop(project);
+
+    provider.reconcile_completed.store(true, Ordering::SeqCst);
+    let (host, stream, project) = local_project(directory.path(), false).await?;
+    let reopened = open_swarm(
+        directory.path(),
+        provider.clone(),
+        host.clone(),
+        stream.clone(),
+        project.clone(),
+    )
+    .await?;
+    let root_task = reopened.root_task().await?;
+    let root_harness = PersistentLocalHarness::open_with_tools_and_project_on_providers(
+        directory.path().join("tasks").join(root_task.to_string()),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+        LocalHarnessTools::new(),
+        Some(project.clone()),
+        host.clone(),
+        stream.clone(),
+        ProviderRef::new("local", "stream", "2")?,
+    )
+    .await?;
+    let mut parent = root_harness
+        .conversation_aggregate(Limits::default())
+        .await?;
+    let seed = reopened.published_seed(task(child_a)).await?;
+    let recovered = reopened
+        .retry_published_child(
+            task(child_a),
+            host,
+            stream,
+            child_issuer(&seed, child_a),
+            &mut parent,
+        )
+        .await?;
+    assert_eq!(recovered.output.text, "ordinary completion");
+    let output = reopened
+        .run_root(root_operation, "recover a child after model completion")
+        .await?;
+    assert_eq!(output.text, "ordinary completion");
+    assert_eq!(
+        &provider.serialized()[..durable_prefix.len()],
+        durable_prefix
+    );
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 4);
+    provider.assert_request_digests();
+    provider.assert_completed_dispatch_trace(child_a, child_b);
+    assert_eq!(
+        reopened.outcome(task(child_a)).await?.text,
+        "ordinary completion"
+    );
+    assert_eq!(
+        reopened.outcome(task(child_b)).await?.text,
+        "ordinary completion"
+    );
     Ok(())
 }
 
