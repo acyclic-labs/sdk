@@ -98,6 +98,28 @@ const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 
+#[cfg(test)]
+type MessageAdmissionPause = (Arc<tokio::sync::Barrier>, Arc<tokio::sync::Notify>);
+
+/// Test-only seam placed after the owner journal append and before its result
+/// is returned. It models an acknowledgement lost after durable admission;
+/// no runtime protocol or second ledger depends on it.
+#[cfg(test)]
+static MESSAGE_ADMISSION_PAUSE: OnceLock<StdMutex<Option<MessageAdmissionPause>>> = OnceLock::new();
+
+#[cfg(test)]
+async fn pause_after_message_admission_append() {
+    let pause = MESSAGE_ADMISSION_PAUSE
+        .get_or_init(|| StdMutex::new(None))
+        .lock()
+        .expect("message admission pause lock")
+        .take();
+    if let Some((entered, release)) = pause {
+        entered.wait().await;
+        release.notified().await;
+    }
+}
+
 /// A spawned child turn remains owned by its activation future. Dropping the
 /// activation must cancel the child task instead of detaching a model worker
 /// that can continue dispatching effects after its caller has gone away.
@@ -4982,6 +5004,8 @@ impl PersistentLocalSwarm {
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
                 self.retain_registry_tail(committed_tail).await;
+                #[cfg(test)]
+                pause_after_message_admission_append().await;
                 Ok(())
             }
             Err(error) => {
@@ -10008,7 +10032,7 @@ mod tests {
         let swarm = PersistentLocalSwarm::open_with_model(
             root.path(),
             model,
-            provider,
+            provider.clone(),
             Limits::default(),
         )
         .await?;
@@ -10095,19 +10119,198 @@ mod tests {
                 .await,
             Err(Error::Unauthorized(_))
         ));
+
+        // Two independently opened local handles race the same owner journal
+        // tail. Both calls may recover success, but exactly one admission can
+        // be durable.
+        let second = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            Model::new("mock", "message-admission", "1", json!({}))?,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
         let message = OperationId::from_bytes([0xDB; 16]);
-        swarm.admit_message(parent, child, message, payload.clone()).await?;
+        let (first_admission, second_admission) = tokio::join!(
+            swarm.admit_message(parent, child, message, payload.clone()),
+            second.admit_message(parent, child, message, payload.clone()),
+        );
+        first_admission?;
+        second_admission?;
         assert!(matches!(
             swarm
                 .admit_message(parent, sibling, message, payload.clone())
                 .await,
             Err(Error::Conflict(_))
         ));
-        let timer = OperationId::from_bytes([0xDC; 16]);
-        swarm.admit_timer(child, timer, 10_000).await?;
+        let uncertain_message = OperationId::from_bytes([0xE0; 16]);
+        let uncertain_entered = Arc::new(tokio::sync::Barrier::new(2));
+        let uncertain_release = Arc::new(tokio::sync::Notify::new());
+        *MESSAGE_ADMISSION_PAUSE
+            .get_or_init(|| StdMutex::new(None))
+            .lock()
+            .expect("message admission pause lock") = Some((
+            uncertain_entered.clone(),
+            uncertain_release.clone(),
+        ));
+        let uncertain_payload = payload.clone();
+        let pending = tokio::spawn(async move {
+            second
+                .admit_message(parent, child, uncertain_message, uncertain_payload)
+                .await
+        });
+        uncertain_entered.wait().await;
+        pending.abort();
+        uncertain_release.notify_waiters();
+        assert!(pending.await.is_err());
+
+        // A cancellation that commits first closes the owner admission CAS;
+        // no mailbox publication may be inferred from the rejected attempt.
+        let cancelled_child = TaskId::from_bytes([0xDC; 16]);
+        let cancelled_child_operation = OperationId::from_bytes([0xDD; 16]);
+        let cancelled_tail = registry
+            .tail()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record_at(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: cancelled_child,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "cancelled message child".into(),
+                operation: Some(cancelled_child_operation),
+                phase: StoredPhase::Ready,
+            }),
+            cancelled_tail,
+        )
+        .await?;
+        let mut cancelled_admission = swarm.authenticated_admission(parent).await?;
+        cancelled_admission.operation_id = cancelled_child_operation;
+        cancelled_admission.parent = Some(parent);
+        swarm
+            .persist_local_admission(cancelled_child, cancelled_admission)
+            .await?;
+        swarm.refresh_registry_state().await?;
+        swarm.cancel(cancelled_child).await?;
+        let cancelled_message = OperationId::from_bytes([0xDE; 16]);
+        assert!(matches!(
+            swarm
+                .admit_message(
+                    parent,
+                    cancelled_child,
+                    cancelled_message,
+                    payload.clone(),
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+
+        let changed_payload = source
+            .storage()
+            .stage(
+                OperationId::from_bytes([0xDF; 16]),
+                "system/changed-message.txt",
+                b"changed message",
+                "text/plain",
+                "changed-message.txt",
+            )
+            .await?;
+        assert!(matches!(
+            swarm
+                .admit_message(parent, child, message, changed_payload)
+                .await,
+            Err(Error::Conflict(_))
+        ));
         swarm.cancel(child).await?;
-        swarm.admit_message(parent, child, message, payload).await?;
-        swarm.admit_timer(child, timer, 10_000).await?;
+        swarm
+            .admit_message(parent, child, message, payload.clone())
+            .await?;
+        let uncertain_entered = Arc::new(tokio::sync::Barrier::new(2));
+        let uncertain_release = Arc::new(tokio::sync::Notify::new());
+        *MESSAGE_ADMISSION_PAUSE
+            .get_or_init(|| StdMutex::new(None))
+            .lock()
+            .expect("message admission pause lock") = Some((
+            uncertain_entered.clone(),
+            uncertain_release.clone(),
+        ));
+        let uncertain_message = OperationId::from_bytes([0xE0; 16]);
+        let uncertain_payload = payload.clone();
+        let pending = tokio::spawn(async move {
+            second
+                .admit_message(parent, child, uncertain_message, uncertain_payload)
+                .await
+        });
+        uncertain_entered.wait().await;
+        pending.abort();
+        uncertain_release.notify_waiters();
+        assert!(pending.await.is_err());
+
+        // A cancellation that commits first closes the owner admission CAS;
+        // no mailbox publication may be inferred from the rejected attempt.
+        let cancelled_child = TaskId::from_bytes([0xDC; 16]);
+        let cancelled_child_operation = OperationId::from_bytes([0xDD; 16]);
+        let cancelled_tail = registry
+            .tail()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record_at(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: cancelled_child,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "cancelled message child".into(),
+                operation: Some(cancelled_child_operation),
+                phase: StoredPhase::Ready,
+            }),
+            cancelled_tail,
+        )
+        .await?;
+        let mut cancelled_admission = swarm.authenticated_admission(parent).await?;
+        cancelled_admission.operation_id = cancelled_child_operation;
+        cancelled_admission.parent = Some(parent);
+        swarm
+            .persist_local_admission(cancelled_child, cancelled_admission)
+            .await?;
+        swarm.refresh_registry_state().await?;
+        swarm.cancel(cancelled_child).await?;
+        let cancelled_message = OperationId::from_bytes([0xDE; 16]);
+        assert!(matches!(
+            swarm
+                .admit_message(
+                    parent,
+                    cancelled_child,
+                    cancelled_message,
+                    payload.clone(),
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+
+        let changed_payload = source
+            .storage()
+            .stage(
+                OperationId::from_bytes([0xDF; 16]),
+                "system/changed-message.txt",
+                b"changed message",
+                "text/plain",
+                "changed-message.txt",
+            )
+            .await?;
+        assert!(matches!(
+            swarm
+                .admit_message(parent, child, message, changed_payload)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        swarm.cancel(child).await?;
+        swarm
+            .admit_message(parent, child, message, payload.clone())
+            .await?;
         let records = load_records(&registry).await?;
         assert_eq!(
             records
@@ -10131,6 +10334,54 @@ mod tests {
                     record.event,
                     StoredEvent::TimerAdmitted { task, operation, deadline }
                         if task == child && operation == timer && deadline == 10_000
+        // Reopening must recover the exact owner admission and avoid appending
+        // a second record for the same endpoint identity.
+        drop(source);
+        drop(swarm);
+        let reopened = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            Model::new("mock", "message-admission", "1", json!({}))?,
+            provider,
+            Limits::default(),
+        )
+        .await?;
+        reopened
+            .admit_message(parent, child, message, payload)
+            .await?;
+        assert!(reopened
+            .admit_message(parent, child, uncertain_message, payload.clone())
+            .await?);
+        let reopened_registry = reopened
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let reopened_records = load_records(&reopened_registry).await?;
+        assert_eq!(
+            reopened_records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::MessageAdmitted {
+                        sender,
+                        recipient,
+                        message_id,
+                        ..
+                    } if sender == parent && recipient == child && message_id == message
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            reopened_records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::MessageAdmitted {
+                        sender,
+                        recipient,
+                        message_id,
+                        ..
+                    } if sender == parent && recipient == child && message_id == uncertain_message
                 ))
                 .count(),
             1
