@@ -694,6 +694,20 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         self.limiter.usage()
     }
 
+    /// Returns the remaining provider execution ceiling for this dispatch.
+    ///
+    /// The value is derived from the journal-issued limiter rather than from
+    /// model output or a caller supplied timeout.  A provider adapter can use
+    /// it to put one deadline around its in-flight stream, including the
+    /// interval in which the provider emits no event.
+    #[must_use]
+    pub fn remaining_execution_time_ms(&self) -> u64 {
+        self.limiter
+            .limits()
+            .execution_time_ms
+            .saturating_sub(self.limiter.usage().execution_time_ms)
+    }
+
     /// Returns the issuer cursor, which becomes durable only after the caller
     /// commits the corresponding verified receipt to the journal.
     #[must_use]
@@ -758,6 +772,15 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     #[must_use]
     pub const fn usage(&self) -> SwarmUsage {
         self.limiter.usage()
+    }
+
+    /// Returns the remaining root provider execution ceiling.
+    #[must_use]
+    pub fn remaining_execution_time_ms(&self) -> u64 {
+        self.limiter
+            .limits()
+            .execution_time_ms
+            .saturating_sub(self.limiter.usage().execution_time_ms)
     }
 
     /// Returns the issuer cursor, which becomes durable only after the caller

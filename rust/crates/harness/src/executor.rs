@@ -497,6 +497,11 @@ pub trait SwarmProviderAdmission: Send {
     fn admit_model_step(&mut self) -> Result<SwarmUsage>;
     fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage>;
     fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage>;
+    /// Returns the remaining journal-issued execution ceiling. `None` keeps
+    /// the compatibility path for providers that do not expose a budget.
+    fn remaining_execution_time_ms(&self) -> Option<u64> {
+        None
+    }
     fn provider_dispatch_context(
         &self,
         step: u32,
@@ -534,6 +539,13 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     /// Admits elapsed provider execution time at a scheduling boundary.
     pub fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
         self.context.admit_execution_time(elapsed_ms)
+    }
+
+    /// Returns the remaining execution ceiling from the authenticated
+    /// dispatch context.
+    #[must_use]
+    pub fn remaining_execution_time_ms(&self) -> u64 {
+        self.context.remaining_execution_time_ms()
     }
 
     /// Issues the next provider-authenticated cumulative usage receipt.
@@ -589,6 +601,10 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
         Self::admit_execution_time_ms(self, elapsed_ms)
     }
 
+    fn remaining_execution_time_ms(&self) -> Option<u64> {
+        Some(Self::remaining_execution_time_ms(self))
+    }
+
     fn provider_dispatch_context(
         &self,
         step: u32,
@@ -624,6 +640,12 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
     /// Admits elapsed provider execution time at a scheduling boundary.
     pub fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
         self.context.admit_execution_time(elapsed_ms)
+    }
+
+    /// Returns the remaining root execution ceiling.
+    #[must_use]
+    pub fn remaining_execution_time_ms(&self) -> u64 {
+        self.context.remaining_execution_time_ms()
     }
 
     /// Issues the next provider-authenticated cumulative root usage receipt.
@@ -663,6 +685,10 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmRootProviderBoundary<S
 
     fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
         Self::admit_execution_time_ms(self, elapsed_ms)
+    }
+
+    fn remaining_execution_time_ms(&self) -> Option<u64> {
+        Some(Self::remaining_execution_time_ms(self))
     }
 
     fn provider_dispatch_context(
@@ -1191,6 +1217,18 @@ impl StockExecutor {
                 budget.admit_model_step()?;
             }
             let provider_started = self.execution_clock.now_unix_millis();
+            let provider_deadline = match budget
+                .as_deref()
+                .and_then(|budget| budget.remaining_execution_time_ms())
+            {
+                Some(0) => return Err(Error::Indeterminate(input.operation_id)),
+                Some(remaining_ms) => Some(
+                    tokio::time::Instant::now()
+                        .checked_add(std::time::Duration::from_millis(remaining_ms))
+                        .ok_or(Error::Indeterminate(input.operation_id))?,
+                ),
+                None => None,
+            };
             let mut admitted_time_ms = 0;
             let attempt = ModelAttempt {
                 operation_id: input.operation_id,
@@ -1200,11 +1238,35 @@ impl StockExecutor {
             };
             let continuation = if let Some(budget) = budget.as_deref_mut() {
                 let dispatch = budget.provider_dispatch_context(step, request_digest)?;
-                self.provider
-                    .reconcile_admitted_with_dispatch(prepared.clone(), attempt, dispatch)
-                    .await?
+                match provider_deadline {
+                    Some(deadline) => tokio::time::timeout_at(
+                        deadline,
+                        self.provider.reconcile_admitted_with_dispatch(
+                            prepared.clone(),
+                            attempt,
+                            dispatch,
+                        ),
+                    )
+                    .await
+                    .map_err(|_| Error::Indeterminate(input.operation_id))??,
+                    None => {
+                        self.provider
+                            .reconcile_admitted_with_dispatch(prepared.clone(), attempt, dispatch)
+                            .await?
+                    }
+                }
             } else {
-                self.provider.reconcile_admitted(prepared.clone(), attempt).await?
+                match provider_deadline {
+                    Some(deadline) => tokio::time::timeout_at(
+                        deadline,
+                        self.provider.reconcile_admitted(prepared.clone(), attempt),
+                    )
+                    .await
+                    .map_err(|_| Error::Indeterminate(input.operation_id))??,
+                    None => {
+                        self.provider.reconcile_admitted(prepared.clone(), attempt).await?
+                    }
+                }
             };
             let Some(mut continuation) = continuation
             else {                return Err(Error::Indeterminate(input.operation_id));
@@ -1303,13 +1365,32 @@ impl StockExecutor {
                 .map(|budget| budget.provider_dispatch_context(step, request_digest))
                 .transpose()?;
             let provider_started = self.execution_clock.now_unix_millis();
+            let provider_deadline = match budget
+                .as_deref()
+                .and_then(|budget| budget.remaining_execution_time_ms())
+            {
+                Some(0) => return Err(Error::Indeterminate(input.operation_id)),
+                Some(remaining_ms) => Some(
+                    tokio::time::Instant::now()
+                        .checked_add(std::time::Duration::from_millis(remaining_ms))
+                        .ok_or(Error::Indeterminate(input.operation_id))?,
+                ),
+                None => None,
+            };
             let mut admitted_time_ms = 0;
             let mut stream = match dispatch {
                 Some(dispatch) => self.provider.generate_with_dispatch(prepared, dispatch),
                 None => self.provider.generate(prepared),
             };
             let mut observed = Vec::new();
-            while let Some(event) = stream.next().await {
+            loop {
+                let next = match provider_deadline {
+                    Some(deadline) => tokio::time::timeout_at(deadline, stream.next())
+                        .await
+                        .map_err(|_| Error::Indeterminate(input.operation_id))?,
+                    None => stream.next().await,
+                };
+                let Some(event) = next else { break };
                 let event = event?;
                 if let Some(budget) = budget.as_deref_mut() {
                     let elapsed_ms = elapsed_provider_time(
