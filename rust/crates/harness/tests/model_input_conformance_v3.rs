@@ -421,6 +421,8 @@ fn prefix_admission_rejects_duplicate_reordered_and_revised_tools() -> Result<()
         vector.limits,
         Some(&vector.policy),
     )?;
+    assert_eq!(reordered.request().tools[0].name, "unused_tool");
+    assert_eq!(reordered.request().tools[1].name, "read_file");
     assert_ne!(root.manifest().request_digest, reordered.manifest().request_digest);
     assert_ne!(root.manifest().binding_digest, reordered.manifest().binding_digest);
     assert!(prefix.verify(&reordered).is_err());
