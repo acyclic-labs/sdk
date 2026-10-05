@@ -29,7 +29,7 @@ test("every lane names a known input set and a Blacksmith runner", () => {
 });
 
 test("the Windows helper waits for the planner and cannot provision on an ordinary PR", () => {
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
   const job = workflow.slice(workflow.indexOf("\n  windows:\n"));
   const runsOn = job.match(/\n {4}runs-on: (\S+)\n/)?.[1];
   const windows = lanes.find(lane => lane.lane === "windows");
@@ -40,7 +40,7 @@ test("the Windows helper waits for the planner and cannot provision on an ordina
 });
 
 test("release events force the full downstream qualification path", () => {
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
   assert.match(workflow, /\n  release:\n    types: \[published\]/);
   assert.match(workflow, /github\.event_name == 'release'/);
 });
@@ -139,4 +139,26 @@ test("forced runs execute every lane", () => {
   });
   assert.equal(matrix.length, lanes.length);
   assert.deepEqual(reused, {});
+});
+
+// Routine pushes and non-forced dispatches must never schedule downstream
+// packaging merely because their caches are empty.
+test("routine core-only runs never schedule downstream checks without cache markers", () => {
+  for (const mainPush of [false, true]) {
+    const { matrix, reused } = chooseLanes(lanes, {
+      force: false, mainPush, coreOnly: true, trusted: null,
+      marker: () => null, retained: () => "",
+    });
+    assert.deepEqual(matrix.map(lane => lane.lane).sort(), ["gate", "policy"]);
+    assert.deepEqual(reused, {});
+  }
+});
+
+test("full hosted qualification requires release or explicit force", () => {
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
+  assert.doesNotMatch(workflow, /^  schedule:/m);
+  assert.match(workflow, /force:[\s\S]*?default: false/);
+  const downstream = workflow.slice(workflow.indexOf("\n  rust_source:"));
+  assert.doesNotMatch(downstream, /if: github.event_name == 'release' \|\| github.event_name == 'workflow_dispatch'/);
+  assert.match(downstream, /inputs\.force/);
 });
