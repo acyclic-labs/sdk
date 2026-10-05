@@ -17,7 +17,7 @@ const vector = JSON.parse(bytes(vectorPath));
 if (vector.version !== 3 || vector.children?.length !== 2 || vector.grandchild === undefined) {
   throw new Error("model-input-v3 must retain root, two sibling, and grandchild cases");
 }
-if (!Array.isArray(vector.rejections) || vector.rejections.length !== 2
+if (!Array.isArray(vector.rejections) || vector.rejections.length !== 4
   || vector.rejections.some(entry => typeof entry.name !== "string"
     || !["conflict", "invalid"].includes(entry.error_kind)
     || typeof entry.error_message !== "string")) {
