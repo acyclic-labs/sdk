@@ -1,0 +1,34 @@
+{
+  "source_commit": "8ffcd3a872ed47a0850b8e795f96777b1cbcf49c",
+  "platform": "Windows native execution",
+  "suite": "acyclic-stream local::tests",
+  "features": [
+    "no-default-features",
+    "local"
+  ],
+  "session": 20511,
+  "exit_code": 101,
+  "passed": 19,
+  "failed": 3,
+  "ignored": 0,
+  "filtered": 34,
+  "artifact_directory": "D:/graphcoder-builds/root-qualification-artifacts/8ffcd3a87/stream-drain",
+  "source_sha256": "5917c96be02cb4ad81027d403baa241872846846c35eb18a462b67116aa8fb80",
+  "log_sha256": "486f018e3ec60101076b791473dfab7e07ae93d4698ac8139f731e1fdb215bef",
+  "binary_sha256": "bdb1d4cf006f3c627f1113c223bb6416a81f050e1d3201f4e8308cac0d98364f",
+  "verified_cases": [
+    "cancelled_persist_retains_ownership_until_the_journal_task_stops including immediate cold reopen",
+    "drain_waits_for_a_late_tracker_guard",
+    "cancelled_real_open_retains_ownership_until_journal_open_stops",
+    "a_cancelled_mutation_is_invisible_until_its_frame_is_durable"
+  ],
+  "failed_cases": [
+    "a_half_full_journal_is_compacted_into_a_snapshot",
+    "a_journal_torn_before_its_header_completed_is_created_again",
+    "local_provider_reopens_and_passes_public_conformance"
+  ],
+  "failure": "valid coordinated commit conflicted",
+  "attribution": "unproved; compare the actual pre-drain implementation before claiming baseline failure",
+  "qualification": "open; focused cleanup cases pass but required conformance failures prevent completion",
+  "swarm_admission_regression": "still open"
+}
