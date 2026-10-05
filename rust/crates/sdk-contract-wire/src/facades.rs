@@ -1365,7 +1365,7 @@ fn render_ruby_shapes() -> String {
             when /^ordered_parts:(\d+):(\d+)$/
               maximum_items = Regexp.last_match(1).to_i
               maximum_part_number = Regexp.last_match(2).to_i
-              unless field_value.is_a?(Array) && field_value.length <= maximum_items
+              unless (field_value.is_a?(Array) || (field_value.respond_to?(:each) && !field_value.is_a?(Hash) && !field_value.is_a?(String))) && field_value.length <= maximum_items
                 raise ArgumentError, "invalid ordered parts for #{field_name}"
               end
               previous = 0
