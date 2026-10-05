@@ -1046,6 +1046,29 @@ pub struct LocalModelForkPlans {
     journal: Mutex<Option<StreamClient<LocalStream>>>,
 }
 
+fn replay_fork_publication_completion(
+    event: &StoredEvent,
+    completed: &mut BTreeMap<OperationId, [u8; 32]>,
+) -> Result<()> {
+    let StoredEvent::ForkPublicationCompleted { operation, digest } = event else {
+        return Ok(());
+    };
+    if operation.into_bytes() == [0; 16] || *digest == [0; 32] {
+        return Err(Error::Conflict(
+            "persisted model fork publication receipt is invalid".into(),
+        ));
+    }
+    if let Some(existing) = completed.get(operation)
+        && existing != digest
+    {
+        return Err(Error::Conflict(
+            "durable model fork publication result changed on retry".into(),
+        ));
+    }
+    completed.insert(*operation, *digest);
+    Ok(())
+}
+
 fn replay_fork_intent(
     position: u64,
     intent: LocalForkIntent,
@@ -1182,7 +1205,9 @@ impl LocalModelForkPlans {
         let mut intents = self.intents.lock().await;
         let mut intent_order = self.intent_order.lock().await;
         let mut issuer_bindings = self.issuer_bindings.lock().await;
+        let mut completed = self.completed.lock().await;
         for (position, record) in records.into_iter().enumerate() {
+            replay_fork_publication_completion(&record.event, &mut completed)?;
             replay_fork_intent_record(
                 position as u64,
                 record,
@@ -1206,7 +1231,7 @@ impl LocalModelForkPlans {
         // Each PersistentLocalSwarm handle owns its own plan index. Refresh
         // the selected intents from the shared registry before reserving a
         // child slot so a sibling process cannot allocate from a stale cache.
-        self.refresh_intents_from_journal().await?;
+        self.refresh_journal_state().await?;
         let intents = self.intents.lock().await;
         Ok(intents
             .values()
@@ -1219,7 +1244,7 @@ impl LocalModelForkPlans {
             .len())
     }
 
-    async fn refresh_intents_from_journal(&self) -> Result<()> {
+    async fn refresh_journal_state(&self) -> Result<()> {
         let Some(registry) = self.journal.lock().await.clone() else {
             return Ok(());
         };
@@ -1230,7 +1255,9 @@ impl LocalModelForkPlans {
         let mut intents = self.intents.lock().await;
         let mut intent_order = self.intent_order.lock().await;
         let mut issuer_bindings = self.issuer_bindings.lock().await;
+        let mut completed = self.completed.lock().await;
         for (position, record) in records.into_iter().enumerate() {
+            replay_fork_publication_completion(&record.event, &mut completed)?;
             replay_fork_intent_record(
                 position as u64,
                 record,
@@ -1251,7 +1278,7 @@ impl LocalModelForkPlans {
         // Reconcile before checking the live cache. A second swarm handle may
         // have selected this intent since this handle last observed the
         // registry.
-        self.refresh_intents_from_journal().await?;
+        self.refresh_journal_state().await?;
         if self
             .existing_intent_status(&intent, issuer_digest)
             .await?
@@ -1276,7 +1303,7 @@ impl LocalModelForkPlans {
             // selector therefore yields a CAS conflict instead of silently
             // appending behind it.
             let (observed_tail, _) = load_records_with_tail(&stream).await?;
-            self.refresh_intents_from_journal().await?;
+            self.refresh_journal_state().await?;
             if self
                 .existing_intent_status(&intent, issuer_digest)
                 .await?
@@ -1285,7 +1312,7 @@ impl LocalModelForkPlans {
             }
             match append_record_at(&stream, event.clone(), observed_tail).await {
                 Ok(()) => {
-                    self.refresh_intents_from_journal().await?;
+                    self.refresh_journal_state().await?;
                     if self
                         .existing_intent_status(&intent, issuer_digest)
                         .await?
@@ -1298,7 +1325,7 @@ impl LocalModelForkPlans {
                 }
                 Err(error @ Error::Conflict(_)) => {
                     last_conflict = Some(error);
-                    self.refresh_intents_from_journal().await?;
+                    self.refresh_journal_state().await?;
                     if self
                         .existing_intent_status(&intent, issuer_digest)
                         .await?
@@ -1310,7 +1337,7 @@ impl LocalModelForkPlans {
                     // A storage error may be reported after the append was
                     // committed. Reconcile once before exposing uncertainty;
                     // never append a second selection blindly.
-                    self.refresh_intents_from_journal().await?;
+                    self.refresh_journal_state().await?;
                     if self
                         .existing_intent_status(&intent, issuer_digest)
                         .await?
@@ -1375,7 +1402,7 @@ impl LocalModelForkPlans {
         &self,
         publication: ModelBatchPublication,
     ) -> Result<Vec<LocalModelForkPlan>> {
-        self.refresh_intents_from_journal().await?;
+        self.refresh_journal_state().await?;
         let mut intents = self
             .intents
             .lock()
@@ -1474,7 +1501,7 @@ impl LocalModelForkPlans {
     }
 
     async fn has_intent(&self, operation: OperationId) -> Result<bool> {
-        self.refresh_intents_from_journal().await?;
+        self.refresh_journal_state().await?;
         Ok(self
             .intents
             .lock()
@@ -1484,24 +1511,88 @@ impl LocalModelForkPlans {
     }
 
     async fn mark_completed(&self, operation: OperationId, digest: [u8; 32]) -> Result<()> {
-        let mut completed = self.completed.lock().await;
-        if let Some(existing) = completed.get(&operation)
-            && existing != &digest
-        {
-            return Err(Error::Conflict(
-                "model fork publication result changed on retry".into(),
+        if operation.into_bytes() == [0; 16] || digest == [0; 32] {
+            return Err(Error::Invalid(
+                "model fork publication completion identity is empty".into(),
             ));
         }
-        completed.insert(operation, digest);
-        Ok(())
+        self.refresh_journal_state().await?;
+        if let Some(existing) = self.completed.lock().await.get(&operation).copied() {
+            if existing != digest {
+                return Err(Error::Conflict(
+                    "model fork publication result changed on retry".into(),
+                ));
+            }
+            return Ok(());
+        }
+        let registry = self.journal.lock().await.clone();
+        let Some(registry) = registry else {
+            self.completed.lock().await.insert(operation, digest);
+            return Ok(());
+        };
+        let stream = registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let event = StoredEvent::ForkPublicationCompleted { operation, digest };
+        let mut last_conflict = None;
+        for _ in 0..4 {
+            let (observed_tail, _) = load_records_with_tail(&stream).await?;
+            self.refresh_journal_state().await?;
+            if let Some(existing) = self.completed.lock().await.get(&operation).copied() {
+                if existing != digest {
+                    return Err(Error::Conflict(
+                        "model fork publication result changed on retry".into(),
+                    ));
+                }
+                return Ok(());
+            }
+            match append_record_at(&stream, event.clone(), observed_tail).await {
+                Ok(()) => {
+                    self.refresh_journal_state().await?;
+                    if self.completed.lock().await.get(&operation).copied() == Some(digest) {
+                        return Ok(());
+                    }
+                    return Err(Error::Conflict(
+                        "durable model fork publication receipt was not visible after append"
+                            .into(),
+                    ));
+                }
+                Err(error @ Error::Conflict(_)) => {
+                    last_conflict = Some(error);
+                    self.refresh_journal_state().await?;
+                    if let Some(existing) = self.completed.lock().await.get(&operation).copied() {
+                        if existing != digest {
+                            return Err(Error::Conflict(
+                                "model fork publication result changed on retry".into(),
+                            ));
+                        }
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    // The storage error may have followed a committed append.
+                    // Reconcile the registry before exposing uncertainty and
+                    // never append a second completion receipt blindly.
+                    self.refresh_journal_state().await?;
+                    if self.completed.lock().await.get(&operation).copied() == Some(digest) {
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Err(last_conflict.unwrap_or_else(|| {
+            Error::Conflict("local fork publication receipt did not reach a stable tail".into())
+        }))
     }
 
-    async fn completed(&self, operation: OperationId) -> Option<[u8; 32]> {
-        self.completed.lock().await.get(&operation).copied()
+    async fn completed(&self, operation: OperationId) -> Result<Option<[u8; 32]>> {
+        self.refresh_journal_state().await?;
+        Ok(self.completed.lock().await.get(&operation).copied())
     }
 
     async fn replay_intent(&self, input: &LocalForkToolInput) -> Result<Option<LocalForkIntent>> {
-        self.refresh_intents_from_journal().await?;
+        self.refresh_journal_state().await?;
         Ok(self
             .intents
             .lock()
@@ -1597,6 +1688,19 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
 
     fn publish<'a>(&'a self, publication: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            let publication_digest = crate::contract::canonical_json_digest(&publication)?;
+            if let Some(completed) = self
+                .plans
+                .completed(publication.operation_id)
+                .await?
+            {
+                if completed != publication_digest {
+                    return Err(Error::Conflict(
+                        "model fork publication result changed on retry".into(),
+                    ));
+                }
+                return Ok(());
+            }
             // The publisher is registered for every completed model batch;
             // most batches do not select the fork tool and must complete as a
             // durable no-op. A selected fork is still required to carry its
@@ -1707,7 +1811,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             self.plans
                 .mark_completed(
                     publication.operation_id,
-                    crate::contract::canonical_json_digest(&publication)?,
+                    publication_digest,
                 )
                 .await
         })
@@ -1729,7 +1833,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 return Ok(None);
             }
             let digest = crate::contract::canonical_json_digest(&publication)?;
-            if self.plans.completed(publication.operation_id).await == Some(digest) {
+            if self.plans.completed(publication.operation_id).await? == Some(digest) {
                 return Ok(Some(()));
             }
             for plan in plans {
@@ -2179,6 +2283,13 @@ enum StoredEvent {
     /// publication. The owner allocator resolves it only after publication.
     ForkIntent {
         intent: LocalForkIntent,
+    },
+    /// Durable receipt that one completed model publication has been fully
+    /// admitted and scheduled. The publication digest fences retries from a
+    /// substituted batch carrying the same operation identity.
+    ForkPublicationCompleted {
+        operation: OperationId,
+        digest: [u8; 32],
     },
     /// Non-secret owner binding fingerprint retained beside the selected
     /// intent. It prevents a reopen with another host issuer secret.
@@ -5217,6 +5328,13 @@ fn apply_record(
                 ));
             }
         }
+        StoredEvent::ForkPublicationCompleted { operation, digest } => {
+            if operation.into_bytes() == [0; 16] || digest == [0; 32] {
+                return Err(Error::Conflict(
+                    "persisted model fork publication receipt is invalid".into(),
+                ));
+            }
+        }
         StoredEvent::ForkIssuerBinding { .. } => {}
         StoredEvent::ForkActivationClaimed { .. } => {}
         StoredEvent::ForkPrepared {
@@ -5595,6 +5713,56 @@ mod tests {
             1,
             "a retry from another handle must reuse the durable intent"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fork_publication_completion_receipt_survives_restart_and_fences_substitution(
+    ) -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let client = StreamClient::new(provider);
+        let first = LocalModelForkPlans::new();
+        let second = LocalModelForkPlans::new();
+        first.bind_journal(client.clone()).await?;
+        second.bind_journal(client.clone()).await?;
+        let operation = OperationId::from_bytes([8; 16]);
+        let digest = [9; 32];
+
+        first.mark_completed(operation, digest).await?;
+        assert_eq!(second.completed(operation).await?, Some(digest));
+        second.mark_completed(operation, digest).await?;
+        assert!(matches!(
+            second.mark_completed(operation, [10; 32]).await,
+            Err(Error::Conflict(message)) if message.contains("result changed")
+        ));
+
+        let stream = client
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let records = load_records(&stream).await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    &record.event,
+                    StoredEvent::ForkPublicationCompleted {
+                        operation: recorded,
+                        digest: recorded_digest,
+                    } if *recorded == operation && *recorded_digest == digest
+                ))
+                .count(),
+            1,
+            "completion retry must not append a second receipt"
+        );
+
+        let reopened = LocalModelForkPlans::new();
+        reopened.bind_journal(client).await?;
+        assert_eq!(reopened.completed(operation).await?, Some(digest));
         Ok(())
     }
 
