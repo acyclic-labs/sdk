@@ -1,0 +1,29 @@
+{
+  "failed": 3,
+  "artifacts": [
+    {
+      "sha256": "f1b2f662800122bed0ff255693df89c4487fbdcf453d3524a42d4ec20c3d9c04",
+      "bytes": 3,
+      "path": "target/graphcoder-qualification/evidence/081d47dd1/package-tooling/exit.txt"
+    },
+    {
+      "sha256": "7fcd770a91ab33feac90fd74993537106e350943c4baeda881ab16e759800f93",
+      "bytes": 7711380,
+      "path": "target/graphcoder-qualification/evidence/081d47dd1/package-tooling/source.zip"
+    },
+    {
+      "sha256": "18b0a0372e5450d1d4b7e2583c858ae0e6403ac34d26f7c061dce4d3cf4eed23",
+      "bytes": 4991,
+      "path": "target/graphcoder-qualification/evidence/081d47dd1/package-tooling/tests.log"
+    }
+  ],
+  "platform": "Windows Node",
+  "suite": "six package receipt and provenance tooling test files",
+  "passed": 16,
+  "skipped": 0,
+  "tests": 19,
+  "source_commit": "081d47dd12b58174995d1c701646a3202e297c29",
+  "exit": 1,
+  "outcome": "AJV import unavailable in two suites; PTY positive fixture lacks required named coverage",
+  "qualification_complete": false
+}
