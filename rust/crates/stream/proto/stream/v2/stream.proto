@@ -83,7 +83,18 @@ message FollowRequest {
 
 message ReadResponse {
   Record record = 1;
+  // Opaque, one-use token issued by a hosted server for this delivered record.
+  // Absent on local and older servers; its presence never changes read results.
+  bytes delivery_token = 2;
 }
+
+message AcknowledgeDeliveryRequest {
+  // Exactly 32 opaque bytes from the issuing endpoint. This acknowledges
+  // transport receipt, not application consumption or permission to bill.
+  bytes delivery_token = 1;
+}
+
+message AcknowledgeDeliveryResponse {}
 
 message ChildrenRequest {
   optional string parent = 1;
@@ -260,6 +271,7 @@ service StreamService {
   rpc Fork(ForkRequest) returns (ForkReceipt);
   rpc Read(ReadRequest) returns (stream ReadResponse);
   rpc Follow(FollowRequest) returns (stream ReadResponse);
+  rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse);
   rpc Children(ChildrenRequest) returns (stream ChildrenResponse);
   rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse);
   rpc Commit(CommitRequest) returns (CommitResponse);

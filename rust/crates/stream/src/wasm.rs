@@ -328,6 +328,7 @@ impl WasmMemoryStream {
                         commit_id: record.commit_id.as_bytes().to_vec().into(),
                         committed_at_micros: record.committed_at_micros,
                     }),
+                    delivery_token: bytes::Bytes::new(),
                 }
                 .encode_to_vec(),
             );
@@ -420,6 +421,7 @@ impl WasmFollow {
                             commit_id: record.commit_id.as_bytes().to_vec().into(),
                             committed_at_micros: record.committed_at_micros,
                         }),
+                        delivery_token: bytes::Bytes::new(),
                     }
                     .encode_to_vec()
                     .as_slice(),
@@ -1003,6 +1005,7 @@ mod http {
             .iter()
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
         {
+            Some("empty") => Ok(JsValue::UNDEFINED),
             Some("sequence") => bigint_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),

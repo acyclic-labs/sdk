@@ -305,6 +305,13 @@ pub fn validate(route: &str, value: &Value) -> Result {
         .iter()
         .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
     {
+        Some("empty") => {
+            if object(value)?.is_empty() {
+                Ok(())
+            } else {
+                Err("expected empty acknowledgement response")
+            }
+        }
         Some("sequence") => {
             u64_string(value)?;
             Ok(())

@@ -28,11 +28,12 @@ try {
   const service = stream.service.find(item => item.name === "StreamService");
   assert.ok(service, "StreamService is missing");
   assert.deepEqual(service.method.map(method => method.name), [
-    "InspectIdempotency", "Append", "Tail", "Fork", "Read", "Follow",
+    "InspectIdempotency", "Append", "Tail", "Fork", "Read", "Follow", "AcknowledgeDelivery",
     "Children", "ChildrenPage", "Commit", "ReadCommit",
   ]);
   assert.equal(service.method.find(method => method.name === "Read").serverStreaming, true);
   assert.equal(service.method.find(method => method.name === "Follow").serverStreaming, true);
+  assert.equal(service.method.find(method => method.name === "AcknowledgeDelivery").serverStreaming, undefined);
 
   for (const name of ["TrimRequest", "TrimReceipt", "DeleteRequest", "DeleteReceipt",
     "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict"]) {
@@ -42,7 +43,7 @@ try {
   const assertFields = (name, expected) => {
     const message = messages.get(name);
     assert.ok(message, `${name} is missing`);
-    assert.deepEqual(message.field.map(field => [field.name, field.number]), expected);
+    assert.deepEqual((message.field ?? []).map(field => [field.name, field.number]), expected);
   };
   const assertReserved = (name, numbers, names) => {
     const message = messages.get(name);
@@ -51,6 +52,9 @@ try {
   };
   assertFields("TailResponse", [["tail", 1]]);
   assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4]]);
+  assertFields("ReadResponse", [["record", 1], ["delivery_token", 2]]);
+  assertFields("AcknowledgeDeliveryRequest", [["delivery_token", 1]]);
+  assertFields("AcknowledgeDeliveryResponse", []);
   assertReserved("TailResponse", [[2, 3]], ["trim_point"]);
   assertFields("CommitMutation", [["append", 1], ["fork", 2]]);
   assertReserved("CommitMutation", [[3, 4], [4, 5]], ["trim", "delete"]);

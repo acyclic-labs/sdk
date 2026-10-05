@@ -303,6 +303,14 @@ export declare type ReadResponse = Message<"acyclic.stream.v2.ReadResponse"> & {
    * @generated from field: acyclic.stream.v2.Record record = 1;
    */
   record?: Record | undefined;
+
+  /**
+   * Opaque, one-use token issued by a hosted server for this delivered record.
+   * Absent on local and older servers; its presence never changes read results.
+   *
+   * @generated from field: bytes delivery_token = 2;
+   */
+  deliveryToken: Uint8Array;
 };
 
 /**
@@ -310,6 +318,37 @@ export declare type ReadResponse = Message<"acyclic.stream.v2.ReadResponse"> & {
  * Use `create(ReadResponseSchema)` to create a new message.
  */
 export declare const ReadResponseSchema: GenMessage<ReadResponse>;
+
+/**
+ * @generated from message acyclic.stream.v2.AcknowledgeDeliveryRequest
+ */
+export declare type AcknowledgeDeliveryRequest = Message<"acyclic.stream.v2.AcknowledgeDeliveryRequest"> & {
+  /**
+   * Exactly 32 opaque bytes from the issuing endpoint. This acknowledges
+   * transport receipt, not application consumption or permission to bill.
+   *
+   * @generated from field: bytes delivery_token = 1;
+   */
+  deliveryToken: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.stream.v2.AcknowledgeDeliveryRequest.
+ * Use `create(AcknowledgeDeliveryRequestSchema)` to create a new message.
+ */
+export declare const AcknowledgeDeliveryRequestSchema: GenMessage<AcknowledgeDeliveryRequest>;
+
+/**
+ * @generated from message acyclic.stream.v2.AcknowledgeDeliveryResponse
+ */
+export declare type AcknowledgeDeliveryResponse = Message<"acyclic.stream.v2.AcknowledgeDeliveryResponse"> & {
+};
+
+/**
+ * Describes the message acyclic.stream.v2.AcknowledgeDeliveryResponse.
+ * Use `create(AcknowledgeDeliveryResponseSchema)` to create a new message.
+ */
+export declare const AcknowledgeDeliveryResponseSchema: GenMessage<AcknowledgeDeliveryResponse>;
 
 /**
  * @generated from message acyclic.stream.v2.ChildrenRequest
@@ -1071,6 +1110,14 @@ export declare const StreamService: GenService<{
     methodKind: "server_streaming";
     input: typeof FollowRequestSchema;
     output: typeof ReadResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.stream.v2.StreamService.AcknowledgeDelivery
+   */
+  acknowledgeDelivery: {
+    methodKind: "unary";
+    input: typeof AcknowledgeDeliveryRequestSchema;
+    output: typeof AcknowledgeDeliveryResponseSchema;
   },
   /**
    * @generated from rpc acyclic.stream.v2.StreamService.Children

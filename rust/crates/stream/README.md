@@ -1,5 +1,15 @@
 # acyclic-stream
 
+Hosted gRPC reads may carry a 32-byte opaque delivery token. The Rust client
+acknowledges valid received records at the issuing endpoint with a bounded,
+best-effort call; a lost acknowledgement never changes a read result. Translating
+clients can opt out with `without_delivery_acknowledgements`. HTTP clients expose
+`acknowledge_delivery` through the Rust-owned `delivery/acknowledge` projection.
+Local adapters issue no tokens and reject the hosted-only RPC as unsupported.
+Token issuance, expiry, authenticated replay and durable receipt retention belong
+to the hosted service. An ACK establishes no application consumption, Actor
+checkpoint or billable egress by itself.
+
 Hierarchical append-only streams with exact sequence cursors, conditional appends, forks, and coordinated commits. A `StreamClient` wraps any `StreamProvider` without changing provider semantics.
 
 ```sh
