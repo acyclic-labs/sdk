@@ -35,9 +35,9 @@ test("local staging applies its Rust-validated bound before retaining bytes", as
 
 test("ephemeral content retention bounds bytes and zero-byte versions without discarding pinned refs", async () => {
   await expect(MemoryConversation.create({ agent, wasm, maxResidentBytes: Number.POSITIVE_INFINITY }))
-    .rejects.toThrow("retention limits are invalid");
+    .rejects.toThrow("maximum_resident_bytes must be a safe non-negative integer");
   await expect(MemoryConversation.create({ agent, wasm, maxResidentFiles: 0 }))
-    .rejects.toThrow("retention limits are invalid");
+    .rejects.toThrow("maximum_resident_files must be a safe non-negative integer");
   const host = await MemoryConversation.create({ agent, wasm, maxResidentBytes: 3, maxResidentFiles: 3 });
   const first = await host.stage("files/one", new Uint8Array([1, 2]), "application/octet-stream", "one");
   const second = await host.stage("files/two", new Uint8Array([3]), "application/octet-stream", "two");
