@@ -27,7 +27,7 @@ manifest = JSON.parse(File.read(options[:manifest]))
 authority = manifest.fetch("authority")
 
 def ruby_const(full_name)
-  full_name.delete_prefix(".").split(".").map { |part| part.split("_").map(&:capitalize).join }.join("::")
+  full_name.delete_prefix(".").split(".").map { |part| part.split("_").map { |piece| piece.empty? ? piece : piece[0].upcase + piece[1..] }.join }.join("::")
 end
 
 def resolve_const(full_name)
@@ -35,12 +35,30 @@ def resolve_const(full_name)
 end
 
 def snake_case(name)
-  name.gsub(/([A-Z]+)([A-Z][a-z])/, '\\1_\\2').gsub(/([a-z\\d])([A-Z])/, '\\1_\\2').downcase
+  # Keep acronym boundaries while splitting the generated RPC name. The
+  # second character class must contain a real digit range; `\\d` inside a
+  # regexp literal would otherwise be treated as a literal backslash/d pair
+  # by some generated source revisions and turns IssueS3Credential into the
+  # nonexistent issue_s3credential method.
+  name.gsub(/([A-Z]+)([A-Z][a-z])/, '\\1_\\2').gsub(/([a-z0-9])([A-Z])/, '\\1_\\2').downcase
+end
+
+def json_safe(value)
+  case value
+  when Hash
+    value.each_with_object({}) { |(key, item), out| out[key.to_s] = json_safe(item) }
+  when Array
+    value.map { |item| json_safe(item) }
+  when String
+    value.encoding == Encoding::UTF_8 && value.valid_encoding? ? value : { "base64" => [value].pack("m0") }
+  else
+    value
+  end
 end
 
 def decoded(message)
-  return message.to_h if message.respond_to?(:to_h)
-  message.inspect
+  return json_safe(message.to_h) if message.respond_to?(:to_h)
+  json_safe(message.inspect)
 end
 
 def wire_hex(message)
@@ -71,6 +89,11 @@ methods = manifest.fetch("methods").map do |entry|
   end
 
   begin
+    # Reset per-RPC stream state before validation or client construction can
+    # throw, so cancellation never reuses frames from the previous method.
+    frames = []
+    frame_hex = []
+    frame_types = []
     raise "invalid serialized request hex" unless hex.match?(/\A(?:[0-9a-f]{2})*\z/i)
     request_digest = Digest::SHA256.hexdigest([hex].pack("H*"))
     expected_request_digest = typed.fetch("serialized_sha256").delete_prefix("sha256:").downcase
@@ -97,10 +120,7 @@ methods = manifest.fetch("methods").map do |entry|
     request = entry.fetch("client_streaming") ? requests : requests.fetch(0)
     rpc = snake_case(entry.fetch("method"))
     response = stubs[key].public_send(rpc, request)
-    frames = []
     if entry.fetch("server_streaming")
-      frame_hex = []
-      frame_types = []
       response.each do |frame|
         frames << decoded(frame)
         frame_hex << wire_hex(frame)
@@ -158,5 +178,5 @@ receipt = {
   "pending" => methods.count { |m| m["status"] == "pending_missing_typed_request" },
   "methods" => methods
 }
-File.write(options[:output], JSON.pretty_generate(receipt) + "\n")
+File.write(options[:output], JSON.pretty_generate(json_safe(receipt)) + "\n")
 puts JSON.generate("method_count" => methods.length, "passed" => receipt["passed"], "pending" => receipt["pending"])

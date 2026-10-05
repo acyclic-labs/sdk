@@ -53,6 +53,13 @@ function responseBytesHex(object $message): string {
     return bin2hex($message->serializeToString());
 }
 
+function validHex(mixed $value): bool {
+    if (!is_string($value) || (strlen($value) % 2) !== 0) return false;
+    // Avoid a backtracking regexp for Rust-owned body frames, which can be
+    // multi-megabyte payloads. strspn is linear and keeps the check exact.
+    return strspn($value, '0123456789abcdefABCDEF') === strlen($value);
+}
+
 $clients = [];
 $results = [];
 foreach ($manifest['methods'] as $entry) {
@@ -76,7 +83,14 @@ foreach ($manifest['methods'] as $entry) {
         continue;
     }
     try {
-        if (preg_match('/\A(?:[0-9a-f]{2})*\z/i', $hex) !== 1) {
+        // Reset per-RPC terminal and frame state before any validation or
+        // client construction can throw. Catch handling must never inherit a
+        // status or frames from the preceding method.
+        $status = null;
+        $frames = [];
+        $frameHex = [];
+        $frameTypes = [];
+        if (!validHex($hex)) {
             throw new RuntimeException('invalid serialized request hex');
         }
         $requestDigest = hash('sha256', hex2bin($hex));
@@ -91,7 +105,7 @@ foreach ($manifest['methods'] as $entry) {
         $requestFrameSha = [];
         foreach ($frameSpecs as $frameIndex => $frame) {
             $frameHex = is_array($frame) ? ($frame['serialized_hex'] ?? null) : $frame;
-            if (!is_string($frameHex) || preg_match('/\A(?:[0-9a-f]{2})*\z/i', $frameHex) !== 1) {
+            if (!validHex($frameHex)) {
                 throw new RuntimeException("invalid serialized request frame hex at $frameIndex");
             }
             $frameDigest = hash('sha256', hex2bin($frameHex));
@@ -115,11 +129,30 @@ foreach ($manifest['methods'] as $entry) {
             $request->mergeFromString(hex2bin($frameHex));
             $requests[] = $request;
         }
-        $request = $entry['client_streaming'] ? $requests : $requests[0];
         $callOptions = ['timeout' => $timeoutMs * 1000];
-        $call = $clients[$cacheKey]->{$entry['method']}($request, [], $callOptions);
-        $frames = [];
-        if ($entry['server_streaming']) {
+        if ($entry['client_streaming']) {
+            // gRPC PHP exposes client-streaming methods as a call factory.
+            // Requests are written to the returned call; passing a protobuf
+            // message as the first argument is interpreted as metadata and
+            // fails before the RPC reaches the server.
+            $call = $clients[$cacheKey]->{$entry['method']}([], $callOptions);
+            foreach ($requests as $requestFrame) {
+                $call->write($requestFrame);
+            }
+            [$response, $status] = $call->wait();
+            $result['status_info'] = $status;
+            $result['terminal_code'] = (int) ($status->code ?? 0);
+            if ($response !== null) {
+                $result['response'] = responseValue($response);
+                $result['response_type_observed'] = get_class($response);
+                $result['response_type_id_observed'] = (string) $entry['response_type'];
+                $result['response_bytes_hex'] = responseBytesHex($response);
+                $result['response_sha256'] = hash('sha256', hex2bin($result['response_bytes_hex']));
+            }
+            $result['terminal_status'] = $result['terminal_code'] === Grpc\STATUS_CANCELLED ? 'canceled' : ($result['terminal_code'] === Grpc\STATUS_OK ? 'ok' : 'error');
+            $result['status'] = ($result['terminal_code'] === Grpc\STATUS_OK && $response !== null) || $result['terminal_code'] === Grpc\STATUS_CANCELLED ? 'semantic_passed' : 'error';
+        } elseif ($entry['server_streaming']) {
+            $call = $clients[$cacheKey]->{$entry['method']}($requests[0], [], $callOptions);
             $frameHex = [];
             $frameTypes = [];
             foreach ($call->responses() as $frame) {
@@ -137,6 +170,7 @@ foreach ($manifest['methods'] as $entry) {
             $result['terminal_status'] = $result['terminal_code'] === Grpc\STATUS_CANCELLED ? 'canceled' : ($result['terminal_code'] === Grpc\STATUS_OK ? 'ok' : 'error');
             $result['status'] = in_array($result['terminal_code'], [Grpc\STATUS_OK, Grpc\STATUS_CANCELLED], true) ? 'semantic_passed' : 'error';
         } else {
+            $call = $clients[$cacheKey]->{$entry['method']}($requests[0], [], $callOptions);
             [$response, $status] = $call->wait();
             $result['status_info'] = $status;
             $result['terminal_code'] = (int) ($status->code ?? 0);
@@ -152,7 +186,7 @@ foreach ($manifest['methods'] as $entry) {
         }
         $result['request_sha256'] = $requestDigest;
     } catch (Throwable $e) {
-        if (isset($status) && (($status->code ?? 0) === Grpc\STATUS_CANCELLED)) {
+        if ($status !== null && (($status->code ?? 0) === Grpc\STATUS_CANCELLED)) {
             if (isset($frameHex, $frameTypes, $frames)) {
                 $result['response_frames'] = $frames;
                 $result['response_frame_types'] = $frameTypes;
@@ -169,7 +203,7 @@ foreach ($manifest['methods'] as $entry) {
             $result['terminal_code'] = isset($status) ? (int) ($status->code ?? 2) : 2;
             $result['error'] = ['class' => get_class($e), 'message' => $e->getMessage()];
         }
-        $result['request_sha256'] = preg_match('/\A(?:[0-9a-f]{2})*\z/i', $hex) === 1 ? hash('sha256', hex2bin($hex)) : null;
+        $result['request_sha256'] = validHex($hex) ? hash('sha256', hex2bin($hex)) : null;
     }
     $results[] = $result;
 }
@@ -186,4 +220,4 @@ $receipt = [
     'methods' => $results,
 ];
 file_put_contents($output, json_encode($receipt, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
-echo json_encode(['method_count' => count($results), 'passed' => $receipt['passed'], 'pending' => $receipt['pending']) . PHP_EOL;
+echo json_encode(['method_count' => count($results), 'passed' => $receipt['passed'], 'pending' => $receipt['pending']]) . PHP_EOL;
