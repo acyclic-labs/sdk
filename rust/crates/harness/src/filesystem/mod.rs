@@ -36,8 +36,6 @@ use std::{
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 use acyclic_fs::{CaptureOptions, HostCheckout, SourceMode, SourceOptions};
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-use acyclic_fs::LocalOptions;
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
@@ -2816,7 +2814,7 @@ mod tests {
     async fn operation_recovery_requires_exact_cas_parent_after_cold_reopen() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let path = root.path().to_path_buf();
-        let filesystem = Fs::local(LocalOptions::new(&path))
+        let filesystem = Fs::local(acyclic_fs::LocalOptions::new(&path))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         let provider = ProviderRef::new("local", "filesystem", "receipt-parent-test")?;
@@ -2854,7 +2852,7 @@ mod tests {
         drop(host);
         drop(filesystem);
 
-        let reopened_filesystem = Fs::local(LocalOptions::new(&path))
+        let reopened_filesystem = Fs::local(acyclic_fs::LocalOptions::new(&path))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         let reopened = FilesystemHost::new(reopened_filesystem, provider)?;

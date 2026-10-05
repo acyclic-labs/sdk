@@ -1,0 +1,26 @@
+{
+  "kind": "failed-native-recursive-diagnostic-checkpoint",
+  "source_commit": "4a780e289",
+  "platform": "Windows native",
+  "suite": "local_model_swarm::default_local_composition_runs_recursive_models_and_reopens_without_dispatch",
+  "features": ["test-support", "native-process-tree"],
+  "build_jobs": 1,
+  "stack_override": false,
+  "observed_exit_code": -1073741571,
+  "test_process_exit": "0xc00000fd STATUS_STACK_OVERFLOW",
+  "tests_completed": 0,
+  "evidence_directory": "target/graphcoder-qualification/4a780e289-recursive-diagnostic",
+  "artifacts": [
+    {"path": "source.tar", "sha256": "aa10ca7da604d593df870459a4aa0e26994407ea51af586031dae044d3f0b9f6"},
+    {"path": "native.log", "sha256": "7421e21029a6fa5310658316aee1b23e59a8154fe0ba78ddb094effd6d0f0dff"},
+    {"path": "exit-code.txt", "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"},
+    {"path": "local_model_swarm.exe", "sha256": "69e0c3ab3bc8cddaaa8d76e2656490bbe9030b6671adf0609f91c1b6dfe0bbc8"}
+  ],
+  "observations": [
+    "Compilation succeeded; the selected test process overflowed before failure-capture output.",
+    "No preserved execution journal was produced.",
+    "The earlier a1b591bdd run reached Indeterminate without stack overflow. A diagnostic-future frame regression is a hypothesis, not a proven cause."
+  ],
+  "qualification": "failed",
+  "remaining_gate": "Repair and verify physical async frames without increasing stack allowance, then collect the original recursive failure journal."
+}

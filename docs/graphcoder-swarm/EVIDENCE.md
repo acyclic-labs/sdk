@@ -1,5 +1,18 @@
 # Qualification evidence index
 
+Current Q-worktree qualification is incomplete. Historical receipts below whose
+raw artifacts were lost during the C/D storage cutover do not qualify current
+source; see `q-cutover-2026-10-05.json` and the evidence-loss checkpoint.
+
+- [Exact native input contracts](checkpoint-q-input-contracts-2026-10-06.json): six conformance and three rejection cases passed; initial persistent fixture failure retained.
+- [Native persistent input](checkpoint-q-persistent-input-pass-2026-10-06.json): all seven cases passed at `46852dc41`; no WASM or installed scope claimed.
+- [Recursive activation failure](checkpoint-q-recursive-activation-2026-10-06.json): child activation passed but root returned Indeterminate.
+- [Unified compilation failures](checkpoint-q-unified-compilation-2026-10-06.json): neither attempt executed a test.
+- [Recursive diagnostic stack failure](checkpoint-q-recursive-diagnostic-stack-2026-10-06.json): build succeeded but the test process overflowed before recording its journal.
+
+Final source, installed artifacts, process cleanup, runtime integration and the
+locked 68-entry matrix remain unqualified.
+
 [Shared Harness mailbox extraction](checkpoint-mailbox-extraction-native-2026-10-05.json) records 368 library, four communication, four recursive and six fault tests at Windows native source `10ad465c3`, with no failures or ignored cases. Twelve source, suite, log and executable artifacts have verified archive digests. The initial missing-import compilation failure is retained. Default swarm messaging and installed acceptance remain unqualified.
 
 [Single-open recursive composition](checkpoint-single-owner-composition-native-2026-10-04.json) records 365/365 library, 4/4 recursive and 6/6 fault tests at Windows native candidate `22b94ef5e`, with no failures or ignored cases. The default constructor exercises the real recursive provider boundary and cold completed-operation replay; root storage is retained during tool binding. Integrated source `5dd97f1a7` has an empty Rust diff against this candidate. Messaging/waits and installed artifacts remain unqualified.
