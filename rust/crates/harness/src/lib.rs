@@ -49,6 +49,8 @@ pub mod model_input;
 #[cfg(feature = "objects")]
 pub mod objects;
 pub mod projection;
+#[cfg(test)]
+mod provider_conformance;
 pub mod registry;
 pub mod resources;
 pub mod runtime;

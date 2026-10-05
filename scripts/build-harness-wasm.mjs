@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { harnessWasmSourceClosure } from "./harness-wasm-source-closure.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [outputArgument, cargoArgument, wasmBindgenArgument, ...unexpected] = process.argv.slice(2);
@@ -14,6 +16,12 @@ const version = spawnSync(wasmBindgen, ["--version"], { cwd: root, encoding: "ut
 if (version.error || version.status !== 0 || version.stdout.trim() !== "wasm-bindgen 0.2.117") {
   throw new Error("wasm-bindgen 0.2.117 is required to build harness WASM");
 }
+const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
+const revision = spawnSync("git", ["rev-parse", "HEAD"], {
+  cwd: root,
+  encoding: "utf8",
+  windowsHide: true,
+});
 const run = (executable, args, options = {}) => {
   const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", windowsHide: true, ...options });
   if (result.error) throw result.error;
@@ -41,6 +49,11 @@ if (metadata.status !== 0) {
   process.exit(metadata.status ?? 1);
 }
 const targetDirectory = JSON.parse(metadata.stdout).target_directory;
+const generationInputs = harnessWasmSourceClosure(root);
+const sourceSnapshot = generationInputs.map(path => ({
+  path,
+  sha256: sha256(readFileSync(resolve(root, path))),
+}));
 const outputDirectory = outputArgument || process.env.ACYCLIC_HARNESS_WASM_OUT_DIR
   ? resolve(outputArgument || process.env.ACYCLIC_HARNESS_WASM_OUT_DIR)
   : resolve(root, "typescript/packages/harness/generated/wasm");
@@ -72,3 +85,23 @@ for (const declaration of generatedDeclarationFiles) {
   const normalized = source.replace(closureInvokeShim, "");
   if (normalized !== source) writeFileSync(declaration, normalized);
 }
+
+const generatedArtifacts = [
+  "acyclic_harness_wasm.js",
+  "acyclic_harness_wasm.d.ts",
+  "acyclic_harness_wasm_bg.wasm",
+  "acyclic_harness_wasm_bg.wasm.d.ts",
+].map(path => ({
+  path,
+  sha256: sha256(readFileSync(resolve(outputDirectory, path))),
+}));
+writeFileSync(resolve(outputDirectory, "acyclic_harness_wasm.manifest.json"), `${JSON.stringify({
+  version: 1,
+  generator: "scripts/build-harness-wasm.mjs",
+  wasmBindgen: "0.2.117",
+  target: "web",
+  cargoProfile: "wasm-release",
+  sourceCommit: revision.status === 0 ? revision.stdout.trim() : null,
+  sourceSnapshot,
+  artifacts: generatedArtifacts,
+}, null, 2)}\n`);

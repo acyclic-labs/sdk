@@ -93,6 +93,8 @@ export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v
 // target and the TypeScript WASM consumer. Keep its packaged crate copy bound
 // through the same generated-source drift check as the other Harness vectors.
 export const modelInputVector = "conformance/vectors/harness/model-input-v3.json";
+export const modelInputRejectionVector = "conformance/vectors/harness/model-input-rejection-v1.json";
+export const providerConsumptionVector = "conformance/vectors/harness/provider-consumption-v1.json";
 export const packagedSourceCopies = [
   ...[
     "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",
@@ -104,6 +106,8 @@ export const packagedSourceCopies = [
   [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],
   [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
   [modelInputVector, "rust/crates/harness/conformance/model-input-v3.json"],
+  [modelInputRejectionVector, "rust/crates/harness/conformance/model-input-rejection-v1.json"],
+  [providerConsumptionVector, "rust/crates/harness/conformance/provider-consumption-v1.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
   ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
   ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],
