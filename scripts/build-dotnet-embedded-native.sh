@@ -21,16 +21,23 @@ root=$(cd "$root" && pwd)
 mkdir -p "$output"
 source_revision=$(git -C "$root" rev-parse HEAD)
 [[ "$source_revision" =~ ^[0-9a-fA-F]{40}$ ]]
-source_inputs=(
-  rust/crates/sdk-embedded-prototype/Cargo.toml
-  rust/crates/sdk-embedded-prototype/Cargo.lock
-  rust/crates/sdk-embedded-prototype/build.rs
-  rust/crates/sdk-embedded-prototype/src/lib.rs
-  rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs
+closure_json="$output/source-closure.json"
+python3 "$root/scripts/embedded-source-closure.py" \
+  --repository "$root" \
+  --manifest "$root/rust/crates/sdk-embedded-prototype/Cargo.toml" \
+  --output "$closure_json"
+source_inputs_sha256=$(python3 - "$closure_json" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1], encoding='utf-8'))['digest'])
+PY
 )
-for source_input in "${source_inputs[@]}"; do
-  test -f "$root/$source_input"
-done
+source_inputs_json=$(python3 - "$closure_json" <<'PY'
+import json
+import sys
+print(json.dumps(json.load(open(sys.argv[1], encoding='utf-8'))['paths'], separators=(',', ':')))
+PY
+)
 lockfile_sha256=$(sha256sum "$root/rust/crates/sdk-embedded-prototype/Cargo.lock" | awk '{print $1}')
 cargo_command='cargo build --locked --release --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --target <rust_target> --target-dir <target_dir>'
 target_dir=${target_dir:-"$output/rust-target"}
@@ -76,13 +83,8 @@ cat > "$output/native/$rid/native-producer.json" <<EOF
   "schema": "acyclic.sdk.dotnet.embedded.native.v1",
   "source_revision": "$source_revision",
   "source_revision_kind": "git-oid",
-  "source_inputs": [
-    "rust/crates/sdk-embedded-prototype/Cargo.toml",
-    "rust/crates/sdk-embedded-prototype/Cargo.lock",
-    "rust/crates/sdk-embedded-prototype/build.rs",
-    "rust/crates/sdk-embedded-prototype/src/lib.rs",
-    "rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs"
-  ],
+  "source_inputs": $source_inputs_json,
+  "source_inputs_sha256": "$source_inputs_sha256",
   "cargo_manifest": "rust/crates/sdk-embedded-prototype/Cargo.toml",
   "cargo_lock": "rust/crates/sdk-embedded-prototype/Cargo.lock",
   "cargo_lock_sha256": "$lockfile_sha256",
@@ -101,13 +103,8 @@ cat > "$output/native/native-manifest.json" <<EOF
   "schema": "acyclic.sdk.dotnet.embedded.native-manifest.v1",
   "source_revision": "$source_revision",
   "source_revision_kind": "git-oid",
-  "source_inputs": [
-    "rust/crates/sdk-embedded-prototype/Cargo.toml",
-    "rust/crates/sdk-embedded-prototype/Cargo.lock",
-    "rust/crates/sdk-embedded-prototype/build.rs",
-    "rust/crates/sdk-embedded-prototype/src/lib.rs",
-    "rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs"
-  ],
+  "source_inputs": $source_inputs_json,
+  "source_inputs_sha256": "$source_inputs_sha256",
   "cargo_manifest": "rust/crates/sdk-embedded-prototype/Cargo.toml",
   "cargo_lock": "rust/crates/sdk-embedded-prototype/Cargo.lock",
   "cargo_lock_sha256": "$lockfile_sha256",

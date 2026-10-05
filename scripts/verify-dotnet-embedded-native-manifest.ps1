@@ -3,15 +3,23 @@ function Get-EmbeddedRustSourceClosure {
 
   $repo = [IO.Path]::GetFullPath($Repository)
   $embeddedManifest = Join-Path $repo 'rust/crates/sdk-embedded-prototype/Cargo.toml'
+  $metadataErrorPath = Join-Path ([IO.Path]::GetTempPath()) ('acyclic-cargo-metadata-' + [Guid]::NewGuid().ToString('N') + '.err')
+  $metadataError = ''
   Push-Location -LiteralPath $repo
   try {
-    $metadataLines = @(& cargo metadata --format-version 1 --locked --manifest-path $embeddedManifest 2>$null)
+    $metadataLines = @(& cargo metadata --format-version 1 --locked --manifest-path $embeddedManifest 2> $metadataErrorPath)
     $cargoExitCode = $LASTEXITCODE
+    if (Test-Path -LiteralPath $metadataErrorPath) {
+      $metadataErrorContent = Get-Content -LiteralPath $metadataErrorPath -Raw -ErrorAction SilentlyContinue
+      if ($null -ne $metadataErrorContent) { $metadataError = $metadataErrorContent.Trim() }
+    }
   } finally {
     Pop-Location
+    Remove-Item -LiteralPath $metadataErrorPath -Force -ErrorAction SilentlyContinue
   }
   if ($cargoExitCode -ne 0 -or $metadataLines.Count -eq 0) {
-    throw 'Unable to resolve the Rust embedded Cargo source closure'
+    $detail = if ([string]::IsNullOrWhiteSpace($metadataError)) { 'no cargo diagnostic' } else { $metadataError }
+    throw "Unable to resolve the Rust embedded Cargo source closure: $detail"
   }
   $metadata = ($metadataLines -join "`n") | ConvertFrom-Json
   $packageById = @{}
@@ -55,7 +63,9 @@ function Get-EmbeddedRustSourceClosure {
     if (Test-Path -LiteralPath $rootPath -PathType Leaf) { [void]$paths.Add($rootInput.Replace('\', '/')) }
   }
 
-  $ordered = @($paths | Sort-Object -Unique)
+  $ordered = [string[]]$paths
+  [Array]::Sort($ordered, [StringComparer]::Ordinal)
+  $ordered = @($ordered | Select-Object -Unique)
   $lines = foreach ($relative in $ordered) {
     $path = Join-Path $repo $relative
     "$relative`t$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant())"
