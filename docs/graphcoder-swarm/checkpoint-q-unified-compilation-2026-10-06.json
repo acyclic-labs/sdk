@@ -1,0 +1,28 @@
+{
+  "kind": "failed-native-unified-swarm-compilation-checkpoint",
+  "platform": "Windows native",
+  "suite": "unified_runtime_swarm",
+  "features": ["test-support", "native-process-tree"],
+  "build_jobs": 1,
+  "attempts": [
+    {
+      "source_commit_prefix": "616f104ac",
+      "evidence_directory": "target/graphcoder-qualification/616f104ac-unified-swarm",
+      "exit_code": 101,
+      "tests_executed": 0,
+      "failure": "EditExecutor reconciliation referenced a missing internal FilesystemHost operation_generation delegate.",
+      "source_archive_sha256": "cd127882b698ed31b5b574cd1bef66875935cc844e56bfd20d01326bbb435b4d",
+      "native_log_sha256": "9196bcd7a5227d61a3939df8be4fd608838ced4295628a5bf7ef24b63938862e"
+    },
+    {
+      "source_commit_prefix": "538993a4c",
+      "evidence_directory": "target/graphcoder-qualification/538993a4c-unified-swarm",
+      "exit_code": 101,
+      "tests_executed": 0,
+      "failure": "Fourteen fixture compilation errors: imports, typed workspace identity access, WorkspaceId formatting and Bytes comparison. No runtime assertion executed.",
+      "source_archive_sha256": "06874a98d284d03f819fc8a00230bae1b2091bc37c6a44f486d086a28e8c9e9a",
+      "native_log_sha256": "2c8d3b39cb6e14ead8f4f54dbc16a7a797f1a16108df6f239c6f425f93090e74"
+    }
+  ],
+  "qualification_scope": "Failed builds only. No test binary produced, no unified runtime behavior qualified, and no acceptance requirement marked passed."
+}
