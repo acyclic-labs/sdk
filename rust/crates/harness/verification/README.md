@@ -1,4 +1,4 @@
-# Activation recovery model
+# Bounded swarm safety models
 
 This is a finite TLA+ safety model of one stable activation operation with two
 possible owners. It checks admission before dispatch, claim retention when the
@@ -54,3 +54,25 @@ indefinitely. Deadlock checking is disabled because terminal and deliberately
 uncertain states are permitted. TLC explores the reachable finite model with
 fingerprints; this is bounded model-checking evidence, not an unbounded theorem
 or whole-swarm verification. The locked acceptance matrix remains required.
+
+## Completed fork boundary model
+
+`ForkBoundary.tla` models one batch with two selected children and three parent
+revisions. It checks that all children are bound and the ordered triggering
+exchange is complete before any child dispatches, and that inherited captures
+stay pinned while the parent changes. Two negative controls separately permit
+early dispatch and mutable capture refresh; both must produce their expected
+invariant violation. Run through the shared checker:
+
+```powershell
+./check-models.ps1 -Model ForkBoundary -ToolsJar C:/tools/tla2tools.jar -EvidenceDirectory C:/evidence/forks
+```
+
+The correspondence is `LocalModelForkPublisher::publish`'s completed-batch
+barrier and the frozen declaration consumed by `inherited_task_bundle`.
+This is a design model, not an implementation conformance proof. Captures are
+abstract immutable revision identities: it does not check serialization bytes,
+reference authorization, storage corruption, recursive depth, crashes, or
+scheduler progress. The real provider-input and recursive-fork tests remain
+necessary. In particular, the current publisher awaits child completion and
+this safety model does not establish live parent-child communication.
