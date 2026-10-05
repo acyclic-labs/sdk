@@ -823,6 +823,14 @@ impl<P: StreamProvider> Stream<P> {
     }
 }
 
+#[cfg(feature = "local")]
+impl Stream<LocalStream> {
+    /// Waits for deferred local mutations on this exact provider handle.
+    pub async fn drain(&self) {
+        self.client.provider.drain().await;
+    }
+}
+
 /// Gapless, paged replay of one stream up to its tail.
 ///
 /// A path that does not exist reads as empty from zero. Every record's
