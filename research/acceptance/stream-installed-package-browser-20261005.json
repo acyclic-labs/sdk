@@ -1,7 +1,7 @@
 {
   "schema": "acyclic.sdk.stream.installed-package.browser-qualification.v1",
   "status": "passed",
-  "sourceRevision": "a487e97819a82976f8d8fded3f3d23fa4abc2cce",
+  "sourceRevision": "7baa94bda784aeda1bd3218f166029c2429646c4",
   "source": {
     "family": "stream",
     "rustCrate": "acyclic-stream",
@@ -14,35 +14,35 @@
   },
   "sourceFiles": {
     "typescript/packages/stream/src/client.ts": "93251aeeaf74f8dba4563c5775c187987cd7eaa77f881633fa89cd24f644ca8c",
-    "typescript/packages/stream/src/http.ts": "5c4155b79c16a8ff4d32aba94fe5277fdacc27024be8872013d642651e561ca2",
+    "typescript/packages/stream/src/http.ts": "87b2f9605d99dde80d7affbe16d38916f4a7905e75b889b5a41b20c8ae44705e",
     "typescript/packages/stream/src/generated-client.ts": "5fb7ba2ec9d66a361fa6d58c1ddfc32c397610aa966c4558069a4f926c5b9b0b",
-    "rust/crates/stream/src/http.rs": "939e8f290e03ea7741061cfb6cb33949e4f15d62ec19f02dc9141c4c2028e0e5",
+    "rust/crates/stream/src/wasm.rs": "73e05bb8f744bd33d9b7ad3f374a89764a4644333f3b954117bc39f291d3d576",
     "rust/crates/stream/Cargo.toml": "de70037a1013aa6e4a77e61b1b062f256a5fb38f4758555d2d4242f3898248ef"
   },
   "artifact": {
     "manifest": "typescript/packages/stream/package.json",
     "manifestSha256": "1075d462ea981d3ba80e2df04c604c9a251c684101b8435fbdd9e350103214e1",
     "browserEntry": "work/stream-installed-consumer/dist2/index.js",
-    "browserEntrySha256": "48fcb7e90b0e716ff0d96bdc54a18b2c7af2dba588b8a40af73e12b27e1d6123",
-    "sharedChunk": "work/stream-installed-consumer/dist2/index-sgkevqmt.js",
-    "sharedChunkSha256": "9fb6a1a59aa11e59a75addda86267dac41f28b41b488c18affc5a0fa986e82ef",
-    "nativeChunk": "work/stream-installed-consumer/dist2/grpc-mb4d1fa7.js",
-    "nativeChunkSha256": "e93af484c84db90e28494ca6dc046c263018bb28ef21e6c7c4b8e72cf81222df",
+    "browserEntrySha256": "a01ef5374f8e60a7e28b15355a8e6aeeabba9573a09ac66d77652c8d90321bad",
+    "sharedChunk": "work/stream-installed-consumer/dist2/index-gv8bq1gs.js",
+    "sharedChunkSha256": "c25c41dba90a1fc3258d3d2330abdba4bb5a6d61c7e39ea70ef814c28f7d78c0",
+    "nativeChunk": "work/stream-installed-consumer/dist2/grpc-f8kp1pmd.js",
+    "nativeChunkSha256": "c92c1ecbfe08a09f5f286aafc1d05d52c1b854a20e1b79dd423ff28965145bee",
     "rustWasm": "work/stream-installed-consumer/generated/wasm/acyclic_stream_wasm_bg.wasm",
-    "rustWasmSha256": "ec2b119401a79550021592683368c69bdb685673add13a0e3851566dc280ea24"
+    "rustWasmSha256": "2b6b375decb7f0f6ade99bd7a751ab0149a98d5094d6d2c661169bf2785d2093"
   },
   "fixture": {
     "runner": "work/stream-installed-browser-consumer.mjs",
-    "runnerSha256": "37c2129a7590031bd824afddeac068f398df4cd664e61db3a794689164872aee",
+    "runnerSha256": "d522700ef0fde9142dedbfe6ddf65f42a3b6f332ef2016a62db60f3a41985f13",
     "page": "work/stream-installed-consumer/index.html",
-    "pageSha256": "a8d598c1d1c392eadfc0d6014d8e79e13e92bf71a2732696e95b7d3c2518eb29",
+    "pageSha256": "33a6064da90f02c105e35b00f1cce44d39f4d5f2e5573f46e7a94aa500828e61",
     "log": "work/stream-installed-browser-consumer.log",
-    "logSha256": "6f95431aa3e85ac9ba527d829ef57c951588d207c49e6b97f20735460a21c3d7",
+    "logSha256": "67c53c41117c5b392f2c7a6c77540064e77445e204ffe62237f138ea5043c880",
     "runtime": "Microsoft Edge headless via DevTools",
     "operations": ["inspect", "append", "tail", "fork", "read", "follow", "children", "children_page", "commit", "read_commit"],
     "transport": "HttpStreamProvider",
     "recovery": "503 unavailable then successful tail",
-    "cancellation": "pending follow AbortController cancellation observed as peer close by the fixture",
+    "cancellation": "pending follow AbortSignal rejection observed in the installed browser",
     "observedRoutes": ["idempotency/inspect", "append", "tail", "fork", "read", "children", "children/page", "commit", "commits/read"]
   },
   "generation": {
