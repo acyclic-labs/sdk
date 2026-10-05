@@ -48,9 +48,11 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Iterator;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
@@ -111,6 +113,55 @@ class InstalledCanonicalReplayTest {
     }
     assertTrue(failures.isEmpty(), failures.describe());
     expected.forEach((rpc, calls) -> assertTrue(calls.isEmpty(), "unreplayed canonical RPC: " + rpc));
+  }
+
+  @Test
+  void installedArtifactExposesRustOwnedTypedSurfaceForEveryRpc() throws Exception {
+    Path manifest = canonicalManifest();
+    JsonObject root = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+    Set<String> rpcs = new HashSet<>();
+    for (JsonElement element : root.getAsJsonArray("execution_plan")) {
+      String rpc = element.getAsJsonObject().get("rpc").getAsString();
+      if (rpc.endsWith(AFTER_COMPLETION)) continue;
+      rpcs.add(rpc);
+    }
+    assertEquals(106, rpcs.size());
+    Class<?> requests = Class.forName("dev.acyclic.transport.RustTypedRequests");
+    Class<?> responses = Class.forName("dev.acyclic.transport.RustTypedResponses");
+    Class<?> clients = Class.forName("dev.acyclic.transport.RustTypedClients");
+    for (String rpc : rpcs) {
+      String[] path = rpc.split("/");
+      String service = path[0].substring(path[0].lastIndexOf('.') + 1);
+      String method = path[1];
+      String family = familyFor(rpc);
+      String serviceStem = service.endsWith("Service") ? service.substring(0, service.length() - 7) : service;
+      String requestName = upperCamel(family) + upperCamel(serviceStem) + upperCamel(method) + "Request";
+      String responseName = upperCamel(family) + upperCamel(serviceStem) + upperCamel(method) + "Response";
+      String clientName = lowerCamel(family + serviceStem + method);
+      assertNotNull(Class.forName(requests.getName() + "$" + requestName), "missing typed request " + rpc);
+      assertNotNull(Class.forName(responses.getName() + "$" + responseName), "missing typed response " + rpc);
+      assertTrue(java.util.Arrays.stream(clients.getDeclaredMethods()).anyMatch(candidate -> candidate.getName().equals(clientName)),
+          "missing typed client " + clientName + " for " + rpc);
+    }
+  }
+
+  private static String familyFor(String rpc) {
+    if (rpc.startsWith("acyclic.actors.")) return "actors";
+    if (rpc.startsWith("acyclic.filesystem.")) return "filesystem";
+    if (rpc.startsWith("acyclic.harness.")) return "harness";
+    if (rpc.startsWith("acyclic.machines.")) return "machines";
+    if (rpc.startsWith("acyclic.objects.")) return "objects";
+    if (rpc.startsWith("acyclic.stream.")) return "stream";
+    if (rpc.startsWith("acyclic.workers.")) return "workers";
+    return "inference";
+  }
+
+  private static String upperCamel(String value) {
+    return Character.toUpperCase(value.charAt(0)) + value.substring(1);
+  }
+
+  private static String lowerCamel(String value) {
+    return Character.toLowerCase(value.charAt(0)) + value.substring(1);
   }
 
   private static Path canonicalManifest() {
@@ -194,8 +245,16 @@ class InstalledCanonicalReplayTest {
             || method.getType() == MethodDescriptor.MethodType.SERVER_STREAMING)) {
       return;
     }
-    if (!expected.equals(actual)) failures.add(new AssertionError("request wire mismatch for " + method.getFullMethodName()
+    if (!sameFrames(expected, actual)) failures.add(new AssertionError("request wire mismatch for " + method.getFullMethodName()
         + " expected=" + describe(call.requests) + " actual=" + describe(actual)));
+  }
+
+  private static boolean sameFrames(List<byte[]> expected, List<byte[]> actual) {
+    if (expected.size() != actual.size()) return false;
+    for (int i = 0; i < expected.size(); i++) {
+      if (!java.util.Arrays.equals(expected.get(i), actual.get(i))) return false;
+    }
+    return true;
   }
 
   @SuppressWarnings("unchecked")
