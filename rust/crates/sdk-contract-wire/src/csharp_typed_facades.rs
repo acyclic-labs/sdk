@@ -564,7 +564,8 @@ fn render_nested_models(out: &mut String) {
 
 fn render_object_stream(out: &mut String) {
     out.push_str("public sealed record ObjectsGetObjectHeader(OpaqueText? Etag)\n{\n    internal static ObjectsGetObjectHeader FromWire(Acyclic.Objects.V2.GetObjectHeader message) => new(message.Object is null || string.IsNullOrEmpty(message.Object.Etag) ? null : new OpaqueText(message.Object.Etag));\n}\n\n");
-    out.push_str("public sealed record ObjectsErrorDetail(int Code, string RequestId)\n{\n    internal static ObjectsErrorDetail FromWire(Acyclic.Objects.V2.ErrorDetail message) => new((int)message.Code, message.RequestId);\n}\n\n");
+    out.push_str("public readonly record struct ObjectsRequestId\n{\n    public ObjectsRequestId(string value)\n    {\n        if (string.IsNullOrEmpty(value)) throw new ArgumentException(\"Objects request IDs must be non-empty\", nameof(value));\n        Value = value;\n    }\n    public string Value { get; }\n    internal static ObjectsRequestId FromWire(string value) => new(value);\n}\n\n");
+    out.push_str("public sealed record ObjectsErrorDetail(RustObjectsErrorCodeEnum Code, ObjectsRequestId RequestId)\n{\n    internal static ObjectsErrorDetail FromWire(Acyclic.Objects.V2.ErrorDetail message) => new(new RustObjectsErrorCodeEnum((int)message.Code), ObjectsRequestId.FromWire(message.RequestId));\n}\n\n");
     out.push_str("public abstract record ObjectsGetObjectFrame\n{\n    public sealed record Header(ObjectsGetObjectHeader Value) : ObjectsGetObjectFrame;\n    public sealed record Body(ByteString Value) : ObjectsGetObjectFrame;\n    public sealed record Error(ObjectsErrorDetail Value) : ObjectsGetObjectFrame;\n    public sealed record Unknown(int RawCase, ByteString WireBytes) : ObjectsGetObjectFrame;\n    public sealed record Empty : ObjectsGetObjectFrame;\n}\n\n");
     out.push_str("public sealed record ObjectsGetObjectResponse(ObjectsGetObjectFrame Frame)\n{\n    internal static ObjectsGetObjectResponse FromWire(Acyclic.Objects.V2.GetObjectResponse message) => message.FrameCase switch\n    {\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Header => new(new ObjectsGetObjectFrame.Header(ObjectsGetObjectHeader.FromWire(message.Header))),\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Body => new(new ObjectsGetObjectFrame.Body(message.Body)),\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Error => new(new ObjectsGetObjectFrame.Error(ObjectsErrorDetail.FromWire(message.Error))),\n        _ => new(new ObjectsGetObjectFrame.Unknown((int)message.FrameCase, ByteString.CopyFrom(message.ToByteArray()))),\n    };\n}\n\n");
     out.push_str("public sealed class ObjectsGetObjectStream\n{\n    private readonly AsyncServerStreamingCall<Acyclic.Objects.V2.GetObjectResponse> _inner;\n    internal ObjectsGetObjectStream(AsyncServerStreamingCall<Acyclic.Objects.V2.GetObjectResponse> inner) => _inner = inner;\n    public async IAsyncEnumerable<ObjectsGetObjectResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)\n    {\n        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return ObjectsGetObjectResponse.FromWire(_inner.ResponseStream.Current);\n    }\n}\n\n");
@@ -575,7 +576,8 @@ fn render_object_stream(out: &mut String) {
 /// message remains available for forward-compatible ordinary fields.
 fn render_object_info_response(out: &mut String) {
     out.push_str("public sealed record ObjectsObjectMetadata(string ContentType, IReadOnlyDictionary<string, string> User, string ContentEncoding, string CacheControl, string ContentDisposition, string ContentLanguage, long? ExpiresUnixSeconds)\n{\n    internal static ObjectsObjectMetadata FromWire(Acyclic.Objects.V2.ObjectMetadata message) => new(message.ContentType, new Dictionary<string, string>(message.User), message.ContentEncoding, message.CacheControl, message.ContentDisposition, message.ContentLanguage, message.HasExpiresUnixSeconds ? message.ExpiresUnixSeconds : null);\n}\n\n");
-    out.push_str("public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, ObjectsObjectMetadata Metadata, DateTimeOffset? LastModified)\n{\n    internal static ObjectsObjectInfo FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(\n        string.IsNullOrEmpty(message.Etag) ? null : new OpaqueText(message.Etag),\n        message.Size,\n        message.Metadata is null ? new ObjectsObjectMetadata(string.Empty, new Dictionary<string, string>(), string.Empty, string.Empty, string.Empty, string.Empty, null) : ObjectsObjectMetadata.FromWire(message.Metadata),\n        message.LastModified?.ToDateTimeOffset());\n}\n\n");
+    out.push_str("public readonly record struct ObjectsTimestamp\n{\n    public ObjectsTimestamp(long seconds, int nanos)\n    {\n        if (nanos is < 0 or > 999999999) throw new ArgumentOutOfRangeException(nameof(nanos));\n        Seconds = seconds;\n        Nanos = nanos;\n    }\n    public long Seconds { get; }\n    public int Nanos { get; }\n    internal static ObjectsTimestamp FromWire(Google.Protobuf.WellKnownTypes.Timestamp value) => new(value.Seconds, value.Nanos);\n}\n\n");
+    out.push_str("public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, ObjectsObjectMetadata? Metadata, ObjectsTimestamp? LastModified)\n{\n    internal static ObjectsObjectInfo FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(\n        string.IsNullOrEmpty(message.Etag) ? null : new OpaqueText(message.Etag),\n        message.Size,\n        message.Metadata is null ? null : ObjectsObjectMetadata.FromWire(message.Metadata),\n        message.LastModified is null ? null : ObjectsTimestamp.FromWire(message.LastModified));\n}\n\n");
     // PutObject is client-streaming, so expose the semantic ObjectInfo response
     // through an adapter while preserving the generated call lifecycle and raw
     // request stream. The ObjectInfo.etag binding remains Rust-owned above.
@@ -707,6 +709,13 @@ fn response_wire_field_type(field: &ResolvedRequestField, family: &str) -> Strin
 }
 
 fn response_field_type(field: &ResolvedRequestField, family: &str) -> String {
+    let message = field.message_path.trim_start_matches('.');
+    if message == "acyclic.objects.v2.ErrorDetail" && field.field == "request_id" {
+        return "ObjectsRequestId".to_owned();
+    }
+    if message == "acyclic.objects.v2.ObjectInfo" && field.field == "last_modified" {
+        return "ObjectsTimestamp?".to_owned();
+    }
     if field.map_entry {
         return response_map_type(field, family);
     }
@@ -749,6 +758,13 @@ fn response_field_property(field: &ResolvedRequestField) -> String {
 
 fn response_field_accessor(field: &ResolvedRequestField) -> String {
     let property = response_field_property(field);
+    let message = field.message_path.trim_start_matches('.');
+    if message == "acyclic.objects.v2.ErrorDetail" && field.field == "request_id" {
+        return format!("ObjectsRequestId.FromWire(Wire.{property})");
+    }
+    if message == "acyclic.objects.v2.ObjectInfo" && field.field == "last_modified" {
+        return format!("Wire.{property} is null ? null : ObjectsTimestamp.FromWire(Wire.{property})");
+    }
     if field.map_entry {
         return format!("Wire.{property}");
     }
@@ -1893,6 +1909,19 @@ mod tests {
         let (_, source) = generate_csharp_typed_facade();
         assert!(source.contains("record Unknown(int RawCase, ByteString WireBytes)"));
         assert!(source.contains("ObjectsGetObjectFrame.Unknown((int)message.FrameCase, ByteString.CopyFrom(message.ToByteArray()))"));
+    }
+
+    #[test]
+    fn csharp_objects_projection_preserves_rust_owned_error_and_timestamp_shapes() {
+        let (_, source) = generate_csharp_typed_facade();
+        assert!(source.contains("public sealed record ObjectsErrorDetail(RustObjectsErrorCodeEnum Code, ObjectsRequestId RequestId)"));
+        assert!(source.contains("public readonly record struct ObjectsRequestId"));
+        assert!(source.contains("public readonly record struct ObjectsTimestamp"));
+        assert!(source.contains("ObjectsObjectMetadata? Metadata, ObjectsTimestamp? LastModified"));
+        assert!(source.contains("message.Metadata is null ? null : ObjectsObjectMetadata.FromWire(message.Metadata)"));
+        assert!(source.contains("ObjectsTimestamp.FromWire(message.LastModified)"));
+        assert!(source.contains("public ObjectsRequestId RequestId => ObjectsRequestId.FromWire(Wire.RequestId);"));
+        assert!(source.contains("public ObjectsTimestamp? LastModified => Wire.LastModified is null ? null : ObjectsTimestamp.FromWire(Wire.LastModified);"));
     }
 
     #[test]
