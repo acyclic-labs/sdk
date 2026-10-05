@@ -2028,7 +2028,44 @@ impl LocalModelForkPlans {
             .any(|intent| intent.publication_operation == Some(operation)))
     }
 
-    async fn mark_completed(&self, operation: OperationId, digest: [u8; 32]) -> Result<()> {
+    /// A completion receipt is only valid after the publication selected a
+    /// durable intent or an owner-prepared plan. The caller supplies the
+    /// exact `(fork, child)` identities it actually published so a retained
+    /// plan expectation cannot authorize an unrelated completion.
+    async fn has_completion_authority(
+        &self,
+        operation: OperationId,
+        fork_children: &[(OperationId, OperationId)],
+    ) -> Result<bool> {
+        self.refresh_journal_state().await?;
+        if self.has_intent(operation).await? {
+            return Ok(true);
+        }
+        if fork_children.is_empty()
+            || fork_children.iter().any(|(fork, child)| {
+                fork.into_bytes() == [0; 16] || child.into_bytes() == [0; 16]
+            })
+        {
+            return Ok(false);
+        }
+        Ok(self
+            .expected_plans
+            .lock()
+            .await
+            .get(&operation)
+            .is_some_and(|expected| {
+                fork_children
+                    .iter()
+                    .all(|identity| expected.contains(identity))
+            }))
+    }
+
+    async fn mark_completed(
+        &self,
+        operation: OperationId,
+        digest: [u8; 32],
+        fork_children: &[(OperationId, OperationId)],
+    ) -> Result<()> {
         if operation.into_bytes() == [0; 16] || digest == [0; 32] {
             return Err(Error::Invalid(
                 "model fork publication completion identity is empty".into(),
@@ -2042,6 +2079,14 @@ impl LocalModelForkPlans {
                 ));
             }
             return Ok(());
+        }
+        if !self
+            .has_completion_authority(operation, fork_children)
+            .await?
+        {
+            return Err(Error::Unauthorized(
+                "model fork publication has no retained intent or prepared plan".into(),
+            ));
         }
         let registry = self.journal.lock().await.clone();
         let Some(registry) = registry else {
@@ -2360,6 +2405,13 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             }
             // Every child is now durably admitted and bound to the parent
             // aggregate. Only after that barrier may a child model dispatch.
+            let mut fork_children = Vec::with_capacity(prepared.len());
+            for (plan, _) in &prepared {
+                let fork_operation = plan.request.fork_operation.ok_or_else(|| {
+                    Error::Conflict("prepared fork plan has no fork operation".into())
+                })?;
+                fork_children.push((fork_operation, plan.request.child_operation));
+            }
             for (plan, seed) in prepared {
                 let child_operation = plan.request.child_operation;
                 let child = TaskId::from_bytes(child_operation.into_bytes());
@@ -2388,6 +2440,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 .mark_completed(
                     publication.operation_id,
                     publication_digest,
+                    &fork_children,
                 )
                 .await
         })
@@ -8747,14 +8800,32 @@ mod tests {
         first.bind_journal(client.clone()).await?;
         second.bind_journal(client.clone()).await?;
         let operation = OperationId::from_bytes([8; 16]);
+        let fork_operation = OperationId::from_bytes([6; 16]);
+        let child_operation = OperationId::from_bytes([7; 16]);
         let digest = [9; 32];
 
-        first.mark_completed(operation, digest).await?;
+        first
+            .record_plan_registration(operation, fork_operation, child_operation)
+            .await?;
+        first
+            .mark_completed(operation, digest, &[(fork_operation, child_operation)])
+            .await?;
         assert_eq!(second.completed(operation).await?, Some(digest));
-        second.mark_completed(operation, digest).await?;
+        second
+            .mark_completed(operation, digest, &[(fork_operation, child_operation)])
+            .await?;
         assert!(matches!(
-            second.mark_completed(operation, [10; 32]).await,
+            second
+                .mark_completed(operation, [10; 32], &[(fork_operation, child_operation)])
+                .await,
             Err(Error::Conflict(message)) if message.contains("result changed")
+        ));
+
+        let orphan = OperationId::from_bytes([11; 16]);
+        assert!(matches!(
+            second.mark_completed(orphan, [12; 32], &[(fork_operation, child_operation)])
+                .await,
+            Err(Error::Unauthorized(message)) if message.contains("no retained intent")
         ));
 
         let stream = client
