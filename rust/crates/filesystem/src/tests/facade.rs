@@ -2856,6 +2856,90 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
     Ok(())
 }
 
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[test]
+fn clean_context_retry_requires_the_exact_context_and_durable_output_head()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("context receipt fixture creation blocked")??
+        .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("context receipt checkout blocked")??
+    .value;
+    poll_ready(checkout.create_file(
+        path("context-receipt")?,
+        Bytes::from_static(b"durable output"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("context receipt mutation blocked")??;
+
+    let operation_id = OperationId::from_bytes([0xa7; 16]);
+    let context = Digest::from_bytes([0xa8; 32]);
+    let committed = poll_ready(checkout.commit_with_context(
+        operation_id,
+        context,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("context receipt publication blocked")??;
+    let (generation_id, durable_head) = match committed.value {
+        CheckoutCommitOutcome::Committed {
+            generation_id,
+            head,
+        }
+        | CheckoutCommitOutcome::AlreadyCommitted {
+            generation_id,
+            head,
+        } => (generation_id, head),
+        CheckoutCommitOutcome::Conflict { .. }
+        | CheckoutCommitOutcome::Fenced { .. }
+        | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+            return Err("context receipt publication was rejected".into());
+        }
+    };
+
+    // Simulate a reopened clean checkout whose in-memory operation/head
+    // receipt was lost. Recovery must authenticate the retained publication,
+    // not trust a mutable head or operation id alone.
+    checkout.last_commit = None;
+    checkout.authority_head = None;
+    let wrong = poll_ready(checkout.commit_with_context(
+        operation_id,
+        Digest::from_bytes([0xa9; 32]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("wrong-context recovery blocked")??;
+    assert!(matches!(
+        wrong.value,
+        CheckoutCommitOutcome::IdempotencyConflict { .. }
+    ));
+
+    let recovered = poll_ready(checkout.commit_with_context(
+        operation_id,
+        context,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("exact-context recovery blocked")??;
+    assert!(matches!(
+        recovered.value,
+        CheckoutCommitOutcome::AlreadyCommitted {
+            generation_id: recovered_generation,
+            head,
+        } if recovered_generation == generation_id && head == durable_head
+    ));
+    Ok(())
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()

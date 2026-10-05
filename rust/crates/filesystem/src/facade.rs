@@ -10973,7 +10973,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<CheckoutCommitOutcome> {
         if !self.has_pending_mutations() && permit == PublicationPermit::Unrestricted {
             return self
-                .resolve_clean_commit(operation_id, budget, cancellation)
+                .resolve_clean_commit(operation_id, operation_context, budget, cancellation)
                 .await;
         }
         let expected = self
@@ -11180,6 +11180,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     async fn resolve_clean_commit(
         &self,
         operation_id: OperationId,
+        operation_context: Option<Digest>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<CheckoutCommitOutcome> {
@@ -11200,9 +11201,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation
             .check()
             .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let head = self
-            .authority_head
-            .ok_or_else(|| OperationFailure::before_work(FsError::WritableCheckoutRequiresHead))?;
         let resolved = self
             .volume
             .fs
@@ -11225,10 +11223,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             ));
         };
         let generation_root = generation_from_record(&commit, self.volume.id, resolved.work)?;
-        let value = if generation_root == self.generation_root {
+        // A clean retry may reconstruct a receipt only from the durable
+        // publication and its exact operation context. In particular, do not
+        // use the checkout's mutable authority head: it can describe a later
+        // publication after a restart while the durable operation still owns
+        // the earlier result.
+        let context_matches = operation_context
+            .map(|context| {
+                let previous_sequence = commit.sequence.get().checked_sub(1).ok_or_else(|| {
+                    OperationFailure::new(FsError::InvalidAuthorityHistory, resolved.work)
+                })?;
+                let expected = Head {
+                    epoch: commit.epoch,
+                    sequence: Sequence::new(previous_sequence),
+                    digest: commit.previous_digest,
+                };
+                Ok(commit.fingerprint
+                    == contextual_publication_fingerprint(
+                        PublishGenerationRequest {
+                            authority_id: volume_authority_id(self.volume.id),
+                            volume_id: self.volume.id,
+                            epoch: commit.epoch,
+                            expected,
+                            operation_id,
+                            generation_root,
+                        },
+                        context,
+                    ))
+            })
+            .transpose()?;
+        let value = if generation_root == self.generation_root && context_matches != Some(false) {
             CheckoutCommitOutcome::AlreadyCommitted {
                 generation_id: GenerationId::new(generation_root.digest),
-                head,
+                head: durable_head(&commit),
             }
         } else {
             CheckoutCommitOutcome::IdempotencyConflict {
