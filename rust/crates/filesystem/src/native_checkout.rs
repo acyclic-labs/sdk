@@ -42,6 +42,9 @@ pub enum HostCheckoutError {
         /// Generation currently authenticated by the attached source.
         actual: GenerationId,
     },
+    /// The generation being restored belongs to another provider workspace.
+    #[error("restore generation belongs to another workspace")]
+    GenerationMismatch,
     /// The materialization destination was not the exact attached checkout.
     #[error("materialization destination is not the attached checkout root")]
     DestinationMismatch,
@@ -203,6 +206,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<HostCheckoutRestore, HostCheckoutError> {
+        if generation.workspace_id() != expected.workspace_id {
+            return Err(HostCheckoutError::GenerationMismatch);
+        }
         if options.destination != expected.source_root {
             return Err(HostCheckoutError::DestinationMismatch);
         }
@@ -219,6 +225,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         }
         self.source.verify_root(&expected.source_root).await?;
         Ok(HostCheckoutRestore { outcomes, work })
+    }
+
+    /// Revalidates the attached source under the supplied retry identity
+    /// before restoring paths. A binding captured before a concurrent host
+    /// edit is rejected as stale and cannot authorize the write.
+    pub async fn restore_paths_after_revalidation(
+        &self,
+        generation: &Generation<A, O>,
+        expected: &SourceBinding,
+        reconciliation_key: IdempotencyKey,
+        paths: &[PathBuf],
+        replacement: HostPathReplacement,
+        options: &MaterializeOptions,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<HostCheckoutRestore, HostCheckoutError> {
+        let actual = self.revalidate_with_key(reconciliation_key).await?;
+        if actual != *expected {
+            return Err(HostCheckoutError::StaleSource {
+                expected: expected.generation_id,
+                actual: actual.generation_id,
+            });
+        }
+        self.restore_paths(
+            generation,
+            expected,
+            paths,
+            replacement,
+            options,
+            budget,
+            cancellation,
+        )
+        .await
     }
 }
 
@@ -283,6 +322,44 @@ mod tests {
             checkout.prepare_publish(&approved).await,
             Err(HostCheckoutError::StaleSource { .. })
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn safe_restore_rejects_a_host_edit_before_any_path_effect()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        std::fs::write(root.path().join("tracked.txt"), b"before")?;
+        let fs = Fs::memory();
+        let checkout = HostCheckout::attach(
+            &fs,
+            "host-checkout-safe-restore",
+            root.path(),
+            SourceOptions {
+                mode: SourceMode::Pinned,
+                ..SourceOptions::default()
+            },
+        )
+        .await?;
+        let approved = checkout.binding().await;
+        let generation = checkout.workspace().head().await?;
+        std::fs::write(root.path().join("tracked.txt"), b"user-edit")?;
+
+        let error = checkout
+            .restore_paths_after_revalidation(
+                &generation,
+                &approved,
+                IdempotencyKey::from_bytes([8; 16]),
+                &[PathBuf::from("tracked.txt")],
+                HostPathReplacement::Atomic,
+                &MaterializeOptions::native(root.path()),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("a stale physical edit must fence restore");
+        assert!(matches!(error, HostCheckoutError::StaleSource { .. }));
+        assert_eq!(std::fs::read(root.path().join("tracked.txt"))?, b"user-edit");
         Ok(())
     }
 }
