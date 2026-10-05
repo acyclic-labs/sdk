@@ -80,6 +80,7 @@ set these values in the suite capture configuration:
       "writeback {{writeback_operation_id}} {{workspace_generation}} yes",
       "cancel",
       "resume {{session_id}}",
+      "input input-after-reopen follow-up  after completion",
       "cancel"
     ],
     "cwd": "<sdk-root>",
@@ -100,8 +101,13 @@ workspace-generation identities. For interactive Windows qualification, use
 `scripts/graphcoder-production-pty.mjs` as the executable argument instead:
 
 ```text
-node scripts/graphcoder-production-pty.mjs "start inspect the repository" "activity" "messages" "approvals" "approve {{approval_id}} yes" "changes" "diff README.md" "file README.md" "writeback {{writeback_operation_id}} {{workspace_generation}} yes" "cancel" "resume {{session_id}}" "cancel"
+node scripts/graphcoder-production-pty.mjs "start inspect the repository" "activity" "messages" "approvals" "approve {{approval_id}} yes" "changes" "diff README.md" "file README.md" "writeback {{writeback_operation_id}} {{workspace_generation}} yes" "cancel" "resume {{session_id}}" "input input-after-reopen follow-up  after completion" "cancel"
 ```
+
+The `input` command is a fresh root turn in the selected session. The doubled
+space in the example is intentional: the installed lane checks that prompt
+bytes survive the terminal adapter and reach the Harness unchanged after a
+completed turn is reopened.
 
 Capture each lane with
 `node scripts/graphcoder-qualification-suite.mjs capture CONFIG.json`. The

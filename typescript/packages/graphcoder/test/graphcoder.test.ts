@@ -63,6 +63,29 @@ describe("GraphCoder UI transport boundary", () => {
     expect(requests[0]?.params).toEqual({ prompt: "inspect", operation_id: "op-stable-1", model_fixture: "stage" });
   });
 
+  test("input requests target the selected session and carry a distinct operation identity", async () => {
+    const requests: GraphCoderWireRequest[] = [];
+    const bridge = {
+      request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse> {
+        requests.push(request);
+        return Promise.resolve({
+          request_id: request.request_id,
+          ok: true,
+          result: {
+            summary: { id: "session-1", title: "inspect", state: "completed", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" },
+            agents: [],
+            workspace_generation: null,
+          },
+        });
+      },
+    };
+    const transport = new BridgeGraphCoderTransport(bridge);
+    const snapshot = await transport.inputSession({ sessionId: sessionId("session-1"), prompt: "follow-up  with exact bytes", operationId: "op-stable-2" });
+    expect(snapshot.summary.id).toBe(sessionId("session-1"));
+    expect(requests[0]?.method).toBe("input_session");
+    expect(requests[0]?.params).toEqual({ session_id: "session-1", prompt: "follow-up  with exact bytes", operation_id: "op-stable-2" });
+  });
+
   test("preserves unknown activity and approval metadata as null", async () => {
     const bridge = {
       request: async (request: GraphCoderWireRequest): Promise<GraphCoderWireResponse> => {
@@ -85,6 +108,11 @@ describe("GraphCoder UI transport boundary", () => {
     const transport = {
       startSession: async () => ({
         summary: { id: sessionId("session-1"), title: "inspect", state: "running", updatedAt: "2026-01-01T00:00:00.000Z", rootAgentId: agentId("agent-1") },
+        agents: [],
+        workspaceGeneration: undefined,
+      }),
+      inputSession: async input => ({
+        summary: { id: input.sessionId, title: "inspect", state: "completed", updatedAt: "2026-01-01T00:00:00.000Z", rootAgentId: agentId("agent-1") },
         agents: [],
         workspaceGeneration: undefined,
       }),
@@ -392,6 +420,26 @@ describe("GraphCoder terminal adapter", () => {
     expect(lines).toHaveLength(4);
     expect(lines[0]).toMatchObject({ ok: true });
     expect(lines[3]).toMatchObject({ ok: true, value: { path: "README.md" } });
+  });
+
+  test("input starts a distinct root turn after reopen and preserves prompt bytes", async () => {
+    const output = writable();
+    const transport = createMockTransport();
+    const prompts: string[] = [];
+    const original = transport.inputSession.bind(transport);
+    transport.inputSession = async input => {
+      prompts.push(input.prompt);
+      return original(input);
+    };
+    const terminal = new GraphCoderTerminal(transport, { output: output.stream });
+    await terminal.headless([
+      "start op-terminal-first inspect repository",
+      "open session-1",
+      "input op-terminal-follow-up follow-up  with exact bytes",
+    ]);
+    expect(prompts).toEqual(["follow-up  with exact bytes"]);
+    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "openSession", "inputSession"]);
+    expect(output.lines().every(line => line.ok === true)).toBe(true);
   });
 
   test("interactive commands keep accepting cancellation while history is waiting", async () => {

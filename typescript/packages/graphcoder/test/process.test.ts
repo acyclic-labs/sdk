@@ -102,6 +102,7 @@ process.stdin.on("data", chunk => {
     switch (request.method) {
       case "list_sessions": result = { items: [snapshot("idle").summary] }; break;
       case "start_session": result = snapshot("completed"); break;
+      case "input_session": result = snapshot("completed"); break;
       case "open_session": result = snapshot("completed"); break;
       case "resume_session": result = snapshot("running"); break;
       case "cancel_session": result = snapshot("cancelled"); break;
