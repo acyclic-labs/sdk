@@ -60,9 +60,54 @@ struct ColdReopenFixture {
     provider: ProviderRef,
 }
 
+struct GrandchildColdReopenFixture {
+    seed: ForkSeed,
+    child_issuer: AuthorityIssuer,
+    parent_verifier: AuthorityVerifier,
+    parent_authority: Authority,
+    boundary: CompletedModelBoundary,
+    expected_files: Vec<(FileRef, Vec<u8>)>,
+    provider: ProviderRef,
+}
+
 fn validate_observed_manifest(request: &ModelRequest, bytes: &[u8], limits: Limits) -> Result<()> {
     let json = std::str::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     acyclic_harness::model_input::validate_manifest(request.clone(), limits, None, json)
+}
+
+fn assert_captured_request_evidence(
+    requests: &[ModelRequest],
+    serialized: &[Vec<u8>],
+    manifests: &[Vec<u8>],
+    bindings: &[[u8; 32]],
+    boundary: &CompletedModelBoundary,
+    limits: Limits,
+) -> Result<()> {
+    assert_eq!(requests.len(), serialized.len());
+    assert_eq!(requests.len(), manifests.len());
+    assert_eq!(requests.len(), bindings.len());
+    let boundary_binding = PreparedModelInput::prepare(boundary.request.clone(), limits)?
+        .manifest()
+        .binding_digest;
+    for (((request, bytes), manifest), binding) in requests
+        .iter()
+        .zip(serialized)
+        .zip(manifests)
+        .zip(bindings)
+    {
+        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
+        assert_eq!(bytes, prepared.bytes());
+        validate_observed_manifest(request, manifest, limits)?;
+        assert_eq!(*binding, prepared.manifest().binding_digest);
+        assert_eq!(*binding, boundary_binding);
+        assert_eq!(
+            request.messages.get(..boundary.request.messages.len()),
+            Some(boundary.request.messages.as_slice())
+        );
+        let inherited = FrozenModelPrefix::capture(&prepared, boundary.request.messages.len())?;
+        assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
+    }
+    Ok(())
 }
 
 struct CapturedModel {
@@ -314,28 +359,26 @@ struct ForkAtBatch {
     limits: Limits,
     publications: AtomicUsize,
     cold_reopen: Mutex<Option<ColdReopenFixture>>,
+    grandchild_cold_reopen: Mutex<Option<GrandchildColdReopenFixture>>,
     paused: bool,
 }
 impl ForkAtBatch {
     fn assert_model_evidence(
         &self,
         model: &CapturedModel,
+        boundary: &CompletedModelBoundary,
         expected_binding: [u8; 32],
     ) -> Result<Vec<ModelRequest>> {
         let (requests, serialized, manifests, bindings) = model.evidence()?;
-        assert_eq!(requests.len(), serialized.len());
-        assert_eq!(requests.len(), manifests.len());
-        assert_eq!(requests.len(), bindings.len());
-        for (((request, bytes), manifest_bytes), binding) in requests
-            .iter()
-            .zip(&serialized)
-            .zip(&manifests)
-            .zip(&bindings)
-        {
-            let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
-            assert_eq!(bytes, prepared.bytes());
-            validate_observed_manifest(request, manifest_bytes, self.limits)?;
-            assert_eq!(*binding, prepared.manifest().binding_digest);
+        assert_captured_request_evidence(
+            &requests,
+            &serialized,
+            &manifests,
+            &bindings,
+            boundary,
+            self.limits,
+        )?;
+        for binding in &bindings {
             assert_eq!(*binding, expected_binding);
         }
         Ok(requests)
@@ -362,6 +405,16 @@ impl ForkAtBatch {
             .map_err(|_| Error::Storage("cold reopen fixture lock is poisoned".into()))?
             .take()
             .ok_or_else(|| Error::Storage("cold reopen fixture was not published".into()))
+    }
+
+    fn take_grandchild_cold_reopen(&self) -> Result<GrandchildColdReopenFixture> {
+        self.grandchild_cold_reopen
+            .lock()
+            .map_err(|_| Error::Storage("grandchild cold reopen fixture lock is poisoned".into()))?
+            .take()
+            .ok_or_else(|| {
+                Error::Storage("grandchild cold reopen fixture was not published".into())
+            })
     }
 
     async fn assert_model_read(
@@ -1122,7 +1175,7 @@ impl ForkAtBatch {
                 .children
                 .get(*index as usize)
                 .ok_or_else(|| Error::Invalid("missing deterministic child provider".into()))?;
-            let requests = self.assert_model_evidence(child_model, boundary_binding)?;
+            let requests = self.assert_model_evidence(child_model, &boundary, boundary_binding)?;
             let (_, _, observed_manifests, _) = child_model.evidence()?;
             let mut durable_manifests = self.durable_model_manifests(storage, *operation).await?;
             if *index == 0 {
@@ -1142,6 +1195,41 @@ impl ForkAtBatch {
                 let inherited = FrozenModelPrefix::capture(&actual, boundary.request.messages.len())?;
                 assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
             }
+            let first_request = self
+                .children
+                .get(*index as usize)
+                .ok_or_else(|| Error::Invalid("missing deterministic child provider".into()))?
+                .requests
+                .lock()
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .first()
+                .cloned()
+                .ok_or_else(|| Error::Storage("child provider request is missing".into()))?;
+            let suffix = first_request
+                .messages
+                .get(boundary.request.messages.len()..)
+                .ok_or_else(|| Error::Storage("child request lost inherited prefix".into()))?;
+            assert_eq!(suffix.len(), 2);
+            assert!(matches!(
+                &suffix[0],
+                ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(text),
+                } if text == &format!(
+                    "fork child {index}; task: verify; workspace: project-{index}; fresh scratch"
+                )
+            ));
+            let ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(ModelContentPart::File { file, .. }),
+            } = &suffix[1]
+            else {
+                return Err(Error::Storage("child scratch input is not a file message".into()));
+            };
+            assert_eq!(
+                storage.read(file).await?,
+                format!("explicit recursive child input {index}").into_bytes()
+            );
         }
         let child_zero_seed = parent
             .reducer()
@@ -1483,7 +1571,7 @@ impl ForkAtBatch {
             )
             .await?;
         storage
-            .run_conversation(&bundle, operation, input, Vec::new(), 3)
+            .run_conversation(&bundle, operation, input.clone(), Vec::new(), 3)
             .await?;
         let records = storage.journal().replay(operation).await?;
         let read_started = records.iter().find_map(|record| match &record.event {
@@ -1518,30 +1606,71 @@ impl ForkAtBatch {
         assert_eq!(projection, Value::String("root request".into()));
         let (captured, serialized, manifests, bindings) = self.grandchild.evidence()?;
         assert!(captured.len() >= 2);
-        assert_eq!(captured.len(), serialized.len());
-        assert_eq!(captured.len(), manifests.len());
-        assert_eq!(captured.len(), bindings.len());
-        let boundary_binding = PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
-            .manifest()
-            .binding_digest;
-        for (((request, bytes), manifest_bytes), binding) in captured
-            .iter()
-            .zip(&serialized)
-            .zip(&manifests)
-            .zip(&bindings)
-        {
-            let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
-            assert_eq!(bytes, prepared.bytes());
-            validate_observed_manifest(request, manifest_bytes, self.limits)?;
-            assert_eq!(*binding, prepared.manifest().binding_digest);
-            assert_eq!(*binding, boundary_binding);
-            let inherited = FrozenModelPrefix::capture(&prepared, boundary.request.messages.len())?;
-            assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
-        }
+        assert_captured_request_evidence(
+            &captured,
+            &serialized,
+            &manifests,
+            &bindings,
+            &boundary,
+            self.limits,
+        )?;
+        let grandchild_suffix = captured[0]
+            .messages
+            .get(boundary.request.messages.len()..)
+            .ok_or_else(|| Error::Storage("grandchild request lost inherited prefix".into()))?;
+        assert_eq!(grandchild_suffix.len(), 2);
+        assert!(matches!(
+            &grandchild_suffix[0],
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(text),
+            } if text == "grandchild task: read the inherited file and verify the pinned workspace"
+        ));
+        let ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::File { file, .. }),
+        } = &grandchild_suffix[1]
+        else {
+            return Err(Error::Storage("grandchild scratch input is not a file message".into()));
+        };
+        assert_eq!(file, &input);
+        assert_eq!(
+            storage.read(file).await?,
+            "grandchild explicit UTF-8 input α🦀\n".as_bytes()
+        );
         assert_eq!(
             manifests,
             self.durable_model_manifests(&storage, operation).await?
         );
+        // Advance the ancestor again after the grandchild has completed. A
+        // cold reopen must continue using the pinned generation captured by
+        // the fork, even when the current source has moved twice.
+        self.host
+            .apply(
+                &source.workspace,
+                Some(&updated_generation),
+                &[WorkspaceMutation::PutFile {
+                    path: "/recursive-same-path.txt".into(),
+                    bytes: b"latest parent generation".to_vec(),
+                }],
+                &IdempotencyKey::new("recursive-parent-cold-reopen-mutation")?,
+            )
+            .await?;
+        let expected_files = model_files
+            .iter()
+            .map(|file| async { Ok::<_, Error>((file.clone(), storage.read(file).await?)) });
+        let expected_files = futures::future::try_join_all(expected_files).await?;
+        *self.grandchild_cold_reopen.lock().map_err(|_| {
+            Error::Storage("grandchild cold reopen fixture lock is poisoned".into())
+        })? = Some(GrandchildColdReopenFixture {
+            seed,
+            child_issuer: grandchild_issuer,
+            parent_verifier: parent_issuer.verifier(),
+            parent_authority: parent.reducer().authority().clone(),
+            boundary,
+            expected_files,
+            provider,
+        });
         Ok(())
     }
 }
@@ -1624,7 +1753,13 @@ async fn run_cold_reopen(
         )
         .await?;
     cold_storage
-        .run_conversation(&cold_bundle, cold_operation, cold_input, Vec::new(), 3)
+        .run_conversation(
+            &cold_bundle,
+            cold_operation,
+            cold_input.clone(),
+            Vec::new(),
+            3,
+        )
         .await
         .map_err(|error| Error::Storage(format!("cold child restart failed: {error}")))?;
     let cold_requests = cold_model
@@ -1633,14 +1768,6 @@ async fn run_cold_reopen(
         .map_err(|error| Error::Storage(error.to_string()))?
         .clone();
     assert_eq!(cold_requests.len(), 2);
-    for request in &cold_requests {
-        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
-        let prefix = FrozenModelPrefix::capture(
-            &prepared,
-            fixture.boundary.request.messages.len(),
-        )?;
-        assert_eq!(prefix.message_bytes(), fixture.boundary.prefix.message_bytes());
-    }
     assert!(cold_requests[0].messages.iter().any(|message| {
         matches!(
             &message.content,
@@ -1649,23 +1776,23 @@ async fn run_cold_reopen(
         )
     }));
     let (_, cold_serialized, cold_manifests, cold_bindings) = cold_model.evidence()?;
-    assert_eq!(cold_requests.len(), cold_serialized.len());
-    assert_eq!(cold_requests.len(), cold_manifests.len());
-    assert_eq!(cold_requests.len(), cold_bindings.len());
-    let boundary_binding = PreparedModelInput::prepare(fixture.boundary.request.clone(), limits)?
-        .manifest()
-        .binding_digest;
-    for (((request, bytes), manifest), binding) in cold_requests
-        .iter()
-        .zip(&cold_serialized)
-        .zip(&cold_manifests)
-        .zip(&cold_bindings)
-    {
-        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
-        assert_eq!(bytes, prepared.bytes());
-        validate_observed_manifest(request, manifest, limits)?;
-        assert_eq!(*binding, boundary_binding);
-    }
+    assert_captured_request_evidence(
+        &cold_requests,
+        &cold_serialized,
+        &cold_manifests,
+        &cold_bindings,
+        &fixture.boundary,
+        limits,
+    )?;
+    assert!(matches!(
+        cold_requests[0]
+            .messages
+            .get(fixture.boundary.request.messages.len()),
+        Some(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(text),
+        }) if text == "cold child restart; preserve inherited boundary"
+    ));
     let records = cold_storage.journal().replay(cold_operation).await?;
     let mut durable_manifests = Vec::new();
     for record in records {
@@ -1674,6 +1801,151 @@ async fn run_cold_reopen(
         }
     }
     assert_eq!(cold_manifests, durable_manifests);
+    drop(cold_bundle);
+    drop(cold_storage);
+    Ok(())
+}
+
+async fn run_grandchild_cold_reopen(
+    root_directory: PathBuf,
+    limits: Limits,
+    fixture: GrandchildColdReopenFixture,
+) -> Result<()> {
+    // Recreate every local provider handle from durable paths. The model below
+    // is a fresh provider instance, so its captured requests prove that the
+    // production inherited builder reconstructs the pinned grandchild input
+    // after both the child and its source workspace have changed.
+    let cold_host = Arc::new(FilesystemHost::new(
+        Fs::local(LocalOptions::new(root_directory.join("fs")))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        fixture.provider.clone(),
+    )?);
+    let cold_stream = StreamClient::new(Arc::new(
+        LocalStream::open(
+            root_directory.join("streams"),
+            LocalStreamLimits::default(),
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?,
+    ));
+    let cold_parent = StreamAggregate::open(
+        &cold_stream,
+        fixture.parent_authority,
+        fixture.parent_verifier,
+        SchemaRegistry::new(),
+    )
+    .await?;
+    let cold_storage = HarnessStorage::from_published_fork(
+        limits.file_bytes,
+        cold_host,
+        cold_stream,
+        fixture.child_issuer,
+        &cold_parent,
+        &fixture.seed,
+    )
+    .await?;
+    for (file, expected) in &fixture.expected_files {
+        assert_eq!(cold_storage.read(file).await?, *expected);
+    }
+
+    let cold_model = Arc::new(CapturedModel {
+        overlap_barrier: None,
+        root: false,
+        read_first: true,
+        reject_first: false,
+        calls: AtomicUsize::new(0),
+        requests: Mutex::new(Vec::new()),
+        serialized_requests: Mutex::new(Vec::new()),
+        manifest_bytes: Mutex::new(Vec::new()),
+        binding_digests: Mutex::new(Vec::new()),
+    });
+    let cold_bundle = cold_storage
+        .inherited_builder(
+            fixture.boundary.clone(),
+            vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(
+                    "grandchild cold restart; preserve ancestor boundary".into(),
+                ),
+            }],
+            cold_model.clone(),
+            limits,
+        )?
+        .tools(cold_storage.default_tools(limits)?)
+        .grant("tool:call:acyclic.read_file")
+        .grant("tool:call:acyclic.stage_file")
+        .grant("tool:call:acyclic.list_files")
+        .limits(limits)
+        .build()?;
+    let cold_operation = OperationId::from_bytes([93; 16]);
+    let cold_input = cold_storage
+        .stage(
+            cold_operation,
+            "input/grandchild-cold-restart.txt",
+            "grandchild cold restart α🦀\n".as_bytes(),
+            "text/plain",
+            "grandchild-cold-restart.txt",
+        )
+        .await?;
+    cold_storage
+        .run_conversation(&cold_bundle, cold_operation, cold_input, Vec::new(), 3)
+        .await
+        .map_err(|error| Error::Storage(format!("grandchild cold restart failed: {error}")))?;
+
+    let (requests, serialized, manifests, bindings) = cold_model.evidence()?;
+    assert!(requests.len() >= 2);
+    assert_captured_request_evidence(
+        &requests,
+        &serialized,
+        &manifests,
+        &bindings,
+        &fixture.boundary,
+        limits,
+    )?;
+    assert!(matches!(
+        requests[0]
+            .messages
+            .get(fixture.boundary.request.messages.len()),
+        Some(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(text),
+        }) if text == "grandchild cold restart; preserve ancestor boundary"
+    ));
+    let cold_suffix = requests[0]
+        .messages
+        .get(fixture.boundary.request.messages.len()..)
+        .ok_or_else(|| Error::Storage("grandchild cold request lost inherited prefix".into()))?;
+    assert_eq!(cold_suffix.len(), 2);
+    let ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Part(ModelContentPart::File { file, .. }),
+    } = &cold_suffix[1]
+    else {
+        return Err(Error::Storage("grandchild cold scratch input is not a file message".into()));
+    };
+    assert_eq!(file, &cold_input);
+    assert_eq!(
+        cold_storage.read(file).await?,
+        "grandchild cold restart α🦀\n".as_bytes()
+    );
+    assert!(requests.iter().any(|request| {
+        request.messages.iter().any(|message| {
+            matches!(
+                &message.content,
+                ModelContent::Part(ModelContentPart::ToolResult { value, .. })
+                    if value == &Value::String("root request".into())
+            )
+        })
+    }));
+    let records = cold_storage.journal().replay(cold_operation).await?;
+    let mut durable_manifests = Vec::new();
+    for record in records {
+        if let ExecutionEvent::ModelInputPrepared { manifest, .. } = record.event {
+            durable_manifests.push(cold_storage.journal().load(&manifest).await?);
+        }
+    }
+    assert_eq!(manifests, durable_manifests);
     drop(cold_bundle);
     drop(cold_storage);
     Ok(())
@@ -1829,6 +2101,7 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         limits,
         publications: AtomicUsize::new(0),
         cold_reopen: Mutex::new(None),
+        grandchild_cold_reopen: Mutex::new(None),
         paused: false,
     });
     let bundle = storage
@@ -1878,9 +2151,6 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
     assert_eq!(output.text, " \nα🦀\t retained\nfinal only");
     assert_eq!(publisher.publications.load(Ordering::SeqCst), 1);
     let (root_requests, root_serialized, root_manifests, root_bindings) = root_model.evidence()?;
-    assert_eq!(root_requests.len(), root_serialized.len());
-    assert_eq!(root_requests.len(), root_manifests.len());
-    assert_eq!(root_requests.len(), root_bindings.len());
     assert_eq!(
         root_manifests,
         publisher.durable_model_manifests(&storage, operation).await?
@@ -1889,18 +2159,6 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         .first()
         .copied()
         .ok_or_else(|| Error::Storage("root model binding digest missing".into()))?;
-    for (((request, bytes), manifest_bytes), binding) in root_requests
-        .iter()
-        .zip(&root_serialized)
-        .zip(&root_manifests)
-        .zip(&root_bindings)
-    {
-        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
-        assert_eq!(bytes, prepared.bytes());
-        validate_observed_manifest(request, manifest_bytes, limits)?;
-        assert_eq!(*binding, prepared.manifest().binding_digest);
-        assert_eq!(*binding, root_boundary_binding);
-    }
     let boundary = storage
         .completed_model_boundary(operation, 0, limits)
         .await
@@ -1915,6 +2173,45 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
             .binding_digest,
         root_boundary_binding
     );
+    assert_eq!(root_requests.len(), root_serialized.len());
+    assert_eq!(root_requests.len(), root_manifests.len());
+    assert_eq!(root_requests.len(), root_bindings.len());
+    for (((request, bytes), manifest_bytes), binding) in root_requests
+        .iter()
+        .zip(&root_serialized)
+        .zip(&root_manifests)
+        .zip(&root_bindings)
+    {
+        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
+        assert_eq!(bytes, prepared.bytes());
+        validate_observed_manifest(request, manifest_bytes, limits)?;
+        assert_eq!(*binding, prepared.manifest().binding_digest);
+        assert_eq!(*binding, root_boundary_binding);
+    }
+    let ordered_calls = boundary
+        .request
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            ModelContent::Part(ModelContentPart::ToolCall { call_id, .. }) => {
+                Some(call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let ordered_results = boundary
+        .request
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) => {
+                Some(call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ordered_calls, vec!["invalid", "edit"]);
+    assert_eq!(ordered_results, vec!["invalid", "edit"]);
     assert!(boundary.request.messages.iter().any(|message| {
         message
             .content
@@ -2076,12 +2373,19 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         ExecutionEvent::BatchPublicationCompleted { .. }
     )));
     let cold_fixture = publisher.take_cold_reopen()?;
+    let grandchild_cold_fixture = publisher.take_grandchild_cold_reopen()?;
     drop(restarted_bundle);
     drop(restarted);
     drop(bundle);
     drop(storage);
     drop(publisher);
     run_cold_reopen(directory.path().to_path_buf(), limits, cold_fixture).await?;
+    run_grandchild_cold_reopen(
+        directory.path().to_path_buf(),
+        limits,
+        grandchild_cold_fixture,
+    )
+    .await?;
     Ok(())
 }
 
@@ -2406,6 +2710,7 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
         limits,
         publications: AtomicUsize::new(0),
         cold_reopen: Mutex::new(None),
+        grandchild_cold_reopen: Mutex::new(None),
         paused: true,
     });
     let bundle = storage

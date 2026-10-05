@@ -768,6 +768,11 @@ impl StockExecutor {
         projection: &Value,
         limits: Limits,
     ) -> Result<()> {
+        // The definition revision is the immutable identity for executor and
+        // projection semantics. Historical callers pass the definition from
+        // the frozen model request; validating it here keeps this contract in
+        // one place without re-running a mutable projection implementation.
+        definition.validate()?;
         validate_value(&definition.output_schema, &result.value, "tool output")?;
         validate_value(
             &definition.model_output_schema,
@@ -5998,6 +6003,127 @@ mod tests {
             Err(Error::Conflict(_) | Error::Storage(_))
         ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn historical_batch_replay_rejects_schema_valid_projection_mismatch() -> Result<()> {
+        let model = Arc::new(ProjectionModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.private".into(),
+                revision: "1".into(),
+                description: "Private result".into(),
+                input_schema: json!({"type": "object"}),
+                output_schema: json!({
+                    "type": "object",
+                    "required": ["private", "public"],
+                    "properties": {
+                        "private": {"type": "string"},
+                        "public": {"type": "string"},
+                    },
+                    "additionalProperties": false,
+                }),
+                model_output_schema: json!({
+                    "type": "object",
+                    "required": ["public"],
+                    "properties": {"public": {"type": "string"}},
+                    "additionalProperties": false,
+                }),
+            },
+            executor: Arc::new(PrivateResultTool),
+            projection: Arc::new(NarrowProjection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model,
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.private"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let operation = OperationId::from_bytes([83; 16]);
+        executor
+            .execute(
+                TurnInput {
+                    operation_id: operation,
+                    input: ModelContent::Text("show public result".into()),
+                    selected_context: None,
+                    max_steps: 2,
+                },
+                &journal,
+            )
+            .await?;
+
+        let records = journal.replay(operation).await?;
+        let prepared_ref = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ModelInputPrepared {
+                    step: 0, request, ..
+                } => Some(request),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("prepared request is missing".into()))?;
+        let boundary_ref = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ToolBatchCompleted { step: 0, boundary } => Some(boundary),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("completed batch boundary is missing".into()))?;
+        let prepared: ModelRequest = load_json(&journal, prepared_ref).await?;
+        let boundary: crate::model_input::CompletedModelBoundary =
+            load_json(&journal, boundary_ref).await?;
+
+        // Both values satisfy the pinned model-output schema. The historical
+        // verifier must still reject the durable exchange because its bytes no
+        // longer agree with the immutable completed boundary; it must not ask
+        // the current projection implementation to reinterpret the old result.
+        let stale = journal
+            .stage(
+                operation,
+                "historical-stale-projection".into(),
+                crate::contract::canonical_json_bytes(&json!({"public": "stale"}))?,
+                "application/json",
+            )
+            .await?;
+        {
+            let mut records = journal
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+            for record in &mut *records {
+                if let ExecutionEvent::ToolCompleted { projection, .. } = &mut record.event {
+                    *projection = stale.clone();
+                    break;
+                }
+            }
+        }
+        let records = journal.replay(operation).await?;
+        assert!(matches!(
+            validate_completed_batch_exchange(
+                &journal,
+                &records,
+                operation,
+                0,
+                &prepared,
+                &boundary,
+                Limits::default(),
+            )
+            .await,
+            Err(Error::Conflict(message)) if message.contains("pinned boundary")
+        ));
         Ok(())
     }
 
