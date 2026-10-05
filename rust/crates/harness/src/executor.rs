@@ -1531,30 +1531,15 @@ impl StockExecutor {
                     let tool = tool.ok_or_else(|| {
                         Error::Storage("invalid-argument rejection lacks pinned tool".into())
                     })?;
-                    let error_text = match validate_value(
-                        &tool.definition.input_schema,
-                        &invocation.arguments,
-                        "tool input",
-                    ) {
-                        Ok(()) => {
-                            return Err(Error::Conflict(
-                                "durable invalid-argument rejection no longer applies".into(),
-                            ));
-                        }
-                        Err(error) => error.to_string(),
-                    };
                     let feedback = feedback.ok_or_else(|| {
                         Error::Storage("invalid-argument rejection lacks feedback".into())
                     })?;
                     let durable: ToolRejectionFeedback = load_json(journal, &feedback).await?;
-                    let expected = ToolRejectionFeedback::invalid_arguments(
+                    let error_text = validate_invalid_argument_feedback(
+                        &durable,
                         &invocation,
                         &tool.definition.input_schema,
-                        &error_text,
                     )?;
-                    if durable != expected {
-                        return Err(Error::Conflict("durable rejection feedback changed".into()));
-                    }
                     let message = ModelMessage {
                         role: ModelRole::Tool,
                         content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -2278,6 +2263,23 @@ enum CompletedBatchToolOutcome {
     InvalidArguments(ToolRejectionFeedback),
 }
 
+fn validate_invalid_argument_feedback(
+    feedback: &ToolRejectionFeedback,
+    invocation: &ToolInvocation,
+    schema: &Value,
+) -> Result<String> {
+    let error = match validate_value(schema, &invocation.arguments, "tool input") {
+        Ok(()) => {
+            return Err(Error::Conflict(
+                "durable invalid-argument rejection no longer applies".into(),
+            ));
+        }
+        Err(error) => error.to_string(),
+    };
+    feedback.validate_invalid_arguments(invocation, schema, &error)?;
+    Ok(error)
+}
+
 /// Checks the complete, model-visible exchange against the durable model and
 /// tool observations.  This is shared by the live executor and recovery so a
 /// completed boundary cannot be admitted under weaker replay rules.
@@ -2456,10 +2458,30 @@ async fn validate_completed_batch_exchange(
                     ));
                 }
                 let feedback = load_json::<ToolRejectionFeedback>(journal, feedback).await?;
-                outcomes.insert(
+                let definition = boundary
+                    .request
+                    .tools
+                    .iter()
+                    .find(|tool| tool.name == invocation.name)
+                    .ok_or_else(|| {
+                        Error::Storage("invalid-argument rejection lacks pinned tool".into())
+                    })?;
+                validate_invalid_argument_feedback(
+                    &feedback,
+                    &invocation,
+                    &definition.input_schema,
+                )?;
+                if outcomes
+                    .insert(
                     invocation.call_id,
                     CompletedBatchToolOutcome::InvalidArguments(feedback),
-                );
+                    )
+                    .is_some()
+                {
+                    return Err(Error::Storage(
+                        "tool rejection is duplicated in completed batch".into(),
+                    ));
+                }
             }
             ExecutionEvent::ToolAdmissionRejected {
                 step: event_step, ..
@@ -2739,11 +2761,26 @@ pub(crate) async fn classify_terminal_failure(
                 match (*reason, feedback) {
                     (ToolRejectionKind::InvalidArguments, Some(feedback)) => {
                         let feedback = load_json::<ToolRejectionFeedback>(journal, feedback).await?;
-                        if feedback.call_id != invocation.call_id || feedback.name != invocation.name {
-                            return Err(Error::Conflict(
-                                "tool rejection feedback is bound to another invocation".into(),
-                            ));
-                        }
+                        let request = prepared_requests.get(step).ok_or_else(|| {
+                            Error::Storage(
+                                "tool rejection has no pinned request while classifying terminal failure"
+                                    .into(),
+                            )
+                        })?;
+                        let definition = request
+                            .tools
+                            .iter()
+                            .find(|tool| tool.name == invocation.name)
+                            .ok_or_else(|| {
+                                Error::Storage(
+                                    "invalid-argument rejection lacks pinned tool".into(),
+                                )
+                            })?;
+                        validate_invalid_argument_feedback(
+                            &feedback,
+                            &invocation,
+                            &definition.input_schema,
+                        )?;
                     }
                     (ToolRejectionKind::InvalidArguments, None)
                     | (_, Some(_)) => {
@@ -4081,6 +4118,42 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_argument_feedback_binds_the_full_call_and_schema() -> Result<()> {
+        let invocation = ToolInvocation::for_model_call(
+            OperationId::from_bytes([91; 16]),
+            0,
+            "call-a".into(),
+            "example.tool".into(),
+            json!({"unexpected": true}),
+        );
+        let schema = json!({
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": false
+        });
+        let error = validate_value(&schema, &invocation.arguments, "tool input")
+            .expect_err("fixture arguments must be malformed")
+            .to_string();
+        let feedback = ToolRejectionFeedback::invalid_arguments(&invocation, &schema, &error)?;
+        validate_invalid_argument_feedback(&feedback, &invocation, &schema)?;
+
+        let mut wrong_call = feedback.clone();
+        wrong_call.call_id = "call-b".into();
+        assert!(matches!(
+            validate_invalid_argument_feedback(&wrong_call, &invocation, &schema),
+            Err(Error::Conflict(_))
+        ));
+        let mut wrong_schema = feedback;
+        wrong_schema.schema_digest = [7; 32];
+        assert!(matches!(
+            validate_invalid_argument_feedback(&wrong_schema, &invocation, &schema),
+            Err(Error::Conflict(_))
+        ));
         Ok(())
     }
 

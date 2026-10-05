@@ -57,6 +57,23 @@ impl ToolRejectionFeedback {
         })
     }
 
+    /// Validates feedback against the exact malformed invocation, pinned
+    /// schema, and bounded validation error that produced it.
+    pub fn validate_invalid_arguments(
+        &self,
+        invocation: &ToolInvocation,
+        schema: &Value,
+        error: &str,
+    ) -> Result<()> {
+        let expected = Self::invalid_arguments(invocation, schema, error)?;
+        if self != &expected {
+            return Err(Error::Conflict(
+                "durable rejection feedback changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Validates the envelope and returns its canonical model value.
     pub fn to_model_value(&self, error: &str) -> Result<Value> {
         validate_rejection_error(error)?;
