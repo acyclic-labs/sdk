@@ -76,6 +76,8 @@ const REGISTRY_STREAM: &str = "swarm/records";
 // deliberately fenced at the registry boundary until an explicit migration
 // can validate every legacy record.
 const REGISTRY_VERSION: u32 = 2;
+const LOCAL_DEPTH_LIMIT_ERROR: &str = "local swarm depth limit exceeded";
+const LOCAL_DEPTH_LIMIT_REASON: &str = "depth_limit";
 /// Completion payloads stay small enough for a Stream record. Larger outputs
 /// are staged in the child agent-private volume and the registry retains only
 /// their immutable reference and digest.
@@ -594,11 +596,13 @@ fn source_project_for_parent(
 
 fn validate_recursive_depth(parent_depth: usize, maximum_depth: usize) -> Result<()> {
     if parent_depth >= maximum_depth {
-        return Err(Error::Unauthorized(
-            "local swarm depth limit exceeded".into(),
-        ));
+        return Err(Error::Unauthorized(LOCAL_DEPTH_LIMIT_ERROR.into()));
     }
     Ok(())
+}
+
+fn is_depth_limit_denial(error: &Error) -> bool {
+    matches!(error, Error::Unauthorized(message) if message == LOCAL_DEPTH_LIMIT_ERROR)
 }
 
 /// Owner allocator invoked only after the parent completed batch is
@@ -1966,6 +1970,91 @@ struct LocalForkToolInput {
     prompt: String,
 }
 
+fn bind_local_fork_input(
+    context: &ModelToolContext,
+    parent: TaskId,
+    invocation: &ToolInvocation,
+) -> Result<(LocalForkToolInput, OperationId, OperationId)> {
+    context.validate_invocation(invocation)?;
+    let input: LocalForkToolInput = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
+    let publication_operation = context.publication_operation();
+    let fork_operation = child_fork_operation(publication_operation, input.child_operation);
+    if input
+        .fork_operation
+        .is_some_and(|value| value != fork_operation)
+        || input.child_operation == fork_operation
+    {
+        return Err(Error::Conflict(
+            "local fork tool identity is not bound to this completed model batch".into(),
+        ));
+    }
+    if context.task_id.is_some_and(|task| task != parent) {
+        return Err(Error::Unauthorized(
+            "local fork tool task binding differs from the authenticated parent".into(),
+        ));
+    }
+    // Replay lookup must be scoped to this completed batch even when the
+    // model omitted the optional fork operation from its arguments.
+    input.fork_operation = Some(fork_operation);
+    Ok((input, publication_operation, fork_operation))
+}
+
+fn selected_fork_tool_result(
+    fork_operation: OperationId,
+    child_operation: OperationId,
+) -> ToolResult {
+    ToolResult {
+        value: json!({
+            "status": "selected_after_completed_batch",
+            "fork_operation": fork_operation.to_string(),
+            "child_operation": child_operation.to_string(),
+        }),
+    }
+}
+
+fn denied_fork_tool_result(
+    fork_operation: OperationId,
+    child_operation: OperationId,
+) -> ToolResult {
+    ToolResult {
+        value: json!({
+            "status": "denied",
+            "reason": LOCAL_DEPTH_LIMIT_REASON,
+            "fork_operation": fork_operation.to_string(),
+            "child_operation": child_operation.to_string(),
+        }),
+    }
+}
+
+fn local_fork_output_schema() -> Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "required": ["status", "fork_operation", "child_operation"],
+                "properties": {
+                    "status": {"const": "selected_after_completed_batch"},
+                    "fork_operation": {"type": "string"},
+                    "child_operation": {"type": "string"}
+                },
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "required": ["status", "reason", "fork_operation", "child_operation"],
+                "properties": {
+                    "status": {"const": "denied"},
+                    "reason": {"const": "depth_limit"},
+                    "fork_operation": {"type": "string"},
+                    "child_operation": {"type": "string"}
+                },
+                "additionalProperties": false
+            }
+        ]
+    })
+}
+
 struct LocalForkToolExecutor {
     parent: TaskId,
     plans: Arc<LocalModelForkPlans>,
@@ -1986,31 +2075,17 @@ impl ToolExecutor for LocalForkToolExecutor {
         invocation: ToolInvocation,
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
-            context.validate_invocation(&invocation)?;
-            let input: LocalForkToolInput =
-                serde_json::from_value(invocation.arguments).map_err(|error| {
-                    Error::Invalid(format!("local fork arguments are invalid: {error}"))
-                })?;
-            let publication_operation = context.publication_operation();
-            let fork_operation = child_fork_operation(publication_operation, input.child_operation);
-            if input
-                .fork_operation
-                .is_some_and(|value| value != fork_operation)
-                || input.child_operation == fork_operation
-            {
-                return Err(Error::Conflict(
-                    "local fork tool identity is not bound to this completed model batch".into(),
-                ));
-            }
-            if context.task_id.is_some_and(|task| task != self.parent) {
-                return Err(Error::Unauthorized(
-                    "local fork tool task binding differs from the authenticated parent".into(),
-                ));
-            }
+            let (input, publication_operation, fork_operation) =
+                bind_local_fork_input(&context, self.parent, &invocation)?;
             // Depth is a deterministic owner policy. Reject before retaining
             // an intent so an out-of-depth request cannot become an orphaned
             // publication or a later unknown allocation failure.
-            self.plans.preflight_depth(self.parent).await?;
+            if let Err(error) = self.plans.preflight_depth(self.parent).await {
+                if is_depth_limit_denial(&error) {
+                    return Ok(denied_fork_tool_result(fork_operation, input.child_operation));
+                }
+                return Err(error);
+            }
             let intent = LocalForkIntent {
                 parent: self.parent,
                 parent_operation: context.parent_operation,
@@ -2023,13 +2098,34 @@ impl ToolExecutor for LocalForkToolExecutor {
                 prompt: input.prompt,
             };
             self.plans.record_intent(intent).await?;
-            Ok(ToolResult {
-                value: json!({
-                    "status": "selected_after_completed_batch",
-                    "fork_operation": fork_operation.to_string(),
-                    "child_operation": input.child_operation.to_string(),
-                }),
-            })
+            Ok(selected_fork_tool_result(fork_operation, input.child_operation))
+        })
+    }
+
+    fn reconcile_in_model_batch<'a>(
+        &'a self,
+        context: ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move {
+            let (input, _publication_operation, fork_operation) =
+                bind_local_fork_input(&context, self.parent, &invocation)?;
+            if let Some(intent) = self.plans.replay_intent(&input).await? {
+                return Ok(Some(selected_fork_tool_result(
+                    intent.fork_operation,
+                    intent.child_operation,
+                )));
+            }
+            if let Err(error) = self.plans.preflight_depth(self.parent).await {
+                if is_depth_limit_denial(&error) {
+                    return Ok(Some(denied_fork_tool_result(
+                        fork_operation,
+                        input.child_operation,
+                    )));
+                }
+                return Err(error);
+            }
+            Ok(None)
         })
     }
 
@@ -2048,13 +2144,10 @@ impl ToolExecutor for LocalForkToolExecutor {
             let Some(intent) = self.plans.replay_intent(&input).await? else {
                 return Ok(None);
             };
-            Ok(Some(ToolResult {
-                value: json!({
-                    "status": "selected_after_completed_batch",
-                    "fork_operation": intent.fork_operation.to_string(),
-                    "child_operation": intent.child_operation.to_string(),
-                }),
-            }))
+            Ok(Some(selected_fork_tool_result(
+                intent.fork_operation,
+                intent.child_operation,
+            )))
         })
     }
 }
@@ -2085,26 +2178,8 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
                 },
                 "additionalProperties": false
             }),
-            output_schema: json!({
-                "type": "object",
-                "required": ["status", "fork_operation", "child_operation"],
-                "properties": {
-                    "status": {"const": "selected_after_completed_batch"},
-                    "fork_operation": {"type": "string"},
-                    "child_operation": {"type": "string"}
-                },
-                "additionalProperties": false
-            }),
-            model_output_schema: json!({
-                "type": "object",
-                "required": ["status", "fork_operation", "child_operation"],
-                "properties": {
-                    "status": {"const": "selected_after_completed_batch"},
-                    "fork_operation": {"type": "string"},
-                    "child_operation": {"type": "string"}
-                },
-                "additionalProperties": false
-            }),
+            output_schema: local_fork_output_schema(),
+            model_output_schema: local_fork_output_schema(),
         },
         executor: Arc::new(LocalForkToolExecutor { parent, plans }),
         projection: Arc::new(LocalForkToolProjection),
@@ -6178,6 +6253,76 @@ mod tests {
         Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+
+    struct DepthDeniedResolver;
+
+    impl LocalModelForkResolver for DepthDeniedResolver {
+        fn preflight_depth<'a>(&'a self, _parent: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Unauthorized(LOCAL_DEPTH_LIMIT_ERROR.into())) })
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            _intent: LocalForkIntent,
+            _publication: ModelBatchPublication,
+        ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
+            Box::pin(async {
+                Err(Error::Unsupported(
+                    "depth-denied resolver must not allocate".into(),
+                ))
+            })
+        }
+    }
+
+    fn depth_denied_invocation(
+        parent_operation: OperationId,
+        child_operation: OperationId,
+    ) -> ToolInvocation {
+        ToolInvocation::for_model_call(
+            parent_operation,
+            0,
+            "fork-depth-denial".into(),
+            "acyclic.fork_child".into(),
+            json!({
+                "child_operation": child_operation.to_string(),
+                "task": "depth denied",
+                "prompt": "must remain a typed result"
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn deterministic_depth_denial_is_typed_and_does_not_retain_intent() -> Result<()> {
+        let parent = TaskId::from_bytes([0xD1; 16]);
+        let parent_operation = OperationId::from_bytes([0xD2; 16]);
+        let child_operation = OperationId::from_bytes([0xD3; 16]);
+        let context = ModelToolContext {
+            parent_operation,
+            step: 0,
+            task_id: Some(parent),
+        };
+        let plans = Arc::new(
+            LocalModelForkPlans::new().with_resolver(Arc::new(DepthDeniedResolver)),
+        );
+        let executor = LocalForkToolExecutor {
+            parent,
+            plans: plans.clone(),
+        };
+        let invocation = depth_denied_invocation(parent_operation, child_operation);
+        let result = executor
+            .execute_in_model_batch(context, invocation.clone())
+            .await?;
+        assert_eq!(result.value["status"], "denied");
+        assert_eq!(result.value["reason"], LOCAL_DEPTH_LIMIT_REASON);
+        assert!(!plans.has_intent(context.publication_operation()).await?);
+
+        let recovered = executor
+            .reconcile_in_model_batch(context, invocation)
+            .await?
+            .expect("deterministic denial should be replayable");
+        assert_eq!(recovered.value, result.value);
+        Ok(())
+    }
 
     #[test]
     fn source_project_selection_only_falls_back_for_root() -> Result<()> {
