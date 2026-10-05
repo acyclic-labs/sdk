@@ -124,7 +124,11 @@ where
     R: Read + Send + 'static,
     F: FnMut(&[u8]) -> bool + Send + 'static,
 {
-    generic::spawn(reader, move |chunk| consume(chunk))
+    let _ = (reader, &mut consume);
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "interruptible native output readers are unavailable on this platform",
+    ))
 }
 
 fn run_reader<R, F>(mut reader: R, sender: Sender<io::Result<Vec<u8>>>, mut consume: F)
@@ -268,22 +272,35 @@ mod unix {
 
 #[cfg(windows)]
 mod windows {
-    use super::{OutputReader, run_reader};
+    use super::OutputReader;
     use std::{
         io::{self, Read},
         os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-        sync::mpsc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU8, Ordering},
+            mpsc,
+        },
         thread,
     };
     use windows_sys::Win32::System::Threading::{
         CancelSynchronousIo, GetCurrentThreadId, OpenThread, THREAD_TERMINATE,
     };
 
+    const IDLE: u8 = 0;
+    const STARTING: u8 = 1;
+    const READING: u8 = 2;
+    const STOPPED: u8 = 3;
+
     pub(super) fn spawn<R, F>(reader: R, consume: F) -> io::Result<OutputReader>
     where
         R: Read + AsRawHandle + Send + 'static,
         F: FnMut(&[u8]) -> bool + Send + 'static,
     {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(AtomicU8::new(IDLE));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker_state = Arc::clone(&state);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let (sender, receiver) = mpsc::channel();
         let handle = thread::Builder::new()
@@ -301,7 +318,10 @@ mod windows {
                 if ready_sender.send(Ok(thread_handle)).is_err() {
                     return;
                 }
-                run_reader(reader, sender, consume);
+                let result =
+                    run_reader(reader, worker_cancelled, Arc::clone(&worker_state), consume);
+                worker_state.store(STOPPED, Ordering::Release);
+                let _ = sender.send(result);
             })?;
         let thread_handle = match ready_receiver.recv() {
             Ok(Ok(handle)) => handle,
@@ -315,17 +335,20 @@ mod windows {
             }
         };
         let cancel = Box::new(move || {
-            // SAFETY: the handle is owned and names exactly the reader thread.
-            if unsafe { CancelSynchronousIo(thread_handle.as_raw_handle().cast()) } != 0 {
-                Ok(())
-            } else {
-                let error = io::Error::last_os_error();
-                // There is no pending synchronous request when the reader has
-                // already completed. The subsequent join remains authoritative.
-                if error.raw_os_error() == Some(1168) {
-                    Ok(())
-                } else {
-                    Err(error)
+            cancelled.store(true, Ordering::Release);
+            loop {
+                match state.load(Ordering::Acquire) {
+                    STOPPED | IDLE => return Ok(()),
+                    STARTING => thread::yield_now(),
+                    READING => {
+                        // SAFETY: the handle is owned and names exactly the
+                        // reader thread. The state handshake guarantees that
+                        // a synchronous read is either already pending or the
+                        // worker will observe cancellation before starting it.
+                        let _ =
+                            unsafe { CancelSynchronousIo(thread_handle.as_raw_handle().cast()) };
+                        thread::yield_now();
+                    }
                 }
             }
         });
@@ -335,27 +358,42 @@ mod windows {
             handle: Some(handle),
         })
     }
-}
 
-#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
-mod generic {
-    use super::{OutputReader, run_reader};
-    use std::{io::Read, sync::mpsc, thread};
-
-    pub(super) fn spawn<R, F>(reader: R, consume: F) -> std::io::Result<OutputReader>
+    fn run_reader<R, F>(
+        mut reader: R,
+        cancelled: Arc<AtomicBool>,
+        state: Arc<AtomicU8>,
+        mut consume: F,
+    ) -> io::Result<Vec<u8>>
     where
-        R: Read + Send + 'static,
-        F: FnMut(&[u8]) -> bool + Send + 'static,
+        R: Read,
+        F: FnMut(&[u8]) -> bool,
     {
-        let (sender, receiver) = mpsc::channel();
-        let handle = thread::Builder::new()
-            .name("acyclic-output-reader".into())
-            .spawn(move || run_reader(reader, sender, consume))?;
-        Ok(OutputReader {
-            receiver,
-            cancel: None,
-            handle: Some(handle),
-        })
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            state.store(STARTING, Ordering::Release);
+            if cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "process output reader cancelled",
+                ));
+            }
+            state.store(READING, Ordering::Release);
+            let read = reader.read(&mut buffer);
+            state.store(IDLE, Ordering::Release);
+            let read = read?;
+            if read == 0 {
+                return Ok(bytes);
+            }
+            let chunk = buffer
+                .get(..read)
+                .ok_or_else(|| io::Error::other("process reader returned an invalid length"))?;
+            if !consume(chunk) {
+                return Ok(bytes);
+            }
+            bytes.extend_from_slice(chunk);
+        }
     }
 }
 
@@ -381,5 +419,62 @@ mod tests {
         );
         assert_eq!(reader.cancel_and_join().expect("cancel and join"), None);
         drop(writer_file);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::spawn_output_reader;
+    use std::{
+        process::{Child, Command, Stdio},
+        sync::mpsc,
+        time::Duration,
+    };
+
+    fn held_pipe_process(script: &str) -> Child {
+        let system_root = std::env::var_os("SystemRoot").expect("SystemRoot");
+        let shell = std::path::Path::new(&system_root)
+            .join("System32")
+            .join("cmd.exe");
+        let mut command = Command::new(shell);
+        command
+            .args(["/D", "/C", script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+        command.spawn().expect("spawn held-pipe process")
+    }
+
+    fn reap(child: &mut Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn cancellation_before_first_read_joins_reader() {
+        let mut child = held_pipe_process("ping -n 100 127.0.0.1 >NUL");
+        let stdout = child.stdout.take().expect("stdout pipe");
+        let mut reader = spawn_output_reader(stdout, |_| true).expect("spawn reader");
+        assert_eq!(reader.cancel_and_join().expect("cancel and join"), None);
+        reap(&mut child);
+    }
+
+    #[test]
+    fn cancellation_between_chunks_joins_reader() {
+        let mut child = held_pipe_process("echo first & ping -n 100 127.0.0.1 >NUL");
+        let stdout = child.stdout.take().expect("stdout pipe");
+        let (seen_sender, seen_receiver) = mpsc::channel();
+        let mut reader = spawn_output_reader(stdout, move |_| {
+            let _ = seen_sender.send(());
+            true
+        })
+        .expect("spawn reader");
+        seen_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first output chunk");
+        assert_eq!(reader.cancel_and_join().expect("cancel and join"), None);
+        reap(&mut child);
     }
 }
