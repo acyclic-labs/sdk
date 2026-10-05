@@ -164,10 +164,16 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     validateHostedGenerationIdentity: rustWasm.validateHostedGenerationIdentity,
   };
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
-  rustPolicy.validateHostedResponseBytes(
-    maximumResponseBytes,
-    DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes,
-  );
+  try {
+    rustPolicy.validateHostedResponseBytes(
+      maximumResponseBytes,
+      DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes,
+    );
+  } catch {
+    throw new RangeError(
+      `maximum response bytes must be at least ${DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes}`,
+    );
+  }
   const maximumPayloadResponseBytes = maximumResponseBytes - DEFAULT_HOSTED_OPTIONS.maximumByteResponseEnvelopeBytes;
   const send = options.fetch ?? globalThis.fetch;
   if (send === undefined) throw new TypeError("this runtime does not provide fetch");
@@ -203,7 +209,18 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     );
     advertised = fromBinary(CapabilitiesSchema, encoded);
   } catch (error) {
-    throw new HostedFsError("protocol", error instanceof Error ? error.message : String(error));
+    const raw = String(error);
+    const statusMessage = raw.match(/message: "([^"]*)"/)?.[1];
+    const message = statusMessage
+      ?? (error instanceof Error && error.name !== "Internal error" ? error.message : raw.replace(/^Error: /, ""));
+    const internalPrefix = "Internal error: ";
+    if (raw.includes("code: 'Internal error'") || message.startsWith(internalPrefix)) {
+      const normalized = message.replace(internalPrefix, "") === "response is absent"
+        ? "handshake response is absent"
+        : message.replace(internalPrefix, "");
+      throw new HostedFsError("invalid_response", normalized);
+    }
+    throw new HostedFsError("protocol", message);
   }
   negotiatedMaximumRequestBytes = advertised.maximumRequestBytes;
   rustPolicy.validateHostedAdvertisedLimits(
@@ -393,6 +410,15 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       return workspaceRebase(response.status, response.generation, response.conflicts, response.truncated);
     },
     async diff(from, to, maximumChanges) {
+      try {
+        await client.rustPolicy.validateHostedPageBound(maximumChanges, client.maximumPageItems);
+      } catch {
+        throw new RangeError(
+          maximumChanges > client.maximumPageItems
+            ? "maximum changes exceeds the negotiated page limit"
+            : "page bound is invalid",
+        );
+      }
       return diff(
         client,
         reference.workspaceId,
@@ -436,11 +462,16 @@ function sourceResult(
   workspace: WireWorkspaceRef,
   response: WireSourceResponse,
 ): SourceResult {
-  const projection = client.rustPolicy.projectHostedSourceState(
-    response.state,
-    response.reason,
-    response.generation !== undefined,
-  );
+  let projection: ReturnType<HostedRustPolicy["projectHostedSourceState"]>;
+  try {
+    projection = client.rustPolicy.projectHostedSourceState(
+      response.state,
+      response.reason,
+      response.generation !== undefined,
+    );
+  } catch (error) {
+    throw new HostedFsError("invalid_response", error instanceof Error ? error.message : String(error));
+  }
   const { status, reason } = projection;
   const selected = response.generation;
   if (selected !== undefined) {

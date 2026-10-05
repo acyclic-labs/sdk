@@ -1196,50 +1196,6 @@ export class BrowserGitCompatRepository {
 }
 
 /**
- * Authenticated Rust-owned Harness gRPC-Web client for browser WASM.
- *
- * Harness has no HTTP/JSON projection. Browser consumers use the same
- * generated protobuf service through gRPC-Web, with all protocol checks
- * and operation-control semantics retained in Rust.
- */
-export class BrowserHarnessClient {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Cancels an encoded Rust Harness operation request.
-     */
-    cancel(request: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Returns the negotiated Harness protocol identity.
-     */
-    capabilities(): any;
-    /**
-     * Connects from JavaScript using the Rust-owned authenticated
-     * handshake and gRPC-Web adapter with Rust-owned safe bounds.
-     */
-    static connect(endpoint: string, bearer_token: string): Promise<BrowserHarnessClient>;
-    /**
-     * Connects with explicit request and response bounds.
-     */
-    static connectWithLimits(endpoint: string, bearer_token: string, maximum_request_bytes: bigint, maximum_response_bytes: bigint): Promise<BrowserHarnessClient>;
-    /**
-     * Observes an encoded Rust Harness operation request.
-     */
-    observe(request: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Collects a bounded replay page into encoded deliveries. The Rust
-     * API remains streaming for callers that need a live follow stream.
-     */
-    replay(request: Uint8Array): Promise<Array<any>>;
-    /**
-     * Submits an encoded Rust Harness command and returns its encoded
-     * admission. The protobuf bytes preserve the generated wire types.
-     */
-    submit(request: Uint8Array): Promise<Uint8Array>;
-}
-
-/**
  * One immutable, side-effect-free workspace join plan.
  */
 export class BrowserJoinPlan {
@@ -1845,6 +1801,8 @@ export function openMemoryFs(options: any): BrowserFs;
  */
 export function projectGrpcReadResponse(input: Uint8Array, expected: bigint): unknown;
 
+export function projectHostedSourceState(state: number, reason: number, has_generation: boolean): any;
+
 /**
  * Decode one unary memory-provider response from canonical protobuf bytes
  * into the public JavaScript result shape. Rust owns the response oneofs,
@@ -1888,11 +1846,15 @@ export function validateChildrenPageResponse(request: Uint8Array, response: Uint
  */
 export function validateGrpcResponseIdentity(operation: string, input: Uint8Array, expected: Uint8Array): void;
 
+export function validateHostedAdvertisedLimits(maximum_transaction_mutations: number, maximum_page_items: number): void;
+
 export function validateHostedGenerationBounds(maximum_generations: number, maximum_changes: number, maximum_conflicts: number, maximum_page_items: number): void;
 
 export function validateHostedGenerationIdentity(generation_id: Uint8Array, owner_workspace_id: Uint8Array, expected_workspace_id: Uint8Array): void;
 
 export function validateHostedPageBound(value: number, maximum: number): void;
+
+export function validateHostedResponseBytes(maximum_response_bytes: number, minimum_handshake_response_bytes: number): void;
 
 export function validateHostedSourceState(state: number, reason: number, has_generation: boolean): void;
 
@@ -1938,15 +1900,17 @@ export function validateIdempotencyKey(input: Uint8Array): string;
 export function validatePath(path: string): string;
 
 /**
+ * Validate one remote bearer credential using the shared Rust policy.
+ */
+export function validateRemoteWebCredential(token: string): void;
+
+/**
  * Validate one remote endpoint using the shared Rust policy.
  */
 export function validateRemoteWebEndpoint(endpoint: string): void;
 
 /**
- * Validates an encoded Filesystem handshake response and returns the
- * canonical negotiated capabilities. Keeping decoding and admission in
- * this Rust boundary prevents hosted TypeScript clients from re-owning
- * protocol identity or capability validation.
+ * Validate a wire handshake and return its canonical Rust-owned capabilities.
  */
 export function validateRemoteWebFilesystemHandshake(response: Uint8Array): Uint8Array;
 
@@ -1997,7 +1961,7 @@ export function validate_remote_web_ca_certificate(certificate: string): void;
 export function validate_remote_web_content_length(content_length: string, maximum: bigint): void;
 
 /**
- * Validate one remote bearer credential using the shared Rust policy.
+ * Validates one bearer credential according to the shared Rust policy.
  */
 export function validate_remote_web_credential(token: string): void;
 
@@ -2223,31 +2187,27 @@ export interface InitOutput {
     readonly encodePublicationJson: (a: number, b: number) => [number, number, number, number];
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
+    readonly projectHostedSourceState: (a: number, b: number, c: number) => [number, number, number];
+    readonly validateHostedAdvertisedLimits: (a: number, b: number) => [number, number];
     readonly validateHostedGenerationBounds: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateHostedGenerationIdentity: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly validateHostedPageBound: (a: number, b: number) => [number, number];
+    readonly validateHostedResponseBytes: (a: number, b: number) => [number, number];
     readonly validateHostedSourceState: (a: number, b: number, c: number) => [number, number];
     readonly validateHostedTransactionBounds: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateRemoteWebCredential: (a: number, b: number) => [number, number];
     readonly validateRemoteWebEndpoint: (a: number, b: number) => [number, number];
     readonly validateRemoteWebGrpcEndpoint: (a: number, b: number) => [number, number];
-    readonly validate_remote_web_credential: (a: number, b: number) => [number, number];
     readonly __wbg_browserfilesystemclient_free: (a: number, b: number) => void;
-    readonly __wbg_browserharnessclient_free: (a: number, b: number) => void;
     readonly browserfilesystemclient_cancel: (a: number, b: number, c: number) => any;
     readonly browserfilesystemclient_capabilities: (a: number) => [number, number, number];
     readonly browserfilesystemclient_connect: (a: number, b: number, c: number, d: number, e: bigint, f: bigint) => any;
     readonly browserfilesystemclient_export: (a: number, b: number, c: number) => any;
-    readonly browserharnessclient_cancel: (a: number, b: number, c: number) => any;
-    readonly browserharnessclient_capabilities: (a: number) => [number, number, number];
-    readonly browserharnessclient_connect: (a: number, b: number, c: number, d: number) => any;
-    readonly browserharnessclient_connectWithLimits: (a: number, b: number, c: number, d: number, e: bigint, f: bigint) => any;
-    readonly browserharnessclient_observe: (a: number, b: number, c: number) => any;
-    readonly browserharnessclient_replay: (a: number, b: number, c: number) => any;
-    readonly browserharnessclient_submit: (a: number, b: number, c: number) => any;
     readonly validateRemoteWebFilesystemHandshake: (a: number, b: number) => [number, number, number, number];
     readonly validate_actors_invoke: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_remote_web_ca_certificate: (a: number, b: number) => [number, number];
     readonly validate_remote_web_content_length: (a: number, b: number, c: bigint) => [number, number];
+    readonly validate_remote_web_credential: (a: number, b: number) => [number, number];
     readonly validate_remote_web_endpoint: (a: number, b: number) => [number, number];
     readonly validate_remote_web_grpc_endpoint: (a: number, b: number) => [number, number];
     readonly validate_remote_web_message_limit: (a: bigint) => [number, number];
@@ -2315,8 +2275,8 @@ export interface InitOutput {
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_: (a: number, b: number) => void;
     readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

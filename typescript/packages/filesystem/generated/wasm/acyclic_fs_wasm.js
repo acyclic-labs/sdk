@@ -1680,122 +1680,6 @@ export class BrowserGitCompatRepository {
 if (Symbol.dispose) BrowserGitCompatRepository.prototype[Symbol.dispose] = BrowserGitCompatRepository.prototype.free;
 
 /**
- * Authenticated Rust-owned Harness gRPC-Web client for browser WASM.
- *
- * Harness has no HTTP/JSON projection. Browser consumers use the same
- * generated protobuf service through gRPC-Web, with all protocol checks
- * and operation-control semantics retained in Rust.
- */
-export class BrowserHarnessClient {
-    static __wrap(ptr) {
-        ptr = ptr >>> 0;
-        const obj = Object.create(BrowserHarnessClient.prototype);
-        obj.__wbg_ptr = ptr;
-        BrowserHarnessClientFinalization.register(obj, obj.__wbg_ptr, obj);
-        return obj;
-    }
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        BrowserHarnessClientFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_browserharnessclient_free(ptr, 0);
-    }
-    /**
-     * Cancels an encoded Rust Harness operation request.
-     * @param {Uint8Array} request
-     * @returns {Promise<Uint8Array>}
-     */
-    cancel(request) {
-        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browserharnessclient_cancel(this.__wbg_ptr, ptr0, len0);
-        return ret;
-    }
-    /**
-     * Returns the negotiated Harness protocol identity.
-     * @returns {any}
-     */
-    capabilities() {
-        const ret = wasm.browserharnessclient_capabilities(this.__wbg_ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Connects from JavaScript using the Rust-owned authenticated
-     * handshake and gRPC-Web adapter with Rust-owned safe bounds.
-     * @param {string} endpoint
-     * @param {string} bearer_token
-     * @returns {Promise<BrowserHarnessClient>}
-     */
-    static connect(endpoint, bearer_token) {
-        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(bearer_token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.browserharnessclient_connect(ptr0, len0, ptr1, len1);
-        return ret;
-    }
-    /**
-     * Connects with explicit request and response bounds.
-     * @param {string} endpoint
-     * @param {string} bearer_token
-     * @param {bigint} maximum_request_bytes
-     * @param {bigint} maximum_response_bytes
-     * @returns {Promise<BrowserHarnessClient>}
-     */
-    static connectWithLimits(endpoint, bearer_token, maximum_request_bytes, maximum_response_bytes) {
-        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(bearer_token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.browserharnessclient_connectWithLimits(ptr0, len0, ptr1, len1, maximum_request_bytes, maximum_response_bytes);
-        return ret;
-    }
-    /**
-     * Observes an encoded Rust Harness operation request.
-     * @param {Uint8Array} request
-     * @returns {Promise<Uint8Array>}
-     */
-    observe(request) {
-        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browserharnessclient_observe(this.__wbg_ptr, ptr0, len0);
-        return ret;
-    }
-    /**
-     * Collects a bounded replay page into encoded deliveries. The Rust
-     * API remains streaming for callers that need a live follow stream.
-     * @param {Uint8Array} request
-     * @returns {Promise<Array<any>>}
-     */
-    replay(request) {
-        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browserharnessclient_replay(this.__wbg_ptr, ptr0, len0);
-        return ret;
-    }
-    /**
-     * Submits an encoded Rust Harness command and returns its encoded
-     * admission. The protobuf bytes preserve the generated wire types.
-     * @param {Uint8Array} request
-     * @returns {Promise<Uint8Array>}
-     */
-    submit(request) {
-        const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browserharnessclient_submit(this.__wbg_ptr, ptr0, len0);
-        return ret;
-    }
-}
-if (Symbol.dispose) BrowserHarnessClient.prototype[Symbol.dispose] = BrowserHarnessClient.prototype.free;
-
-/**
  * One immutable, side-effect-free workspace join plan.
  */
 export class BrowserJoinPlan {
@@ -3627,6 +3511,20 @@ export function projectGrpcReadResponse(input, expected) {
 }
 
 /**
+ * @param {number} state
+ * @param {number} reason
+ * @param {boolean} has_generation
+ * @returns {any}
+ */
+export function projectHostedSourceState(state, reason, has_generation) {
+    const ret = wasm.projectHostedSourceState(state, reason, has_generation);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Decode one unary memory-provider response from canonical protobuf bytes
  * into the public JavaScript result shape. Rust owns the response oneofs,
  * scalar widths, copied byte buffers, and camelCase projection at this
@@ -3753,6 +3651,17 @@ export function validateGrpcResponseIdentity(operation, input, expected) {
 }
 
 /**
+ * @param {number} maximum_transaction_mutations
+ * @param {number} maximum_page_items
+ */
+export function validateHostedAdvertisedLimits(maximum_transaction_mutations, maximum_page_items) {
+    const ret = wasm.validateHostedAdvertisedLimits(maximum_transaction_mutations, maximum_page_items);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
  * @param {number} maximum_generations
  * @param {number} maximum_changes
  * @param {number} maximum_conflicts
@@ -3789,6 +3698,17 @@ export function validateHostedGenerationIdentity(generation_id, owner_workspace_
  */
 export function validateHostedPageBound(value, maximum) {
     const ret = wasm.validateHostedPageBound(value, maximum);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {number} maximum_response_bytes
+ * @param {number} minimum_handshake_response_bytes
+ */
+export function validateHostedResponseBytes(maximum_response_bytes, minimum_handshake_response_bytes) {
+    const ret = wasm.validateHostedResponseBytes(maximum_response_bytes, minimum_handshake_response_bytes);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
@@ -3924,6 +3844,19 @@ export function validatePath(path) {
 }
 
 /**
+ * Validate one remote bearer credential using the shared Rust policy.
+ * @param {string} token
+ */
+export function validateRemoteWebCredential(token) {
+    const ptr0 = passStringToWasm0(token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validateRemoteWebCredential(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
  * Validate one remote endpoint using the shared Rust policy.
  * @param {string} endpoint
  */
@@ -3937,10 +3870,7 @@ export function validateRemoteWebEndpoint(endpoint) {
 }
 
 /**
- * Validates an encoded Filesystem handshake response and returns the
- * canonical negotiated capabilities. Keeping decoding and admission in
- * this Rust boundary prevents hosted TypeScript clients from re-owning
- * protocol identity or capability validation.
+ * Validate a wire handshake and return its canonical Rust-owned capabilities.
  * @param {Uint8Array} response
  * @returns {Uint8Array}
  */
@@ -4087,7 +4017,7 @@ export function validate_remote_web_content_length(content_length, maximum) {
 }
 
 /**
- * Validate one remote bearer credential using the shared Rust policy.
+ * Validates one bearer credential according to the shared Rust policy.
  * @param {string} token
  */
 export function validate_remote_web_credential(token) {
@@ -4341,10 +4271,6 @@ function __wbg_get_imports() {
         },
         __wbg_browsergeneration_new: function(arg0) {
             const ret = BrowserGeneration.__wrap(arg0);
-            return ret;
-        },
-        __wbg_browserharnessclient_new: function(arg0) {
-            const ret = BrowserHarnessClient.__wrap(arg0);
             return ret;
         },
         __wbg_browserjoinplan_new: function(arg0) {
@@ -5020,17 +4946,17 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1348, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1299, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 968, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 919, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 1011, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 962, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_Event__Event______true_);
             return ret;
         },
@@ -5040,13 +4966,13 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 1010, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 869, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000006: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 918, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 961, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_);
             return ret;
         },
         __wbindgen_cast_0000000000000007: function(arg0) {
@@ -5097,12 +5023,12 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_(arg0, arg1) {
-    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_(arg0, arg1);
-}
-
 function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_(arg0, arg1) {
     wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_(arg0, arg1);
+}
+
+function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_(arg0, arg1) {
+    wasm.wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_(arg0, arg1);
 }
 
 function wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_(arg0, arg1, arg2) {
@@ -5172,9 +5098,6 @@ const BrowserGenerationFinalization = (typeof FinalizationRegistry === 'undefine
 const BrowserGitCompatRepositoryFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browsergitcompatrepository_free(ptr >>> 0, 1));
-const BrowserHarnessClientFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_browserharnessclient_free(ptr >>> 0, 1));
 const BrowserJoinPlanFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserjoinplan_free(ptr >>> 0, 1));
