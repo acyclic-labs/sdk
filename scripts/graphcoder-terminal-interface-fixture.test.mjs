@@ -46,6 +46,16 @@ test("checkout authority stays inside the durable Harness composition", () => {
   assert.doesNotMatch(cli, /AuthorityIssuer::new\(/u);
 });
 
+test("session listing remains metadata-only and lazy", () => {
+  const start = cli.indexOf("async fn list_sessions");
+  const end = cli.indexOf("async fn start_session", start);
+  assert.ok(start >= 0 && end > start);
+  const list = cli.slice(start, end);
+  assert.match(list, /sessions_page\(/u);
+  assert.doesNotMatch(list, /open_session\(/u);
+  assert.doesNotMatch(list, /list_files\(/u);
+});
+
 test("terminal fixture closes its owned bridge on success and failure", () => {
   assert.match(driver, /bridge\.close\("terminal interface fixture finished"\)/u);
   assert.match(driver, /await bridge\.waitForExit\(5_000\)/u);
