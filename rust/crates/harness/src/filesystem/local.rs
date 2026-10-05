@@ -662,6 +662,25 @@ where
         handle: &'a ExecutionClaimHandle,
         receipt: &'a ExecutionReceipt,
     ) -> BoxFuture<'a, Result<FileRef>> {
+        self.publish_inner(key, handle, receipt, false)
+    }
+
+    fn publish_host_unknown<'a>(
+        &'a self,
+        key: &'a ExecutionReceiptKey,
+        handle: &'a ExecutionClaimHandle,
+        receipt: &'a ExecutionReceipt,
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        self.publish_inner(key, handle, receipt, true)
+    }
+
+    fn publish_inner<'a>(
+        &'a self,
+        key: &'a ExecutionReceiptKey,
+        handle: &'a ExecutionClaimHandle,
+        receipt: &'a ExecutionReceipt,
+        host_unknown: bool,
+    ) -> BoxFuture<'a, Result<FileRef>> {
         Box::pin(async move {
             self.validate_key(key)?;
             receipt.validate()?;
@@ -680,7 +699,10 @@ where
                     "operator handles may only resolve execution as unknown".into(),
                 ));
             }
-            if !handle.is_operator() && matches!(receipt, ExecutionReceipt::Unknown { .. }) {
+            if !handle.is_operator()
+                && matches!(receipt, ExecutionReceipt::Unknown { .. })
+                && !host_unknown
+            {
                 return Err(Error::Unauthorized(
                     "unknown execution outcomes require operator resolution".into(),
                 ));
@@ -778,7 +800,8 @@ where
                             result: record.result,
                             owner_token: *handle.token(),
                             generation: handle.generation(),
-                            operator_resolution: handle.is_operator(),
+                        operator_resolution: handle.is_operator()
+                            || matches!(receipt, ExecutionReceipt::Unknown { .. }),
                             operator_principal: handle.operator_principal().map(ToOwned::to_owned),
                             operator_authenticated: handle.operator_authenticated(),
                         },

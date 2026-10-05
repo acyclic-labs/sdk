@@ -924,6 +924,40 @@ pub trait ExecutionReceiptStore: Send + Sync {
         receipt: &'a ExecutionReceipt,
     ) -> BoxFuture<'a, Result<FileRef>>;
 
+    /// Persists a host-observed unknown outcome using the ordinary claim
+    /// proof. This is distinct from operator resolution.
+    fn publish_host_unknown<'a>(
+        &'a self,
+        key: &'a ExecutionReceiptKey,
+        handle: &'a ExecutionClaimHandle,
+        receipt: &'a ExecutionReceipt,
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        let _ = (key, handle, receipt);
+        async {
+            Err(Error::Unsupported(
+                "host unknown receipt publication is unavailable".into(),
+            ))
+        }
+        .boxed()
+    }
+
+    #[doc(hidden)]
+    fn publish_inner<'a>(
+        &'a self,
+        key: &'a ExecutionReceiptKey,
+        handle: &'a ExecutionClaimHandle,
+        receipt: &'a ExecutionReceipt,
+        host_unknown: bool,
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        let _ = (key, handle, receipt, host_unknown);
+        async {
+            Err(Error::Unsupported(
+                "host receipt publication implementation is unavailable".into(),
+            ))
+        }
+        .boxed()
+    }
+
     /// Durably records cancellation intent for an admitted pending attempt.
     ///
     /// A restart must retain this fence even when the process outcome was not
@@ -1865,14 +1899,7 @@ impl NativeExecutionProvider {
                         && record.key.effect_id == request.effect_id
                         && matches!(record.receipt, ExecutionReceipt::Unknown { .. })
                     {
-                        return Ok(EffectObservation {
-                            provider: request.provider,
-                            effect_id: request.effect_id,
-                            attempt_id: request.attempt_id,
-                            request_digest: request.request_digest,
-                            guarantee: request.guarantee,
-                            status: EffectStatus::Indeterminate,
-                        });
+                        return Err(Error::Indeterminate(approval.operation_id));
                     }
                     record.validate_for(&request)?;
                     return Ok(EffectObservation {
@@ -1978,6 +2005,17 @@ impl NativeExecutionProvider {
         // an Unknown receipt from the dispatcher would incorrectly clear the
         // retry fence.
         if self.receipt_store.is_some() && matches!(&receipt, ExecutionReceipt::Unknown { .. }) {
+            let store = self.receipt_store.as_ref().expect("checked above");
+            if store
+                .publish_host_unknown(&key, &claim_handle, &receipt)
+                .await
+                .is_err()
+            {
+                // Keep the claim unresolved if the unknown marker could not
+                // be durably written; recovery must not infer permission to
+                // rerun the host command.
+                return Err(Error::Indeterminate(approval.operation_id));
+            }
             self.release_attempt(approval.operation_id, request.attempt_id)?;
             return Ok(EffectObservation {
                 provider: request.provider,
@@ -4776,7 +4814,7 @@ mod local_provider_tests {
             )?),
         };
         let observed = capture.capture_selection(&selected).await?;
-        assert!(matches!(observed, Capture::InFlight(value) if value == operation));
+        assert!(matches!(observed, Capture::Indeterminate(value) if value == operation));
 
         let pending_operation = OperationId::from_bytes([134; 16]);
         let pending_attempt = EffectAttemptId::from_bytes([135; 16]);
