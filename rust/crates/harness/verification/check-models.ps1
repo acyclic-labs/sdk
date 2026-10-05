@@ -43,7 +43,9 @@ $cases = if ($Model -eq 'ActivationRecovery') { @(
 ) } else { @(
     @{ Name = 'safe'; Config = 'SwarmMessage.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe-duplicate'; Config = 'SwarmMessageUnsafeDuplicate.cfg'; Exit = 12; Expected = 'Invariant AtMostOnce is violated.' },
-    @{ Name = 'unsafe-orphan'; Config = 'SwarmMessageUnsafeOrphan.cfg'; Exit = 12; Expected = 'Invariant DeliveredRequiresAdmission is violated.' }
+    @{ Name = 'unsafe-orphan'; Config = 'SwarmMessageUnsafeOrphan.cfg'; Exit = 12; Expected = 'Invariant DeliveredRequiresAdmission is violated.' },
+    @{ Name = 'unsafe-cancel'; Config = 'SwarmMessageUnsafeCancel.cfg'; Exit = 12; Expected = 'Invariant CancelledNeverDelivered is violated.' },
+    @{ Name = 'unsafe-publication'; Config = 'SwarmMessageUnsafePublication.cfg'; Exit = 12; Expected = 'Invariant AtMostOncePublication is violated.' }
 ) }
 foreach ($case in $cases) {
     $log = Join-Path $evidence "$runId-$($case.Name).log"
