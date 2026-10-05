@@ -332,7 +332,7 @@ mod tests {
         if unsafe { GetExitCodeProcess(handle.as_raw_handle().cast(), &mut exit_code) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(exit_code == STILL_ACTIVE)
+        Ok(exit_code == STILL_ACTIVE as u32)
     }
 }
 
