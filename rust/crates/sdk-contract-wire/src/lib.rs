@@ -42,6 +42,7 @@ pub mod harness;
 pub mod inference;
 pub mod machines;
 pub mod objects;
+pub mod product_paths;
 pub mod protocol;
 pub mod remote_limits;
 pub mod semantic_oracle;

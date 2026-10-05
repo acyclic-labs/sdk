@@ -2146,6 +2146,9 @@ fn is_authored_text_path(path: &str) -> bool {
 
 fn is_generated_output_path(path: &str) -> bool {
     let path = path.replace('\\', "/");
+    if acyclic_sdk_contract_wire::product_paths::GENERATED_FACADE_PATHS.contains(&path.as_str()) {
+        return true;
+    }
     path == "generated"
         || path.starts_with("generated/")
         || path.starts_with("rust/crates/sdk-contract-wire/generated/")
@@ -9280,6 +9283,29 @@ mod tests {
         assert_eq!(before.digest, after.digest);
         assert_ne!(before.digest, complete_after.digest);
         cleanup(&root);
+    }
+
+    #[test]
+    fn generated_facade_paths_do_not_become_authoritative_contract_inputs() {
+        for path in acyclic_sdk_contract_wire::product_paths::GENERATED_FACADE_PATHS {
+            assert!(
+                is_generated_output_path(path),
+                "generated facade counted as authority: {path}"
+            );
+            assert!(is_generated_output_path(&path.replace('/', "\\")));
+        }
+        for adapter in [
+            "ruby/lib/acyclic_sdk/client.rb",
+            "php/src/Acyclic/Runtime/GrpcTransport.php",
+            "dart/lib/src/client.dart",
+            "jvm/src/main/java/dev/acyclic/transport/Transport.java",
+            "rust/crates/sdk-contract-wire/src/portable_typed_facades.rs",
+        ] {
+            assert!(
+                !is_generated_output_path(adapter),
+                "authored adapter excluded: {adapter}"
+            );
+        }
     }
 
     #[test]
