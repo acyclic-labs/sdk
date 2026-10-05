@@ -1158,28 +1158,8 @@ impl ExecutionRunner for NativeExecutionRunner {
                         return Err(error);
                     }
                 };
-                if stdout.is_none() || stderr.is_none() {
-                    let _ = child.terminate();
-                    let stdout = finish_reader(&mut stdout_thread, stdout)?;
-                    let stderr = finish_reader(&mut stderr_thread, stderr)?;
-                    if overflow.load(Ordering::Acquire) {
-                        return Err(Error::Invalid(
-                            "approved process output exceeded its limit".into(),
-                        ));
-                    }
-                    let (Some(stdout), Some(stderr)) = (stdout, stderr) else {
-                        return Ok(RunnerOutcome::Unknown {
-                            reason: "process descendants retained output handles".into(),
-                        });
-                    };
-                    return Ok(RunnerOutcome::Exited {
-                        status_code: status.code(),
-                        stdout,
-                        stderr,
-                    });
-                }
-                finish_reader(&mut stdout_thread, stdout)?;
-                finish_reader(&mut stderr_thread, stderr)?;
+                let stdout = finish_reader(&mut stdout_thread, stdout)?;
+                let stderr = finish_reader(&mut stderr_thread, stderr)?;
                 if overflow.load(Ordering::Acquire) {
                     return Err(Error::Invalid(
                         "approved process output exceeded its limit".into(),
