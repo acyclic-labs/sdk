@@ -463,7 +463,7 @@ fn render_java_responses() -> String {
     out.push_str("  public static RustSemanticTypes.Sha256Digest evaluationSpecDigest(inference.customer.v1.Inference.EvaluationSpec value) { return RustSemanticTypes.Sha256Digest.of(value.getSpecDigest()); }\n");
     out.push_str("  public static RustSemanticTypes.ResourcePath fileRefPath(acyclic.harness.v2.Harness.FileRef value) { return RustSemanticTypes.ResourcePath.of(value.getNormalizedPath()); }\n");
     out.push_str("  public static RustSemanticTypes.WireChoice preserveKnown(String tag, com.google.protobuf.ByteString payload) { return new RustSemanticTypes.Known(tag, RustSemanticTypes.WireBytes.of(payload)); }\n");
-    out.push_str("  public static RustSemanticTypes.WireChoice preserveUnknown(int tag, com.google.protobuf.ByteString payload) { return new RustSemanticTypes.Unknown(tag, payload); }\n");
+    out.push_str("  public static RustSemanticTypes.WireChoice preserveUnknown(int tag, com.google.protobuf.ByteString payload) { return new RustSemanticTypes.Unknown(tag, RustSemanticTypes.WireBytes.of(payload)); }\n");
     out.push_str("  public static RustSemanticTypes.WireChoice preserveOneof(int tag, String knownTag, com.google.protobuf.ByteString payload) { return tag == 0 ? preserveKnown(knownTag, payload) : preserveUnknown(tag, payload); }\n");
     out.push_str("  public static RustSemanticTypes.WireChoice frameChoice(acyclic.objects.v2.Objects.GetObjectResponse value) { switch (value.getFrameCase()) { case HEADER: return preserveKnown(\"header\", value.getHeader().toByteString()); case BODY: return preserveKnown(\"body\", value.getBody()); case ERROR: return preserveKnown(\"error\", value.getError().toByteString()); default: for (var entry : value.getUnknownFields().asMap().entrySet()) { var fields = entry.getValue(); if (!fields.getLengthDelimitedList().isEmpty()) return preserveUnknown(entry.getKey(), fields.getLengthDelimitedList().get(0)); if (!fields.getVarintList().isEmpty()) return preserveUnknown(entry.getKey(), com.google.protobuf.ByteString.copyFromUtf8(Long.toString(fields.getVarintList().get(0)))); } return preserveUnknown(0, com.google.protobuf.ByteString.EMPTY); } }\n\n");
     out.push_str("}\n");
@@ -514,7 +514,7 @@ fn render_kotlin_responses() -> String {
     out.push_str("  fun evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesKotlin.Sha256Digest = RustSemanticTypesKotlin.Sha256Digest.of(value.specDigest)\n");
     out.push_str("  fun fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesKotlin.ResourcePath = RustSemanticTypesKotlin.ResourcePath.of(value.normalizedPath)\n");
     out.push_str("  fun preserveKnown(tag: String, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = RustSemanticTypesKotlin.Known(tag, RustSemanticTypesKotlin.WireBytes.of(payload))\n");
-    out.push_str("  fun preserveUnknown(tag: Int, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = RustSemanticTypesKotlin.Unknown(tag, payload)\n");
+    out.push_str("  fun preserveUnknown(tag: Int, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = RustSemanticTypesKotlin.Unknown(tag, RustSemanticTypesKotlin.WireBytes.of(payload))\n");
     out.push_str("  fun preserveOneof(tag: Int, knownTag: String, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");
     out.push_str("  fun frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesKotlin.WireChoice = when (value.frameCase) { acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER -> preserveKnown(\"header\", value.header.toByteString()); acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.BODY -> preserveKnown(\"body\", value.body); acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.ERROR -> preserveKnown(\"error\", value.error.toByteString()); else -> { val entry = value.getUnknownFields().asMap().entries.firstOrNull(); if (entry != null && entry.value.getLengthDelimitedList().isNotEmpty()) preserveUnknown(entry.key, entry.value.getLengthDelimitedList().first()) else if (entry != null && entry.value.getVarintList().isNotEmpty()) preserveUnknown(entry.key, com.google.protobuf.ByteString.copyFromUtf8(entry.value.getVarintList().first().toString())) else preserveUnknown(0, com.google.protobuf.ByteString.EMPTY) } }\n\n");
     out.push_str("}\n");
@@ -570,7 +570,7 @@ fn render_scala_responses() -> String {
     out.push_str("  def evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpecDigest).toOption.get\n");
     out.push_str("  def fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesScala.ResourcePath = RustSemanticTypesScala.ResourcePath.from(value.getNormalizedPath).toOption.get\n");
     out.push_str("  def preserveKnown(tag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Known(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)\n");
-    out.push_str("  def preserveUnknown(tag: Int, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Unknown(tag, payload)\n");
+    out.push_str("  def preserveUnknown(tag: Int, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Unknown(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)\n");
     out.push_str("  def preserveOneof(tag: Int, knownTag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");
     out.push_str("  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = RustTypedResponses.frameChoice(value) match { case known: RustSemanticTypes.Known => RustSemanticTypesScala.Known(known.tag(), known.payload().toByteArray); case unknown: RustSemanticTypes.Unknown => RustSemanticTypesScala.Unknown(unknown.tag(), unknown.payload().toByteArray) }\n\n");
     out.push_str("}\n");
@@ -2396,6 +2396,11 @@ fn render_java() -> String {
         out.push_str(wire);
         out.push_str(" toWire() { return value; }\n  }\n\n");
     }
+    out = out
+        .replace("public record Known(String tag, com.google.protobuf.ByteString payload)", "public record Known(String tag, WireBytes payload)")
+        .replace("public record Unknown(int tag, com.google.protobuf.ByteString payload)", "public record Unknown(int tag, WireBytes payload)")
+        .replace("new RustSemanticTypes.Known(tag, payload)", "new RustSemanticTypes.Known(tag, RustSemanticTypes.WireBytes.of(payload))")
+        .replace("new RustSemanticTypes.Unknown(tag, payload)", "new RustSemanticTypes.Unknown(tag, RustSemanticTypes.WireBytes.of(payload))");
     out.push_str("}\n");
     out
 }
@@ -2437,6 +2442,11 @@ fn render_kotlin() -> String {
         out.push_str(ty.rust_name);
         out.push_str("(value) } }\n  }\n\n");
     }
+    out = out
+        .replace("data class Known(val tag: String, val payload: ByteString)", "data class Known(val tag: String, val payload: WireBytes)")
+        .replace("data class Unknown(val tag: Int, val payload: ByteString)", "data class Unknown(val tag: Int, val payload: WireBytes)")
+        .replace("RustSemanticTypesKotlin.Known(tag, payload)", "RustSemanticTypesKotlin.Known(tag, RustSemanticTypesKotlin.WireBytes.of(payload))")
+        .replace("RustSemanticTypesKotlin.Unknown(tag, payload)", "RustSemanticTypesKotlin.Unknown(tag, RustSemanticTypesKotlin.WireBytes.of(payload))");
     out.push_str("}\n");
     out
 }
@@ -2486,6 +2496,13 @@ fn render_scala() -> String {
             "(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }\n\n",
         );
     }
+    out = out
+        .replace("final case class Known(tag: String, payload: Array[Byte])", "final case class Known(tag: String, payload: WireBytes)")
+        .replace("final case class Unknown(tag: Int, payload: Array[Byte])", "final case class Unknown(tag: Int, payload: WireBytes)")
+        .replace("RustSemanticTypesScala.Known(tag, payload)", "RustSemanticTypesScala.Known(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)")
+        .replace("RustSemanticTypesScala.Unknown(tag, payload)", "RustSemanticTypesScala.Unknown(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)")
+        .replace("RustSemanticTypesScala.Known(known.tag(), known.payload().toByteArray)", "RustSemanticTypesScala.Known(known.tag(), RustSemanticTypesScala.WireBytes.from(known.payload().toWire).toOption.get)")
+        .replace("RustSemanticTypesScala.Unknown(unknown.tag(), unknown.payload().toByteArray)", "RustSemanticTypesScala.Unknown(unknown.tag(), RustSemanticTypesScala.WireBytes.from(unknown.payload().toWire).toOption.get)");
     out.push_str("}\n");
     out
 }
