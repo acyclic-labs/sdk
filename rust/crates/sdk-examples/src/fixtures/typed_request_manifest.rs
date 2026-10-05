@@ -1689,6 +1689,49 @@ mod tests {
         assert_eq!(put.request_type, "acyclic.objects.v2.PutObjectRequest");
         assert_eq!(put.response_frames.len(), 1);
     }
+
+    #[tokio::test]
+    async fn ordered_execution_plan_is_replayable_by_protocol_shape() {
+        let first = actual_execution_records()
+            .await
+            .expect("first Rust actual fixture execution plan");
+        let second = actual_execution_records()
+            .await
+            .expect("second Rust actual fixture execution plan");
+        let shape = |records: &[TypedRequestRecord]| {
+            records
+                .iter()
+                .map(|record| {
+                    format!(
+                        "{}|{}|{}|{}|{}|{}",
+                        record.family,
+                        record.rpc,
+                        record.request_type,
+                        record.request_frames.len(),
+                        record.response_frames.len(),
+                        record.expected_status,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first.len(), 111);
+        assert_eq!(second.len(), 111);
+        assert_eq!(shape(&first), shape(&second));
+        assert_eq!(
+            first
+                .iter()
+                .filter(|record| record.rpc == "acyclic.objects.v2.BucketsService/CreateBucket")
+                .count(),
+            2
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|record| record.rpc == "acyclic.objects.v2.MultipartService/CreateMultipart")
+                .count(),
+            3
+        );
+    }
 }
 
 
