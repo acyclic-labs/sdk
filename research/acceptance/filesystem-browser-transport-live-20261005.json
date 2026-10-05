@@ -1,0 +1,56 @@
+{
+  "schema": "acyclic.sdk.browser-transport.receipt.v1",
+  "status": "passed",
+  "source_revision": "d2744b3349c9b400e3cfca7b126c2046ed210904",
+  "source_files": {
+    "rust/crates/sdk-remote-web/src/lib.rs": "2df8c1ebc0ffc3ad1d92da22a8828b76353b082714b4691c823fc429a9bc2047",
+    "rust/crates/sdk-remote-web/build.rs": "6176cae47830a3cfb17390c56ec3c33811646051c2e15de2e18b2f06d0d87363",
+    "rust/crates/sdk-remote-web/Cargo.toml": "cec3cef0819bdbf201e2944544e19589bff05002dfbbdd2134ee877ca5ea3602",
+    "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin": "105e153060d229569836982527c91bd56a69891691007215fbc599115eca2093"
+  },
+  "artifacts": {
+    "wasm": {
+      "path": "work/remote-browser-package-private/acyclic_sdk_remote_web_bg.wasm",
+      "sha256": "3278efd0016899de2e4c4d5cd0d680cb7f2cd364d08e043f6a9283a56a4d51d9",
+      "bytes": 4328611
+    },
+    "js": {
+      "path": "work/remote-browser-package-private/acyclic_sdk_remote_web.js",
+      "sha256": "21caac4947b76fb9fd5a68e54fe025b6e496bb1a2e5ba4ffffda03711630b4ee",
+      "bytes": 46297
+    }
+  },
+  "browser": {
+    "executable": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "runner": "work/browser-rust-live/qualify.mjs",
+    "result": "PASS rust-browser-grpc-web",
+    "features": [
+      "authenticated handshake",
+      "streaming export",
+      "typed cancel",
+      "cumulative response bound rejection"
+    ],
+    "runner_log": "work/browser-rust-live/qualify-20261005.log",
+    "runner_log_sha256": "8ef37d8863426df23d11d3b3bea0f6d80c6cee6c5a0565f01e5bd0cb90acebec",
+    "processes": [
+      47940,
+      25796,
+      70444
+    ]
+  },
+  "command": "node work/browser-rust-live/qualify.mjs",
+  "observed": {
+    "handshake": "contractVersion 1, request 4096, response 1024, mutations 100, page items 100",
+    "stream_chunks": 1,
+    "stream_bytes": 36,
+    "cancel_bytes": 0,
+    "bound_error": "response exceeds configured bound"
+  },
+  "source_revision_kind": "owned-commit-object",
+  "build": {
+    "command": "cargo build --offline -p acyclic-sdk-remote-web --target wasm32-unknown-unknown --target-dir work/remote-browser-target-private",
+    "package_command": "wasm-bindgen --target web --out-dir work/remote-browser-package-private work/remote-browser-target-private/wasm32-unknown-unknown/debug/acyclic_sdk_remote_web.wasm",
+    "cargo_home": "work/cargo-home-private",
+    "target_dir": "work/remote-browser-target-private"
+  }
+}
