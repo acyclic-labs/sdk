@@ -1,0 +1,15 @@
+{
+  "kind": "failed-native-checkpoint",
+  "source_commit": "acaaf2c3b9d23b5cb1cf7c7ea354c8ab65bf8fdb",
+  "platform": "Windows native",
+  "session": 25963,
+  "exit_code": 101,
+  "features": ["filesystem-local", "native-process-tree"],
+  "selected_test": "terminal_failure_requires_complete_model_and_tool_journal",
+  "evidence_directory": "D:/graphcoder-builds/root-qualification-artifacts/acaaf2c3b/terminal-journal-proof",
+  "source_archive_sha256": "76352ad4635f556a7f728d0b36c78c424c9e3d74dbdcd7bafe8305bd3b6eeb52",
+  "native_log_sha256": "26727a8c4795cd789e51bea9daf8a81426ddeaf44f5019e0ec77e379b72b043b",
+  "result": "Compilation failed: PreparedModelInput.request is private; tool completion key was moved before lookup. No test ran and no new executable was qualified.",
+  "repair": "Use the public request accessor and retain the completion key for exact invocation lookup.",
+  "qualification": "failed; corrected source must be rebuilt and verified"
+}

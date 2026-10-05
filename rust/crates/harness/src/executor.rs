@@ -1243,7 +1243,7 @@ impl StockExecutor {
             &records,
             operation,
             step,
-            &prepared.request,
+            prepared.request(),
             &boundary,
             self.limits,
         )
@@ -2836,7 +2836,7 @@ pub(crate) async fn classify_terminal_failure(
                 ..
             } => {
                 let key = (*step, call_id.clone());
-                if !started_tools.contains(&key) || !resolved_tools.insert(key) {
+                if !started_tools.contains(&key) || !resolved_tools.insert(key.clone()) {
                     return Err(Error::Storage(
                         "tool completion is invalid while classifying terminal failure".into(),
                     ));
