@@ -26,7 +26,11 @@ $invalidCases = @(
     @{ Name = 'double-delivery'; File = 'trace-invalid-double-delivery.json' },
     @{ Name = 'invalid-bool'; File = 'trace-invalid-bool.json' },
     @{ Name = 'overspend'; File = 'trace-invalid-overspend.json' },
-    @{ Name = 'stale-publication'; File = 'trace-invalid-stale.json' }
+    @{ Name = 'stale-publication'; File = 'trace-invalid-stale.json' },
+    @{ Name = 'missing-fork'; File = 'trace-invalid-missing-fork.json' },
+    @{ Name = 'missing-publication'; File = 'trace-invalid-missing-publication.json' },
+    @{ Name = 'missing-model-start'; File = 'trace-invalid-missing-model-start.json' },
+    @{ Name = 'missing-completion'; File = 'trace-invalid-missing-completion.json' }
 )
 
 foreach ($case in $invalidCases) {

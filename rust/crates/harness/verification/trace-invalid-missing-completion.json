@@ -1,0 +1,33 @@
+[
+  {
+    "kind": "fork_admitted",
+    "parent": 1,
+    "child": 2,
+    "depth": 1,
+    "captured_generation": 0,
+    "fork_operation_id": "fork-op",
+    "child_operation_id": "child-turn-op"
+  },
+  {
+    "kind": "workspace_published",
+    "parent": 1,
+    "child": 2,
+    "captured_generation": 0,
+    "current_generation": 0,
+    "fork_operation_id": "fork-op",
+    "publication_operation_id": "batch-op"
+  },
+  {
+    "kind": "model_started",
+    "agent": 2,
+    "child_operation_id": "child-turn-op"
+  },
+  {
+    "kind": "wait_observed",
+    "wait_id": "root-wait",
+    "waiter": 1,
+    "target": 2,
+    "target_operation_id": "child-turn-op",
+    "target_completed": true
+  }
+]

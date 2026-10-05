@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "workspace_published",
+    "parent": 1,
+    "child": 2,
+    "captured_generation": 0,
+    "current_generation": 0,
+    "fork_operation_id": "fork-op",
+    "publication_operation_id": "batch-op"
+  },
+  {
+    "kind": "model_started",
+    "agent": 2,
+    "child_operation_id": "child-turn-op"
+  }
+]
