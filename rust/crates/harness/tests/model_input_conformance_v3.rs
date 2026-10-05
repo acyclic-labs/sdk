@@ -249,7 +249,7 @@ async fn production_provider_receives_exact_recursive_requests() -> Result<()> {
         .children
         .iter()
         .map(|child| {
-            child_provider.generate(prepare(child, vector.limits, &vector.policy)?)
+            Ok(child_provider.generate(prepare(child, vector.limits, &vector.policy)?))
         })
         .collect::<Result<Vec<_>>>()?;
     futures::future::join_all(sibling_streams.into_iter().map(async |mut stream| {
