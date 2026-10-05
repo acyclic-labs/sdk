@@ -18,6 +18,228 @@
 //! target may expose a closed, exhaustive convenience view only in addition
 //! to the open wire representation; it must never discard an unknown value.
 
+use prost::Message;
+use prost_types::{field_descriptor_proto::Type as FieldType, DescriptorProto, FileDescriptorSet};
+
+use crate::family_registry::{FAMILY_VIEWS, FamilyModel};
+
+/// A descriptor-resolved request field used by every language emitter.
+///
+/// This is derived from the Rust-owned family descriptors at generation time;
+/// it is intentionally independent of the semantic override table below.
+/// Ordinary fields therefore remain present in generated request models even
+/// when they do not need a nominal refinement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedRequestField {
+    pub family: String,
+    pub rpc: String,
+    pub root_message: String,
+    pub message_path: String,
+    pub field: String,
+    pub number: i32,
+    pub json_name: String,
+    pub wire_type: Option<i32>,
+    pub label: Option<i32>,
+    pub oneof_index: Option<i32>,
+    pub proto3_optional: bool,
+}
+
+/// Resolve every reachable request field from the single Rust contract model.
+///
+/// A fresh vector is returned so generators can sort or group fields without
+/// mutating shared model state.  Descriptor lookup is global across the
+/// registered families because request fields commonly use protocol messages
+/// declared in a dependency file.
+pub fn resolved_request_fields() -> Result<Vec<ResolvedRequestField>, String> {
+    resolve_rpc_fields(true)
+}
+
+/// Resolve every reachable response field from the same Rust contract model.
+///
+/// The output uses the same record as request fields so language emitters can
+/// share one renderer while selecting the direction they are projecting.
+pub fn resolved_response_fields() -> Result<Vec<ResolvedRequestField>, String> {
+    resolve_rpc_fields(false)
+}
+
+fn resolve_rpc_fields(request: bool) -> Result<Vec<ResolvedRequestField>, String> {
+    let mut files = Vec::new();
+    for family in FAMILY_VIEWS {
+        let descriptor = match family.model {
+            FamilyModel::ContractSpec(_) | FamilyModel::Filesystem(_) | FamilyModel::Harness(_) => {
+                family.model.descriptor()
+            }
+        };
+        let set = FileDescriptorSet::decode(descriptor.as_slice())
+            .map_err(|error| format!("{} descriptor decode failed: {error}", family.name))?;
+        files.extend(set.file);
+    }
+
+    let mut messages = std::collections::BTreeMap::<String, DescriptorProto>::new();
+    for file in &files {
+        let package = file.package.as_deref().unwrap_or_default();
+        for message in &file.message_type {
+            collect_messages(package, None, message, &mut messages);
+        }
+    }
+
+    let mut fields = Vec::new();
+    for family in FAMILY_VIEWS {
+        let Some(package_file) = files.iter().find(|file| {
+            file.package.as_deref() == Some(family.package())
+                && file.name.as_deref() == Some(family.file_name())
+        }) else {
+            return Err(format!(
+                "{} Rust descriptor file {} is missing",
+                family.name,
+                family.file_name()
+            ));
+        };
+        for service in &package_file.service {
+            let service_name = service.name.as_deref().unwrap_or_default();
+            for method in &service.method {
+                let method_name = method.name.as_deref().unwrap_or_default();
+                let reference = if request {
+                    method.input_type.as_deref()
+                } else {
+                    method.output_type.as_deref()
+                };
+                let Some(reference) = reference else {
+                    return Err(format!(
+                        "{} method {method_name} has no {} message",
+                        family.name,
+                        if request { "input" } else { "output" }
+                    ));
+                };
+                let root_name = reference.trim_start_matches('.');
+                let Some(message) = messages.get(root_name) else {
+                    return Err(format!(
+                        "{} method {method_name} {} {root_name} is missing from Rust descriptors",
+                        family.name,
+                        if request { "input" } else { "output" },
+                    ));
+                };
+                let rpc = format!("{}.{}/{}", family.package(), service_name, method_name);
+                let mut active = std::collections::BTreeSet::new();
+                active.insert(root_name.to_owned());
+                collect_reachable_fields(
+                    family.name,
+                    &rpc,
+                    root_name,
+                    root_name,
+                    message,
+                    &messages,
+                    &mut fields,
+                    &mut active,
+                )?;
+            }
+        }
+    }
+    fields.sort_by(|left, right| {
+        (
+            left.family.as_str(),
+            left.rpc.as_str(),
+            left.message_path.as_str(),
+            left.number,
+        )
+            .cmp(&(
+                right.family.as_str(),
+                right.rpc.as_str(),
+                right.message_path.as_str(),
+                right.number,
+            ))
+    });
+    fields.dedup();
+    Ok(fields)
+}
+
+fn collect_messages(
+    package: &str,
+    parent: Option<&str>,
+    message: &DescriptorProto,
+    output: &mut std::collections::BTreeMap<String, DescriptorProto>,
+) {
+    let Some(name) = message.name.as_deref() else {
+        return;
+    };
+    let full_name = match parent {
+        Some(parent) => format!("{parent}.{name}"),
+        None if package.is_empty() => name.to_owned(),
+        None => format!("{package}.{name}"),
+    };
+    output.insert(full_name.clone(), message.clone());
+    for nested in &message.nested_type {
+        collect_messages(package, Some(&full_name), nested, output);
+    }
+}
+
+fn collect_reachable_fields(
+    family: &str,
+    rpc: &str,
+    root_message: &str,
+    message_path: &str,
+    message: &DescriptorProto,
+    messages: &std::collections::BTreeMap<String, DescriptorProto>,
+    output: &mut Vec<ResolvedRequestField>,
+    active: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    for field in &message.field {
+        let Some(field_name) = field.name.as_deref() else {
+            continue;
+        };
+        output.push(ResolvedRequestField {
+            family: family.to_owned(),
+            rpc: rpc.to_owned(),
+            root_message: root_message.to_owned(),
+            message_path: message_path.to_owned(),
+            field: field_name.to_owned(),
+            number: field.number.unwrap_or_default(),
+            json_name: field
+                .json_name
+                .clone()
+                .unwrap_or_else(|| field_name.to_owned()),
+            wire_type: field.r#type,
+            label: field.label,
+            oneof_index: field.oneof_index,
+            proto3_optional: field.proto3_optional.unwrap_or(false),
+        });
+        if field.r#type == Some(FieldType::Message as i32)
+            || field.r#type == Some(FieldType::Group as i32)
+        {
+            if let Some(reference) = field.type_name.as_deref() {
+                let reference = reference.trim_start_matches('.');
+                let Some(nested) = messages.get(reference) else {
+                    if is_known_external_message(reference) {
+                        continue;
+                    }
+                    return Err(format!(
+                        "{family} {rpc} field {}.{} references missing message {reference}",
+                        message_path, field_name
+                    ));
+                };
+                if active.insert(reference.to_owned()) {
+                    collect_reachable_fields(
+                        family,
+                        rpc,
+                        root_message,
+                        reference,
+                        nested,
+                        messages,
+                        output,
+                        active,
+                    )?;
+                    active.remove(reference);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_known_external_message(name: &str) -> bool {
+    name.starts_with("google.protobuf.")
+}
+
 /// Every language target currently inventoried by the generation pipeline.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TypePolicyLanguage {
@@ -1617,5 +1839,21 @@ mod tests {
         assert_eq!(variants[0].tag, "known");
         assert_eq!(variants[1].tag, "unknown");
         assert_eq!(variants[1].payload_wire_kind, WireValueKind::Bytes);
+    }
+
+    #[test]
+    fn descriptor_field_inventory_is_complete_and_fail_closed() {
+        let requests = resolved_request_fields().expect("all request graphs resolve");
+        let responses = resolved_response_fields().expect("all response graphs resolve");
+        assert!(requests.len() >= 600, "request field inventory is unexpectedly small");
+        assert!(responses.len() >= 600, "response field inventory is unexpectedly small");
+        for field in requests.iter().chain(responses.iter()) {
+            assert!(!field.family.is_empty());
+            assert!(!field.rpc.is_empty());
+            assert!(!field.root_message.is_empty());
+            assert!(!field.message_path.is_empty());
+            assert!(!field.field.is_empty());
+            assert!(field.number > 0);
+        }
     }
 }
