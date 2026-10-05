@@ -11,9 +11,10 @@
 
 use futures::StreamExt;
 use acyclic_harness::{
+    communication_tools::LocalTaskCancellationSource,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{
-        LocalSessionPhase, PersistentLocalSwarm,
+        LocalSessionPhase, LocalSwarmBindings, PersistentLocalSwarm,
     },
     model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
         ModelProvider},
@@ -34,7 +35,7 @@ use std::{
     },
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::{watch, Mutex, Notify, Semaphore};
+use tokio::sync::{Mutex, Notify, Semaphore};
 
 #[cfg(test)]
 use tokio::io::AsyncReadExt;
@@ -75,7 +76,8 @@ struct Args {
 #[derive(Clone)]
 struct BlockingFixture {
     started: Arc<Notify>,
-    cancelled: watch::Sender<bool>,
+    cancellation: Arc<LocalTaskCancellationSource>,
+    task: Arc<std::sync::Mutex<Option<TaskId>>>,
 }
 
 #[derive(Clone)]
@@ -94,7 +96,21 @@ impl ModelProvider for EchoModel {
         let request = prepared.request().clone();
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
         if let Some(blocking) = self.blocking.clone() {
-            let mut cancelled = blocking.cancelled.subscribe();
+            let task = blocking
+                .task
+                .lock()
+                .ok()
+                .and_then(|task| *task);
+            let Some(task) = task else {
+                return Box::pin(futures::stream::once(async {
+                    Err(HarnessError::Storage("blocking fixture task is not bound".into()))
+                }));
+            };
+            let Some(mut cancelled) = blocking.cancellation.receiver(task) else {
+                return Box::pin(futures::stream::once(async move {
+                    Err(HarnessError::Storage("blocking fixture cancellation scope is not registered".into()))
+                }));
+            };
             blocking.started.notify_waiters();
             return Box::pin(futures::stream::once(async move {
                 if !*cancelled.borrow() {
@@ -443,10 +459,10 @@ impl Runtime {
             }),
         )?;
         let blocking = (fixture == "blocking").then(|| {
-            let (cancelled, _) = watch::channel(false);
             BlockingFixture {
                 started: Arc::new(Notify::new()),
-                cancelled,
+                cancellation: Arc::new(LocalTaskCancellationSource::default()),
+                task: Arc::new(std::sync::Mutex::new(None)),
             }
         });
         let provider = Arc::new(EchoModel {
@@ -455,6 +471,12 @@ impl Runtime {
             option_policy,
             blocking: blocking.clone(),
         });
+        let bindings = blocking
+            .as_ref()
+            .map(|blocking| {
+                LocalSwarmBindings::default().with_cancellation(blocking.cancellation.clone())
+            })
+            .unwrap_or_default();
         let swarm = match (&args.checkout, &args.project_id) {
             (Some(checkout), Some(project_id)) => {
                 let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
@@ -480,24 +502,30 @@ impl Runtime {
                 ));
             }
             (None, _) => {
-                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_with_bindings(
                     &args.root,
                     model,
                     provider,
                     Limits::default(),
+                    bindings,
                 )
                 .await?
             }
         };
         if blocking.is_some() {
             let task = swarm.root_task().await?;
+            if let Some(blocking) = &blocking {
+                if let Ok(mut bound_task) = blocking.task.lock() {
+                    *bound_task = Some(task);
+                }
+            }
             if swarm.list_approvals(task).await?.is_empty() {
                 swarm
                     .open_approval(
                         task,
-                        OperationId::from_bytes([0xd1; 16]),
+                        operation_for("blocking-operation"),
                         "Approve the blocking fixture operation",
-                        [0x71; 32],
+                        *blake3::hash(b"blocking fixture operation").as_bytes(),
                     )
                     .await?;
             }
@@ -839,9 +867,6 @@ impl Runtime {
     async fn cancel_session(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
-        if let Some(blocking) = &self.blocking {
-            let _ = blocking.cancelled.send(true);
-        }
         let session = self
             .swarm
             .cancel(task)
@@ -1794,6 +1819,10 @@ mod tests {
         assert_eq!(approvals["ok"], true);
         let approval = &approvals["result"]["items"][0];
         assert_eq!(approval["state"], "pending");
+        assert_eq!(
+            approval["operation_id"],
+            operation_for("blocking-operation").to_string()
+        );
         let approval_id = approval["id"].as_str().expect("approval id").to_owned();
 
         let denied = exchange(
@@ -1812,6 +1841,16 @@ mod tests {
         .await;
         assert_eq!(denied["ok"], false);
         assert_eq!(denied["error"]["code"], "denied");
+        let still_pending = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"blocking-still-pending",
+                "method":"list_approvals",
+                "params":{"session_id":session_id.clone()}
+            }),
+        )
+        .await;
+        assert_eq!(still_pending["result"]["items"][0]["state"], "pending");
 
         let approved = exchange(
             runtime.clone(),
@@ -1908,6 +1947,22 @@ mod tests {
             .await
             .expect("server joins")
             .expect("server succeeds");
+
+        drop(runtime);
+        let mut reopen_args = runtime_args(root.path().to_owned(), "blocking");
+        reopen_args.operator_token = Some("operator-secret".to_owned());
+        let reopened = Arc::new(Runtime::open(&reopen_args).await.expect("runtime reopens"));
+        let recovered = exchange(
+            reopened,
+            json!({
+                "request_id":"blocking-reopen",
+                "method":"open_session",
+                "params":{"session_id":session_id}
+            }),
+        )
+        .await;
+        assert_eq!(recovered["ok"], true);
+        assert_eq!(recovered["result"]["summary"]["state"], "cancelled");
     }
 
     #[tokio::test]

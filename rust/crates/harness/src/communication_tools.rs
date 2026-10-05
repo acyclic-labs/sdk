@@ -39,8 +39,20 @@ pub const TOOL_REVISION: &str = "1";
 /// Implementations return a receiver for the admitted task's cancellation
 /// scope. This is runtime provenance and never enters model-visible content.
 pub trait WaitCancellationSource: Send + Sync {
+    /// Registers one admitted task's live cancellation scope. Read-only
+    /// sources may retain the default no-op because they only observe scopes
+    /// created by another owner.
+    fn register(&self, _task_id: TaskId) -> Result<()> {
+        Ok(())
+    }
+
     /// Returns a live cancellation receiver for one admitted task.
     fn receiver(&self, task_id: TaskId) -> Option<watch::Receiver<bool>>;
+
+    /// Removes one task's live scope after its executor has stopped.
+    fn remove(&self, _task_id: TaskId) -> Result<()> {
+        Ok(())
+    }
 
     /// Requests cancellation for one admitted task when this source is also
     /// owner-controlled. Read-only sources may retain the default refusal.
@@ -101,6 +113,10 @@ impl LocalTaskCancellationSource {
 }
 
 impl WaitCancellationSource for LocalTaskCancellationSource {
+    fn register(&self, task_id: TaskId) -> Result<()> {
+        LocalTaskCancellationSource::register(self, task_id)
+    }
+
     fn receiver(&self, task_id: TaskId) -> Option<watch::Receiver<bool>> {
         self.scopes
             .lock()
@@ -110,6 +126,10 @@ impl WaitCancellationSource for LocalTaskCancellationSource {
 
     fn cancel(&self, task_id: TaskId) -> Result<()> {
         LocalTaskCancellationSource::cancel(self, task_id)
+    }
+
+    fn remove(&self, task_id: TaskId) -> Result<()> {
+        LocalTaskCancellationSource::remove(self, task_id)
     }
 }
 

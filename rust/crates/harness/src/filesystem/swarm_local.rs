@@ -186,6 +186,17 @@ impl LocalSwarmBindings {
         self
     }
 
+    /// Installs the owner-controlled cancellation source used by admitted
+    /// task executors and communication waits.
+    #[must_use]
+    pub fn with_cancellation(
+        mut self,
+        cancellation: Arc<dyn crate::communication_tools::WaitCancellationSource>,
+    ) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
     /// Adds owner-prepared recursive fork plans and the model-facing fork tool.
     #[must_use]
     pub fn with_model_fork_plans(mut self, plans: Arc<LocalModelForkPlans>) -> Self {
@@ -2248,6 +2259,26 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
     ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_with_bindings(
+            root,
+            model,
+            provider,
+            limits,
+            LocalSwarmBindings::default(),
+        )
+        .await
+    }
+
+    /// Opens the shared recursive local composition with caller supplied
+    /// owner services. The services stay Harness owned while the caller may
+    /// provide an authenticated cancellation source for the host runtime.
+    pub async fn open_shared_with_model_and_recursive_filesystem_with_bindings(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
         let root = root.as_ref().to_path_buf();
         let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
         let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone())
@@ -2267,7 +2298,7 @@ impl PersistentLocalSwarm {
             root.clone(),
             config,
             provider.clone(),
-            LocalSwarmBindings::default(),
+            bindings.clone(),
         )
         .await?;
         let root_task = base.root_task().await?;
@@ -2282,7 +2313,7 @@ impl PersistentLocalSwarm {
             model,
             provider,
             limits,
-            LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+            bindings.with_filesystem_fork_resolver(resolver),
         )
         .await
     }
@@ -2925,9 +2956,17 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
-        let output = harness
+        let cancellation = self.bindings.cancellation.clone();
+        if let Some(source) = &cancellation {
+            source.register(task)?;
+        }
+        let output_result = harness
             .run_with_max_steps(operation, prompt, max_steps)
-            .await?;
+            .await;
+        if let Some(source) = &cancellation {
+            source.remove(task)?;
+        }
+        let output = output_result?;
         // The per-task mutex only fences handles in this process.  A second
         // process can cancel the task while the model is running, so the
         // registry must be refreshed before the terminal Session event is

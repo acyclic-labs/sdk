@@ -6,7 +6,7 @@
     "root_env": "GRAPHCODER_NATIVE_ROOT",
     "fixture": "blocking",
     "driver": "scripts/graphcoder-native-blocking-e2e.mjs",
-    "fixture_policy": "The blocking model is an explicit deterministic fixture. Its waiting state belongs to the model provider; the driver only uses public Harness-backed routes."
+    "fixture_policy": "The blocking model is an explicit deterministic fixture. Its approval ticket is bound to the exact blocking operation identity, and its waiting state belongs to the model provider; the driver only uses public Harness-backed routes. The fixture has no model tool side effect, so approval evidence covers durable interaction routing and operation binding rather than effect authorization."
   },
   "public_routes": [
     "list_sessions",
@@ -18,7 +18,7 @@
   "assertions": [
     "list_approvals exposes the durable ticket as pending",
     "an incorrect operator credential is denied",
-    "the configured operator resolves the exact pending ticket",
+    "the configured operator resolves the exact pending ticket and a wrong credential leaves it pending",
     "cancel_session persists cancellation while the blocking model turn is unresolved",
     "the cancelled start returns stale and cannot report false completion",
     "all requests and responses remain correlated through the JSON-lines bridge",
