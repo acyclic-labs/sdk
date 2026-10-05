@@ -4279,6 +4279,7 @@ impl PersistentLocalSwarm {
         operation: OperationId,
         prompt: &str,
     ) -> Result<TurnOutput> {
+        crate::stack_diagnostics::marker("root-admission-enter");
         self.live.cancellation.register(task)?;
         let mut cancelled = self.live.cancellation.receiver(task).ok_or_else(|| {
             Error::Storage("registered task cancellation scope disappeared".into())
@@ -4328,6 +4329,7 @@ impl PersistentLocalSwarm {
                     .await
             }
         };
+        crate::stack_diagnostics::future_size("local-run-body", &run);
         let output = tokio::select! {
             biased;
             result = cancellation_requested(&mut cancelled) => {
@@ -5325,6 +5327,7 @@ impl PersistentLocalSwarm {
         // Keep recursive model/tool polling behind a heap boundary. The worker
         // registry remains the sole owner and join boundary for cancellation.
         let child_task = Self::run_child_turn(harness, bundle, admission, request, max_steps);
+        crate::stack_diagnostics::future_size("run-child-boxed", &child_task);
         tokio::pin!(child_task);
         tokio::select! {
             result = &mut child_task => result,
