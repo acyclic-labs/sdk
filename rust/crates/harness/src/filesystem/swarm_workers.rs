@@ -77,7 +77,7 @@ mod tests {
         let workers = LocalChildWorkers::default();
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, mut dropped_observed) = oneshot::channel();
+        let (dropped, dropped_observed) = oneshot::channel();
         workers
             .enqueue(task, pending_worker(started, dropped))
             .await?;
@@ -106,7 +106,7 @@ mod tests {
         let workers = LocalChildWorkers::default();
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, mut dropped_observed) = oneshot::channel();
+        let (dropped, dropped_observed) = oneshot::channel();
         workers
             .enqueue(task, pending_worker(started, dropped))
             .await?;
@@ -122,7 +122,7 @@ mod tests {
         let workers = LocalChildWorkers::default();
         let task = TaskId::new();
         let (started, started_observed) = oneshot::channel();
-        let (dropped, mut dropped_observed) = oneshot::channel();
+        let (dropped, dropped_observed) = oneshot::channel();
         workers
             .enqueue(task, pending_worker(started, dropped))
             .await?;

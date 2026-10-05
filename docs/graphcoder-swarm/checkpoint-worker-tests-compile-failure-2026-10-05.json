@@ -1,0 +1,12 @@
+{
+  "source_commit": "5f979b9f1",
+  "suite": "cargo test -p acyclic-harness --features test-support,native-process-tree --lib --test local_model_swarm --test local_swarm_faults",
+  "platform": "Windows native",
+  "exit_code": 101,
+  "status": "compile_failed_before_test_execution",
+  "cause": "Worker tests used the single-parameter Harness Result alias for boxed test errors and an unavailable oneshot receiver is_closed method.",
+  "archive": "D:/graphcoder-builds/root-qualification-artifacts/5f979b9f1/compile-failure",
+  "source_archive_sha256": "f987f215deccab161d87656d3932ae029c1412e94f086041c485fe6e92fcb0de",
+  "log_sha256": "b8c20799a070ad97566a995c15f7a24882020351226aa8c3406306ccf98854d4",
+  "claims": "No runtime pass is claimed. Session 53567 was terminal with exit 101 before source changes."
+}
