@@ -48,6 +48,79 @@ export type RustOwnedWireChoice =
   { readonly kind: "known"; readonly value: object } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
+import type * as RustWire from "../generated/proto/machines/v1/machines_pb.js";
+
+// Rust-owned public facade types. Generated from type_policy.rs; do not edit.
+
+export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
+
+export type RustOwnedPublicCheckpointAdmission = RustWire.CheckpointAdmission;
+export type RustOwnedPublicCheckpointMachineRequest = RustWire.CheckpointMachineRequest;
+export type RustOwnedPublicCheckpointMutationRequest = RustWire.CheckpointMutationRequest;
+export type RustOwnedPublicCheckpointState = RustWire.CheckpointState;
+export type RustOwnedPublicCreateMachineRequest = Omit<RustWire.CreateMachineRequest, "idempotencyKey" | "image"> & {
+  readonly idempotencyKey: RustOwnedSemanticMessage<"idempotency_key_message">;
+  readonly image: RustOwnedSemanticMessage<"immutable_image">;
+};
+export type RustOwnedPublicEventPage = RustWire.EventPage;
+export type RustOwnedPublicEventsRequest = Omit<RustWire.EventsRequest, "limit"> & {
+  readonly limit: RustOwnedMachineEventPageLimit;
+};
+export type RustOwnedPublicForkAdmission = RustWire.ForkAdmission;
+export type RustOwnedPublicForkCheckpointRequest = RustWire.ForkCheckpointRequest;
+export type RustOwnedPublicForkMachineAdmission = RustWire.ForkMachineAdmission;
+export type RustOwnedPublicForkMachineRequest = RustWire.ForkMachineRequest;
+export type RustOwnedPublicImageQualification = RustWire.ImageQualification;
+export type RustOwnedPublicInspectCheckpointRequest = Omit<RustWire.InspectCheckpointRequest, "checkpoint"> & {
+  readonly checkpoint: RustOwnedCheckpointId;
+};
+export type RustOwnedPublicInspectMachineRequest = Omit<RustWire.InspectMachineRequest, "machine"> & {
+  readonly machine: RustOwnedMachineId;
+};
+export type RustOwnedPublicListMachinesRequest = Omit<RustWire.ListMachinesRequest, "limit"> & {
+  readonly limit: RustOwnedMachinePageLimit;
+};
+export type RustOwnedPublicMachineAdmission = RustWire.MachineAdmission;
+export type RustOwnedPublicMachineMutationRequest = RustWire.MachineMutationRequest;
+export type RustOwnedPublicMachinePage = RustWire.MachinePage;
+export type RustOwnedPublicMachineState = RustWire.MachineState;
+export type RustOwnedPublicMutationAdmission = RustWire.MutationAdmission;
+export type RustOwnedPublicOperationRequest = Omit<RustWire.OperationRequest, "operation"> & {
+  readonly operation: RustOwnedOperationId;
+};
+export type RustOwnedPublicOperationState = RustWire.OperationState;
+export type RustOwnedPublicPolicyAdmission = RustWire.PolicyAdmission;
+export type RustOwnedPublicQualifyImageRequest = Omit<RustWire.QualifyImageRequest, "image"> & {
+  readonly image: RustOwnedSemanticMessage<"immutable_image">;
+};
+export type RustOwnedPublicRecoverRequest = RustWire.RecoverRequest;
+export type RustOwnedPublicRecoveredAdmission = RustWire.RecoveredAdmission;
+export type RustOwnedPublicSetSuspensionPolicyRequest = RustWire.SetSuspensionPolicyRequest;
+export type RustOwnedPublicUsageReceipt = RustWire.UsageReceipt;
+export type RustOwnedPublicUsageRequest = RustWire.UsageRequest;
+
+export interface RustOwnedMachinesPublicClient {
+  readonly qualifyImage: (request: RustOwnedPublicQualifyImageRequest, signal?: AbortSignal) => Promise<RustOwnedPublicImageQualification>;
+  readonly create: (request: RustOwnedPublicCreateMachineRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMachineAdmission>;
+  readonly checkpoint: (request: RustOwnedPublicCheckpointMachineRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCheckpointAdmission>;
+  readonly fork: (request: RustOwnedPublicForkCheckpointRequest, signal?: AbortSignal) => Promise<RustOwnedPublicForkAdmission>;
+  readonly forkMachine: (request: RustOwnedPublicForkMachineRequest, signal?: AbortSignal) => Promise<RustOwnedPublicForkMachineAdmission>;
+  readonly suspend: (request: RustOwnedPublicMachineMutationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationAdmission>;
+  readonly wake: (request: RustOwnedPublicMachineMutationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationAdmission>;
+  readonly setSuspensionPolicy: (request: RustOwnedPublicSetSuspensionPolicyRequest, signal?: AbortSignal) => Promise<RustOwnedPublicPolicyAdmission>;
+  readonly destroyMachine: (request: RustOwnedPublicMachineMutationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationAdmission>;
+  readonly destroyCheckpoint: (request: RustOwnedPublicCheckpointMutationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMutationAdmission>;
+  readonly recover: (request: RustOwnedPublicRecoverRequest, signal?: AbortSignal) => Promise<RustOwnedPublicRecoveredAdmission>;
+  readonly inspectMachine: (request: RustOwnedPublicInspectMachineRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMachineState>;
+  readonly inspectCheckpoint: (request: RustOwnedPublicInspectCheckpointRequest, signal?: AbortSignal) => Promise<RustOwnedPublicCheckpointState>;
+  readonly listMachines: (request: RustOwnedPublicListMachinesRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMachinePage>;
+  readonly events: (request: RustOwnedPublicEventsRequest, signal?: AbortSignal) => Promise<RustOwnedPublicEventPage>;
+  readonly usage: (request: RustOwnedPublicUsageRequest, signal?: AbortSignal) => Promise<RustOwnedPublicUsageReceipt>;
+  readonly cancel: (request: RustOwnedPublicOperationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicOperationState>;
+  readonly inspectOperation: (request: RustOwnedPublicOperationRequest, signal?: AbortSignal) => Promise<RustOwnedPublicOperationState>;
+  readonly watchOperation: (request: RustOwnedPublicOperationRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicOperationState>;
+}
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {

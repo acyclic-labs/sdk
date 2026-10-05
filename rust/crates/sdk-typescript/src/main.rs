@@ -1140,7 +1140,7 @@ fn typescript_public_types_section(
                 WireValueKind::Bytes => format!("RustOwned{}", typescript_semantic_name(item.id).trim_start_matches("RustOwned")),
                 WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => format!("RustOwned{}", typescript_semantic_name(item.id).trim_start_matches("RustOwned")),
                 WireValueKind::Boolean => "boolean".to_owned(),
-                WireValueKind::Message => format!("RustOwnedSemanticMessage<{}>", item.id.escape_default()),
+                WireValueKind::Message => format!("RustOwnedSemanticMessage<\"{}\">", item.id.escape_default()),
                 WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => "unknown".to_owned(),
             };
             fields.push((field, value));
