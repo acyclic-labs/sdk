@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertTypedTerminalRecords, bridgeEnvironment, commandContext, framedPromptCount, installChildSignalCleanup } from "./graphcoder-production-pty.mjs";
+import { assertTypedTerminalRecords, bridgeEnvironment, commandContext, framedPromptCount, installChildSignalCleanup, validateFreshInputSequence } from "./graphcoder-production-pty.mjs";
 
 test("PTY environment keeps only platform and explicit GraphCoder variables", () => {
   const filtered = bridgeEnvironment({
@@ -89,4 +89,20 @@ test("PTY child signal listeners forward termination and are removed after close
   cleanup();
   assert.equal(process.listenerCount("SIGINT"), beforeInt);
   assert.equal(process.listenerCount("SIGTERM"), beforeTerm);
+});
+
+test("PTY fresh-input scenario follows a reopened session and uses a new operation", () => {
+  assert.doesNotThrow(() => validateFreshInputSequence([
+    "start op-first inspect",
+    "resume session-1",
+    "input op-follow-up follow-up  with exact bytes",
+  ]));
+  assert.throws(
+    () => validateFreshInputSequence(["start op-first inspect", "input op-follow-up follow-up"]),
+    /follow an open or resume/u,
+  );
+  assert.throws(
+    () => validateFreshInputSequence(["start op-first inspect", "resume session-1", "input op-first follow-up"]),
+    /reuses an earlier operation identity/u,
+  );
 });
