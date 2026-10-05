@@ -3186,23 +3186,27 @@ impl PersistentLocalSwarm {
     /// private/project capabilities after typed publication.
     fn child_preallocation_grants(
         tool_contract: &Value,
+        available: &Capabilities,
     ) -> Result<Capabilities> {
         let definitions = tool_contract
             .get("tools")
             .and_then(Value::as_array)
             .ok_or_else(|| Error::Invalid("local execution contract has no tools".into()))?;
-        let mut grants = vec![
-            "model:generate".to_owned(),
-            "mail:send".to_owned(),
-            "mail:read".to_owned(),
-            "timer:wait".to_owned(),
-        ];
+        let mut grants = Vec::new();
+        for grant in ["model:generate", "mail:send", "mail:read", "timer:wait"] {
+            if available.contains(grant) {
+                grants.push(grant.to_owned());
+            }
+        }
         for definition in definitions {
             let name = definition
                 .get("name")
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::Invalid("local tool contract has no name".into()))?;
-            grants.push(format!("tool:call:{name}"));
+            let grant = format!("tool:call:{name}");
+            if available.contains(&grant) {
+                grants.push(grant);
+            }
         }
         Ok(Capabilities::new(grants))
     }
@@ -3245,8 +3249,7 @@ impl PersistentLocalSwarm {
                     .bundle()
                     .capabilities()
                     .iter()
-                    .map(str::to_owned)
-                    .chain(["mail:send".into(), "mail:read".into(), "timer:wait".into()]),
+                    .map(str::to_owned),
             ),
             harness.bundle().limits(),
             self.config.run_limits,
@@ -3294,7 +3297,10 @@ impl PersistentLocalSwarm {
             &requirements,
             &machine_digest,
             Some(parent),
-            Self::child_preallocation_grants(&tool_contract)?,
+            Self::child_preallocation_grants(
+                &tool_contract,
+                parent_harness.bundle().capabilities(),
+            )?,
             parent_harness.bundle().limits(),
             self.config.run_limits,
             self.provider
@@ -5269,9 +5275,6 @@ impl PersistentLocalSwarm {
             .grant("tool:call:acyclic.read_file")
             .grant("tool:call:acyclic.stage_file")
             .grant("tool:call:acyclic.list_files")
-            .grant("mail:send")
-            .grant("mail:read")
-            .grant("timer:wait")
             .limits(self.config.limits);
         self.bindings.tools_for(task)?.install_into(builder)?.build()
     }

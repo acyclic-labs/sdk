@@ -985,6 +985,12 @@ impl LocalHarnessTools {
             builder = builder.batch_publisher(publisher.clone());
         }
         if let Some(task_id) = self.authenticated_task {
+            // These grants accompany the authenticated communication tools,
+            // so admission records the capabilities of the actual bundle.
+            builder = builder
+                .grant("mail:send")
+                .grant("mail:read")
+                .grant("timer:wait");
             builder = builder.authenticated_task(task_id);
         }
         Ok(builder)
