@@ -757,14 +757,20 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                         .await?
                 }
             };
+            crate::stack_diagnostics::marker("fork-physical-after-boundary-verification");
+            crate::stack_diagnostics::marker("fork-physical-before-boundary-clone");
             let boundary = verified.boundary().clone();
+            crate::stack_diagnostics::marker("fork-physical-after-boundary-clone");
             let parent = verified.parent();
+            crate::stack_diagnostics::marker("fork-physical-after-parent-access");
             let parent_revision = parent.reducer().revision();
+            crate::stack_diagnostics::marker("fork-physical-after-parent-revision");
             if parent.reducer().authority() != storage.conversation() || parent_revision == 0 {
                 return Err(Error::Conflict(
                     "fork publication parent aggregate changed during allocation".into(),
                 ));
             }
+            crate::stack_diagnostics::marker("fork-physical-after-parent-authority");
 
             // A restart may have committed the typed report and declaration
             // before the live plan cache was reconstructed. Reuse that exact
