@@ -7,8 +7,9 @@
 //! files are still owned by [`PersistentLocalHarness`].
 
 use super::{
-    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
-    InteractionApprovalAuthorization, InteractionOperatorAuthorizer, LocalHarnessTools,
+    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool,
+    FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
+    LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
     PersistentLocalHarness, workspace_ref,
 };
 use crate::{
@@ -47,7 +48,10 @@ use crate::{
         ToolRegistry, ToolResult,
     },
 };
-use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
+use acyclic_fs::{
+    GitFilesystemAction, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
+    LocalOptions,
+};
 use acyclic_stream::{
     AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError, StreamProvider,
 };
@@ -60,7 +64,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
+    sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak},
     task::{Context, Poll},
 };
 use tokio::sync::Mutex;
@@ -2726,12 +2730,18 @@ pub struct PersistentLocalSwarm {
     /// Shared provider bindings used by the root and lazily reopened task
     /// harnesses. The resolver must observe the same host and stream domain.
     filesystem_host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    /// Durable compatibility state for the model-facing filesystem Git facade.
+    git_store: Option<Arc<LocalCoreStateStore>>,
     conversation_stream: StreamClient<LocalStream>,
     stream_provider: ProviderRef,
     root_conversation: Authority,
     records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
     requests: Mutex<BTreeMap<TaskId, LocalForkRequest>>,
     seeds: Mutex<BTreeMap<TaskId, ForkSeed>>,
+    /// Direct child project bindings are populated only after the durable
+    /// seed publication barrier. Git joins consult this authenticated map so
+    /// siblings and descendants cannot be integrated by a child facade.
+    project_children: LocalProjectChildren,
     reports: Mutex<BTreeMap<TaskId, ForkReport>>,
     publications: Mutex<BTreeMap<TaskId, ModelBatchPublication>>,
     declarations: Mutex<BTreeMap<TaskId, LocalInheritedModelDeclaration>>,
@@ -2773,6 +2783,216 @@ impl PersistentLocalSwarm {
         if let Some(observer) = &self.bindings.observer {
             observer.observe(observation);
         }
+    }
+
+    fn git_tool_for(
+        &self,
+        task: TaskId,
+        harness: &PersistentLocalHarness,
+        project: &VolumeRef,
+    ) -> Result<Option<Tool>> {
+        let Some(store) = self.git_store.clone() else {
+            return Ok(None);
+        };
+        let workspace = Arc::new(
+            LocalProjectWorkspaceTree::new(
+                self.filesystem_host.clone(),
+                project.clone(),
+                &harness.storage().verifier(),
+                harness.storage().owner_scope().clone(),
+            )?
+            .with_project_children(self.project_children.clone()),
+        );
+        let facade = Arc::new(FilesystemGitFacade::new(
+            workspace.workspace_id(),
+            (*store).clone(),
+            project.clone(),
+            harness.storage().verifier(),
+            harness.storage().owner_scope().clone(),
+        )?);
+        let host = self.filesystem_host.clone();
+        let children = self.project_children.clone();
+        let parent_facade = facade.clone();
+        workspace.bind_direct_project_join(Arc::new(move |operation_id, action| {
+            let host = host.clone();
+            let children = children.clone();
+            let facade = parent_facade.clone();
+            Box::pin(async move {
+                let GitFilesystemAction::Join {
+                    target_tree,
+                    source_workspace,
+                    tracked_paths,
+                    ..
+                } = action
+                else {
+                    return Err(Error::Invalid(
+                        "direct Git join route received another action".into(),
+                    ));
+                };
+                let binding = children
+                    .read()
+                    .map_err(|_| {
+                        Error::Storage("local project child registry was poisoned".into())
+                    })?
+                    .get(&source_workspace)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::Unauthorized("Git join source is not a direct child".into())
+                    })?;
+                let plan = facade
+                    .prepare_project_merge_for_child(
+                        host.as_ref(),
+                        &binding.parent,
+                        &binding.child,
+                        &binding.project,
+                    )
+                    .await?;
+                let expected = host.generation_ref_id(plan.target_head())?;
+                let target_digest = target_tree.authored_generation().digest().into_bytes();
+                if expected.as_resource().key() != target_digest.as_slice() {
+                    return Err(Error::Conflict(
+                        "direct project join target generation changed".into(),
+                    ));
+                }
+                match facade
+                    .apply_authenticated_project_merge_for_child(
+                        host.as_ref(),
+                        &binding.parent,
+                        &binding.child,
+                        &binding.project,
+                        &plan,
+                        operation_id,
+                    )
+                    .await?
+                {
+                    acyclic_fs::JoinOutcome::Applied(application)
+                    | acyclic_fs::JoinOutcome::AlreadyApplied(application) => {
+                        Ok(acyclic_fs::GitFilesystemResult::Applied {
+                            tree: Some(acyclic_fs::GitTreeRef::exact(
+                                target_tree.workspace_id(),
+                                application.generation().id(),
+                            )),
+                            tracked_paths: Some(tracked_paths),
+                        })
+                    }
+                    acyclic_fs::JoinOutcome::NoChanges(generation) => {
+                        Ok(acyclic_fs::GitFilesystemResult::Applied {
+                            tree: Some(acyclic_fs::GitTreeRef::exact(
+                                target_tree.workspace_id(),
+                                generation.id(),
+                            )),
+                            tracked_paths: Some(tracked_paths),
+                        })
+                    }
+                    acyclic_fs::JoinOutcome::StaleTarget(_) => Err(Error::Conflict(
+                        "direct project join target is stale".into(),
+                    )),
+                    acyclic_fs::JoinOutcome::Conflicted { .. } => Err(Error::Conflict(
+                        "direct project join has unresolved conflicts".into(),
+                    )),
+                    acyclic_fs::JoinOutcome::Fenced => Err(Error::Conflict(
+                        "direct project join writer was fenced".into(),
+                    )),
+                    acyclic_fs::JoinOutcome::IdempotencyConflict => Err(Error::Conflict(
+                        "direct project join operation identity was reused".into(),
+                    )),
+                }
+            })
+        }))?;
+        let tool = FilesystemGitTool::new(facade, workspace, format!("local-task-{task}"), || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+                })
+        })?;
+        Ok(Some(Arc::new(tool).into_tool()))
+    }
+
+    async fn project_for_task(&self, task: TaskId) -> Result<Option<VolumeRef>> {
+        if self.root_task().await? == task {
+            return Ok(self.config.project.clone());
+        }
+        let seed = self
+            .seeds
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local swarm seed {task}")))?;
+        Ok(seed
+            .resources
+            .into_iter()
+            .find_map(|resource| match resource.revision {
+                ResourceRevision::Project { volume, .. } => Some(volume),
+                _ => None,
+            }))
+    }
+
+    async fn register_project_child(
+        &self,
+        seed: &ForkSeed,
+        parent: &crate::core::Reducer,
+    ) -> Result<()> {
+        let Some(project) = seed
+            .resources
+            .iter()
+            .find_map(|resource| match &resource.revision {
+                ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                _ => None,
+            })
+        else {
+            return Ok(());
+        };
+        let workspace_id = self
+            .filesystem_host
+            .workspace_id(project.storage_name()?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        self.project_children
+            .write()
+            .map_err(|_| Error::Storage("local project child registry was poisoned".into()))?
+            .insert(
+                workspace_id,
+                LocalProjectChildBinding {
+                    parent: parent.clone(),
+                    child: seed.child.clone(),
+                    project,
+                },
+            );
+        Ok(())
+    }
+
+    async fn rebuild_project_children(&self) -> Result<()> {
+        let seeds = self
+            .seeds
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for seed in seeds {
+            let tasks = self
+                .records
+                .lock()
+                .await
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            let mut parent_task = None;
+            for task in tasks {
+                if self.conversation_authority(task).await == Some(seed.parent.clone()) {
+                    parent_task = Some(task);
+                    break;
+                }
+            }
+            let Some(parent_task) = parent_task else {
+                continue;
+            };
+            let parent = self.open_session(parent_task).await?;
+            self.register_project_child(&seed, parent.storage().reducer())
+                .await?;
+        }
+        Ok(())
     }
 
     /// Opens or recovers a local swarm. Child sessions remain lazy until a
@@ -3004,12 +3224,14 @@ impl PersistentLocalSwarm {
             registry,
             budget_journal: Arc::new(Mutex::new(budget_journal)),
             filesystem_host,
+            git_store: None,
             conversation_stream,
             stream_provider,
             root_conversation,
             records: Mutex::new(sessions),
             requests: Mutex::new(requests),
             seeds: Mutex::new(seeds),
+            project_children: Arc::new(RwLock::new(BTreeMap::new())),
             reports: Mutex::new(reports),
             publications: Mutex::new(publications),
             declarations: Mutex::new(declarations),
@@ -3151,6 +3373,11 @@ impl PersistentLocalSwarm {
             LocalSwarmBindings::default(),
         )
         .await?;
+        swarm.git_store = Some(Arc::new(
+            LocalCoreStateStore::open_owned(root.join("git"))
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        swarm.rebuild_project_children().await?;
         let root_task = swarm.root_task().await?;
         let root_harness = swarm.sessions.get_mut().remove(&root_task)
             .ok_or_else(|| Error::Storage("new local composition has no root harness".into()))?;
@@ -3177,9 +3404,13 @@ impl PersistentLocalSwarm {
         if let Some(source) = budget_usage_source {
             swarm.bindings = swarm.bindings.with_budget_usage_source(source);
         }
-        let root_harness = root_harness.with_local_tools(
-            model, provider, limits, swarm.bindings.tools_for(root_task)?,
-        )?;
+        let mut root_tools = swarm.bindings.tools_for(root_task)?;
+        if let Some(project) = swarm.config.project.clone()
+            && let Some(tool) = swarm.git_tool_for(root_task, &root_harness, &project)?
+        {
+            root_tools = root_tools.with_tool(tool)?;
+        }
+        let root_harness = root_harness.with_local_tools(model, provider, limits, root_tools)?;
         swarm.sessions.get_mut().insert(root_task, Arc::new(root_harness));
         swarm.model_fork_publisher = Some(publisher.clone());
         let swarm = Arc::new(swarm);
@@ -4514,7 +4745,7 @@ impl PersistentLocalSwarm {
         let declaration = self.declarations.lock().await.get(&task).cloned();
         let run = async {
             if let Some(declaration) = declaration {
-                let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
+                let bundle = self.inherited_task_bundle(task, &harness, &declaration).await?;
                 harness
                     .run_with_admission(&bundle, &admission, prompt, max_steps, &mut provider_budget)
                     .await
@@ -5182,6 +5413,7 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
+        self.register_project_child(&seed, parent.reducer()).await?;
         Ok(seed)
     }
 
@@ -5325,7 +5557,7 @@ impl PersistentLocalSwarm {
             boundary,
             suffix: declared_suffix,
         };
-        let bundle = match self.inherited_task_bundle(child, &harness, &declaration) {
+        let bundle = match self.inherited_task_bundle(child, &harness, &declaration).await {
             Ok(bundle) => bundle,
             Err(error) => {
                 self.mark_activation_failed_if_safe(
@@ -5683,7 +5915,7 @@ impl PersistentLocalSwarm {
         })
     }
 
-    fn inherited_task_bundle(
+    async fn inherited_task_bundle(
         &self,
         task: TaskId,
         harness: &PersistentLocalHarness,
@@ -5697,7 +5929,13 @@ impl PersistentLocalSwarm {
             .grant("tool:call:acyclic.stage_file")
             .grant("tool:call:acyclic.list_files")
             .limits(self.config.limits);
-        self.bindings.tools_for(task)?.install_into(builder)?.build()
+        let mut tools = self.bindings.tools_for(task)?;
+        if let Some(project) = self.project_for_task(task).await?
+            && let Some(tool) = self.git_tool_for(task, harness, &project)?
+        {
+            tools = tools.with_tool(tool)?;
+        }
+        tools.install_into(builder)?.build()
     }
 
     /// Rechecks the owner-retained admission immediately before model

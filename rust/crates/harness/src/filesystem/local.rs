@@ -966,6 +966,15 @@ impl LocalHarnessTools {
         self
     }
 
+    /// Adds one owner-constructed tool while preserving the registry's pinned
+    /// definition and revision.  Local swarm composition uses this to install
+    /// the filesystem Git facade after it has bound the task's authenticated
+    /// project workspace.
+    pub(crate) fn with_tool(mut self, tool: crate::tool::Tool) -> Result<Self> {
+        self.tools.register(tool)?;
+        Ok(self)
+    }
+
     pub(crate) fn install_into(
         &self,
         mut builder: crate::bundle::HarnessBuilder,
