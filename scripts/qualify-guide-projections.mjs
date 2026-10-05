@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { extname, join, relative, resolve } from "node:path";
+import { delimiter, extname, join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verifyQualificationSummary } from "./verify-guide-projection-receipts.mjs";
@@ -146,7 +146,12 @@ function compile(language, file, cwd, packageArtifact, environment = {}) {
     case "python": return command(environment.PYTHON_BIN ?? binaries.python, ["-m", "py_compile", file], cwd, environment);
     case "typescript": return command(binaries.tsc, ["--noEmit", "--strict", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--target", "ES2022", file], cwd, environment);
     case "go": return command(binaries.go, ["test", "."], cwd, environment);
-    case "java": return command(binaries.maven, ["--offline", "--batch-mode", "-q", "-DskipTests", "package"], cwd, environment);
+    case "java": {
+      const args = ["--offline", "--batch-mode", "-q"];
+      if (environment.MAVEN_REPO_LOCAL) args.push(`-Dmaven.repo.local=${environment.MAVEN_REPO_LOCAL}`);
+      args.push("-DskipTests", "package");
+      return command(binaries.maven, args, cwd, environment);
+    }
     case "csharp": return command(binaries.dotnet, ["build", join(cwd, "GuideSnippet.csproj"), "--nologo", "--verbosity", "quiet"], cwd, environment);
     case "ruby": return command(binaries.ruby, ["-c", file], cwd, environment);
     case "dart": return command(binaries.dart, ["analyze", file], cwd, environment);
@@ -167,7 +172,7 @@ function execute(language, file, cwd, environment = {}) {
       const classpathFile = join(cwd, "runtime-classpath.txt");
       const classpath = existsSync(classpathFile) ? readFileSync(classpathFile, "utf8").trim() : "";
       const targetClasses = join(cwd, "target", "classes");
-      return command(binaries.java, ["-cp", [targetClasses, classpath].filter(Boolean).join(";"), "GuideSnippet"], cwd, environment);
+      return command(binaries.java, ["-cp", [targetClasses, classpath].filter(Boolean).join(delimiter), "GuideSnippet"], cwd, environment);
     }
     case "csharp": return command(binaries.dotnet, ["run", "--project", join(cwd, "GuideSnippet.csproj"), "--no-build"], cwd, environment);
     case "rust": return command(cargo, ["run", "--offline", "--manifest-path", join(cwd, "Cargo.toml")], cwd, environment);
@@ -183,8 +188,20 @@ function prepare(language, packageArtifact, directory) {
     const packageToml = readFileSync(packageArtifact, "utf8");
     const packageName = packageToml.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
     if (!packageName) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package name" };
-    writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${packageRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
-    return { status: "installed", install: { command: "cargo consumer package", exitCode: 0, stdout: "", stderr: "" }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
+    const packageVersion = packageToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+    if (!packageVersion) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package version" };
+    const packageTarget = join(directory, "cargo-package-target");
+    const packaged = command(cargo, ["package", "--locked", "--offline", "--allow-dirty", "--no-verify", "--manifest-path", packageArtifact, "--target-dir", packageTarget], packageRoot, environment);
+    if (packaged.exitCode !== 0) return { status: "install-failed", install: packaged, environment: {} };
+    const crate = allFiles(packageTarget).find((path) => path.endsWith(`${packageName}-${packageVersion}.crate`));
+    if (!crate) return { status: "install-failed", install: { ...packaged, stderr: `${packaged.stderr}\nCargo package produced no .crate artifact` }, environment: {} };
+    const packageInstall = join(directory, "installed-package");
+    mkdirSync(packageInstall, { recursive: true });
+    const extracted = command(process.env.SDK_TAR_BIN ?? "tar", ["-xf", crate, "-C", packageInstall], directory, environment);
+    if (extracted.exitCode !== 0) return { status: "install-failed", install: extracted, environment: {} };
+    const installedRoot = join(packageInstall, `${packageName}-${packageVersion}`);
+    writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
+    return { status: "installed", install: { ...extracted, command: `${packaged.command} && ${extracted.command}`, stdout: `${packaged.stdout}${extracted.stdout}`, stderr: `${packaged.stderr}${extracted.stderr}` }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
   }
 
   if (language === "python" && packageArtifact.endsWith(".whl")) {
@@ -194,7 +211,7 @@ function prepare(language, packageArtifact, directory) {
     return {
       status: install.exitCode === 0 ? "installed" : "install-failed",
       install,
-      environment: { PYTHON_BIN: binaries.python, PYTHONPATH: [site, process.env.PYTHONPATH].filter(Boolean).join(";") },
+      environment: { PYTHON_BIN: binaries.python, PYTHONPATH: [site, process.env.PYTHONPATH].filter(Boolean).join(delimiter) },
     };
   }
 
@@ -245,7 +262,7 @@ function prepare(language, packageArtifact, directory) {
       },
     }, null, 2));
     const install = command(binaries.bun, ["install", "--offline", "--no-progress"], directory);
-    const nodePath = [join(directory, "node_modules"), join(repo, "typescript", "node_modules"), join(packageRoot, "node_modules")].join(";");
+    const nodePath = [join(directory, "node_modules"), join(repo, "typescript", "node_modules"), join(packageRoot, "node_modules")].join(delimiter);
     return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: { NODE_PATH: nodePath, PATH: process.env.PATH } };
   }
 
@@ -297,7 +314,7 @@ function prepare(language, packageArtifact, directory) {
     const gemHome = join(directory, "vendor", "bundle");
     const built = command(binaries.gem, ["build", packageArtifact, "--output", gemPath], directory);
     if (built.exitCode !== 0) return { status: "install-failed", install: built, environment: {} };
-    const rubyGemPath = [process.env.SDK_RUBY_GEM_PATH, gemHome, process.env.GEM_PATH].filter(Boolean).join(";");
+    const rubyGemPath = [process.env.SDK_RUBY_GEM_PATH, gemHome, process.env.GEM_PATH].filter(Boolean).join(delimiter);
     const rubyEnv = { GEM_HOME: gemHome, ...(rubyGemPath ? { GEM_PATH: rubyGemPath } : {}) };
     const dependencyCache = process.env.SDK_RUBY_GEM_PATH ? join(process.env.SDK_RUBY_GEM_PATH, "cache") : null;
     const dependencyNames = ["google-protobuf-4.33.0", "grpc-1.82.0", "googleapis-common-protos-types-1.23.0"];
