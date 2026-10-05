@@ -29,12 +29,14 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tempfile::tempdir;
+use tokio::sync::Notify;
 
 struct TraceModel {
     child_operation: OperationId,
+    child_release: Arc<Notify>,
     calls: AtomicUsize,
     usage: Arc<TraceUsage>,
 }
@@ -119,14 +121,19 @@ impl ModelProvider for TraceModel {
                 }),
             ]));
         }
-        Box::pin(futures::stream::iter([
-            Ok(ModelEvent::Content {
+        let release = self.child_release.clone();
+        let content = futures::stream::once(async move {
+            release.notified().await;
+            Ok::<ModelEvent, Error>(ModelEvent::Content {
                 delta: "real child result".into(),
-            }),
-            Ok(ModelEvent::Completed {
+            })
+        });
+        let completed = futures::stream::once(async {
+            Ok::<ModelEvent, Error>(ModelEvent::Completed {
                 metadata: Value::Null,
-            }),
-        ]))
+            })
+        });
+        Box::pin(content.chain(completed))
     }
 
     fn generate_with_dispatch<'a>(
@@ -408,9 +415,11 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let child_operation = OperationId::from_bytes([2; 16]);
     let root_operation = OperationId::from_bytes([1; 16]);
+    let child_release = Arc::new(Notify::new());
     let capture = Arc::new(CaptureProvider {
         inner: Arc::new(TraceModel {
             child_operation,
+            child_release: child_release.clone(),
             calls: AtomicUsize::new(0),
             usage: Arc::new(TraceUsage::default()),
         }),
@@ -426,10 +435,42 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     )
     .await?;
     let root_task = swarm.root_task().await?;
-    swarm
-        .run_root(root_operation, "formal real trace root")
-        .await?;
     let child_task = TaskId::from_bytes(child_operation.into_bytes());
+    let message_id = OperationId::from_bytes([3; 16]);
+    let message_body = b"formal runtime message";
+    let mut root_run = Box::pin(swarm.run_root(root_operation, "formal real trace root"));
+    let (sent_message, delivered_message) = loop {
+        tokio::select! {
+            result = &mut root_run => {
+                result?;
+                return Err(Error::Conflict(
+                    "real child completed before the active-agent message could be admitted".into(),
+                ));
+            }
+            _ = tokio::time::sleep(Duration::from_millis(1)) => {
+                let Ok(session) = swarm.session(child_task).await else {
+                    continue;
+                };
+                if !matches!(session.phase, LocalSessionPhase::Activating | LocalSessionPhase::Ready) {
+                    continue;
+                }
+                let sent = swarm
+                    .send_message(root_task, child_task, message_id, message_body)
+                    .await?;
+                let inbox = swarm.read_inbox(child_task, 0, 8).await?;
+                let delivered = inbox
+                    .iter()
+                    .find(|item| item.message_id == message_id.to_string())
+                    .cloned()
+                    .ok_or_else(|| Error::Storage("real child inbox has no active-agent message".into()))?;
+                // `notify_one` retains a permit if the provider has not yet
+                // polled its gated child stream, avoiding a lost wake-up.
+                child_release.notify_one();
+                break (sent, delivered);
+            }
+        }
+    };
+    root_run.await?;
     let child_session = swarm.session(child_task).await?;
     if child_session.phase != LocalSessionPhase::Completed {
         return Err(Error::Storage("real child did not complete".into()));
@@ -777,27 +818,6 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         ));
     }
 
-    // Exercise the real durable communication path after completion. The
-    // registry admission and recipient mailbox are separate authoritative
-    // streams; retain both and bind them by identity and payload.
-    let message_id = OperationId::from_bytes([3; 16]);
-    let message_body = b"formal runtime message";
-    let sent_message = swarm
-        .send_message(root_task, child_task, message_id, message_body)
-        .await?;
-    let inbox = swarm.read_inbox(child_task, 0, 8).await?;
-    let delivered_message = inbox
-        .iter()
-        .find(|item| item.message_id == message_id.to_string())
-        .ok_or_else(|| Error::Storage("real child inbox has no sent message".into()))?;
-    if delivered_message.sender != root_task
-        || delivered_message.task_id != child_task
-        || delivered_message.payload != sent_message.payload
-    {
-        return Err(Error::Conflict(
-            "real mailbox delivery is not bound to the admitted message".into(),
-        ));
-    }
     let post_message_events = registry_events(&registry).await?;
     let (
         message_admission_sequence,
@@ -820,11 +840,6 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             _ => None,
         })
         .ok_or_else(|| Error::Storage("real registry has no MessageAdmitted record".into()))?;
-    if message_admission_sequence <= completion_sequence {
-        return Err(Error::Conflict(
-            "message admission did not follow the durable child completion".into(),
-        ));
-    }
     if message_admission_payload != sent_message.payload {
         return Err(Error::Conflict(
             "message admission payload differs from the send result".into(),
@@ -859,12 +874,6 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "request_bytes_sha256": sha256_hex(&captured_request_bytes)
         }),
         json!({
-            "kind": "agent_completed",
-            "child_operation_id": child_operation.to_string(),
-            "agent": 2,
-            "outcome_durable": true
-        }),
-        json!({
             "kind": "message_admitted",
             "message_id": message_id.to_string(),
             "sender": 1,
@@ -875,6 +884,12 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "kind": "message_delivered",
             "message_id": message_id.to_string(),
             "delivery_index": delivered_message.sequence
+        }),
+        json!({
+            "kind": "agent_completed",
+            "child_operation_id": child_operation.to_string(),
+            "agent": 2,
+            "outcome_durable": true
         }),
     ];
     let bytes = serde_json::to_vec_pretty(&trace)

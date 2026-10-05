@@ -385,9 +385,8 @@ RequireJsonEqual $manifest.source.message_delivery_payload $manifest.source.mess
 if ([string]$manifest.source.message_delivery_message_id -ne [string]$manifest.source.message_id) {
     throw 'message delivery identity does not match the admitted message.'
 }
-if ([int64]$manifest.source.message_delivery_sequence -ne 1 -or
-    [int64]$manifest.source.message_admission_sequence -le [int64]$manifest.source.fork_completed_sequence) {
-    throw 'message delivery or registry admission sequence is invalid.'
+if ([int64]$manifest.source.message_delivery_sequence -ne 1) {
+    throw 'message delivery sequence is invalid.'
 }
 
 $parentEvent = ParseCanonicalJson ([string]$manifest.source.parent_event_canonical_bytes_hex) 'parent event'

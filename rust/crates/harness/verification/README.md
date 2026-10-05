@@ -227,9 +227,9 @@ deterministic mock provider, then projects the current durable records:
 `ForkPrepared` (with `ForkAdmitted` retained only for legacy read
 compatibility), the parent conversation's `ForkPublished`, the registry's
 `ForkPublicationCompleted` receipt and same-digest replay, the child's
-authenticated execution-journal `ModelStarted`, `ForkCompleted`, and one
-real parent-to-child durable message through both `MessageAdmitted` and the
-recipient mailbox. It writes a normalized six-event trace and a provenance manifest containing
+authenticated execution-journal `ModelStarted`, one active parent-to-child
+durable message through both `MessageAdmitted` and the recipient mailbox, and
+`ForkCompleted`. It writes a normalized six-event trace and a provenance manifest containing
 source stream sequences, distinct fork/publication/child operation identities,
 canonical source bytes and SHA-256 digests, and the raw opaque project
 generation. Registry sequence, parent conversation revision, and child journal
@@ -316,8 +316,8 @@ export authoritative journal witnesses for each applicable row and reject
 missing, reordered, or identity-mutated witnesses. The current real-trace
 exporter covers a bounded fork admission, parent-conversation publication,
 `ForkPublicationCompleted` registry receipt, same-digest reopen/replay, model
-start, completion, and one real durable message admission plus mailbox
-delivery. The replay reuses the authenticated publication operation and
+start, one active durable message admission plus mailbox delivery, and
+completion. The replay reuses the authenticated publication operation and
 digest, proves that no second receipt is appended, and checks that a
 substituted digest is rejected. Cancellation races, project integration,
 approval/writeback, and aggregate budget exhaustion remain separate gates.
