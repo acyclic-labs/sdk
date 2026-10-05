@@ -8,6 +8,7 @@ use crate::{
     durable_mail::MailboxStore,
     runtime::{DurableTaskHost, TaskCommunicationScope},
     scheduler::InboxItem,
+    swarm_budget::SwarmReservationState,
 };
 
 pub(super) struct SwarmCommunicationHost {
@@ -65,18 +66,67 @@ impl DurableTaskHost for SwarmCommunicationHost {
                     "task session parent differs from its authenticated admission".into(),
                 ));
             }
-            let accepts_new_mutations = matches!(
+            // Child communication is subordinate to the single durable swarm
+            // budget.  Admission alone is insufficient: the child reservation
+            // must be present, bound to the exact canonical admission bytes,
+            // and past the publication gate before a model or mailbox effect
+            // can mutate state.  Refresh the journal here so a second owner
+            // cannot leave this handle using a stale in-memory projection.
+            let reservation_state = if admission.parent.is_some() {
+                let parent_task = admission.parent.ok_or_else(|| {
+                    Error::Conflict("child admission is missing its parent identity".into())
+                })?;
+                let parent_operation = swarm
+                    .authenticated_admission(parent_task)
+                    .await?
+                    .operation_id;
+                let admission_digest = crate::contract::canonical_json_digest(
+                    &admission.canonical_value(),
+                )?;
+                let mut budget = swarm.budget_journal.lock().await;
+                budget.refresh().await?;
+                let reservation = budget
+                    .reservation(admission.operation_id)?
+                    .ok_or_else(|| {
+                        Error::Unauthorized(
+                            "child communication requires a canonical swarm budget reservation"
+                        .into(),
+                    )
+                })?;
+                if reservation.admission_digest != Some(admission_digest)
+                    || reservation.parent_operation_id != Some(parent_operation)
+                    || reservation.depth != u32::try_from(session.depth).map_err(|_| {
+                        Error::Conflict("task session depth exceeds the budget contract".into())
+                    })?
+                {
+                    return Err(Error::Conflict(
+                        "child communication admission is not bound to its canonical budget ancestry"
+                            .into(),
+                    ));
+                }
+                Some(reservation.state)
+            } else {
+                None
+            };
+            let lifecycle_allows = matches!(
                 &session.phase,
                 LocalSessionPhase::Ready
                     | LocalSessionPhase::Activating
                     | LocalSessionPhase::Completed
             );
+            let budget_allows = match reservation_state {
+                None | Some(SwarmReservationState::Active) => true,
+                Some(SwarmReservationState::Reserved | SwarmReservationState::Cancelled) => false,
+                Some(SwarmReservationState::Completed) => {
+                    matches!(session.phase, LocalSessionPhase::Completed)
+                }
+            };
             Ok(TaskCommunicationScope {
                 parent: admission.parent,
                 grants: admission.grants,
                 limits: admission.limits,
                 run_limits: admission.run_limits,
-                accepts_new_mutations,
+                accepts_new_mutations: lifecycle_allows && budget_allows,
             })
         })
     }
