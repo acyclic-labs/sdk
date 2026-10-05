@@ -3019,6 +3019,54 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn native_tree_backend_rejects_an_unprivileged_junction_parent() {
+        use std::os::windows::fs::MetadataExt as _;
+        use std::process::Command;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        let outside = temporary.path().join("outside");
+        let junction = root.join("alias");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::create_dir_all(operation.join("target")).expect("target");
+        let result = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .output()
+            .expect("mklink is available on Windows");
+        assert!(
+            result.status.success(),
+            "unprivileged junction creation failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let metadata = std::fs::symlink_metadata(&junction).expect("junction metadata");
+        assert_ne!(
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT,
+            0,
+            "mklink /J did not create a reparse point"
+        );
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+
+        assert!(matches!(
+            backend.plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["alias/escape.txt".to_owned()],
+            ),
+            Err(NativeTreeMaterializationError::AliasedPath(path))
+                if path == "alias/escape.txt"
+        ));
+        assert!(!outside.join("escape.txt").exists());
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_tree_backend_rejects_operation_directory_inside_checkout() {
