@@ -1356,7 +1356,8 @@ impl Drop for NativeExecutionProvider {
             .cancel_jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (_, job) in jobs.drain() {
+        let jobs = std::mem::take(&mut *jobs);
+        for (_, (_, job)) in jobs {
             job.abort();
         }
     }
@@ -1609,8 +1610,13 @@ impl NativeExecutionProvider {
         };
         cancellation.cancel();
         if let Ok(mut jobs) = self.cancel_jobs.lock() {
-            if let Some((_, job)) = jobs.remove(&operation_id) {
-                job.abort();
+            let matches_current_attempt = jobs
+                .get(&operation_id)
+                .is_some_and(|(attempt_id, _)| *attempt_id == key.attempt_id);
+            if matches_current_attempt {
+                if let Some((_, job)) = jobs.remove(&operation_id) {
+                    job.abort();
+                }
             }
         }
         if let Some(store) = &self.receipt_store {
