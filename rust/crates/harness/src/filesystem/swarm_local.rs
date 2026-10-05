@@ -4273,10 +4273,7 @@ impl PersistentLocalSwarm {
             Err(error) => return Err(error),
         }
         self.admissions.lock().await.insert(task, admission.clone());
-        let committed_tail = observed_tail
-            .checked_add(1)
-            .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
-        self.retain_registry_tail(committed_tail).await;
+        self.retain_appended_registry_tail(observed_tail).await?;
         Ok(admission)
     }
 
@@ -4978,10 +4975,7 @@ impl PersistentLocalSwarm {
         };
         match append_record_at(&registry, event, observed_tail).await {
             Ok(()) => {
-                let committed_tail = observed_tail
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
-                self.retain_registry_tail(committed_tail).await;
+                self.retain_appended_registry_tail(observed_tail).await?;
                 Ok(())
             }
             Err(error) => {
@@ -5086,10 +5080,7 @@ impl PersistentLocalSwarm {
         };
         match append_record_at(&registry, event, observed_tail).await {
             Ok(()) => {
-                let committed_tail = observed_tail
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
-                self.retain_registry_tail(committed_tail).await;
+                self.retain_appended_registry_tail(observed_tail).await?;
                 Ok(())
             }
             Err(error) => {
@@ -6950,6 +6941,14 @@ impl PersistentLocalSwarm {
     async fn retain_registry_tail(&self, committed_tail: u64) {
         let mut known_tail = self.registry_tail.lock().await;
         *known_tail = (*known_tail).max(committed_tail);
+    }
+
+    async fn retain_appended_registry_tail(&self, observed_tail: u64) -> Result<()> {
+        let committed_tail = observed_tail
+            .checked_add(1)
+            .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+        self.retain_registry_tail(committed_tail).await;
+        Ok(())
     }
 
     async fn refresh_registry_state_with_tail(&self) -> Result<u64> {
