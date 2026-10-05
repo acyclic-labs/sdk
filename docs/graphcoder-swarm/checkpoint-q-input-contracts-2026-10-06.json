@@ -1,0 +1,24 @@
+{
+  "kind": "native-model-input-checkpoint",
+  "source_commit": "1932e22aad3363c495c0783454863478d6c70473",
+  "platform": "Windows native",
+  "features": ["test-support", "native-process-tree"],
+  "build_jobs": 1,
+  "exit_code": 101,
+  "suites": [
+    {"name": "model_input_conformance_v3", "passed": 6, "failed": 0, "ignored": 0},
+    {"name": "model_input_rejection_conformance_v3", "passed": 3, "failed": 0, "ignored": 0},
+    {"name": "persistent_model_input_admission_v3", "passed": 4, "failed": 3, "ignored": 0}
+  ],
+  "evidence_directory": "target/graphcoder-qualification/1932e22aa-model-input",
+  "artifacts": [
+    {"path": "source.tar", "sha256": "18d0f079b7c6cc815b9b720902f074220b725d5d5a2426b32948b93233b23208"},
+    {"path": "native.log", "sha256": "a745a5ba8883e478bcc759f7fc2a7376d11d2c843bc1a332e1b734ab570c9b8f"},
+    {"path": "model_input_conformance_v3-dcf1d8c9181026ce.exe", "sha256": "e54a78eca248e1f99db169370ccfa7361da7ca4cffc3b13564c6f0b0917b93f2"},
+    {"path": "model_input_rejection_conformance_v3-b0282d5e58e077b7.exe", "sha256": "bdb0364bd714e0b54c001d009ef84fba8495c0b14c88e84da886af2d1969379e"},
+    {"path": "persistent_model_input_admission_v3-32d0fb1e60731bff.exe", "sha256": "6f86937517c2625de353478cee984c9eded7c4321480dade1cc74127af74dec5"}
+  ],
+  "qualification": "failed",
+  "failure": "Three persistent-input cases reject an ordered full tool-definition mismatch at the exact request assertion.",
+  "remaining_gate": "Reconcile expected pinned definitions with the canonical scoped Git tool contract without weakening whole-request equality, then rerun native and WASM/installed gates."
+}
