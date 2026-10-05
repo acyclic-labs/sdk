@@ -277,8 +277,8 @@ impl ModelProvider for DeterministicProvider {
         let is_child_a = declared_task == Some("child-a");
         let is_child_b = declared_task == Some("child-b");
         let is_grandchild = declared_task == Some("grandchild");
-        let sibling_fork_attempt = dispatch == 6
-            && self.child_read_verified.load(Ordering::SeqCst)
+        let sibling_fork_attempt = is_child_a
+            && message_contains(&request, "attempt sibling fork")
             && !self.sibling_fork_sent.load(Ordering::SeqCst);
         let root = !is_child_a && !is_child_b && !is_grandchild;
         if is_grandchild && has_read_result(&request) {
@@ -806,6 +806,8 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
     let inbox = swarm.read_inbox(child_a, 0, 8).await?;
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].sender, root);
+    assert_eq!(swarm.read_file(child_a, inbox[0].payload.path(), None).await?.1, ROOT_FILE.as_bytes());
+    assert_eq!(inbox[0].payload.descriptor().media_type(), "text/plain");
     let decoded = provider.decoded_requests();
     let last = decoded.last().expect("completed root request");
     let results: Vec<_> = last.messages.iter().filter_map(|message| match &message.content {
@@ -832,6 +834,17 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
     assert_eq!(swarm.send_message(child_a, root, id(0xE1), "explicit λ🦀\n  reply".as_bytes()).await?, receipt);
     let root_inbox = swarm.read_inbox(root, 0, 8).await?;
     assert_eq!(root_inbox.len(), 1);
+    assert_eq!(swarm.read_file(root, root_inbox[0].payload.path(), None).await?.1,
+        "explicit λ🦀\n  reply".as_bytes());
+    assert!(matches!(swarm.send_message(child_a, root, id(0), b"invalid identity").await,
+        Err(Error::Invalid(_))));
+    assert_eq!(swarm.read_inbox(root, 0, 8).await?, root_inbox);
+    let wait = acyclic_harness::communication::WaitRequest {
+        operation_id: id(0xE8), waiter: root,
+        target: acyclic_harness::communication::WaitTarget::Tasks { task_ids: vec![child_a, child_b] },
+        timeout_epoch_ms: None, cancellation_id: None,
+    };
+    let completion = swarm.wait(wait.clone()).await?;
     let requests = provider.serialized_requests();
     drop(swarm);
     let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
@@ -840,6 +853,9 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
     provider.bind_swarm(&reopened);
     assert_eq!(reopened.read_inbox(child_a, 0, 8).await?, inbox);
     assert_eq!(reopened.read_inbox(root, 0, 8).await?, root_inbox);
+    assert_eq!(reopened.wait(wait).await?, completion);
+    assert_eq!(reopened.read_file(root, root_inbox[0].payload.path(), None).await?.1,
+        "explicit λ🦀\n  reply".as_bytes());
     assert_eq!(reopened.run_root(operation, "run default recursive composition").await?, output);
     assert_eq!(provider.serialized_requests(), requests);
     Ok(())

@@ -3142,6 +3142,9 @@ impl PersistentLocalSwarm {
         message_id: OperationId,
         body: &[u8],
     ) -> Result<LocalSwarmMessage> {
+        if message_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("swarm message identity is nil".into()));
+        }
         if body.len() > self.config.limits.file_bytes as usize {
             return Err(Error::Invalid(
                 "swarm message exceeds the configured file bound".into(),
@@ -3209,6 +3212,19 @@ impl PersistentLocalSwarm {
         DurableCommunication::new(host)
             .inbox(task, after_sequence, limit)
             .await
+    }
+
+    /// Observes an explicit target through the same durable wait path as the
+    /// model tool. The request identity and terminal result survive reopening.
+    pub async fn wait(&self, request: crate::communication::WaitRequest)
+        -> Result<crate::communication::WaitCompletion> {
+        let host = self.bindings.communication_host.clone()
+            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        let store = self.bindings.wait_store.clone()
+            .ok_or_else(|| Error::Unsupported("durable wait store is not bound".into()))?;
+        let cancellation = self.bindings.cancellation.as_ref()
+            .and_then(|source| source.receiver(request.waiter));
+        DurableCommunication::new(host).with_wait_store(store).wait(request, cancellation).await
     }
 
     /// Durably cancels one task and propagates the owner cancellation signal

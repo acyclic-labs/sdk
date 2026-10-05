@@ -11,37 +11,28 @@ use crate::{
 };
 
 pub(super) struct SwarmCommunicationHost {
-    swarm: StdMutex<Weak<PersistentLocalSwarm>>,
+    swarm: OnceLock<Weak<PersistentLocalSwarm>>,
     stream: StreamClient<LocalStream>,
 }
 
 impl SwarmCommunicationHost {
     pub(super) fn new(stream: StreamClient<LocalStream>) -> Self {
         Self {
-            swarm: StdMutex::new(Weak::new()),
+            swarm: OnceLock::new(),
             stream,
         }
     }
 
     pub(super) fn bind(&self, swarm: Weak<PersistentLocalSwarm>) -> Result<()> {
-        let mut binding = self
-            .swarm
-            .lock()
-            .map_err(|_| Error::Storage("swarm communication binding poisoned".into()))?;
-        if binding.strong_count() != 0 {
-            return Err(Error::Conflict(
-                "swarm communication host is already bound".into(),
-            ));
-        }
-        *binding = swarm;
-        Ok(())
+        self.swarm
+            .set(swarm)
+            .map_err(|_| Error::Conflict("swarm communication host is already bound".into()))
     }
 
     fn swarm(&self) -> Result<Arc<PersistentLocalSwarm>> {
         self.swarm
-            .lock()
-            .map_err(|_| Error::Storage("swarm communication binding poisoned".into()))?
-            .upgrade()
+            .get()
+            .and_then(Weak::upgrade)
             .ok_or_else(|| Error::Storage("swarm communication owner is unavailable".into()))
     }
 }
@@ -111,6 +102,9 @@ impl DurableTaskHost for SwarmCommunicationHost {
         payload: FileRef,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if message.into_bytes() == [0; 16] {
+                return Err(Error::Invalid("swarm message identity is nil".into()));
+            }
             let swarm = self.swarm()?;
             let sender_scope = self.communication_scope(sender).await?;
             let recipient_scope = self.communication_scope(recipient).await?;
@@ -153,7 +147,7 @@ impl DurableTaskHost for SwarmCommunicationHost {
                         transfer,
                         &format!("system/swarm/messages/{transfer}.txt"),
                         &bytes,
-                    payload.descriptor().media_type(),
+                        payload.descriptor().media_type(),
                         "message.txt",
                     )
                     .await?
