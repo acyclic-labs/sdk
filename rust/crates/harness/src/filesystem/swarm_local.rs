@@ -3884,9 +3884,10 @@ impl PersistentLocalSwarm {
             Err(error) => return Err(error),
         }
         self.admissions.lock().await.insert(task, admission.clone());
-        *self.registry_tail.lock().await = observed_tail
+        let committed_tail = observed_tail
             .checked_add(1)
             .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+        self.retain_registry_tail(committed_tail).await;
         Ok(admission)
     }
 
@@ -4581,9 +4582,10 @@ impl PersistentLocalSwarm {
         };
         match append_record_at(&registry, event, observed_tail).await {
             Ok(()) => {
-                *self.registry_tail.lock().await = observed_tail
+                let committed_tail = observed_tail
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                self.retain_registry_tail(committed_tail).await;
                 Ok(true)
             }
             Err(error) => {
@@ -4681,9 +4683,10 @@ impl PersistentLocalSwarm {
         };
         match append_record_at(&registry, event, observed_tail).await {
             Ok(()) => {
-                *self.registry_tail.lock().await = observed_tail
+                let committed_tail = observed_tail
                     .checked_add(1)
                     .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                self.retain_registry_tail(committed_tail).await;
                 Ok(true)
             }
             Err(error) => {
@@ -6508,6 +6511,15 @@ impl PersistentLocalSwarm {
     /// committed by the first handle before it can dispatch or append again.
     async fn refresh_registry_state(&self) -> Result<()> {
         self.refresh_registry_state_with_tail().await.map(|_| ())
+    }
+
+    /// Retains the highest locally observed registry tail. An append can
+    /// commit concurrently with another handle; publishing `observed + 1`
+    /// must never move this cache backwards and make a later refresh reject a
+    /// valid durable suffix.
+    async fn retain_registry_tail(&self, committed_tail: u64) {
+        let mut known_tail = self.registry_tail.lock().await;
+        *known_tail = (*known_tail).max(committed_tail);
     }
 
     async fn refresh_registry_state_with_tail(&self) -> Result<u64> {
