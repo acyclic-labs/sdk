@@ -14,7 +14,8 @@
     "dynamic_identity_only": 2,
     "state_or_fixture_semantics_mismatch": 7,
     "response_shape_mismatch": 2,
-    "request_or_stream_contract_failure": 10,
+    "manifest_metadata_mismatch": 1,
+    "request_or_stream_contract_failure": 13,
     "expected_cancellation_observed": 1,
     "unclassified": 0
   },
@@ -35,6 +36,9 @@
     {"index": 7, "rpc": "acyclic.actors.v1.ActorsService/InvokeActor", "missing_fields": ["headers"], "cause": "network response omits the Rust-owned content-type header"},
     {"index": 14, "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment", "missing_fields": ["body"], "cause": "network response omits the Rust-owned response body"}
   ],
+  "manifest_metadata_mismatch": [
+    {"index": 90, "rpc": "acyclic.filesystem.v2.FilesystemService/Export", "returned_frame_count": 1, "rust_expected_frame_count": 0, "cause": "Rust manifest omitted the response frame metadata even though the network fixture returned a typed frame"}
+  ],
   "request_or_stream_contract_failure": [
     {"index": 3, "rpc": "acyclic.actors.v1.ActorsService/AddSubscription", "status": "INVALID_ARGUMENT", "cause": "Rust manifest request has no SubscriptionStart choice; network validator requires Cursor or CurrentHead"},
     {"index": 4, "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription", "status": "NOT_FOUND", "cause": "cascades from rejected AddSubscription"},
@@ -53,5 +57,5 @@
   "expected_cancellation_observed": [
     {"index": 20, "rpc": "acyclic.stream.v2.StreamService/Follow", "observed": "Timeout::Error execution expired", "required_runner_change": "accept timeout as the expected empty observed-status outcome and record cancellation"}
   ],
-  "interpretation": "The 81 exact wire matches are valid. Two mismatches are identity-only and must be compared through returned IDs in the ordered Rust transcript. The remaining differences are concrete Rust fixture, response-shape, validation, or stream-closure defects and remain unqualified until the source scenarios and network fixture share one implementation."
+  "interpretation": "The 81 exact wire matches are valid. Two mismatches are identity-only and must be compared through returned IDs in the ordered Rust transcript. The remaining 23 observations are concrete Rust fixture, response-shape, manifest-metadata, validation, or stream-closure defects and remain unqualified until the source scenarios and network fixture share one implementation."
 }
