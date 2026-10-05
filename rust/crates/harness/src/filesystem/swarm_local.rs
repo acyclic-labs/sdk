@@ -2952,7 +2952,7 @@ impl PersistentLocalSwarm {
         }
     }
 
-    fn git_tool_for(
+    async fn git_tool_for(
         &self,
         task: TaskId,
         harness: &PersistentLocalHarness,
@@ -2961,6 +2961,7 @@ impl PersistentLocalSwarm {
         let Some(store) = self.git_store.clone() else {
             return Ok(None);
         };
+        self.ensure_project_child_binding(task).await?;
         let workspace = Arc::new(
             LocalProjectWorkspaceTree::new(
                 self.filesystem_host.clone(),
@@ -3130,41 +3131,33 @@ impl PersistentLocalSwarm {
         Ok(())
     }
 
-    async fn rebuild_project_children(&self) -> Result<()> {
-        let seeds = self
-            .seeds
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for seed in seeds {
-            let tasks = self
-                .records
-                .lock()
-                .await
-                .keys()
-                .copied()
-                .collect::<Vec<_>>();
-            let mut parent_task = None;
-            for task in tasks {
-                if self.conversation_authority(task).await == Some(seed.parent.clone()) {
-                    parent_task = Some(task);
-                    break;
-                }
-            }
-            let Some(parent_task) = parent_task else {
-                continue;
-            };
-            let parent = self
-                .open_session(parent_task)
-                .await?
-                .conversation_aggregate(self.config.limits)
-                .await?;
-            self.register_project_child(&seed, parent.reducer())
-                .await?;
+    /// Rehydrates one direct-child binding only when that child's model-facing
+    /// Git tool is requested. Session listing and cold startup retain the
+    /// durable seed index without opening parent conversation aggregates.
+    async fn ensure_project_child_binding(&self, task: TaskId) -> Result<()> {
+        let Some(seed) = self.seeds.lock().await.get(&task).cloned() else {
+            return Ok(());
+        };
+        let session = self.session(task).await?;
+        let parent_task = session
+            .parent
+            .ok_or_else(|| Error::Conflict("published child has no parent session".into()))?;
+        if self.conversation_authority(parent_task).await != Some(seed.parent.clone()) {
+            return Err(Error::Conflict(
+                "published child parent authority changed during Git binding".into(),
+            ));
         }
-        Ok(())
+        let parent = self
+            .open_session(parent_task)
+            .await?
+            .conversation_aggregate(self.config.limits)
+            .await?;
+        if parent.reducer().authority() != &seed.parent {
+            return Err(Error::Conflict(
+                "published child parent aggregate authority changed during Git binding".into(),
+            ));
+        }
+        self.register_project_child(&seed, parent.reducer()).await
     }
 
     /// Opens or recovers a local swarm. Child sessions remain lazy until a
@@ -3571,7 +3564,6 @@ impl PersistentLocalSwarm {
             LocalCoreStateStore::open_owned(root.join("git"))
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
-        swarm.rebuild_project_children().await?;
         let root_task = swarm.root_task().await?;
         let root_harness = swarm.sessions.get_mut().remove(&root_task)
             .ok_or_else(|| Error::Storage("new local composition has no root harness".into()))?;
@@ -3604,7 +3596,9 @@ impl PersistentLocalSwarm {
         }
         let mut root_tools = swarm.bindings.tools_for(root_task)?;
         if let Some(project) = swarm.config.project.clone()
-            && let Some(tool) = swarm.git_tool_for(root_task, &root_harness, &project)?
+            && let Some(tool) = swarm
+                .git_tool_for(root_task, &root_harness, &project)
+                .await?
         {
             root_tools = root_tools.with_tool(tool)?;
         }
@@ -6448,7 +6442,7 @@ impl PersistentLocalSwarm {
             .limits(self.config.limits);
         let mut tools = self.bindings.tools_for(task)?;
         if let Some(project) = self.project_for_task(task).await?
-            && let Some(tool) = self.git_tool_for(task, harness, &project)?
+            && let Some(tool) = self.git_tool_for(task, harness, &project).await?
         {
             tools = tools.with_tool(tool)?;
         }
