@@ -10,7 +10,7 @@ use acyclic_harness::conversation::{
     ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
 use acyclic_harness::core::{
-    Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry,
+    Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope,
 };
 use acyclic_harness::executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord};
 use acyclic_harness::filesystem::{
@@ -198,6 +198,20 @@ where
     )
 }
 
+/// The immutable edge data needed to reopen each parent controller after the
+/// recursive chain has been built. Keeping these bindings alongside the test
+/// lets the upward integration exercise the same direct-parent checks as the
+/// production facade, rather than routing changes through a test-only copy.
+#[derive(Clone)]
+struct RecursiveProjectEdge {
+    parent_authority: Authority,
+    parent_issuer: AuthorityIssuer,
+    parent_scope: Scope,
+    parent_project: VolumeRef,
+    child_authority: Authority,
+    child_project: VolumeRef,
+}
+
 #[tokio::test]
 async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -325,6 +339,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     let mut merge_parent_scope = None;
     let mut merge_parent_project = None;
     let mut merge_child_authority = None;
+    let mut recursive_project_edges = Vec::new();
 
     for level in 1..=DEPTH {
         let child_agent = AgentId::from_bytes([level + 1; 16]);
@@ -440,6 +455,14 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             )
             .await?;
         assert_eq!(seed.child, child_authority);
+        recursive_project_edges.push(RecursiveProjectEdge {
+            parent_authority: authority.clone(),
+            parent_issuer: issuer.clone(),
+            parent_scope: grant_scope.clone(),
+            parent_project: project.clone(),
+            child_authority: child_authority.clone(),
+            child_project: child_project.clone(),
+        });
         if level == 1 {
             // Close the live providers, reopen their on-disk roots, and then
             // recover both durable Stream aggregates before the child appends.
@@ -1363,7 +1386,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         &merge_parent_issuer,
         host.clone(),
         merge_parent_scope,
-        stream_provider,
+        stream_provider.clone(),
     )
     .await?;
     assert_eq!(reopened_parent.reducer().revision(), 4);
@@ -1375,7 +1398,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     );
     let merged_project = host
         .resolve(&workspace_ref(
-            provider,
+            provider.clone(),
             &merge_parent_project.storage_name()?,
         )?)
         .await?;
@@ -1396,6 +1419,161 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         .is_err(),
         "private child conversation files stay outside the project merge"
     );
+
+    // The production merge path is direct-parent scoped. Complete the real
+    // project publication chain one edge at a time so the deepest edit is
+    // visible in the root only after both parent integrations succeed.
+    // Edge 3 -> 2 was exercised above with crash/recovery and conflict
+    // handling; edges 2 -> 1 and 1 -> 0 are applied here through the same
+    // typed facade and authenticated notice boundary.
+    assert_eq!(recursive_project_edges.len(), usize::from(DEPTH));
+    for (index, edge) in recursive_project_edges[..recursive_project_edges.len() - 1]
+        .iter()
+        .enumerate()
+        .rev()
+    {
+        let parent_aggregate = open_aggregate(
+            &stream,
+            edge.parent_authority.clone(),
+            &edge.parent_issuer,
+            host.clone(),
+            edge.parent_scope.clone(),
+            stream_provider.clone(),
+        )
+        .await?;
+        let facade = FilesystemGitFacade::new(
+            WorkspaceId::from_bytes(identity(130 + index as u8)),
+            MemoryGitCompatStore::new(),
+            edge.parent_project.clone(),
+            edge.parent_issuer.verifier(),
+            edge.parent_scope.clone(),
+        )?;
+        let notice = host
+            .put_content(
+                &edge.parent_project,
+                &ContentGrant::verify(
+                    &edge.parent_issuer.verifier(),
+                    &edge.parent_scope,
+                    &edge.parent_project,
+                    VolumeOperation::Write,
+                )?,
+                &format!("notices/upward-{index}.txt"),
+                format!("integrate recursive edge {index}").as_bytes(),
+                "text/plain",
+                &format!("upward-{index}.txt"),
+                1_024,
+                &IdempotencyKey::new(format!("upward-notice-{index}"))?,
+            )
+            .await?;
+        let message = ConversationMessage {
+            id: Uuid::from_bytes([130 + index as u8; 16]),
+            sequence: 2,
+            kind: MessageKind::Merge,
+            content: notice,
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
+            reply_to: None,
+            tool_call_id: None,
+            extensions: Default::default(),
+        };
+        let plan = facade
+            .prepare_project_merge_for_child(
+                host.as_ref(),
+                parent_aggregate.reducer(),
+                &edge.child_authority,
+                &edge.child_project,
+            )
+            .await?;
+        let outcome = facade
+            .apply_project_merge_for_child_with_notice(
+                host.as_ref(),
+                parent_aggregate.reducer(),
+                &edge.child_authority,
+                &edge.child_project,
+                &plan,
+                OperationId::from_bytes(identity(150 + index as u8)),
+                &message,
+            )
+            .await?;
+        assert!(matches!(
+            outcome,
+            acyclic_fs::JoinOutcome::Applied(_) | acyclic_fs::JoinOutcome::AlreadyApplied(_)
+        ));
+    }
+
+    // The root has only published the level-one child. A grandchild and an
+    // un-published sibling must be rejected before the provider join is even
+    // prepared, regardless of their project capabilities.
+    let root_edge = recursive_project_edges
+        .first()
+        .ok_or_else(|| Error::Invalid("missing root project edge".into()))?;
+    let grandchild_edge = recursive_project_edges
+        .get(1)
+        .ok_or_else(|| Error::Invalid("missing grandchild project edge".into()))?;
+    let root_aggregate = open_aggregate(
+        &stream,
+        root_edge.parent_authority.clone(),
+        &root_edge.parent_issuer,
+        host.clone(),
+        root_edge.parent_scope.clone(),
+        stream_provider.clone(),
+    )
+    .await?;
+    let root_facade = FilesystemGitFacade::new(
+        WorkspaceId::from_bytes(identity(180)),
+        MemoryGitCompatStore::new(),
+        root_edge.parent_project.clone(),
+        root_edge.parent_issuer.verifier(),
+        root_edge.parent_scope.clone(),
+    )?;
+    assert!(
+        root_facade
+            .prepare_project_merge_for_child(
+                host.as_ref(),
+                root_aggregate.reducer(),
+                &grandchild_edge.child_authority,
+                &grandchild_edge.child_project,
+            )
+            .await
+            .is_err(),
+        "a grandchild cannot bypass its direct parent during root integration"
+    );
+    let sibling = Authority {
+        kind: AggregateKind::Conversation,
+        id: "unpublished-sibling".into(),
+    };
+    assert!(
+        root_facade
+            .prepare_project_merge_for_child(
+                host.as_ref(),
+                root_aggregate.reducer(),
+                &sibling,
+                &grandchild_edge.child_project,
+            )
+            .await
+            .is_err(),
+        "an un-published sibling cannot route a project join through root"
+    );
+
+    let root_workspace = host
+        .resolve(&workspace_ref(
+            provider,
+            &root_edge.parent_project.storage_name()?,
+        )?)
+        .await?;
+    for level in 1..=DEPTH {
+        assert_eq!(
+            host.read(
+                &root_workspace.workspace,
+                None,
+                &format!("/level-{level}.txt"),
+                1_024,
+            )
+            .await?
+            .as_ref(),
+            format!("project child {level}").as_bytes(),
+            "root publication omitted the recursively integrated level {level}"
+        );
+    }
     Ok(())
 }
 
