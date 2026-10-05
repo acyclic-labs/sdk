@@ -127,6 +127,10 @@ $mutations = @(
     @{ Name = 'completion-digest'; Apply = { param($m) $m.source.completion_output_digest = @(0..31) } },
     @{ Name = 'request-bytes-corrupt'; Apply = { param($m) $m.source.child_execution_model_started_request_bytes_hex = "20$($m.source.child_execution_model_started_request_bytes_hex)" } },
     @{ Name = 'request-bytes-missing'; Apply = { param($m) $m.source.child_execution_model_started_request_bytes_hex = $null } },
+    @{ Name = 'provenance-commit'; Apply = { param($m) $m.provenance.source_commit = ('0' * 40) } },
+    @{ Name = 'provenance-tree'; Apply = { param($m) $m.provenance.source_tree = ('0' * 40) } },
+    @{ Name = 'provenance-exporter-digest'; Apply = { param($m) $m.provenance.exporter_source_sha256 = ('0' * 64) } },
+    @{ Name = 'provenance-not-clean'; Apply = { param($m) $m.provenance.source_clean = $false } },
     @{ Name = 'request-bytes-reordered'; Apply = {
         param($m)
         $bytes = DecodeHexBytes ([string]$m.source.child_execution_model_started_request_bytes_hex)
