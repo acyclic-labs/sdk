@@ -18,9 +18,11 @@ mod python_go;
 mod typed_facades;
 
 pub use typed_facades::{
-    generate_jvm_semantic_types, generate_jvm_typed_requests, JAVA_PATH, JAVA_REQUESTS_PATH,
-    KOTLIN_PATH, KOTLIN_REQUESTS_PATH, SCALA_PATH, SCALA_REQUESTS_PATH,
+    generate_jvm_semantic_types, generate_jvm_typed_clients, generate_jvm_typed_requests,
+    JAVA_CLIENTS_PATH, JAVA_PATH, JAVA_REQUESTS_PATH, KOTLIN_CLIENTS_PATH, KOTLIN_PATH,
+    KOTLIN_REQUESTS_PATH, SCALA_CLIENTS_PATH, SCALA_PATH, SCALA_REQUESTS_PATH,
 };
+pub use crate::csharp_typed_facades::{generate_csharp_typed_facade, CSHARP_TYPED_PATH};
 
 /// Cancellation semantics that a generated facade must preserve per RPC.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,6 +195,7 @@ pub fn generate_type_policy_qualification_tests() -> Vec<(&'static str, String)>
             python_go::render_go_type_policy_test(),
         ),
     ];
+    outputs.extend(crate::csharp_typed_facades::generate_csharp_type_policy_tests());
     outputs.push((
         "jvm/src/test/java/dev/acyclic/transport/RustSemanticTypesTest.java",
         render_java_semantic_type_test(),
@@ -983,7 +986,8 @@ fn render_dart_operations() -> String {
 mod tests {
     use super::{
         CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, all_facade_operations,
-        facade_operations, generate_jvm_typed_requests, generate_remote_facade,
+        facade_operations, generate_jvm_typed_clients, generate_jvm_typed_requests,
+        generate_remote_facade,
         generate_remote_facades,
     };
     use crate::family_registry::FAMILY_VIEWS;
@@ -1033,6 +1037,39 @@ mod tests {
                     assert!(source.contains(&binding.field.replace('_', "")) || source.contains(binding.field), "{path} missing {}", binding.field);
                     let semantic = crate::type_policy::semantic_type(binding.semantic_type).expect("binding semantic type");
                     assert!(source.contains(semantic.rust_name), "{path} missing semantic binding {}", semantic.rust_name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jvm_typed_clients_bind_every_rust_owned_request_field_and_rpc() {
+        let outputs = generate_jvm_typed_clients();
+        assert_eq!(outputs.len(), 3);
+        for (path, source) in outputs {
+            assert!(source.contains("RustTypedClients"), "{path} missing client facade");
+            assert!(source.contains("stub."), "{path} does not invoke a generated stub");
+            for binding in crate::type_policy::PUBLIC_FIELD_BINDINGS {
+                if binding.direction == crate::type_policy::PublicFieldDirection::Request {
+                    let semantic = crate::type_policy::semantic_type(binding.semantic_type)
+                        .expect("binding semantic type");
+                    assert!(
+                        source.contains(semantic.rust_name),
+                        "{path} missing semantic client binding {}",
+                        semantic.rust_name
+                    );
+                    assert!(
+                        source.contains(binding.field),
+                        "{path} missing client parameter {}",
+                        binding.field
+                    );
+                    let rpc = binding.rpc().expect("request RPC");
+                    let rpc = rpc[..1].to_ascii_lowercase() + &rpc[1..];
+                    assert!(
+                        source.contains(&rpc),
+                        "{path} missing client RPC for {}",
+                        binding.field
+                    );
                 }
             }
         }

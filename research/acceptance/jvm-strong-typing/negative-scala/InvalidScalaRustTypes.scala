@@ -1,5 +1,6 @@
 import inference.customer.v1.inference.{ContextProvenance, ContextView, Empty}
-import dev.acyclic.transport.{RustSemanticTypesScala, RustTypedRequestsScala}
+import acyclic.actors.v1.ActorsServiceGrpc
+import dev.acyclic.transport.{RustSemanticTypesScala, RustTypedClientsScala, RustTypedRequestsScala}
 
 object InvalidScalaRustTypes {
   val parent: String = ContextView().parent
@@ -10,4 +11,10 @@ object InvalidScalaRustTypes {
   val actorAsText: String = actor
   val digest: RustSemanticTypesScala.Sha256Digest = actor
   val invalidRequest = RustTypedRequestsScala.streamRead(actor)
+
+  val stub: ActorsServiceGrpc.ActorsServiceBlockingStub = null
+  RustTypedClientsScala.actorsInvokeActor(
+    stub,
+    RustSemanticTypesScala.MethodName.from("actor-1").toOption.get,
+    RustSemanticTypesScala.MethodName.from("run").toOption.get)
 }

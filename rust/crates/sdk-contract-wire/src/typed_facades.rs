@@ -21,6 +21,12 @@ pub const KOTLIN_REQUESTS_PATH: &str =
     "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedRequests.kt";
 pub const SCALA_REQUESTS_PATH: &str =
     "jvm/src/main/scala/dev/acyclic/transport/RustTypedRequests.scala";
+pub const JAVA_CLIENTS_PATH: &str =
+    "jvm/src/main/java/dev/acyclic/transport/RustTypedClients.java";
+pub const KOTLIN_CLIENTS_PATH: &str =
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedClients.kt";
+pub const SCALA_CLIENTS_PATH: &str =
+    "jvm/src/main/scala/dev/acyclic/transport/RustTypedClients.scala";
 
 pub fn generate_jvm_semantic_types() -> Vec<(&'static str, String)> {
     vec![
@@ -39,6 +45,18 @@ pub fn generate_jvm_typed_requests() -> Vec<(&'static str, String)> {
         (JAVA_REQUESTS_PATH, render_java_requests()),
         (KOTLIN_REQUESTS_PATH, render_kotlin_requests()),
         (SCALA_REQUESTS_PATH, render_scala_requests()),
+    ]
+}
+
+/// Emit public client calls from the same Rust-owned request bindings.  The
+/// generated methods accept nominal values, construct the protobuf request,
+/// and immediately invoke the generated blocking stub.  This keeps callers
+/// from opting out of the semantic policy by reaching for a raw request.
+pub fn generate_jvm_typed_clients() -> Vec<(&'static str, String)> {
+    vec![
+        (JAVA_CLIENTS_PATH, render_java_clients()),
+        (KOTLIN_CLIENTS_PATH, render_kotlin_clients()),
+        (SCALA_CLIENTS_PATH, render_scala_clients()),
     ]
 }
 
@@ -90,6 +108,213 @@ fn upper_camel(value: &str) -> String {
 fn request_method_name(module: &str, message: &str) -> String {
     let base = message.strip_suffix("Request").unwrap_or(message);
     format!("{}{}", module.replace('.', ""), base)
+}
+
+fn rpc_method_name(rpc: &str) -> String {
+    let mut chars = rpc.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn client_service(module: &str, message: &str) -> &'static str {
+    match (module, message) {
+        ("actors", _) => "acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub",
+        ("workers", _) => "acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub",
+        ("stream", _) => "acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub",
+        ("objects", "ListPartsRequest") => {
+            "acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub"
+        }
+        ("objects", _) => "acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub",
+        ("inference", "InspectRunRequest") => {
+            "inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub"
+        }
+        ("inference", "InspectContextRequest") => {
+            "inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub"
+        }
+        ("inference", "InspectWarmRequest") => {
+            "inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub"
+        }
+        ("inference", "InspectEvaluationRequest") => {
+            "inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub"
+        }
+        ("machines", _) => "acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub",
+        ("filesystem", _) => {
+            "acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub"
+        }
+        _ => panic!("missing JVM gRPC service for {module}.{message}"),
+    }
+}
+
+fn client_response(module: &str, message: &str) -> (&'static str, bool) {
+    match (module, message) {
+        ("actors", "InvokeActorRequest") => ("acyclic.actors.v1.Actors.InvokeActorResponse", false),
+        ("workers", "SelectDeploymentRequest") => (
+            "acyclic.workers.v1.Workers.SelectDeploymentResponse",
+            false,
+        ),
+        ("workers", "InspectJobRequest") => ("acyclic.workers.v1.Workers.InspectJobResponse", false),
+        ("workers", "InvokeVersionRequest") => ("acyclic.workers.v1.Workers.InvokeResponse", false),
+        ("stream", "AppendRequest") => ("acyclic.stream.v2.Stream.AppendResponse", false),
+        ("stream", "ForkRequest") => ("acyclic.stream.v2.Stream.ForkReceipt", false),
+        ("stream", "ReadRequest") => ("acyclic.stream.v2.Stream.ReadResponse", true),
+        ("stream", "ReadCommitRequest") => ("acyclic.stream.v2.Stream.CommittedEnvelope", false),
+        ("objects", "GetObjectRequest") => ("acyclic.objects.v2.Objects.GetObjectResponse", true),
+        ("objects", "ListObjectsRequest") => ("acyclic.objects.v2.Objects.ListObjectsResponse", false),
+        ("objects", "ListPartsRequest") => ("acyclic.objects.v2.Objects.ListPartsResponse", false),
+        ("inference", "InspectRunRequest") => ("inference.customer.v1.Inference.RunView", false),
+        ("inference", "InspectContextRequest") => ("inference.customer.v1.Inference.ContextView", false),
+        ("inference", "InspectWarmRequest") => ("inference.customer.v1.Inference.WarmView", false),
+        ("inference", "InspectEvaluationRequest") => {
+            ("inference.customer.v1.Inference.EvaluationView", false)
+        }
+        ("machines", "CreateMachineRequest") => ("acyclic.machines.v1.Machines.MachineAdmission", false),
+        ("machines", "InspectMachineRequest") => ("acyclic.machines.v1.Machines.MachineState", false),
+        ("machines", "InspectCheckpointRequest") => ("acyclic.machines.v1.Machines.CheckpointState", false),
+        ("machines", "OperationRequest") => ("acyclic.machines.v1.Machines.OperationState", false),
+        ("machines", "ListMachinesRequest") => ("acyclic.machines.v1.Machines.MachinePage", false),
+        ("filesystem", "ReadRequest") => ("acyclic.filesystem.v2.Filesystem.ReadResponse", false),
+        _ => panic!("missing JVM response mapping for {module}.{message}"),
+    }
+}
+
+fn render_java_clients() -> String {
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Client signatures and request construction originate in Rust type_policy.rs.\npackage dev.acyclic.transport;\n\n/** Typed blocking client calls generated from Rust-owned request bindings. */\npublic final class RustTypedClients {\n  private RustTypedClients() {}\n\n",
+    );
+    for (module, message, fields) in request_groups() {
+        let method = request_method_name(module, message);
+        let rpc = fields[0].rpc().expect("every request binding has an RPC");
+        let rpc_method = rpc_method_name(rpc);
+        let service = client_service(module, message);
+        let (response, streaming) = client_response(module, message);
+        let result = if streaming {
+            format!("java.util.Iterator<{response}>")
+        } else {
+            response.to_string()
+        };
+        out.push_str("  public static ");
+        out.push_str(&result);
+        out.push(' ');
+        out.push_str(&method);
+        out.push('(');
+        out.push_str(service);
+        out.push_str(" stub");
+        for binding in &fields {
+            let ty = semantic_for(binding);
+            out.push_str(", RustSemanticTypes.");
+            out.push_str(ty.rust_name);
+            out.push(' ');
+            out.push_str(binding.field);
+        }
+        out.push_str(") {\n    return stub.");
+        out.push_str(&rpc_method);
+        out.push_str("(RustTypedRequests.");
+        out.push_str(&method);
+        out.push('(');
+        for (index, binding) in fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(binding.field);
+        }
+        out.push_str("));\n  }\n\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_kotlin_clients() -> String {
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Client signatures and request construction originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\n/** Typed blocking client calls generated from Rust-owned request bindings. */\nobject RustTypedClientsKotlin {\n\n",
+    );
+    for (module, message, fields) in request_groups() {
+        let method = request_method_name(module, message);
+        let rpc = fields[0].rpc().expect("every request binding has an RPC");
+        let rpc_method = rpc_method_name(rpc);
+        let service = client_service(module, message);
+        let (response, streaming) = client_response(module, message);
+        let result = if streaming {
+            format!("kotlin.collections.Iterator<{response}>")
+        } else {
+            response.to_string()
+        };
+        out.push_str("  fun ");
+        out.push_str(&method);
+        out.push_str("(stub: ");
+        out.push_str(service);
+
+        for binding in &fields {
+            let ty = semantic_for(binding);
+            out.push_str(", ");
+            out.push_str(binding.field);
+            out.push_str(": RustSemanticTypesKotlin.");
+            out.push_str(ty.rust_name);
+        }
+        out.push_str("): ");
+        out.push_str(&result);
+        out.push_str(" = stub.");
+        out.push_str(&rpc_method);
+        out.push_str("(RustTypedRequestsKotlin.");
+        out.push_str(&method);
+        out.push('(');
+        for (index, binding) in fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(binding.field);
+        }
+        out.push_str("))\n\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_scala_clients() -> String {
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Client signatures and request construction originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\n/** Typed blocking client calls generated from Rust-owned request bindings. */\nobject RustTypedClientsScala {\n\n",
+    );
+    for (module, message, fields) in request_groups() {
+        let method = request_method_name(module, message);
+        let rpc = fields[0].rpc().expect("every request binding has an RPC");
+        let rpc_method = rpc_method_name(rpc);
+        let service = client_service(module, message);
+        let (response, streaming) = client_response(module, message);
+        let result = if streaming {
+            format!("java.util.Iterator[{response}]")
+        } else {
+            response.to_string()
+        };
+        out.push_str("  def ");
+        out.push_str(&method);
+        out.push_str("(stub: ");
+        out.push_str(service);
+
+        for binding in &fields {
+            let ty = semantic_for(binding);
+            out.push_str(", ");
+            out.push_str(binding.field);
+            out.push_str(": RustSemanticTypesScala.");
+            out.push_str(ty.rust_name);
+        }
+        out.push_str("): ");
+        out.push_str(&result);
+        out.push_str(" = stub.");
+        out.push_str(&rpc_method);
+        out.push_str("(RustTypedRequestsScala.");
+        out.push_str(&method);
+        out.push('(');
+        for (index, binding) in fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(binding.field);
+        }
+        out.push_str("))\n\n");
+    }
+    out.push_str("}\n");
+    out
 }
 
 fn semantic_for(binding: &PublicFieldBinding) -> &'static SemanticType {

@@ -8,9 +8,11 @@ use std::process::Command;
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
     BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
+    generate_csharp_typed_facade,
     family_registry::family_view,
     filesystem::{filesystem_descriptor, filesystem_proto},
-    generate_embedded_facades, generate_jvm_semantic_types, generate_jvm_typed_requests,
+    generate_embedded_facades, generate_jvm_semantic_types, generate_jvm_typed_clients,
+    generate_jvm_typed_requests,
     generate_product_bindings,
     generate_remote_facades,
     generate_type_policy_qualification_tests,
@@ -507,6 +509,11 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
     for (path, source) in generate_jvm_typed_requests() {
         artifacts.push((path.to_owned(), source.into_bytes()));
     }
+    for (path, source) in generate_jvm_typed_clients() {
+        artifacts.push((path.to_owned(), source.into_bytes()));
+    }
+    let (path, source) = generate_csharp_typed_facade();
+    artifacts.push((path.to_owned(), source.into_bytes()));
     for facade in generate_embedded_facades() {
         artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
     }

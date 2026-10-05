@@ -1,7 +1,9 @@
 package dev.acyclic.negative
 
 import com.google.protobuf.ByteString
+import acyclic.actors.v1.ActorsServiceGrpc
 import dev.acyclic.transport.RustSemanticTypesKotlin
+import dev.acyclic.transport.RustTypedClientsKotlin
 import dev.acyclic.transport.RustTypedRequestsKotlin
 
 class InvalidKotlinRustTypes {
@@ -18,5 +20,11 @@ class InvalidKotlinRustTypes {
         RustSemanticTypesKotlin.ActorId.of("actor-1")
     val invalidRequest = RustTypedRequestsKotlin.streamRead(
         RustSemanticTypesKotlin.ActorId.of("actor-1"))
+
+    val stub: ActorsServiceGrpc.ActorsServiceBlockingStub = TODO()
+    RustTypedClientsKotlin.actorsInvokeActor(
+        stub,
+        RustSemanticTypesKotlin.MethodName.of("actor-1"),
+        RustSemanticTypesKotlin.MethodName.of("run"))
   }
 }

@@ -10,6 +10,7 @@ use prost::Message;
 
 pub mod bindings;
 pub mod credential;
+pub mod csharp_typed_facades;
 pub mod embedded_facades;
 pub mod facades;
 pub mod family_registry;
@@ -38,9 +39,10 @@ pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 pub use facades::{
     CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,
     FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_jvm_semantic_types,
-    generate_jvm_typed_requests,
+    generate_jvm_typed_clients, generate_jvm_typed_requests,
     generate_remote_facade, generate_remote_facades, generate_type_policy_qualification_tests,
 };
+pub use csharp_typed_facades::{generate_csharp_type_policy_tests, generate_csharp_typed_facade, CSHARP_TYPED_PATH};
 pub use family_registry::{
     FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,
     explicit_http_family_views, family_view, native_method_boundaries_for_family,

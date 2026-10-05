@@ -16,5 +16,11 @@ class InvalidJavaRustTypes {
         dev.acyclic.transport.RustSemanticTypes.ActorId.of("actor-1");
     String mistakenUnion =
         new dev.acyclic.transport.RustSemanticTypes.Unknown(99, com.google.protobuf.ByteString.EMPTY);
+
+    acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub = null;
+    dev.acyclic.transport.RustTypedClients.actorsInvokeActor(
+        stub,
+        dev.acyclic.transport.RustSemanticTypes.MethodName.of("actor-1"),
+        dev.acyclic.transport.RustSemanticTypes.MethodName.of("run"));
   }
 }
