@@ -1,29 +1,12 @@
 /** Logical Objects v2 clients. Public messages are generated from the canonical descriptor. */
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import type {
-  RustOwnedIdempotencyKeyText,
-  RustOwnedObjectKey,
-  RustOwnedOpaqueText,
-  RustOwnedPageLimit,
-  RustOwnedUploadId,
-} from "./generated-client.js";
 import { ObjectsV2Memory, validate_objects_v2_request, validate_objects_v2_response, validate_objects_v2_get_body, validate_objects_v2_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 export * from "../generated/proto/objects/v2/objects_pb.js";
 
-type ObjectsPublicWire<Wire, Overrides extends object> = Readonly<Omit<Wire, keyof Overrides> & Overrides>;
-export type PublicMutationIdentity = ObjectsPublicWire<wire.MutationIdentity, { readonly idempotencyKey: RustOwnedIdempotencyKeyText }>;
-export type PublicCreateBucketRequest = ObjectsPublicWire<wire.CreateBucketRequest, { readonly mutation?: PublicMutationIdentity | undefined }>;
-export type PublicGetObjectRequest = ObjectsPublicWire<wire.GetObjectRequest, { readonly objectKey: RustOwnedObjectKey }>;
-export type PublicListObjectsRequest = ObjectsPublicWire<wire.ListObjectsRequest, { readonly pageSize: RustOwnedPageLimit }>;
-export type PublicListPartsRequest = ObjectsPublicWire<wire.ListPartsRequest, { readonly objectKey: RustOwnedObjectKey; readonly uploadId: RustOwnedUploadId; readonly pageSize: RustOwnedPageLimit }>;
-export type PublicObjectInfo = ObjectsPublicWire<wire.ObjectInfo, { readonly etag: RustOwnedOpaqueText }>;
-export type PublicHeadObjectResponse = ObjectsPublicWire<wire.HeadObjectResponse, { readonly object?: PublicObjectInfo | undefined }>;
-export type PublicGetObjectHeader = ObjectsPublicWire<wire.GetObjectHeader, { readonly object?: PublicObjectInfo | undefined }>;
-
 /** A bounded buffered read; metadata remains the generated public wire type. */
-export interface ObjectValue { readonly header: PublicGetObjectHeader; readonly body: Uint8Array }
+export interface ObjectValue { readonly header: wire.GetObjectHeader; readonly body: Uint8Array }
 export class ObjectsV2Error extends Error {
   constructor(readonly code: wire.ErrorCode) { super(`Objects operation failed (${wire.ErrorCode[code]})`); this.name = "ObjectsV2Error"; }
 }
@@ -47,19 +30,19 @@ export abstract class ObjectsV2Provider {
       return fromBinary(output, frames[0]);
     } catch (error) { if (error instanceof Error && error.name === "AbortError") throw error; throw objectsV2Error(error); }
   }
-  createBucket(value: PublicCreateBucketRequest, signal?: AbortSignal) { return this.call("buckets/create", wire.CreateBucketRequestSchema, wire.BucketSchema, value, new Uint8Array(0), signal); }
+  createBucket(value: wire.CreateBucketRequest, signal?: AbortSignal) { return this.call("buckets/create", wire.CreateBucketRequestSchema, wire.BucketSchema, value, new Uint8Array(0), signal); }
   headBucket(value: wire.HeadBucketRequest, signal?: AbortSignal) { return this.call("buckets/head", wire.HeadBucketRequestSchema, wire.BucketSchema, value, new Uint8Array(0), signal); }
   deleteBucket(value: wire.DeleteBucketRequest, signal?: AbortSignal) { return this.call("buckets/delete", wire.DeleteBucketRequestSchema, wire.DeleteBucketResponseSchema, value, new Uint8Array(0), signal); }
-  put(value: wire.PutObjectHeader, body: Uint8Array, signal?: AbortSignal): Promise<PublicObjectInfo> { return this.call("objects/put", wire.PutObjectHeaderSchema, wire.ObjectInfoSchema, value, body, signal) as Promise<PublicObjectInfo>; }
-  head(value: wire.HeadObjectRequest, signal?: AbortSignal): Promise<PublicHeadObjectResponse> { return this.call("objects/head", wire.HeadObjectRequestSchema, wire.HeadObjectResponseSchema, value, new Uint8Array(0), signal) as Promise<PublicHeadObjectResponse>; }
+  put(value: wire.PutObjectHeader, body: Uint8Array, signal?: AbortSignal) { return this.call("objects/put", wire.PutObjectHeaderSchema, wire.ObjectInfoSchema, value, body, signal); }
+  head(value: wire.HeadObjectRequest, signal?: AbortSignal) { return this.call("objects/head", wire.HeadObjectRequestSchema, wire.HeadObjectResponseSchema, value, new Uint8Array(0), signal); }
   delete(value: wire.DeleteObjectRequest, signal?: AbortSignal) { return this.call("objects/delete", wire.DeleteObjectRequestSchema, wire.DeleteObjectResponseSchema, value, new Uint8Array(0), signal); }
-  list(value: PublicListObjectsRequest, signal?: AbortSignal) { return this.call("objects/list", wire.ListObjectsRequestSchema, wire.ListObjectsResponseSchema, value, new Uint8Array(0), signal); }
+  list(value: wire.ListObjectsRequest, signal?: AbortSignal) { return this.call("objects/list", wire.ListObjectsRequestSchema, wire.ListObjectsResponseSchema, value, new Uint8Array(0), signal); }
   createMultipart(value: wire.CreateMultipartRequest, signal?: AbortSignal) { return this.call("multipart/create", wire.CreateMultipartRequestSchema, wire.MultipartUploadSchema, value, new Uint8Array(0), signal); }
   uploadPart(value: wire.UploadPartHeader, body: Uint8Array, signal?: AbortSignal) { return this.call("multipart/upload-part", wire.UploadPartHeaderSchema, wire.UploadedPartSchema, value, body, signal); }
-  listParts(value: PublicListPartsRequest, signal?: AbortSignal) { return this.call("multipart/list-parts", wire.ListPartsRequestSchema, wire.ListPartsResponseSchema, value, new Uint8Array(0), signal); }
-  completeMultipart(value: wire.CompleteMultipartRequest, signal?: AbortSignal): Promise<PublicObjectInfo> { return this.call("multipart/complete", wire.CompleteMultipartRequestSchema, wire.ObjectInfoSchema, value, new Uint8Array(0), signal) as Promise<PublicObjectInfo>; }
+  listParts(value: wire.ListPartsRequest, signal?: AbortSignal) { return this.call("multipart/list-parts", wire.ListPartsRequestSchema, wire.ListPartsResponseSchema, value, new Uint8Array(0), signal); }
+  completeMultipart(value: wire.CompleteMultipartRequest, signal?: AbortSignal) { return this.call("multipart/complete", wire.CompleteMultipartRequestSchema, wire.ObjectInfoSchema, value, new Uint8Array(0), signal); }
   abortMultipart(value: wire.AbortMultipartRequest, signal?: AbortSignal) { return this.call("multipart/abort", wire.AbortMultipartRequestSchema, wire.AbortMultipartResponseSchema, value, new Uint8Array(0), signal); }
-  async get(value: PublicGetObjectRequest, maximumBytes: bigint, signal?: AbortSignal): Promise<ObjectValue> {
+  async get(value: wire.GetObjectRequest, maximumBytes: bigint, signal?: AbortSignal): Promise<ObjectValue> {
     await ensureObjectsWasm();
     try {
       if (maximumBytes < 0n || maximumBytes > 0xffff_ffffn) throw new ObjectsV2Error(wire.ErrorCode.INVALID_ARGUMENT);
@@ -90,7 +73,7 @@ export abstract class ObjectsV2Provider {
       const body = new Uint8Array(length);
       let offset = 0;
       for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-      return { header: header as PublicGetObjectHeader, body };
+      return { header, body };
     } catch (error) { if (error instanceof Error && error.name === "AbortError") throw error; throw objectsV2Error(error); }
   }
 }

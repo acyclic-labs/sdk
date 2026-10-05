@@ -33,59 +33,11 @@ impl Default for MemoryOptions {
     }
 }
 
-/// Supplies timestamps for provider metadata.
-///
-/// Production constructors use [`SystemClock`]. Qualification fixtures can
-/// inject [`FixedClock`] so the collector and remote server observe the same
-/// Rust-owned state without changing normal SDK behavior.
-pub trait Clock: Send + Sync {
-    /// Returns the current provider timestamp.
-    fn now(&self) -> Result<prost_types::Timestamp, Error>;
-}
-
-/// The normal host clock used by production constructors.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> Result<prost_types::Timestamp, Error> {
-        timestamp()
-    }
-}
-
-/// A deterministic clock for Rust-owned fixtures and reproducible receipts.
-#[derive(Clone, Debug)]
-pub struct FixedClock {
-    timestamp: prost_types::Timestamp,
-}
-
-impl FixedClock {
-    /// Creates a clock that returns `timestamp` for every observation.
-    #[must_use]
-    pub const fn new(timestamp: prost_types::Timestamp) -> Self {
-        Self { timestamp }
-    }
-
-    /// Creates a clock from protobuf timestamp components without requiring
-    /// fixture crates to depend directly on `prost-types`.
-    #[must_use]
-    pub const fn from_parts(seconds: i64, nanos: i32) -> Self {
-        Self::new(prost_types::Timestamp { seconds, nanos })
-    }
-}
-
-impl Clock for FixedClock {
-    fn now(&self) -> Result<prost_types::Timestamp, Error> {
-        Ok(self.timestamp.clone())
-    }
-}
-
 /// Atomic reference provider with no public version history or captured listings.
 #[derive(Clone)]
 pub struct MemoryObjects {
     state: Arc<Mutex<State>>,
     options: MemoryOptions,
-    clock: Arc<dyn Clock>,
     token_key: Arc<Mutex<Option<[u8; 32]>>>,
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     journal: Option<Arc<persistence::Journal>>,
@@ -140,12 +92,6 @@ impl MemoryObjects {
     /// No cardinality limit is added to the composition's existing 64 MiB byte limit.
     #[must_use]
     pub fn with_default_bucket() -> (Self, wire::BucketRef) {
-        Self::with_default_bucket_clock(Arc::new(SystemClock))
-    }
-
-    /// Creates the default-bucket composition with an injected Rust clock.
-    #[must_use]
-    pub fn with_default_bucket_clock(clock: Arc<dyn Clock>) -> (Self, wire::BucketRef) {
         let bucket = wire::BucketRef {
             name: "default".to_owned(),
         };
@@ -167,7 +113,6 @@ impl MemoryObjects {
                     maximum_entries: usize::MAX,
                     ..MemoryOptions::default()
                 },
-                clock,
                 token_key: Arc::new(Mutex::new(None)),
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 journal: None,
@@ -193,7 +138,7 @@ impl MemoryObjects {
         provider.mutate([0; 32], &None, |state| {
             let info = wire::Bucket {
                 bucket: Some(bucket.clone()),
-                created_at: Some(provider.now()?),
+                created_at: Some(timestamp()?),
             };
             state.buckets.insert(
                 name,
@@ -207,13 +152,8 @@ impl MemoryObjects {
         Ok((provider, bucket))
     }
 
-    /// Creates a provider with explicit limits, the system clock, and independently authenticated cursors.
+    /// Creates a provider with explicit limits and independently authenticated cursors.
     pub fn new(options: MemoryOptions) -> Result<Self, Error> {
-        Self::with_clock(options, Arc::new(SystemClock))
-    }
-
-    /// Creates a provider with explicit limits and an injected Rust clock.
-    pub fn with_clock(options: MemoryOptions, clock: Arc<dyn Clock>) -> Result<Self, Error> {
         if options.maximum_entries == 0 {
             return Err(InvalidArgument.into());
         }
@@ -222,17 +162,12 @@ impl MemoryObjects {
         Ok(Self {
             state: Arc::default(),
             options,
-            clock,
             token_key: Arc::new(Mutex::new(Some(token_key))),
             #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             journal: None,
             #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             defer_local: false,
         })
-    }
-
-    fn now(&self) -> Result<prost_types::Timestamp, Error> {
-        self.clock.now()
     }
 
     // A failed mutation rolls back both publication and its receipt. Persistent ordered
@@ -387,7 +322,6 @@ impl MemoryObjects {
                     query.metadata.clone(),
                     &query.preconditions,
                     StoredBody::memory(body),
-                    self.now()?,
                 )
             },
         )
@@ -521,7 +455,6 @@ fn publish(
     metadata: Option<wire::ObjectMetadata>,
     condition: &Option<wire::Preconditions>,
     body: StoredBody,
-    timestamp: prost_types::Timestamp,
 ) -> Result<wire::ObjectInfo, Error> {
     let current = state
         .buckets
@@ -534,7 +467,7 @@ fn publish(
         etag: next_id(state)?,
         size: body.len() as u64,
         metadata,
-        last_modified: Some(timestamp),
+        last_modified: Some(timestamp()?),
     };
     state
         .buckets
@@ -664,8 +597,7 @@ impl NativeBatchObjects for MemoryObjects {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[async_trait::async_trait]
 impl ObjectsProvider for MemoryObjects {
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
         request::bucket_name(&query.name)?;
@@ -680,7 +612,7 @@ impl ObjectsProvider for MemoryObjects {
                     bucket: Some(wire::BucketRef {
                         name: query.name.clone(),
                     }),
-                    created_at: Some(self.now()?),
+                    created_at: Some(timestamp()?),
                 };
                 state.buckets.insert(
                     query.name.clone(),
@@ -997,7 +929,6 @@ impl ObjectsProvider for MemoryObjects {
                         parts: bodies.into(),
                         length: size,
                     },
-                    self.now()?,
                 )?;
                 state.uploads.remove(&query.upload_id);
                 Ok(info)
@@ -1028,36 +959,6 @@ impl ObjectsProvider for MemoryObjects {
 #[cfg(test)]
 mod bootstrap_tests {
     use super::*;
-
-    #[tokio::test]
-    async fn fixed_clock_reproduces_bucket_and_object_timestamps() -> Result<(), Error> {
-        let expected = prost_types::Timestamp {
-            seconds: 1_700_000_000,
-            nanos: 123_000_000,
-        };
-        let (provider, _) = MemoryObjects::with_default_bucket_clock(Arc::new(
-            FixedClock::from_parts(expected.seconds, expected.nanos),
-        ));
-        let bucket = provider
-            .create_bucket(wire::CreateBucketRequest {
-                name: "clocked".to_owned(),
-                ..Default::default()
-            })
-            .await?;
-        assert_eq!(bucket.created_at, Some(expected.clone()));
-        let object = provider
-            .put(
-                wire::PutObjectHeader {
-                    bucket: bucket.bucket,
-                    object_key: "value".to_owned(),
-                    ..Default::default()
-                },
-                Bytes::from_static(b"body"),
-            )
-            .await?;
-        assert_eq!(object.last_modified, Some(expected));
-        Ok(())
-    }
 
     #[test]
     fn cursor_entropy_failure_does_not_install_a_key_and_clones_share_initialization()

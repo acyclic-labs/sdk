@@ -34,16 +34,20 @@ pub mod extension;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub mod filesystem;
 pub mod fork;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "grpc")]
 pub mod grpc;
 mod handles;
-pub mod integrations;
 pub mod interaction;
+pub mod integrations;
 pub mod live;
+pub mod managed_agent_runtime;
 #[cfg(feature = "machines")]
 pub mod machines;
-pub mod managed_agent_runtime;
-#[cfg(any(test, feature = "filesystem", target_arch = "wasm32"))]
+#[cfg(any(
+    test,
+    feature = "filesystem",
+    target_arch = "wasm32"
+))]
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
@@ -59,23 +63,12 @@ pub mod tool;
 pub mod turn;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
-#[cfg(target_arch = "wasm32")]
-pub use acyclic_sdk_remote_web::{BrowserHarnessCapabilities, BrowserHarnessClient};
 pub mod wire_api;
 mod wire_codec;
 pub use wire_codec::encode_error;
 pub mod wire_validation;
 pub mod wire_values;
 pub mod workflow;
-
-/// Future ABI used by the harness traits. Native providers may cross worker
-/// threads; browser providers remain on the browser executor and therefore
-/// use local futures.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type BoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
-#[cfg(target_arch = "wasm32")]
-pub(crate) type BoxFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
-pub(crate) type SendBoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
 
 /// Generated Protobuf packages, nested as their package names are, so the
 /// harness messages resolve the shared protocol handshake they import.
@@ -86,18 +79,13 @@ pub(crate) type SendBoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
     clippy::large_enum_variant
 )]
 mod generated {
-    /// Generated protobuf package namespace.
     pub mod acyclic {
-        /// Harness service messages and envelopes.
         pub mod harness {
-            /// Version-two harness wire contract.
             pub mod v2 {
                 include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v2.rs"));
             }
         }
-        /// Shared protocol negotiation messages.
         pub mod protocol {
-            /// Version-one protocol handshake contract.
             pub mod v1 {
                 include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
             }

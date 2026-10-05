@@ -8,7 +8,6 @@ import {
   GetObjectRequestSchema, HeadBucketRequestSchema, PutObjectHeaderSchema,
   ErrorCode, ObjectsV2Error, type Bucket, type ObjectsV2Provider,
 } from "@acyclic-labs/objects/v2";
-import { makeRustOwnedObjectKey, type PublicGetObjectRequest } from "@acyclic-labs/objects";
 
 const encoder = new TextEncoder();
 const maximumObjectBytes = 5 * 1_024 ** 3;
@@ -159,11 +158,9 @@ export class ObjectContentStore {
     if (file.version !== this.#identity(file.descriptor, file.display_name)) {
       throw new Error("Objects file content identity does not match its descriptor");
     }
-    const request: PublicGetObjectRequest = {
-      ...create(GetObjectRequestSchema, { bucket: this.options.bucket.bucket, objectKey: this.#key(file.path, file.version) }),
-      objectKey: makeRustOwnedObjectKey(this.#key(file.path, file.version)),
-    };
-    const result = await this.#objects.get(request, BigInt(file.descriptor.byte_length));
+    const result = await this.#objects.get(create(GetObjectRequestSchema, {
+      bucket: this.options.bucket.bucket, objectKey: this.#key(file.path, file.version),
+    }), BigInt(file.descriptor.byte_length));
     const info = result.header.object;
     if (info?.size !== BigInt(file.descriptor.byte_length)
       || info.metadata?.contentType !== file.descriptor.media_type
@@ -204,11 +201,9 @@ export class ObjectContentStore {
     } catch (error) {
       if (!(error instanceof ObjectsV2Error) || error.code !== ErrorCode.PRECONDITION_FAILED) throw error;
     }
-    const pinnedRequest: PublicGetObjectRequest = {
-      ...create(GetObjectRequestSchema, { bucket: this.options.bucket.bucket, objectKey }),
-      objectKey: makeRustOwnedObjectKey(objectKey),
-    };
-    const pinned = await this.#objects.get(pinnedRequest, 32n);
+    const pinned = await this.#objects.get(create(GetObjectRequestSchema, {
+      bucket: this.options.bucket.bucket, objectKey,
+    }), 32n);
     if (pinned.header.contentRange !== undefined || pinned.header.object?.size !== 32n
       || pinned.header.object.metadata?.contentType !== contentType
       || pinned.body.byteLength !== intent.byteLength

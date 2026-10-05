@@ -40,16 +40,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let descriptors = prost_types::FileDescriptorSet::decode(model_with_docs.as_slice())?;
     let prost = tonic_prost_build::Config::new();
-    // Browser clients use `tonic-web-wasm-client` as their transport.  Keep
-    // generating the canonical client for wasm32 so the browser facade uses
-    // the same Rust-owned service contract as native hosted clients.
-    let build_client = true;
     let native_transport = std::env::var("CARGO_CFG_TARGET_ARCH")?.as_str() != "wasm32";
     tonic_prost_build::configure()
-        // Keep the generated client available to the browser facade while
-        // omitting native transport/server glue from wasm32 builds.
-        .build_client(build_client)
-        .build_transport(native_transport)
+        .build_client(native_transport)
         .build_server(native_transport)
         .compile_fds_with_config(descriptors, prost)?;
     println!("cargo:rerun-if-changed=build.rs");

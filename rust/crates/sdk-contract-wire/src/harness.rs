@@ -684,6 +684,7 @@ pub fn harness_service_doc(name: &str) -> Option<&'static str> {
 }
 
 #[rustfmt::skip]
+
 pub const HARNESS_METHOD_DOCS: &[ContractDoc] = &[
     ContractDoc { name: "Handshake", text: "Negotiates protocol identity." },
     ContractDoc { name: "Submit", text: "Admits a canonical command before effects occur." },
@@ -744,7 +745,7 @@ impl ContractModel {
         harness_descriptor()
     }
     pub fn canonical_sha256(&self) -> String {
-        let digest = Sha256::digest(self.descriptor());
+        let digest = Sha256::digest(&self.descriptor());
         digest.iter().map(|b| format!("{b:02x}")).collect()
     }
 

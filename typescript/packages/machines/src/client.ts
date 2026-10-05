@@ -3,16 +3,12 @@ import type {
   MachineObservation, MachinesProvider, MutationOutcome, OperationId, OperationObservation,
   SuspensionPolicy, UsageReceipt,
 } from "./index.js";
+import { HttpMachinesProvider } from "./http.js";
 import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
-import type { NativeMachinesOptions } from "./native.js";
 
 export interface MachinesEnvironment {
-  readonly endpoint?: string;
-  /** Retained for source compatibility; native Machines authentication is mTLS. */
-  readonly token?: string;
-  readonly caCertificate?: string;
-  readonly certificate?: string;
-  readonly privateKey?: string;
+  readonly endpoint: string;
+  readonly token: string;
 }
 
 export interface MachineListOptions {
@@ -26,32 +22,7 @@ export interface MachineListOptions {
 
 export class Machines {
   constructor(readonly provider: MachinesProvider) {}
-  /** Connects through the Rust-owned native provider selected for this runtime. */
-  static async fromEnv(environment: Partial<MachinesEnvironment> = {}): Promise<Machines> {
-    if (!isNativeRuntime()) {
-      if (environment.endpoint === undefined || environment.token === undefined) {
-        throw new TypeError("Machines browser transport requires endpoint and token");
-      }
-      const { RemoteMachines } = await import("./remote.js");
-      return new Machines(new RemoteMachines(environment.endpoint, environment.token));
-    }
-    // Keep the native companion outside browser bundles; this path is reached only
-    // after the runtime check above and is resolved by the Node conditional export.
-    const nativeModule = "./native.js";
-    const { NativeMachinesProvider } = await import(nativeModule);
-    const endpoint = environment.endpoint;
-    const caCertificate = environment.caCertificate;
-    const certificate = environment.certificate;
-    const privateKey = environment.privateKey;
-    if (endpoint === undefined && caCertificate === undefined && certificate === undefined && privateKey === undefined) {
-      return new Machines(await NativeMachinesProvider.connectFromEnv());
-    }
-    if (endpoint === undefined || caCertificate === undefined || certificate === undefined || privateKey === undefined) {
-      throw new TypeError("Machines native transport requires endpoint, caCertificate, certificate, and privateKey");
-    }
-    const options: NativeMachinesOptions = { endpoint, caCertificate, certificate, privateKey };
-    return new Machines(await NativeMachinesProvider.connect(options));
-  }
+  static fromEnv(environment?: Partial<MachinesEnvironment>): Machines { return new Machines(new HttpMachinesProvider({ endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_MACHINES_ENDPOINT"), token: environment?.token ?? environmentValue("ACYCLIC_MACHINES_TOKEN") })); }
   qualifyImage(image: import("./index.js").Image): Promise<import("./index.js").ImageQualification> { return this.provider.qualifyImage(image); }
   async create(request: CreateMachine): Promise<Machine> { const outcome = await this.provider.create(request); return new Machine(this.provider, expectOutcome(outcome, "created").machine.id); }
   async attach(id: MachineId): Promise<Machine> { await this.provider.inspectMachine(id); return new Machine(this.provider, id); }
@@ -118,7 +89,4 @@ export class Operation {
 
 function expectOutcome<Kind extends MutationOutcome["kind"]>(outcome: MutationOutcome, kind: Kind): Extract<MutationOutcome, { kind: Kind }> { if (outcome.kind !== kind) throw new MachineOutcomeError(kind, outcome); return outcome as Extract<MutationOutcome, { kind: Kind }>; }
 export class MachineOutcomeError extends Error { constructor(readonly expected: MutationOutcome["kind"], readonly outcome: MutationOutcome) { super(`expected ${expected} outcome, received ${outcome.kind}`); } }
-function isNativeRuntime(): boolean {
-  const value = globalThis as typeof globalThis & { process?: { versions?: { node?: string; bun?: string } } };
-  return typeof value.process?.versions?.node === "string" || typeof value.process?.versions?.bun === "string";
-}
+function environmentValue(name: string): string { const runtime = globalThis as typeof globalThis & { process?: { env?: Readonly<Record<string, string | undefined>> } }; const value = runtime.process?.env?.[name]; if (!value?.trim()) throw new TypeError(`${name} is required`); return value; }

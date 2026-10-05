@@ -517,7 +517,7 @@ pub fn descriptor_with_options() -> Vec<u8> {
 
 fn varint_option<T: Into<u64> + Copy>(out: &mut Vec<u8>, number: u32, value: Option<T>) {
     if let Some(value) = value {
-        out.extend(varint(u64::from(number) << 3));
+        out.extend(varint((u64::from(number) << 3) | 0));
         out.extend(varint(value.into()));
     }
 }

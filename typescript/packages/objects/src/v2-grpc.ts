@@ -1,12 +1,9 @@
 import { rootCertificates } from "node:tls";
-import { validate_objects_v2_http_endpoint } from "../generated/wasm/acyclic_objects_wasm.js";
-import { OBJECTS_REMOTE_POLICY, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import { createClient, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { BucketsService, ObjectsService, MultipartService } from "../generated/proto/objects/v2/objects_pb.js";
-import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
-import { OBJECTS_HANDSHAKE, rustOwnedGrpcHandshakeRequest, validateRustOwnedGrpcHandshake } from "./generated-client.js";
 /** Node/Bun transport configuration for the logical Objects service. */
 export interface ObjectsV2GrpcOptions {
   readonly endpoint: string;
@@ -27,40 +24,21 @@ function grpcError(error: unknown): ObjectsV2Error {
 
 /** Complete Node/Bun clients, including client-streaming PUT/parts and server-streaming GET. */
 export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
-  let endpoint: URL;
-  try {
-    validate_objects_v2_http_endpoint(options.endpoint);
-    endpoint = new URL(options.endpoint);
-  } catch {
-    throw new TypeError("invalid Objects gRPC endpoint");
-  }
+  const endpoint = new URL(options.endpoint);
+  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   validateRustOwnedCredentialPolicy(options.token);
+  if (new TextEncoder().encode(options.token).byteLength > 8192 || /\0/.test(options.token)) throw new TypeError("invalid bearer token");
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
-    request.header.set("acyclic-family", "objects");
     return next(request);
   };
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   // Identity encoding preserves gRPC streaming in both supported runtimes.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const control = createClient(ProtocolService, createGrpcTransport({ sessionManager: session, defaultTimeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: 64 * 1024, writeMaxBytes: 64 * 1024 }));
-  let handshake: Promise<void> | undefined;
-  const applicationAuthenticate: Interceptor = next => async request => {
-    request.header.set("authorization", `Bearer ${options.token}`);
-    request.header.set("acyclic-family", "objects");
-    if (handshake === undefined) {
-      const pending = control.handshake(rustOwnedGrpcHandshakeRequest(OBJECTS_HANDSHAKE, "objects"), { timeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis })
-        .then(response => { validateRustOwnedGrpcHandshake(response, OBJECTS_HANDSHAKE, "objects"); });
-      const wrapped = pending.catch(error => { if (handshake === wrapped) handshake = undefined; throw error; });
-      handshake = wrapped;
-    }
-    await handshake;
-    return next(request);
-  };
-  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis, acceptCompression: [], baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum });
+  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: 30000, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum });
   return { buckets: createClient(BucketsService, transport), objects: createClient(ObjectsService, transport), multipart: createClient(MultipartService, transport), close: () => session.abort() };
 }
 

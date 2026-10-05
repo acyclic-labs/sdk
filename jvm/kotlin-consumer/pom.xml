@@ -25,31 +25,15 @@
   <build>
     <plugins>
       <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>build-helper-maven-plugin</artifactId>
-        <version>3.5.0</version>
-        <executions>
-          <execution>
-            <id>add-kotlin-test-source</id>
-            <phase>generate-test-sources</phase>
-            <goals><goal>add-test-source</goal></goals>
-            <configuration>
-              <sources><source>${project.basedir}/src/test/kotlin</source></sources>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
         <groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId><version>${kotlin.version}</version>
         <configuration><jvmTarget>17</jvmTarget></configuration>
         <executions>
           <execution><id>compile-kotlin</id><phase>compile</phase>
+            <configuration><sourceDirs><source>src/main/kotlin</source></sourceDirs></configuration>
             <goals><goal>compile</goal></goals>
           </execution>
           <execution><id>test-compile-kotlin</id><phase>test-compile</phase>
-            <configuration>
-              <sourceDirs><source>${project.basedir}/src/test/kotlin</source></sourceDirs>
-            </configuration>
+            <configuration><sourceDirs><source>src/test/kotlin</source></sourceDirs></configuration>
             <goals><goal>test-compile</goal></goals>
           </execution>
         </executions>

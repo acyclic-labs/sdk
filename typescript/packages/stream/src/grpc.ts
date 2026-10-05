@@ -2,15 +2,14 @@ import { rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
-import { is_stream_error_code, projectGrpcReadResponse, projectMemoryResponse, publicHttpErrorCode, validateGrpcResponseIdentity } from "../generated/wasm/acyclic_stream_wasm.js";
+import { projectGrpcReadResponse, projectMemoryResponse, validateGrpcResponseIdentity } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
-import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
-import { STREAM_HANDSHAKE, STREAM_REMOTE_POLICY, rustOwnedGrpcHandshakeRequest, validateRustOwnedCredentialPolicy, validateRustOwnedGrpcHandshake } from "./generated-client.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 
 export interface StreamGrpcOptions {
   readonly endpoint: string;
@@ -29,25 +28,9 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
-    request.header.set("acyclic-family", "stream");
     return next(request);
   };
-  const tls = options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } };
-  const control = createClient(ProtocolService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: 64 * 1024, writeMaxBytes: 64 * 1024, ...tls }));
-  let handshake: Promise<void> | undefined;
-  const applicationAuthenticate: Interceptor = next => async request => {
-    request.header.set("authorization", `Bearer ${options.token}`);
-    request.header.set("acyclic-family", "stream");
-    if (handshake === undefined) {
-      const pending = control.handshake(rustOwnedGrpcHandshakeRequest(STREAM_HANDSHAKE, "stream"), { timeoutMs: STREAM_REMOTE_POLICY.requestTimeoutMillis })
-        .then(response => { validateRustOwnedGrpcHandshake(response, STREAM_HANDSHAKE, "stream"); });
-      const wrapped = pending.catch(error => { if (handshake === wrapped) handshake = undefined; throw error; });
-      handshake = wrapped;
-    }
-    await handshake;
-    return next(request);
-  };
-  return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls }));
+  return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
 }
 
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
@@ -152,18 +135,17 @@ function providerError(error: unknown, operation: string): Error {
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
   let code = "unavailable";
   switch (error.code) {
-    case Code.InvalidArgument: code = is_stream_error_code(error.rawMessage) ? error.rawMessage : "invalid_argument"; break;
+    case Code.InvalidArgument: code = ["invalid_path", "limit_exceeded"].includes(error.rawMessage) ? error.rawMessage : "invalid_argument"; break;
     case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
     case Code.AlreadyExists: code = "destination_exists"; break;
     case Code.OutOfRange: code = "out_of_range"; break;
     case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
     case Code.ResourceExhausted: code = "capacity_exhausted"; break;
     case Code.FailedPrecondition:
-      if (is_stream_error_code(error.rawMessage)) code = error.rawMessage;
+      if (["hierarchy_changed", "idempotency_mismatch", "prefix_not_retained", "deadline_elapsed"].includes(error.rawMessage)) code = error.rawMessage;
       break;
     case Code.Unimplemented: if (error.rawMessage === "unsupported_capability") code = "unsupported"; break;
   }
-  const projected = publicHttpErrorCode(error.rawMessage, operation);
-  if (projected !== undefined) code = projected;
+  if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, error.rawMessage);
 }

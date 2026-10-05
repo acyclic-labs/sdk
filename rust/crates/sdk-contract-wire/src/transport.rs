@@ -141,8 +141,8 @@ impl TransportSelectionRequest {
         Self {
             runtime,
             // Authentication is supplied by the selected family's qualified adapter.  A
-            // caller that specifically requires a bearer credential opts in below;
-            // native mutual-TLS authentication remains available independently.
+            // caller that specifically requires a bearer credential opts in below; native
+            // Machines uses mTLS and must not be rejected for lacking bearer auth.
             requirements: TransportRequirements {
                 streaming: false,
                 bearer_auth: false,
@@ -249,7 +249,7 @@ const GRPC_UNARY: TransportOption = TransportOption {
 const MACHINES_GRPC: TransportOption = TransportOption {
     kind: TransportKind::Grpc,
     streaming: true,
-    bearer_auth: true,
+    bearer_auth: false,
 };
 const GRPC_WEB: TransportOption = TransportOption {
     kind: TransportKind::GrpcWeb,
@@ -281,7 +281,6 @@ const MACHINES_NATIVE: &[TransportOption] = &[MACHINES_GRPC];
 const FILESYSTEM_NATIVE: &[TransportOption] = &[GRPC];
 const FILESYSTEM_BROWSER: &[TransportOption] = &[GRPC_WEB];
 const HARNESS_NATIVE: &[TransportOption] = &[GRPC];
-const HARNESS_BROWSER: &[TransportOption] = &[GRPC_WEB];
 
 /// Transport policy for a family with a native gRPC client and HTTP JSON
 /// projection whose operations are unary.
@@ -334,14 +333,12 @@ pub const INFERENCE_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
     },
 };
 
-/// Transport policy for Machines with native gRPC and browser gRPC-Web.
+/// Transport policy for Machines. No canonical browser transport is claimed.
 pub const MACHINES_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
     native: RuntimeTransportPolicy {
         options: MACHINES_NATIVE,
     },
-    browser: RuntimeTransportPolicy {
-        options: &[GRPC_WEB],
-    },
+    browser: RuntimeTransportPolicy { options: &[] },
 };
 
 /// Transport policy for Filesystem's hosted gRPC and browser gRPC-Web clients.
@@ -354,14 +351,12 @@ pub const FILESYSTEM_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
     },
 };
 
-/// Transport policy for Harness's canonical native gRPC and browser gRPC-Web services.
+/// Transport policy for Harness's canonical native gRPC service.
 pub const HARNESS_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
     native: RuntimeTransportPolicy {
         options: HARNESS_NATIVE,
     },
-    browser: RuntimeTransportPolicy {
-        options: HARNESS_BROWSER,
-    },
+    browser: RuntimeTransportPolicy { options: &[] },
 };
 
 #[cfg(test)]
@@ -416,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn machines_defaults_are_platform_owned_and_support_account_authentication() {
+    fn machines_native_defaults_to_mtls_without_bearer_requirement() {
         let native = TransportSelectionRequest::for_runtime(ClientRuntime::Native);
         assert_eq!(
             select_transport_by_name("machines", native).unwrap().kind,
@@ -431,34 +426,8 @@ mod tests {
             ..native
         };
         assert_eq!(
-            select_transport_by_name("machines", bearer_required)
-                .unwrap()
-                .kind,
-            TransportKind::Grpc
-        );
-        let browser = TransportSelectionRequest {
-            runtime: ClientRuntime::Browser,
-            ..bearer_required
-        };
-        assert_eq!(
-            select_transport_by_name("machines", browser).unwrap().kind,
-            TransportKind::GrpcWeb
-        );
-    }
-
-    #[test]
-    fn harness_defaults_to_grpc_web_in_browser() {
-        assert_eq!(
-            select_transport_by_name("harness", request(ClientRuntime::Native))
-                .unwrap()
-                .kind,
-            TransportKind::Grpc
-        );
-        assert_eq!(
-            select_transport_by_name("harness", request(ClientRuntime::Browser))
-                .unwrap()
-                .kind,
-            TransportKind::GrpcWeb
+            select_transport_by_name("machines", bearer_required),
+            Err(TransportSelectionError::NoCompatibleTransport)
         );
     }
 

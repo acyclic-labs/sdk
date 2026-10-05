@@ -79,11 +79,6 @@ mod validation {
         Digest, MAXIMUM_EVALUATION_CANDIDATES, MAXIMUM_EVALUATION_CASES,
         MAXIMUM_EVALUATION_METRICS, MAXIMUM_EVALUATION_RESULTS, Sha256, ValidationError, wire,
     };
-    /// Reject an all-zero fixed-width identity.
-    ///
-    /// Wire identities use zero as the unset value, so callers can use this
-    /// helper before accepting a digest, revision, or identifier from a
-    /// transport response.
     pub fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), ValidationError> {
         if *value == [0; N] {
             return Err(ValidationError::Invalid("zero identity"));
@@ -91,8 +86,6 @@ mod validation {
         Ok(())
     }
 
-    /// Validate a byte slice as a non-zero fixed-width identity and copy it
-    /// into an array of the requested size.
     pub fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], ValidationError> {
         let bytes = value
             .try_into()
@@ -101,12 +94,6 @@ mod validation {
         Ok(bytes)
     }
 
-    /// Validate the model capability inventory exposed by an inference
-    /// service.
-    ///
-    /// This checks bounded and unique model names, execution profiles,
-    /// feature lists, context and output limits, and retention profiles so a
-    /// consumer never relies on an ambiguous capability record.
     pub fn validate_model_capabilities(
         response: &wire::ListModelsResponse,
     ) -> Result<(), ValidationError> {
@@ -144,11 +131,6 @@ mod validation {
         Ok(())
     }
 
-    /// Validate an evaluation specification before admission or execution.
-    ///
-    /// Candidate, suite, case, grader, and metric identities must be bounded,
-    /// non-zero, and unique where the protocol requires it. The maximum result
-    /// count is also checked against the candidate and case cartesian product.
     pub fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), ValidationError> {
         if spec.candidates.is_empty() || spec.candidates.len() > MAXIMUM_EVALUATION_CANDIDATES {
             return Err(ValidationError::Invalid(
@@ -246,10 +228,6 @@ mod validation {
         Ok(())
     }
 
-    /// Bind a native model output digest to a grader observation digest.
-    ///
-    /// The domain-separated digest is the wire-level proof that the two
-    /// observations belong to the same evaluation result.
     pub fn evaluation_observation_binding(native: &[u8; 32], observation: &[u8; 32]) -> [u8; 32] {
         let mut digest = Sha256::new();
         digest.update(b"acyclic.inference.grader-observation.v1\0");
@@ -258,8 +236,6 @@ mod validation {
         digest.finalize().into()
     }
 
-    /// Validate an evaluation admission response against the requested
-    /// evaluation identifier and exact specification.
     pub fn validate_evaluation_admission(
         view: &wire::EvaluationView,
         expected: [u8; 16],
@@ -273,8 +249,6 @@ mod validation {
         validate_evaluation_view(view, expected)
     }
 
-    /// Validate an evaluation view, including identity, sequence, state,
-    /// specification, and completed-result consistency.
     pub fn validate_evaluation_view(
         view: &wire::EvaluationView,
         expected: [u8; 16],
@@ -427,11 +401,6 @@ mod validation {
         Ok(())
     }
 
-    /// Validate a run view returned by the inference service.
-    ///
-    /// The run identifier and input digest are always checked. A terminal
-    /// result must name a known terminal state, and any attached context and
-    /// usage receipt must contain the identities required to account for it.
     pub fn validate_run_view(
         view: &wire::RunView,
         expected: [u8; 16],
@@ -495,11 +464,6 @@ mod validation {
         Ok(())
     }
 
-    /// Validate a warm model commitment and its optional caller expectations.
-    ///
-    /// The commitment, context, model and latency profiles, evidence, and
-    /// admission receipt are all required identities; expiry, sequence, and
-    /// state must describe a usable protocol record.
     pub fn validate_warm_view(
         view: &wire::WarmView,
         expected_context: Option<[u8; 32]>,
@@ -523,11 +487,6 @@ mod validation {
         Ok(())
     }
 
-    /// Validate the tagged origin of a context observation.
-    ///
-    /// Each provenance variant has different identity requirements: derived,
-    /// forked, and transferred contexts reference a source; generated and run
-    /// input contexts additionally bind to a run and its output policy.
     pub fn validate_provenance(value: &wire::ContextProvenance) -> Result<(), ValidationError> {
         use wire::context_provenance::Origin;
         match value
@@ -555,8 +514,6 @@ mod validation {
         }
     }
 
-    /// Validate the immutable identities and publication sequence of a
-    /// mutation receipt.
     pub fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), ValidationError> {
         fixed::<32>(&receipt.revision)?;
         fixed::<32>(&receipt.command_digest)?;

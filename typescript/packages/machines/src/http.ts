@@ -50,8 +50,7 @@ export class HttpMachinesProvider implements MachinesProvider {
       // Rust uses null-prototype objects while projecting untrusted JSON.
       // Clone once at the transport boundary to retain the historical plain
       // object API without rebuilding the generated DTO graph in TypeScript.
-      const decoded = structuredClone(WasmSimulatedMachines.decodeHttpResponse(route, body, payload));
-      return decoded as MachinesHttpResponse<MachinesHttpRoutes[Key]>;
+      return structuredClone(WasmSimulatedMachines.decodeHttpResponse(route, body, payload));
     } catch (error) {
       throw new MachinesTransportError(`invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status);
     }

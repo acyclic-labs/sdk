@@ -1,2 +1,2 @@
-/** Browser-safe Machines surface backed by Rust gRPC-Web through WASM. */
+/** Browser-safe Machines surface. Rust policy currently exposes no browser transport. */
 export * from "./index.js";

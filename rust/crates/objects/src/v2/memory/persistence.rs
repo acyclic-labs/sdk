@@ -313,9 +313,6 @@ pub(crate) fn open(
     Ok(MemoryObjects {
         state: Arc::new(Mutex::new(state)),
         options,
-        // Reopened production stores use the normal host clock. Fixture
-        // callers use `with_clock` and never restore a persisted provider.
-        clock: Arc::new(SystemClock),
         token_key: Arc::new(Mutex::new(Some(key))),
         defer_local: false,
         journal: Some(Arc::new(Journal {
