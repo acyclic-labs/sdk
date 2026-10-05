@@ -11,7 +11,7 @@ use super::{
     workspace_ref,
 };
 use crate::conversation::{VolumeClass, VolumeOperation, VolumeRef};
-use crate::core::{AuthorityVerifier, Scope};
+use crate::core::{Authority, AuthorityVerifier, Reducer, Scope};
 use crate::resources::GenerationRef;
 use crate::{Error, Result};
 use acyclic_fs::{
@@ -24,6 +24,27 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
+
+/// Durable parent binding for one project volume published by a direct fork.
+/// The reducer snapshot is refreshed when the swarm publishes the seed; the
+/// provider still rechecks the child lineage and target generation at join.
+#[derive(Clone)]
+pub struct LocalProjectChildBinding {
+    pub parent: Reducer,
+    pub child: Authority,
+    pub project: VolumeRef,
+}
+
+pub type LocalProjectChildren = Arc<RwLock<BTreeMap<WorkspaceId, LocalProjectChildBinding>>>;
+
+type DirectProjectJoin = Arc<
+    dyn Fn(
+            FilesystemOperationId,
+            GitFilesystemAction,
+        ) -> BoxFuture<'static, Result<GitFilesystemResult>>
+        + Send
+        + Sync,
+>;
 
 /// Authenticated local project binding used by the default swarm composition.
 ///
@@ -40,6 +61,8 @@ pub struct LocalProjectWorkspaceTree<A, O> {
     /// the typed Filesystem host. It is never a host-directory path map.
     workspaces: Arc<RwLock<BTreeMap<WorkspaceId, String>>>,
     active_workspace: Arc<RwLock<WorkspaceId>>,
+    project_children: Option<LocalProjectChildren>,
+    direct_project_join: Arc<RwLock<Option<DirectProjectJoin>>>,
 }
 
 impl<A, O> LocalProjectWorkspaceTree<A, O>
@@ -87,7 +110,29 @@ where
             workspace_id,
             workspaces: Arc::new(RwLock::new(workspaces)),
             active_workspace: Arc::new(RwLock::new(workspace_id)),
+            project_children: None,
+            direct_project_join: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Shares the swarm's durable direct-child project registry with this
+    /// binding. The registry contains only typed seed identities and is read
+    /// lazily when a join action is executed.
+    #[must_use]
+    pub fn with_project_children(mut self, children: LocalProjectChildren) -> Self {
+        self.project_children = Some(children);
+        self
+    }
+
+    /// Installs the composition-owned direct-project join route after the
+    /// facade has been constructed. The route remains behind this typed
+    /// Filesystem boundary; callers cannot replace the provider merge engine.
+    pub(crate) fn bind_direct_project_join(&self, join: DirectProjectJoin) -> Result<()> {
+        *self
+            .direct_project_join
+            .write()
+            .map_err(|_| Error::Storage("local Git join route was poisoned".into()))? = Some(join);
+        Ok(())
     }
 
     /// Returns the bound project identity.
@@ -532,6 +577,26 @@ where
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     if GitTreeRef::exact(target_id, current.id()) != *target_tree {
                         return Err(Error::Conflict("Git join target generation changed".into()));
+                    }
+                    if self
+                        .project_children
+                        .as_ref()
+                        .and_then(|children| children.read().ok())
+                        .is_some_and(|children| children.contains_key(source_workspace))
+                    {
+                        let route = self
+                            .direct_project_join
+                            .read()
+                            .map_err(|_| {
+                                Error::Storage("local Git join route was poisoned".into())
+                            })?
+                            .clone()
+                            .ok_or_else(|| {
+                                Error::Storage(
+                                    "direct project Git join route is not installed".into(),
+                                )
+                            })?;
+                        return route(operation_id, action.clone()).await;
                     }
                     let Some(source_tree) = source_tree else {
                         return Ok(GitFilesystemResult::Applied {

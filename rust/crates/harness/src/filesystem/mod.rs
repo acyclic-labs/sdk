@@ -56,7 +56,10 @@ pub use git_facade::{
     ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,
 };
 mod swarm_git;
-pub use swarm_git::{FilesystemGitTool, LocalProjectWorkspaceTree, ProjectWorkspaceTree};
+pub use swarm_git::{
+    FilesystemGitTool, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
+    ProjectWorkspaceTree,
+};
 mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
