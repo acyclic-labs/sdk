@@ -87,7 +87,7 @@ mod bindings {
     }
 
     /// Validate one remote bearer credential using the shared Rust policy.
-    #[wasm_bindgen]
+    #[wasm_bindgen(js_name = validateRemoteWebCredential)]
     pub fn validate_remote_web_credential(token: &str) -> Result<(), JsValue> {
         acyclic_sdk_remote_web::validate_remote_web_credential(token)
     }
