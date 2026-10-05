@@ -2340,6 +2340,8 @@ pub struct PersistentLocalSwarm {
 impl PersistentLocalSwarm {
     /// Stops accepting child workers and joins their cancelled futures.
     /// Admitted external effects retain their durable recovery fences.
+    /// This owns child-worker admission only; caller-owned root runs require
+    /// their own cancellation and join boundary.
     pub async fn shutdown_workers(&self) {
         self.workers.shutdown().await;
         // LocalStream keeps a cancelled caller's mutation alive until its

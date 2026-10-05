@@ -195,6 +195,8 @@ impl MutationTracker {
     async fn drain(&self) {
         loop {
             let notified = self.drained.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.active.load(Ordering::Acquire) == 0 {
                 return;
             }
@@ -1637,6 +1639,34 @@ mod tests {
             .await?;
             Ok::<_, Box<dyn std::error::Error>>(())
         })
+    }
+
+    #[tokio::test]
+    async fn drain_waits_for_a_late_tracker_guard() {
+        let tracker = Arc::new(MutationTracker {
+            active: AtomicUsize::new(0),
+            drained: Notify::new(),
+        });
+        let first = tracker.acquire();
+        let second = tracker.acquire();
+        let draining = tokio::spawn({
+            let tracker = Arc::clone(&tracker);
+            async move { tracker.drain().await }
+        });
+
+        tokio::task::yield_now().await;
+        drop(first);
+        tokio::task::yield_now().await;
+        assert!(
+            !draining.is_finished(),
+            "drain returned while a later provider guard remained active"
+        );
+
+        drop(second);
+        tokio::time::timeout(std::time::Duration::from_secs(1), draining)
+            .await
+            .expect("drain should complete after the final guard drops")
+            .expect("drain task should not panic");
     }
 
     /// Serializes the tests that install [`JOURNAL_PERSIST_BLOCKER`], which is
