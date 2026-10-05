@@ -1,0 +1,20 @@
+{
+  "source_commit": "21fa40361f64847331d36116df77344794720ea9",
+  "platform": "Windows native",
+  "archive": "D:/graphcoder-builds/root-qualification-artifacts/21fa40361/frozen-boundary-recovery",
+  "source_archive_sha256": "9ae95141de5abf5c4175c0cad1a488c26113f5bdb936d73973a92244ee60a9ef",
+  "native_log_sha256": "e44c45eb9063d34605afd868c98a70d7502c995ca891d6f1013e3d9c624f8684",
+  "fault_log_sha256": "f4770cd2d9e86e6ebb6a04f0e51c159bfe41695e093e8a7276edff5401454445",
+  "executables_sha256": {
+    "local_model_swarm-2a4724405f2fc4cd.exe": "01f9a66bc4fa9f7cef372b374ba1eb55746b2d9195085ed7b49f597a725fe567",
+    "local_swarm_faults-f5ff69a39607b16d.exe": "c321ee3dfcea28b2a9edd8432de8e41cbd182ee8807389030901c5b94fff1352"
+  },
+  "results": {
+    "local_model_swarm": {"passed": 4, "failed": 1, "ignored": 0},
+    "local_swarm_faults": {"passed": 3, "failed": 3, "ignored": 0}
+  },
+  "new_evidence": ["Owned cancellation provider is dropped", "Precompletion disconnect recovers without duplicate dispatch", "Live retry returns Indeterminate before a later dispatch-count assertion fails"],
+  "unmet": ["Known depth denial leaves child Activating", "Concurrent fixture expects three requests but parent continuation produces four", "Prepared fixture incorrectly forbids independently completed sibling", "Cold reopen encounters retained local Stream owner"],
+  "execution": "Cargo session 56979 terminated 101 before faults. Same-source retained fault executable ran in session 64015 and terminated 101. Source, executables and logs archived before further edits.",
+  "completion": false
+}
