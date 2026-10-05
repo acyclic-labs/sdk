@@ -620,7 +620,9 @@ where
         self.admit(&request)?;
         let request = request.into_inner();
         let page = required(request.page, "page")?;
-        if page.maximum_items == 0 || page.maximum_items > self.limits.maximum_page_items {
+        if hosted_contract::validate_page_bound(page.maximum_items, self.limits.maximum_page_items)
+            .is_err()
+        {
             return Err(Status::invalid_argument("directory page bound is invalid"));
         }
         let generation = self.generation(request.generation).await?;
@@ -694,7 +696,11 @@ where
     ) -> Result<Response<wire::PlanExtentsResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.maximum_extents == 0 || request.maximum_extents > self.limits.maximum_page_items
+        if hosted_contract::validate_page_bound(
+            request.maximum_extents,
+            self.limits.maximum_page_items,
+        )
+        .is_err()
         {
             return Err(Status::invalid_argument("extent bound is invalid"));
         }
@@ -734,20 +740,15 @@ where
     ) -> Result<Response<wire::MutationResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.mutations.is_empty()
-            || u32::try_from(request.mutations.len()).unwrap_or(u32::MAX)
-                > self.limits.maximum_transaction_mutations
+        if hosted_contract::validate_transaction_bounds(
+            request.mutations.len(),
+            self.limits.maximum_transaction_mutations,
+            request.maximum_conflicts,
+            self.limits.maximum_page_items,
+        )
+        .is_err()
         {
-            return Err(Status::invalid_argument(
-                "transaction mutation count is invalid",
-            ));
-        }
-        if request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
-        {
-            return Err(Status::invalid_argument(
-                "transaction conflict bound is invalid",
-            ));
+            return Err(Status::invalid_argument("transaction bounds are invalid"));
         }
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
@@ -787,11 +788,13 @@ where
     ) -> Result<Response<wire::RebaseTransactionResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.mutations.is_empty()
-            || u32::try_from(request.mutations.len()).unwrap_or(u32::MAX)
-                > self.limits.maximum_transaction_mutations
-            || request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
+        if hosted_contract::validate_transaction_bounds(
+            request.mutations.len(),
+            self.limits.maximum_transaction_mutations,
+            request.maximum_conflicts,
+            self.limits.maximum_page_items,
+        )
+        .is_err()
         {
             return Err(Status::invalid_argument(
                 "transaction rebase bounds are invalid",
@@ -857,7 +860,11 @@ where
     ) -> Result<Response<wire::DiffResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.maximum_changes == 0 || request.maximum_changes > self.limits.maximum_page_items
+        if hosted_contract::validate_page_bound(
+            request.maximum_changes,
+            self.limits.maximum_page_items,
+        )
+        .is_err()
         {
             return Err(Status::invalid_argument("diff bound is invalid"));
         }
@@ -894,12 +901,13 @@ where
     ) -> Result<Response<wire::RebaseResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.maximum_generations == 0
-            || request.maximum_generations > self.limits.maximum_page_items
-            || request.maximum_changes == 0
-            || request.maximum_changes > self.limits.maximum_page_items
-            || request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
+        if hosted_contract::validate_generation_bounds(
+            request.maximum_generations,
+            request.maximum_changes,
+            request.maximum_conflicts,
+            self.limits.maximum_page_items,
+        )
+        .is_err()
         {
             return Err(Status::invalid_argument("rebase bounds are invalid"));
         }
@@ -922,12 +930,13 @@ where
     ) -> Result<Response<wire::JoinPlan>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.maximum_generations == 0
-            || request.maximum_generations > self.limits.maximum_page_items
-            || request.maximum_changes == 0
-            || request.maximum_changes > self.limits.maximum_page_items
-            || request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
+        if hosted_contract::validate_generation_bounds(
+            request.maximum_generations,
+            request.maximum_changes,
+            request.maximum_conflicts,
+            self.limits.maximum_page_items,
+        )
+        .is_err()
         {
             return Err(Status::invalid_argument("join bounds are invalid"));
         }
@@ -1021,12 +1030,13 @@ where
         let target_ref = required(supplied.expected_target.clone(), "join target")?;
         let base_ref = required(supplied.common_ancestor.clone(), "join common ancestor")?;
         let history = join_history(supplied.history)?;
-        if supplied.maximum_generations == 0
-            || supplied.maximum_generations > self.limits.maximum_page_items
-            || supplied.maximum_changes == 0
-            || supplied.maximum_changes > self.limits.maximum_page_items
-            || supplied.maximum_conflicts == 0
-            || supplied.maximum_conflicts > self.limits.maximum_page_items
+        if hosted_contract::validate_generation_bounds(
+            supplied.maximum_generations,
+            supplied.maximum_changes,
+            supplied.maximum_conflicts,
+            self.limits.maximum_page_items,
+        )
+        .is_err()
         {
             return Err(Status::invalid_argument("join bounds are invalid"));
         }
