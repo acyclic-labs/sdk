@@ -3922,9 +3922,10 @@ impl PersistentLocalSwarm {
             Err(error) => return Err(error),
         }
         self.admissions.lock().await.insert(task, admission.clone());
-        *self.registry_tail.lock().await = observed_tail
+        let committed_tail = observed_tail
             .checked_add(1)
             .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+        self.retain_registry_tail(committed_tail).await;
         Ok(admission)
     }
 
@@ -6561,8 +6562,10 @@ impl PersistentLocalSwarm {
         self.refresh_registry_state_with_tail().await.map(|_| ())
     }
 
-    /// Keep the local cursor monotonic when another handle commits a durable
-    /// suffix concurrently with this one.
+    /// Retains the highest locally observed registry tail. An append can
+    /// commit concurrently with another handle; publishing `observed + 1`
+    /// must never move this cache backwards and make a later refresh reject a
+    /// valid durable suffix.
     async fn retain_registry_tail(&self, committed_tail: u64) {
         let mut known_tail = self.registry_tail.lock().await;
         *known_tail = (*known_tail).max(committed_tail);
