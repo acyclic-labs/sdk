@@ -317,8 +317,8 @@ fn cpp_kind(kind: WireValueKind, name: &str) -> String {
     match kind {
         WireValueKind::String
         | WireValueKind::Bytes
-        | WireValueKind::Message
         | WireValueKind::UnsignedInteger => name.to_owned(),
+        WireValueKind::Message => format!("std::shared_ptr<{name}>"),
         WireValueKind::SignedInteger => "std::int64_t".into(),
         WireValueKind::Boolean => "bool".into(),
         WireValueKind::Timestamp => "std::chrono::system_clock::time_point".into(),
@@ -574,7 +574,7 @@ fn ordinary_descriptor_fields(name: &str) -> Vec<crate::type_policy::ResolvedReq
     {
         if descriptor_type_name(&field).as_deref() == Some(name)
             && !fields.iter().any(|existing: &crate::type_policy::ResolvedRequestField| {
-                existing.field == field.field && existing.number == field.number
+                existing.field == field.field
             })
         {
             fields.push(field);
@@ -734,7 +734,9 @@ fn cpp_wire_type(field: &crate::type_policy::ResolvedRequestField) -> String {
             descriptor_type_name(field).unwrap_or_else(|| "RustWireEnum".into())
         }
         Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
-            descriptor_type_name(field).unwrap_or_else(|| "RustWireMessage".into())
+            descriptor_type_name(field)
+                .map(|name| format!("std::shared_ptr<{name}>"))
+                .unwrap_or_else(|| "std::shared_ptr<RustWireMessage>".into())
         }
         _ => "std::vector<std::uint8_t>".into(),
     }
@@ -1138,6 +1140,27 @@ fn render_cpp() -> String {
     // message that embeds them.  Emit descriptor-derived ordinary messages
     // and enums first so nested public fields never fall back to an opaque
     // RustWireMessage/RustWireEnum solely because of declaration order.
+    let mut semantic_message_names = BTreeSet::new();
+    for item in SEMANTIC_TYPES {
+        if item.wire_kind == WireValueKind::Message
+            && semantic_message_names.insert(item.rust_name)
+        {
+            out.push_str(&format!("struct {};\n", item.rust_name));
+        }
+    }
+    let mut scalar_seen = BTreeSet::new();
+    for item in SEMANTIC_TYPES {
+        if !scalar_seen.insert(item.rust_name) || item.wire_kind == WireValueKind::Message {
+            continue;
+        }
+        match item.wire_kind {
+            WireValueKind::String => out.push_str(&format!("struct {} {{ std::string value; explicit {}(std::string value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
+            WireValueKind::Bytes => out.push_str(&format!("struct {} {{ std::vector<std::uint8_t> value; explicit {}(std::vector<std::uint8_t> value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
+            WireValueKind::UnsignedInteger => out.push_str(&format!("struct {} {{ std::uint64_t value; explicit {}(std::uint64_t value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
+            WireValueKind::SignedInteger => out.push_str(&format!("struct {} {{ std::int64_t value; explicit {}(std::int64_t value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
+            _ => {}
+        }
+    }
     let mut ordinary_messages = ordinary_descriptor_names(FieldType::Message);
     ordinary_messages.extend(semantic_nested_descriptor_names(FieldType::Message));
     for name in &ordinary_messages {
@@ -1164,7 +1187,7 @@ fn render_cpp() -> String {
     }
     let mut seen = BTreeSet::new();
     for item in SEMANTIC_TYPES {
-        if !seen.insert(item.rust_name) {
+        if !seen.insert(item.rust_name) || item.wire_kind != WireValueKind::Message {
             continue;
         }
         match item.wire_kind {
