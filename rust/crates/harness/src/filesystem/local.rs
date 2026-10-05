@@ -1562,6 +1562,7 @@ impl PersistentLocalHarness {
     ) -> Result<TurnOutput> {
         if admission.input != serde_json::Value::String(prompt.to_owned())
             || bundle.limits() != admission.limits
+            || !admission.grants.is_subset_of(bundle.capabilities())
             || admission
                 .run_limits
                 .max_steps
