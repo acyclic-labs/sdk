@@ -41,6 +41,9 @@ fn subscription_observation(spec: actors_wire::SubscriptionSpec) -> actors_wire:
         completed_cursor: 0,
         recoverable_cursor: 0,
         placement_anchor: spec.placement_anchor,
+        // A newly-created subscription has not retried delivery yet. Keep
+        // this semantic invariant in the Rust provider so generated clients
+        // do not inherit a stale manifest value.
         retry_count: 0,
         failure_code: String::new(),
         failed_cursor: None,
@@ -50,7 +53,13 @@ fn subscription_observation(spec: actors_wire::SubscriptionSpec) -> actors_wire:
 /// Shared stateful Actors implementation used by remote qualification.
 #[derive(Clone)]
 pub struct ActorsFixture {
-    state: Arc<Mutex<actors_wire::ActorObservation>>,
+	state: Arc<Mutex<ActorsState>>,
+}
+
+#[derive(Clone, Default)]
+struct ActorsState {
+	actor: actors_wire::ActorObservation,
+	mutations: BTreeMap<String, Vec<u8>>,
 }
 
 impl Default for ActorsFixture {
@@ -58,81 +67,125 @@ impl Default for ActorsFixture {
 }
 
 impl ActorsFixture {
-    #[must_use]
-    pub fn new() -> Self { Self { state: Arc::new(Mutex::new(actor_observation())) } }
+	#[must_use]
+	pub fn new() -> Self {
+		Self {
+			state: Arc::new(Mutex::new(ActorsState { actor: actor_observation(), mutations: BTreeMap::new() })),
+		}
+	}
 
-    async fn current(&self) -> actors_wire::ActorObservation { self.state.lock().await.clone() }
+	fn mutation_key(operation: &str, key: &str) -> String { format!("{operation}:{key}") }
+
+	fn record_mutation(
+		state: &mut ActorsState,
+		operation: &str,
+		key: &str,
+		request: &impl prost::Message,
+	) -> Result<bool, Status> {
+		let encoded = request.encode_to_vec();
+		let mutation_key = Self::mutation_key(operation, key);
+		match state.mutations.get(&mutation_key) {
+			Some(previous) if previous != &encoded => Err(Status::failed_precondition("idempotency key was reused with a different request")),
+			Some(_) => Ok(true),
+			None => {
+				state.mutations.insert(mutation_key, encoded);
+				Ok(false)
+			}
+		}
+	}
+
+	async fn current(&self) -> actors_wire::ActorObservation { self.state.lock().await.actor.clone() }
 }
 
 #[tonic::async_trait]
 impl actors_wire::actors_service_server::ActorsService for ActorsFixture {
-    async fn create_actor(&self, request: Request<actors_wire::CreateActorRequest>) -> Result<Response<actors_wire::CreateActorResponse>, Status> {
-        let request = request.into_inner();
-        let mut state = self.state.lock().await;
-        state.code_sha256 = if request.code_sha256.is_empty() { fixture_digest() } else { request.code_sha256 };
-        if !request.home_region.is_empty() { state.home_region = request.home_region; }
-        state.subscriptions = request.subscriptions.into_iter().map(subscription_observation).collect();
-        state.state = actors_wire::ActorState::Active as i32;
-        state.configuration_revision = 1;
-        Ok(Response::new(actors_wire::CreateActorResponse { actor: Some(state.clone()) }))
+	async fn create_actor(&self, request: Request<actors_wire::CreateActorRequest>) -> Result<Response<actors_wire::CreateActorResponse>, Status> {
+		let request = request.into_inner();
+		let mut state = self.state.lock().await;
+		if Self::record_mutation(&mut state, "create", &request.idempotency_key, &request)? {
+			return Ok(Response::new(actors_wire::CreateActorResponse { actor: Some(state.actor.clone()) }));
+		}
+		state.actor.code_sha256 = if request.code_sha256.is_empty() { fixture_digest() } else { request.code_sha256 };
+		if !request.home_region.is_empty() { state.actor.home_region = request.home_region; }
+		state.actor.subscriptions = request.subscriptions.into_iter().map(subscription_observation).collect();
+		state.actor.state = actors_wire::ActorState::Active as i32;
+		state.actor.configuration_revision = 1;
+		Ok(Response::new(actors_wire::CreateActorResponse { actor: Some(state.actor.clone()) }))
     }
 
     async fn update_actor(&self, request: Request<actors_wire::UpdateActorRequest>) -> Result<Response<actors_wire::UpdateActorResponse>, Status> {
-        let request = request.into_inner();
-        let mut state = self.state.lock().await;
-        if !request.actor_id.is_empty() && request.actor_id != state.actor_id { return Err(Status::not_found("actor not found")); }
-        if request.expected_configuration_revision != 0 && request.expected_configuration_revision != state.configuration_revision { return Err(Status::aborted("configuration revision conflict")); }
-        if !request.code_sha256.is_empty() { state.code_sha256 = request.code_sha256; }
-        state.configuration_revision += 1;
-        Ok(Response::new(actors_wire::UpdateActorResponse { actor: Some(state.clone()) }))
+		let request = request.into_inner();
+		let mut state = self.state.lock().await;
+		if !request.actor_id.is_empty() && request.actor_id != state.actor.actor_id { return Err(Status::not_found("actor not found")); }
+		if Self::record_mutation(&mut state, "update", &request.idempotency_key, &request)? {
+			return Ok(Response::new(actors_wire::UpdateActorResponse { actor: Some(state.actor.clone()) }));
+		}
+		if request.expected_configuration_revision != 0 && request.expected_configuration_revision != state.actor.configuration_revision { return Err(Status::aborted("configuration revision conflict")); }
+		if !request.code_sha256.is_empty() { state.actor.code_sha256 = request.code_sha256; }
+		state.actor.configuration_revision += 1;
+		Ok(Response::new(actors_wire::UpdateActorResponse { actor: Some(state.actor.clone()) }))
     }
 
     async fn inspect_actor(&self, request: Request<actors_wire::InspectActorRequest>) -> Result<Response<actors_wire::InspectActorResponse>, Status> {
-        let request = request.into_inner();
-        let state = self.current().await;
-        if !request.actor_id.is_empty() && request.actor_id != state.actor_id { return Err(Status::not_found("actor not found")); }
-        Ok(Response::new(actors_wire::InspectActorResponse { actor: Some(state) }))
+		let request = request.into_inner();
+		let state = self.current().await;
+		if !request.actor_id.is_empty() && request.actor_id != state.actor_id { return Err(Status::not_found("actor not found")); }
+		Ok(Response::new(actors_wire::InspectActorResponse { actor: Some(state) }))
     }
 
     async fn add_subscription(&self, request: Request<actors_wire::AddSubscriptionRequest>) -> Result<Response<actors_wire::AddSubscriptionResponse>, Status> {
-        let request = request.into_inner();
-        let mut state = self.state.lock().await;
-        if !request.actor_id.is_empty() && request.actor_id != state.actor_id { return Err(Status::not_found("actor not found")); }
-        let spec = request.subscription.unwrap_or(actors_wire::SubscriptionSpec { subscription_id: String::new(), stream_path: String::new(), start: None, placement_anchor: false });
-        let subscription = subscription_observation(spec);
-        state.subscriptions.retain(|item| item.subscription_id != subscription.subscription_id);
-        state.subscriptions.push(subscription);
-        state.configuration_revision += 1;
-        Ok(Response::new(actors_wire::AddSubscriptionResponse { actor: Some(state.clone()) }))
+		let request = request.into_inner();
+		let mut state = self.state.lock().await;
+		if !request.actor_id.is_empty() && request.actor_id != state.actor.actor_id { return Err(Status::not_found("actor not found")); }
+		let spec = request.subscription.clone().unwrap_or(actors_wire::SubscriptionSpec { subscription_id: String::new(), stream_path: String::new(), start: None, placement_anchor: false });
+		let subscription = subscription_observation(spec);
+		if Self::record_mutation(&mut state, "add-subscription", &request.idempotency_key, &request)? {
+			return Ok(Response::new(actors_wire::AddSubscriptionResponse { actor: Some(state.actor.clone()) }));
+		}
+		if state.actor.subscriptions.iter().any(|item| item.subscription_id == subscription.subscription_id) { return Err(Status::failed_precondition("subscription already exists")); }
+		state.actor.subscriptions.push(subscription);
+		state.actor.configuration_revision += 1;
+		Ok(Response::new(actors_wire::AddSubscriptionResponse { actor: Some(state.actor.clone()) }))
     }
 
     async fn remove_subscription(&self, request: Request<actors_wire::RemoveSubscriptionRequest>) -> Result<Response<actors_wire::RemoveSubscriptionResponse>, Status> {
-        let request = request.into_inner();
-        let mut state = self.state.lock().await;
-        if !request.actor_id.is_empty() && request.actor_id != state.actor_id { return Err(Status::not_found("actor not found")); }
-        let id = if request.subscription_id.is_empty() { "fixture-subscription" } else { &request.subscription_id };
-        state.subscriptions.retain(|item| item.subscription_id != id);
-        state.configuration_revision += 1;
-        Ok(Response::new(actors_wire::RemoveSubscriptionResponse { actor: Some(state.clone()) }))
+		let request = request.into_inner();
+		let mut state = self.state.lock().await;
+		if !request.actor_id.is_empty() && request.actor_id != state.actor.actor_id { return Err(Status::not_found("actor not found")); }
+		let id = if request.subscription_id.is_empty() { "fixture-subscription" } else { &request.subscription_id };
+		if Self::record_mutation(&mut state, "remove-subscription", &request.idempotency_key, &request)? {
+			return Ok(Response::new(actors_wire::RemoveSubscriptionResponse { actor: Some(state.actor.clone()) }));
+		}
+		if !state.actor.subscriptions.iter().any(|item| item.subscription_id == id) { return Err(Status::not_found("subscription does not exist")); }
+		state.actor.subscriptions.retain(|item| item.subscription_id != id);
+		state.actor.configuration_revision += 1;
+		Ok(Response::new(actors_wire::RemoveSubscriptionResponse { actor: Some(state.actor.clone()) }))
     }
 
     async fn resume_subscription(&self, request: Request<actors_wire::ResumeSubscriptionRequest>) -> Result<Response<actors_wire::ResumeSubscriptionResponse>, Status> {
-        let request = request.into_inner();
-        let mut state = self.state.lock().await;
-        if !request.actor_id.is_empty() && request.actor_id != state.actor_id { return Err(Status::not_found("actor not found")); }
-        let id = if request.subscription_id.is_empty() { "fixture-subscription" } else { &request.subscription_id };
-        for subscription in &mut state.subscriptions { if subscription.subscription_id == id { subscription.state = actors_wire::SubscriptionState::Active as i32; } }
-        state.configuration_revision += 1;
-        Ok(Response::new(actors_wire::ResumeSubscriptionResponse { actor: Some(state.clone()) }))
+		let request = request.into_inner();
+		let mut state = self.state.lock().await;
+		if !request.actor_id.is_empty() && request.actor_id != state.actor.actor_id { return Err(Status::not_found("actor not found")); }
+		let id = if request.subscription_id.is_empty() { "fixture-subscription" } else { &request.subscription_id };
+		if Self::record_mutation(&mut state, "resume-subscription", &request.idempotency_key, &request)? {
+			return Ok(Response::new(actors_wire::ResumeSubscriptionResponse { actor: Some(state.actor.clone()) }));
+		}
+		let subscription = state.actor.subscriptions.iter_mut().find(|subscription| subscription.subscription_id == id).ok_or_else(|| Status::not_found("subscription does not exist"))?;
+		subscription.state = actors_wire::SubscriptionState::Active as i32;
+		state.actor.configuration_revision += 1;
+		Ok(Response::new(actors_wire::ResumeSubscriptionResponse { actor: Some(state.actor.clone()) }))
     }
 
     async fn checkpoint_actor(&self, request: Request<actors_wire::CheckpointActorRequest>) -> Result<Response<actors_wire::CheckpointActorResponse>, Status> {
-        let request = request.into_inner();
-        let mut state = self.state.lock().await;
-        if !request.actor_id.is_empty() && request.actor_id != state.actor_id { return Err(Status::not_found("actor not found")); }
-        state.checkpoint_epoch += 1;
-        state.checkpoint_unix_millis = Some(FIXTURE_CHECKPOINT_UNIX_MILLIS);
-        Ok(Response::new(actors_wire::CheckpointActorResponse { actor: Some(state.clone()) }))
+		let request = request.into_inner();
+		let mut state = self.state.lock().await;
+		if !request.actor_id.is_empty() && request.actor_id != state.actor.actor_id { return Err(Status::not_found("actor not found")); }
+		if Self::record_mutation(&mut state, "checkpoint", &request.idempotency_key, &request)? {
+			return Ok(Response::new(actors_wire::CheckpointActorResponse { actor: Some(state.actor.clone()) }));
+		}
+		state.actor.checkpoint_epoch += 1;
+		state.actor.checkpoint_unix_millis = Some(FIXTURE_CHECKPOINT_UNIX_MILLIS);
+		Ok(Response::new(actors_wire::CheckpointActorResponse { actor: Some(state.actor.clone()) }))
     }
 
     async fn invoke_actor(&self, request: Request<actors_wire::InvokeActorRequest>) -> Result<Response<actors_wire::InvokeActorResponse>, Status> {
@@ -262,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn actors_cover_all_operations_and_preserve_state() {
         let fixture = ActorsFixture::new();
-        let created = fixture.create_actor(Request::new(actors_wire::CreateActorRequest {
+        let create = actors_wire::CreateActorRequest {
             code_sha256: vec![7, 8],
             home_region: "eu-west".into(),
             bindings: Vec::new(),
@@ -274,24 +327,35 @@ mod tests {
                 placement_anchor: true,
             }],
             idempotency_key: "create-1".into(),
-        })).await.unwrap().into_inner().actor.unwrap();
+        };
+        let created = fixture.create_actor(Request::new(create.clone())).await.unwrap().into_inner().actor.unwrap();
         assert_eq!(created.actor_id, "fixture-actor");
         assert_eq!(created.configuration_revision, 1);
         assert_eq!(created.state, actors_wire::ActorState::Active as i32);
         assert_eq!(created.home_region, "eu-west");
         assert_eq!(created.subscriptions.len(), 1);
+        assert_eq!(created.subscriptions[0].retry_count, 0);
 
-        let updated = fixture.update_actor(Request::new(actors_wire::UpdateActorRequest {
+        let replayed = fixture.create_actor(Request::new(create.clone())).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(replayed.configuration_revision, created.configuration_revision);
+        let mut conflicting_create = create.clone();
+        conflicting_create.home_region = "us-east".into();
+        assert_eq!(fixture.create_actor(Request::new(conflicting_create)).await.unwrap_err().code(), tonic::Code::FailedPrecondition);
+
+        let update = actors_wire::UpdateActorRequest {
             actor_id: created.actor_id.clone(),
             code_sha256: vec![9],
             bindings: Vec::new(),
             limits: None,
             expected_configuration_revision: created.configuration_revision,
             idempotency_key: "update-1".into(),
-        })).await.unwrap().into_inner().actor.unwrap();
+        };
+        let updated = fixture.update_actor(Request::new(update.clone())).await.unwrap().into_inner().actor.unwrap();
         assert_eq!(updated.actor_id, "fixture-actor");
         assert_eq!(updated.configuration_revision, 2);
         assert_eq!(updated.state, actors_wire::ActorState::Active as i32);
+        let replayed_update = fixture.update_actor(Request::new(update.clone())).await.unwrap().into_inner().actor.unwrap();
+        assert_eq!(replayed_update.configuration_revision, updated.configuration_revision);
         let inspected = fixture.inspect_actor(Request::new(actors_wire::InspectActorRequest { actor_id: created.actor_id.clone() })).await.unwrap().into_inner().actor.unwrap();
         assert_eq!(inspected.actor_id, "fixture-actor");
         assert_eq!(inspected.configuration_revision, 2);

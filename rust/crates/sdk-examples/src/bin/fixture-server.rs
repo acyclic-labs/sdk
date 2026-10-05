@@ -18,7 +18,7 @@ use acyclic_sdk_examples::tls_fixture::{
     new_method_transcript_log,
 };
 use acyclic_sdk_examples::{
-    fixtures::{filesystem_harness, fixture_clock, harness_backend},
+    fixtures::{actors_workers::{ActorsFixture as CanonicalActorsFixture, WorkersFixture as CanonicalWorkersFixture}, filesystem_harness, fixture_clock, harness_backend},
     transport_fixtures,
 };
 use acyclic_stream::{
@@ -110,7 +110,7 @@ struct HttpError {
 #[derive(Clone)]
 struct App {
     stream: MemoryStream,
-    actors: ActorsFixture,
+    actors: CanonicalActorsFixture,
     requests: Arc<Mutex<usize>>,
     max_requests: usize,
     shutdown: Arc<Notify>,
@@ -573,7 +573,10 @@ impl actors_wire::actors_service_server::ActorsService for ActorsFixture {
         )?;
         let current = state.actor.as_mut().ok_or_else(Self::not_found_error)?;
         current.checkpoint_epoch += 1;
-        current.checkpoint_unix_millis = Some(1_700_000_000_000 + current.checkpoint_epoch);
+        // Keep the loopback fixture on the same deterministic Rust clock as
+        // the canonical actor scenario. The epoch is still advanced above;
+        // the published timestamp is intentionally stable for replay.
+        current.checkpoint_unix_millis = Some(1_700_000_000_123);
         Ok(Response::new(actors_wire::CheckpointActorResponse {
             actor: Some(current.clone()),
         }))
@@ -589,10 +592,18 @@ impl actors_wire::actors_service_server::ActorsService for ActorsFixture {
         if actor.actor_id != request.actor_id {
             return Err(Self::not_found_error());
         }
+        let headers = if request.headers.is_empty() {
+            vec![actors_wire::Header {
+                name: "content-type".to_owned(),
+                value: "application/octet-stream".to_owned(),
+            }]
+        } else {
+            request.headers
+        };
         Ok(Response::new(actors_wire::InvokeActorResponse {
             status: 200,
             body: request.body,
-            headers: request.headers,
+            headers,
         }))
     }
 }
@@ -1173,7 +1184,7 @@ impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
             return Err(Status::not_found("Workers version is unknown"));
         }
         Ok(Response::new(Self::invocation(
-            request.body,
+            if request.body.is_empty() { b"fixture-response".to_vec() } else { request.body },
             request.version_sha256,
             None,
         )))
@@ -1194,7 +1205,7 @@ impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
             .as_ref()
             .ok_or_else(|| Status::internal("Workers deployment has no version"))?;
         Ok(Response::new(Self::invocation(
-            request.body,
+            if request.body.is_empty() { b"fixture-response".to_vec() } else { request.body },
             version.sha256.clone(),
             Some(deployment.revision),
         )))
@@ -1221,9 +1232,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_requests: options.max_requests,
         shutdown: Arc::clone(&shutdown),
     };
-    let actors_fixture = ActorsFixture::with_state(Arc::new(Mutex::new(ActorsState::default())));
+    // Both HTTP and gRPC qualification use the canonical Rust-owned Actors
+    // provider so seeds, replay, and revision behavior cannot drift by
+    // transport.
+    let actors_fixture = CanonicalActorsFixture::new();
     let http_actors = actors_fixture.clone();
-    let grpc_actors = actors_fixture.clone();
+    let grpc_actors = actors_fixture;
     let app = App {
         stream: (*stream).clone(),
         actors: http_actors,
@@ -1248,7 +1262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interceptor.clone(),
         );
         let workers = tonic::service::interceptor::InterceptedService::new(
-            workers_wire::workers_service_server::WorkersServiceServer::new(WorkersFixture::default())
+            workers_wire::workers_service_server::WorkersServiceServer::new(CanonicalWorkersFixture::new())
                 .max_decoding_message_size(MAX_BODY_BYTES)
                 .max_encoding_message_size(MAX_BODY_BYTES),
             interceptor.clone(),
@@ -1261,17 +1275,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let objects_buckets = tonic::service::interceptor::InterceptedService::new(
             objects_wire::buckets_service_server::BucketsServiceServer::new(
                 objects_fixture.clone(),
-            ),
+            )
+            .max_decoding_message_size(16 * 1024 * 1024)
+            .max_encoding_message_size(16 * 1024 * 1024),
             interceptor.clone(),
         );
         let objects = tonic::service::interceptor::InterceptedService::new(
             objects_wire::objects_service_server::ObjectsServiceServer::new(
                 objects_fixture.clone(),
-            ),
+            )
+            .max_decoding_message_size(16 * 1024 * 1024)
+            .max_encoding_message_size(16 * 1024 * 1024),
             interceptor.clone(),
         );
         let objects_multipart = tonic::service::interceptor::InterceptedService::new(
-            objects_wire::multipart_service_server::MultipartServiceServer::new(objects_fixture),
+            objects_wire::multipart_service_server::MultipartServiceServer::new(objects_fixture)
+                .max_decoding_message_size(16 * 1024 * 1024)
+                .max_encoding_message_size(16 * 1024 * 1024),
             interceptor.clone(),
         );
         let harness = tonic::service::interceptor::InterceptedService::new(
@@ -1660,7 +1680,7 @@ fn encode_actor_message<M: Message>(response: &M, name: &str) -> Result<Value, H
 macro_rules! actor_http_unary {
     ($function:ident, $request:ty, $response:ty, $method:ident, $request_name:literal, $response_name:literal) => {
         async fn $function(
-            fixture: &ActorsFixture,
+            fixture: &CanonicalActorsFixture,
             content_type: &str,
             body: &[u8],
         ) -> Result<Value, HttpError> {
