@@ -2,7 +2,6 @@
 use crate::{MAX_COMMAND_BYTES, StreamError, TOKEN_OPERATIONS, memory, wire, wire_codec};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
-use serde::de::Deserializer;
 use serde_json::Value;
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
@@ -361,17 +360,21 @@ fn decode_append_json(value: Value) -> std::result::Result<Vec<u8>, &'static str
                 .and_then(decode_base64)
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let options = object.get("options").and_then(Value::as_object);
+    let options = match object.get("options") {
+        Some(value) => Some(value.as_object().ok_or("invalid_argument")?),
+        None => None,
+    };
     let if_tail = options
         .and_then(|options| options.get("ifTail"))
-        .and_then(Value::as_u64);
+        .map(parse_u64_json)
+        .transpose()?;
     let idempotency_key = options
         .and_then(|options| options.get("idempotencyKey"))
         .map(|value| value.as_str().ok_or("invalid_argument").and_then(decode_base64))
         .transpose()?;
     Ok(wire::AppendRequest {
         path,
-        records,
+        records: records.into_iter().map(bytes::Bytes::from).collect(),
         if_tail,
         idempotency_key: idempotency_key.map(bytes::Bytes::from),
     }
@@ -386,15 +389,9 @@ fn decode_read_json(value: Value) -> std::result::Result<Vec<u8>, &'static str> 
             .and_then(Value::as_str)
             .ok_or("invalid_argument")?
             .to_owned(),
-        from: object
-            .get("from")
-            .and_then(Value::as_u64)
-            .ok_or("invalid_argument")?,
-        limit: object
-            .get("limit")
-            .and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or("invalid_argument")?,
+        from: parse_u64_json(object.get("from").ok_or("invalid_argument")?)?,
+        limit: u32::try_from(parse_u64_json(object.get("limit").ok_or("invalid_argument")?)?)
+            .map_err(|_| "invalid_argument")?,
     }
     .encode_to_vec())
 }
@@ -429,6 +426,17 @@ fn decode_protobuf_json(
         return Err("limit_exceeded");
     }
     Ok(bytes)
+}
+
+fn parse_u64_json(value: &Value) -> std::result::Result<u64, &'static str> {
+    if let Some(number) = value.as_u64() {
+        return Ok(number);
+    }
+    value
+        .as_str()
+        .ok_or("invalid_argument")?
+        .parse::<u64>()
+        .map_err(|_| "invalid_argument")
 }
 
 fn decode_base64(value: &str) -> std::result::Result<Vec<u8>, &'static str> {
