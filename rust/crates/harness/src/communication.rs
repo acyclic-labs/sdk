@@ -1318,7 +1318,11 @@ mod tests {
         },
     };
     use serde_json::json;
-    use std::{collections::BTreeMap, sync::Mutex};
+    use std::{
+        collections::BTreeMap,
+        sync::Mutex,
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
     fn task(value: u8) -> TaskId {
         TaskId::from_bytes([value; 16])
@@ -1326,6 +1330,100 @@ mod tests {
 
     fn operation(value: u8) -> OperationId {
         OperationId::from_bytes([value; 16])
+    }
+
+    /// Commits the first append, then drops only its acknowledgement. This
+    /// models the provider boundary where the caller must reconcile by stable
+    /// idempotency rather than blindly retrying the mutation.
+    struct CommitThenUnavailable {
+        inner: acyclic_stream::MemoryStream,
+        fail_once: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl acyclic_stream::StreamProvider for CommitThenUnavailable {
+        async fn inspect_idempotency(
+            &self,
+            key: acyclic_stream::IdempotencyKey,
+        ) -> std::result::Result<
+            Option<acyclic_stream::IdempotencyObservation>,
+            acyclic_stream::StreamError,
+        > {
+            self.inner.inspect_idempotency(key).await
+        }
+
+        async fn tail(
+            &self,
+            path: acyclic_stream::StreamPath,
+        ) -> std::result::Result<u64, acyclic_stream::StreamError> {
+            self.inner.tail(path).await
+        }
+
+        async fn bounds(
+            &self,
+            path: acyclic_stream::StreamPath,
+        ) -> std::result::Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
+            self.inner.bounds(path).await
+        }
+
+        async fn append(
+            &self,
+            request: acyclic_stream::AppendRequest,
+        ) -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError>
+        {
+            let outcome = self.inner.append(request).await?;
+            if self.fail_once.swap(false, Ordering::SeqCst) {
+                Err(acyclic_stream::StreamError::Unavailable)
+            } else {
+                Ok(outcome)
+            }
+        }
+
+        async fn fork(
+            &self,
+            request: acyclic_stream::ForkRequest,
+        ) -> std::result::Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> {
+            self.inner.fork(request).await
+        }
+
+        async fn read(
+            &self,
+            request: acyclic_stream::ReadRequest,
+        ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+            self.inner.read(request).await
+        }
+
+        async fn follow(
+            &self,
+            path: acyclic_stream::StreamPath,
+            from: u64,
+        ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError>
+        {
+            self.inner.follow(path, from).await
+        }
+
+        async fn children(
+            &self,
+            request: acyclic_stream::ChildrenRequest,
+        ) -> std::result::Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> {
+            self.inner.children(request).await
+        }
+
+        async fn commit(
+            &self,
+            request: acyclic_stream::CommitRequest,
+        ) -> std::result::Result<acyclic_stream::CommitOutcome, acyclic_stream::StreamError>
+        {
+            self.inner.commit(request).await
+        }
+
+        async fn read_commit(
+            &self,
+            commit_id: acyclic_stream::CommitId,
+        ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError>
+        {
+            self.inner.read_commit(commit_id).await
+        }
     }
 
     #[derive(Clone)]
@@ -1407,7 +1505,9 @@ mod tests {
 
     struct RecordingHost {
         admissions: BTreeMap<TaskId, TaskAdmissionRecord>,
+        fenced: std::collections::BTreeSet<TaskId>,
         sent: Mutex<Vec<MessageRequest>>,
+        timers: Mutex<Vec<OperationId>>,
         inbox: Vec<InboxItem>,
         outcomes: BTreeMap<TaskId, Outcome<Value>>,
         observed_outcomes: Mutex<Vec<TaskId>>,
@@ -1415,6 +1515,23 @@ mod tests {
     }
 
     impl DurableTaskHost for RecordingHost {
+        fn communication_scope<'a>(
+            &'a self,
+            task_id: TaskId,
+        ) -> futures::future::BoxFuture<'a, Result<TaskCommunicationScope>> {
+            let fenced = self.fenced.contains(&task_id);
+            Box::pin(async move {
+                let admission = self.observe_admission(task_id).await?;
+                Ok(TaskCommunicationScope {
+                    parent: admission.parent,
+                    grants: admission.grants,
+                    limits: admission.limits,
+                    run_limits: admission.run_limits,
+                    accepts_new_mutations: !fenced,
+                })
+            })
+        }
+
         fn observe_admission<'a>(
             &'a self,
             task_id: TaskId,
@@ -1492,10 +1609,16 @@ mod tests {
         fn wait_until<'a>(
             &'a self,
             _task_id: TaskId,
-            _operation_id: OperationId,
+            operation_id: OperationId,
             _deadline_unix_ms: u64,
         ) -> futures::future::BoxFuture<'a, Result<()>> {
-            Box::pin(async { Ok(()) })
+            Box::pin(async move {
+                self.timers
+                    .lock()
+                    .map_err(|_| Error::Storage("recording host lock poisoned".into()))?
+                    .push(operation_id);
+                Ok(())
+            })
         }
     }
 
@@ -1508,7 +1631,9 @@ mod tests {
         admissions.insert(root, admission(9, None)?);
         Ok(Arc::new(RecordingHost {
             admissions,
+            fenced: Default::default(),
             sent: Mutex::new(Vec::new()),
+            timers: Mutex::new(Vec::new()),
             inbox: Vec::new(),
             outcomes,
             observed_outcomes: Mutex::new(Vec::new()),
@@ -1770,6 +1895,59 @@ mod tests {
             })
             .await?;
         assert_eq!(host.sent.lock().expect("test lock").len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_send_rejects_fenced_sender_before_host_effect() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        Arc::get_mut(&mut host)
+            .expect("test host has one owner")
+            .fenced
+            .insert(task(1));
+        let communication = DurableCommunication::new(host.clone());
+        assert!(matches!(
+            communication
+                .send(MessageRequest {
+                    sender: task(1),
+                    recipient: task(2),
+                    message_id: operation(33),
+                    target: MessageTarget::Child,
+                    payload: payload()?,
+                })
+                .await,
+            Err(Error::Conflict(message)) if message.contains("fenced")
+        ));
+        assert!(host.sent.lock().expect("test lock").is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_deadline_rejects_fenced_waiter_before_timer_effect() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        Arc::get_mut(&mut host)
+            .expect("test host has one owner")
+            .fenced
+            .insert(task(1));
+        let communication = DurableCommunication::new(host.clone());
+        assert!(matches!(
+            communication
+                .wait(
+                    WaitRequest {
+                        operation_id: operation(34),
+                        waiter: task(1),
+                        target: WaitTarget::Deadline {
+                            deadline_epoch_ms: unix_millis()? + 10_000,
+                        },
+                        timeout_epoch_ms: None,
+                        cancellation_id: None,
+                    },
+                    None,
+                )
+                .await,
+            Err(Error::Conflict(message)) if message.contains("fenced")
+        ));
+        assert!(host.timers.lock().expect("test lock").is_empty());
         Ok(())
     }
 
@@ -2201,6 +2379,51 @@ mod tests {
             reopened.complete(request, WaitCompletion::TimedOut).await?,
             WaitCompletion::Cancelled
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stream_wait_store_reconciles_committed_append_after_lost_ack() -> Result<()> {
+        let provider = Arc::new(CommitThenUnavailable {
+            inner: acyclic_stream::MemoryStream::default(),
+            fail_once: AtomicBool::new(true),
+        });
+        let stream = StreamClient::new(provider.clone());
+        let store = StreamWaitStore::new(stream.clone());
+        let request = WaitRequest {
+            operation_id: operation(41),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(42)),
+        };
+
+        // The provider commits the admission but drops the append response.
+        // Reconciliation must inspect the stable key and validate the exact
+        // committed record before exposing success.
+        assert_eq!(store.open(request.clone()).await?, None);
+        let wait_stream = stream
+            .stream(format!("harness/v2/waits/{}", request.waiter))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(wait_stream.bounds().await?.tail, 1);
+        let records = wait_stream
+            .read(0, 1)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let [record] = records.as_slice() else {
+            return Err(Error::Storage("reconciled wait record is missing".into()));
+        };
+        let event = PersistedWaitEvent::from_canonical_bytes(&record.value)?;
+        assert_eq!(event.request(), &request);
+        assert_eq!(store.open(request).await?, None);
+        assert_eq!(wait_stream.bounds().await?.tail, 1);
         Ok(())
     }
 
