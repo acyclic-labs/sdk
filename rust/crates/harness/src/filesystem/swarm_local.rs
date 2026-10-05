@@ -3624,190 +3624,45 @@ impl PersistentLocalSwarm {
         let report = stored_report.ok_or_else(|| {
             Error::Conflict("prepared fork report disappeared before admission".into())
         })?;
-        let seed_digest = fork_seed_digest(seed)?;
-        let existing = self.records.lock().await.get(&child).cloned();
-        let mut new_admission = match existing {
-            None => true,
-            Some(session) => {
-                if self.requests.lock().await.get(&child) != Some(&request) {
-                    return Err(Error::Conflict(
-                        "child operation is already a different session".into(),
-                    ));
-                }
-                if self.seeds.lock().await.get(&child) != Some(seed)
-                    || self.reports.lock().await.get(&child) != Some(&report)
-                    || self.publications.lock().await.get(&child) != Some(&publication)
-                    || self.declarations.lock().await.get(&child) != Some(&declaration)
-                {
-                    return Err(Error::Conflict(
-                        "existing child publication binding differs from published fork".into(),
-                    ));
-                }
-                if session.phase == LocalSessionPhase::Completed {
-                    if session.operation != Some(request.child_operation) {
-                        return Err(Error::Conflict(
-                            "completed child operation differs from the retry binding".into(),
-                        ));
-                    }
-                    let output = self.outcome(child).await?;
-                    return Ok(LocalChildActivation::Completed(LocalForkOutcome {
-                        child,
-                        operation: request.child_operation,
-                        output,
-                    }));
-                }
-                if session.phase == LocalSessionPhase::Cancelled {
-                    return Err(Error::Conflict(
-                        "cancelled child operation is terminal and cannot be resurrected".into(),
-                    ));
-                }
-                false
-            }
-        };
-        let registry = self
-            .registry
-            .stream(REGISTRY_STREAM)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if new_admission {
-            let observed_tail = self.refresh_registry_state_with_tail().await?;
-            let latest_parent = self.session(request.parent).await?;
-            if latest_parent.depth >= self.config.maximum_depth {
-                return Err(Error::Unauthorized(
-                    "local swarm depth limit exceeded".into(),
-                ));
-            }
-            let latest_child_count = self
-                .records
-                .lock()
-                .await
-                .values()
-                .filter(|session| session.parent == Some(request.parent) && session.task != child)
-                .count();
-            if latest_child_count >= self.config.maximum_children {
-                return Err(Error::Unauthorized(
-                    "local swarm child limit exceeded".into(),
-                ));
-            }
-            if let Some(session) = self.records.lock().await.get(&child).cloned() {
-                if session.phase == LocalSessionPhase::Cancelled {
-                    return Err(Error::Conflict(
-                        "cancelled child operation is terminal and cannot be resurrected".into(),
-                    ));
-                }
-                if session.phase == LocalSessionPhase::Completed {
-                    if session.operation != Some(request.child_operation) {
-                        return Err(Error::Conflict(
-                            "completed child operation differs from the retry binding".into(),
-                        ));
-                    }
-                    return Ok(LocalChildActivation::Completed(LocalForkOutcome {
-                        child,
-                        operation: request.child_operation,
-                        output: self.outcome(child).await?,
-                    }));
-                }
-                // Another handle admitted this exact child while the
-                // preparation checks ran. Its observed tail is newer than
-                // the stale projection that selected this branch.
-                new_admission = false;
-            }
-            if new_admission {
-                let append = append_record_at(
-                    &registry,
-                    StoredEvent::ForkAdmitted {
-                        parent: request.parent,
-                        parent_operation: request.parent_operation,
-                        parent_step: request.parent_step,
-                        child,
-                        child_operation: request.child_operation,
-                        fork_operation: request.fork_operation.clone(),
-                        child_authority: request.child_authority.clone(),
-                        child_agent: request.child_agent.clone(),
-                        task: request.task.clone(),
-                        prompt: request.prompt.clone(),
-                        seed: Some(seed.clone()),
-                        seed_digest: Some(seed_digest),
-                        report: Some(report.clone()),
-                        publication: Some(publication.clone()),
-                        declaration: Some(declaration.clone()),
-                        rebind_proof: None,
-                    },
-                    observed_tail,
-                )
-                .await;
-                if let Err(error) = append {
-                    // Another process may have won the append-at-tail race. A
-                    // refresh turns that benign retry into the same admission;
-                    // unrelated conflicts still surface to the caller.
-                    self.refresh_registry_state().await?;
-                    let reconciled = self.requests.lock().await.get(&child) == Some(&request)
-                        && self.seeds.lock().await.get(&child) == Some(seed)
-                        && self.reports.lock().await.get(&child) == Some(&report)
-                        && self.publications.lock().await.get(&child) == Some(&publication)
-                        && self.declarations.lock().await.get(&child) == Some(&declaration);
-                    if !reconciled {
-                        return Err(error);
-                    }
-                    new_admission = false;
-                }
-                if new_admission {
-                    self.refresh_registry_state().await?;
-                    if self
-                        .records
-                        .lock()
-                        .await
-                        .get(&child)
-                        .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
-                    {
-                        return Err(Error::Conflict(
-                            "child operation was cancelled during admission".into(),
-                        ));
-                    }
-                    let _refresh = self.registry_refresh.lock().await;
-                    self.records.lock().await.insert(
-                        child,
-                        LocalSwarmSession {
-                            task: child,
-                            parent: Some(request.parent),
-                            depth: parent_session.depth + 1,
-                            task_description: request.task.clone(),
-                            operation: Some(request.child_operation),
-                            phase: LocalSessionPhase::Activating,
-                        },
-                    );
-                    self.requests.lock().await.insert(child, request.clone());
-                    self.seeds.lock().await.insert(child, seed.clone());
-                    self.reports.lock().await.insert(child, report.clone());
-                    self.publications
-                        .lock()
-                        .await
-                        .insert(child, publication.clone());
-                    self.declarations
-                        .lock()
-                        .await
-                        .insert(child, declaration.clone());
-                }
-            }
+        // Preparation is the only admission path. Its authoritative record
+        // retains the request, seed, report and completed model declaration
+        // together; activation must never create a second admission.
+        let admitted = self.session(child).await?;
+        if admitted.parent != Some(request.parent)
+            || admitted.operation != Some(request.child_operation)
+            || admitted.depth != parent_session.depth + 1
+            || self.requests.lock().await.get(&child) != Some(&request)
+            || self.seeds.lock().await.get(&child) != Some(seed)
+            || self.reports.lock().await.get(&child) != Some(&report)
+            || self.publications.lock().await.get(&child) != Some(&publication)
+            || self.declarations.lock().await.get(&child) != Some(&declaration)
+        {
+            return Err(Error::Conflict(
+                "child activation differs from its retained admission".into(),
+            ));
         }
-        if !new_admission {
-            let phase = self
-                .records
-                .lock()
-                .await
-                .get(&child)
-                .map(|session| session.phase.clone());
-            if phase == Some(LocalSessionPhase::Cancelled) {
+        match admitted.phase {
+            LocalSessionPhase::Completed => {
+                return Ok(LocalChildActivation::Completed(LocalForkOutcome {
+                    child,
+                    operation: request.child_operation,
+                    output: self.outcome(child).await?,
+                }));
+            }
+            LocalSessionPhase::Cancelled => {
                 return Err(Error::Conflict(
                     "cancelled child operation is terminal and cannot be resurrected".into(),
                 ));
             }
-            if phase != Some(LocalSessionPhase::Activating) {
+            LocalSessionPhase::Activating => {}
+            _ => {
                 self.update_session(child, |session| {
                     session.phase = LocalSessionPhase::Activating;
-                })
-                .await?;
+                }).await?;
             }
         }
+        let registry = self.registry.stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
         // The durable claim permits cold recovery, but a live writer still
         // owns the child journal. All handles share this per-child fence.
         let activation_gate = self.task_gate(child)?;
