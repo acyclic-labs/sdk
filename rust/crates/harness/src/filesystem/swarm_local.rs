@@ -464,6 +464,35 @@ impl LocalSwarmBindings {
         self
     }
 
+    /// Installs recursive services without discarding caller-owned bindings.
+    fn with_recursive_services(
+        mut self,
+        communication_host: Arc<dyn crate::runtime::DurableTaskHost>,
+        wait_store: Option<Arc<dyn crate::communication::DurableWaitStore>>,
+        cancellation: Option<Arc<dyn crate::communication_tools::WaitCancellationSource>>,
+        filesystem_host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        root_project: VolumeRef,
+        root_task: TaskId,
+        limits: Limits,
+        resolver: Arc<LocalFilesystemForkResolver>,
+        plans: Arc<LocalModelForkPlans>,
+        publisher: Arc<LocalModelForkPublisher>,
+    ) -> Self {
+        self.communication_host = Some(communication_host);
+        self.wait_store = wait_store;
+        self.cancellation = cancellation;
+        self.workspace_tools = Some(workspace_tools::WorkspaceToolsBinding {
+            host: filesystem_host,
+            root_project,
+            root_task,
+            limits,
+        });
+        self.filesystem_fork_resolver = Some(resolver);
+        self.model_fork_plans = Some(plans);
+        self.model_batch_publisher = Some(publisher);
+        self
+    }
+
     fn tools_for(&self, parent: TaskId) -> Result<LocalHarnessTools> {
         let Some(host) = self.communication_host.clone() else {
             let mut tools = LocalHarnessTools::new();
@@ -3570,17 +3599,19 @@ impl PersistentLocalSwarm {
         let publisher = Arc::new(LocalModelForkPublisher::new(plans.clone()));
         let communication = Arc::new(communication_host::SwarmCommunicationHost::new(stream.clone()));
         let waits = Arc::new(crate::communication::StreamWaitStore::new(stream.clone()));
-        let budget_usage_source = swarm.bindings.budget_usage_source.clone();
-        swarm.bindings = LocalSwarmBindings::communication(
-            communication.clone(), Some(waits), Some(swarm.live.clone()),
-        )
-            .with_workspace_tools(host.clone(), project.clone(), root_task, limits)
-            .with_filesystem_fork_resolver(resolver)
-            .with_model_fork_plans(plans.clone())
-            .with_model_batch_publisher(publisher.clone());
-        if let Some(source) = budget_usage_source {
-            swarm.bindings = swarm.bindings.with_budget_usage_source(source);
-        }
+        let bindings = std::mem::take(&mut swarm.bindings);
+        swarm.bindings = bindings.with_recursive_services(
+            communication.clone(),
+            Some(waits),
+            Some(swarm.live.clone()),
+            host.clone(),
+            project.clone(),
+            root_task,
+            limits,
+            resolver,
+            plans.clone(),
+            publisher.clone(),
+        );
         let mut root_tools = swarm.bindings.tools_for(root_task)?;
         if let Some(project) = swarm.config.project.clone()
             && let Some(tool) = swarm.git_tool_for(root_task, &root_harness, &project)?
