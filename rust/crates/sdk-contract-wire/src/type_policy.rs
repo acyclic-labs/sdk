@@ -18,6 +18,8 @@
 //! target may expose a closed, exhaustive convenience view only in addition
 //! to the open wire representation; it must never discard an unknown value.
 
+use std::{fs, path::{Path, PathBuf}};
+
 use prost::Message;
 use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto::Type as FieldType};
 
@@ -2376,6 +2378,136 @@ pub fn type_projection_profile(language: TypePolicyLanguage) -> &'static TypePro
         .expect("every inventoried language must have a Rust-owned type policy")
 }
 
+/// A public-surface defect found in a generated SDK artifact.
+///
+/// The checker deliberately looks only at public facade files.  Protobuf
+/// messages are valid at a private transport boundary, but leaking them from
+/// a public convenience method defeats the Rust-owned semantic policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedSurfaceViolation {
+    pub language: &'static str,
+    pub path: String,
+    pub line: usize,
+    pub reason: &'static str,
+}
+
+/// Check generated public facades for known type-erasing shapes.
+///
+/// This is intentionally source based: it runs immediately after generation,
+/// before any language-specific compiler is invoked, and therefore catches a
+/// facade that happens to compile while discarding Rust-owned type semantics.
+/// The language generators remain responsible for producing the source; this
+/// function only defines the Rust-owned acceptance boundary.
+pub fn audit_generated_public_surfaces(
+    artifact_root: &Path,
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    if !artifact_root.is_dir() {
+        return Err(format!("generated artifact root does not exist: {}", artifact_root.display()));
+    }
+
+    let mut files = Vec::new();
+    collect_surface_files(artifact_root, &mut files);
+    let mut violations = Vec::new();
+
+    for path in files {
+        let Some(language) = surface_language(&path) else {
+            continue;
+        };
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("read generated facade {}: {error}", path.display()))?;
+        let relative = path
+            .strip_prefix(artifact_root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+
+        for (line_number, line) in source.lines().enumerate() {
+            let line_number = line_number + 1;
+            let reason = match language {
+                "typescript"
+                    if line.contains("request:")
+                        && line.contains("Promise<")
+                        && line.contains("Request")
+                        && line.contains("Response") =>
+                {
+                    Some("public TypeScript client method exposes a raw protobuf request/response")
+                }
+                "python" if line.contains("return await self.") => {
+                    Some("public Python route returns the raw transport response")
+                }
+                "go"
+                    if line.contains("func (client *Client)")
+                        && line.contains("Response, error)")
+                        && line.contains("*") =>
+                {
+                    Some("public Go client method returns a raw protobuf response pointer")
+                }
+                "go"
+                    if line.contains("type IdempotencyKey any")
+                        || line.contains("type Image any")
+                        || line.contains("NewIdempotencyKey(value any)")
+                        || line.contains("NewImage(value any)") =>
+                {
+                    Some("Go semantic identity is erased to any")
+                }
+                "jvm" if line.contains("public acyclic.") && !line.contains("toWire") => {
+                    Some("public JVM response getter exposes a raw protobuf message")
+                }
+                "swift" if line.contains("public let wire: RustWireMessage") => {
+                    Some("public Swift wrapper exposes an opaque RustWireMessage")
+                }
+                "cpp" if line.contains("Wire { RustWireMessage wire;") => {
+                    Some("public C++ wrapper exposes an opaque RustWireMessage")
+                }
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                violations.push(GeneratedSurfaceViolation {
+                    language,
+                    path: relative.clone(),
+                    line: line_number,
+                    reason,
+                });
+            }
+        }
+    }
+
+    Ok(violations)
+}
+
+fn collect_surface_files(root: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_surface_files(&path, files);
+        } else if surface_language(&path).is_some() {
+            files.push(path);
+        }
+    }
+}
+
+fn surface_language(path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    if name.ends_with("-metadata.ts") || name == "RustTypedClients.ts" {
+        Some("typescript")
+    } else if name == "remote.py" {
+        Some("python")
+    } else if name == "client.go" {
+        Some("go")
+    } else if name == "RustTypedResponses.java" {
+        Some("jvm")
+    } else if name == "RustTypedClients.swift" {
+        Some("swift")
+    } else if name == "rust_typed_clients.hpp" {
+        Some("cpp")
+    } else {
+        None
+    }
+}
+
 /// Find a semantic type by its stable Rust-owned identifier.
 pub fn semantic_type(id: &str) -> Option<&'static SemanticType> {
     SEMANTIC_TYPES.iter().find(|item| item.id == id)
@@ -2409,6 +2541,67 @@ mod tests {
             assert!(!profile.unknown_values.is_empty());
             assert!(!profile.integers.is_empty());
         }
+    }
+
+    #[test]
+    fn generated_surface_audit_rejects_public_type_erasure() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-surface-audit-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("jvm")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("go")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("python")).expect("audit fixture directory");
+        fs::write(
+            root.join("typescript-metadata.ts"),
+            "publish(request: PublishRequest): Promise<PublishResponse> { }\n",
+        )
+        .expect("typescript fixture");
+        fs::write(
+            root.join("python").join("remote.py"),
+            "    return await self.actors.InvokeActor(request)\n",
+        )
+        .expect("python fixture");
+        fs::write(
+            root.join("go").join("client.go"),
+            "func (client *Client) Select(ctx context.Context) (*workersv1.SelectResponse, error) { }\ntype Image any\n",
+        )
+        .expect("go fixture");
+        fs::write(
+            root.join("jvm").join("RustTypedResponses.java"),
+            "public acyclic.protocol.v1.Protocol.HandshakeResponse protocol() { }\n",
+        )
+        .expect("jvm fixture");
+
+        let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
+        assert!(findings.iter().any(|finding| finding.language == "typescript"));
+        assert!(findings.iter().any(|finding| finding.language == "python"));
+        assert!(findings.iter().any(|finding| finding.language == "go"));
+        assert!(findings.iter().any(|finding| finding.language == "jvm"));
+        assert!(findings.iter().all(|finding| finding.line <= 2));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generated_surface_audit_allows_private_wire_boundaries() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-surface-audit-private-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("audit fixture directory");
+        fs::write(
+            root.join("RustTypedClients.cs"),
+            "private RustWireMessage wire;\n",
+        )
+        .expect("private wire fixture");
+        assert!(
+            audit_generated_public_surfaces(&root)
+                .expect("audit fixture")
+                .is_empty()
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
