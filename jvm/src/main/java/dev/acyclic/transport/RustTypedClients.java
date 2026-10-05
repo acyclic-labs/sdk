@@ -6,88 +6,109 @@ package dev.acyclic.transport;
 public final class RustTypedClients {
   private RustTypedClients() {}
 
-  public static acyclic.actors.v1.Actors.InvokeActorResponse actorsInvokeActor(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustSemanticTypes.ActorId actor_id, RustSemanticTypes.MethodName method) {
-    return stub.invokeActor(RustTypedRequests.actorsInvokeActor(actor_id, method));
+  public static RustTypedResponses.ActorsInvokeActorResponse actorsInvokeActor(acyclic.actors.v1.ActorsServiceGrpc.ActorsServiceBlockingStub stub, RustSemanticTypes.ActorId actor_id, RustSemanticTypes.MethodName method) {
+    var wire = stub.invokeActor(RustTypedRequests.actorsInvokeActor(actor_id, method));
+    return RustTypedResponses.ActorsInvokeActorResponse.fromWire(wire);
   }
 
-  public static acyclic.filesystem.v2.Filesystem.ReadResponse filesystemRead(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustSemanticTypes.ResourcePath path) {
-    return stub.read(RustTypedRequests.filesystemRead(path));
+  public static RustTypedResponses.FilesystemReadResponse filesystemRead(acyclic.filesystem.v2.FilesystemServiceGrpc.FilesystemServiceBlockingStub stub, RustSemanticTypes.ResourcePath path) {
+    var wire = stub.read(RustTypedRequests.filesystemRead(path));
+    return RustTypedResponses.FilesystemReadResponse.fromWire(wire);
   }
 
-  public static inference.customer.v1.Inference.ContextView inferenceInspectContext(inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub stub, RustSemanticTypes.RevisionDigest revision) {
-    return stub.inspect(RustTypedRequests.inferenceInspectContext(revision));
+  public static RustTypedResponses.InferenceInspectContextResponse inferenceInspectContext(inference.customer.v1.ContextsServiceGrpc.ContextsServiceBlockingStub stub, RustSemanticTypes.RevisionDigest revision) {
+    var wire = stub.inspect(RustTypedRequests.inferenceInspectContext(revision));
+    return RustTypedResponses.InferenceInspectContextResponse.fromWire(wire);
   }
 
-  public static inference.customer.v1.Inference.EvaluationView inferenceInspectEvaluation(inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub stub, RustSemanticTypes.EvaluationId evaluation_id) {
-    return stub.inspect(RustTypedRequests.inferenceInspectEvaluation(evaluation_id));
+  public static RustTypedResponses.InferenceInspectEvaluationResponse inferenceInspectEvaluation(inference.customer.v1.EvaluationsServiceGrpc.EvaluationsServiceBlockingStub stub, RustSemanticTypes.EvaluationId evaluation_id) {
+    var wire = stub.inspect(RustTypedRequests.inferenceInspectEvaluation(evaluation_id));
+    return RustTypedResponses.InferenceInspectEvaluationResponse.fromWire(wire);
   }
 
-  public static inference.customer.v1.Inference.RunView inferenceInspectRun(inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub stub, RustSemanticTypes.RunId run_id) {
-    return stub.inspect(RustTypedRequests.inferenceInspectRun(run_id));
+  public static RustTypedResponses.InferenceInspectRunResponse inferenceInspectRun(inference.customer.v1.RunsServiceGrpc.RunsServiceBlockingStub stub, RustSemanticTypes.RunId run_id) {
+    var wire = stub.inspect(RustTypedRequests.inferenceInspectRun(run_id));
+    return RustTypedResponses.InferenceInspectRunResponse.fromWire(wire);
   }
 
-  public static inference.customer.v1.Inference.WarmView inferenceInspectWarm(inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub stub, RustSemanticTypes.Sha256Digest commitment) {
-    return stub.inspect(RustTypedRequests.inferenceInspectWarm(commitment));
+  public static RustTypedResponses.InferenceInspectWarmResponse inferenceInspectWarm(inference.customer.v1.WarmContextsServiceGrpc.WarmContextsServiceBlockingStub stub, RustSemanticTypes.Sha256Digest commitment) {
+    var wire = stub.inspect(RustTypedRequests.inferenceInspectWarm(commitment));
+    return RustTypedResponses.InferenceInspectWarmResponse.fromWire(wire);
   }
 
-  public static acyclic.machines.v1.Machines.MachineAdmission machinesCreateMachine(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.Image image, RustSemanticTypes.IdempotencyKey idempotency_key) {
-    return stub.create(RustTypedRequests.machinesCreateMachine(image, idempotency_key));
+  public static RustTypedResponses.MachinesCreateMachineResponse machinesCreateMachine(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.Image image, RustSemanticTypes.IdempotencyKey idempotency_key) {
+    var wire = stub.create(RustTypedRequests.machinesCreateMachine(image, idempotency_key));
+    return RustTypedResponses.MachinesCreateMachineResponse.fromWire(wire);
   }
 
-  public static acyclic.machines.v1.Machines.CheckpointState machinesInspectCheckpoint(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.CheckpointId checkpoint_id) {
-    return stub.inspectCheckpoint(RustTypedRequests.machinesInspectCheckpoint(checkpoint_id));
+  public static RustTypedResponses.MachinesInspectCheckpointResponse machinesInspectCheckpoint(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.CheckpointId checkpoint_id) {
+    var wire = stub.inspectCheckpoint(RustTypedRequests.machinesInspectCheckpoint(checkpoint_id));
+    return RustTypedResponses.MachinesInspectCheckpointResponse.fromWire(wire);
   }
 
-  public static acyclic.machines.v1.Machines.MachineState machinesInspectMachine(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.MachineId machine_id) {
-    return stub.inspectMachine(RustTypedRequests.machinesInspectMachine(machine_id));
+  public static RustTypedResponses.MachinesInspectMachineResponse machinesInspectMachine(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.MachineId machine_id) {
+    var wire = stub.inspectMachine(RustTypedRequests.machinesInspectMachine(machine_id));
+    return RustTypedResponses.MachinesInspectMachineResponse.fromWire(wire);
   }
 
-  public static acyclic.machines.v1.Machines.MachinePage machinesListMachines(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.PageLimit page_limit) {
-    return stub.listMachines(RustTypedRequests.machinesListMachines(page_limit));
+  public static RustTypedResponses.MachinesListMachinesResponse machinesListMachines(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.MachinePageLimit page_limit) {
+    var wire = stub.listMachines(RustTypedRequests.machinesListMachines(page_limit));
+    return RustTypedResponses.MachinesListMachinesResponse.fromWire(wire);
   }
 
-  public static acyclic.machines.v1.Machines.OperationState machinesOperation(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.OperationId operation_id) {
-    return stub.inspectOperation(RustTypedRequests.machinesOperation(operation_id));
+  public static RustTypedResponses.MachinesOperationResponse machinesOperation(acyclic.machines.v1.MachinesServiceGrpc.MachinesServiceBlockingStub stub, RustSemanticTypes.OperationId operation_id) {
+    var wire = stub.inspectOperation(RustTypedRequests.machinesOperation(operation_id));
+    return RustTypedResponses.MachinesOperationResponse.fromWire(wire);
   }
 
-  public static java.util.Iterator<acyclic.objects.v2.Objects.GetObjectResponse> objectsGetObject(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustSemanticTypes.ObjectKey key) {
-    return stub.getObject(RustTypedRequests.objectsGetObject(key));
+  public static java.util.Iterator<RustTypedResponses.ObjectsGetObjectResponse> objectsGetObject(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustSemanticTypes.ObjectKey key) {
+    var wire = stub.getObject(RustTypedRequests.objectsGetObject(key));
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.ObjectsGetObjectResponse::fromWire);
   }
 
-  public static acyclic.objects.v2.Objects.ListObjectsResponse objectsListObjects(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustSemanticTypes.PageLimit page_size) {
-    return stub.listObjects(RustTypedRequests.objectsListObjects(page_size));
+  public static RustTypedResponses.ObjectsListObjectsResponse objectsListObjects(acyclic.objects.v2.ObjectsServiceGrpc.ObjectsServiceBlockingStub stub, RustSemanticTypes.PageLimit page_size) {
+    var wire = stub.listObjects(RustTypedRequests.objectsListObjects(page_size));
+    return RustTypedResponses.ObjectsListObjectsResponse.fromWire(wire);
   }
 
-  public static acyclic.objects.v2.Objects.ListPartsResponse objectsListParts(acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub stub, RustSemanticTypes.UploadId upload_id) {
-    return stub.listParts(RustTypedRequests.objectsListParts(upload_id));
+  public static RustTypedResponses.ObjectsListPartsResponse objectsListParts(acyclic.objects.v2.MultipartServiceGrpc.MultipartServiceBlockingStub stub, RustSemanticTypes.UploadId upload_id) {
+    var wire = stub.listParts(RustTypedRequests.objectsListParts(upload_id));
+    return RustTypedResponses.ObjectsListPartsResponse.fromWire(wire);
   }
 
-  public static acyclic.stream.v2.Stream.AppendResponse streamAppend(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustSemanticTypes.IdempotencyKeyBytes idempotency_key, RustSemanticTypes.ResourcePath path) {
-    return stub.append(RustTypedRequests.streamAppend(idempotency_key, path));
+  public static RustTypedResponses.StreamAppendResponse streamAppend(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustSemanticTypes.IdempotencyKeyBytes idempotency_key, RustSemanticTypes.ResourcePath path) {
+    var wire = stub.append(RustTypedRequests.streamAppend(idempotency_key, path));
+    return RustTypedResponses.StreamAppendResponse.fromWire(wire);
   }
 
-  public static acyclic.stream.v2.Stream.ForkReceipt streamFork(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustSemanticTypes.SourceName source, RustSemanticTypes.DestinationName destination) {
-    return stub.fork(RustTypedRequests.streamFork(source, destination));
+  public static RustTypedResponses.StreamForkResponse streamFork(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustSemanticTypes.SourceName source, RustSemanticTypes.DestinationName destination) {
+    var wire = stub.fork(RustTypedRequests.streamFork(source, destination));
+    return RustTypedResponses.StreamForkResponse.fromWire(wire);
   }
 
-  public static acyclic.stream.v2.Stream.CommittedEnvelope streamReadCommit(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustSemanticTypes.CommitId commit_id) {
-    return stub.readCommit(RustTypedRequests.streamReadCommit(commit_id));
+  public static RustTypedResponses.StreamReadCommitResponse streamReadCommit(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustSemanticTypes.CommitId commit_id) {
+    var wire = stub.readCommit(RustTypedRequests.streamReadCommit(commit_id));
+    return RustTypedResponses.StreamReadCommitResponse.fromWire(wire);
   }
 
-  public static java.util.Iterator<acyclic.stream.v2.Stream.ReadResponse> streamRead(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustSemanticTypes.PageLimit limit) {
-    return stub.read(RustTypedRequests.streamRead(limit));
+  public static java.util.Iterator<RustTypedResponses.StreamReadResponse> streamRead(acyclic.stream.v2.StreamServiceGrpc.StreamServiceBlockingStub stub, RustSemanticTypes.StreamPageLimit limit) {
+    var wire = stub.read(RustTypedRequests.streamRead(limit));
+    return RustTypedResponses.mapIterator(wire, RustTypedResponses.StreamReadResponse::fromWire);
   }
 
-  public static acyclic.workers.v1.Workers.InspectJobResponse workersInspectJob(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustSemanticTypes.JobId job_id) {
-    return stub.inspectJob(RustTypedRequests.workersInspectJob(job_id));
+  public static RustTypedResponses.WorkersInspectJobResponse workersInspectJob(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustSemanticTypes.JobId job_id) {
+    var wire = stub.inspectJob(RustTypedRequests.workersInspectJob(job_id));
+    return RustTypedResponses.WorkersInspectJobResponse.fromWire(wire);
   }
 
-  public static acyclic.workers.v1.Workers.InvokeResponse workersInvokeVersion(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustSemanticTypes.MethodName method) {
-    return stub.invokeVersion(RustTypedRequests.workersInvokeVersion(method));
+  public static RustTypedResponses.WorkersInvokeVersionResponse workersInvokeVersion(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustSemanticTypes.MethodName method) {
+    var wire = stub.invokeVersion(RustTypedRequests.workersInvokeVersion(method));
+    return RustTypedResponses.WorkersInvokeVersionResponse.fromWire(wire);
   }
 
-  public static acyclic.workers.v1.Workers.SelectDeploymentResponse workersSelectDeployment(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustSemanticTypes.VersionAlias alias, RustSemanticTypes.Sha256Digest version_sha256, RustSemanticTypes.IdempotencyKeyText idempotency_key) {
-    return stub.selectDeployment(RustTypedRequests.workersSelectDeployment(alias, version_sha256, idempotency_key));
+  public static RustTypedResponses.WorkersSelectDeploymentResponse workersSelectDeployment(acyclic.workers.v1.WorkersServiceGrpc.WorkersServiceBlockingStub stub, RustSemanticTypes.VersionAlias alias, RustSemanticTypes.Sha256Digest version_sha256, RustSemanticTypes.IdempotencyKeyText idempotency_key) {
+    var wire = stub.selectDeployment(RustTypedRequests.workersSelectDeployment(alias, version_sha256, idempotency_key));
+    return RustTypedResponses.WorkersSelectDeploymentResponse.fromWire(wire);
   }
 
 }

@@ -19,8 +19,10 @@ mod typed_facades;
 
 pub use typed_facades::{
     generate_jvm_semantic_types, generate_jvm_typed_clients, generate_jvm_typed_requests,
-    JAVA_CLIENTS_PATH, JAVA_PATH, JAVA_REQUESTS_PATH, KOTLIN_CLIENTS_PATH, KOTLIN_PATH,
-    KOTLIN_REQUESTS_PATH, SCALA_CLIENTS_PATH, SCALA_PATH, SCALA_REQUESTS_PATH,
+    generate_jvm_typed_responses,
+    JAVA_CLIENTS_PATH, JAVA_PATH, JAVA_REQUESTS_PATH, JAVA_RESPONSES_PATH,
+    KOTLIN_CLIENTS_PATH, KOTLIN_PATH, KOTLIN_REQUESTS_PATH, KOTLIN_RESPONSES_PATH,
+    SCALA_CLIENTS_PATH, SCALA_PATH, SCALA_REQUESTS_PATH, SCALA_RESPONSES_PATH,
 };
 pub use crate::csharp_typed_facades::{generate_csharp_typed_facade, CSHARP_TYPED_PATH};
 
@@ -986,7 +988,9 @@ fn render_dart_operations() -> String {
 mod tests {
     use super::{
         CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, all_facade_operations,
-        facade_operations, generate_jvm_typed_clients, generate_jvm_typed_requests,
+        facade_operations, generate_jvm_semantic_types, generate_jvm_typed_clients,
+        generate_jvm_typed_requests,
+        generate_jvm_typed_responses,
         generate_remote_facade,
         generate_remote_facades,
     };
@@ -1041,6 +1045,19 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn jvm_typed_responses_are_lossless_and_semantic() {
+        let outputs = generate_jvm_typed_responses();
+        assert_eq!(outputs.len(), 3);
+        for (path, source) in outputs {
+            assert!(source.contains("RustTypedResponses"), "{path} missing facade");
+            assert!(source.contains("fromWire"), "{path} missing wire decoder");
+            assert!(source.contains("WireChoice"), "{path} missing open union");
+            assert!(source.contains("preserveUnknown"), "{path} drops unknown union arms");
+        }
+    }
+
 
     #[test]
     fn jvm_typed_clients_bind_every_rust_owned_request_field_and_rpc() {
