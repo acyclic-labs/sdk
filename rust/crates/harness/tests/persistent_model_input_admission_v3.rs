@@ -320,6 +320,70 @@ fn expected_tool_definitions() -> Vec<ToolDefinition> {
             model_output_schema: json!({"type": "string"}),
         },
         ToolDefinition {
+            name: "acyclic.shell".into(),
+            revision: "1".into(),
+            description: "Execute one exact absolute host command after owner approval".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "executable": {"type": "string", "minLength": 1},
+                    "arguments": {"type": "array", "items": {"type": "string"}},
+                    "working_directory": {"type": "string", "minLength": 1},
+                    "environment": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {"kind": {"const": "clear"}},
+                                "required": ["kind"],
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"const": "explicit"},
+                                    "variables": {"type": "object", "additionalProperties": {"type": "string"}}
+                                },
+                                "required": ["kind", "variables"],
+                                "additionalProperties": false
+                            }
+                        ]
+                    },
+                    "timeout_ms": {"type": ["integer", "null"], "minimum": 1},
+                    "max_output_bytes": {"type": "integer", "minimum": 1}
+                },
+                "required": ["executable", "arguments", "working_directory", "environment", "timeout_ms", "max_output_bytes"],
+                "additionalProperties": false
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "operation_id": {"type": "string"},
+                    "receipt": {
+                        "type": "object",
+                        "required": ["kind"],
+                        "properties": {"kind": {"type": "string"}},
+                        "additionalProperties": true
+                    }
+                },
+                "required": ["operation_id", "receipt"],
+                "additionalProperties": false
+            }),
+            model_output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "operation_id": {"type": "string"},
+                    "receipt": {
+                        "type": "object",
+                        "required": ["kind"],
+                        "properties": {"kind": {"type": "string"}},
+                        "additionalProperties": true
+                    }
+                },
+                "required": ["operation_id", "receipt"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDefinition {
             name: "acyclic.stage_file".into(),
             revision: "2".into(),
             description:
@@ -352,7 +416,7 @@ fn expected_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
-const EXPECTED_TOOL_DIGESTS: [[u8; 32]; 3] = [
+const EXPECTED_TOOL_DIGESTS: [[u8; 32]; 4] = [
     [
         255, 201, 32, 110, 227, 198, 143, 244, 25, 148, 43, 127, 12, 155, 217, 45, 133, 176, 215,
         102, 50, 237, 178, 216, 69, 211, 210, 245, 235, 20, 196, 219,
@@ -362,12 +426,16 @@ const EXPECTED_TOOL_DIGESTS: [[u8; 32]; 3] = [
         78, 187, 99, 150, 157, 159, 6, 75, 195, 230, 92, 18,
     ],
     [
+        19, 116, 201, 29, 106, 117, 249, 26, 98, 211, 60, 212, 101, 0, 235, 179, 168, 54, 49,
+        205, 112, 62, 72, 222, 68, 123, 4, 20, 61, 43, 130, 179,
+    ],
+    [
         93, 91, 47, 255, 173, 159, 13, 121, 7, 40, 132, 189, 227, 227, 42, 151, 47, 170, 244,
         55, 209, 221, 160, 250, 253, 238, 8, 129, 119, 156, 28, 229,
     ],
 ];
 
-const EXPECTED_TOOL_SCHEMA_DIGESTS: [[[u8; 32]; 3]; 3] = [
+const EXPECTED_TOOL_SCHEMA_DIGESTS: [[[u8; 32]; 3]; 4] = [
     [
         [
             178, 98, 26, 180, 243, 138, 212, 244, 71, 232, 43, 250, 81, 13, 120, 195, 167, 168, 79,
@@ -398,6 +466,17 @@ const EXPECTED_TOOL_SCHEMA_DIGESTS: [[[u8; 32]; 3]; 3] = [
     ],
     [
         [
+            48, 64, 56, 200, 46, 247, 91, 146, 36, 209, 129, 11, 216, 195, 92, 142, 36, 153, 95, 145, 195, 177, 76, 104, 118, 235, 69, 109, 206, 203, 26, 151,
+        ],
+        [
+            108, 157, 92, 23, 113, 243, 37, 197, 160, 56, 254, 188, 225, 24, 143, 69, 228, 21, 12, 36, 181, 37, 247, 178, 138, 86, 78, 240, 81, 253, 223, 255,
+        ],
+        [
+            108, 157, 92, 23, 113, 243, 37, 197, 160, 56, 254, 188, 225, 24, 143, 69, 228, 21, 12, 36, 181, 37, 247, 178, 138, 86, 78, 240, 81, 253, 223, 255,
+        ],
+    ],
+    [
+        [
             227, 227, 57, 7, 113, 114, 174, 166, 145, 52, 146, 85, 24, 121, 61, 235, 116, 146, 134,
             94, 208, 62, 79, 62, 184, 97, 54, 42, 208, 63, 223, 156,
         ],
@@ -413,8 +492,8 @@ const EXPECTED_TOOL_SCHEMA_DIGESTS: [[[u8; 32]; 3]; 3] = [
 ];
 
 const EXPECTED_BINDING_DIGEST: [u8; 32] = [
-    61, 248, 215, 37, 140, 208, 252, 226, 125, 189, 207, 103, 91, 156, 34, 112, 186, 195, 151,
-    4, 160, 159, 196, 104, 0, 203, 105, 16, 242, 138, 125, 232,
+    231, 204, 56, 164, 46, 147, 218, 91, 96, 147, 18, 241, 176, 218, 138, 159, 232, 201, 132,
+    17, 21, 223, 41, 233, 68, 91, 243, 16, 5, 155, 75, 215,
 ];
 
 fn assert_request_allowlist(request: &ModelRequest) -> Result<()> {
