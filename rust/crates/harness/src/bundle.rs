@@ -24,7 +24,7 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 const CODING_TOOLS: &[(&str, &str)] = &[
     (
@@ -191,6 +191,12 @@ pub struct HarnessBundle {
     runtime: Arc<AgentHarness>,
     journal: Option<Arc<dyn ExecutionJournal>>,
     agent_loop: bool,
+    /// Canonical stock-loop composition captured from the built executor.
+    /// Volume capabilities are intentionally excluded because child volumes
+    /// are allocated after admission.
+    execution_contract: Option<Value>,
+    /// Requirements for the selected model-visible tool revisions.
+    execution_requirements: BTreeSet<String>,
 }
 
 /// Rust-first composition root. Every stock-loop dependency is explicit.
@@ -532,6 +538,8 @@ impl HarnessBuilder {
             }
         }
         .bind_context(self.context.clone());
+        let mut execution_contract = None;
+        let mut execution_requirements = BTreeSet::new();
         let executor = if let Some(executor) = self.executor {
             Some(executor)
         } else if agent_loop.is_some() {
@@ -561,8 +569,10 @@ impl HarnessBuilder {
                 Some(task_id) => executor.with_authenticated_task(task_id),
                 None => executor,
             };
-            Some(Arc::new(executor.with_batch_publisher(self.batch_publisher)?)
-                as Arc<dyn Executor>)
+            let executor = executor.with_batch_publisher(self.batch_publisher)?;
+            execution_contract = Some(executor.admission_contract()?);
+            execution_requirements = executor.admission_requirements()?;
+            Some(Arc::new(executor) as Arc<dyn Executor>)
         };
         if executor.is_some() && journal.is_none() {
             return Err(Error::Invalid(
@@ -580,6 +590,8 @@ impl HarnessBuilder {
             limits: self.limits,
             runtime,
             agent_loop: agent_loop.is_some(),
+            execution_contract,
+            execution_requirements,
         })
     }
 }
@@ -615,6 +627,17 @@ impl HarnessBundle {
     #[must_use]
     pub fn executor(&self) -> Option<Arc<dyn Executor>> {
         self.executor.clone()
+    }
+
+    /// Returns the canonical contract captured from the built stock executor.
+    pub(crate) fn execution_contract(&self) -> Option<&Value> {
+        self.execution_contract.as_ref()
+    }
+
+    /// Returns requirements for the exact selected tool revisions in the
+    /// built stock executor.
+    pub(crate) fn execution_requirements(&self) -> &BTreeSet<String> {
+        &self.execution_requirements
     }
 
     /// Runs or resumes an admitted typed turn through the pinned journal.

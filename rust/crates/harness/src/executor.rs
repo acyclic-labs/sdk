@@ -359,6 +359,112 @@ pub struct TurnOutput {
     pub steps: u32,
 }
 
+/// Canonical JSON contract for the serialized [`TurnOutput`] wire value.
+/// Keeping this beside the type prevents host admission code from inventing a
+/// second, permissive output shape.
+pub(crate) fn turn_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "attachments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "object",
+                            "properties": {
+                                "volume": {
+                                    "type": "object",
+                                    "properties": {
+                                        "provider": {
+                                            "type": "object",
+                                            "properties": {
+                                                "namespace": {"type": "string"},
+                                                "family": {"type": "string"},
+                                                "version": {"type": "string"}
+                                            },
+                                            "required": ["namespace", "family", "version"],
+                                            "additionalProperties": false
+                                        },
+                                        "id": {"type": "string"},
+                                        "class": {
+                                            "enum": ["project", "agent_private", "session_shared"]
+                                        },
+                                        "owner": {
+                                            "oneOf": [
+                                                {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "kind": {"const": "project"},
+                                                        "id": {"type": "string"}
+                                                    },
+                                                    "required": ["kind", "id"],
+                                                    "additionalProperties": false
+                                                },
+                                                {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "kind": {"const": "agent"},
+                                                        "id": {"type": "string", "format": "uuid"}
+                                                    },
+                                                    "required": ["kind", "id"],
+                                                    "additionalProperties": false
+                                                },
+                                                {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "kind": {"const": "session"},
+                                                        "id": {"type": "string"}
+                                                    },
+                                                    "required": ["kind", "id"],
+                                                    "additionalProperties": false
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    "required": ["provider", "id", "class", "owner"],
+                                    "additionalProperties": false
+                                },
+                                "path": {"type": "string"},
+                                "version": {"type": "string"},
+                                "descriptor": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sha256": {
+                                            "type": "array",
+                                            "items": {"type": "integer", "minimum": 0, "maximum": 255},
+                                            "minItems": 32,
+                                            "maxItems": 32
+                                        },
+                                        "byte_length": {"type": "integer", "minimum": 0},
+                                        "media_type": {"type": "string"}
+                                    },
+                                    "required": ["sha256", "byte_length", "media_type"],
+                                    "additionalProperties": false
+                                },
+                                "display_name": {"type": "string"}
+                            },
+                            "required": ["volume", "path", "version", "descriptor", "display_name"],
+                            "additionalProperties": false
+                        },
+                        "label": {"type": ["string", "null"]}
+                    },
+                    "required": ["file", "label"],
+                    "additionalProperties": false
+                }
+            },
+            "metadata": {
+                "type": ["object", "array", "string", "number", "boolean", "null"]
+            },
+            "steps": {"type": "integer", "minimum": 0}
+        },
+        "required": ["text", "attachments", "metadata", "steps"],
+        "additionalProperties": false
+    })
+}
+
 /// Complete replaceable turn loop. Implementations may own every policy decision.
 pub trait Executor: Send + Sync {
     /// Executes or resumes one turn using only explicit durable host services.
@@ -596,15 +702,43 @@ impl StockExecutor {
         crate::contract::canonical_json_digest(&json!({
             "executor": "acyclic.stock.v4",
             "input": input,
+            "contract": self.admission_contract()?,
+        }))
+    }
+
+    /// Returns the exact stock-loop composition contract used by model-input
+    /// admission. Scope grants are intentionally excluded because filesystem
+    /// volume capabilities are allocated after child admission; the selected
+    /// tool revisions, ordered context stages, model, policy, limits, and
+    /// batch publisher remain pinned here. Task identity is carried by the
+    /// admission envelope itself.
+    pub(crate) fn admission_contract(&self) -> Result<Value> {
+        Ok(json!({
+            "executor": "acyclic.stock.v4",
             "model": self.model,
             "context": self.context.contracts(),
             "tools": self.tools.definitions()?,
             "limits": self.limits,
-            "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
+            "tool_scope_limits": self.tool_scope.limits(),
             "policy": self.policy_identity.as_ref(),
             "batch_publisher": (&self.batch_identity, self.batch_guarantee),
-            "authenticated_task": self.authenticated_task,
         }))
+    }
+
+    /// Returns requirements for exactly the selected model-visible tool
+    /// revisions in this built executor.
+    pub(crate) fn admission_requirements(&self) -> Result<BTreeSet<String>> {
+        Ok(self
+            .tools
+            .definitions()?
+            .into_iter()
+            .map(|definition| format!("tool:{}@{}", definition.name, definition.revision))
+            .chain([
+                "model".to_owned(),
+                "content".to_owned(),
+                "content:write".to_owned(),
+            ])
+            .collect())
     }
 
     fn project_replayed_tool_result(
@@ -2209,7 +2343,7 @@ mod tests {
     use crate::{
         AgentId, Capabilities,
         context::{Context, ContextStage},
-        conversation::{FileDescriptor, VolumeOwner, VolumeRef},
+        conversation::{Attachment, FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
         resources::ProviderRef,
     };
     use futures::{FutureExt as _, stream};
@@ -2218,6 +2352,40 @@ mod tests {
         Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn turn_output_schema_matches_serialized_attachment() -> Result<()> {
+        let provider = ProviderRef::new("local", "filesystem", "2")?;
+        let volume = VolumeRef::new(
+            provider,
+            "turn-output-schema",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([7; 16])),
+        )?;
+        let file = FileRef::new(
+            volume,
+            "result.txt",
+            "1",
+            FileDescriptor::from_bytes(b"result", "text/plain")?,
+            "result.txt",
+        )?;
+        let output = TurnOutput {
+            text: "done".into(),
+            attachments: vec![Attachment {
+                file,
+                label: Some("result".into()),
+            }],
+            metadata: json!({"finish": "stop"}),
+            steps: 1,
+        };
+        let value =
+            serde_json::to_value(output).map_err(|error| Error::Invalid(error.to_string()))?;
+        validate_value(&turn_output_schema(), &value, "turn output")?;
+        let mut extra = value;
+        extra["unexpected"] = json!(true);
+        assert!(validate_value(&turn_output_schema(), &extra, "turn output").is_err());
+        Ok(())
+    }
 
     /// Emits two malformed calls â€” including `parameters` where the pinned
     /// schema expects a direct argument â€” then a well-formed call after both
