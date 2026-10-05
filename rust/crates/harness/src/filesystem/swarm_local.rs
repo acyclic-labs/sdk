@@ -9838,6 +9838,7 @@ mod tests {
         let first_key = first.open_session(task).await?.signing_key();
         let first_project = first.config.project.clone();
         assert!(first.bindings.filesystem_fork_resolver.is_some());
+        assert!(!root.path().join(".local-operator-issuer").exists());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         drop(first);
 
