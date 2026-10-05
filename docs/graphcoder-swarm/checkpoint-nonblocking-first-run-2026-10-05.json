@@ -7,7 +7,7 @@
   ],
   "platform": "Windows native",
   "ignored": 0,
-  "failed": 2,
+  "failed": 6,
   "artifacts": [
     {
       "sha256": "cebdfa2e2ae1a78046b9ca4c8b8781b541ce9ccab754ebef0f0d7eca3290ac8c",
@@ -28,6 +28,10 @@
     {
       "sha256": "ce66910eced75fcacd811778ee07dd5639c9a719dd37b89650c0440eaab8f431",
       "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\ebd74c762\\nonblocking-first-run\\source.zip"
+    },
+    {
+      "sha256": "3bcf932db0c746aa43ca1470b215820efb0687aaba76c793705fdb871f91ec69",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\ebd74c762\\nonblocking-first-run\\retained-faults.log"
     }
   ],
   "suites": {
@@ -39,14 +43,22 @@
       "passed": 2,
       "failed": 2
     },
-    "local_swarm_faults": "Not executed after preceding suite failure"
+    "local_swarm_faults": {
+      "failed": 4,
+      "passed": 2,
+      "execution": "Retained executable from the same archived source; separate run after Cargo stopped at model suite failure."
+    }
   },
   "failures": [
     "cancelled_recursive_activation_drops_the_owned_child_provider_stream",
-    "model_selected_child_rejects_grandchild_at_configured_depth"
+    "model_selected_child_rejects_grandchild_at_configured_depth",
+    "cancelled_child_after_publication_cannot_be_reactivated",
+    "precompletion_disconnect_replays_child_result_without_duplicate_dispatch",
+    "concurrent_handle_reconciles_live_admission_without_duplicate_dispatch",
+    "prepared_batch_failure_retries_without_duplicate_child_dispatch"
   ],
   "protocol": "acyclic.graphcoder.native-checkpoint.v1",
-  "passed": 382,
+  "passed": 384,
   "source_commit": "ebd74c762291d5cf2145f056a3a85235634bcfb6",
   "exit": 101
 }
