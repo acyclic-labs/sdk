@@ -171,9 +171,9 @@ eventual completion, deadlock freedom, storage correctness, or Rust refinement.
 
 ### Qualified property inventory
 
-The current source-bound run was executed at commit `e916167b7` in the
+The current source-bound run was executed at commit `b147fc89a` in the
 isolated qualification worktree. Its TLC logs are under
-`target/formal-rebase-evidence/e916167b7` and use the pinned
+`target/formal-rebase-evidence/b147fc89a` and use the pinned
 `tla2tools-1.7.4.jar`, one worker, fingerprint index `0`, seed `1`, and a
 512 MB heap. The run contains 25 cases across the seven model families below;
 the evidence directory is generated output and must be retained with the
@@ -267,7 +267,12 @@ self-reported by the same test process. Until a separately trusted journal
 reader or signed artifact supplies the source witness, this is self-reported
 integrity evidence rather than external provenance. The export does not claim
 Rust refinement, unbounded recursion, liveness, approval handling, aggregate
-budget exhaustion, or OS confinement.
+budget exhaustion, process-tree cleanup, or OS confinement. The finite
+`SwarmBudget` model checks only admission count, depth, and per-agent steps;
+it does not model the production reservation dimensions, retry settlement,
+remaining-budget propagation, or recursive release fences. Process-tree
+startup, cancellation, descendant cleanup, and uncertain process outcomes are
+runtime-test obligations rather than formal model results.
 The named gate requires a clean tracked and untracked source worktree, binds
 both the commit and tree object, and records the workspace manifest and lockfile
 digests as the build closure. It also mutates representative source fields and
