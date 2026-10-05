@@ -233,12 +233,19 @@ fn dart_type(field: &ResolvedRequestField) -> String {
     if optional(field) { format!("{}?", base) } else { base }
 }
 
-fn ruby_field(field: &ResolvedRequestField) -> String { field.field.clone() }
+fn ruby_field(field: &ResolvedRequestField) -> String {
+    match field.field.as_str() {
+        "alias" | "and" | "begin" | "break" | "case" | "class" | "def" | "defined" | "do" | "else" | "elsif" | "end" | "ensure" | "false" | "for" | "if" | "in" | "module" | "next" | "nil" | "not" | "or" | "redo" | "rescue" | "retry" | "return" | "self" | "super" | "then" | "true" | "undef" | "unless" | "until" | "when" | "while" | "yield" => format!("{}_", field.field),
+        value => value.to_owned(),
+    }
+}
+
+fn ruby_wire_field(field: &ResolvedRequestField) -> String { format!(":{}", field.field) }
 fn php_field(field: &ResolvedRequestField) -> String { field.field.clone() }
 fn dart_field(field: &ResolvedRequestField) -> String { field.field.clone() }
 
 fn ruby_wrapper(name: &str, _value_type: &str) -> String {
-    format!("        class {name}\n          attr_reader :value\n          def initialize(value)\n            raise ArgumentError, \"invalid {name}\" if value.nil?\n            @value = value\n            freeze\n          end\n          def to_wire = @value\n        end\n")
+    format!("        class Rust{name}\n          attr_reader :value\n          def initialize(value)\n            raise ArgumentError, \"invalid {name}\" if value.nil?\n            @value = value\n            freeze\n          end\n          def to_wire = @value\n        end\n")
 }
 
 fn ruby_message(name: &str, fields: &[ResolvedRequestField]) -> String {
@@ -247,7 +254,7 @@ fn ruby_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     out.push_str("            **unknown\n          )\n");
     for field in fields { out.push_str(&format!("            @{} = {}\n", ruby_field(field), ruby_field(field))); }
     out.push_str("            @unknown = unknown.freeze\n            freeze\n          end\n          def to_wire\n            values = {\n");
-    for field in fields { out.push_str(&format!("              {0}: {0}.respond_to?(:to_wire) ? {0}.to_wire : {0},\n", ruby_field(field))); }
+    for field in fields { out.push_str(&format!("              {0} => {1}.respond_to?(:to_wire) ? {1}.to_wire : {1},\n", ruby_wire_field(field), ruby_field(field))); }
     out.push_str("            }\n            values.merge(@unknown)\n          end\n        end\n");
     out
 }
