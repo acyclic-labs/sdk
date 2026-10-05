@@ -557,8 +557,9 @@ impl HarnessBuilder {
                 Some(task_id) => executor.with_authenticated_task(task_id),
                 None => executor,
             };
-            Some(Arc::new(executor.with_batch_publisher(self.batch_publisher)?)
-                as Arc<dyn Executor>)
+            Some(
+                Arc::new(executor.with_batch_publisher(self.batch_publisher)?) as Arc<dyn Executor>,
+            )
         };
         if executor.is_some() && journal.is_none() {
             return Err(Error::Invalid(

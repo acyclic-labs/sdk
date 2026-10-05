@@ -3421,7 +3421,10 @@ mod local_provider_tests {
     struct NoopModel;
 
     impl ModelProvider for NoopModel {
-        fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
                 metadata: serde_json::Value::Null,
             })]))

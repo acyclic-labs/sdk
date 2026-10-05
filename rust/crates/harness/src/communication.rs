@@ -1875,10 +1875,7 @@ mod tests {
         let journal = stream
             .stream(format!("harness/v2/waits/{}", task(1)))
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert!(matches!(
-            journal.bounds().await,
-            Err(StreamError::NotFound)
-        ));
+        assert!(matches!(journal.bounds().await, Err(StreamError::NotFound)));
         Ok(())
     }
 

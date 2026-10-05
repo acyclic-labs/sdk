@@ -6337,7 +6337,10 @@ mod tests {
     #[test]
     fn pending_action_and_mutation_must_describe_same_transition() {
         let workspace_id = WorkspaceId::from_bytes([41; 16]);
-        let tree = GitTreeRef::exact(workspace_id, GenerationId::new(Digest::from_bytes([42; 32])));
+        let tree = GitTreeRef::exact(
+            workspace_id,
+            GenerationId::new(Digest::from_bytes([42; 32])),
+        );
         let state = GitCompatState::new("main", workspace_id);
         let valid = GitPendingTransition {
             id: GitTransitionId::from_bytes([43; 16]),
