@@ -46,6 +46,66 @@ export type RustOwnedWireChoice =
   { readonly kind: "known"; readonly value: object } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
+import type * as RustWire from "../generated/proto/objects/v2/objects_pb.js";
+
+// Rust-owned public facade types. Generated from type_policy.rs; do not edit.
+
+export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
+
+export type RustOwnedPublicAbortMultipartRequest = RustWire.AbortMultipartRequest;
+export type RustOwnedPublicAbortMultipartResponse = RustWire.AbortMultipartResponse;
+export type RustOwnedPublicBucket = RustWire.Bucket;
+export type RustOwnedPublicCompleteMultipartRequest = RustWire.CompleteMultipartRequest;
+export type RustOwnedPublicCreateBucketRequest = Omit<RustWire.CreateBucketRequest, "mutation"> & {
+  readonly mutation: RustOwnedPublicMutationIdentity;
+};
+export type RustOwnedPublicCreateMultipartRequest = RustWire.CreateMultipartRequest;
+export type RustOwnedPublicDeleteBucketRequest = RustWire.DeleteBucketRequest;
+export type RustOwnedPublicDeleteBucketResponse = RustWire.DeleteBucketResponse;
+export type RustOwnedPublicDeleteObjectRequest = RustWire.DeleteObjectRequest;
+export type RustOwnedPublicDeleteObjectResponse = RustWire.DeleteObjectResponse;
+export type RustOwnedPublicGetObjectRequest = Omit<RustWire.GetObjectRequest, "objectKey"> & {
+  readonly objectKey: RustOwnedObjectKey;
+};
+export type RustOwnedPublicGetObjectResponse = RustWire.GetObjectResponse;
+export type RustOwnedPublicHeadBucketRequest = RustWire.HeadBucketRequest;
+export type RustOwnedPublicHeadObjectRequest = RustWire.HeadObjectRequest;
+export type RustOwnedPublicHeadObjectResponse = RustWire.HeadObjectResponse;
+export type RustOwnedPublicListObjectsRequest = Omit<RustWire.ListObjectsRequest, "pageSize"> & {
+  readonly pageSize: RustOwnedPageLimit;
+};
+export type RustOwnedPublicListObjectsResponse = RustWire.ListObjectsResponse;
+export type RustOwnedPublicListPartsRequest = Omit<RustWire.ListPartsRequest, "uploadId"> & {
+  readonly uploadId: RustOwnedUploadId;
+};
+export type RustOwnedPublicListPartsResponse = RustWire.ListPartsResponse;
+export type RustOwnedPublicMultipartUpload = RustWire.MultipartUpload;
+export type RustOwnedPublicMutationIdentity = Omit<RustWire.MutationIdentity, "idempotencyKey"> & {
+  readonly idempotencyKey: RustOwnedIdempotencyKeyText;
+};
+export type RustOwnedPublicObjectInfo = Omit<RustWire.ObjectInfo, "etag"> & {
+  readonly etag: RustOwnedOpaqueText;
+};
+export type RustOwnedPublicPutObjectRequest = RustWire.PutObjectRequest;
+export type RustOwnedPublicUploadPartRequest = RustWire.UploadPartRequest;
+export type RustOwnedPublicUploadedPart = RustWire.UploadedPart;
+
+export interface RustOwnedObjectsPublicClient {
+  readonly createBucket: (request: RustOwnedPublicCreateBucketRequest, signal?: AbortSignal) => Promise<RustOwnedPublicBucket>;
+  readonly headBucket: (request: RustOwnedPublicHeadBucketRequest, signal?: AbortSignal) => Promise<RustOwnedPublicBucket>;
+  readonly deleteBucket: (request: RustOwnedPublicDeleteBucketRequest, signal?: AbortSignal) => Promise<RustOwnedPublicDeleteBucketResponse>;
+  readonly putObject: (request: AsyncIterable<RustOwnedPublicPutObjectRequest>, signal?: AbortSignal) => Promise<RustOwnedPublicObjectInfo>;
+  readonly getObject: (request: RustOwnedPublicGetObjectRequest, signal?: AbortSignal) => AsyncIterable<RustOwnedPublicGetObjectResponse>;
+  readonly headObject: (request: RustOwnedPublicHeadObjectRequest, signal?: AbortSignal) => Promise<RustOwnedPublicHeadObjectResponse>;
+  readonly deleteObject: (request: RustOwnedPublicDeleteObjectRequest, signal?: AbortSignal) => Promise<RustOwnedPublicDeleteObjectResponse>;
+  readonly listObjects: (request: RustOwnedPublicListObjectsRequest, signal?: AbortSignal) => Promise<RustOwnedPublicListObjectsResponse>;
+  readonly createMultipart: (request: RustOwnedPublicCreateMultipartRequest, signal?: AbortSignal) => Promise<RustOwnedPublicMultipartUpload>;
+  readonly uploadPart: (request: AsyncIterable<RustOwnedPublicUploadPartRequest>, signal?: AbortSignal) => Promise<RustOwnedPublicUploadedPart>;
+  readonly listParts: (request: RustOwnedPublicListPartsRequest, signal?: AbortSignal) => Promise<RustOwnedPublicListPartsResponse>;
+  readonly completeMultipart: (request: RustOwnedPublicCompleteMultipartRequest, signal?: AbortSignal) => Promise<RustOwnedPublicObjectInfo>;
+  readonly abortMultipart: (request: RustOwnedPublicAbortMultipartRequest, signal?: AbortSignal) => Promise<RustOwnedPublicAbortMultipartResponse>;
+}
+
 export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }
 
 export interface RustOwnedMethodMetadata {

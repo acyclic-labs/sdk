@@ -7,20 +7,39 @@ import type {
   RustOwnedOpaqueText,
   RustOwnedPageLimit,
   RustOwnedUploadId,
+  RustOwnedPublicCreateBucketRequest,
+  RustOwnedPublicGetObjectRequest,
+  RustOwnedPublicListObjectsRequest,
+  RustOwnedPublicListPartsRequest,
+  RustOwnedPublicMutationIdentity,
+  RustOwnedPublicObjectInfo,
+} from "./generated-client.js";
+export {
+  makeRustOwnedIdempotencyKeyText,
+  makeRustOwnedObjectKey,
+  makeRustOwnedOpaqueText,
+  makeRustOwnedPageLimit,
+  makeRustOwnedUploadId,
+} from "./generated-client.js";
+export type {
+  RustOwnedIdempotencyKeyText,
+  RustOwnedObjectKey,
+  RustOwnedOpaqueText,
+  RustOwnedPageLimit,
+  RustOwnedUploadId,
 } from "./generated-client.js";
 import { ObjectsV2Memory, validate_objects_v2_request, validate_objects_v2_response, validate_objects_v2_get_body, validate_objects_v2_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 export * from "../generated/proto/objects/v2/objects_pb.js";
 
-type ObjectsPublicWire<Wire, Overrides extends object> = Readonly<Omit<Wire, keyof Overrides> & Overrides>;
-export type PublicMutationIdentity = ObjectsPublicWire<wire.MutationIdentity, { readonly idempotencyKey: RustOwnedIdempotencyKeyText }>;
-export type PublicCreateBucketRequest = ObjectsPublicWire<wire.CreateBucketRequest, { readonly mutation?: PublicMutationIdentity | undefined }>;
-export type PublicGetObjectRequest = ObjectsPublicWire<wire.GetObjectRequest, { readonly objectKey: RustOwnedObjectKey }>;
-export type PublicListObjectsRequest = ObjectsPublicWire<wire.ListObjectsRequest, { readonly pageSize: RustOwnedPageLimit }>;
-export type PublicListPartsRequest = ObjectsPublicWire<wire.ListPartsRequest, { readonly objectKey: RustOwnedObjectKey; readonly uploadId: RustOwnedUploadId; readonly pageSize: RustOwnedPageLimit }>;
-export type PublicObjectInfo = ObjectsPublicWire<wire.ObjectInfo, { readonly etag: RustOwnedOpaqueText }>;
-export type PublicHeadObjectResponse = ObjectsPublicWire<wire.HeadObjectResponse, { readonly object?: PublicObjectInfo | undefined }>;
-export type PublicGetObjectHeader = ObjectsPublicWire<wire.GetObjectHeader, { readonly object?: PublicObjectInfo | undefined }>;
+export type PublicMutationIdentity = RustOwnedPublicMutationIdentity;
+export type PublicCreateBucketRequest = RustOwnedPublicCreateBucketRequest;
+export type PublicGetObjectRequest = RustOwnedPublicGetObjectRequest;
+export type PublicListObjectsRequest = RustOwnedPublicListObjectsRequest;
+export type PublicListPartsRequest = RustOwnedPublicListPartsRequest;
+export type PublicObjectInfo = RustOwnedPublicObjectInfo;
+export type PublicHeadObjectResponse = wire.HeadObjectResponse;
+export type PublicGetObjectHeader = wire.GetObjectHeader;
 
 /** A bounded buffered read; metadata remains the generated public wire type. */
 export interface ObjectValue { readonly header: PublicGetObjectHeader; readonly body: Uint8Array }
