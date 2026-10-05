@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('ActivationRecovery', 'ForkBoundary', 'SwarmAuthority', 'SwarmBudget', 'SwarmPublication', 'SwarmMessage')][string]$Model = 'ActivationRecovery',
+    [ValidateSet('ActivationRecovery', 'ForkBoundary', 'SwarmAuthority', 'SwarmBudget', 'SwarmPublication', 'SwarmMessage', 'SwarmIntegration')][string]$Model = 'ActivationRecovery',
     [Parameter(Mandatory = $true)][string]$ToolsJar,
     [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
     [string]$Java = 'java'
@@ -33,6 +33,12 @@ $cases = if ($Model -eq 'ActivationRecovery') { @(
 ) } elseif ($Model -eq 'SwarmPublication') { @(
     @{ Name = 'safe'; Config = 'SwarmPublication.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe-stale'; Config = 'SwarmPublicationUnsafeStale.cfg'; Exit = 12; Expected = 'Invariant PublicationAtCapturedGeneration is violated.' }
+) } elseif ($Model -eq 'SwarmIntegration') { @(
+    @{ Name = 'safe'; Config = 'SwarmIntegration.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
+    @{ Name = 'unsafe-sibling'; Config = 'SwarmIntegrationUnsafeSibling.cfg'; Exit = 12; Expected = 'Invariant DirectIntegrationAuthority is violated.' },
+    @{ Name = 'unsafe-grandchild'; Config = 'SwarmIntegrationUnsafeGrandchild.cfg'; Exit = 12; Expected = 'Invariant RootWritebackScope is violated.' },
+    @{ Name = 'unsafe-stale-approval'; Config = 'SwarmIntegrationUnsafeStaleApproval.cfg'; Exit = 12; Expected = 'Invariant ApprovalBinding is violated.' },
+    @{ Name = 'unsafe-mismatched-approval'; Config = 'SwarmIntegrationUnsafeMismatchedApproval.cfg'; Exit = 12; Expected = 'Invariant ApprovalBinding is violated.' }
 ) } else { @(
     @{ Name = 'safe'; Config = 'SwarmMessage.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe-duplicate'; Config = 'SwarmMessageUnsafeDuplicate.cfg'; Exit = 12; Expected = 'Invariant AtMostOnce is violated.' },

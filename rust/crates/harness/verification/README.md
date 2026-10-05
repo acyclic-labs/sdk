@@ -228,3 +228,43 @@ requires the semantic checker to reject every mutation. There is no production
 causal publication negative case because the current APIs expose independent
 registry, conversation, and child-journal orderings without an authenticated
 cross-stream causal witness; the gate does not invent one.
+
+## Direct-parent integration and root approval model
+
+`SwarmIntegration.tla` is a bounded four-agent safety model with root `1`,
+direct children `2` and `4`, and grandchild `3` whose direct parent is `2`.
+Each child captures a project generation when it is forked. The safe behavior
+permits only that direct parent to integrate or discard the child. Root
+writeback is separately admitted only for a direct root child and binds the
+exact writeback operation, `writeback` action, and captured generation. The
+model includes a generation advance so publication at a captured generation is
+kept distinct from a claim that the captured generation is still current.
+
+The shared checker runs one safe case and four reachable negative controls:
+
+* `unsafe-sibling` gives child `4`'s discard to agent `2`, and must violate
+  `DirectIntegrationAuthority`.
+* `unsafe-grandchild` lets root approve child `2` but writes back child `3`,
+  and must violate `RootWritebackScope`.
+* `unsafe-stale-approval` changes the approved generation, and must violate
+  `ApprovalBinding`.
+* `unsafe-mismatched-approval` changes the operation and action, and must
+  violate `ApprovalBinding`.
+
+The exact production transition matrix is:
+
+| Model property | Harness/Filesystem transition | Evidence and remaining gate |
+| --- | --- | --- |
+| `DirectIntegrationAuthority` | `ProjectWorkspaceProvider::prepare_project_merge` creates a provider-owned `ProjectJoinPlan`; `ProjectJoinPlan::apply` receives the caller scope and child authority; `ProjectMergeReceipt::validate` checks that the receipt matches the direct-child fork seed. | The finite model and negative control are qualified. A real concurrent journal scenario still must show sibling and descendant authorization failures through the public Filesystem facade. |
+| `RootWritebackScope` | The parent-bound `ProjectJoinLineage` and `ProjectMergeReceipt::validate` keep the source child and target parent bound to the fork; `ProjectJoinPlan::target_project`/`child_project` prevent a generic plan from claiming lineage. | The model proves the bounded root/child relation. The current real trace does not export a root writeback event, so Rust conformance for this property is open. |
+| `ApprovalBinding` | `PersistentLocalSwarm::record_operator_approval` copies the ticket's immutable `ApprovalBinding`; `resolve_recorded_operator_approval` rechecks operation and action digest before `InteractionApprovalAuthorization` issues the exact resolver scope; `resolve_approval` commits the decision. | The model proves operation, action, and target-generation equality in its finite state space. Approval mutation and restart scenarios remain an explicit runtime gate. |
+| `WritebackAtCapturedGeneration` | `ProjectJoinPlan::source_generation` and `expected_target_generation` are provider-owned compare-and-swap inputs; `ProjectJoinOutcome::StaleTarget`/`Fenced` refuse a stale publication, while `ProjectMergeReceipt` records the resulting generation. | The model proves the writeback records its captured generation. It does not prove that the capture is current at apply time; provider CAS and stale-target tests are required. |
+| `TypeOK` and finite bounds | Typed Harness contracts validate authorities, scopes, generations, receipts, and approval tickets before durable publication. | TLC qualifies only the declared four-agent, two-generation state space. It is not an unbounded recursion, liveness, storage, or Rust-refinement proof. |
+
+The model is design evidence tied to these existing Harness transitions; it
+does not add a second integration or approval runtime. Its assumptions include
+the provider's authenticated lineage and compare-and-swap behavior, durable
+approval storage, and the caller's authority verifier. It does not establish
+causal ordering across independent journal streams, OS confinement, or
+fairness/eventual completion. The real production trace gate remains open for
+integration, approvals, and root writeback.
