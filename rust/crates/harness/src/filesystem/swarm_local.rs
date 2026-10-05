@@ -4899,15 +4899,28 @@ async fn claim_child_activation_on_stream(
                 }
                 StoredEvent::ForkCompleted {
                     child: recorded_child,
+                    operation: recorded_operation,
                     ..
+                } if recorded_child == child => {
+                    if recorded_operation != operation {
+                        return Err(Error::Conflict(
+                            "terminal child activation belongs to another operation".into(),
+                        ));
+                    }
+                    return Ok(false);
                 }
-                | StoredEvent::ForkFailed {
-                    child: recorded_child,
-                    ..
-                }
-                | StoredEvent::ForkCancelled {
+                StoredEvent::ForkCancelled {
                     child: recorded_child,
                 } if recorded_child == child => {
+                    return Err(Error::Conflict(
+                        "cancelled child activation cannot acquire a new claim".into(),
+                    ));
+                }
+                StoredEvent::ForkFailed {
+                    child: recorded_child,
+                    ..
+                }
+                if recorded_child == child => {
                     claimed = None;
                 }
                 _ => {}
@@ -5297,8 +5310,14 @@ fn apply_record(
                     "persisted child completion follows a terminal cancellation".into(),
                 ));
             }
-            session.operation = Some(operation);
-            session.phase = LocalSessionPhase::Completed;
+            if session.operation.is_some_and(|existing| existing != operation)
+                || (session.parent.is_some()
+                    && requests.get(&child).map(|request| request.child_operation) != Some(operation))
+            {
+                return Err(Error::Conflict(
+                    "persisted child completion changed its admitted operation".into(),
+                ));
+            }
             match (output, output_ref, output_digest) {
                 (Some(output), None, digest) => {
                     if let Some(digest) = digest {
@@ -5309,6 +5328,13 @@ fn apply_record(
                             ));
                         }
                     }
+                    if completion_refs.contains_key(&child)
+                        || outcomes.get(&child).is_some_and(|existing| existing != &output)
+                    {
+                        return Err(Error::Conflict(
+                            "persisted child completion changed its terminal output".into(),
+                        ));
+                    }
                     outcomes.insert(child, output);
                 }
                 (None, Some(file), Some(digest)) => {
@@ -5317,8 +5343,8 @@ fn apply_record(
                         file,
                         digest,
                     };
-                    if let Some(existing) = completion_refs.get(&child)
-                        && existing != &value
+                    if outcomes.contains_key(&child)
+                        || completion_refs.get(&child).is_some_and(|existing| existing != &value)
                     {
                         return Err(Error::Conflict(
                             "persisted child completion reference changed".into(),
@@ -5337,6 +5363,8 @@ fn apply_record(
                     ));
                 }
             }
+            session.operation = Some(operation);
+            session.phase = LocalSessionPhase::Completed;
         }
         StoredEvent::ForkFailed { child, reason } => {
             if let Some(session) = sessions.get_mut(&child) {
@@ -5614,6 +5642,98 @@ mod tests {
             1,
             "concurrent handles must persist one activation claim"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_activation_cannot_publish_another_claim() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let client = StreamClient::new(Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await.map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        let stream = client.stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let child = TaskId::from_bytes([0xC2; 16]);
+        let operation = OperationId::from_bytes([0xD2; 16]);
+        assert!(claim_child_activation_on_stream(&stream, child, operation).await?);
+        append_record(&stream, StoredEvent::ForkCancelled { child }).await?;
+        let cancelled_tail = stream.tail().await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            claim_child_activation_on_stream(&stream, child, operation).await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(stream.tail().await
+            .map_err(|error| Error::Storage(error.to_string()))?, cancelled_tail);
+
+        let completed = TaskId::from_bytes([0xC3; 16]);
+        let output = TurnOutput {
+            text: "durable result".into(), attachments: Vec::new(),
+            metadata: Value::Null, steps: 1,
+        };
+        append_record(&stream, StoredEvent::ForkCompleted {
+            child: completed, operation, output: Some(output),
+            output_ref: None, output_digest: None,
+        }).await?;
+        let completed_tail = stream.tail().await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(!claim_child_activation_on_stream(&stream, completed, operation).await?);
+        assert!(matches!(
+            claim_child_activation_on_stream(
+                &stream, completed, OperationId::from_bytes([0xD3; 16]),
+            ).await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(stream.tail().await
+            .map_err(|error| Error::Storage(error.to_string()))?, completed_tail);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cold_completion_replay_rejects_changed_operation_and_output() -> Result<()> {
+        for substitution in ["identical", "operation", "output"] {
+            let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+            let model = Model::new("mock", "completion-fence", "1", json!({}))?;
+            let provider = Arc::new(MockModel {
+                calls: AtomicUsize::new(0), requests: Mutex::new(Vec::new()),
+            });
+            let swarm = PersistentLocalSwarm::open_with_model(
+                root.path(), model.clone(), provider.clone(), Limits::default(),
+            ).await?;
+            let child = swarm.root_task().await?;
+            let operation = OperationId::from_bytes([0xD4; 16]);
+            let output = TurnOutput {
+                text: "original terminal bytes".into(), attachments: Vec::new(),
+                metadata: Value::Null, steps: 1,
+            };
+            let stream = swarm.registry.stream(REGISTRY_STREAM)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            append_record(&stream, StoredEvent::ForkCompleted {
+                child, operation, output: Some(output.clone()),
+                output_ref: None, output_digest: None,
+            }).await?;
+            let mut replay = output.clone();
+            if substitution == "output" { replay.text = "substituted terminal bytes".into(); }
+            append_record(&stream, StoredEvent::ForkCompleted {
+                child,
+                operation: if substitution == "operation" {
+                    OperationId::from_bytes([0xD5; 16])
+                } else { operation },
+                output: Some(replay), output_ref: None, output_digest: None,
+            }).await?;
+            drop(stream);
+            drop(swarm);
+            let reopened = PersistentLocalSwarm::open_with_model(
+                root.path(), model, provider.clone(), Limits::default(),
+            ).await;
+            if substitution == "identical" {
+                assert_eq!(reopened?.outcome(child).await?, output);
+            } else {
+                assert!(matches!(reopened, Err(Error::Conflict(_))));
+            }
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        }
         Ok(())
     }
 
