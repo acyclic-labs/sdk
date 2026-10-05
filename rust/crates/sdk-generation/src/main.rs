@@ -3937,6 +3937,12 @@ fn copy_type_audit_tree(source: &Path, destination: &Path) -> Result<(), CliErro
         fs::create_dir_all(destination)?;
         for entry in fs::read_dir(source)? {
             let entry = entry?;
+            // The audit writes its report below `generated/`; carrying that
+            // report into the next audit would make the artifact hash map
+            // self-referential and turn a no-op rerun into drift.
+            if entry.file_name() == "public-type-audit.json" {
+                continue;
+            }
             copy_type_audit_tree(&entry.path(), &destination.join(entry.file_name()))?;
         }
     } else if metadata.is_file() {
@@ -3963,7 +3969,19 @@ fn prepare_type_audit_root(output: &Path) -> Result<PathBuf, CliError> {
     // These roots are the Rust product generator's public facade closure. The
     // audit intentionally receives no logs, requests, wire descriptors, or
     // prior audit report, so its artifact hash map is stable across reruns.
-    for relative in ["generated", "python", "go", "jvm", "csharp", "swift", "cpp"] {
+    for relative in [
+        "generated",
+        "python",
+        "go",
+        "jvm",
+        "csharp",
+        "dotnet",
+        "swift",
+        "cpp",
+        "ruby",
+        "php",
+        "dart",
+    ] {
         let source = output.join(relative);
         if source.exists() {
             copy_type_audit_tree(&source, &staging.join(relative))?;
@@ -8407,6 +8425,33 @@ mod tests {
         assert!(index("sdk-typescript-rpc-contracts") < index("sdk-examples"));
         assert!(index("sdk-typescript") < index("sdk-examples"));
         assert!(index("sdk-examples") < index("sdk-docs"));
+    }
+
+    #[test]
+    fn type_audit_staging_excludes_prior_report_and_keeps_dotnet_surface() {
+        let output = test_directory("type-audit-staging");
+        fs::create_dir_all(output.join("generated")).expect("generated staging fixture");
+        fs::create_dir_all(output.join("dotnet")).expect("dotnet staging fixture");
+        fs::write(
+            output.join("generated").join("public-type-audit.json"),
+            b"prior report must not be audited",
+        )
+        .expect("prior report fixture");
+        fs::write(
+            output.join("dotnet").join("RustTypedClients.cs"),
+            b"public sealed class RustTypedClients {}\n",
+        )
+        .expect("C# facade fixture");
+
+        let first = prepare_type_audit_root(&output).expect("first audit staging");
+        assert!(!first.join("generated/public-type-audit.json").exists());
+        assert!(first.join("dotnet/RustTypedClients.cs").exists());
+
+        let second = prepare_type_audit_root(&output).expect("repeat audit staging");
+        assert!(!second.join("generated/public-type-audit.json").exists());
+        assert!(second.join("dotnet/RustTypedClients.cs").exists());
+        cleanup(&second);
+        cleanup(&output);
     }
 
     #[test]
