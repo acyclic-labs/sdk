@@ -965,6 +965,12 @@ export function harnessDefaultResidentFiles(): number;
 export function harnessMaxInlineAttachments(): number;
 
 /**
+ * Rust owns the retry schedule. Hosts only wait using the returned duration
+ * and carry the opaque attempt token into the next call.
+ */
+export function harnessReplayBackoff(attempt: number): any;
+
+/**
  * Return whether a code can be emitted by this WASM adapter.
  *
  * Keeping this validator beside the Rust error mapping prevents the TypeScript adapter from
@@ -1014,6 +1020,13 @@ export function projectMemoryResponse(operation: string, input: Uint8Array): unk
  * Unknown values and a commit-only alias on another route return no value.
  */
 export function publicHttpErrorCode(raw: string, route: string): string | undefined;
+
+/**
+ * Validate one replay delivery and return the durable state transitions. The
+ * host performs listener dispatch and storage I/O, while Rust owns generation,
+ * contiguity, operation identity, and the per-event acknowledgement cursors.
+ */
+export function reconcileReplayDelivery(previous: any, delivery: any): any;
 
 /**
  * Runs the canonical Rust conversation projection over bytes captured by the
@@ -1153,9 +1166,8 @@ export function validateOfflineCommand(value: any): any;
 export function validatePath(path: string): string;
 
 /**
- * Validate one replay delivery against the previously committed cursor and
- * return the resulting cursor. Listener dispatch and durable persistence stay
- * in the host, but generation, contiguity, and authority rules are Rust-owned.
+ * Backward-compatible cursor-only projection for generated consumers that do
+ * not need acknowledgement details.
  */
 export function validateReplayDelivery(previous: any, delivery: any): any;
 
@@ -1363,7 +1375,9 @@ export interface InitOutput {
     readonly forkSeedFromReport: (a: any) => [number, number, number];
     readonly harnessAttachmentManifestMediaType: () => [number, number];
     readonly harnessMaxInlineAttachments: () => number;
+    readonly harnessReplayBackoff: (a: number) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
+    readonly reconcileReplayDelivery: (a: any, b: any) => [number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];

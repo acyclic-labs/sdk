@@ -23,7 +23,7 @@ import type {
   RustOwnedPublicSelectDeploymentRequest, RustOwnedPublicSelectDeploymentResponse,
   RustOwnedPublicSubmitJobRequest, RustOwnedPublicSubmitJobResponse,
 } from "./generated-client.js";
-import { WORKERS_HANDSHAKE, WORKERS_METHODS, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { WORKERS_HANDSHAKE, WORKERS_METHODS, WORKERS_REMOTE_POLICY, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
 import { validateWorkersContentLength, validateWorkersCredential, validateWorkersEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersResponseChunk, validateWorkersResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpWorkersOptions {
@@ -53,7 +53,7 @@ export class HttpWorkersClient {
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
-    this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
+    this.#maximum = options.maximumResponseBytes ?? WORKERS_REMOTE_POLICY.maximumHttpResponseBytes;
     validateWorkersResponseLimit(this.#maximum);
   }
 

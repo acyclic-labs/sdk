@@ -1,6 +1,6 @@
 import type { AggregateKind, Authority, OperationId } from "./index.js";
 import type { FileRef, ReferencedAttachments } from "./conversation.js";
-import { NativeContracts } from "./native-contracts.js";
+import { NativeContracts, type HarnessReplayReconciliation } from "./native-contracts.js";
 import { isSafeAuthorityId } from "./authority-contract.js";
 
 export interface ReplayCursor {
@@ -282,7 +282,7 @@ export class HarnessClient<Event = unknown> {
 
   async submit(command: ClientCommand): Promise<void> {
     await this.#serializeState(async () => {
-      const safelyReplayable = command.offlineSafe && command.kind !== "interaction.resolve.approval";
+      const safelyReplayable = command.offlineSafe === true;
       const admitted = safelyReplayable ? await assertOutboxSafe(command) : command;
       if (this.#connection !== undefined) {
         if (safelyReplayable) await this.outbox.put(admitted);
@@ -332,7 +332,8 @@ export class HarnessClient<Event = unknown> {
   /** Runs reconnect/replay until aborted; transport failures use bounded exponential backoff. */
   async run(signal?: AbortSignal): Promise<void> {
     await this.#serializeState(() => this.#hydrateCursors());
-    let delay = 50;
+    let attempt = 0;
+    const contracts = await NativeContracts.create();
     while (!signal?.aborted) {
       try {
         const { cursors, epoch } = await this.#serializeState(async () => ({
@@ -351,7 +352,7 @@ export class HarnessClient<Event = unknown> {
         }
         await this.#flushOutbox(connection, epoch);
         for await (const delivery of connection) await this.#accept(delivery, epoch);
-        delay = 50;
+        attempt = 0;
       } catch (error) {
         if (signal?.aborted) break;
         if (error instanceof ReplayError) {
@@ -360,8 +361,9 @@ export class HarnessClient<Event = unknown> {
             this.#cursors.delete(authorityKey(error.authority));
           });
         }
-        await abortableDelay(delay, signal);
-        delay = Math.min(delay * 2, 5_000);
+        const backoff = contracts.harnessReplayBackoff(attempt);
+        attempt = backoff.nextAttempt;
+        await abortableDelay(backoff.delayMs, signal);
       } finally {
         const connection = this.#connection;
         this.#connection = undefined;
@@ -399,17 +401,25 @@ export class HarnessClient<Event = unknown> {
   async #acceptSerialized(delivery: Delivery<Event>): Promise<void> {
     const key = authorityKey(delivery.authority);
     const previous = this.#cursors.get(key);
-    let cursor: ReplayCursor;
+    let reconciliation: HarnessReplayReconciliation<ReplayCursor>;
     try {
-      cursor = await (await NativeContracts.create()).validateReplayDelivery(previous ?? null, delivery);
+      reconciliation = (await NativeContracts.create()).reconcileReplayDelivery<ReplayCursor, Delivery<Event>>(previous ?? null, delivery);
     } catch (error) {
       throw new ReplayError(delivery.authority, String(error));
     }
-    let committed = previous?.revision ?? 0n;
-    for (const event of delivery.events) {
+    if (reconciliation.acknowledgements.length !== delivery.events.length) {
+      throw new ReplayError(delivery.authority, "replay acknowledgement coverage mismatch");
+    }
+    for (const [index, event] of delivery.events.entries()) {
+      const acknowledgement = reconciliation.acknowledgements[index];
+      if (acknowledgement === undefined) {
+        throw new ReplayError(delivery.authority, "replay acknowledgement is missing");
+      }
+      if (acknowledgement.operationId !== event.operationId) {
+        throw new ReplayError(delivery.authority, "replay acknowledgement identity mismatch");
+      }
       for (const listener of this.#listeners) listener(event);
-      committed = event.revision;
-      const cursor = { generation: delivery.generation, revision: committed };
+      const cursor = acknowledgement.cursor;
       if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
         await this.outbox.commit(delivery.authority, cursor, event.operationId);
       } else {
@@ -419,8 +429,8 @@ export class HarnessClient<Event = unknown> {
       this.#cursors.set(key, cursor);
     }
     if (delivery.events.length === 0) {
-      await this.cursorStore.putCursor(delivery.authority, cursor);
-      this.#cursors.set(key, cursor);
+      await this.cursorStore.putCursor(delivery.authority, reconciliation.cursor);
+      this.#cursors.set(key, reconciliation.cursor);
     }
   }
 

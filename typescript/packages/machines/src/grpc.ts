@@ -2,7 +2,7 @@ import { rootCertificates } from "node:tls";
 import { createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { MachinesService } from "../generated/proto/machines/v1/machines_pb.js";
-import { createMachinesGrpcClient } from "./generated-client.js";
+import { MACHINES_REMOTE_POLICY, createMachinesGrpcClient } from "./generated-client.js";
 import type { RustOwnedGrpcInvoker, RustOwnedGrpcMethodMetadata } from "./generated-client.js";
 
 /** Native Machines gRPC configuration. Rust owns the RPC and domain mapping. */
@@ -17,10 +17,8 @@ export interface MachinesGrpcOptions {
 /**
  * Creates the generated Machines RPC surface for Node and Bun.
  *
- * The returned methods expose generated protobuf messages. A Rust-owned domain
- * bridge should be supplied when adapting them to `MachinesProvider`; this
- * function deliberately does not duplicate the Machines admission/response
- * mapper in TypeScript.
+ * The returned methods expose the generated protobuf RPC surface. Use
+ * `Machines.fromEnv()` for the public domain provider backed by Rust.
  */
 export function createMachinesGrpcInvoker(options: MachinesGrpcOptions): RustOwnedGrpcInvoker {
   const endpoint = new URL(options.endpoint);
@@ -30,7 +28,7 @@ export function createMachinesGrpcInvoker(options: MachinesGrpcOptions): RustOwn
   const caCertificate = validateCertificate(options.caCertificate, "caCertificate");
   const certificate = validateCertificate(options.certificate, "certificate");
   const privateKey = validateCertificate(options.privateKey, "privateKey");
-  const maximum = options.maximumMessageBytes ?? 64 * 1024 * 1024;
+  const maximum = options.maximumMessageBytes ?? MACHINES_REMOTE_POLICY.maximumMessageBytes;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   const client = createClient(MachinesService, createGrpcTransport({
     baseUrl: endpoint.href,

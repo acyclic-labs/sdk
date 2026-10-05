@@ -35,7 +35,7 @@ export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
     throw new TypeError("invalid Objects gRPC endpoint");
   }
   validateRustOwnedCredentialPolicy(options.token);
-  const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
+  const maximum = options.maximumMessageBytes ?? OBJECTS_REMOTE_POLICY.maximumMessageBytes;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
@@ -67,7 +67,7 @@ export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
 /** Rust-validated provider with buffered operations and bounded streamed uploads. */
 export class GrpcObjectsV2 extends ObjectsV2Provider {
   private readonly clients: ReturnType<typeof createObjectsV2GrpcClients>;
-  constructor(options: ObjectsV2GrpcOptions, private readonly maximumResponseBytes = 64 * 1024 * 1024) {
+  constructor(options: ObjectsV2GrpcOptions, private readonly maximumResponseBytes = OBJECTS_REMOTE_POLICY.maximumMessageBytes) {
     super();
     if (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1) throw new RangeError("invalid response bound");
     this.clients = createObjectsV2GrpcClients(options);

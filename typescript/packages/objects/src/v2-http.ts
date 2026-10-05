@@ -1,7 +1,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { decode_objects_v2_json, encode_objects_v2_json, objects_v2_http_body_frame_bytes, objects_v2_http_error_code, objects_v2_http_json_frame_bytes, objects_v2_http_type, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
-import { OBJECTS_METHODS, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { OBJECTS_HANDSHAKE, OBJECTS_METHODS, OBJECTS_REMOTE_POLICY, negotiateRustOwnedEndpoint, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 
 export interface ObjectsV2HttpOptions {
@@ -17,6 +17,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
   private readonly maximumResponse: number;
   private readonly maximumRequest: number;
   private readonly fetcher: typeof globalThis.fetch;
+  private handshake: Promise<void> | undefined;
   constructor(private readonly options: ObjectsV2HttpOptions) {
     super();
     let endpoint: URL;
@@ -27,15 +28,16 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
       throw new TypeError("invalid Objects HTTP endpoint");
     }
     validateRustOwnedCredentialPolicy(options.token);
-    if (new TextEncoder().encode(options.token).byteLength > 8192 || /\0/.test(options.token)) throw new TypeError("invalid bearer token");
-    this.maximumResponse = options.maximumResponseBytes ?? 64 * 1024 * 1024;
-    this.maximumRequest = options.maximumRequestBytes ?? 64 * 1024 * 1024;
+    this.maximumResponse = options.maximumResponseBytes ?? OBJECTS_REMOTE_POLICY.maximumHttpResponseBytes;
+    this.maximumRequest = options.maximumRequestBytes ?? OBJECTS_REMOTE_POLICY.maximumHttpRequestBytes;
     for (const maximum of [this.maximumResponse, this.maximumRequest]) if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");
     endpoint.pathname = endpoint.pathname.replace(/\/$/, "") + "/v2/objects/";
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
   protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, signal?: AbortSignal): Promise<readonly Uint8Array[]> {
+    const headers = { authorization: `Bearer ${this.options.token}`, "content-type": route === "objects/put" || route === "multipart/upload-part" ? "application/x-ndjson" : "application/json" };
+    await this.ensureHandshake(headers, signal);
     const method = Object.values(OBJECTS_METHODS).find(candidate => candidate.path === `v2/objects/${route}`);
     if (method === undefined) throw new ObjectsV2Error(wire.ErrorCode.INVALID_ARGUMENT);
     const types = [objects_v2_http_type(route, false), objects_v2_http_type(route, true)];
@@ -74,7 +76,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
         ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "complete", value: true } }))
         : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "complete", value: true } }));
       add(encode_objects_v2_json(types[0], complete, jsonFrameBytes));
-    } else add(encode_objects_v2_json(types[0], bytes, 16 * 1024 * 1024));
+    } else add(encode_objects_v2_json(types[0], bytes, this.maximumRequest));
     const request = new Uint8Array(requestSize);
     let offset = 0;
     for (const part of payloads) { request.set(part, offset); offset += part.byteLength; }
@@ -82,10 +84,10 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     const forwardAbort = () => controller.abort(signal?.reason);
     if (signal?.aborted) forwardAbort();
     else signal?.addEventListener("abort", forwardAbort, { once: true });
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), OBJECTS_REMOTE_POLICY.requestTimeoutMillis);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
-      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${this.options.token}`, "content-type": streaming ? "application/x-ndjson" : "application/json" }, body: request });
+      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers, body: request });
       if (response.status === 304) throw new ObjectsV2Error(wire.ErrorCode.NOT_MODIFIED);
       if (method.serverStreaming && response.status === 200) {
         if (response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
@@ -159,5 +161,13 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();
     }
+  }
+
+  private async ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
+    if (this.handshake !== undefined) return this.handshake;
+    const pending = negotiateRustOwnedEndpoint(this.fetcher, this.endpoint, headers, OBJECTS_HANDSHAKE, this.maximumResponse, signal)
+      .catch(error => { this.handshake = undefined; throw error; });
+    this.handshake = pending;
+    return pending;
   }
 }

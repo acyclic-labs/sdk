@@ -114,6 +114,9 @@ struct RemotePolicyMetadata {
     response_encoding: String,
     credential_policy: String,
     response_limit_policy: String,
+    maximum_message_bytes: u64,
+    maximum_http_request_bytes: u64,
+    maximum_http_response_bytes: u64,
     request_timeout_millis: u64,
     behavior_binding: String,
     transport: TransportPolicyMetadata,
@@ -535,6 +538,8 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 .collect(),
         })
         .collect();
+    let remote_limits = acyclic_sdk_contract_wire::family_remote_limits(spec.family)
+        .ok_or_else(|| Error::Missing(format!("missing Rust remote size policy for {}", spec.family)))?;
     Ok(ServiceMetadata {
         family: spec.family.to_owned(),
         rust_crate: spec.rust_crate.to_owned(),
@@ -558,6 +563,9 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 request_encoding: "protobuf-json".to_owned(),
                 response_encoding: "protobuf-json".to_owned(),
                 response_limit_policy: "bounded-cumulative-utf8".to_owned(),
+                maximum_message_bytes: remote_limits.maximum_message_bytes,
+                maximum_http_request_bytes: remote_limits.maximum_http_request_bytes,
+                maximum_http_response_bytes: remote_limits.maximum_http_response_bytes,
                 request_timeout_millis: 30_000,
                 behavior_binding: "generated-client".to_owned(),
                 transport: transport_policy_metadata(spec.transport),
@@ -569,6 +577,9 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 request_encoding: "protobuf-json".to_owned(),
                 response_encoding: "protobuf-json".to_owned(),
                 response_limit_policy: "bounded-cumulative-utf8".to_owned(),
+                maximum_message_bytes: remote_limits.maximum_message_bytes,
+                maximum_http_request_bytes: remote_limits.maximum_http_request_bytes,
+                maximum_http_response_bytes: remote_limits.maximum_http_response_bytes,
                 request_timeout_millis: 30_000,
                 behavior_binding: "native-wasm".to_owned(),
                 transport: transport_policy_metadata(spec.transport),
@@ -580,6 +591,9 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 request_encoding: "protobuf-json".to_owned(),
                 response_encoding: "protobuf-json".to_owned(),
                 response_limit_policy: "bounded-cumulative-utf8".to_owned(),
+                maximum_message_bytes: remote_limits.maximum_message_bytes,
+                maximum_http_request_bytes: remote_limits.maximum_http_request_bytes,
+                maximum_http_response_bytes: remote_limits.maximum_http_response_bytes,
                 request_timeout_millis: 30_000,
                 behavior_binding: "native-wasm".to_owned(),
                 transport: transport_policy_metadata(spec.transport),
@@ -591,6 +605,9 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 request_encoding: "protobuf-json".to_owned(),
                 response_encoding: "protobuf-json".to_owned(),
                 response_limit_policy: "bounded-cumulative-utf8".to_owned(),
+                maximum_message_bytes: remote_limits.maximum_message_bytes,
+                maximum_http_request_bytes: remote_limits.maximum_http_request_bytes,
+                maximum_http_response_bytes: remote_limits.maximum_http_response_bytes,
                 request_timeout_millis: 60_000,
                 behavior_binding: "generated-client".to_owned(),
                 transport: inference_transport_policy_metadata(spec.transport),
@@ -602,6 +619,9 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 request_encoding: "protobuf".to_owned(),
                 response_encoding: "protobuf".to_owned(),
                 response_limit_policy: "bounded-cumulative-protobuf".to_owned(),
+                maximum_message_bytes: remote_limits.maximum_message_bytes,
+                maximum_http_request_bytes: remote_limits.maximum_http_request_bytes,
+                maximum_http_response_bytes: remote_limits.maximum_http_response_bytes,
                 request_timeout_millis: 30_000,
                 behavior_binding: "rust-native-grpc".to_owned(),
                 transport: transport_policy_metadata(spec.transport),
@@ -613,6 +633,9 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 request_encoding: "protobuf".to_owned(),
                 response_encoding: "protobuf".to_owned(),
                 response_limit_policy: "bounded-cumulative-protobuf".to_owned(),
+                maximum_message_bytes: remote_limits.maximum_message_bytes,
+                maximum_http_request_bytes: remote_limits.maximum_http_request_bytes,
+                maximum_http_response_bytes: remote_limits.maximum_http_response_bytes,
                 request_timeout_millis: 30_000,
                 behavior_binding: "generated-client".to_owned(),
                 transport: transport_policy_metadata(spec.transport),
@@ -1324,7 +1347,7 @@ fn typescript_with_paths(
             .collect::<Vec<_>>()
             .join(", ");
         output.push_str(&format!(
-            "export type RustOwnedTransportKind = \"grpc\" | \"grpc-web\" | \"http\";\nexport type RustOwnedRuntime = \"native\" | \"browser\";\nexport interface RustOwnedTransportOption {{ readonly kind: RustOwnedTransportKind; readonly streaming: boolean; readonly bearerAuth: boolean; }}\nexport interface RustOwnedRemotePolicy {{ readonly protocol: {:?}; readonly auth: {:?}; readonly credentialPolicy: {:?}; readonly requestEncoding: {:?}; readonly responseEncoding: {:?}; readonly responseLimitPolicy: {:?}; readonly requestTimeoutMillis: number; readonly behaviorBinding: {:?}; readonly transport: {{ readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }}; }}\nexport type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKind, boolean>>;\n\n",
+            "export type RustOwnedTransportKind = \"grpc\" | \"grpc-web\" | \"http\";\nexport type RustOwnedRuntime = \"native\" | \"browser\";\nexport interface RustOwnedTransportOption {{ readonly kind: RustOwnedTransportKind; readonly streaming: boolean; readonly bearerAuth: boolean; }}\nexport interface RustOwnedRemotePolicy {{ readonly protocol: {:?}; readonly auth: {:?}; readonly credentialPolicy: {:?}; readonly requestEncoding: {:?}; readonly responseEncoding: {:?}; readonly responseLimitPolicy: {:?}; readonly maximumMessageBytes: number; readonly maximumHttpRequestBytes: number; readonly maximumHttpResponseBytes: number; readonly requestTimeoutMillis: number; readonly behaviorBinding: {:?}; readonly transport: {{ readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }}; }}\nexport type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKind, boolean>>;\n\n",
             policy.protocol,
             policy.auth,
             policy.credential_policy,
@@ -1334,7 +1357,7 @@ fn typescript_with_paths(
             policy.behavior_binding,
         ));
         output.push_str(&format!(
-            "export const {}_REMOTE_POLICY = {{ protocol: {:?}, auth: {:?}, credentialPolicy: {:?}, requestEncoding: {:?}, responseEncoding: {:?}, responseLimitPolicy: {:?}, requestTimeoutMillis: {}, behaviorBinding: {:?}, transport: {{ native: [{}], browser: [{}] }} }} as const satisfies RustOwnedRemotePolicy;\n",
+            "export const {}_REMOTE_POLICY = {{ protocol: {:?}, auth: {:?}, credentialPolicy: {:?}, requestEncoding: {:?}, responseEncoding: {:?}, responseLimitPolicy: {:?}, maximumMessageBytes: {}, maximumHttpRequestBytes: {}, maximumHttpResponseBytes: {}, requestTimeoutMillis: {}, behaviorBinding: {:?}, transport: {{ native: [{}], browser: [{}] }} }} as const satisfies RustOwnedRemotePolicy;\n",
             service.family.to_ascii_uppercase(),
             policy.protocol,
             policy.auth,
@@ -1342,6 +1365,9 @@ fn typescript_with_paths(
             policy.request_encoding,
             policy.response_encoding,
             policy.response_limit_policy,
+            policy.maximum_message_bytes,
+            policy.maximum_http_request_bytes,
+            policy.maximum_http_response_bytes,
             policy.request_timeout_millis,
             policy.behavior_binding,
             native,

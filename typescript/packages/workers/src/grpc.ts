@@ -18,7 +18,7 @@ export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
   const endpoint = new URL(options.endpoint);
   validateWorkersGrpcEndpoint(options.endpoint);
   validateWorkersCredential(options.token);
-  const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
+  const maximum = options.maximumMessageBytes ?? WORKERS_REMOTE_POLICY.maximumMessageBytes;
   validateWorkersMessageLimit(maximum);
   if (options.caCertificate !== undefined) validateWorkersCaCertificate(options.caCertificate);
   const authenticate: Interceptor = next => async request => {

@@ -43,12 +43,13 @@ pub mod inference;
 pub mod machines;
 pub mod objects;
 pub mod protocol;
+pub mod remote_limits;
 pub mod semantic_oracle;
 pub mod stream;
 pub mod swift_cpp_typed_facades;
-pub mod type_policy;
 pub mod transport;
 pub mod transport_control;
+pub mod type_policy;
 pub mod wire_semantics;
 pub mod workers;
 
@@ -60,14 +61,15 @@ pub use bindings::{
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 
+pub use csharp_typed_facades::{
+    CSHARP_TYPED_PATH, generate_csharp_type_policy_tests, generate_csharp_typed_facade,
+};
 pub use facades::{
     CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,
     FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_jvm_semantic_types,
-    generate_jvm_typed_clients, generate_jvm_typed_requests, generate_jvm_typed_responses,
+    generate_jvm_typed_clients, generate_jvm_typed_requests, generate_jvm_typed_responses, generate_portable_typed_facades, PortableTypedOutput,
     generate_remote_facade, generate_remote_facades, generate_type_policy_qualification_tests,
 };
-pub use csharp_typed_facades::{generate_csharp_type_policy_tests, generate_csharp_typed_facade, CSHARP_TYPED_PATH};
-pub use swift_cpp_typed_facades::{generate_swift_cpp_typed_facades, CPP_TYPED_PATH, SWIFT_TYPED_PATH};
 pub use family_registry::{
     FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,
     explicit_http_family_views, family_view, native_method_boundaries_for_family,
@@ -83,30 +85,31 @@ pub use harness::{
 pub use inference::{INFERENCE, inference_descriptor, inference_proto};
 pub use machines::{MACHINES, machines_descriptor, machines_proto};
 pub use objects::{OBJECTS_V2, objects_descriptor, objects_proto};
+pub use remote_limits::{FamilyRemoteLimits, family_remote_limits};
 pub use stream::{STREAM, STREAM_ROUTES, STREAM_SERVICE, stream_descriptor, stream_proto};
-pub use type_policy::{
-    FIELD_SEMANTIC_TYPES, MACHINE_EVENT_PAGE_LIMIT_MAX, MACHINE_PAGE_LIMIT_MAX,
-    OBJECTS_MAX_MULTIPART_ITEMS, STREAM_MAX_COMMAND_BYTES, STREAM_MAX_RECORD_BYTES,
-    PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES,
-    FieldSemanticType, PublicFieldBinding, PublicFieldDirection,
-    OperationEnforcement, OperationRule, OperationTarget, ResolvedOperationRule,
-    ResolvedRequestField, ResolvedRpcMethod,
-    ResolvedValidationConstraint,
-    SemanticRule, SemanticType, TypePolicyLanguage, TypeProjectionProfile,
-    WIRE_UNION_VARIANTS, WireUnionVariant, WireValueKind, field_semantic_type, semantic_type,
-    resolved_operation_rules, resolved_request_fields, resolved_response_fields,
-    resolved_rpc_methods, type_projection_profile,
+pub use swift_cpp_typed_facades::{
+    CPP_TYPED_PATH, SWIFT_TYPED_PATH, generate_swift_cpp_typed_facades,
 };
 pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
     TransportKind, TransportOption, TransportRequirements, TransportSelection,
     TransportSelectionError, TransportSelectionRequest, select_transport, select_transport_by_name,
 };
+pub use type_policy::{
+    FIELD_SEMANTIC_TYPES, FieldSemanticType, MACHINE_EVENT_PAGE_LIMIT_MAX, MACHINE_PAGE_LIMIT_MAX,
+    OBJECTS_MAX_MULTIPART_ITEMS, OperationEnforcement, OperationRule, OperationTarget,
+    PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection, ResolvedOperationRule,
+    ResolvedRequestField, ResolvedRpcMethod, ResolvedValidationConstraint, SEMANTIC_TYPES,
+    STREAM_MAX_COMMAND_BYTES, STREAM_MAX_RECORD_BYTES, SemanticRule, SemanticType,
+    TYPE_PROJECTION_PROFILES, TypePolicyLanguage, TypeProjectionProfile, WIRE_UNION_VARIANTS,
+    WireUnionVariant, WireValueKind, field_semantic_type, resolved_operation_rules,
+    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, semantic_type,
+    type_projection_profile,
+};
 pub use wire_semantics::{
-    compare_family_rpc_message, compare_message, compare_message_with_options, family_rpc_streaming,
-    compare_rpc_message, compare_rpc_message_with_options, CompareOptions, FloatPolicy,
-    rpc_streaming, RpcDirection, RpcSemanticError, RpcStreaming, SemanticMismatch,
-    UnknownFieldPolicy,
+    CompareOptions, FloatPolicy, RpcDirection, RpcSemanticError, RpcStreaming, SemanticMismatch,
+    UnknownFieldPolicy, compare_family_rpc_message, compare_message, compare_message_with_options,
+    compare_rpc_message, compare_rpc_message_with_options, family_rpc_streaming, rpc_streaming,
 };
 pub use workers::{WORKERS, WORKERS_ROUTES, WORKERS_SERVICE, workers_descriptor, workers_proto};
 

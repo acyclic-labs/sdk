@@ -31,7 +31,7 @@ import type {
   RustOwnedPublicResumeSubscriptionRequest, RustOwnedPublicResumeSubscriptionResponse,
   RustOwnedPublicUpdateActorRequest, RustOwnedPublicUpdateActorResponse,
 } from "./generated-client.js";
-import { ACTORS_HANDSHAKE, ACTORS_METHODS, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { ACTORS_HANDSHAKE, ACTORS_METHODS, ACTORS_REMOTE_POLICY, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
 import { validateActorsContentLength, validateActorsCredential, validateActorsEndpoint, validateActorsInvoke, validateActorsResponseChunk, validateActorsResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpActorsOptions {
@@ -61,7 +61,7 @@ export class HttpActorsClient {
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
-    this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
+    this.#maximum = options.maximumResponseBytes ?? ACTORS_REMOTE_POLICY.maximumHttpResponseBytes;
     validateActorsResponseLimit(this.#maximum);
   }
 

@@ -18,7 +18,7 @@ export function createActorsGrpcClient(options: ActorsGrpcOptions) {
   const endpoint = new URL(options.endpoint);
   validateActorsGrpcEndpoint(options.endpoint);
   validateActorsCredential(options.token);
-  const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
+  const maximum = options.maximumMessageBytes ?? ACTORS_REMOTE_POLICY.maximumMessageBytes;
   validateActorsMessageLimit(maximum);
   if (options.caCertificate !== undefined) validateActorsCaCertificate(options.caCertificate);
   const authenticate: Interceptor = next => async request => {
