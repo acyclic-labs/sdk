@@ -44,7 +44,9 @@ use crate::{
     },
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
-use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
+use acyclic_stream::{
+    AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError, StreamProvider,
+};
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -5896,6 +5898,14 @@ async fn claim_child_activation_on_stream(
     child: TaskId,
     operation: OperationId,
 ) -> Result<bool> {
+    claim_child_activation(stream, child, operation).await
+}
+
+async fn claim_child_activation<P: StreamProvider>(
+    stream: &acyclic_stream::Stream<P>,
+    child: TaskId,
+    operation: OperationId,
+) -> Result<bool> {
     for _ in 0..4 {
         let observed_tail = match stream.tail().await {
             Ok(tail) => tail,
@@ -5997,7 +6007,7 @@ fn activation_claim_state(
 }
 
 async fn reconcile_activation_claim_after_error(
-    stream: &acyclic_stream::Stream<LocalStream>,
+    stream: &acyclic_stream::Stream<impl StreamProvider>,
     child: TaskId,
     operation: OperationId,
     original: Error,
@@ -6065,12 +6075,14 @@ fn fork_seed_digest(seed: &ForkSeed) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(seed)
 }
 
-async fn load_records(stream: &acyclic_stream::Stream<LocalStream>) -> Result<Vec<StoredRecord>> {
+async fn load_records<P: StreamProvider>(
+    stream: &acyclic_stream::Stream<P>,
+) -> Result<Vec<StoredRecord>> {
     Ok(load_records_with_tail(stream).await?.1)
 }
 
 async fn load_records_with_tail(
-    stream: &acyclic_stream::Stream<LocalStream>,
+    stream: &acyclic_stream::Stream<impl StreamProvider>,
 ) -> Result<(u64, Vec<StoredRecord>)> {
     let tail = match stream.tail().await {
         Ok(tail) => tail,
@@ -6081,14 +6093,14 @@ async fn load_records_with_tail(
 }
 
 async fn load_records_at(
-    stream: &acyclic_stream::Stream<LocalStream>,
+    stream: &acyclic_stream::Stream<impl StreamProvider>,
     tail: u64,
 ) -> Result<Vec<StoredRecord>> {
     load_records_range(stream, 0, tail).await
 }
 
 async fn load_records_range(
-    stream: &acyclic_stream::Stream<LocalStream>,
+    stream: &acyclic_stream::Stream<impl StreamProvider>,
     from: u64,
     tail: u64,
 ) -> Result<Vec<StoredRecord>> {
@@ -6150,8 +6162,8 @@ async fn append_record(
     append_record_at(stream, event, tail).await
 }
 
-async fn append_record_at(
-    stream: &acyclic_stream::Stream<LocalStream>,
+async fn append_record_at<P: StreamProvider>(
+    stream: &acyclic_stream::Stream<P>,
     event: StoredEvent,
     observed_tail: u64,
 ) -> Result<()> {
@@ -6547,6 +6559,112 @@ mod tests {
         Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+
+    /// Provider used by the activation recovery test. The underlying
+    /// provider commits the append normally, while this adapter loses the
+    /// acknowledgement exactly once. This models a transport/disconnect
+    /// after the durable effect without weakening the production path.
+    #[derive(Clone)]
+    struct CommitThenErrorProvider {
+        inner: Arc<acyclic_stream::MemoryStream>,
+        lose_next_ack: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl CommitThenErrorProvider {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(acyclic_stream::MemoryStream::default()),
+                lose_next_ack: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl acyclic_stream::StreamProvider for CommitThenErrorProvider {
+        async fn inspect_idempotency(
+            &self,
+            idempotency_key: acyclic_stream::IdempotencyKey,
+        ) -> std::result::Result<
+            Option<acyclic_stream::IdempotencyObservation>,
+            acyclic_stream::StreamError,
+        > {
+            self.inner.inspect_idempotency(idempotency_key).await
+        }
+
+        async fn tail(
+            &self,
+            path: acyclic_stream::StreamPath,
+        ) -> std::result::Result<u64, acyclic_stream::StreamError> {
+            self.inner.tail(path).await
+        }
+
+        async fn bounds(
+            &self,
+            path: acyclic_stream::StreamPath,
+        ) -> std::result::Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
+            self.inner.bounds(path).await
+        }
+
+        async fn append(
+            &self,
+            request: acyclic_stream::AppendRequest,
+        ) -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError>
+        {
+            let outcome = self.inner.append(request).await?;
+            if self
+                .lose_next_ack
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                Err(acyclic_stream::StreamError::Unavailable)
+            } else {
+                Ok(outcome)
+            }
+        }
+
+        async fn fork(
+            &self,
+            request: acyclic_stream::ForkRequest,
+        ) -> std::result::Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> {
+            self.inner.fork(request).await
+        }
+
+        async fn read(
+            &self,
+            request: acyclic_stream::ReadRequest,
+        ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+            self.inner.read(request).await
+        }
+
+        async fn follow(
+            &self,
+            path: acyclic_stream::StreamPath,
+            from: u64,
+        ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+            self.inner.follow(path, from).await
+        }
+
+        async fn children(
+            &self,
+            request: acyclic_stream::ChildrenRequest,
+        ) -> std::result::Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> {
+            self.inner.children(request).await
+        }
+
+        async fn commit(
+            &self,
+            request: acyclic_stream::CommitRequest,
+        ) -> std::result::Result<acyclic_stream::CommitOutcome, acyclic_stream::StreamError> {
+            self.inner.commit(request).await
+        }
+
+        async fn read_commit(
+            &self,
+            commit_id: acyclic_stream::CommitId,
+        ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError>
+        {
+            self.inner.read_commit(commit_id).await
+        }
+    }
 
     struct DepthDeniedResolver;
 
@@ -7276,6 +7394,40 @@ mod tests {
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
             committed_tail
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn commit_then_error_claim_ack_is_reconciled_without_duplicate_claim() -> Result<()> {
+        let provider = Arc::new(CommitThenErrorProvider::new());
+        let client = StreamClient::new(provider);
+        let stream = client
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let child = TaskId::from_bytes([0xC5; 16]);
+        let operation = OperationId::from_bytes([0xD5; 16]);
+
+        // The provider commits the claim and then returns Unavailable. The
+        // production claim path must reread the journal and recover the
+        // committed effect instead of returning uncertainty or appending a
+        // second claim.
+        assert!(claim_child_activation(&stream, child, operation).await?);
+        assert_eq!(
+            stream
+                .tail()
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            1
+        );
+        assert!(!claim_child_activation(&stream, child, operation).await?);
+        assert_eq!(
+            stream
+                .tail()
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            1,
+            "recovery must not duplicate a committed activation claim"
         );
         Ok(())
     }
