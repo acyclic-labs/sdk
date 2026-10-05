@@ -381,6 +381,20 @@ pub trait SwarmUsageSource: Send + Sync {
     ) -> Result<SwarmUsage>;
 }
 
+impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
+    fn provider_identity(&self) -> &str {
+        (**self).provider_identity()
+    }
+
+    fn cumulative_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+    ) -> Result<SwarmUsage> {
+        (**self).cumulative_usage(operation_id, dispatch_id)
+    }
+}
+
 /// Monotonic receipt issuer bound to one provider dispatch.
 pub struct SwarmUsageReceiptIssuer<S> {
     source: S,
