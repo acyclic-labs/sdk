@@ -916,6 +916,32 @@ fn authority_methods(authority: &Value) -> Result<Vec<String>, String> {
     Ok(methods)
 }
 
+fn authority_family_map(authority: &Value) -> Result<BTreeMap<String, String>, String> {
+    if authority.get("schema").and_then(Value::as_str) != Some("acyclic.sdk.rust-authority.v1") {
+        return Err("runtime tools require acyclic.sdk.rust-authority.v1".into());
+    }
+    let families = authority.get("families").and_then(Value::as_array)
+        .ok_or_else(|| "authority is missing families".to_string())?;
+    let mut result = BTreeMap::new();
+    for family in families {
+        let source = required_string(family, "source")?;
+        let canonical = source
+            .split('/')
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("authority family {source} has no canonical family name"))?;
+        let methods = family.get("rpc_methods").and_then(Value::as_array)
+            .ok_or_else(|| format!("authority family {source} is missing rpc_methods"))?;
+        for method in methods {
+            let rpc = required_string(method, "rpc")?.to_owned();
+            if result.insert(rpc.clone(), canonical.to_owned()).is_some() {
+                return Err(format!("Rust authority contains duplicate RPC {rpc}"));
+            }
+        }
+    }
+    Ok(result)
+}
+
 fn generated_source_files(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
     for entry in fs::read_dir(root).map_err(|error| format!("read {}: {error}", root.display()))? {
         let entry = entry.map_err(|error| format!("read directory entry in {}: {error}", root.display()))?;
@@ -963,6 +989,28 @@ fn callable_identifier(source: &str, extension: &str, candidate: &str) -> bool {
     }))
 }
 
+fn source_regions<'a>(source: &'a str, extension: &str) -> Vec<&'a str> {
+    let markers = match extension {
+        "ex" => vec!["defmodule "],
+        "erl" => vec!["-module("],
+        "lisp" | "lsp" => vec!["(defpackage", "(in-package"],
+        "ml" => vec!["module "],
+        _ => Vec::new(),
+    };
+    let mut starts = markers.iter()
+        .flat_map(|marker| source.match_indices(marker).map(|(index, _)| index))
+        .collect::<Vec<_>>();
+    starts.sort_unstable();
+    starts.dedup();
+    if starts.is_empty() {
+        return vec![source];
+    }
+    starts.iter().enumerate().map(|(index, start)| {
+        let end = starts.get(index + 1).copied().unwrap_or(source.len());
+        &source[*start..end]
+    }).collect()
+}
+
 fn service_candidates(rpc: &str) -> Vec<String> {
     let service = rpc
         .split_once('/')
@@ -990,12 +1038,14 @@ fn callable_service_method(source: &str, extension: &str, rpc: &str) -> bool {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let service_present = service_candidates(rpc)
-        .iter()
-        .any(|candidate| identifier_boundary(&code, candidate));
-    service_present && method_candidates(rpc)
-        .iter()
-        .any(|candidate| callable_identifier(&code, extension, candidate))
+    source_regions(&code, extension).into_iter().any(|region| {
+        let service_present = service_candidates(rpc)
+            .iter()
+            .any(|candidate| identifier_boundary(region, candidate));
+        service_present && method_candidates(rpc)
+            .iter()
+            .any(|candidate| callable_identifier(region, extension, candidate))
+    })
 }
 
 pub fn verify_generated_rpc_coverage(authority_path: &Path, generated_root: &Path) -> Result<usize, String> {
@@ -1101,8 +1151,20 @@ fn observation_metadata(path: &Path) -> Result<Map<String, Value>, String> {
     Ok(value)
 }
 
-pub fn collect_runtime_observation_receipt(project: &Path, output: &Path, source_revision: &str, manifest: &str) -> Result<usize, String> {
+pub fn collect_runtime_observation_receipt_with_authority(
+    project: &Path,
+    output: &Path,
+    source_revision: &str,
+    manifest: &str,
+    authority_path: Option<&Path>,
+) -> Result<usize, String> {
     let observation_dir = project.join("runtime-observations");
+    let authority_families = if let Some(path) = authority_path {
+        let authority = read_json(path)?;
+        Some(authority_family_map(&authority)?)
+    } else {
+        None
+    };
     let files = observation_files(&observation_dir)?;
     let mut requests = files.iter().filter_map(|path| {
         let name = path.file_name()?.to_str()?;
@@ -1168,7 +1230,11 @@ pub fn collect_runtime_observation_receipt(project: &Path, output: &Path, source
             item.extend(observation_metadata(&metadata)?);
         }
         if let Some(rpc) = item.get("rpc").and_then(Value::as_str).map(str::to_owned) {
-            item.insert("family".into(), Value::from(rpc.split_once('/').map(|(service, _)| service).unwrap_or(rpc.as_str())));
+            if let Some(families) = authority_families.as_ref() {
+                let family = families.get(&rpc)
+                    .ok_or_else(|| format!("runtime observation RPC {rpc} is absent from Rust authority"))?;
+                item.insert("family".into(), Value::from(family.clone()));
+            }
         }
         observations.push(Value::Object(item));
     }
@@ -1191,6 +1257,10 @@ pub fn collect_runtime_observation_receipt(project: &Path, output: &Path, source
     fs::write(output, serde_json::to_string_pretty(&Value::Object(payload)).map_err(|error| format!("serialize receipt: {error}"))? + "\n")
         .map_err(|error| format!("write {}: {error}", output.display()))?;
     Ok(request_count)
+}
+
+pub fn collect_runtime_observation_receipt(project: &Path, output: &Path, source_revision: &str, manifest: &str) -> Result<usize, String> {
+    collect_runtime_observation_receipt_with_authority(project, output, source_revision, manifest, None)
 }
 
 pub fn parse_language(value: &str) -> Result<Language, String> {
@@ -1241,11 +1311,13 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if let Some(project) = receipt_project {
-        let count = collect_runtime_observation_receipt(
+        let authority = authority.as_deref().ok_or_else(|| "--authority is required for --collect-receipt".to_string())?;
+        let count = collect_runtime_observation_receipt_with_authority(
             &project,
             &output.ok_or_else(|| "--output is required for --collect-receipt".to_string())?,
             &source_revision.ok_or_else(|| "--source-revision is required for --collect-receipt".to_string())?,
             &manifest_sha256.ok_or_else(|| "--manifest-sha256 is required for --collect-receipt".to_string())?,
+            Some(authority),
         )?;
         println!("collected {count} runtime observations from {}", project.display());
         return Ok(());

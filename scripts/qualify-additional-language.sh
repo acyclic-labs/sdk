@@ -86,7 +86,8 @@ run_runtime_probe() {
     exit 1
   }
   python3 "$source_root/scripts/run-rust-authority-grpc-probe.py" \
-    "$descriptor_set" "$endpoint" "$output_root/rust-authority-grpc-probe.json"
+    "$descriptor_set" "${ACYCLIC_RUST_TYPED_REQUEST_MANIFEST:?ACYCLIC_RUST_TYPED_REQUEST_MANIFEST is required for the Rust authority runtime probe}" \
+    "$endpoint" "$output_root/rust-authority-grpc-probe.json"
 }
 archive_project() {
   local project=$1
@@ -393,7 +394,7 @@ EOF
       test -s "$project/runtime-consumer-receipt.sexp"
       rg -q ':source-revision "[0-9a-f]{40}"' "$project/runtime-consumer-receipt.sexp"
       python3 "$source_root/scripts/collect-runtime-observation-receipt.py" \
-        "$project" "$project/runtime-consumer-receipt.json" "$source_revision" "$manifest_digest"
+        "$project" "$project/runtime-consumer-receipt.json" "$source_revision" "$manifest_digest" "$product_manifest"
       test -s "$project/runtime-consumer-receipt.json"
       rg -q '"source_revision": "[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
       require_current_receipt_count "$project/runtime-consumer-receipt.json"
