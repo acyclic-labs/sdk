@@ -1166,6 +1166,7 @@ impl ForkAtBatch {
         let boundary_binding = PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
             .manifest()
             .binding_digest;
+        let mut sibling_scratch = Vec::with_capacity(completed_children.len());
         for (index, storage, _, _, _, _, _, _, operation) in &completed_children {
             if *index != 0 {
                 self.assert_model_read(storage, *operation, "root request")
@@ -1230,7 +1231,20 @@ impl ForkAtBatch {
                 storage.read(file).await?,
                 format!("explicit recursive child input {index}").into_bytes()
             );
+            sibling_scratch.push((*index, storage, file.clone()));
         }
+        // Each explicit child input lives in its own fresh private volume.
+        // A sibling's scope must not be able to read that exact file ref.
+        assert_eq!(sibling_scratch.len(), 2);
+        assert_ne!(sibling_scratch[0].2, sibling_scratch[1].2);
+        assert!(matches!(
+            sibling_scratch[0].1.read(&sibling_scratch[1].2).await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            sibling_scratch[1].1.read(&sibling_scratch[0].2).await,
+            Err(Error::Unauthorized(_))
+        ));
         let child_zero_seed = parent
             .reducer()
             .fork(&child_zero.4)
