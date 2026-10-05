@@ -54,7 +54,14 @@ $traceMutations = @(
     @{ Name = 'trace-missing-model-start'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'model_started' }) } },
     @{ Name = 'trace-missing-completion'; Apply = { param($events) @($events | Where-Object { $_.kind -ne 'agent_completed' }) } },
     @{ Name = 'trace-corrupt-agent'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'model_started') { $event.agent = 3 } }; @($events) } },
-    @{ Name = 'trace-corrupt-capture'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'fork_admitted') { $event.captured_generation = 1 } }; @($events) } }
+    @{ Name = 'trace-corrupt-capture'; Apply = { param($events) foreach ($event in $events) { if ($event.kind -eq 'fork_admitted') { $event.captured_generation = 1 } }; @($events) } },
+    @{ Name = 'trace-duplicate-model-start'; Apply = {
+        param($events)
+        $copy = @($events)
+        $duplicate = $events | Where-Object { $_.kind -eq 'model_started' } | Select-Object -First 1
+        $copy += $duplicate
+        @($copy)
+    } }
 )
 function Sha256Hex([byte[]]$Bytes) {
     $algorithm = [System.Security.Cryptography.SHA256]::Create()
@@ -119,6 +126,7 @@ $mutations = @(
     @{ Name = 'model-start'; Apply = { param($m) $m.source.child_execution_model_started_step = [int64]$m.source.child_execution_model_started_step + 1 } },
     @{ Name = 'completion-digest'; Apply = { param($m) $m.source.completion_output_digest = @(0..31) } },
     @{ Name = 'request-bytes-corrupt'; Apply = { param($m) $m.source.child_execution_model_started_request_bytes_hex = "20$($m.source.child_execution_model_started_request_bytes_hex)" } },
+    @{ Name = 'request-bytes-missing'; Apply = { param($m) $m.source.child_execution_model_started_request_bytes_hex = $null } },
     @{ Name = 'request-bytes-reordered'; Apply = {
         param($m)
         $bytes = DecodeHexBytes ([string]$m.source.child_execution_model_started_request_bytes_hex)

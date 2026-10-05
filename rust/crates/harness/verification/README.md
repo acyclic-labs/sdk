@@ -232,7 +232,8 @@ completion output/digest, and the exact canonical provider-neutral request
 bytes captured at the mock provider boundary. The request bytes are compared
 with the child journal's staged `ModelInputPrepared` request, independently
 hashed with BLAKE3, and checked against the durable `ModelStarted` digest;
-their SHA-256 is retained as artifact evidence. It also requires the
+the checker parses these bytes for structure without reserializing or
+discarding whitespace, and their SHA-256 is retained as artifact evidence. It also requires the
 normalized trace's captured generation to equal the source generation ordinal
 before passing the finite event reducer.
 The registry admission and completion retain raw envelope bytes; the current

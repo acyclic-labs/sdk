@@ -185,6 +185,19 @@ function ParseCanonicalJson([string]$Hex, [string]$Name) {
     catch { throw "$Name canonical bytes are not valid JSON." }
 }
 
+# The request witness is authoritative serialized provider input. Preserve its
+# bytes exactly and only parse for structural checks; digest equality below is
+# what binds the bytes to the durable ModelStarted record.
+function ParseJsonBytes([byte[]]$Bytes, [string]$Name) {
+    try {
+        $encoding = [System.Text.UTF8Encoding]::new($false, $true)
+        $text = $encoding.GetString($Bytes)
+        return ($text | ConvertFrom-Json)
+    } catch {
+        throw "$Name bytes are not valid UTF-8 JSON."
+    }
+}
+
 function CompactJson($Value) {
     if ($null -eq $Value) { return 'null' }
     return ($Value | ConvertTo-Json -Compress -Depth 100)
@@ -330,15 +343,7 @@ $requestBytes = DecodeHex ([string]$manifest.source.child_execution_model_starte
 if ((Hex $requestBytes) -ne ([string]$manifest.source.child_execution_model_started_request_bytes_hex).ToLowerInvariant()) {
     throw 'child model request bytes are not normalized hexadecimal.'
 }
-$requestCanonicalHex = InvokePythonHex $requestBytes $canonicalJsonCode 'child model request'
-if ($requestCanonicalHex -ne (Hex $requestBytes)) {
-    throw 'child model request bytes are not canonical JSON.'
-}
-try {
-    $requestJson = ([System.Text.Encoding]::UTF8.GetString($requestBytes) | ConvertFrom-Json)
-} catch {
-    throw 'child model request bytes are not valid JSON.'
-}
+$requestJson = ParseJsonBytes $requestBytes 'child model request'
 $requestDigest = InvokePythonHex $requestBytes $blake3Code 'child model request digest'
 if ($requestDigest -ne ([string]$manifest.source.child_execution_model_started_request_digest_hex).ToLowerInvariant() -or
     $requestDigest -ne (JsonByteArrayHex $childModelEvent.request_digest 'child ModelStarted request digest')) {
@@ -349,6 +354,13 @@ if ((Sha256Hex $requestBytes) -ne ([string]$manifest.source.child_execution_mode
 }
 if ($null -eq $requestJson.model -or $null -eq $requestJson.messages -or $null -eq $requestJson.tools) {
     throw 'child model request bytes do not contain the required provider-neutral request fields.'
+}
+foreach ($container in @($requestJson, $requestJson.model)) {
+    foreach ($forbidden in @('transport_metadata', 'ui_state', 'sibling_history', 'credentials')) {
+        if ($null -ne $container.PSObject.Properties[$forbidden]) {
+            throw "child model request contains forbidden transport or hidden-input field '$forbidden'."
+        }
+    }
 }
 $projectCaptures = @($reportCanonical.captures | Where-Object {
     $_.kind -eq 'captured' -and $null -ne $_.value -and
