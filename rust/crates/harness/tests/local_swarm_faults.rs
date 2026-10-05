@@ -21,7 +21,7 @@ use acyclic_harness::{
     fork::ForkSeed,
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelProvider,
-        ModelRequest,
+        ModelRequest, ProviderDispatchContext,
     },
     resources::ProviderRef,
 };
@@ -41,6 +41,10 @@ use std::{
 };
 use tempfile::tempdir;
 use tokio::time::{Duration, timeout};
+
+#[path = "swarm_provider_support.rs"]
+mod swarm_provider_support;
+use swarm_provider_support::FixtureUsage;
 
 const ROOT_FILE: &str = "fault fixture root file";
 
@@ -137,6 +141,7 @@ struct ForkFaultProvider {
     dispatches: AtomicUsize,
     child_a: OperationId,
     child_b: OperationId,
+    usage: Arc<FixtureUsage>,
 }
 
 struct BlockedChildStreamGuard {
@@ -170,6 +175,7 @@ impl ForkFaultProvider {
             dispatches: AtomicUsize::new(0),
             child_a,
             child_b,
+            usage: FixtureUsage::new("harness.test.local-swarm-faults"),
         })
     }
 
@@ -339,6 +345,8 @@ impl ForkFaultProvider {
 }
 
 impl ModelProvider for ForkFaultProvider {
+    fixture_budget_methods!();
+
     fn generate<'a>(
         &'a self,
         prepared: acyclic_harness::model_input::PreparedModelInput,

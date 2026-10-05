@@ -1,7 +1,7 @@
 //! Provider-neutral immutable model values and streaming host contract.
 
 use crate::{
-    Error, OperationId, Result,
+    Error, IdempotencyKey, OperationId, Result,
     conversation::FileRef,
     registry::ComponentIdentity,
 };
@@ -390,6 +390,21 @@ pub struct ModelAttempt {
     pub observed: Vec<ModelEvent>,
 }
 
+/// Authenticated transport provenance for one provider dispatch. This value
+/// is supplied out of band to provider adapters and is intentionally excluded
+/// from [`ModelRequest`] and the model-visible serialized input bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderDispatchContext {
+    /// Durable operation identity owning the provider attempt.
+    pub operation_id: OperationId,
+    /// Zero-based stock executor step.
+    pub step: u32,
+    /// Digest of the exact admitted model request bytes.
+    pub request_digest: [u8; 32],
+    /// Journal-issued provider dispatch identity.
+    pub dispatch_id: IdempotencyKey,
+}
+
 /// Replaceable streaming model provider.
 pub trait ModelProvider: Send + Sync {
     /// Returns the registered model-visible option policy for this provider.
@@ -409,6 +424,14 @@ pub trait ModelProvider: Send + Sync {
         None
     }
 
+    /// Declares that this adapter binds authenticated dispatch provenance to
+    /// the provider request and its measured usage. Unbudgeted callers keep
+    /// using [`Self::generate`] and [`Self::reconcile_admitted`]; a provider
+    /// must opt in before a budgeted call can cross the model boundary.
+    fn supports_dispatch_context(&self) -> bool {
+        false
+    }
+
     /// Validates immutable input before a new dispatch or recovered attempt.
     /// This hook must not perform I/O or mutate the request.
     fn admit(&self, request: &ModelRequest) -> Result<()> {
@@ -424,7 +447,22 @@ pub trait ModelProvider: Send + Sync {
         prepared: crate::model_input::PreparedModelInput,
     ) -> BoxStream<'a, Result<ModelEvent>>;
 
-    /// Reconciles only after verifying the original complete request.
+    /// Starts one provider attempt with authenticated transport provenance.
+    /// Providers with measured counters must override this method to bind
+    /// those counters to the supplied dispatch identity. The default rejects
+    /// the budgeted path instead of silently dropping authenticated context;
+    /// unbudgeted callers remain source compatible through [`Self::generate`].
+    fn generate_with_dispatch<'a>(
+        &'a self,
+        _prepared: crate::model_input::PreparedModelInput,
+        _dispatch: ProviderDispatchContext,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
+        Box::pin(futures::stream::once(async {
+            Err(Error::Unsupported(
+                "provider does not support authenticated dispatch context".into(),
+            ))
+        }))
+    }    /// Reconciles only after verifying the original complete request.
     fn reconcile_admitted<'a>(
         &'a self,
         prepared: crate::model_input::PreparedModelInput,
@@ -441,7 +479,22 @@ pub trait ModelProvider: Send + Sync {
         })
     }
 
-    /// Continues or reconciles an interrupted run without starting another model request.
+    /// Reconciles an interrupted attempt with the same authenticated
+    /// transport provenance used by its original dispatch. Providers with
+    /// measured counters must override this method; the default rejects the
+    /// budgeted recovery path rather than dropping the authenticated context.
+    fn reconcile_admitted_with_dispatch<'a>(
+        &'a self,
+        _prepared: crate::model_input::PreparedModelInput,
+        _attempt: ModelAttempt,
+        _dispatch: ProviderDispatchContext,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "provider does not support authenticated dispatch context".into(),
+            ))
+        })
+    }    /// Continues or reconciles an interrupted run without starting another model request.
     fn reconcile<'a>(
         &'a self,
         attempt: ModelAttempt,
@@ -451,7 +504,9 @@ pub trait ModelProvider: Send + Sync {
 #[cfg(test)]
 mod wire_contract_tests {
     use super::*;
+    use futures::StreamExt;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn request() -> serde_json::Value {
         json!({
@@ -460,6 +515,63 @@ mod wire_contract_tests {
             "tools": [],
             "max_output_tokens": null
         })
+    }
+
+    struct BareProvider {
+        calls: AtomicUsize,
+    }
+
+    impl ModelProvider for BareProvider {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(futures::stream::empty())
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[test]
+    fn default_budgeted_dispatch_rejects_before_bare_provider() -> Result<()> {
+        let provider = BareProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let request = ModelRequest {
+            model: Model {
+                provider: "mock".into(),
+                name: "local".into(),
+                revision: "1".into(),
+                options: json!({}),
+            },
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("exact input".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: None,
+        };
+        let prepared = crate::model_input::PreparedModelInput::prepare(
+            request,
+            crate::conversation::Limits::default(),
+        )?;
+        let context = ProviderDispatchContext {
+            operation_id: OperationId::from_bytes([7; 16]),
+            step: 0,
+            request_digest: prepared.manifest().request_digest,
+            dispatch_id: IdempotencyKey::new("unsupported-dispatch-test")?,
+        };
+        let result = futures::executor::block_on(provider.generate_with_dispatch(prepared, context).next())
+            .expect("default dispatch stream emits a rejection");
+        assert!(matches!(result, Err(Error::Unsupported(message)) if message.contains("authenticated dispatch")));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        Ok(())
     }
 
     #[test]
@@ -483,6 +595,22 @@ mod wire_contract_tests {
                 "{layer}"
             );
         }
+    }
+
+    #[test]
+    fn provider_dispatch_context_is_out_of_band_from_request_bytes() -> Result<()> {
+        let request: ModelRequest = serde_json::from_value(request())?;
+        let bytes = crate::contract::canonical_json_bytes(&request)?;
+        let context = ProviderDispatchContext {
+            operation_id: OperationId::from_bytes([7; 16]),
+            step: 3,
+            request_digest: *blake3::hash(&bytes).as_bytes(),
+            dispatch_id: IdempotencyKey::new("provider-dispatch-test")?,
+        };
+        let round_trip = crate::contract::canonical_json_bytes(&request)?;
+        assert_eq!(bytes, round_trip);
+        assert_eq!(context.request_digest, *blake3::hash(&round_trip).as_bytes());
+        Ok(())
     }
 
     #[test]

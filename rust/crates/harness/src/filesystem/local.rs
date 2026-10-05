@@ -7,7 +7,7 @@ use crate::{
     },
     core::{AggregateKind, Authority, AuthorityIssuer, Scope},
     effects::EffectRegistry,
-    executor::TurnOutput,
+    executor::{SwarmProviderAdmission, TurnOutput},
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     host_execution::{
         ExecutionClaim, ExecutionClaimHandle, ExecutionReceipt, ExecutionReceiptKey,
@@ -1565,6 +1565,7 @@ impl PersistentLocalHarness {
         admission: &crate::runtime::TaskAdmissionRecord,
         prompt: &str,
         max_steps: u32,
+        budget: &mut dyn SwarmProviderAdmission,
     ) -> Result<TurnOutput> {
         if admission.input != serde_json::Value::String(prompt.to_owned())
             || bundle.limits() != admission.limits
@@ -1580,7 +1581,44 @@ impl PersistentLocalHarness {
                 "local execution no longer matches its owner task admission".into(),
             ));
         }
-        self.run_with_bundle(bundle, admission.operation_id, prompt, max_steps)
+        let current_policy = bundle
+            .execution_contract()
+            .and_then(|contract| contract.get("model_option_policy"))
+            .filter(|policy| !policy.is_null())
+            .map(|policy| {
+                serde_json::from_value::<crate::registry::ComponentIdentity>(policy.clone())
+                    .map_err(|error| {
+                        Error::Conflict(format!(
+                            "local execution policy contract is invalid: {error}"
+                        ))
+                    })
+            })
+            .transpose()?;
+        if current_policy != admission.policy {
+            return Err(Error::Conflict(
+                "local execution provider policy changed after admission".into(),
+            ));
+        }
+        let operation = admission.operation_id;
+        let content = self
+            .storage
+            .stage(
+                operation,
+                &format!("turns/{operation}/user.txt"),
+                prompt.as_bytes(),
+                "text/plain",
+                "prompt.txt",
+            )
+            .await?;
+        self.storage
+            .run_conversation_with_provider_budget(
+                bundle,
+                operation,
+                content,
+                vec![],
+                max_steps,
+                Some(budget),
+            )
             .await
     }
     /// Provider-bound storage for tools and recovery.

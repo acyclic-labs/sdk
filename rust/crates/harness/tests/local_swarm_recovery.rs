@@ -16,7 +16,7 @@ use acyclic_harness::{
     Error, OperationId, Result,
     conversation::Limits,
     filesystem::{LocalSessionPhase, LocalSwarmSession, PersistentLocalSwarm},
-    model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
+    model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest, ProviderDispatchContext},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use futures::{
@@ -35,6 +35,10 @@ use std::{
 use tempfile::tempdir;
 use tokio::time::{Duration, timeout};
 
+#[path = "swarm_provider_support.rs"]
+mod swarm_provider_support;
+use swarm_provider_support::FixtureUsage;
+
 /// A provider-side fault adapter.  `blocked` pauses the first event after the
 /// model request has been admitted, which leaves the durable local registry
 /// available to a second swarm handle.  `fail_first` models a provider whose
@@ -48,6 +52,7 @@ struct RecoveryProvider {
     fail_first: AtomicBool,
     fail_after_prefix: AtomicBool,
     reconcile_none: AtomicBool,
+    usage: Arc<FixtureUsage>,
 }
 
 impl RecoveryProvider {
@@ -61,6 +66,7 @@ impl RecoveryProvider {
             fail_first: AtomicBool::new(false),
             fail_after_prefix: AtomicBool::new(false),
             reconcile_none: AtomicBool::new(true),
+            usage: FixtureUsage::new("harness.test.local-swarm-recovery"),
         })
     }
 
@@ -111,6 +117,8 @@ impl RecoveryProvider {
 }
 
 impl ModelProvider for RecoveryProvider {
+    fixture_budget_methods!();
+
     fn admit(&self, _request: &ModelRequest) -> Result<()> {
         self.admissions.fetch_add(1, Ordering::SeqCst);
         Ok(())

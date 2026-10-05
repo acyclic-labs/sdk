@@ -18,6 +18,7 @@ use acyclic_harness::{
     },
     model::{
         Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest, ModelRole,
+        ProviderDispatchContext,
     },
     resources::ProviderRef,
 };
@@ -33,6 +34,10 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tempfile::tempdir;
+
+#[path = "swarm_provider_support.rs"]
+mod swarm_provider_support;
+use swarm_provider_support::FixtureUsage;
 
 const ROOT_FILE: &str = "root private file survives the recursive fork";
 
@@ -141,6 +146,7 @@ struct DeterministicProvider {
     child_a: OperationId,
     child_b: OperationId,
     grandchild: OperationId,
+    usage: Arc<FixtureUsage>,
 }
 
 struct CancellationProvider {
@@ -151,6 +157,7 @@ struct CancellationProvider {
     reconciliations: AtomicUsize,
     child_stream_dropped: Arc<AtomicBool>,
     child_stopped: Arc<tokio::sync::Notify>,
+    usage: Arc<FixtureUsage>,
 }
 
 /// A production-runtime fixture for the nonblocking child scheduler.  Child
@@ -174,6 +181,7 @@ struct LiveHandshakeProvider {
     child_a: OperationId,
     child_b: OperationId,
     grandchild: OperationId,
+    usage: Arc<FixtureUsage>,
 }
 
 impl LiveHandshakeProvider {
@@ -195,6 +203,7 @@ impl LiveHandshakeProvider {
             child_a,
             child_b,
             grandchild,
+            usage: FixtureUsage::new("harness.test.local-model-swarm.live"),
         })
     }
 
@@ -219,6 +228,8 @@ impl LiveHandshakeProvider {
 }
 
 impl ModelProvider for LiveHandshakeProvider {
+    fixture_budget_methods!();
+
     fn generate<'a>(
         &'a self,
         prepared: acyclic_harness::model_input::PreparedModelInput,
@@ -431,11 +442,14 @@ impl CancellationProvider {
             reconciliations: AtomicUsize::new(0),
             child_stream_dropped: Arc::new(AtomicBool::new(false)),
             child_stopped: Arc::new(tokio::sync::Notify::new()),
+            usage: FixtureUsage::new("harness.test.local-model-swarm.cancel"),
         })
     }
 }
 
 impl ModelProvider for CancellationProvider {
+    fixture_budget_methods!();
+
     fn generate<'a>(
         &'a self,
         prepared: acyclic_harness::model_input::PreparedModelInput,
@@ -508,6 +522,7 @@ impl DeterministicProvider {
             child_a,
             child_b,
             grandchild,
+            usage: FixtureUsage::new("harness.test.local-model-swarm.deterministic"),
         })
     }
 
@@ -543,6 +558,8 @@ impl DeterministicProvider {
 }
 
 impl ModelProvider for DeterministicProvider {
+    fixture_budget_methods!();
+
     fn generate<'a>(
         &'a self,
         prepared: acyclic_harness::model_input::PreparedModelInput,

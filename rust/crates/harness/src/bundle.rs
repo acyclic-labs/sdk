@@ -7,7 +7,9 @@ use crate::{
     conversation::Limits,
     core::{ExtensionAdmission, Reducer},
     durable_tool::{ResumableTool, ResumableToolRegistry},
-    executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
+    executor::{
+        ExecutionJournal, Executor, StockExecutor, SwarmProviderAdmission, TurnInput, TurnOutput,
+    },
     extension::{ExtensionRuntime, NativeExtensionBundle},
     model::{Model, ModelProvider},
     runtime::{
@@ -658,6 +660,34 @@ impl HarnessBundle {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("turn journal is not bound".into()))?;
         executor.execute(input, journal.as_ref()).await
+    }
+
+    /// Runs one admitted turn through the stock executor's provider budget
+    /// boundary. The guard is supplied by the journal after publication and
+    /// remains mutable for the duration of the provider stream.
+    pub(crate) async fn run_with_provider_budget(
+        &self,
+        input: TurnInput,
+        budget: &mut dyn SwarmProviderAdmission,
+    ) -> Result<TurnOutput> {
+        if input.max_steps == 0
+            || usize::try_from(input.max_steps).unwrap_or(usize::MAX) > self.limits.model_steps
+        {
+            return Err(Error::Invalid(
+                "turn exceeds the bound model step limit".into(),
+            ));
+        }
+        let executor = self
+            .executor
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("turn executor is not bound".into()))?;
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("turn journal is not bound".into()))?;
+        executor
+            .execute_with_provider_budget(input, journal.as_ref(), budget)
+            .await
     }
 
     /// Runs the typed custom agent loop as a local task, preserving its full

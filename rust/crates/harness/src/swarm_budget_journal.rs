@@ -1440,4 +1440,67 @@ mod tests {
         assert_eq!(journal.usage()?.active_agents, 2);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn terminal_child_rejects_late_measured_receipt_without_budget_mutation() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let mut journal =
+            SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits()).await?;
+        let child = OperationId::new();
+        let resources = SwarmResourceRequest {
+            model_steps: 4,
+            output_bytes: 64,
+            execution_time_ms: 100,
+        };
+        journal
+            .reserve_child(child_request(child, "terminal-receipt", 1, resources))
+            .await?;
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: child,
+            parent_operation_id: None,
+            completed_boundary_digest: [17; 32],
+            workspace_generation_digest: [18; 32],
+        })?;
+        let dispatch_id = IdempotencyKey::new("terminal-dispatch")?;
+        let token = journal
+            .activate_verified_with_dispatch(child, owner.clone(), dispatch_id, publication)
+            .await?;
+        let measured = SwarmUsage {
+            model_steps: 2,
+            output_bytes: 20,
+            execution_time_ms: 30,
+        };
+        let mut completion_context = journal.usage_context(&token, FixedSource(measured))?;
+        let completion_receipt = completion_context.issue_usage_receipt()?;
+        journal
+            .complete_with_receipt(child, &owner, completion_receipt)
+            .await?;
+        let settled = journal.usage()?;
+
+        // A provider can report a final event before surfacing an error or
+        // cancellation. Once the durable child terminal event won, a later
+        // cumulative receipt must not reopen the reservation or charge it a
+        // second time.
+        let late_usage = SwarmUsage {
+            model_steps: 3,
+            output_bytes: 30,
+            execution_time_ms: 40,
+        };
+        let mut late_context = journal.usage_context(&token, FixedSource(late_usage))?;
+        let late_receipt = late_context.issue_usage_receipt()?;
+        assert!(matches!(
+            journal
+                .report_usage_with_receipt(child, &owner, late_receipt)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(journal.usage()?, settled);
+        assert_eq!(
+            journal.reservation(child)?.expect("reservation").state,
+            SwarmReservationState::Completed
+        );
+        Ok(())
+    }
 }

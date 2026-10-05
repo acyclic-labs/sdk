@@ -12,13 +12,16 @@ use super::{
     PersistentLocalHarness, workspace_ref,
 };
 use crate::{
-    AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
+    AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
-    executor::{ExecutionEvent, TerminalFailureState, TurnOutput},
+    executor::{
+        ExecutionEvent, SwarmProviderBoundary, SwarmRootProviderBoundary,
+        TerminalFailureState, TurnOutput,
+    },
     fork::{
         Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed,
         ForkSelection, ResourceRevision,
@@ -36,6 +39,7 @@ use crate::{
     swarm_budget::{
         SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
         SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource, VerifiedForkPublication,
+        SwarmUsage,
     },
     swarm_budget_journal::SwarmBudgetJournal,
     tool::{
@@ -124,6 +128,7 @@ struct LocalChildTurn {
     harness: Arc<PersistentLocalHarness>,
     bundle: crate::Harness,
     admission: crate::runtime::TaskAdmissionRecord,
+    budget_token: SwarmDispatchToken,
     max_steps: u32,
     cancelled: tokio::sync::watch::Receiver<bool>,
     _activation_guard: tokio::sync::OwnedMutexGuard<()>,
@@ -1742,7 +1747,8 @@ impl LocalModelForkPublisher {
         turn: Box<LocalChildTurn>,
     ) -> Result<LocalForkOutcome> {
         let LocalChildTurn {
-            request, stream, harness, bundle, admission, max_steps, cancelled, _activation_guard,
+            request, stream, harness, bundle, admission, budget_token, max_steps, cancelled,
+            _activation_guard,
         } = *turn;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         {
@@ -1751,11 +1757,28 @@ impl LocalModelForkPublisher {
             })?;
             swarm.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
         }
-        // The registry owns this future; it must not own the composition
-        // strongly across model/tool awaits.
+        // Bind the journal-issued token to the provider boundary immediately
+        // before dispatch. The owner is held only long enough to obtain the
+        // authenticated source/context; the worker does not retain the swarm
+        // composition across model or tool awaits.
+        let mut provider_budget = {
+            let swarm = owner.upgrade().ok_or_else(|| {
+                Error::Conflict("local child owner was dropped before dispatch".into())
+            })?;
+            let source = swarm.bindings.budget_usage_source.clone().ok_or_else(|| {
+                Error::Unauthorized("provider usage source is required before child dispatch".into())
+            })?;
+            let context = swarm.budget_journal.lock().await.usage_context(&budget_token, source)?;
+            SwarmProviderBoundary::new(context)
+        };
         let output = PersistentLocalSwarm::run_owned_child_turn(
-            harness.clone(), bundle, admission, request.clone(), max_steps, cancelled,
+            harness.clone(), bundle, admission, request.clone(), budget_token.clone(),
+            max_steps, cancelled, &mut provider_budget,
         ).await;
+        let swarm = owner.upgrade().ok_or_else(|| {
+            Error::Conflict("local child owner was dropped before budget settlement".into())
+        })?;
+        swarm.complete_child_budget(&budget_token).await?;
         let swarm = owner.upgrade().ok_or_else(|| {
             Error::Conflict("local child owner was dropped before outcome publication".into())
         })?;
@@ -1934,7 +1957,8 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             // Every child is now durably admitted and bound to the parent
             // aggregate. Only after that barrier may a child model dispatch.
             for (plan, seed) in prepared {
-                let child = TaskId::from_bytes(plan.request.child_operation.into_bytes());
+                let child_operation = plan.request.child_operation;
+                let child = TaskId::from_bytes(child_operation.into_bytes());
                 if swarm.workers.contains(child).await {
                     continue;
                 }
@@ -1945,7 +1969,14 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 crate::stack_diagnostics::marker("fork-publisher-after-child-prepare");
                 if let LocalChildActivation::Ready(turn) = activation {
                     let owner = Arc::downgrade(&swarm);
-                    swarm.workers.enqueue(child, Self::run_scheduled_child(owner, turn)).await?;
+                    if let Err(error) = swarm
+                        .workers
+                        .enqueue(child, Self::run_scheduled_child(owner, turn))
+                        .await
+                    {
+                        swarm.cancel_child_budget(child_operation).await?;
+                        return Err(error);
+                    }
                 }
             }
             crate::stack_diagnostics::marker("fork-publisher-complete");
@@ -2920,11 +2951,15 @@ impl PersistentLocalSwarm {
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
         let budget_session = OperationId::from_bytes(root_task.into_bytes());
-        let budget_journal = SwarmBudgetJournal::start(
+        let root_dispatch_id = crate::IdempotencyKey::new(format!(
+            "local-root-dispatch:{root_task}"
+        ))?;
+        let budget_journal = SwarmBudgetJournal::start_with_root_dispatch(
             &registry,
             budget_session,
             config.budget.owner.clone(),
             config.budget.limits,
+            root_dispatch_id,
         )
         .await?;
         let root_session = open_session_path(&root, root_task);
@@ -3329,6 +3364,52 @@ impl PersistentLocalSwarm {
         Err(Error::Conflict(input_conflict.into()))
     }
 
+    fn child_budget_resources(
+        &self,
+        limits: Limits,
+        run_limits: TaskRunLimits,
+    ) -> Result<SwarmResourceRequest> {
+        limits.validate()?;
+        run_limits.validate()?;
+        let model_steps = run_limits
+            .max_steps
+            .map_or(limits.model_steps, |steps| steps.min(limits.model_steps));
+        let resources = SwarmResourceRequest {
+            model_steps: u64::try_from(model_steps)
+                .map_err(|_| Error::Invalid("task model step limit is not representable".into()))?,
+            output_bytes: limits.file_bytes.min(limits.render_bytes),
+            execution_time_ms: self.config.budget.limits.max_execution_time_ms,
+        };
+        resources.validate()?;
+        Ok(resources)
+    }
+
+    fn child_budget_idempotency(
+        fork_operation: OperationId,
+        child_operation: OperationId,
+    ) -> Result<crate::IdempotencyKey> {
+        crate::IdempotencyKey::new(format!(
+            "local-child-reservation:{fork_operation}:{child_operation}"
+        ))
+    }
+
+    fn child_dispatch_id(operation: OperationId) -> Result<crate::IdempotencyKey> {
+        crate::IdempotencyKey::new(format!("local-child-dispatch:{operation}"))
+    }
+
+    fn verified_child_publication(
+        boundary: &crate::model_input::CompletedModelBoundary,
+        seed: &ForkSeed,
+        parent_operation: Option<OperationId>,
+    ) -> Result<VerifiedForkPublication> {
+        VerifiedForkPublication::from_verified(crate::swarm_budget::ForkPublication {
+            operation_id: seed.operation_id,
+            parent_operation_id: parent_operation,
+            completed_boundary_digest: crate::contract::canonical_json_digest(boundary)?,
+            workspace_generation_digest: fork_seed_digest(seed)?,
+        })
+    }
+
     /// Admits the exact local turn through the authoritative swarm registry.
     /// The resulting record is later used by budget reservation and model
     /// execution; no turn output or fork request reconstructs its limits.
@@ -3607,6 +3688,17 @@ impl PersistentLocalSwarm {
             .lock()
             .await
             .complete_from_source(token, source)
+            .await
+    }
+
+    /// Releases a preallocated child when publication, activation, or
+    /// cancellation fails before provider dispatch. The durable journal keeps
+    /// measured usage while returning only the unconsumed reservation.
+    async fn cancel_child_budget(&self, operation: OperationId) -> Result<SwarmForkReservation> {
+        self.budget_journal
+            .lock()
+            .await
+            .cancel(operation, &self.config.budget.owner)
             .await
     }
 
@@ -4380,29 +4472,53 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
+        let source = self.bindings.budget_usage_source.clone().ok_or_else(|| {
+            Error::Unauthorized("provider usage source is required before root dispatch".into())
+        })?;
+        let context = self
+            .budget_journal
+            .lock()
+            .await
+            .root_usage_context(source.clone())?;
+        let mut provider_budget = SwarmRootProviderBoundary::new(context);
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task });
         let declaration = self.declarations.lock().await.get(&task).cloned();
         let run = async {
             if let Some(declaration) = declaration {
                 let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
                 harness
-                    .run_with_admission(&bundle, &admission, prompt, max_steps)
+                    .run_with_admission(&bundle, &admission, prompt, max_steps, &mut provider_budget)
                     .await
             } else {
                 harness
-                    .run_with_admission(&harness.bundle(), &admission, prompt, max_steps)
+                    .run_with_admission(
+                        &harness.bundle(),
+                        &admission,
+                        prompt,
+                        max_steps,
+                        &mut provider_budget,
+                    )
                     .await
             }
         };
         crate::stack_diagnostics::future_size("local-run-body", &run);
-        let output = tokio::select! {
+        let run_result: Result<TurnOutput> = tokio::select! {
             biased;
-            result = cancellation_requested(&mut cancelled) => {
-                result?;
-                return Err(Error::Conflict("local swarm task was cancelled while running".into()));
-            }
-            output = run => output?,
+            result = cancellation_requested(&mut cancelled) => match result {
+                Ok(()) => Err(Error::Conflict("local swarm task was cancelled while running".into())),
+                Err(error) => Err(error),
+            },
+            output = run => output,
         };
+        // Settle measured root usage even when model/tool execution returns an
+        // error or cancellation wins the select. Otherwise a provider receipt
+        // observed before cancellation would be lost across the next turn.
+        self.budget_journal
+            .lock()
+            .await
+            .report_root_usage_from_source(&self.config.budget.owner, source)
+            .await?;
+        let output = run_result?;
         // The per-task mutex only fences handles in this process.  A second
         // process can cancel the task while the model is running, so the
         // registry must be refreshed before the terminal Session event is
@@ -4588,13 +4704,30 @@ impl PersistentLocalSwarm {
                     self.mark_activation_failed_if_safe(
                         child, request.child_operation, None, &error,
                     ).await?;
+                    self.cancel_child_budget(request.child_operation).await?;
                     return Err(error);
                 }
             };
         let child_admission = self.authenticated_admission(child).await?;
-        self.verify_admitted_task(Some(request.parent), &child_admission, &harness)
-            .await?;
+        if let Err(error) = self
+            .verify_admitted_task(Some(request.parent), &child_admission, &harness)
+            .await
+        {
+            self.cancel_child_budget(request.child_operation).await?;
+            return Err(error);
+        }
         self.sessions.lock().await.insert(child, harness.clone());
+        let budget_publication = match Self::verified_child_publication(
+            &boundary,
+            seed,
+            Some(parent_admission.operation_id),
+        ) {
+            Ok(publication) => publication,
+            Err(error) => {
+                self.cancel_child_budget(request.child_operation).await?;
+                return Err(error);
+            }
+        };
         self.prepare_child_turn(
             request,
             child,
@@ -4603,6 +4736,7 @@ impl PersistentLocalSwarm {
             harness,
             declared_suffix,
             activation_guard,
+            budget_publication,
         )
         .await
     }
@@ -4631,6 +4765,13 @@ impl PersistentLocalSwarm {
             report.validate()?;
         }
         let parent_storage = self.open_session(request.parent).await?;
+        let parent_session = self.session(request.parent).await?;
+        let parent_admission = self.authenticated_admission(request.parent).await?;
+        if request.parent_operation != Some(parent_admission.operation_id) {
+            return Err(Error::Conflict(
+                "fork request parent operation is not the admitted parent turn".into(),
+            ));
+        }
         if report.request.parent != *parent_storage.storage().conversation()
             || report.request.operation_id != fork_operation
         {
@@ -4725,6 +4866,24 @@ impl PersistentLocalSwarm {
                 // dispatching the child model again.
                 return Ok(());
             }
+            let child_resources = self.child_budget_resources(
+                parent_storage.bundle().limits(),
+                self.config.run_limits,
+            )?;
+            let _ = self
+                .admit_and_reserve_child(
+                    child,
+                    request.child_operation,
+                    &request.prompt,
+                    request.parent,
+                    Self::child_budget_idempotency(
+                        fork_operation,
+                        request.child_operation,
+                    )?,
+                    parent_session.depth.saturating_add(1),
+                    child_resources,
+                )
+                .await?;
             return Ok(());
         }
         validate_recursive_depth(parent.depth, self.config.maximum_depth)?;
@@ -4773,8 +4932,26 @@ impl PersistentLocalSwarm {
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
+        // Reserve before appending ForkPrepared. This is the resolver's
+        // workspace boundary: a failed reservation publishes no child and
+        // cannot consume active/total capacity after a restart.
+        let child_resources = self.child_budget_resources(
+            parent_storage.bundle().limits(),
+            self.config.run_limits,
+        )?;
+        let _ = self
+            .admit_and_reserve_child(
+                child,
+                request.child_operation,
+                &request.prompt,
+                request.parent,
+                Self::child_budget_idempotency(fork_operation, request.child_operation)?,
+                parent_session.depth.saturating_add(1),
+                child_resources,
+            )
+            .await?;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
-        append_record_at(
+        let append_result = append_record_at(
             &registry,
             StoredEvent::ForkPrepared {
                 parent: request.parent,
@@ -4796,7 +4973,14 @@ impl PersistentLocalSwarm {
             },
             observed_tail,
         )
-        .await?;
+        .await;
+        if let Err(error) = append_result {
+            self.refresh_registry_state().await?;
+            if !self.records.lock().await.contains_key(&child) {
+                self.cancel_child_budget(request.child_operation).await?;
+            }
+            return Err(error);
+        }
         self.refresh_registry_state().await?;
         if self
             .records
@@ -4805,6 +4989,7 @@ impl PersistentLocalSwarm {
             .get(&child)
             .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
         {
+            self.cancel_child_budget(request.child_operation).await?;
             return Err(Error::Conflict(
                 "child operation was cancelled during admission preparation".into(),
             ));
@@ -5043,6 +5228,7 @@ impl PersistentLocalSwarm {
         harness: Arc<PersistentLocalHarness>,
         declared_suffix: Vec<ModelMessage>,
         activation_guard: tokio::sync::OwnedMutexGuard<()>,
+        budget_publication: VerifiedForkPublication,
     ) -> Result<LocalChildActivation> {
         // Subscribe before the durable check so cancellation cannot fall
         // between that check and live task registration.
@@ -5058,6 +5244,7 @@ impl PersistentLocalSwarm {
             .get(&child)
             .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
         {
+            self.cancel_child_budget(request.child_operation).await?;
             return Err(Error::Conflict(
                 "cancelled child operation is terminal and cannot be activated".into(),
             ));
@@ -5115,6 +5302,7 @@ impl PersistentLocalSwarm {
                 self.mark_activation_failed_if_safe(
                     child, request.child_operation, Some(&harness), &error,
                 ).await?;
+                self.cancel_child_budget(request.child_operation).await?;
                 return Err(error);
             }
         };
@@ -5126,23 +5314,61 @@ impl PersistentLocalSwarm {
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
         let admission = self.authenticated_admission(child).await?;
-        self.verify_admitted_task(Some(request.parent), &admission, &harness)
-            .await?;
+        if let Err(error) = self
+            .verify_admitted_task(Some(request.parent), &admission, &harness)
+            .await
+        {
+            self.cancel_child_budget(request.child_operation).await?;
+            return Err(error);
+        }
+        if self.bindings.budget_usage_source.is_none() {
+            self.cancel_child_budget(request.child_operation).await?;
+            return Err(Error::Unauthorized(
+                "provider usage source is required before child dispatch".into(),
+            ));
+        }
+        let budget_token = match self
+            .activate_child_budget(
+                request.child_operation,
+                self.config.budget.owner.clone(),
+                Self::child_dispatch_id(request.child_operation)?,
+                budget_publication,
+            )
+            .await
+        {
+            Ok(token) => token,
+            Err(error) => {
+                self.cancel_child_budget(request.child_operation).await?;
+                return Err(error);
+            }
+        };
         Ok(LocalChildActivation::Ready(Box::new(LocalChildTurn {
-            request, stream, harness, bundle, admission, max_steps, cancelled,
+            request, stream, harness, bundle, admission, budget_token, max_steps, cancelled,
             _activation_guard: activation_guard,
         })))
     }
 
     async fn execute_child_turn(&self, turn: Box<LocalChildTurn>) -> Result<LocalForkOutcome> {
         let LocalChildTurn {
-            request, stream, harness, bundle, admission, max_steps, cancelled, _activation_guard,
+            request, stream, harness, bundle, admission, budget_token, max_steps, cancelled,
+            _activation_guard,
         } = *turn;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
+        let source = self.bindings.budget_usage_source.clone().ok_or_else(|| {
+            Error::Unauthorized("provider usage source is required before child dispatch".into())
+        })?;
+        let context = self
+            .budget_journal
+            .lock()
+            .await
+            .usage_context(&budget_token, source)?;
+        let mut provider_budget = SwarmProviderBoundary::new(context);
         let child_result = Self::run_owned_child_turn(
-            harness.clone(), bundle, admission, request.clone(), max_steps, cancelled,
+            harness.clone(), bundle, admission, request.clone(), budget_token.clone(),
+            max_steps, cancelled, &mut provider_budget,
         ).await;
+        self.complete_child_budget(&budget_token).await?;
         self.finish_child_turn(&stream, child, request.child_operation, &harness, child_result).await
     }
 
@@ -5386,12 +5612,20 @@ impl PersistentLocalSwarm {
         bundle: crate::Harness,
         admission: crate::runtime::TaskAdmissionRecord,
         request: LocalForkRequest,
+        budget_token: SwarmDispatchToken,
         max_steps: u32,
         mut cancelled: tokio::sync::watch::Receiver<bool>,
+        budget: &mut dyn crate::executor::SwarmProviderAdmission,
     ) -> Result<TurnOutput> {
+        if budget_token.operation_id() != request.child_operation {
+            return Err(Error::Conflict(
+                "child provider dispatch token is bound to another operation".into(),
+            ));
+        }
+        budget_token.required_dispatch_id()?;
         // Keep recursive model/tool polling behind a heap boundary. The worker
         // registry remains the sole owner and join boundary for cancellation.
-        let child_task = Self::run_child_turn(harness, bundle, admission, request, max_steps);
+        let child_task = Self::run_child_turn(harness, bundle, admission, request, max_steps, budget);
         crate::stack_diagnostics::future_size("run-child-boxed", &child_task);
         tokio::pin!(child_task);
         tokio::select! {
@@ -5411,10 +5645,11 @@ impl PersistentLocalSwarm {
         admission: crate::runtime::TaskAdmissionRecord,
         request: LocalForkRequest,
         max_steps: u32,
-    ) -> BoxFuture<'static, Result<TurnOutput>> {
+        budget: &mut dyn crate::executor::SwarmProviderAdmission,
+    ) -> BoxFuture<'_, Result<TurnOutput>> {
         Box::pin(async move {
             harness
-                .run_with_admission(&bundle, &admission, &request.prompt, max_steps)
+                .run_with_admission(&bundle, &admission, &request.prompt, max_steps, budget)
                 .await
         })
     }
@@ -6666,6 +6901,35 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct MockUsageSource {
+        usage: Mutex<BTreeMap<(OperationId, String), SwarmUsage>>,
+    }
+
+    impl SwarmUsageSource for MockUsageSource {
+        fn provider_identity(&self) -> &str {
+            "harness.test.local-swarm"
+        }
+
+        fn cumulative_usage(
+            &self,
+            operation_id: OperationId,
+            dispatch_id: &IdempotencyKey,
+        ) -> Result<SwarmUsage> {
+            Ok(self
+                .usage
+                .lock()
+                .map_err(|_| Error::Conflict("mock usage lock poisoned".into()))?
+                .get(&(operation_id, dispatch_id.0.clone()))
+                .copied()
+                .unwrap_or_default())
+        }
+    }
+
+    fn mock_usage_source() -> Arc<MockUsageSource> {
+        Arc::new(MockUsageSource::default())
+    }
+
     struct DepthDeniedResolver;
 
     impl LocalModelForkResolver for DepthDeniedResolver {
@@ -7098,6 +7362,7 @@ mod tests {
     struct MockModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
+        usage: Arc<MockUsageSource>,
     }
 
     struct RecordingObserver {
@@ -7232,9 +7497,20 @@ mod tests {
 
     struct CommunicationModel {
         calls: AtomicUsize,
+        usage: Arc<MockUsageSource>,
     }
 
     impl ModelProvider for CommunicationModel {
+        fn supports_dispatch_context(&self) -> bool {
+            true
+        }
+
+        fn swarm_usage_source(
+            &self,
+        ) -> Option<Arc<dyn crate::swarm_budget::SwarmUsageSource>> {
+            Some(self.usage.clone())
+        }
+
         fn generate<'a>(
             &'a self,
             _prepared: crate::model_input::PreparedModelInput,
@@ -7259,12 +7535,47 @@ mod tests {
             ]))
         }
 
+        fn generate_with_dispatch<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+            dispatch: ProviderDispatchContext,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            let source = self.usage.clone();
+            if let Ok(mut usage) = source.usage.lock() {
+                usage
+                    .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                    .or_default()
+                    .model_steps = 1;
+            }
+            let started = Instant::now();
+            let stream = self.generate(prepared);
+            Box::pin(stream.map(move |event| {
+                if let Ok(event) = &event {
+                    if let Ok(mut usage) = source.usage.lock() {
+                        let entry = usage
+                            .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                            .or_default();
+                        entry.output_bytes = entry.output_bytes.saturating_add(
+                            crate::contract::canonical_json_bytes(event)
+                                .map(|bytes| bytes.len() as u64)
+                                .unwrap_or_default(),
+                        );
+                        entry.execution_time_ms = entry
+                            .execution_time_ms
+                            .max(started.elapsed().as_millis() as u64);
+                    }
+                }
+                event
+            }))
+        }
+
         fn reconcile<'a>(
             &'a self,
             _: ModelAttempt,
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+
     }
 
     #[tokio::test]
@@ -7486,6 +7797,7 @@ mod tests {
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
         });
         let swarm = PersistentLocalSwarm::open_with_model(
             root.path(), model.clone(), provider.clone(), Limits::default(),
@@ -7563,6 +7875,7 @@ mod tests {
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
         });
         let model = Model::new("mock", "swarm", "1", json!({"api_key": "private-state"}))?;
         let ordinary = root.path().join("ordinary");
@@ -7613,6 +7926,7 @@ mod tests {
             model,
             Arc::new(CommunicationModel {
                 calls: AtomicUsize::new(0),
+                usage: mock_usage_source(),
             }),
             Limits::default(),
             bindings,
@@ -7657,6 +7971,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -7693,6 +8008,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -7739,6 +8055,7 @@ mod tests {
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
         });
         let first = PersistentLocalSwarm::open_with_model(
             root.path(),
@@ -7776,6 +8093,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -7817,6 +8135,7 @@ mod tests {
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
         });
         let first_observer = Arc::new(RecordingObserver {
             events: Mutex::new(Vec::new()),
@@ -7928,6 +8247,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -7953,6 +8273,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -8015,6 +8336,7 @@ mod tests {
                 Arc::new(MockModel {
                     calls: AtomicUsize::new(0),
                     requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
                 }),
                 Limits::default(),
                 bindings,
@@ -8067,6 +8389,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -8092,6 +8415,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -8109,6 +8433,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -8161,6 +8486,7 @@ mod tests {
             Arc::new(MockModel {
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
             }),
             Limits::default(),
         )
@@ -8173,6 +8499,15 @@ mod tests {
     }
 
     impl ModelProvider for MockModel {
+        fn supports_dispatch_context(&self) -> bool {
+            true
+        }
+
+        fn swarm_usage_source(
+            &self,
+        ) -> Option<Arc<dyn crate::swarm_budget::SwarmUsageSource>> {
+            Some(self.usage.clone())
+        }
         fn generate<'a>(
             &'a self,
             prepared: crate::model_input::PreparedModelInput,
@@ -8205,6 +8540,56 @@ mod tests {
             ]))
         }
 
+        fn generate_with_dispatch<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+            dispatch: ProviderDispatchContext,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            let source = self.usage.clone();
+            if let Ok(mut usage) = source.usage.lock() {
+                let entry = usage
+                    .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                    .or_default();
+                entry.model_steps = entry.model_steps.saturating_add(1);
+            }
+            let started = Instant::now();
+            let stream = self.generate(prepared);
+            Box::pin(stream.map(move |event| {
+                if let Ok(event) = &event {
+                    let bytes = crate::contract::canonical_json_bytes(event)
+                        .map(|bytes| bytes.len() as u64)
+                        .unwrap_or_default();
+                    if let Ok(mut usage) = source.usage.lock() {
+                        let entry = usage
+                            .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                            .or_default();
+                        entry.output_bytes = entry.output_bytes.saturating_add(bytes);
+                        entry.execution_time_ms = entry
+                            .execution_time_ms
+                            .max(started.elapsed().as_millis() as u64);
+                    }
+                }
+                event
+            }))
+        }
+
+        fn reconcile_admitted_with_dispatch<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+            attempt: ModelAttempt,
+            dispatch: ProviderDispatchContext,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async move {
+                if dispatch.operation_id != attempt.operation_id
+                    || dispatch.request_digest != attempt.request_digest
+                {
+                    return Err(Error::Conflict(
+                        "mock dispatch context does not match admitted attempt".into(),
+                    ));
+                }
+                self.reconcile_admitted(prepared, attempt).await
+            })
+        }
         fn reconcile<'a>(
             &'a self,
             _: ModelAttempt,
@@ -8219,6 +8604,7 @@ mod tests {
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
         });
         let model = Model::new("mock", "local-swarm", "1", json!({}))?;
         let operation = OperationId::new();
@@ -8232,6 +8618,10 @@ mod tests {
         .await?;
         let root_task = swarm.root_task().await?;
         swarm.run_root(operation, "root request").await?;
+        let usage = swarm.budget_journal().lock().await.usage()?;
+        assert_eq!(usage.consumed.model_steps, 2);
+        assert!(usage.consumed.output_bytes > 0);
+        assert_eq!(usage.reserved, SwarmUsage::default());
         let error = swarm
             .fork(LocalForkRequest {
                 parent: root_task,
@@ -8253,11 +8643,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_root_turns_accumulate_provider_receipts_without_fallback() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
+        });
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            Model::new("mock", "local-swarm", "1", json!({}))?,
+            provider,
+            Limits::default(),
+        )
+        .await?;
+
+        swarm
+            .run_root(OperationId::from_bytes([0xE1; 16]), "first measured turn")
+            .await?;
+        let first = swarm.budget_journal().lock().await.usage()?;
+        assert!(first.consumed.model_steps > 0);
+        assert!(first.consumed.output_bytes > 0);
+        assert_eq!(first.reserved, SwarmUsage::default());
+
+        swarm
+            .run_root(OperationId::from_bytes([0xE2; 16]), "second measured turn")
+            .await?;
+        let second = swarm.budget_journal().lock().await.usage()?;
+        assert!(second.consumed.model_steps > first.consumed.model_steps);
+        assert!(second.consumed.output_bytes > first.consumed.output_bytes);
+        assert_eq!(second.reserved, SwarmUsage::default());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn fork_refuses_without_a_completed_model_boundary() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
         });
         let model = Model::new("mock", "local-swarm", "1", json!({}))?;
         let swarm =
@@ -8288,6 +8713,7 @@ mod tests {
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
         });
         let model = Model::new("mock", "local-swarm", "1", json!({}))?;
         let first = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
@@ -8332,8 +8758,19 @@ mod tests {
             calls: AtomicUsize,
             started: tokio::sync::Notify,
             dropped: Arc<std::sync::atomic::AtomicBool>,
+            usage: Arc<MockUsageSource>,
         }
         impl ModelProvider for PendingProvider {
+            fn supports_dispatch_context(&self) -> bool {
+                true
+            }
+
+            fn swarm_usage_source(
+                &self,
+            ) -> Option<Arc<dyn crate::swarm_budget::SwarmUsageSource>> {
+                Some(self.usage.clone())
+            }
+
             fn generate<'a>(&'a self, _input: crate::model_input::PreparedModelInput)
                 -> BoxStream<'a, Result<ModelEvent>> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
@@ -8344,6 +8781,20 @@ mod tests {
                     std::future::pending::<Result<ModelEvent>>().await
                 }))
             }
+
+            fn generate_with_dispatch<'a>(
+                &'a self,
+                prepared: crate::model_input::PreparedModelInput,
+                dispatch: ProviderDispatchContext,
+            ) -> BoxStream<'a, Result<ModelEvent>> {
+                if let Ok(mut usage) = self.usage.usage.lock() {
+                    usage
+                        .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                        .or_default()
+                        .model_steps = 1;
+                }
+                self.generate(prepared)
+            }
             fn reconcile<'a>(&'a self, _attempt: ModelAttempt)
                 -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
                 panic!("a cancelled root must not reconcile or redispatch its provider");
@@ -8353,6 +8804,7 @@ mod tests {
         let provider = Arc::new(PendingProvider {
             calls: AtomicUsize::new(0), started: tokio::sync::Notify::new(),
             dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            usage: mock_usage_source(),
         });
         let model = Model::new("mock", "default-cancellation", "1", json!({}))?;
         let first = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
@@ -8498,6 +8950,7 @@ mod tests {
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
         });
         let model = Model::new("mock", "local-swarm", "1", json!({}))?;
         let swarm =

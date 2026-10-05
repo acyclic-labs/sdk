@@ -1237,6 +1237,28 @@ where
         attachments: Vec<Attachment>,
         max_steps: u32,
     ) -> Result<TurnOutput> {
+        self.run_conversation_with_provider_budget(
+            bundle,
+            operation_id,
+            content,
+            attachments,
+            max_steps,
+            None,
+        )
+        .await
+    }
+
+    /// Runs a canonical conversation turn while passing the journal-issued
+    /// provider budget into the actual stock model loop.
+    pub async fn run_conversation_with_provider_budget(
+        &self,
+        bundle: &crate::bundle::HarnessBundle,
+        operation_id: OperationId,
+        content: FileRef,
+        attachments: Vec<Attachment>,
+        max_steps: u32,
+        mut budget: Option<&mut dyn crate::executor::SwarmProviderAdmission>,
+    ) -> Result<TurnOutput> {
         let limits = bundle.limits();
         limits.validate_file(&content)?;
         if attachments.len() > limits.attachments {
@@ -1344,11 +1366,11 @@ where
             .selected_rejection_evidence(&historical, &selected.selection, limits)
             .await?;
         crate::stack_diagnostics::marker("run-with-admission-enter");
-        let run = bundle.run(TurnInput::from_selected_context(
-            operation_id,
-            selected,
-            max_steps,
-        )?);
+        let input = TurnInput::from_selected_context(operation_id, selected, max_steps)?;
+        let run = match budget.as_deref_mut() {
+            Some(budget) => bundle.run_with_provider_budget(input, budget),
+            None => bundle.run(input),
+        };
         crate::stack_diagnostics::future_size("run-with-admission", &run);
         let output = run.await?;
         crate::stack_diagnostics::marker("run-with-admission-complete");

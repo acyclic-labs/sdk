@@ -9,7 +9,7 @@ use crate::{
     interaction::{Interaction, InteractionOutcome},
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
-        ModelProvider, ModelRequest, ModelRole,
+        ModelProvider, ModelRequest, ModelRole, ProviderDispatchContext,
     },
     projection::SelectedModelContext,
     registry::ComponentIdentity,
@@ -473,7 +473,34 @@ pub trait Executor: Send + Sync {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>>;
+
+    /// Executes one turn while enforcing the journal-issued provider budget
+    /// at the actual model boundary. Implementations that do not expose the
+    /// stock provider loop reject this path rather than silently bypassing
+    /// the gate.
+    fn execute_with_provider_budget<'a>(
+        &'a self,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+        budget: &'a mut dyn SwarmProviderAdmission,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        let _ = (input, journal, budget);
+        Box::pin(async { Err(Error::Unsupported("provider budget boundary is not bound".into())) })
+    }
 }
+
+/// Erased provider-side budget guard used by the canonical stock loop.
+/// Implementations must perform checks against their journal-issued limiter;
+/// callers never supply or derive ceilings from model output.
+pub trait SwarmProviderAdmission: Send {
+    fn admit_model_step(&mut self) -> Result<SwarmUsage>;
+    fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage>;
+    fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage>;
+    fn provider_dispatch_context(
+        &self,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> Result<ProviderDispatchContext>;}
 
 /// Provider-side admission and measurement boundary for one child dispatch.
 ///
@@ -537,8 +564,38 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     pub fn into_context(self) -> SwarmDispatchContext<S> {
         self.context
     }
+
+    /// Returns authenticated transport provenance for one model attempt.
+    pub fn provider_dispatch_context(
+        &self,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> Result<ProviderDispatchContext> {
+        self.context.provider_dispatch_context(step, request_digest)
+    }
 }
 
+impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
+    fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        Self::admit_model_step(self)
+    }
+
+    fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        Self::admit_output_bytes(self, bytes)
+    }
+
+    fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        Self::admit_execution_time_ms(self, elapsed_ms)
+    }
+
+    fn provider_dispatch_context(
+        &self,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> Result<ProviderDispatchContext> {
+        Self::provider_dispatch_context(self, step, request_digest)
+    }
+}
 /// Provider-side admission and measurement boundary for the canonical root
 /// dispatch lease. Root work is accepted only when the journal has a real
 /// scheduler/provider lease and measurement source.
@@ -583,8 +640,38 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
     pub fn context_mut(&mut self) -> &mut SwarmRootDispatchContext<S> {
         &mut self.context
     }
+
+    /// Returns authenticated transport provenance for one root model attempt.
+    pub fn provider_dispatch_context(
+        &self,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> ProviderDispatchContext {
+        self.context.provider_dispatch_context(step, request_digest)
+    }
 }
 
+impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmRootProviderBoundary<S> {
+    fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        Self::admit_model_step(self)
+    }
+
+    fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        Self::admit_output_bytes(self, bytes)
+    }
+
+    fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        Self::admit_execution_time_ms(self, elapsed_ms)
+    }
+
+    fn provider_dispatch_context(
+        &self,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> Result<ProviderDispatchContext> {
+        Ok(Self::provider_dispatch_context(self, step, request_digest))
+    }
+}
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
@@ -703,7 +790,7 @@ impl StockExecutor {
             // v5 includes the canonical composition plus the effective
             // execution scope and authenticated task binding. Keep the
             // preallocation admission contract volume-neutral below.
-            "executor": "acyclic.stock.v5",
+            "executor": "acyclic.stock.v6",
             "input": input,
             "contract": self.admission_contract()?,
             "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
@@ -719,8 +806,9 @@ impl StockExecutor {
     /// admission envelope itself.
     pub(crate) fn admission_contract(&self) -> Result<Value> {
         Ok(json!({
-            "executor": "acyclic.stock.v4",
+            "executor": "acyclic.stock.v6",
             "model": self.model,
+            "model_option_policy": self.provider.model_option_policy().map(|policy| &policy.identity),
             "context": self.context.contracts(),
             "tools": self.tools.definitions()?,
             "limits": self.limits,
@@ -1078,23 +1166,45 @@ impl StockExecutor {
         let model_events = if replay_completed {
             replayed_model
         } else if started.is_some() {
-            let Some(mut continuation) = self
-                .provider
-                .reconcile_admitted(
-                    prepared.clone(),
-                    ModelAttempt {
-                        operation_id: input.operation_id,
-                        step,
-                        request_digest,
-                        observed: replayed_model.clone(),
-                    },
-                )
-                .await?
-            else {
-                return Err(Error::Indeterminate(input.operation_id));
+            if budget.is_some() && !self.provider.supports_dispatch_context() {
+                return Err(Error::Unsupported(
+                    "provider does not support authenticated dispatch context".into(),
+                ));
+            }
+            if let Some(budget) = budget.as_deref_mut() {
+                budget.admit_model_step()?;
+            }
+            let provider_started = Instant::now();
+            let mut admitted_time_ms = 0;
+            let attempt = ModelAttempt {
+                operation_id: input.operation_id,
+                step,
+                request_digest,
+                observed: replayed_model.clone(),
+            };
+            let continuation = if let Some(budget) = budget.as_deref_mut() {
+                let dispatch = budget.provider_dispatch_context(step, request_digest)?;
+                self.provider
+                    .reconcile_admitted_with_dispatch(prepared.clone(), attempt, dispatch)
+                    .await?
+            } else {
+                self.provider.reconcile_admitted(prepared.clone(), attempt).await?
+            };
+            let Some(mut continuation) = continuation
+            else {                return Err(Error::Indeterminate(input.operation_id));
             };
             let mut observed = replayed_model;
             for event in continuation.drain(..) {
+                if let Some(budget) = budget.as_deref_mut() {
+                    let elapsed_ms = provider_started.elapsed().as_millis() as u64;
+                    let delta_ms = elapsed_ms.saturating_sub(admitted_time_ms);
+                    if delta_ms != 0 {
+                        budget.admit_execution_time_ms(delta_ms)?;
+                        admitted_time_ms = elapsed_ms;
+                    }
+                    let bytes = crate::contract::canonical_json_bytes(&event)?.len() as u64;
+                    budget.admit_output_bytes(bytes)?;
+                }
                 admission.observe(&event, self.limits)?;
                 admit_model_output_bytes(&mut output_bytes, &event, self.limits)?;
                 let key = format!("model:{step}:{}", observed.len());
@@ -1137,6 +1247,14 @@ impl StockExecutor {
                 }
                 return Err(Error::Indeterminate(input.operation_id));
             }
+            if budget.is_some() && !self.provider.supports_dispatch_context() {
+                return Err(Error::Unsupported(
+                    "provider does not support authenticated dispatch context".into(),
+                ));
+            }
+            if let Some(budget) = budget.as_deref_mut() {
+                budget.admit_model_step()?;
+            }
             let claimed = journal
                 .append_if_tail(
                     input.operation_id,
@@ -1156,10 +1274,29 @@ impl StockExecutor {
                 Err(error) => return Err(error),
             }
             crate::stack_diagnostics::marker("provider-dispatch-enter");
-            let mut stream = self.provider.generate(prepared);
+            let dispatch = budget
+                .as_deref()
+                .map(|budget| budget.provider_dispatch_context(step, request_digest))
+                .transpose()?;
+            let provider_started = Instant::now();
+            let mut admitted_time_ms = 0;
+            let mut stream = match dispatch {
+                Some(dispatch) => self.provider.generate_with_dispatch(prepared, dispatch),
+                None => self.provider.generate(prepared),
+            };
             let mut observed = Vec::new();
             while let Some(event) = stream.next().await {
                 let event = event?;
+                if let Some(budget) = budget.as_deref_mut() {
+                    let elapsed_ms = provider_started.elapsed().as_millis() as u64;
+                    let delta_ms = elapsed_ms.saturating_sub(admitted_time_ms);
+                    if delta_ms != 0 {
+                        budget.admit_execution_time_ms(delta_ms)?;
+                        admitted_time_ms = elapsed_ms;
+                    }
+                    let bytes = crate::contract::canonical_json_bytes(&event)?.len() as u64;
+                    budget.admit_output_bytes(bytes)?;
+                }
                 admission.observe(&event, self.limits)?;
                 admit_model_output_bytes(&mut output_bytes, &event, self.limits)?;
                 let key = format!("model:{step}:{}", observed.len());

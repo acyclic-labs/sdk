@@ -557,7 +557,20 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         VerifiedSwarmUsageReceipt::from_verified(receipt)
     }
 
-    /// Returns the next sequence expected from this issuer.
+    /// Returns transport provenance authenticated by this provider issuer.
+    #[must_use]
+    pub fn provider_dispatch_context(
+        &self,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> crate::model::ProviderDispatchContext {
+        crate::model::ProviderDispatchContext {
+            operation_id: self.operation_id,
+            step,
+            request_digest,
+            dispatch_id: self.dispatch_id.clone(),
+        }
+    }    /// Returns the next sequence expected from this issuer.
     #[must_use]
     pub fn next_sequence(&self) -> Result<u64> {
         self.sequence
@@ -632,7 +645,17 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         &self.token
     }
 
-    /// Returns the mutable pre-work provider limiter.
+    /// Returns transport provenance for the provider adapter.
+    #[must_use]
+    pub fn provider_dispatch_context(
+        &self,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> Result<crate::model::ProviderDispatchContext> {
+        Ok(self
+            .issuer
+            .provider_dispatch_context(step, request_digest))
+    }    /// Returns the mutable pre-work provider limiter.
     ///
     /// The provider adapter must call its admission methods before each model
     /// step, output write, and elapsed-time slice.
@@ -693,7 +716,15 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
         Self { limiter, issuer }
     }
 
-    /// Returns the mutable pre-work provider limiter.
+    /// Returns transport provenance for the root provider adapter.
+    #[must_use]
+    pub fn provider_dispatch_context(
+        &self,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> crate::model::ProviderDispatchContext {
+        self.issuer.provider_dispatch_context(step, request_digest)
+    }    /// Returns the mutable pre-work provider limiter.
     pub fn limiter_mut(&mut self) -> &mut SwarmUsageLimiter {
         &mut self.limiter
     }
