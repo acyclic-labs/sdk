@@ -46,7 +46,7 @@ export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   // Identity encoding preserves gRPC streaming in both supported runtimes.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const control = createClient(ProtocolService, createGrpcTransport({ sessionManager: session, defaultTimeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: 64 * 1024, writeMaxBytes: 64 * 1024 }));
+  const control = createClient(ProtocolService, createGrpcTransport({ sessionManager: session, defaultTimeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: OBJECTS_REMOTE_POLICY.maximumMessageBytes, writeMaxBytes: OBJECTS_REMOTE_POLICY.maximumMessageBytes }));
   let handshake: Promise<void> | undefined;
   const applicationAuthenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);

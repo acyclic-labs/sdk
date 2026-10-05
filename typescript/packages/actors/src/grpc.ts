@@ -27,7 +27,7 @@ export function createActorsGrpcClient(options: ActorsGrpcOptions) {
     return next(request);
   };
   const tls = options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } };
-  const control = createClient(ProtocolService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: 64 * 1024, writeMaxBytes: 64 * 1024, ...tls }));
+  const control = createClient(ProtocolService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: ACTORS_REMOTE_POLICY.maximumMessageBytes, writeMaxBytes: ACTORS_REMOTE_POLICY.maximumMessageBytes, ...tls }));
   let handshake: Promise<void> | undefined;
   const applicationAuthenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);

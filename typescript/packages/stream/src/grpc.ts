@@ -33,7 +33,7 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     return next(request);
   };
   const tls = options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } };
-  const control = createClient(ProtocolService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: 64 * 1024, writeMaxBytes: 64 * 1024, ...tls }));
+  const control = createClient(ProtocolService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: STREAM_REMOTE_POLICY.maximumMessageBytes, writeMaxBytes: STREAM_REMOTE_POLICY.maximumMessageBytes, ...tls }));
   let handshake: Promise<void> | undefined;
   const applicationAuthenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
