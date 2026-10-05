@@ -1,6 +1,12 @@
 /** Runtime and packaged-artifact resolution for the cross-platform Objects client. */
 
-import { isRustOwnedTransportUnavailable, OBJECTS_REMOTE_POLICY, selectRustOwnedTransport, type RustOwnedTransportKind } from "./generated-client.js";
+import {
+  isRustOwnedTransportUnavailable,
+  OBJECTS_REMOTE_POLICY,
+  selectRustOwnedTransport,
+  type RustOwnedTransportAvailability,
+  type RustOwnedTransportKind,
+} from "./generated-client.js";
 
 export type ObjectsRuntime = "node" | "bun" | "browser" | "unknown";
 export type ObjectsResolvedTransport = Extract<RustOwnedTransportKind, "grpc" | "http">;
@@ -43,8 +49,18 @@ export async function resolveObjectsPlatform(): Promise<ObjectsPlatformResolutio
   const policyRuntime = runtime === "node" || runtime === "bun" ? "native" : "browser";
   let wasmAvailable = typeof WebAssembly === "object";
   const fallbacks: ("grpc-to-http" | "wasm-unavailable")[] = [];
-  let transport: ObjectsResolvedTransport = selectRustOwnedTransport(OBJECTS_REMOTE_POLICY, policyRuntime, undefined, { grpc: true, http: true }) as ObjectsResolvedTransport;
-
+  const installed: RustOwnedTransportAvailability = { http: false };
+  if (policyRuntime === "native") {
+    try {
+      // Loading the optional native adapter is host plumbing only. The Rust
+      // generated policy below still makes the default/fallback decision.
+      await import("./v2-grpc.js");
+      installed.grpc = true;
+    } catch (error) {
+      if (!isRustOwnedTransportUnavailable(error)) throw error;
+      fallbacks.push("grpc-to-http");
+    }
+  }
   if (wasmAvailable) {
     try {
       // Check the artifact shipped by this package, rather than inferring
@@ -52,22 +68,13 @@ export async function resolveObjectsPlatform(): Promise<ObjectsPlatformResolutio
       // and browser bundles whose WASM asset was omitted.
       const { ensureObjectsWasm } = await import("./wasm-runtime.js");
       await ensureObjectsWasm();
+      installed.http = true;
     } catch {
       wasmAvailable = false;
-      fallbacks.push("wasm-unavailable");
-    }
-  } else {
-    fallbacks.push("wasm-unavailable");
-  }
-  if (transport === "grpc") {
-    try {
-      await import("./v2-grpc.js");
-    } catch (error) {
-      if (!isRustOwnedTransportUnavailable(error)) throw error;
-      fallbacks.push("grpc-to-http");
-      transport = selectRustOwnedTransport(OBJECTS_REMOTE_POLICY, policyRuntime, undefined, { grpc: false, http: true }) as ObjectsResolvedTransport;
     }
   }
+  if (!installed.http) fallbacks.push("wasm-unavailable");
+  const transport = selectRustOwnedTransport(OBJECTS_REMOTE_POLICY, policyRuntime, undefined, installed) as ObjectsResolvedTransport;
 
   return {
     runtime,
