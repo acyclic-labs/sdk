@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,6 +13,12 @@ import {
   validateManifest,
 } from "./graphcoder-platform-gates.mjs";
 import { workingTreeDigest } from "./graphcoder-source-fence.mjs";
+
+function mkdtempInWorktree(prefix) {
+  const parent = join(process.cwd(), "target", "tmp");
+  mkdirSync(parent, { recursive: true });
+  return mkdtempSync(join(parent, prefix));
+}
 
 test("platform manifest rejects altered source identity and duplicate gate IDs", () => {
   const manifest = loadManifest();
@@ -70,7 +76,7 @@ test("installed lane receipts cannot claim completion from stale, failed, or emp
 });
 
 test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-source evidence", () => {
-  const root = mkdtempSync(join(process.cwd(), "target", "tmp", "graphcoder-lane-receipt-"));
+  const root = mkdtempInWorktree("graphcoder-lane-receipt-");
   const lane = loadManifest().qualification_lanes.find(item => item.id === "installed-native-stage");
   const source = { commit: "a".repeat(40), tree: "b".repeat(40), canonical_worktree: process.cwd() };
   assert.throws(() => readLaneReceipt(join(root, "missing.json"), lane, "native", source, "windows"), /receipt is missing/u);
@@ -128,7 +134,7 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
 });
 
 test("the qualification-suite producer emits a receipt consumed by the platform lane validator", () => {
-  const root = mkdtempSync(join(process.cwd(), "target", "tmp", "graphcoder-lane-producer-"));
+  const root = mkdtempInWorktree("graphcoder-lane-producer-");
   const output = join(root, "suite");
   const configPath = join(root, "config.json");
   const artifactPath = join(root, "fresh-artifact.bin");
