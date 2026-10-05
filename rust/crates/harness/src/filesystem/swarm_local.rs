@@ -1736,7 +1736,7 @@ impl LocalModelForkPublisher {
         turn: Box<LocalChildTurn>,
     ) -> Result<LocalForkOutcome> {
         let LocalChildTurn {
-            request, stream, harness, bundle, max_steps, cancelled, _activation_guard,
+            request, stream, harness, bundle, admission, max_steps, cancelled, _activation_guard,
         } = *turn;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         {
@@ -1748,7 +1748,7 @@ impl LocalModelForkPublisher {
         // The registry owns this future; it must not own the composition
         // strongly across model/tool awaits.
         let output = PersistentLocalSwarm::run_owned_child_turn(
-            harness.clone(), bundle, request.clone(), max_steps, cancelled,
+            harness.clone(), bundle, admission, request.clone(), max_steps, cancelled,
         ).await;
         let swarm = owner.upgrade().ok_or_else(|| {
             Error::Conflict("local child owner was dropped before outcome publication".into())

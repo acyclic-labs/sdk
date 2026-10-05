@@ -1566,7 +1566,9 @@ impl PersistentLocalHarness {
             || admission
                 .run_limits
                 .max_steps
-                .is_some_and(|limit| usize::from(max_steps) > limit)
+                .is_some_and(|limit| {
+                    usize::try_from(max_steps).map_or(true, |steps| steps > limit)
+                })
         {
             return Err(Error::Conflict(
                 "local execution no longer matches its owner task admission".into(),
