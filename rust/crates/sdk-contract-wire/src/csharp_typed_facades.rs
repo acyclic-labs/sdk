@@ -625,6 +625,37 @@ fn render_operation_validation_policy(out: &mut String) {
         };
     }
 
+    private static void RequireNonzero(string validation, object? value)
+    {
+        var unwrapped = Unwrap(value);
+        if (unwrapped is ByteString bytes)
+        {
+            if (bytes.Span.IsEmpty || bytes.Span.IndexOfAnyExcept((byte)0) < 0)
+                throw new ArgumentException($"{validation} must contain a nonzero value", nameof(value));
+            return;
+        }
+        if (unwrapped is ReadOnlyMemory<byte> memory)
+        {
+            if (memory.Span.IsEmpty || memory.Span.IndexOfAnyExcept((byte)0) < 0)
+                throw new ArgumentException($"{validation} must contain a nonzero value", nameof(value));
+            return;
+        }
+        if (unwrapped is byte[] raw)
+        {
+            if (raw.Length == 0 || Array.TrueForAll(raw, static item => item == 0))
+                throw new ArgumentException($"{validation} must contain a nonzero value", nameof(value));
+            return;
+        }
+        if (unwrapped is IConvertible number && number.ToInt64(System.Globalization.CultureInfo.InvariantCulture) == 0)
+            throw new ArgumentException($"{validation} must be nonzero", nameof(value));
+    }
+
+    private static void RequireSelectedMessage(string validation, object? value)
+    {
+        if (value is not IMessage message || message.CalculateSize() == 0)
+            throw new ArgumentException($"{validation} requires a selected non-empty wire value", nameof(value));
+    }
+
     internal static void ValidateClientPolicy(string validation, object? value)
     {
         switch (validation)
@@ -639,17 +670,27 @@ fn render_operation_validation_policy(out: &mut String) {
                 if (value is not ImmutableImage) throw new ArgumentException($"{validation} requires an immutable image variant", nameof(value));
                 break;
             case "mutation.oneof":
-                if (value is not IMessage) throw new ArgumentException($"{validation} requires a selected wire arm", nameof(value));
+                RequireSelectedMessage(validation, value);
                 break;
             case "protocol.version.exact":
-                if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
+                if (value is IMessage protocol)
+                {
+                    var major = protocol.Descriptor.FindFieldByName("major")?.Accessor.GetValue(protocol);
+                    var minor = protocol.Descriptor.FindFieldByName("minor")?.Accessor.GetValue(protocol);
+                    if (major is not IConvertible majorValue || minor is not IConvertible minorValue
+                        || majorValue.ToUInt32(System.Globalization.CultureInfo.InvariantCulture) != 1
+                        || minorValue.ToUInt32(System.Globalization.CultureInfo.InvariantCulture) > 1)
+                        throw new ArgumentOutOfRangeException(nameof(value), validation);
+                }
+                else if (RequireNumber(validation, value) != 1)
+                    throw new ArgumentOutOfRangeException(nameof(value), validation);
                 break;
             case "request_identity.nonzero":
             case "operation_id.nonzero":
             case "machine_id.nonzero":
             case "checkpoint_id.nonzero":
             case "idempotency_key.nonzero":
-                if (RequireLength(validation, value) == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+                RequireNonzero(validation, value);
                 break;
             case "part_number.positive":
             case "maximum_output.positive":
@@ -659,7 +700,7 @@ fn render_operation_validation_policy(out: &mut String) {
                 if (RequireNumber(validation, value) <= 0 || RequireNumber(validation, value) > 1024) throw new ArgumentOutOfRangeException(nameof(value), validation);
                 break;
             case "preconditions.atomic":
-                if (value is not IMessage) throw new ArgumentException($"{validation} requires a wire message", nameof(value));
+                RequireSelectedMessage(validation, value);
                 break;
             case "expected_configuration_revision.non_negative":
                 if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
@@ -677,7 +718,7 @@ fn render_operation_validation_policy(out: &mut String) {
                 }
                 if (validation.EndsWith(".nonzero", StringComparison.Ordinal))
                 {
-                    if (RequireLength(validation, value) == 0) throw new ArgumentException($"{validation} must be non-empty", nameof(value));
+                    RequireNonzero(validation, value);
                     break;
                 }
                 if (validation.EndsWith(".length_16", StringComparison.Ordinal) && RequireLength(validation, value) != 16)
