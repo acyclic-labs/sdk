@@ -1389,7 +1389,8 @@ pub struct LocalModelForkPlans {
     /// Durable aliases for owner-prepared plans that may publish without a
     /// model-selected intent. The alias distinguishes an expected fork from
     /// a proven no-fork model batch during recovery.
-    expected_plans: Mutex<BTreeMap<OperationId, BTreeSet<(OperationId, OperationId)>>>,
+    expected_plans:
+        Mutex<BTreeMap<OperationId, BTreeMap<(OperationId, OperationId), [u8; 32]>>>,
     completed: Mutex<BTreeMap<OperationId, [u8; 32]>>,
     resolver: Option<Arc<dyn LocalModelForkResolver>>,
     journal: Mutex<Option<StreamClient<LocalStream>>>,
@@ -1420,12 +1421,13 @@ fn replay_fork_publication_completion(
 
 fn replay_fork_plan_registration(
     event: &StoredEvent,
-    expected_plans: &mut BTreeMap<OperationId, BTreeSet<(OperationId, OperationId)>>,
+    expected_plans: &mut BTreeMap<OperationId, BTreeMap<(OperationId, OperationId), [u8; 32]>>,
 ) -> Result<()> {
     let StoredEvent::ForkPlanRegistered {
         publication,
         fork_operation,
         child_operation,
+        plan_digest,
     } = event
     else {
         return Ok(());
@@ -1433,16 +1435,35 @@ fn replay_fork_plan_registration(
     if publication.into_bytes() == [0; 16]
         || fork_operation.into_bytes() == [0; 16]
         || child_operation.into_bytes() == [0; 16]
+        || *plan_digest == [0; 32]
     {
         return Err(Error::Conflict(
-            "persisted fork plan registration identity is empty".into(),
+            "persisted fork plan registration identity or fingerprint is empty".into(),
         ));
     }
-    expected_plans
-        .entry(*publication)
-        .or_default()
-        .insert((*fork_operation, *child_operation));
+    let plans = expected_plans.entry(*publication).or_default();
+    let identity = (*fork_operation, *child_operation);
+    if let Some(existing) = plans.get(&identity)
+        && existing != plan_digest
+    {
+        return Err(Error::Conflict(
+            "durable fork plan fingerprint changed during recovery".into(),
+        ));
+    }
+    plans.insert(identity, *plan_digest);
     Ok(())
+}
+
+fn local_model_fork_plan_digest(plan: &LocalModelForkPlan) -> Result<[u8; 32]> {
+    crate::contract::canonical_json_digest(&(
+        plan.parent,
+        plan.publication_operation,
+        &plan.request,
+        &plan.resources,
+        &plan.report,
+        &plan.rebind_proof,
+        &plan.declaration,
+    ))
 }
 
 fn replay_fork_intent(
@@ -1672,12 +1693,27 @@ impl LocalModelForkPlans {
         publication: OperationId,
         fork_operation: OperationId,
         child_operation: OperationId,
-    ) -> bool {
-        self.expected_plans
+        plan_digest: [u8; 32],
+    ) -> Result<bool> {
+        if plan_digest == [0; 32] {
+            return Err(Error::Invalid("fork plan fingerprint is empty".into()));
+        }
+        let expected = self
+            .expected_plans
             .lock()
-            .await
+            .await;
+        let Some(existing) = expected
             .get(&publication)
-            .is_some_and(|plans| plans.contains(&(fork_operation, child_operation)))
+            .and_then(|plans| plans.get(&(fork_operation, child_operation)))
+        else {
+            return Ok(false);
+        };
+        if *existing != plan_digest {
+            return Err(Error::Conflict(
+                "fork plan registration changed after durable admission".into(),
+            ));
+        }
+        Ok(true)
     }
 
     /// Persists the expectation for an owner-prepared plan before a model
@@ -1688,17 +1724,26 @@ impl LocalModelForkPlans {
         publication: OperationId,
         fork_operation: OperationId,
         child_operation: OperationId,
+        plan_digest: [u8; 32],
     ) -> Result<()> {
         if publication.into_bytes() == [0; 16]
             || fork_operation.into_bytes() == [0; 16]
             || child_operation.into_bytes() == [0; 16]
+            || plan_digest == [0; 32]
         {
-            return Err(Error::Invalid("fork plan registration identity is empty".into()));
+            return Err(Error::Invalid(
+                "fork plan registration identity or fingerprint is empty".into(),
+            ));
         }
         self.refresh_journal_state().await?;
         if self
-            .expected_plan_status(publication, fork_operation, child_operation)
-            .await
+            .expected_plan_status(
+                publication,
+                fork_operation,
+                child_operation,
+                plan_digest,
+            )
+            .await?
         {
             return Ok(());
         }
@@ -1709,7 +1754,7 @@ impl LocalModelForkPlans {
                 .await
                 .entry(publication)
                 .or_default()
-                .insert((fork_operation, child_operation));
+                .insert((fork_operation, child_operation), plan_digest);
             return Ok(());
         };
         let stream = registry
@@ -1719,14 +1764,20 @@ impl LocalModelForkPlans {
             publication,
             fork_operation,
             child_operation,
+            plan_digest,
         };
         let mut last_conflict = None;
         for _ in 0..4 {
             let (observed_tail, _) = load_records_with_tail(&stream).await?;
             self.refresh_journal_state().await?;
             if self
-                .expected_plan_status(publication, fork_operation, child_operation)
-                .await
+                .expected_plan_status(
+                    publication,
+                    fork_operation,
+                    child_operation,
+                    plan_digest,
+                )
+                .await?
             {
                 return Ok(());
             }
@@ -1734,8 +1785,13 @@ impl LocalModelForkPlans {
                 Ok(()) => {
                     self.refresh_journal_state().await?;
                     if self
-                        .expected_plan_status(publication, fork_operation, child_operation)
-                        .await
+                        .expected_plan_status(
+                            publication,
+                            fork_operation,
+                            child_operation,
+                            plan_digest,
+                        )
+                        .await?
                     {
                         return Ok(());
                     }
@@ -1747,8 +1803,13 @@ impl LocalModelForkPlans {
                     last_conflict = Some(error);
                     self.refresh_journal_state().await?;
                     if self
-                        .expected_plan_status(publication, fork_operation, child_operation)
-                        .await
+                        .expected_plan_status(
+                            publication,
+                            fork_operation,
+                            child_operation,
+                            plan_digest,
+                        )
+                        .await?
                     {
                         return Ok(());
                     }
@@ -1756,8 +1817,13 @@ impl LocalModelForkPlans {
                 Err(error) => {
                     self.refresh_journal_state().await?;
                     if self
-                        .expected_plan_status(publication, fork_operation, child_operation)
-                        .await
+                        .expected_plan_status(
+                            publication,
+                            fork_operation,
+                            child_operation,
+                            plan_digest,
+                        )
+                        .await?
                     {
                         return Ok(());
                     }
@@ -1988,6 +2054,7 @@ impl LocalModelForkPlans {
         let operation = plan.request.fork_operation.ok_or_else(|| {
             Error::Invalid("model fork plan requires a fork operation identity".into())
         })?;
+        let plan_digest = local_model_fork_plan_digest(&plan)?;
         let key = (operation, plan.request.child_operation);
         let mut plans = self.plans.lock().await;
         if let Some(existing) = plans.get(&key)
@@ -2002,6 +2069,7 @@ impl LocalModelForkPlans {
             plan.publication_operation,
             operation,
             plan.request.child_operation,
+            plan_digest,
         )
         .await?;
         plans.insert(key, plan);
@@ -2035,15 +2103,16 @@ impl LocalModelForkPlans {
     async fn has_completion_authority(
         &self,
         operation: OperationId,
-        fork_children: &[(OperationId, OperationId)],
+        fork_children: &[(OperationId, OperationId, [u8; 32])],
     ) -> Result<bool> {
         self.refresh_journal_state().await?;
         if self.has_intent(operation).await? {
             return Ok(true);
         }
         if fork_children.is_empty()
-            || fork_children.iter().any(|(fork, child)| {
+            || fork_children.iter().any(|(fork, child, plan_digest)| {
                 fork.into_bytes() == [0; 16] || child.into_bytes() == [0; 16]
+                    || *plan_digest == [0; 32]
             })
         {
             return Ok(false);
@@ -2056,7 +2125,11 @@ impl LocalModelForkPlans {
             .is_some_and(|expected| {
                 fork_children
                     .iter()
-                    .all(|identity| expected.contains(identity))
+                    .all(|(fork, child, plan_digest)| {
+                        expected
+                            .get(&(*fork, *child))
+                            .is_some_and(|expected_digest| expected_digest == plan_digest)
+                    })
             }))
     }
 
@@ -2064,7 +2137,7 @@ impl LocalModelForkPlans {
         &self,
         operation: OperationId,
         digest: [u8; 32],
-        fork_children: &[(OperationId, OperationId)],
+        fork_children: &[(OperationId, OperationId, [u8; 32])],
     ) -> Result<()> {
         if operation.into_bytes() == [0; 16] || digest == [0; 32] {
             return Err(Error::Invalid(
@@ -2410,7 +2483,11 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 let fork_operation = plan.request.fork_operation.ok_or_else(|| {
                     Error::Conflict("prepared fork plan has no fork operation".into())
                 })?;
-                fork_children.push((fork_operation, plan.request.child_operation));
+                fork_children.push((
+                    fork_operation,
+                    plan.request.child_operation,
+                    local_model_fork_plan_digest(plan)?,
+                ));
             }
             for (plan, seed) in prepared {
                 let child_operation = plan.request.child_operation;
@@ -3072,6 +3149,7 @@ enum StoredEvent {
         publication: OperationId,
         fork_operation: OperationId,
         child_operation: OperationId,
+        plan_digest: [u8; 32],
     },
     /// Prepared request retained before provider publication. This event is
     /// replayable but does not authorize child activation by itself.
@@ -8761,7 +8839,7 @@ mod tests {
         let first = LocalModelForkPlans::new();
         first.bind_journal(client.clone()).await?;
         first
-            .record_plan_registration(publication, fork, child)
+            .record_plan_registration(publication, fork, child, [0xA8; 32])
             .await?;
 
         // A cold reopen loses the in-memory typed plan but retains the
@@ -8769,6 +8847,12 @@ mod tests {
         let reopened = Arc::new(LocalModelForkPlans::new());
         reopened.bind_journal(client).await?;
         assert!(reopened.has_expected_plan(publication).await?);
+        assert!(matches!(
+            reopened
+                .record_plan_registration(publication, fork, child, [0xA9; 32])
+                .await,
+            Err(Error::Conflict(message)) if message.contains("changed after durable admission")
+        ));
         let publisher = LocalModelForkPublisher::new(reopened);
         let batch = test_batch_publication(publication)?;
         assert!(publisher.reconcile(batch.clone()).await?.is_none());
@@ -8805,25 +8889,41 @@ mod tests {
         let digest = [9; 32];
 
         first
-            .record_plan_registration(operation, fork_operation, child_operation)
+            .record_plan_registration(operation, fork_operation, child_operation, [13; 32])
             .await?;
         first
-            .mark_completed(operation, digest, &[(fork_operation, child_operation)])
+            .mark_completed(
+                operation,
+                digest,
+                &[(fork_operation, child_operation, [13; 32])],
+            )
             .await?;
         assert_eq!(second.completed(operation).await?, Some(digest));
         second
-            .mark_completed(operation, digest, &[(fork_operation, child_operation)])
+            .mark_completed(
+                operation,
+                digest,
+                &[(fork_operation, child_operation, [13; 32])],
+            )
             .await?;
         assert!(matches!(
             second
-                .mark_completed(operation, [10; 32], &[(fork_operation, child_operation)])
+                .mark_completed(
+                    operation,
+                    [10; 32],
+                    &[(fork_operation, child_operation, [13; 32])],
+                )
                 .await,
             Err(Error::Conflict(message)) if message.contains("result changed")
         ));
 
         let orphan = OperationId::from_bytes([11; 16]);
         assert!(matches!(
-            second.mark_completed(orphan, [12; 32], &[(fork_operation, child_operation)])
+            second.mark_completed(
+                orphan,
+                [12; 32],
+                &[(fork_operation, child_operation, [13; 32])],
+            )
                 .await,
             Err(Error::Unauthorized(message)) if message.contains("no retained intent")
         ));
