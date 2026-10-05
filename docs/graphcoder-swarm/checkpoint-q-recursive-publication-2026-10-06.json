@@ -1,0 +1,25 @@
+{
+  "kind": "failed-native-recursive-checkpoint",
+  "source_commit": "e1c93c7b28ed8919d67f38d63653c659b4f338fd",
+  "platform": "Windows native",
+  "suite": "local_model_swarm::default_local_composition_runs_recursive_models_and_reopens_without_dispatch",
+  "features": ["test-support", "native-process-tree"],
+  "build_jobs": 1,
+  "stack_override": false,
+  "exit_code": 101,
+  "tests": {"passed": 0, "failed": 1, "ignored": 0, "filtered": 5},
+  "evidence_directory": "target/graphcoder-qualification/e1c93c7b2-recursive",
+  "artifacts": [
+    {"path": "source.tar", "sha256": "6d0c4d84a3376327f89befd874c0f3dcf3e5c46ac3804e088bc2bf5368ead713"},
+    {"path": "native.log", "sha256": "0cced6dd70e05a9f1f578dc221a308a41c5a2e3c220b7d304784eb13ec337c05"},
+    {"path": "local_model_swarm.exe", "sha256": "51a4b2ad940c52c5c13f0a068185109a191174dd039645291b10b4aabec653c4"}
+  ],
+  "observations": [
+    "The process does not reproduce the previous resolver stack overflow.",
+    "Both child workspace seed publications complete before child preparation.",
+    "Canonical child tool assembly passes the previous task contract mismatch.",
+    "Child preparation now fails with fork publication does not match admission."
+  ],
+  "qualification": "failed",
+  "remaining_gate": "Preserve exact admitted child and parent operation identities through fork activation; rerun recursive execution, recovery and integration."
+}
