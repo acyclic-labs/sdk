@@ -972,10 +972,30 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
         LocalSessionPhase::Cancelled
     );
     let dispatches_before_resume = provider.dispatches.load(Ordering::SeqCst);
-    assert!(reopened
+    // The root turn completed independently of child A. Replaying that exact
+    // root operation is therefore a successful journal replay; cancellation
+    // applies to the child activation and must not poison the already durable
+    // parent outcome.
+    let replayed = reopened
         .run_root(root_operation, "cancel child after publication")
-        .await
-        .is_err());
+        .await?;
+    assert_eq!(replayed.text, "ordinary completion");
+    assert_eq!(
+        reopened.session(task(child_a)).await?.phase,
+        LocalSessionPhase::Cancelled
+    );
+    assert_eq!(
+        reopened.session(task(child_b)).await?.phase,
+        LocalSessionPhase::Completed
+    );
+    assert!(matches!(
+        reopened.outcome(task(child_a)).await,
+        Err(Error::NotFound(_))
+    ));
+    assert_eq!(
+        reopened.outcome(task(child_b)).await?.text,
+        "ordinary completion"
+    );
     assert_eq!(
         provider.dispatches.load(Ordering::SeqCst),
         dispatches_before_resume,
