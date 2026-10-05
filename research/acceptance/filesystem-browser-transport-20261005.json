@@ -1,0 +1,36 @@
+{
+  "schema": "acyclic.filesystem.browser-transport-evaluation.v2",
+  "recorded_at": "2026-10-05T00:00:00Z",
+  "status": "rust_wasm_client_compiles_and_loads",
+  "scope": "Rust-owned browser remote Filesystem transport and installed WASM qualification",
+  "pinned_dependency": {
+    "crate": "tonic-web-wasm-client",
+    "version": "0.9.2",
+    "tonic_compatibility": "0.14",
+    "source": "https://docs.rs/crate/tonic-web-wasm-client/0.9.2/source/Cargo.toml.orig",
+    "api": "https://docs.rs/tonic-web-wasm-client/0.9.2/tonic_web_wasm_client/",
+    "implementation": "https://docs.rs/crate/tonic-web-wasm-client/0.9.2/source/src/call.rs"
+  },
+  "implementation": {
+    "generated_contract": "Rust filesystem model descriptor with tonic transport constructors disabled for wasm32",
+    "client": "acyclic-sdk-remote-web::BrowserFilesystemClient",
+    "facade_export": "acyclic-fs-wasm::BrowserRemoteFilesystemClient",
+    "handshake": "authenticated Filesystem protocol and descriptor digest validation",
+    "bounds": "negotiated request and response message limits are retained by the client",
+    "streaming": "typed Export stream over grpc-web ResponseBody",
+    "cancellation": "typed Cancel RPC plus drop-based fetch cancellation from tonic-web-wasm-client"
+  },
+  "qualification": {
+    "compile_command": "cargo build --locked -p acyclic-sdk-remote-web --target wasm32-unknown-unknown --target-dir work/remote-browser-target",
+    "compile_result": "passed",
+    "wasm_bindgen_command": "wasm-bindgen --target web --out-dir work/remote-browser-package work/remote-browser-target/wasm32-unknown-unknown/debug/acyclic_sdk_remote_web.wasm",
+    "wasm_bindgen_result": "passed",
+    "node_smoke_command": "node -e require('./work/remote-browser-node/acyclic_sdk_remote_web.js') validation",
+    "node_smoke_result": "wasm loaded; loopback endpoint and bearer credential accepted",
+    "wasm_artifact": "work/remote-browser-target/wasm32-unknown-unknown/debug/acyclic_sdk_remote_web.wasm",
+    "wasm_sha256": "4cf4e8cb7098ddaf6d6b62bf0b6eb138a08018f1e15006378458dcd7f76811fc",
+    "wasm_bytes": 57547645,
+    "node_binding_sha256": "8c3a544144b3f41086d8597cb01baa1a67b39b8e477523a86bc49b19cff794ee",
+    "browser_page_result": "Chrome exited with 4294930433 before DevToolsActivePort while running research/acceptance/filesystem-harness-wasm/browser-qualify.mjs"
+  }
+}

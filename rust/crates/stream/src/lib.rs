@@ -1,14 +1,20 @@
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/quickstart.md")]
+#![doc = include_str!("../docs/topics.md")]
 
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
 use futures::stream::BoxStream;
+#[cfg(target_arch = "wasm32")]
+use futures::stream::LocalBoxStream;
 use thiserror::Error;
 
+pub mod client;
 pub mod conformance;
-#[cfg(feature = "grpc")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 pub mod http_response;
 pub mod persistence;
@@ -16,7 +22,6 @@ pub mod preparation;
 pub mod request;
 // The WASM adapter consumes this module on browser builds; native builds keep
 // it available for contract tests without pulling in JS bindings.
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 #[allow(dead_code)]
 mod http_codec;
@@ -25,7 +30,7 @@ mod http_validation;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod local;
 mod memory;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 mod wasm;
 #[allow(dead_code)]
 mod wire_codec;
@@ -35,8 +40,24 @@ mod wire_codec;
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v2.rs"));
 }
+/// Independent generated control plane; archived Stream descriptors remain immutable.
+#[allow(missing_docs, clippy::all, clippy::pedantic)]
+#[cfg(not(target_arch = "wasm32"))]
+pub mod control_wire {
+    pub mod protocol {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
+        }
+    }
+    pub mod transport {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.transport.v1.rs"));
+        }
+    }
+}
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
+pub use client::{Client, ConnectError, DEFAULT_TRANSPORT, connect};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
@@ -515,13 +536,34 @@ pub struct IdempotencyObservation {
 }
 
 /// Backpressured finite read or long-lived follow.
+#[cfg(not(target_arch = "wasm32"))]
 pub type RecordStream = BoxStream<'static, Result<Record, StreamError>>;
+#[cfg(target_arch = "wasm32")]
+/// Backpressured finite read or long-lived follow on browser targets.
+pub type RecordStream = LocalBoxStream<'static, Result<Record, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
+#[cfg(not(target_arch = "wasm32"))]
 pub type ChildStream = BoxStream<'static, Result<Child, StreamError>>;
+#[cfg(target_arch = "wasm32")]
+/// Backpressured fixed-snapshot direct-child listing on browser targets.
+pub type ChildStream = LocalBoxStream<'static, Result<Child, StreamError>>;
+
+/// Platform capability bound for a provider implementation.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub trait PlatformProvider: Send + Sync {}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub trait PlatformProvider {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync> PlatformProvider for T {}
+#[cfg(target_arch = "wasm32")]
+impl<T> PlatformProvider for T {}
 
 /// Canonical provider contract. Placement and transport remain invisible.
-#[async_trait]
-pub trait StreamProvider: Send + Sync + 'static {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait StreamProvider: PlatformProvider + 'static {
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,
@@ -662,9 +704,102 @@ impl<P: StreamProvider> StreamClient<P> {
     pub async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.provider.read_commit(commit_id).await
     }
+
+    /// Executes the canonical protobuf projection against any provider.
+    ///
+    /// Native bindings call these methods instead of translating Stream behavior into the
+    /// consumer language. The generated request and response types remain the wire contract.
+    pub async fn inspect_idempotency_wire(
+        &self,
+        request: wire::InspectIdempotencyRequest,
+    ) -> Result<wire::InspectIdempotencyResponse, StreamError> {
+        let key = IdempotencyKey::new(request.idempotency_key)?;
+        let observation = self
+            .inspect_idempotency(key)
+            .await?
+            .map(wire_codec::observation_wire);
+        Ok(wire::InspectIdempotencyResponse { observation })
+    }
+
+    /// Executes the canonical append projection against any provider.
+    pub async fn append_wire(
+        &self,
+        request: wire::AppendRequest,
+    ) -> Result<wire::AppendResponse, StreamError> {
+        let request = wire_codec::append_from_wire(request)?;
+        Ok(wire_codec::append_outcome_to_wire(
+            self.provider.append(request).await?,
+        ))
+    }
+
+    /// Executes the canonical tail projection against any provider.
+    pub async fn tail_wire(
+        &self,
+        request: wire::TailRequest,
+    ) -> Result<wire::TailResponse, StreamError> {
+        Ok(wire::TailResponse {
+            tail: self.provider.tail(StreamPath::new(request.path)?).await?,
+        })
+    }
+
+    /// Executes the canonical fork projection against any provider.
+    pub async fn fork_wire(
+        &self,
+        request: wire::ForkRequest,
+    ) -> Result<wire::ForkReceipt, StreamError> {
+        Ok(wire_codec::fork_receipt_to_wire(
+            &self
+                .provider
+                .fork(wire_codec::fork_from_wire(request)?)
+                .await?,
+        ))
+    }
+
+    /// Executes the canonical children-page projection against any provider.
+    pub async fn children_page_wire(
+        &self,
+        request: wire::ChildrenPageRequest,
+    ) -> Result<wire::ChildrenPageResponse, StreamError> {
+        Ok(wire_codec::children_page_to_wire(
+            self.provider
+                .children_page(wire_codec::children_page_from_wire(request)?)
+                .await?,
+        ))
+    }
+
+    /// Executes the canonical coordinated-commit projection against any provider.
+    pub async fn commit_wire(
+        &self,
+        request: wire::CommitRequest,
+    ) -> Result<wire::CommitResponse, StreamError> {
+        let deadline = request.deadline_unix_millis;
+        let request = wire_codec::commit_from_wire(request)?;
+        let outcome = match deadline {
+            Some(deadline) => self.provider.commit_before(request, deadline).await?,
+            None => self.provider.commit(request).await?,
+        };
+        Ok(wire_codec::commit_outcome_to_wire(outcome))
+    }
+
+    /// Executes the canonical committed-envelope projection against any provider.
+    pub async fn read_commit_wire(
+        &self,
+        request: wire::ReadCommitRequest,
+    ) -> Result<wire::CommittedEnvelope, StreamError> {
+        let bytes: [u8; 32] = request
+            .commit_id
+            .as_ref()
+            .try_into()
+            .map_err(|_| StreamError::InvalidArgument)?;
+        Ok(wire_codec::envelope_wire(
+            self.provider
+                .read_commit(CommitId::from_bytes(bytes))
+                .await?,
+        ))
+    }
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(not(target_arch = "wasm32"))]
 impl StreamClient<grpc::Client> {
     /// Connects the high-level API to an authenticated managed or customer-hosted endpoint.
     pub async fn connect(
@@ -924,7 +1059,8 @@ mod replay_tests {
         missing: u64,
     }
 
-    #[async_trait]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl StreamProvider for Gapped {
         async fn inspect_idempotency(
             &self,

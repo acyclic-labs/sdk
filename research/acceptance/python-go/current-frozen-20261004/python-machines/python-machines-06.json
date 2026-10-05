@@ -1,0 +1,24 @@
+{
+  "schema": "acyclic.sdk.rpc-scenario-result.v1",
+  "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "source_revision_kind": "rust-model-sha256",
+  "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "status": "passed",
+  "invoked": true,
+  "execution_mode": "remote",
+  "exit_code": 0,
+  "family": "machines",
+  "rpc": "acyclic.machines.v1.MachinesService/Suspend",
+  "shape": "unary",
+  "transport": "grpc+mtls",
+  "checks": [
+    "invocation",
+    "transport",
+    "serialization",
+    "tls-hostname-verification"
+  ],
+  "response_bytes": 40,
+  "response_sha256": "sha256:45b9b39c5ea9131c797245ab547fb1d18d9a143f645263b4ec3157c1937db657",
+  "fixture_binary_sha256": "67C821A5A9158320F65112C6576ED4A749792B98B18579844051AB51F448A18C",
+  "fixture_source_revision": "37598a1b2908d4091cefb1bb37ca1441d9539b4e"
+}

@@ -1,0 +1,136 @@
+{
+  "schema": "acyclic.additional-language-qualification.v1",
+  "trigger": "release-or-manual-workflow",
+  "source_of_truth": "Rust contract model and its generated proto compatibility projection",
+  "source_revision": "workflow checkout revision",
+  "targets": [
+    {
+      "id": "elixir",
+      "toolchain": {
+        "otp": "27.2.4",
+        "elixir": "1.17.3",
+        "rebar3": "3.24.0"
+      },
+      "generator": {
+        "package": "protobuf",
+        "version": "0.17.0",
+        "license": "Apache-2.0"
+      },
+      "transport": {
+        "package": "grpc",
+        "version": "1.0.3",
+        "license": "Apache-2.0"
+      },
+      "artifact": "mix project, .ez archive, and generated Actors protobuf/gRPC modules",
+      "qualification": "package-archive-and-serialization-streaming-consumer"
+    },
+    {
+      "id": "erlang",
+      "toolchain": {
+        "otp": "27.2.4",
+        "rebar3": "3.24.0"
+      },
+      "generator": {
+        "package": "grpcbox_plugin",
+        "version": "0.9.0",
+        "source": "https://github.com/tsloughter/grpcbox",
+        "license": "Apache-2.0"
+      },
+      "transport": {
+        "package": "grpcbox",
+        "version": "0.18.0",
+        "source": "https://github.com/tsloughter/grpcbox",
+        "license": "Apache-2.0"
+      },
+      "artifact": "rebar3 application with generated Actors protobuf and streaming client modules",
+      "qualification": "package-archive-and-serialization-streaming-consumer"
+    },
+    {
+      "id": "ocaml",
+      "toolchain": {
+        "ocaml": "5.2.1",
+        "opam": "2.2"
+      },
+      "generator": {
+        "package": "ocaml-protoc-plugin",
+        "version": "6.2.0",
+        "source": "https://github.com/andersfugmann/ocaml-protoc-plugin",
+        "license": "Apache-2.0"
+      },
+      "transport": {
+        "package": "grpc",
+        "version": "0.2.0",
+        "sha512": "03bf7448330346959fe581822fdd0580279f5042b3b51acc220950b0fa78764e64a0ead7dda0bcad22374e6e4d77870ff8e70431d233832912278a4ae5ad0390"
+      },
+      "artifact": "dune project and archive with generated Actors protobuf/service modules",
+      "qualification": "package-archive-and-serialization-streaming-consumer"
+    },
+    {
+      "id": "common-lisp",
+      "toolchain": {
+        "sbcl": "2.4.10"
+      },
+      "generator": {
+        "repository": "https://github.com/atgreen/ag-gRPC",
+        "commit": "f76354d8e3ba5a65c2767df68d32570a1668883d",
+        "license": "MIT"
+      },
+      "tooling": {
+        "package": "ocicl",
+        "install": "distribution package"
+      },
+      "artifact": "ag-protoc generated Actors and streaming Lisp sources compiled by SBCL",
+      "qualification": "package-archive-and-serialization-streaming-consumer"
+    },
+    {
+      "id": "lua",
+      "toolchain": {
+        "luajit": "2.1",
+        "host": "Linux and macOS release runners"
+      },
+      "generator": {
+        "repository": "https://github.com/Protocol-Lattice/lua-grpc",
+        "commit": "1247ad7278ec39b3e2db384ede8ca6d1e6204fa1",
+        "license": "blocked: pinned repository has no LICENSE or COPYING file and no grant in reachable history"
+      },
+      "transport": {
+        "package": "Rust sdk-luajit-remote C ABI",
+        "protocol": "Rust-owned acyclic-stream gRPC client with endpoint pooling, TLS CA pinning, retries, streaming, cancellation",
+        "rust_crate_license": "Apache-2.0",
+        "ffi": "LuaJIT built-in FFI",
+        "runtime_license": "LuaJIT 2.1 MIT",
+        "cancellation": "Rust reader cancellation through C ABI"
+      },
+      "artifact": "Rust cdylib plus LuaJIT FFI remote consumer archive; LuaJIT runtime license remains separate",
+      "qualification": "release-or-manual-linux-macos-host-run",
+      "recipe": "scripts/qualify-luajit-ffi-remote.sh"
+    },
+    {
+      "id": "haskell",
+      "toolchain": {
+        "ghc": "9.2.8",
+        "cabal": "3.10.2.1"
+      },
+      "generator": {
+        "package": "proto-lens-protoc",
+        "version": "0.9.0.1",
+        "source": "https://hackage.haskell.org/package/proto-lens-protoc-0.9.0.1",
+        "license": "BSD-3-Clause"
+      },
+      "transport": {
+        "package": "grapesy",
+        "version": "1.2.1",
+        "source": "https://hackage.haskell.org/package/grapesy-1.2.1",
+        "protocol": "Rust-owned StreamService gRPC over HTTP/2",
+        "tls": "wired through grapesy ServerSecure",
+        "cancellation": "deadline API wired",
+        "recovery": "exponential reconnect policy configured"
+      },
+      "artifact": "generated Haskell modules, deterministic source archive, installed typed consumer",
+      "qualification": "release-or-manual-rust-fixture-run",
+      "source": "rust/crates/stream/proto/stream/v2/stream.proto",
+      "runner": "research/additional-languages/haskell-grapesy-prototype/run-remote-prototype.ps1",
+      "status": "generated-serialization-passed; remote-fixture-conformance-pending"
+    }
+  ]
+}

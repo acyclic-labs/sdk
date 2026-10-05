@@ -1,0 +1,73 @@
+{
+  "schema": "acyclic.sdk.rpc-scenario-log.v1",
+  "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "source_revision_kind": "rust-model-sha256",
+  "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "execution_mode": "remote",
+  "consumer": {
+    "name": "acyclic-python-installed-inference-consumer",
+    "version": "0.2.0",
+    "artifact_path": "Q:\\sdk\\work\\python-current-wheel-resume\\acyclic_sdk_transport-0.2.0-py3-none-any.whl",
+    "artifact_sha256": "8496E7D67AF04F60E6197BAF9FF521F79D3B28F62B71A119541E2077F73505AD"
+  },
+  "scenarios": [
+    {
+      "output_path": "qualification/consumers/python-inference-01.json",
+      "output_sha256": "sha256:251e09c78a4c090d36df612e4239aafb4e553704ebd8d6dae52a2705d797e351"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-02.json",
+      "output_sha256": "sha256:0d577c7e23bb065d7b47989dc575bb9ee11041d0f70c227302979392a4b25a16"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-03.json",
+      "output_sha256": "sha256:6d86b15e1c3d5f11ccfc9ec1a23aad999e9ed53c4fccfe12344039f0131a0d38"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-04.json",
+      "output_sha256": "sha256:764b853b7ef92ed5356cd820725056143c44e1857c7e8a1b1922ba6612e77946"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-05.json",
+      "output_sha256": "sha256:e7069fffb4cc9b30465c40dce8bb78b1491047691ee29a62a58c37ac27f2e9d3"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-06.json",
+      "output_sha256": "sha256:4e6e5475bb448bd74d16513988e3e02d1ca40bd6b4fdba8a18fd586af7eb1a78"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-07.json",
+      "output_sha256": "sha256:604af63980741287f5abd6b7ef1b4d0eabaefffbd970395a552b13db915c0eb9"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-08.json",
+      "output_sha256": "sha256:6acae2869278398609a93afaf7b588074335930eafd6e288ecc3cdbdb930e97d"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-09.json",
+      "output_sha256": "sha256:8c10d16ef7aadae8ddbefa01b89a0fe5ee201ad095b7f4552b6b30089887d74d"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-10.json",
+      "output_sha256": "sha256:a04c702b0b901153d5e90842ced36ab002c68b570926b130894e3ce3869fd1e2"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-11.json",
+      "output_sha256": "sha256:1b0a1ef7cd5a8106fde3b2d56f70f757574bb39305210ca32dbe56ee9fb4cf0b"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-12.json",
+      "output_sha256": "sha256:77fefc0d0aa7958abb149ee474e17c715279f899071ad7e328f24b88afcf774a"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-13.json",
+      "output_sha256": "sha256:5a43de5ecd7c29ac376ac56971cad5ca9e56daed5ac25b8ce58969c160a803d6"
+    },
+    {
+      "output_path": "qualification/consumers/python-inference-14.json",
+      "output_sha256": "sha256:8667a312ffb0aa7c437fc4a1ab5fefced67206ff78e6770d05c6498bc3e81868"
+    }
+  ],
+  "fixture_binary_sha256": "9370C5BF666B6BD8C194D1DFDF6DC3A9FC9F63675EA45DDB18C0130263FF01D2",
+  "fixture_source_revision": "37598a1b2908d4091cefb1bb37ca1441d9539b4e"
+}

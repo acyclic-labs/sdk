@@ -1,18 +1,15 @@
 //! Native JavaScript bridge over the Rust-owned Machines provider.
 //!
-//! The bridge deliberately uses JSON strings at its boundary. This keeps the generated
-//! language facade independent of Rust's private handle types while leaving request validation,
-//! idempotency, error classification, and streaming behavior in `acyclic-machines`.
+//! The native ABI is intentionally a thin JSON envelope. Every request and
+//! response is validated and projected by `sdk-machines-public`, the same
+//! boundary used by the browser/WASM adapter.
 
-use acyclic_machines::{
-    CheckpointId, CreateMachine, IdempotencyKey, Image, MachineId, Machines, OperationId,
-    ProviderError, SuspensionPolicy, Tls,
-};
-use futures::StreamExt as _;
+#![allow(missing_docs)]
+
+use acyclic_machines::{Machines, ProviderError, Tls};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::num::NonZeroU32;
+use sdk_machines_public as public;
 
 /// Explicit mutual-TLS connection material for the native Machines service.
 #[napi(object)]
@@ -29,88 +26,15 @@ pub struct NativeMachinesOptions {
     pub private_key: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MachineKey {
-    machine: MachineId,
-    idempotency_key: IdempotencyKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CheckpointKey {
-    checkpoint: CheckpointId,
-    idempotency_key: IdempotencyKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ForkRequest {
-    checkpoint: CheckpointId,
-    count: u32,
-    idempotency_key: IdempotencyKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MachineForkRequest {
-    machine: MachineId,
-    count: u32,
-    idempotency_key: IdempotencyKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PolicyRequest {
-    machine: MachineId,
-    policy: SuspensionPolicy,
-    idempotency_key: IdempotencyKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ListRequest {
-    after: Option<MachineId>,
-    limit: u32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ListEventsRequest {
-    machine: MachineId,
-    after_sequence: Option<u64>,
-    limit: u32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UsageRequest {
-    machine: MachineId,
-    start_unix_ms: u64,
-    end_unix_ms: u64,
-}
-
 fn bridge_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
-}
-
-fn decode<T: DeserializeOwned>(value: &str) -> Result<T> {
-    serde_json::from_str(value).map_err(bridge_error)
-}
-
-fn encode<T: Serialize>(value: &T) -> Result<String> {
-    serde_json::to_string(value).map_err(bridge_error)
 }
 
 fn provider_error(error: ProviderError) -> Error {
     bridge_error(error)
 }
 
-fn count(value: u32) -> Result<NonZeroU32> {
-    NonZeroU32::new(value).ok_or_else(|| bridge_error("count must be greater than zero"))
-}
-
-/// Native Machines client whose every operation is dispatched by the canonical Rust provider.
+/// Native Machines client whose every operation is dispatched by the canonical Rust public boundary.
 #[napi]
 pub struct MachinesNativeClient {
     inner: Machines,
@@ -121,12 +45,10 @@ impl MachinesNativeClient {
         Self { inner }
     }
 
-    async fn call<T, F>(&self, operation: F) -> Result<String>
-    where
-        T: Serialize,
-        F: std::future::Future<Output = std::result::Result<T, ProviderError>>,
-    {
-        encode(&operation.await.map_err(provider_error)?)
+    async fn public(&self, operation: &str, payload: String) -> Result<String> {
+        public::dispatch_json(self.inner.provider().as_ref(), operation, &payload)
+            .await
+            .map_err(bridge_error)
     }
 }
 
@@ -156,255 +78,108 @@ impl MachinesNativeClient {
         ))
     }
 
-    /// Qualifies one immutable image.
     #[napi(js_name = "qualifyImage")]
     pub async fn qualify_image(&self, request_json: String) -> Result<String> {
-        let request: Image = decode(&request_json)?;
-        self.call(self.inner.provider().qualify_image(request))
-            .await
+        self.public("qualifyImage", request_json).await
     }
-
-    /// Creates one machine and returns the canonical mutation outcome.
     #[napi]
     pub async fn create(&self, request_json: String) -> Result<String> {
-        let request: CreateMachine = decode(&request_json)?;
-        self.call(self.inner.provider().create(request)).await
+        self.public("create", request_json).await
     }
-
-    /// Inspects one machine.
     #[napi(js_name = "inspectMachine")]
-    pub async fn inspect_machine(&self, machine_json: String) -> Result<String> {
-        let machine: MachineId = decode(&machine_json)?;
-        self.call(self.inner.provider().inspect_machine(machine))
-            .await
+    pub async fn inspect_machine(&self, request_json: String) -> Result<String> {
+        self.public("inspectMachine", request_json).await
     }
-
-    /// Lists machines after an optional stable cursor.
     #[napi(js_name = "listMachines")]
     pub async fn list_machines(&self, request_json: String) -> Result<String> {
-        let request: ListRequest = decode(&request_json)?;
-        self.call(
-            self.inner
-                .provider()
-                .list_machines(request.after, request.limit),
-        )
-        .await
+        self.public("listMachines", request_json).await
     }
-
-    /// Reads one bounded event page for a machine.
     #[napi]
     pub async fn events(&self, request_json: String) -> Result<String> {
-        let request: ListEventsRequest = decode(&request_json)?;
-        self.call(self.inner.provider().events(
-            request.machine,
-            request.after_sequence,
-            request.limit,
-        ))
-        .await
+        self.public("events", request_json).await
     }
-
-    /// Reads one half-open usage interval for a machine.
     #[napi]
     pub async fn usage(&self, request_json: String) -> Result<String> {
-        let request: UsageRequest = decode(&request_json)?;
-        self.call(self.inner.provider().usage(
-            request.machine,
-            request.start_unix_ms,
-            request.end_unix_ms,
-        ))
-        .await
+        self.public("usage", request_json).await
     }
-
-    /// Creates a checkpoint for one machine.
     #[napi]
     pub async fn checkpoint(&self, request_json: String) -> Result<String> {
-        let request: MachineKey = decode(&request_json)?;
-        self.call(
-            self.inner
-                .provider()
-                .checkpoint(request.machine, request.idempotency_key),
-        )
-        .await
+        self.public("checkpoint", request_json).await
     }
-
-    /// Inspects one checkpoint.
     #[napi(js_name = "inspectCheckpoint")]
-    pub async fn inspect_checkpoint(&self, checkpoint_json: String) -> Result<String> {
-        let checkpoint: CheckpointId = decode(&checkpoint_json)?;
-        self.call(self.inner.provider().inspect_checkpoint(checkpoint))
-            .await
+    pub async fn inspect_checkpoint(&self, request_json: String) -> Result<String> {
+        self.public("inspectCheckpoint", request_json).await
     }
-
-    /// Forks one checkpoint into a bounded number of machines.
     #[napi]
     pub async fn fork(&self, request_json: String) -> Result<String> {
-        let request: ForkRequest = decode(&request_json)?;
-        self.call(self.inner.provider().fork(
-            request.checkpoint,
-            count(request.count)?,
-            request.idempotency_key,
-        ))
-        .await
+        self.public("fork", request_json).await
     }
-
-    /// Forks one running machine without an intermediate checkpoint.
     #[napi(js_name = "forkMachine")]
     pub async fn fork_machine(&self, request_json: String) -> Result<String> {
-        let request: MachineForkRequest = decode(&request_json)?;
-        self.call(self.inner.provider().fork_machine(
-            request.machine,
-            count(request.count)?,
-            request.idempotency_key,
-        ))
-        .await
+        self.public("forkMachine", request_json).await
     }
-
-    /// Suspends one machine.
     #[napi]
     pub async fn suspend(&self, request_json: String) -> Result<String> {
-        let request: MachineKey = decode(&request_json)?;
-        self.call(
-            self.inner
-                .provider()
-                .suspend(request.machine, request.idempotency_key),
-        )
-        .await
+        self.public("suspend", request_json).await
     }
-
-    /// Wakes one machine.
     #[napi]
     pub async fn wake(&self, request_json: String) -> Result<String> {
-        let request: MachineKey = decode(&request_json)?;
-        self.call(
-            self.inner
-                .provider()
-                .wake(request.machine, request.idempotency_key),
-        )
-        .await
+        self.public("wake", request_json).await
     }
-
-    /// Changes one machine's suspension policy.
     #[napi(js_name = "setSuspensionPolicy")]
     pub async fn set_suspension_policy(&self, request_json: String) -> Result<String> {
-        let request: PolicyRequest = decode(&request_json)?;
-        self.call(self.inner.provider().set_suspension_policy(
-            request.machine,
-            request.policy,
-            request.idempotency_key,
-        ))
-        .await
+        self.public("setSuspensionPolicy", request_json).await
     }
-
-    /// Destroys one machine.
     #[napi(js_name = "destroyMachine")]
     pub async fn destroy_machine(&self, request_json: String) -> Result<String> {
-        let request: MachineKey = decode(&request_json)?;
-        self.call(
-            self.inner
-                .provider()
-                .destroy_machine(request.machine, request.idempotency_key),
-        )
-        .await
+        self.public("destroyMachine", request_json).await
     }
-
-    /// Destroys one checkpoint.
     #[napi(js_name = "destroyCheckpoint")]
     pub async fn destroy_checkpoint(&self, request_json: String) -> Result<String> {
-        let request: CheckpointKey = decode(&request_json)?;
-        self.call(
-            self.inner
-                .provider()
-                .destroy_checkpoint(request.checkpoint, request.idempotency_key),
-        )
-        .await
+        self.public("destroyCheckpoint", request_json).await
     }
-
-    /// Recovers the exact outcome admitted for one idempotency key.
     #[napi]
-    pub async fn recover(&self, key_json: String) -> Result<String> {
-        let key: IdempotencyKey = decode(&key_json)?;
-        self.call(self.inner.provider().recover(key)).await
+    pub async fn recover(&self, request_json: String) -> Result<String> {
+        self.public("recover", request_json).await
     }
-
-    /// Inspects one machine.
-    #[napi(js_name = "inspectOperation")]
-    pub async fn inspect_operation(&self, operation_json: String) -> Result<String> {
-        let operation: OperationId = decode(&operation_json)?;
-        self.call(self.inner.provider().inspect_operation(operation))
-            .await
-    }
-
-    /// Resolves the operation associated with one idempotency key.
     #[napi(js_name = "recoverOperation")]
-    pub async fn recover_operation(&self, key_json: String) -> Result<String> {
-        let key: IdempotencyKey = decode(&key_json)?;
-        self.call(self.inner.provider().recover_operation(key))
-            .await
+    pub async fn recover_operation(&self, request_json: String) -> Result<String> {
+        self.public("recoverOperation", request_json).await
     }
-
-    /// Cancels one operation and returns its latest state.
+    #[napi(js_name = "inspectOperation")]
+    pub async fn inspect_operation(&self, request_json: String) -> Result<String> {
+        self.public("inspectOperation", request_json).await
+    }
     #[napi]
-    pub async fn cancel(&self, operation_json: String) -> Result<String> {
-        let operation: OperationId = decode(&operation_json)?;
-        self.call(self.inner.provider().cancel(operation)).await
+    pub async fn cancel(&self, request_json: String) -> Result<String> {
+        self.public("cancel", request_json).await
     }
-
-    /// Watches one operation to completion and returns the ordered observations as JSON.
-    ///
-    /// The Rust provider remains responsible for stream lifetime, timeout, and error semantics;
-    /// the native ABI collects the bounded operation stream for the JavaScript caller.
     #[napi(js_name = "watchOperation")]
-    pub async fn watch_operation(&self, operation_json: String) -> Result<String> {
-        let operation: OperationId = decode(&operation_json)?;
-        let mut stream = self
-            .inner
-            .provider()
-            .watch_operation(operation)
-            .await
-            .map_err(provider_error)?;
-        let mut observations = Vec::new();
-        while let Some(value) = stream.next().await {
-            observations.push(value.map_err(provider_error)?);
-        }
-        encode(&observations)
+    pub async fn watch_operation(&self, request_json: String) -> Result<String> {
+        self.public("watchOperation", request_json).await
     }
-
-    /// Returns the provider assurance selected by the Rust backend.
     #[napi(js_name = "assurance")]
     pub fn assurance_json(&self) -> Result<String> {
-        encode(&self.inner.assurance())
+        serde_json::to_string(&self.inner.assurance()).map_err(bridge_error)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_machines::{ImageQualification, SimulatedMachines};
+    use acyclic_machines::{Machines, SimulatedMachines};
     use std::sync::Arc;
 
-    #[test]
-    fn bridge_request_shapes_reject_zero_fork_counts() {
-        assert!(count(0).is_err());
-        let request: MachineForkRequest = decode(
-            r#"{"machine":"00000000-0000-0000-0000-000000000001","count":1,"idempotencyKey":"00000000-0000-0000-0000-000000000002"}"#,
-        )
-        .expect("valid request shape");
-        assert_eq!(request.count, 1);
-    }
-
     #[tokio::test]
-    async fn bridge_uses_canonical_provider_for_qualification() {
+    async fn bridge_uses_shared_public_boundary_for_qualification() {
         let client = MachinesNativeClient::from_machines(Machines::new(Arc::new(
             SimulatedMachines::default(),
         )));
-        let image = Image::custom([7; 32]).expect("nonzero image");
         let json = client
-            .qualify_image(serde_json::to_string(&image).expect("image JSON"))
+            .qualify_image(r#"{"kind":"custom","digestHex":"0101010101010101010101010101010101010101010101010101010101010101"}"#.into())
             .await
             .expect("qualification");
-        let value: ImageQualification = serde_json::from_str(&json).expect("result JSON");
-        assert_eq!(value.image, image);
-        assert!(!value.capabilities.is_empty());
+        assert!(json.contains("custom"));
     }
 
     #[tokio::test]

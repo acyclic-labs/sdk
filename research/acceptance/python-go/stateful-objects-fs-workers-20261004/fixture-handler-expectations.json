@@ -1,0 +1,76 @@
+{
+  "schema": "acyclic.sdk.python-go.fixture-handler-expectations.v1",
+  "source_file": "rust/crates/sdk-examples/src/bin/fixture-server.rs",
+  "source_sha256": "7096011f17bf2760e7c19ec72f2e55d9cff953f52963c754918f45c786ef2d81",
+  "objects": {
+    "methods": [
+      "CreateBucket",
+      "HeadBucket",
+      "DeleteBucket",
+      "PutObject",
+      "GetObject",
+      "HeadObject",
+      "DeleteObject",
+      "ListObjects",
+      "CreateMultipart",
+      "UploadPart",
+      "ListParts",
+      "CompleteMultipart",
+      "AbortMultipart"
+    ],
+    "empty_streams": [
+      "GetObject"
+    ],
+    "handler_behavior": "ObjectsFixture consumes requests and returns Default responses; GetObject returns stream::empty()."
+  },
+  "filesystem": {
+    "methods": [
+      "Handshake",
+      "CreateWorkspace",
+      "OpenWorkspace",
+      "DeleteWorkspace",
+      "GetHead",
+      "GetGeneration",
+      "Read",
+      "Stat",
+      "ListDirectory",
+      "ReadLink",
+      "PlanExtents",
+      "ApplyTransaction",
+      "RebaseTransaction",
+      "ForkWorkspace",
+      "Diff",
+      "Rebase",
+      "PlanJoin",
+      "ApplyJoin",
+      "Checkpoint",
+      "Pin",
+      "Export",
+      "Import",
+      "IssueMountCredential",
+      "IssueS3Credential",
+      "GetSourceState",
+      "ReconcileSource",
+      "RescanSource",
+      "SealSource",
+      "Observe",
+      "Cancel"
+    ],
+    "empty_streams": [
+      "Export"
+    ],
+    "handler_behavior": "FilesystemFixture consumes requests and returns Default responses; Export returns stream::empty()."
+  },
+  "workers": {
+    "methods": [
+      "PublishVersion",
+      "SelectDeployment",
+      "SubmitJob",
+      "InspectJob",
+      "CancelJob",
+      "InvokeVersion",
+      "InvokeDeployment"
+    ],
+    "handler_behavior": "WorkersFixture consumes requests and returns Default responses."
+  }
+}

@@ -1,0 +1,388 @@
+# THIS FILE IS GENERATED. DO NOT EDIT.
+
+[solution]
+[solution.context]
+solved = true
+[[solution.state]]
+crate = "gnat"
+fulfilment = "solved"
+pinned = false
+transitivity = "indirect"
+versions = ">=11"
+[solution.state.release]
+auto-gpr-with = false
+description = "The GNAT Ada compiler - Native"
+licenses = "GPL-3.0-or-later AND GPL-3.0-or-later WITH GCC-exception-3.1"
+maintainers = [
+"Fabien Chouteau <chouteau@adacore.com>",
+"CÃ©sar Sagaert <sagaert@adacore.com>",
+]
+maintainers-logins = [
+"Fabien-Chouteau",
+"AldanTanneo",
+]
+name = "gnat_native"
+provides = [
+"gnat=16.1.0",
+]
+version = "16.1.0"
+website = "https://github.com/alire-project/GNAT-FSF-builds"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.environment]
+[solution.state.release.environment.LD_LIBRARY_PATH]
+prepend = "${CRATE_ROOT}/lib64"
+[solution.state.release.environment.LD_RUN_PATH]
+prepend = "${CRATE_ROOT}/lib64"
+[solution.state.release.environment.LIBRARY_PATH]
+prepend = "${CRATE_ROOT}/lib64"
+[solution.state.release.environment.PATH]
+prepend = "${CRATE_ROOT}/bin"
+[solution.state.release.origin]
+binary = true
+hashes = [
+"sha256:9f74f58a827a2ad40dd84c72a413e75ea52888e0d8f7e252fba4d26762402703",
+]
+url = "https://github.com/alire-project/GNAT-FSF-builds/releases/download/gnat-16.1.0-1/gnat-x86_64-linux-16.1.0-1.tar.gz"
+[[solution.state]]
+crate = "libcurl"
+fulfilment = "solved"
+pinned = false
+transitivity = "indirect"
+versions = "*"
+[solution.state.release]
+description = "CURL C library for transferring data with URLs"
+maintainers = [
+"Stephane Carrez <Stephane.Carrez@gmail.com>",
+]
+maintainers-logins = [
+"stcarrez",
+]
+name = "libcurl"
+notes = "Provided by system package: libcurl4-openssl-dev"
+version = "7.81.0"
+[solution.state.release.origin]
+url = "system:libcurl4-openssl-dev"
+[[solution.state]]
+crate = "security"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=1.6.0"
+[solution.state.release]
+authors = [
+"Stephane.Carrez@gmail.com",
+]
+description = "Security Library for HTTP client and server with OAuth2 support"
+licenses = "Apache-2.0"
+long-description = "[![Build Status](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-security/badges/build.json)](https://porion.vacs.fr/porion/projects/view/ada-security/summary)\n[![Test Status](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-security/badges/tests.json)](https://porion.vacs.fr/porion/projects/view/ada-securit/xunits)\n[![Coverage](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-security/badges/coverage.json)](https://porion.vacs.fr/porion/projects/view/ada-security/summary)\n[![Documentation Status](https://readthedocs.org/projects/ada-security/badge/?version=latest)](https://ada-security.readthedocs.io/en/latest/?badge=latest)\n\nAda Security provides a security framework which allows applications to define\nand enforce security policies. This framework allows users to authenticate by using\n[OpenID Authentication 2.0](https://openid.net/specs/openid-authentication-2_0.html)\nas well as [OAuth 2.0](https://oauth.net/2/) protocol.\nIt allows a web application to integrate easily with Yahoo!, Gitlab, Github, Facebook and\nGoogle+ authentication systems.\nThe Ada05 library includes:\n\n* An OpenID client authentication,\n* An OAuth 2.0 client authentication,\n* An OpenID Connect authentication framework,\n* An OAuth 2.0 server authentication framework,\n* A policy based security framework to protect the resources\n\nThe Ada Security library is used by the\n[Ada Web Application](https://gitlab.com/stcarrez/ada-awa)\nto provide authentication and access control to users within the web applications.\n\n## Documentation\n\n* [Ada Security Programmer's Guide](https://ada-security.readthedocs.io/en/latest/)\n\n"
+maintainers = [
+"Stephane.Carrez@gmail.com",
+]
+maintainers-logins = [
+"stcarrez",
+]
+name = "security"
+project-files = [
+"security.gpr",
+]
+tags = [
+"security",
+"oauth2",
+"authentication",
+"permissions",
+"jwt",
+]
+version = "1.6.0"
+website = "https://gitlab.com/stcarrez/ada-security"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.gpr-externals]
+SECURITY_BUILD = [
+"distrib",
+"debug",
+"optimize",
+"profile",
+"coverage",
+]
+SECURITY_LIBRARY_TYPE = [
+"relocatable",
+"static",
+"static-pic",
+]
+[solution.state.release.origin]
+commit = "9ca2987053dd91f354837deb4ec69fee5f799267"
+url = "git+https://github.com/stcarrez/ada-security.git"
+[[solution.state.release.depends-on]]
+utilada = "^2.9.0"
+utilada_xml = "^2.9.0"
+[[solution.state]]
+crate = "utilada"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=2.9.0"
+[solution.state.release]
+authors = [
+"Stephane.Carrez@gmail.com",
+]
+description = "Utility Library with streams, processes, logs, serialization, encoders"
+licenses = "Apache-2.0"
+long-description = "[![Build Status](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/build.json)](https://porion.vacs.fr/porion/projects/view/ada-util/summary)\n[![Test Status](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/tests.json)](https://porion.vacs.fr/porion/projects/view/ada-util/xunits)\n[![Coverage](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/coverage.json)](https://porion.vacs.fr/porion/projects/view/ada-util/summary)\n[![Documentation Status](https://readthedocs.org/projects/ada-util/badge/?version=latest)](https://ada-util.readthedocs.io/en/latest/?badge=latest)\n\nThis Ada library contains various utility packages for building\nAda applications.  This includes:\n\n* A logging framework close to Java log4j framework,\n* Support for INI and property files,\n* A serialization/deserialization framework for XML, JSON, CSV, Forms\n* Ada beans framework,\n* Encoding/decoding framework (Base16, Base32, Base64, SHA, HMAC-SHA, AES-256),\n* A composing stream framework (raw, files, buffers, pipes, sockets, encryption, decryption, LZMA compression, LZMA decompression),\n* Several concurrency tools (reference counters, counters, pools, fifos, arrays),\n* Process creation and pipes,\n* Support for loading shared libraries (on Windows or Unix),\n* HTTP client library on top of CURL or AWS.\n\n# Documentation\n\n* [Ada Utility Library Programmer's Guide](https://ada-util.readthedocs.io/en/latest/) [PDF](https://github.com/stcarrez/ada-util/blob/master/docs/utilada-book.pdf)\n* [IO stream composition and serialization with Ada Utility Library](https://blog.vacs.fr/vacs/blogs/post.html?post=2022/03/05/IO-stream-composition-and-serialization-with-Ada-Utility-Library)\n* [Easy reading and writing files with Ada Utility Library](https://blog.vacs.fr/vacs/blogs/post.html?post=2020/08/09/Easy-reading-and-writing-files-with-Ada-Utility-Library)\n* [Process creation in Java and Ada](https://blog.vacs.fr/vacs/blogs/post.html?post=2012/03/16/Process-creation-in-Java-and-Ada)\n\n"
+maintainers = [
+"Stephane.Carrez@gmail.com",
+]
+maintainers-logins = [
+"stcarrez",
+]
+name = "utilada"
+project-files = [
+"utilada_conf.gpr",
+"utilada_core.gpr",
+"utilada_base.gpr",
+"utilada_sys.gpr",
+]
+tags = [
+"logging",
+"processes",
+"streams",
+"json",
+"beans",
+"encoders",
+"decoders",
+]
+version = "2.9.0"
+website = "https://gitlab.com/stcarrez/ada-util"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.environment]
+[solution.state.release.environment.DYNAMO_BUNDLE_PATH]
+prepend = "${CRATE_ROOT}/bundles"
+[solution.state.release.gpr-externals]
+UTIL_BUILD = [
+"distrib",
+"debug",
+"optimize",
+"profile",
+"coverage",
+]
+UTIL_HAS_TIME_64 = [
+"yes",
+"no",
+]
+UTIL_LIBRARY_TYPE = [
+"relocatable",
+"static",
+"static-pic",
+]
+UTIL_OS = [
+"win32",
+"win64",
+"linux32",
+"linux64",
+"macos64",
+"netbsd32",
+"netbsd64",
+"freebsd32",
+"freebsd64",
+"openbsd32",
+"openbsd64",
+]
+[solution.state.release.gpr-set-externals]
+UTIL_OS = "linux64"
+[solution.state.release.origin]
+commit = "bd635f55729b99ca1d2633fb487fe17f935e7d6b"
+url = "git+https://gitlab.com/stcarrez/ada-util.git"
+[[solution.state]]
+crate = "utilada_curl"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=2.9.0"
+[solution.state.release]
+authors = [
+"Stephane.Carrez@gmail.com",
+]
+description = "Utility Library REST support on top of CURL"
+licenses = "Apache-2.0"
+long-description = "[![Build Status](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/build.json)](https://porion.vacs.fr/porion/projects/view/ada-util/summary)\n[![Test Status](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/tests.json)](https://porion.vacs.fr/porion/projects/view/ada-util/xunits)\n[![Coverage](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/coverage.json)](https://porion.vacs.fr/porion/projects/view/ada-util/summary)\n[![Documentation Status](https://readthedocs.org/projects/ada-util/badge/?version=latest)](https://ada-util.readthedocs.io/en/latest/?badge=latest)\n\nThis small library provides an HTTP backend on top of CURL.\nIt can be used by the `Util.Http` package.\n\nAn alternate HTTP backend is provided by AWS with `utilada_aws`.\n\n# Documentation\n\n* [Ada Utility Library Programmer's Guide](https://ada-util.readthedocs.io/en/latest/) [PDF](https://github.com/stcarrez/ada-util/blob/master/docs/utilada-book.pdf)\n\n"
+maintainers = [
+"Stephane.Carrez@gmail.com",
+]
+maintainers-logins = [
+"stcarrez",
+]
+name = "utilada_curl"
+project-files = [
+"utilada_curl.gpr",
+]
+tags = [
+"web",
+"http",
+"rest",
+]
+version = "2.9.0"
+website = "https://gitlab.com/stcarrez/ada-util"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.gpr-externals]
+UTIL_BUILD = [
+"distrib",
+"debug",
+"optimize",
+"profile",
+"coverage",
+]
+UTIL_LIBRARY_TYPE = [
+"relocatable",
+"static",
+"static-pic",
+]
+[solution.state.release.origin]
+commit = "bd635f55729b99ca1d2633fb487fe17f935e7d6b"
+subdir = "./curl/"
+url = "git+https://gitlab.com/stcarrez/ada-util.git"
+[[solution.state.release.depends-on]]
+libcurl = "*"
+utilada = "^2.9.0"
+[[solution.state]]
+crate = "utilada_xml"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=2.9.0"
+[solution.state.release]
+authors = [
+"Stephane.Carrez@gmail.com",
+]
+description = "Utility Library serialization with XML/Ada"
+licenses = "Apache-2.0"
+long-description = "[![Build Status](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/build.json)](https://porion.vacs.fr/porion/projects/view/ada-util/summary)\n[![Test Status](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/tests.json)](https://porion.vacs.fr/porion/projects/view/ada-util/xunits)\n[![Coverage](https://img.shields.io/endpoint?url=https://porion.vacs.fr/porion/api/v1/projects/ada-util/badges/coverage.json)](https://porion.vacs.fr/porion/projects/view/ada-util/summary)\n[![Documentation Status](https://readthedocs.org/projects/ada-util/badge/?version=latest)](https://ada-util.readthedocs.io/en/latest/?badge=latest)\n\nThis library provides a serialization framework on top of XML/Ada for Ada Utility Library.\n\n# Documentation\n\n* [Ada Utility Library Programmer's Guide](https://ada-util.readthedocs.io/en/latest/) [PDF](https://github.com/stcarrez/ada-util/blob/master/docs/utilada-book.pdf)\n\n"
+maintainers = [
+"Stephane.Carrez@gmail.com",
+]
+maintainers-logins = [
+"stcarrez",
+]
+name = "utilada_xml"
+project-files = [
+"utilada_xml.gpr",
+]
+tags = [
+"xml",
+"serialization",
+]
+version = "2.9.0"
+website = "https://gitlab.com/stcarrez/ada-util"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.gpr-externals]
+UTIL_BUILD = [
+"distrib",
+"debug",
+"optimize",
+"profile",
+"coverage",
+]
+UTIL_LIBRARY_TYPE = [
+"relocatable",
+"static",
+"static-pic",
+]
+[solution.state.release.origin]
+commit = "bd635f55729b99ca1d2633fb487fe17f935e7d6b"
+subdir = "./xml/"
+url = "git+https://gitlab.com/stcarrez/ada-util.git"
+[[solution.state.release.depends-on]]
+utilada = "^2.9.0"
+xmlada = "^24.0|^25.0"
+[[solution.state]]
+crate = "xmlada"
+fulfilment = "solved"
+pinned = false
+transitivity = "indirect"
+versions = "^24.0|^25.0"
+[solution.state.release]
+authors = [
+"AdaCore",
+]
+description = "The XML/Ada toolkit"
+licenses = "GPL-3.0-or-later WITH GCC-exception-3.1"
+maintainers = [
+"chouteau@adacore.com",
+]
+maintainers-logins = [
+"Fabien-Chouteau",
+]
+name = "xmlada"
+project-files = [
+"distrib/xmlada.gpr",
+"dom/xmlada_dom.gpr",
+"sax/xmlada_sax.gpr",
+"input_sources/xmlada_input.gpr",
+"schema/xmlada_schema.gpr",
+"unicode/xmlada_unicode.gpr",
+]
+version = "25.0.0"
+website = "https://github.com/AdaCore/xmlada"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.gpr-externals]
+LIBRARY_TYPE = [
+"static",
+"relocatable",
+"static-pic",
+]
+XMLADA_BUILD_MODE = [
+"distrib",
+"Debug",
+"Production",
+"profile",
+"coverage",
+"nochecks",
+]
+[solution.state.release.origin]
+hashes = [
+"sha512:7f12fe3af650530590c8199b8900ef903f647b0421603cfee8141ab57321c23b8e5dd1e1f3205476fdac874aaf5666511d822d24f64f263d492966aa1df19f82",
+]
+url = "https://github.com/adacore/xmlada/archive/v25.0.0/xmlada-25.0.0.zip"
+[[solution.state.release.actions]]
+command = [
+"sh",
+"configure",
+]
+directory = "."
+type = "post-fetch"
+[[solution.state.release.depends-on]]
+gnat = ">=11"
+

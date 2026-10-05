@@ -8,7 +8,12 @@ Install the package:
 cargo add acyclic-inference
 ```
 
-Connect with `Inference::connect(endpoint, api_key, ca_pem)`. The native client uses authenticated HTTPS and tonic gRPC. Supply a trusted PEM CA when the service uses a private CA. Create or attach a Context, then use the typed operation builders to fork, edit, generate, and retain. Save the Run identity after admission so an interrupted caller can recover it. Warm commitments have their own inspect, renew, and release lifecycle.
+Connect with `client::Client::connect(endpoint, token)`. The Rust facade selects
+authenticated gRPC on native targets and HTTP/JSON in browsers, verifies the
+Rust-owned handshake before application calls, and keeps the typed operation
+surface identical across targets. Use `connect_with_ca` only when a native
+provider uses a private CA. Create or attach a Context, then use the typed
+operation builders to fork, edit, generate, and retain.
 
 ## Idle KV retention
 
@@ -35,8 +40,8 @@ Service adapters handle authentication, semantic admission, caller-bound
 validation, and stream lifecycle checks.
 
 The [Rust guide](docs/guide.md) maps the topics to these APIs.
-`examples/inference-capability-discovery.rs` demonstrates `Inference::models`;
-provide the endpoint, credential, and trusted CA to run it.
+`examples/inference-capability-discovery.rs` demonstrates `client::Client::list`;
+provide the endpoint and credential to run it.
 
 See the [Rust API](https://docs.rs/acyclic-inference/latest/acyclic_inference/),
 [repository example](https://github.com/acyclic-labs/sdk/blob/main/README.md),

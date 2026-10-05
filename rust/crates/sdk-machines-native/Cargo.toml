@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-machines = { package = "acyclic-machines", path = "../machines", features = ["grpc"] }
+sdk-machines-public = { path = "../sdk-machines-public" }
 futures.workspace = true
 napi.workspace = true
 napi-derive.workspace = true
@@ -25,3 +26,4 @@ napi-build = "2.3.1"
 
 [lints]
 workspace = true
+

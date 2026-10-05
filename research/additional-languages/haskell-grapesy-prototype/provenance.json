@@ -1,0 +1,27 @@
+{
+  "toolchain": {
+    "ghc": "9.2.8",
+    "cabal": "3.10.2.1",
+    "generator": "proto-lens-protoc 0.9.0.1"
+  },
+  "rust_proto_sha256": "B7463189BA964E193D5EBD517AF7B609462F1BF84B6BAD9DCAE216389196D5B9",
+  "hackage_archives": {
+    "grapesy-1.2.1": "be40dda86d9a08d042504d9b94b4f8377ed08a9ce45fee413b8d0637a50951ca",
+    "proto-lens-0.7.1.7": "5c9826a4b90d07f06470e058ef3fe63ee3123614b4705509ddbf2d5e55e7153a",
+    "proto-lens-protobuf-types-0.7.2.3": "0693063852786f707c1d71c4f22eb2610961746e368f30242edb76b55e20e23a",
+    "proto-lens-runtime-0.7.0.8": "25a1508a886d0c5dd40e4b0b454f589f95e51b2fa2c63e373fa608ef82d16c38",
+    "proto-lens-protoc-0.9.0.1": "513e4338ca74b06929251f78e1c0cd1cc6b26d5e32e80cbcbcc23848ac16e446"
+  },
+  "remote_qualification": "runner-wired-pending-rust-fixture-conformance",
+  "typed_surface": {
+    "status": "passed",
+    "active_rpc_count": 106,
+    "active_service_count": 18,
+    "proof": "app/FullTypedMain.hs",
+    "generated_binding_modules": 23,
+    "archived_bindings_compiled": true
+  },
+  "request_manifest": "request-manifest.json",
+  "request_manifest_sha256": "90b56f1db5a0bfcf5321fd35333289ad9740af5b45ec00c86e26e03c0693a47a",
+  "remote_runner": "run-remote-prototype.ps1"
+}

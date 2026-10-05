@@ -3,7 +3,32 @@
 
 use std::collections::HashSet;
 
+/// Generated independent negotiation bindings for native transports.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod control_wire {
+    #![allow(
+        missing_docs,
+        clippy::all,
+        clippy::pedantic,
+        reason = "generated control bindings"
+    )]
+    pub mod protocol {
+        /// Generated protocol identity and capability handshake messages.
+        pub mod v1 {
+            include!("generated/acyclic.protocol.v1.rs");
+        }
+    }
+    /// Generated transport service used for capability handshakes.
+    pub mod transport {
+        /// Version-one protocol handshake RPC bindings.
+        pub mod v1 {
+            include!("generated/acyclic.transport.v1.rs");
+        }
+    }
+}
+
 pub mod client;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 pub mod http;
 

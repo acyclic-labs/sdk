@@ -1,0 +1,27 @@
+{
+  "schema": "acyclic.sdk.embedded.rust-qualification.v1",
+  "status": "passed",
+  "command": "sdk-generation qualify-embedded --source-root <sdk> --output <isolated-report> --receipt research/acceptance/embedded/release-abi-20261004.json --evidence research/acceptance/embedded/release-abi-generation-evidence.json --package-root <isolated-package>/prefix",
+  "validator": {
+    "crate": "rust/crates/sdk-generation",
+    "binary_sha256": "sha256:585d239acb79a82c77ef6288c4c5b2ed62124de29d8712069e1da3182158cd57",
+    "source_revision": "uncommitted-build-of-qualification-helper"
+  },
+  "source": {
+    "revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+    "digest": "sha256:36055ba48a01d08909cc152f480f3570e0fd81cad29cce0b5aca229f852a7555"
+  },
+  "artifact_digest": "sha256:81d5df80fd3977d50943c4ccecba2d5318c2ae4bc06233e3dad850acfba7e1ed",
+  "positive": {
+    "exit_code": 0,
+    "consumers": ["c", "python-ctypes", "cpp"],
+    "pe_export": "acyclic_embedded_abi_version",
+    "report_schema": "acyclic.sdk.embedded.qualification.v1"
+  },
+  "tamper_negative": {
+    "mutation": "one byte changed in bin/acyclic_sdk_embedded_prototype.dll",
+    "exit_code": 1,
+    "rejection": "embedded artifact hash mismatch: bin/acyclic_sdk_embedded_prototype.dll"
+  },
+  "publication": { "registry_published": false, "production_deployed": false }
+}

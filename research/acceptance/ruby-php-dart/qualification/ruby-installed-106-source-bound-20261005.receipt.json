@@ -1,0 +1,235 @@
+{
+  "schema": "acyclic.sdk.ruby.installed-106-rpc.source-bound.v3",
+  "generated_at_utc": "2026-10-05T02:07:39.2302845Z",
+  "status": "source-bound-observed-failed",
+  "qualification_input": false,
+  "source_binding": {
+    "source_git_sha": "061c31b47feb4cb0edce094928537d3eacd1746f",
+    "rust_manifest": "work/rpd-rust-106-manifest-current-20261005.json",
+    "rust_manifest_sha256": "c1b91bab72fa10559f937d635998953f2feed23f422f5e77629fc1288264465b",
+    "rust_manifest_complete": true,
+    "rust_record_count": 106,
+    "canonical_fixture_commits": [
+      "95cf11c7b5c443bfeaf06b40193aeccf7c4db5f0",
+      "1923135038ef0fd51f7bda753c20b1ff142b1748"
+    ],
+    "fixture_binary": "work/rpd-fixture-current-target/debug/fixture-server.exe",
+    "fixture_binary_sha256": "ee9d08f53d7dac55d92ea619519b23ce6437f4c7c563a7588af19ec23b50934e",
+    "fixture_source_closure": "sha256:d236cd484f677fa1f8b38be0c1feb4d36ce39a76ee4816d9673818ea64ab43c5",
+    "rust_machine_compatibility_patch": "machines create request uses Require when required capability includes LiveCheckpoint",
+    "harness_handshake_source_fix": "filesystem harness observations use protocol.v1 handshake message identities"
+  },
+  "runtime": {
+    "ruby_executable": "Q:\\sdk\\ruby-cache\\ruby\\rubyinstaller-3.2.11-1-x64\\bin\\ruby.exe",
+    "ruby_sha256": "522bec55ce15ae724222207930222c4fd85b9688fec155093067872872e9b7bb",
+    "ruby_version": "3.2.11",
+    "grpc": "1.82.0",
+    "google_protobuf": "4.33.0",
+    "gem_home": "Q:\\sdk\\ruby-cache\\gems"
+  },
+  "execution": {
+    "endpoint": "127.0.0.1:52005",
+    "transport": "grpc",
+    "client": "Acyclic::Remote::Client",
+    "streaming_classification": "Rust-owned exact RPC identities",
+    "actual_public_request_construction": true,
+    "request_wire_from_rust_manifest": true,
+    "response_hashes_compared": true,
+    "cancellation": "server-streaming operation cancelled in ensure; Follow timed out before first frame",
+    "receipt": "work/rpd-ruby-106-result-current.json",
+    "receipt_sha256": "f425ffc27c529afc4b36851241b225235356f2834bb274a21c36ffc61455f33c"
+  },
+  "counts": {
+    "status": "failed",
+    "record_count": 106,
+    "passed": 81,
+    "response_mismatch": 11,
+    "failed": 14
+  },
+  "observed_failures": [
+    {
+      "index": 3,
+      "rpc": "acyclic.actors.v1.ActorsService/AddSubscription",
+      "status": "failed",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:AddSubscriptionRequest rejected: required field is absent or malformed. debug_error_string:{INVALID_ARGUMENT:AddSubscriptionRequest rejected: required field is absent or malformed}"
+    },
+    {
+      "index": 4,
+      "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription",
+      "status": "failed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:subscription does not exist. debug_error_string:{NOT_FOUND:subscription does not exist}"
+    },
+    {
+      "index": 5,
+      "rpc": "acyclic.actors.v1.ActorsService/ResumeSubscription",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 6,
+      "rpc": "acyclic.actors.v1.ActorsService/CheckpointActor",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 7,
+      "rpc": "acyclic.actors.v1.ActorsService/InvokeActor",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 10,
+      "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 11,
+      "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
+      "status": "failed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Workers job is unknown. debug_error_string:{NOT_FOUND:Workers job is unknown}"
+    },
+    {
+      "index": 12,
+      "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
+      "status": "failed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Workers job is unknown. debug_error_string:{NOT_FOUND:Workers job is unknown}"
+    },
+    {
+      "index": 14,
+      "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 20,
+      "rpc": "acyclic.stream.v2.StreamService/Follow",
+      "status": "failed",
+      "error_class": "Timeout::Error",
+      "error": "execution expired"
+    },
+    {
+      "index": 27,
+      "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 28,
+      "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+      "status": "failed",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:PutObject stream ended before completion. debug_error_string:{INVALID_ARGUMENT:PutObject stream ended before completion}"
+    },
+    {
+      "index": 29,
+      "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+      "status": "failed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Objects operation failed (NotFound). debug_error_string:{NOT_FOUND:Objects operation failed (NotFound)}"
+    },
+    {
+      "index": 30,
+      "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+      "status": "failed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Objects operation failed (NotFound). debug_error_string:{NOT_FOUND:Objects operation failed (NotFound)}"
+    },
+    {
+      "index": 31,
+      "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 32,
+      "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 33,
+      "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 34,
+      "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
+      "status": "failed",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:UploadPart stream ended before completion. debug_error_string:{INVALID_ARGUMENT:UploadPart stream ended before completion}"
+    },
+    {
+      "index": 35,
+      "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+      "status": "failed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Objects operation failed (NotFound). debug_error_string:{NOT_FOUND:Objects operation failed (NotFound)}"
+    },
+    {
+      "index": 36,
+      "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+      "status": "failed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Objects operation failed (NotFound). debug_error_string:{NOT_FOUND:Objects operation failed (NotFound)}"
+    },
+    {
+      "index": 37,
+      "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 90,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Export",
+      "status": "response_mismatch",
+      "error_class": null,
+      "error": null
+    },
+    {
+      "index": 91,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Import",
+      "status": "failed",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:import stream ended before its closure. debug_error_string:{INVALID_ARGUMENT:import stream ended before its closure}"
+    },
+    {
+      "index": 104,
+      "rpc": "acyclic.harness.v2.HarnessService/Observe",
+      "status": "failed",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:invalid character: found `i` at 1. debug_error_string:{INVALID_ARGUMENT:invalid character: found `i` at 1}"
+    },
+    {
+      "index": 105,
+      "rpc": "acyclic.harness.v2.HarnessService/Cancel",
+      "status": "failed",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:invalid character: found `i` at 1. debug_error_string:{INVALID_ARGUMENT:invalid character: found `i` at 1}"
+    }
+  ],
+  "evidence": {
+    "manifest": "Rust executable fixture manifest complete with 106 records and no missing RPCs",
+    "positive_rule": "passed requires public client.call, actual gRPC response, and exact response frame SHA256; semantic classification additionally decodes returned protobuf fields in Rust manifest order",
+    "negative_rule": "observed-status cases pass only on expected non-OK gRPC outcome",
+    "semantic_classification": "research/acceptance/ruby-php-dart/qualification/ruby-installed-106-semantic-classification-20261005.json",
+    "dynamic_identity_rule": "Only job_id and upload_id differ while all stable fields agree; compare these returned IDs through the ordered Rust transcript before follow-on requests",
+    "limitations": "Ruby package currently reaches 81/106 exact response outcomes; 2 identity-only differences, 7 state or fixture differences, 2 response-shape differences, and 14 request, stream, or follow-on failures remain evidence-backed findings",
+    "no_claim": "This receipt does not qualify Ruby for the 106-operation release gate"
+  }
+}

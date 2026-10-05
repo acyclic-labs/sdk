@@ -1,0 +1,569 @@
+name: .NET embedded RID package qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Rust target to build, or all eight targets
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+  workflow_call:
+    inputs:
+      target:
+        required: false
+        type: string
+        default: all
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: dotnet-embedded-rid-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: native ${{ matrix.rid }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            rust_target: x86_64-pc-windows-msvc
+            runner: blacksmith-4vcpu-windows-2025
+            kind: native
+          - rid: win-arm64
+            rust_target: aarch64-pc-windows-msvc
+            runner: windows-11-vs2026-arm
+            kind: native
+          - rid: linux-x64
+            rust_target: x86_64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404
+            kind: native
+          - rid: linux-arm64
+            rust_target: aarch64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            kind: native
+          - rid: linux-musl-x64
+            rust_target: x86_64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404
+            kind: musl
+            musl_image: rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452
+          - rid: linux-musl-arm64
+            rust_target: aarch64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            kind: musl
+            musl_image: rust:1.98.1-alpine3.22@sha256:8c8136ecbaef3c248920e564a832a5217ff95819fa351984b48d39def57db223
+          - rid: osx-x64
+            rust_target: x86_64-apple-darwin
+            runner: macos-15-intel
+            kind: native
+          - rid: osx-arm64
+            rust_target: aarch64-apple-darwin
+            runner: blacksmith-6vcpu-macos-15
+            kind: native
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.kind == 'native'
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install native ARM64 Windows linker
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.rust_target == 'aarch64-pc-windows-msvc'
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 20.1.8
+          arch: arm64
+          directory: ${{ runner.temp }}/llvm
+          env: false
+
+      - name: Select native ARM64 Windows linker
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.rust_target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "CC_aarch64_pc_windows_msvc=$env:RUNNER_TEMP\llvm\bin\clang.exe"
+
+      - name: Build native asset
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.kind == 'native'
+        shell: pwsh
+        run: pwsh -NoLogo -NoProfile -File scripts/build-dotnet-embedded-package.ps1 -Output (Join-Path $env:RUNNER_TEMP 'dotnet-embedded') -Target '${{ matrix.rust_target }}' -NativeOnly
+
+      - name: Build dynamic musl asset in pinned Alpine
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.kind == 'musl'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          ALPINE_IMAGE: ${{ matrix.musl_image }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dotnet-embedded"
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$RUNNER_TEMP/dotnet-embedded:/tmp/dotnet-embedded" \
+            --workdir /src \
+            --env RUST_TARGET="$RUST_TARGET" \
+            "$ALPINE_IMAGE" sh -euxc '
+              apk add --no-cache bash binutils build-base ca-certificates git musl-dev
+              git config --global --add safe.directory /src
+              channel="$(grep -m1 ^channel rust-toolchain.toml | cut -d= -f2 | tr -cd A-Za-z0-9.)"
+              test "$channel" = "1.98.1"
+              rustc -Vv | grep -F "release: $channel"
+              bash scripts/build-dotnet-embedded-native.sh --root /src --target "$RUST_TARGET" --output /tmp/dotnet-embedded
+            '
+
+      - name: Validate generated header and complete Rust ABI export surface
+        if: inputs.target == 'all' || inputs.target == matrix.rust_target
+        shell: pwsh
+        run: |
+          $header = Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'dotnet-embedded/rust-target') -Recurse -File -Filter 'acyclic_embedded_prototype.h' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $header) { throw 'The Rust build did not emit its cbindgen header.' }
+          $required = @(
+            'acyclic_embedded_abi_version',
+            'acyclic_embedded_engine_open',
+            'acyclic_embedded_engine_close',
+            'acyclic_embedded_engine_append',
+            'acyclic_embedded_reader_open',
+            'acyclic_embedded_reader_next',
+            'acyclic_embedded_reader_cancel',
+            'acyclic_embedded_reader_close',
+            'acyclic_buffer_release',
+            'acyclic_append_result_release',
+            'acyclic_open_result_release',
+            'acyclic_open_result_take_reader',
+            'acyclic_next_result_release',
+            'acyclic_embedded_engine_wire_call',
+            'acyclic_wire_result_release'
+          )
+          $headerText = Get-Content -LiteralPath $header.FullName -Raw
+          foreach ($name in $required) {
+            if ($headerText -notmatch ('(?m)\b' + [regex]::Escape($name) + '\s*\(')) {
+              throw "Generated C header is missing Rust ABI export $name"
+            }
+          }
+          if ('${{ matrix.kind }}' -eq 'native') {
+            $runtime = Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'dotnet-embedded/native') -Recurse -File |
+              Where-Object { $_.Name -in @('acyclic_sdk_embedded_prototype.dll', 'libacyclic_sdk_embedded_prototype.so', 'libacyclic_sdk_embedded_prototype.dylib') } |
+              Select-Object -First 1
+            if (-not $runtime) { throw 'The Rust build did not emit a native runtime for ABI reflection.' }
+            $python = $null
+            foreach ($candidate in @('python3', 'python', 'py')) {
+              $command = Get-Command $candidate -ErrorAction SilentlyContinue
+              if ($command) { $python = $command.Source; break }
+            }
+            if (-not $python) { throw 'Python is required to reflect all 15 ABI exports on every native RID.' }
+            & $python (Join-Path $env:GITHUB_WORKSPACE 'rust/crates/sdk-embedded-prototype/tests/python_consumer.py') $runtime.FullName
+            if ($LASTEXITCODE -ne 0) { throw "The installed Rust ABI consumer failed for ${{ matrix.rid }}" }
+          }
+
+      - name: Reflect 15 Rust ABI exports in pinned musl runtime
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.kind == 'musl'
+        shell: bash
+        env:
+          RID: ${{ matrix.rid }}
+          ALPINE_IMAGE: ${{ matrix.musl_image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$RUNNER_TEMP/dotnet-embedded:/pkg" \
+            --env RID="$RID" \
+            "$ALPINE_IMAGE" sh -euxc '
+              apk add --no-cache python3
+              case "$RID" in
+                linux-musl-x64|linux-musl-arm64) ;;
+                *) echo "unexpected musl RID: $RID" >&2; exit 2 ;;
+              esac
+              python3 /src/rust/crates/sdk-embedded-prototype/tests/python_consumer.py "/pkg/native/$RID/libacyclic_sdk_embedded_prototype.so"
+            '
+
+      - name: Upload native asset
+        if: always() && (inputs.target == 'all' || inputs.target == matrix.rust_target)
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: dotnet-embedded-native-${{ matrix.rid }}
+          path: ${{ runner.temp }}/dotnet-embedded/native
+          if-no-files-found: error
+          retention-days: 14
+
+  package:
+    name: package all eight RIDs
+    if: inputs.target == 'all'
+    needs: native
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: 8.0.425
+
+      - name: Download native assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dotnet-embedded-native-*
+          path: ${{ runner.temp }}/dotnet-embedded-download
+          merge-multiple: false
+
+      - name: Assemble and pack all eight RIDs
+        shell: pwsh
+        env:
+          DOWNLOAD_ROOT: ${{ runner.temp }}/dotnet-embedded-download
+          PACKAGE_ROOT: ${{ runner.temp }}/dotnet-embedded-package
+        run: |
+          $nativeRoot = Join-Path $env:PACKAGE_ROOT 'native'
+          New-Item -ItemType Directory -Force -Path $nativeRoot | Out-Null
+          $assets = Get-ChildItem -LiteralPath $env:DOWNLOAD_ROOT -File -Recurse |
+            Where-Object { $_.Name -in @('acyclic_sdk_embedded_prototype.dll', 'libacyclic_sdk_embedded_prototype.so', 'libacyclic_sdk_embedded_prototype.dylib') }
+          if ($assets.Count -ne 8) { throw "Expected eight native assets, found $($assets.Count)" }
+          $sourceRevision = (& git rev-parse HEAD).Trim()
+          if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$') { throw 'Package checkout does not have an exact source revision.' }
+          $sourceInputs = @(
+            'rust/crates/sdk-embedded-prototype/Cargo.toml',
+            'rust/crates/sdk-embedded-prototype/Cargo.lock',
+            'rust/crates/sdk-embedded-prototype/build.rs',
+            'rust/crates/sdk-embedded-prototype/src/lib.rs',
+            'rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs'
+          )
+          $lockfileHash = (Get-FileHash -Algorithm SHA256 -LiteralPath 'rust/crates/sdk-embedded-prototype/Cargo.lock').Hash.ToLowerInvariant()
+          $cargoCommand = 'cargo build --locked --release --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --target <rust_target> --target-dir <target_dir>'
+          $nativeManifests = @(Get-ChildItem -LiteralPath $env:DOWNLOAD_ROOT -File -Recurse -Filter 'native-manifest.json')
+          if ($nativeManifests.Count -ne 8) { throw "Expected eight native provenance manifests, found $($nativeManifests.Count)" }
+          $seenRids = @{}
+          foreach ($manifestFile in $nativeManifests) {
+            $manifest = Get-Content -LiteralPath $manifestFile.FullName -Raw | ConvertFrom-Json
+            if ($manifest.schema -ne 'acyclic.sdk.dotnet.embedded.native-manifest.v1' -or $manifest.source_revision -ne $sourceRevision -or $manifest.cargo_lock_sha256 -ne $lockfileHash -or $manifest.cargo_command -ne $cargoCommand -or (@($manifest.source_inputs) -join '|') -ne ($sourceInputs -join '|')) {
+              throw "Native provenance does not bind to package source revision: $($manifestFile.FullName)"
+            }
+            foreach ($record in @($manifest.assets)) {
+              if ($seenRids.ContainsKey([string]$record.rid)) { throw "Duplicate native RID provenance: $($record.rid)" }
+              $seenRids[[string]$record.rid] = $true
+              $asset = @($assets | Where-Object { $_.Directory.Name -eq $record.rid -and $_.Name -eq $record.file })
+              if ($asset.Count -ne 1) { throw "Native provenance asset is missing or ambiguous: $($record.rid)/$($record.file)" }
+              $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $asset[0].FullName).Hash.ToLowerInvariant()
+              if ($actualHash -ne ([string]$record.sha256).ToLowerInvariant()) { throw "Native asset hash does not match provenance: $($record.rid)" }
+            }
+          }
+          if ($seenRids.Count -ne 8) { throw "Expected eight distinct native RID records, found $($seenRids.Count)" }
+          foreach ($asset in $assets) {
+            $rid = $asset.Directory.Name
+            $destination = Join-Path $nativeRoot $rid
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
+            Copy-Item -LiteralPath $asset.FullName -Destination (Join-Path $destination $asset.Name) -Force
+          }
+          [ordered]@{
+            schema = 'acyclic.sdk.dotnet.embedded.native-manifest.v1'
+            source_revision = $sourceRevision
+            source_revision_kind = 'git-oid'
+            source_inputs = @($sourceInputs)
+            cargo_manifest = 'rust/crates/sdk-embedded-prototype/Cargo.toml'
+            cargo_lock = 'rust/crates/sdk-embedded-prototype/Cargo.lock'
+            cargo_lock_sha256 = $lockfileHash
+            cargo_command = $cargoCommand
+            assets = @($nativeManifests | ForEach-Object {
+              $manifest = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+              @($manifest.assets)
+            })
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $nativeRoot 'native-manifest.json') -Encoding utf8NoBOM
+          pwsh -NoLogo -NoProfile -File scripts/build-dotnet-embedded-package.ps1 -Output $env:PACKAGE_ROOT -NativeRoot $nativeRoot -PackageOnly
+          $nupkg = Join-Path $env:PACKAGE_ROOT 'packages/Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg'
+          if (-not (Test-Path -LiteralPath $nupkg -PathType Leaf)) { throw "Missing package $nupkg" }
+          $expanded = Join-Path $env:PACKAGE_ROOT 'expanded'
+          Expand-Archive -LiteralPath $nupkg -DestinationPath $expanded -Force
+          $expected = @(
+            'win-x64', 'win-arm64', 'linux-x64', 'linux-arm64',
+            'linux-musl-x64', 'linux-musl-arm64', 'osx-x64', 'osx-arm64'
+          )
+          foreach ($rid in $expected) {
+            $found = Get-ChildItem -LiteralPath (Join-Path $expanded "runtimes/$rid/native") -File -ErrorAction SilentlyContinue
+            if (-not $found) { throw "Package is missing native RID asset $rid" }
+          }
+          $reproRoot = Join-Path $env:RUNNER_TEMP 'dotnet-embedded-package-repro'
+          pwsh -NoLogo -NoProfile -File scripts/build-dotnet-embedded-package.ps1 -Output $reproRoot -NativeRoot $nativeRoot -PackageOnly
+          $reproPackage = Join-Path $reproRoot 'packages/Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg'
+          if (-not (Test-Path -LiteralPath $reproPackage -PathType Leaf)) { throw 'The reproducibility package was not produced.' }
+          $packageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nupkg).Hash.ToLowerInvariant()
+          $reproHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $reproPackage).Hash.ToLowerInvariant()
+          if ($packageHash -ne $reproHash) {
+            throw "Canonical NuGet package bytes are not reproducible: $packageHash != $reproHash"
+          }
+          $nativeManifestPath = Join-Path $nativeRoot 'native-manifest.json'
+          $nativeManifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nativeManifestPath).Hash.ToLowerInvariant()
+          [ordered]@{
+            schema = 'acyclic.sdk.dotnet.embedded.package-reproducibility.v1'
+            status = 'passed'
+            source_revision = $sourceRevision
+            source_revision_kind = 'git-oid'
+            native_manifest = 'native/native-manifest.json'
+            native_manifest_sha256 = $nativeManifestHash
+            package = 'packages/Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg'
+            package_sha256 = $packageHash
+            repeated_pack_sha256 = $reproHash
+            canonical_archive = $true
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:PACKAGE_ROOT 'package-reproducibility.json') -Encoding utf8NoBOM
+
+      - name: Upload package and producer manifest
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: dotnet-embedded-package
+          path: ${{ runner.temp }}/dotnet-embedded-package
+          if-no-files-found: error
+          retention-days: 14
+
+  consumer:
+    name: installed consumer ${{ matrix.rid }}
+    if: inputs.target == 'all'
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: blacksmith-4vcpu-windows-2025
+            kind: dotnet
+          - rid: win-arm64
+            runner: windows-11-vs2026-arm
+            kind: dotnet
+          - rid: linux-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+            kind: dotnet
+          - rid: linux-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            kind: dotnet
+          - rid: linux-musl-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+            kind: musl
+            musl_image: rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452
+            dotnet_image: mcr.microsoft.com/dotnet/sdk@sha256:566b0dd501284d96c6e2fef35e1bd23c4f53e6699d1b76b9f7d7da56af723287
+          - rid: linux-musl-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            kind: musl
+            musl_image: rust:1.98.1-alpine3.22@sha256:8c8136ecbaef3c248920e564a832a5217ff95819fa351984b48d39def57db223
+            dotnet_image: mcr.microsoft.com/dotnet/sdk@sha256:566b0dd501284d96c6e2fef35e1bd23c4f53e6699d1b76b9f7d7da56af723287
+          - rid: osx-x64
+            runner: macos-15-intel
+            kind: dotnet
+          - rid: osx-arm64
+            runner: blacksmith-6vcpu-macos-15
+            kind: dotnet
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        if: matrix.kind == 'dotnet'
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: 8.0.425
+
+      - name: Download assembled package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dotnet-embedded-package
+          path: ${{ runner.temp }}/dotnet-embedded-package
+
+      - name: Run installed Rust-backed .NET consumer
+        if: matrix.kind == 'dotnet'
+        shell: pwsh
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/dotnet-embedded-package
+          TEST_ROOT: ${{ runner.temp }}/dotnet-embedded-consumer
+          RID: ${{ matrix.rid }}
+        run: |
+          $package = Get-ChildItem -LiteralPath $env:PACKAGE_ROOT -Filter '*.nupkg' -File -Recurse | Select-Object -First 1
+          if (-not $package) { throw "The assembled embedded package was not downloaded." }
+          $producer = Get-Content -LiteralPath (Join-Path $env:PACKAGE_ROOT 'producer-output.json') -Raw | ConvertFrom-Json
+          $reproducibility = Get-Content -LiteralPath (Join-Path $env:PACKAGE_ROOT 'package-reproducibility.json') -Raw | ConvertFrom-Json
+          $sourceRevision = (& git rev-parse HEAD).Trim()
+          $lockfileHash = (Get-FileHash -Algorithm SHA256 -LiteralPath 'rust/crates/sdk-embedded-prototype/Cargo.lock').Hash.ToLowerInvariant()
+          if ($producer.source_revision -ne $sourceRevision -or $producer.cargo_lock_sha256 -ne $lockfileHash) { throw 'The installed package provenance does not match the checked-out Rust source closure.' }
+          $nupkgHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $package.FullName).Hash.ToLowerInvariant()
+          if ($reproducibility.package_sha256 -ne $nupkgHash) { throw 'The downloaded NuGet package differs from the reproducibility receipt.' }
+          $expectedAsset = @($producer.native_assets | Where-Object { $_.rid -eq $env:RID })
+          if ($expectedAsset.Count -ne 1) { throw "The producer manifest has no unique asset for RID $env:RID." }
+          $project = $env:TEST_ROOT
+          $env:NUGET_PACKAGES = Join-Path $env:TEST_ROOT 'packages'
+          dotnet new console --framework net8.0 --output $project --force --no-restore | Out-Host
+          $source = $package.DirectoryName
+          dotnet add $project package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source $source | Out-Host
+          dotnet restore $project --force --no-cache | Out-Host
+          $globalPackages = $env:NUGET_PACKAGES
+          $installedNativeRoot = Join-Path $globalPackages "acyclic.sdk.embedded\0.2.0-alpha.1\runtimes\$($env:RID)\native"
+          $installedNative = Get-ChildItem -LiteralPath $installedNativeRoot -File | Select-Object -First 1
+          if (-not $installedNative) { throw "NuGet did not install a native asset for RID $env:RID." }
+          $installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedNative.FullName).Hash.ToLowerInvariant()
+          if ($installedHash -ne ([string]$expectedAsset[0].sha256).ToLowerInvariant()) { throw "Installed native asset hash differs from the producer manifest for RID $env:RID." }
+          $env:RUST_NATIVE_ASSET = $installedNative.FullName
+          @'
+          using Acyclic.Sdk.Embedded;
+          using System;
+          using System.IO;
+          using System.Linq;
+          using System.Runtime.InteropServices;
+
+          // Construct the facade before loading the absolute path below. This
+          // proves P/Invoke resolved the package's RID native asset by library
+          // name; the absolute path is used only for independent export and
+          // provenance checks.
+          using var engine = new EmbeddedStreamEngine();
+          var nativePath = Environment.GetEnvironmentVariable("RUST_NATIVE_ASSET");
+          if (string.IsNullOrWhiteSpace(nativePath) || !File.Exists(nativePath) ||
+              !NativeLibrary.TryLoad(nativePath, out var nativeHandle))
+              throw new InvalidOperationException("The installed Rust native asset could not be loaded directly.");
+          try
+          {
+              var exports = new[] {
+                  "acyclic_embedded_abi_version", "acyclic_embedded_engine_open",
+                  "acyclic_embedded_engine_close", "acyclic_embedded_engine_append",
+                  "acyclic_embedded_reader_open", "acyclic_embedded_reader_next",
+                  "acyclic_embedded_reader_cancel", "acyclic_embedded_reader_close",
+                  "acyclic_buffer_release", "acyclic_append_result_release",
+                  "acyclic_open_result_release", "acyclic_open_result_take_reader",
+                  "acyclic_next_result_release", "acyclic_embedded_engine_wire_call",
+                  "acyclic_wire_result_release"
+              };
+              foreach (var export in exports)
+                  if (!NativeLibrary.TryGetExport(nativeHandle, export, out _))
+                      throw new InvalidOperationException($"Installed native asset is missing Rust ABI export {export}.");
+          }
+          finally { NativeLibrary.Free(nativeHandle); }
+
+          var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x52, 0x49, 0x44 };
+          var appended = engine.Append("installed-consumer", value);
+          var count = 0;
+          await foreach (var item in engine.ReadAsync("installed-consumer", appended.Start, 1))
+          {
+              if (!item.Value.SequenceEqual(value))
+                  throw new InvalidOperationException("Rust value did not round-trip through the installed package.");
+              count++;
+          }
+          if (count != 1)
+              throw new InvalidOperationException($"Expected one Rust record, received {count}.");
+          Console.WriteLine($"Installed RID consumer passed: {RuntimeInformation.RuntimeIdentifier}");
+          '@ | Set-Content -LiteralPath (Join-Path $project 'Program.cs') -Encoding utf8NoBOM
+          dotnet run --project $project --configuration Release
+
+      - name: Run installed Rust-backed musl .NET consumer
+        if: matrix.kind == 'musl'
+        shell: bash
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/dotnet-embedded-package
+          RID: ${{ matrix.rid }}
+          DOTNET_IMAGE: ${{ matrix.dotnet_image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$PACKAGE_ROOT:/pkg" \
+            --workdir /src \
+            --env RID="$RID" \
+            "$DOTNET_IMAGE" sh -euxc '
+              test "$(dotnet --version)" = "8.0.425"
+              apk add --no-cache git python3
+              mkdir -p /tmp/embedded-consumer
+              export NUGET_PACKAGES=/tmp/embedded-packages
+              package="$(find /pkg -name "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg" -type f -print -quit)"
+              test -n "$package"
+              source_revision="$(git -C /src rev-parse HEAD)"
+              producer_revision="$(python3 -c "import json; print(json.load(open('/pkg/producer-output.json'))['source_revision'])")"
+              test "$producer_revision" = "$source_revision"
+              receipt_hash="$(python3 -c "import json; print(json.load(open('/pkg/package-reproducibility.json'))['package_sha256'])")"
+              test "$(sha256sum "$package" | awk '{print $1}')" = "$receipt_hash"
+              expected_hash="$(RID="$RID" python3 -c "import json, os; assets=[a for a in json.load(open('/pkg/producer-output.json'))['native_assets'] if a['rid']==os.environ['RID']]; assert len(assets)==1; print(assets[0]['sha256'])")"
+              dotnet new console --framework net8.0 --output /tmp/embedded-consumer --force --no-restore
+              source="$(dirname "$package")"
+              dotnet add /tmp/embedded-consumer package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source "$source"
+              sed -i "s#</Project>#  <PropertyGroup><RuntimeIdentifier>$RID</RuntimeIdentifier></PropertyGroup></Project>#" /tmp/embedded-consumer/embedded-consumer.csproj
+              dotnet restore /tmp/embedded-consumer --force --no-cache
+              global_packages="$NUGET_PACKAGES"
+              installed_native="$global_packages/acyclic.sdk.embedded/0.2.0-alpha.1/runtimes/$RID/native/libacyclic_sdk_embedded_prototype.so"
+              test -f "$installed_native"
+              test "$(sha256sum "$installed_native" | awk '{print $1}')" = "$expected_hash"
+              python3 /src/rust/crates/sdk-embedded-prototype/tests/python_consumer.py "$installed_native"
+              export RUST_NATIVE_ASSET="$installed_native"
+              cat > /tmp/embedded-consumer/Program.cs <<'CS'
+              using Acyclic.Sdk.Embedded;
+              using System;
+              using System.IO;
+              using System.Linq;
+              using System.Runtime.InteropServices;
+
+              // Construct the facade before loading the absolute path below.
+              // This proves P/Invoke resolved the package's RID native asset
+              // by library name; the absolute path is only for independent
+              // export and provenance checks.
+              using var engine = new EmbeddedStreamEngine();
+              var nativePath = Environment.GetEnvironmentVariable("RUST_NATIVE_ASSET");
+              if (string.IsNullOrWhiteSpace(nativePath) || !File.Exists(nativePath) ||
+                  !NativeLibrary.TryLoad(nativePath, out var nativeHandle))
+                  throw new InvalidOperationException("The installed Rust native asset could not be loaded directly.");
+              try
+              {
+                  var exports = new[] {
+                      "acyclic_embedded_abi_version", "acyclic_embedded_engine_open",
+                      "acyclic_embedded_engine_close", "acyclic_embedded_engine_append",
+                      "acyclic_embedded_reader_open", "acyclic_embedded_reader_next",
+                      "acyclic_embedded_reader_cancel", "acyclic_embedded_reader_close",
+                      "acyclic_buffer_release", "acyclic_append_result_release",
+                      "acyclic_open_result_release", "acyclic_open_result_take_reader",
+                      "acyclic_next_result_release", "acyclic_embedded_engine_wire_call",
+                      "acyclic_wire_result_release"
+                  };
+                  foreach (var export in exports)
+                      if (!NativeLibrary.TryGetExport(nativeHandle, export, out _))
+                          throw new InvalidOperationException($"Installed native asset is missing Rust ABI export {export}.");
+              }
+              finally { NativeLibrary.Free(nativeHandle); }
+
+              var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x4D, 0x55, 0x53, 0x4C };
+              var appended = engine.Append("installed-musl-consumer", value);
+              var count = 0;
+              await foreach (var item in engine.ReadAsync("installed-musl-consumer", appended.Start, 1))
+              {
+                  if (!item.Value.SequenceEqual(value))
+                      throw new InvalidOperationException("Rust value did not round-trip through the musl RID package.");
+                  count++;
+              }
+              if (count != 1)
+                  throw new InvalidOperationException($"Expected one Rust record, received {count}.");
+              if (!RuntimeInformation.RuntimeIdentifier.StartsWith("linux-musl", StringComparison.Ordinal))
+                  throw new InvalidOperationException($"Unexpected resolved RID: {RuntimeInformation.RuntimeIdentifier}");
+              Console.WriteLine($"Installed musl RID consumer passed: {RuntimeInformation.RuntimeIdentifier}");
+              CS
+              dotnet run --project /tmp/embedded-consumer --configuration Release
+            '

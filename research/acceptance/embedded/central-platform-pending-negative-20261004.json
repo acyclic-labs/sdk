@@ -1,0 +1,44 @@
+{
+  "schema": "acyclic.sdk.embedded.platform-pending-negative.v1",
+  "status": "passed",
+  "source_revision": "ae52ec4795923046580dfdbdfb36e09a90e189d2",
+  "source_digest": "sha256:36055ba48a01d08909cc152f480f3570e0fd81cad29cce0b5aca229f852a7555",
+  "target": "aarch64-pc-windows-msvc",
+  "package": {
+    "producer": "cpp/embedded-consumer/portable-package-test.ps1",
+    "status": "portable-cross-compile-install-passed",
+    "execution": "not-run-cross-target",
+    "central_gate_eligible": false,
+    "artifact_digest": "sha256:3eb05ae1deddfe2e41ce6dbd3b53eb12a17e99fcf845ee359ad3faa3e229ac6f"
+  },
+  "central_gate": {
+    "command": "sdk-generation qualify-embedded --source-root <clean-source> --output <report> --receipt <release-abi-receipt> --evidence <release-abi-evidence> --package-root <arm64-prefix>",
+    "positive_without_platform_receipt": {
+      "exit_code": 0,
+      "result": "passed",
+      "report": "embedded-qualification.json"
+    },
+    "pending_platform_receipt": {
+      "platform_receipt_status": "pending-execution",
+      "exit_code": 1,
+      "result": "rejected",
+      "message": "embedded platform receipt schema or status is invalid"
+    }
+  },
+  "evidence": {
+    "rust_build": "aarch64-pc-windows-msvc release cross compile passed",
+    "cmake_install": "ARM64 package installed and file set verified",
+    "foreign_consumers": {
+      "c": "compiled-only-cross-target",
+      "cpp": "compiled-only-cross-target",
+      "python": "not-run-cross-target"
+    },
+    "native_runtime": false,
+    "required_before_qualification": "native Windows ARM64 runner or a validated ARM64 emulator executing C, Python ctypes, and C++ scenarios"
+  },
+  "scope": {
+    "source_binding": ["Git checkout root", "exact HEAD", "clean status", "source input digest"],
+    "package_binding": "real ARM64 installed prefix and Rust central artifact hash validation",
+    "purpose": "The central gate must reject compile-only foreign evidence until runtime behavior is executed."
+  }
+}

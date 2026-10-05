@@ -46,6 +46,10 @@
         <directory>${project.basedir}/..</directory>
         <includes><include>LICENSE</include><include>NOTICE</include></includes>
       </resource>
+      <resource>
+        <directory>${project.basedir}/src/main/scala</directory>
+        <includes><include>**/*.scala</include></includes>
+      </resource>
     </resources>
     <plugins>
       <plugin>
@@ -140,6 +144,16 @@
         <dependency><groupId>io.grpc</groupId><artifactId>grpc-kotlin-stub</artifactId><version>${grpc.kotlin.version}</version></dependency>
       </dependencies>
       <build><plugins>
+        <!-- The Kotlin variant owns the RustSemanticTypes JVM name.  Exclude the
+             Java facade from this profile so one artifact never contains two
+             classes with the same fully-qualified name. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId>
+          <configuration>
+            <excludes><exclude>dev/acyclic/transport/RustSemanticTypes.java</exclude></excludes>
+            <testExcludes><testExclude>dev/acyclic/transport/RustSemanticTypesTest.java</testExclude></testExcludes>
+          </configuration>
+        </plugin>
         <plugin>
           <groupId>org.xolstice.maven.plugins</groupId><artifactId>protobuf-maven-plugin</artifactId><version>${protobuf.maven.version}</version>
           <configuration>
@@ -164,6 +178,7 @@
             <jvmTarget>17</jvmTarget>
             <sourceDirs>
               <source>${project.build.directory}/generated-sources/protobuf/grpc-kotlin</source>
+              <source>${project.basedir}/src/main/kotlin</source>
             </sourceDirs>
           </configuration>
           <executions>

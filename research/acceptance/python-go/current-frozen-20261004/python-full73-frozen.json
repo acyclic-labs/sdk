@@ -1,0 +1,1215 @@
+{
+  "schema": "acyclic.sdk.rpc-scenario-log.v2",
+  "consumer": "python-f7a2-installed",
+  "address": "127.0.0.1:62110",
+  "execution_mode": "remote",
+  "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "source_revision_kind": "rust-model-sha256",
+  "artifact_sha256": "8496E7D67AF04F60E6197BAF9FF521F79D3B28F62B71A119541E2077F73505AD",
+  "fixture_binary_sha256": "1CFB09F18959E4013513B40C4F68ADCE935583803E9BA936BFD2EE6885D5DAE6",
+  "scenarios": [
+    {
+      "family": "actors",
+      "rpc": "acyclic.actors.v1.ActorsService/CreateActor",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 20.999
+    },
+    {
+      "family": "actors",
+      "rpc": "acyclic.actors.v1.ActorsService/UpdateActor",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "actors",
+      "rpc": "acyclic.actors.v1.ActorsService/InspectActor",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "actors",
+      "rpc": "acyclic.actors.v1.ActorsService/AddSubscription",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "actors",
+      "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "actors",
+      "rpc": "acyclic.actors.v1.ActorsService/ResumeSubscription",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "actors",
+      "rpc": "acyclic.actors.v1.ActorsService/CheckpointActor",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "actors",
+      "rpc": "acyclic.actors.v1.ActorsService/InvokeActor",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/SelectDeployment",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/InvokeVersion",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.BucketsService/CreateBucket",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 3.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+      "shape": "client-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 5.999
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+      "shape": "server-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "failed",
+      "exit_code": 1,
+      "error": "RuntimeError('empty response stream')",
+      "elapsed_ms": 8.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
+      "shape": "client-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 6.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/InspectIdempotency",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/Append",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 3.0
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/Tail",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/Fork",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/Read",
+      "shape": "server-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 2
+      },
+      "response_count": 2,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/Follow",
+      "shape": "server-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 5.0
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/Children",
+      "shape": "server-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.002
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/ChildrenPage",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "failed",
+      "exit_code": 1,
+      "error": "<_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.INVALID_ARGUMENT\n\tdetails = \"invalid_path\"\n\tdebug_error_string = \"INVALID_ARGUMENT:invalid_path\"\n>",
+      "elapsed_ms": 0.998
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/Commit",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "failed",
+      "exit_code": 1,
+      "error": "<_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.FAILED_PRECONDITION\n\tdetails = \"deadline_elapsed\"\n\tdebug_error_string = \"FAILED_PRECONDITION:deadline_elapsed\"\n>",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "stream",
+      "rpc": "acyclic.stream.v2.StreamService/ReadCommit",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "failed",
+      "exit_code": 1,
+      "error": "<_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNAVAILABLE\n\tdetails = \"stream unavailable\"\n\tdebug_error_string = \"UNAVAILABLE:stream unavailable\"\n>",
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Handshake",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/CreateWorkspace",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/OpenWorkspace",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetHead",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetGeneration",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Read",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Stat",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ListDirectory",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ReadLink",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/PlanExtents",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyTransaction",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/RebaseTransaction",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ForkWorkspace",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Diff",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Rebase",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/PlanJoin",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyJoin",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Checkpoint",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Pin",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Export",
+      "shape": "server-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "failed",
+      "exit_code": 1,
+      "error": "RuntimeError('empty response stream')",
+      "elapsed_ms": 5.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Import",
+      "shape": "client-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 6.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/IssueMountCredential",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.002
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/IssueS3Credential",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetSourceState",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ReconcileSource",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/RescanSource",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/SealSource",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Observe",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Cancel",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "harness",
+      "rpc": "acyclic.harness.v2.HarnessService/Handshake",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 2.001
+    },
+    {
+      "family": "harness",
+      "rpc": "acyclic.harness.v2.HarnessService/Submit",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "passed",
+      "exit_code": 0,
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "harness",
+      "rpc": "acyclic.harness.v2.HarnessService/Replay",
+      "shape": "server-streaming",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "failed",
+      "exit_code": 1,
+      "error": "RuntimeError('empty response stream')",
+      "elapsed_ms": 6.001
+    },
+    {
+      "family": "harness",
+      "rpc": "acyclic.harness.v2.HarnessService/Observe",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "failed",
+      "exit_code": 1,
+      "error": "<_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.INVALID_ARGUMENT\n\tdetails = \"event aggregate kind is unspecified\"\n\tdebug_error_string = \"INVALID_ARGUMENT:event aggregate kind is unspecified\"\n>",
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "harness",
+      "rpc": "acyclic.harness.v2.HarnessService/Cancel",
+      "shape": "unary",
+      "invoked": true,
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "status": "failed",
+      "exit_code": 1,
+      "error": "<_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.INVALID_ARGUMENT\n\tdetails = \"event aggregate kind is unspecified\"\n\tdebug_error_string = \"INVALID_ARGUMENT:event aggregate kind is unspecified\"\n>",
+      "elapsed_ms": 1.0
+    }
+  ],
+  "passed": 65,
+  "failed": 8
+}

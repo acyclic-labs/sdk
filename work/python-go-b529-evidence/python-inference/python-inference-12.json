@@ -1,0 +1,22 @@
+{
+  "schema": "acyclic.sdk.rpc-scenario-result.v1",
+  "source_revision": "b5293335694f19d0132be13542f6925111712433",
+  "source_revision_kind": "git-oid",
+  "rust_model_source_revision": "6bfa6cd366ebba884a4ad3eba8931dc19140e145aeeb145f9effe1b37bdf4b9a",
+  "status": "passed",
+  "invoked": true,
+  "execution_mode": "remote",
+  "exit_code": 0,
+  "family": "inference",
+  "rpc": "inference.customer.v1.RunsService/Cancel",
+  "shape": "unary",
+  "transport": "grpc+mtls",
+  "checks": [
+    "invocation",
+    "transport",
+    "serialization",
+    "tls-hostname-verification"
+  ],
+  "response_bytes": 78,
+  "response_sha256": "sha256:28182f48af3f2001ca9ead05bf2b28d02dd3767230c61232a7dae51df7e1dbec"
+}

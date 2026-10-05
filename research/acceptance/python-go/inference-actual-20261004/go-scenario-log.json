@@ -1,0 +1,68 @@
+{
+  "consumer": {
+    "artifact_path": "python-go-producer-run-resume/package/generation-receipt.json",
+    "artifact_sha256": "sha256:199d94dde7ee2f0c2db0a81ebf64ea148fd73a7ca44575603c3667b05185a502",
+    "name": "acyclic-go-installed-inference-consumer",
+    "version": "v0.0.1"
+  },
+  "scenarios": [
+    {
+      "output_path": "qualification/consumers/go-inference-01.json",
+      "output_sha256": "sha256:67a958759b1b8b6ded8dff7704a8be2faf939797cae435421b6333de364e7bdb"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-02.json",
+      "output_sha256": "sha256:c9e7d0b75694f02defe77524447fe3c01a83777c489ab9987d48424b3847735d"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-03.json",
+      "output_sha256": "sha256:f2e7c0401ff20f54d89c31f8f5d1a800b330dff832cd17dd5397e3711f09ab0c"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-04.json",
+      "output_sha256": "sha256:3b24e394ad8a90399623064d30d2164c38988c8ad7d430f927b884464af26f3c"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-05.json",
+      "output_sha256": "sha256:1ae7a096a4b6fab95c671f62978e01d4f537436581352941800f0d536e371bd0"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-06.json",
+      "output_sha256": "sha256:b5bb9170a629025b6559fedfbb79d04a542f2f19f57dd4563730ae9bc57387c0"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-07.json",
+      "output_sha256": "sha256:9430aef68ff2dad6d1a86b31b97ac233d8c889f59ece60e4e42413fb7561449d"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-08.json",
+      "output_sha256": "sha256:601fb7d5687a08f6dccbf4ccf23cd01eccc13d5d5ec9795886b3d78df10c8156"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-09.json",
+      "output_sha256": "sha256:a368f92953d35b75dab4ae85e18a2fc83fd17edcb1cf1210b5da88e88df5fd11"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-10.json",
+      "output_sha256": "sha256:52cb6814f2dc6004f37b725528f77474818b8ca2ac1c78fca947c78786a202e3"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-11.json",
+      "output_sha256": "sha256:3ba4c5bdc099166133ecceb84eb7df5bd2c7c12d8503643f7ec8ec5ffce0b246"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-12.json",
+      "output_sha256": "sha256:c002a10b8c997618e1586feda396c7989f006513da3d5708fdd8dda029bdf85b"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-13.json",
+      "output_sha256": "sha256:747b93394de8ab4fe2fefc02d34391d38340bfb5986d21e9dd3a2d8f74b60dee"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-14.json",
+      "output_sha256": "sha256:fa7d19f9215d9043e0d5e5989207871f43d75bb9a136583788db7817b2fb6124"
+    }
+  ],
+  "schema": "acyclic.sdk.rpc-scenario-log.v1",
+  "source_revision": "942335163d72f3f2b94e9362db501233cd8bb782"
+}

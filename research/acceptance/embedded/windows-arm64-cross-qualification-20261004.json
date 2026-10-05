@@ -1,0 +1,43 @@
+{
+  "schema": "acyclic.sdk.embedded.windows-arm64-cross-qualification.v1",
+  "status": "pending-native-execution",
+  "source_revision": "ae52ec4795923046580dfdbdfb36e09a90e189d2",
+  "source_digest": "sha256:36055ba48a01d08909cc152f480f3570e0fd81cad29cce0b5aca229f852a7555",
+  "target": "aarch64-pc-windows-msvc",
+  "producer": "cpp/embedded-consumer/portable-package-test.ps1",
+  "toolchain": {
+    "rust_target": "aarch64-pc-windows-msvc",
+    "linker": "pinned LLVM ARM64 clang linker wrapper",
+    "cmake_target": "aarch64-pc-windows-msvc",
+    "pe_machine": "0xAA64"
+  },
+  "package": {
+    "layout": "portable-cmake-prefix",
+    "runtime_artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+    "artifacts": {
+      "include/acyclic_embedded_prototype.h": "64837e5a4e468e9748969025d3631e39b69e9de7f77d66d26e7876247b90c109",
+      "bin/acyclic_sdk_embedded_prototype.dll": "b3b6fd254cdb0e6612285eae4e7c045a5ffbb527f02dae4e66072af55cdcfdaa",
+      "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfigVersion.cmake": "c626df80d51f26a450ee36ae47e466121b32f0a9a98894687c0b7edc332170c4",
+      "lib/acyclic_sdk_embedded_prototype.dll.lib": "1d44e741f069e6eaaff4331b9c21b03037b3010cd6753e18dd3a56bc7a652535",
+      "include/acyclic/embedded.hpp": "49e06d55fe822c65604eb5699b1672fa8262ee9feb5a58019aa77d85b3f12572",
+      "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfig.cmake": "0836e861a779ceede1c0624507125c50ead8182ae99e00b716415fd3d5e1f066"
+    }
+  },
+  "consumers": {
+    "c": "compiled-only-cross-target",
+    "cpp": "compiled-only-cross-target",
+    "python": "not-run-cross-target",
+    "ctest": "compiled-only-cross-target",
+    "clean_prefix": "compiled-only-cross-target"
+  },
+  "execution": {
+    "native_arm64_runner": false,
+    "emulator": false,
+    "central_gate_eligible": false,
+    "reason": "The x64 host produced and installed the ARM64 package, but did not execute ARM64 binaries. A native Windows ARM64 runner or emulator receipt is required before qualification."
+  },
+  "publication": {
+    "registry_published": false,
+    "production_deployed": false
+  }
+}

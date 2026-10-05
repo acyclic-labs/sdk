@@ -57,16 +57,30 @@ impl HttpStream {
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
         authorization.set_sensitive(true);
-        let mut client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(30));
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut client = Client::builder();
+        #[cfg(target_arch = "wasm32")]
+        let client = Client::builder();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            client = client.timeout(Duration::from_secs(30));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            client = client.redirect(reqwest::redirect::Policy::none());
+        }
         if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > 64 * 1024 {
                 return Err(ConnectError);
             }
-            client = client.add_root_certificate(
-                reqwest::Certificate::from_pem(ca).map_err(|_| ConnectError)?,
-            );
+            #[cfg(target_arch = "wasm32")]
+            let _ = ca;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                client = client.add_root_certificate(
+                    reqwest::Certificate::from_pem(ca).map_err(|_| ConnectError)?,
+                );
+            }
         }
         Ok(Self {
             client: client.build().map_err(|_| ConnectError)?,
@@ -75,15 +89,117 @@ impl HttpStream {
             maximum,
         })
     }
+    /// Prove the canonical contract before selecting this transport.
+    ///
+    /// # Errors
+    /// Rejects authentication failures, redirects, malformed responses, and identity mismatches.
+    pub async fn verify_handshake(&self) -> Result<bool, crate::client::ConnectError> {
+        use crate::client::ConnectError;
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        use prost_reflect::{DescriptorPool, DynamicMessage};
+        let malformed = || ConnectError::Negotiation("invalid control handshake response".into());
+        let family = BindingFamily::Stream;
+        let version = control::control_protocol_version(family);
+        let route = control::handshake_http_route(family.name()).ok_or_else(malformed)?;
+        let url = self
+            .endpoint
+            .join(route.trim_start_matches('/'))
+            .map_err(|_| malformed())?;
+        let response = self
+            .client
+            .get(url.clone())
+            .timeout(Duration::from_secs(10))
+            .header(AUTHORIZATION, self.authorization.clone())
+            .header("accept", "application/json")
+            .send()
+            .await
+            .map_err(|error| ConnectError::Transport(error.to_string()))?;
+        if response.url() != &url {
+            return Err(malformed());
+        }
+        let status = response.status().as_u16();
+        if matches!(status, 404 | 405) {
+            return Ok(false);
+        }
+        if !response.status().is_success() {
+            return Err(ConnectError::HttpStatus(status));
+        }
+        if !response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+            })
+        {
+            return Err(malformed());
+        }
+        let maximum = self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+        if response
+            .content_length()
+            .is_some_and(|length| length > maximum as u64)
+        {
+            return Err(malformed());
+        }
+        let mut bytes = Vec::new();
+        let mut chunks = response.bytes_stream();
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk.map_err(|error| ConnectError::Transport(error.to_string()))?;
+            if chunk.len() > maximum.saturating_sub(bytes.len()) {
+                return Err(malformed());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let pool = DescriptorPool::decode(
+            acyclic_sdk_contract_wire::protocol::protocol_descriptor().as_slice(),
+        )
+        .map_err(|_| malformed())?;
+        let descriptor = pool
+            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+            .ok_or_else(malformed)?;
+        let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+        let decoded =
+            DynamicMessage::deserialize(descriptor, &mut deserializer).map_err(|_| malformed())?;
+        deserializer.end().map_err(|_| malformed())?;
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &decoded.encode_to_vec(),
+            maximum,
+        )
+        .map_err(|_| malformed())?;
+        Ok(true)
+    }
+
     async fn request(&self, route: &str, bytes: Vec<u8>) -> Result<Value, StreamError> {
         let body = http_codec::encode(route, &bytes).map_err(contract_error)?;
         let url = self
             .endpoint
             .join(&format!("v1/stream/{route}"))
             .map_err(|_| StreamError::Unavailable)?;
+        #[cfg(not(target_arch = "wasm32"))]
         let mut response = self
             .client
             .post(url)
+            .timeout(Duration::from_secs(30))
+            .header(AUTHORIZATION, self.authorization.clone())
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|_| StreamError::Unavailable)?;
+        #[cfg(target_arch = "wasm32")]
+        let response = self
+            .client
+            .post(url)
+            .timeout(Duration::from_secs(30))
             .header(AUTHORIZATION, self.authorization.clone())
             .header("content-type", "application/json")
             .body(body)
@@ -98,15 +214,29 @@ impl HttpStream {
             return Err(StreamError::Unavailable);
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| StreamError::Unavailable)?
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            if chunk.len() > self.maximum.saturating_sub(body.len()) {
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| StreamError::Unavailable)?
+            {
+                if chunk.len() > self.maximum.saturating_sub(body.len()) {
+                    return Err(StreamError::Unavailable);
+                }
+                body.extend_from_slice(&chunk);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|_| StreamError::Unavailable)?;
+            if bytes.len() > self.maximum {
                 return Err(StreamError::Unavailable);
             }
-            body.extend_from_slice(&chunk);
+            body.extend_from_slice(&bytes);
         }
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
@@ -242,7 +372,8 @@ impl HttpStream {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl StreamProvider for HttpStream {
     async fn inspect_idempotency(
         &self,
@@ -330,13 +461,17 @@ impl StreamProvider for HttpStream {
         Ok(result)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        Ok(stream::iter(self.read_page(request, true).await?.into_iter().map(Ok)).boxed())
+        let records = stream::iter(self.read_page(request, true).await?.into_iter().map(Ok));
+        #[cfg(not(target_arch = "wasm32"))]
+        return Ok(records.boxed());
+        #[cfg(target_arch = "wasm32")]
+        return Ok(records.boxed_local());
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
         if from > self.tail(path.clone()).await? {
             return Err(StreamError::OutOfRange);
         }
-        Ok(stream::try_unfold(
+        let follow = stream::try_unfold(
             (self.clone(), path, from, VecDeque::<Record>::new()),
             |(provider, path, mut next, mut queued)| async move {
                 loop {
@@ -363,8 +498,11 @@ impl StreamProvider for HttpStream {
                     }
                 }
             },
-        )
-        .boxed())
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        return Ok(follow.boxed());
+        #[cfg(target_arch = "wasm32")]
+        return Ok(follow.boxed_local());
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         let limit = request.limit;
@@ -382,7 +520,11 @@ impl StreamProvider for HttpStream {
         if children.len() > limit as usize {
             return Err(StreamError::Unavailable);
         }
-        Ok(stream::iter(children.into_iter().map(Ok)).boxed())
+        let children = stream::iter(children.into_iter().map(Ok));
+        #[cfg(not(target_arch = "wasm32"))]
+        return Ok(children.boxed());
+        #[cfg(target_arch = "wasm32")]
+        return Ok(children.boxed_local());
     }
     async fn children_page(
         &self,

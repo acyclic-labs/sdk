@@ -1,0 +1,50 @@
+{
+  "schema": "acyclic.sdk.python-go.fixture-current-authority-resume.v1",
+  "status": "passed",
+  "authority": {
+    "manifest": "Q:/sdk/work/python-go-authority-current-resume/rust-authority.json",
+    "manifest_sha256": "9d5c3f9601b125cf4134b3cada386c7fb5f9a1a0a63ba8dc9c374f757d2e9b21",
+    "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a"
+  },
+  "fixtures": {
+    "actors_stream": {
+      "binary": "Q:/sdk/work/python-go-fixture-target-resume/debug/fixture-server.exe",
+      "binary_sha256": "3363e2852181816f6fcafb8c1d19ed8afa8207b914b7387725b9bc6026e2a932",
+      "source_closure_sha256": "sha256:55000d365986b6751d2ede3e13c877732a0d815706ae0e52db40e9336c2c4552",
+      "metadata": "Q:/sdk/work/python-go-fixture-current-resume/fixture.json",
+      "service_availability": "local_fixture_only"
+    },
+    "machines_tls": {
+      "binary": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/rust/crates/sdk-examples/target/debug/machines-rsa-fixture.exe",
+      "binary_sha256": "e16c2c735dac780d1e1389586ffba8859cc703d08b62f80beff4397d5ca643f0",
+      "source_closure_sha256": "sha256:cb0c483d4ad2baca781bc1fa404fd0d27737ef4fe81c23a1aa403072ad9c8d2d",
+      "metadata": "Q:/sdk/work/python-go-fixture-current-resume/machines3.json",
+      "transcript": "Q:/sdk/work/python-go-fixture-current-resume/machines3.transcript.json",
+      "transcript_sha256": "5db8d86a1fe029c5e725ce61969ddb77bd3373a9b6daf97a4efd4178176aec93",
+      "expected_rpc_count": 19,
+      "observed_unique_rpc_count": 19,
+      "go_methods": 19,
+      "python_methods": 19,
+      "tls": "RSA-2048 mutual TLS; hostname localhost"
+    },
+    "inference_runs_tls": {
+      "binary": "Q:/sdk/work/python-go-fixture-target-resume/debug/inference-rsa-fixture.exe",
+      "binary_sha256": "4e6736649f7e515d758c99d1fb895ddb715801761d33ccc9cb4f8ae99ed2f623",
+      "source_closure_sha256": "sha256:a46629b334fa5f03b6a99f38265dce99b49255c20ab7c42a9ecfcb175518c13e",
+      "metadata": "Q:/sdk/work/python-go-fixture-current-resume/inference2.json",
+      "transcript": "Q:/sdk/work/python-go-fixture-current-resume/inference2.transcript.json",
+      "transcript_sha256": "e08fe55fc7008808d4758e7e359637f5a9649aecb3d3b9fb7c9dbf4254324c95",
+      "expected_rpc_count": 4,
+      "observed_unique_rpc_count": 4,
+      "go_methods": 4,
+      "python_methods": 4,
+      "tls": "RSA-2048 mutual TLS; hostname localhost"
+    }
+  },
+  "coverage": {
+    "machines": ["QualifyImage", "Create", "Checkpoint", "Fork", "ForkMachine", "Suspend", "Wake", "SetSuspensionPolicy", "DestroyMachine", "DestroyCheckpoint", "Recover", "InspectMachine", "InspectCheckpoint", "ListMachines", "Events", "Usage", "Cancel", "InspectOperation", "WatchOperation"],
+    "inference_runs": ["Generate", "Inspect", "Watch", "Cancel"],
+    "actors": ["CreateActor"],
+    "stream": ["Append", "InspectIdempotency", "Tail", "Read", "Follow"]
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schema": "acyclic.sdk.embedded.provenance-gate.v1",
+  "status": "passed",
+  "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+  "positive": {
+    "source_root": "clean checkout at receipt.source.revision",
+    "result": "passed",
+    "artifact_digest": "sha256:81d5df80fd3977d50943c4ccecba2d5318c2ae4bc06233e3dad850acfba7e1ed",
+    "consumers": ["c", "python-ctypes", "cpp"]
+  },
+  "negative": [
+    {
+      "case": "ancestor-git-source",
+      "mutation": "source-root points at a nested directory below the Git checkout root",
+      "result": "rejected",
+      "message": "Git source root does not match requested embedded source root"
+    },
+    {
+      "case": "dirty-same-head-source",
+      "mutation": "tracked Rust source input changed while source revision remained fixed",
+      "result": "rejected",
+      "message": "embedded source checkout is dirty; qualification requires a clean Rust source root"
+    },
+    {
+      "case": "stale-same-head-source",
+      "mutation": "tracked Rust source input changed and was hidden with assume-unchanged",
+      "result": "rejected",
+      "message": "embedded source digest mismatch"
+    },
+    {
+      "case": "missing-consumer-evidence",
+      "mutation": "removed consumer_receipts.c from the receipt",
+      "result": "rejected",
+      "message": "actual embedded consumer receipt is missing: c"
+    },
+    {
+      "case": "forged-consumer-evidence",
+      "mutation": "changed consumer_receipts.c checks to an empty list",
+      "result": "rejected",
+      "message": "actual embedded consumer receipt did not pass: c"
+    }
+  ],
+  "scope": {
+    "central_gate": "sdk-generation qualify-embedded",
+    "source_binding": ["Git checkout root", "exact HEAD", "clean status", "source input digest"],
+    "package_binding": "Rust-verified artifact hashes and canonical artifact digest",
+    "consumer_binding": ["C", "Python ctypes", "C++"]
+  }
+}

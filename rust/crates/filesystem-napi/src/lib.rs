@@ -1372,47 +1372,65 @@ pub struct NativeOperationWindowCoordinator {
 
 /// One durable workspace-lineage record.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeWorkspaceLineageRecord {
+    /// Schema version for this lineage projection.
     pub version: u32,
+    /// Revision that authenticated the lineage observation.
     pub revision: BigInt,
+    /// Stable workspace identity.
     pub workspace_id: Buffer,
+    /// Customer-visible workspace name.
     pub workspace_name: String,
+    /// Parent workspace identity when this workspace was forked.
     pub parent_workspace_id: Option<Buffer>,
+    /// Parent workspace name when this workspace was forked.
     pub parent_workspace_name: Option<String>,
+    /// Generation at which the fork was created.
     pub fork_generation: Buffer,
+    /// Initial generation selected for the workspace.
     pub initial_generation: Buffer,
 }
 
 /// One overlapping filesystem-tool lease.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeOperationWindowLease {
+    /// Workspace whose generation is pinned by this lease.
     pub workspace_id: Buffer,
+    /// Stable lease identity used for close and recovery.
     pub lease_id: Buffer,
+    /// Parent generation retained while the lease is active.
     pub pinned_parent: Buffer,
+    /// Absolute expiration time in milliseconds.
     pub expires_at_millis: BigInt,
 }
 
 /// Stable, compact operation-window phase projection.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeOperationWindowPhase {
+    /// Stable phase name such as `open`, `closing`, or `closed`.
     pub kind: String,
+    /// Reconciliation ticket when close is pending.
     pub ticket: Option<Buffer>,
+    /// Generation pinned by the active window.
     pub pinned_parent: Option<Buffer>,
+    /// Generation waiting to become the active parent.
     pub pending_parent: Option<Buffer>,
+    /// Number of leases that still hold the window open.
     pub active_lease_count: Option<u32>,
 }
 
 /// Result of closing one operation-window lease.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeOperationWindowClose {
+    /// Stable close outcome name.
     pub kind: String,
+    /// Leases that remain open after the close attempt.
     pub remaining: Option<u32>,
+    /// Reconciliation ticket when the close remains pending.
     pub ticket: Option<Buffer>,
+    /// Generation retained by the closing window.
     pub pinned_parent: Option<Buffer>,
+    /// Generation selected after reconciliation.
     pub pending_parent: Option<Buffer>,
 }
 
@@ -1663,89 +1681,121 @@ pub struct NativeTransactionRebaseResult {
 
 /// One exact transaction dependency conflict.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeTransactionConflict {
+    /// Stable conflict region category.
     pub region: String,
+    /// File identity involved in a file conflict.
     pub file_id: Option<Buffer>,
+    /// Directory identity involved in a directory conflict.
     pub directory_id: Option<Buffer>,
+    /// Logical byte offset involved in a range conflict.
     pub offset: Option<BigInt>,
+    /// Logical byte length involved in a range conflict.
     pub length: Option<BigInt>,
+    /// Sparse extent target involved in an extent conflict.
     pub sparse_target: Option<String>,
+    /// Encoded name involved in a namespace conflict.
     pub name: Option<NativeWorkspaceName>,
+    /// Entry bound involved in a directory quota conflict.
     pub maximum_entries: Option<u32>,
+    /// Human-readable usage category for the conflict.
     pub usage: String,
+    /// Expected authenticated value.
     pub expected: Option<Buffer>,
+    /// Actual authenticated value observed at rebase time.
     pub actual: Option<Buffer>,
 }
 
 /// One exact customer-visible path stat without storage topology.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeWorkspaceStat {
+    /// Stable file identity.
     pub file_id: Buffer,
+    /// Authenticated file kind.
     pub kind: String,
+    /// Number of directory links to this file.
     pub link_count: BigInt,
+    /// Logical content length for regular files.
     pub logical_bytes: Option<BigInt>,
+    /// Cross-platform metadata projection.
     pub metadata: NativeWorkspaceMetadata,
 }
 
 /// Scalar cross-profile metadata and opaque-payload presence.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeWorkspaceMetadata {
+    /// POSIX permission bits when available.
     pub posix_mode: Option<u32>,
+    /// POSIX owner identifier when available.
     pub posix_uid: Option<u32>,
+    /// POSIX group identifier when available.
     pub posix_gid: Option<u32>,
+    /// POSIX flags when available.
     pub posix_flags: Option<BigInt>,
+    /// Windows attribute mask when available.
     pub windows_attributes: Option<u32>,
+    /// Creation timestamp in Unix nanoseconds when available.
     pub created_ns: Option<BigInt>,
+    /// Modification timestamp in Unix nanoseconds when available.
     pub modified_ns: Option<BigInt>,
+    /// Access timestamp in Unix nanoseconds when available.
     pub accessed_ns: Option<BigInt>,
+    /// Metadata-change timestamp in Unix nanoseconds when available.
     pub changed_ns: Option<BigInt>,
+    /// Whether named attributes are present.
     pub has_named_attributes: bool,
+    /// Whether an access-control list is present.
     pub has_acl: bool,
+    /// Whether an opaque security descriptor is present.
     pub has_security_descriptor: bool,
 }
 
 /// One exact encoded directory name.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeWorkspaceName {
+    /// Encoding used for the path component bytes.
     pub encoding: String,
+    /// Exact path component bytes in that encoding.
     pub bytes: Buffer,
 }
 
 /// One child in a bounded directory page.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeWorkspaceDirectoryEntry {
+    /// Exact child name and encoding.
     pub name: NativeWorkspaceName,
+    /// Stable child file identity.
     pub file_id: Buffer,
+    /// Authenticated child kind.
     pub kind: String,
 }
 
 /// One bounded authenticated directory page.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeWorkspaceDirectoryPage {
+    /// Entries returned for this bounded page.
     pub entries: Vec<NativeWorkspaceDirectoryEntry>,
+    /// Whether another page follows the caller's cursor.
     pub has_more: bool,
 }
 
 /// One topology-free sparse extent span.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeWorkspaceExtentSpan {
+    /// Logical byte offset of this span.
     pub offset: BigInt,
+    /// Logical byte length of this span.
     pub length: BigInt,
+    /// Exclusive logical end of the source range.
     pub source_end: BigInt,
+    /// Authenticated extent kind, such as allocated or sparse.
     pub kind: String,
 }
 
 /// One bounded topology-free sparse extent plan.
 #[napi(object)]
-#[allow(missing_docs)]
 pub struct NativeWorkspaceExtentPlan {
+    /// Ordered bounded spans covering the requested logical range.
     pub spans: Vec<NativeWorkspaceExtentSpan>,
 }
 
@@ -1926,6 +1976,10 @@ impl NativeWorkspace {
     }
 
     #[napi(js_name = readRange)]
+    /// Reads an exact bounded byte range from a regular file.
+    ///
+    /// `offset` and `length` are unsigned BigInts so large files retain their
+    /// full Rust range without JavaScript number conversion.
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
         Box::pin(
             self.inner
@@ -1937,6 +1991,7 @@ impl NativeWorkspace {
     }
 
     #[napi]
+    /// Returns authenticated metadata for one workspace path.
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
         Box::pin(self.inner.stat(&path))
             .await
@@ -1945,6 +2000,7 @@ impl NativeWorkspace {
     }
 
     #[napi(js_name = readSymbolicLink)]
+    /// Reads the raw target bytes of a symbolic link without following it.
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
         Box::pin(self.inner.read_symbolic_link(&path))
             .await
@@ -1953,6 +2009,10 @@ impl NativeWorkspace {
     }
 
     #[napi(js_name = planExtents)]
+    /// Plans bounded sparse extents for a file range without reading content.
+    ///
+    /// The result preserves logical offsets and reports at most
+    /// `maximum_spans` allocated spans.
     pub async fn plan_extents(
         &self,
         path: String,
@@ -2338,6 +2398,7 @@ impl NativeGeneration {
     }
 
     #[napi(js_name = readRange)]
+    /// Reads an exact bounded byte range from this immutable generation.
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
         Box::pin(
             self.inner
@@ -2349,6 +2410,7 @@ impl NativeGeneration {
     }
 
     #[napi]
+    /// Returns authenticated metadata for one path in this immutable generation.
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
         Box::pin(self.inner.stat(&path))
             .await
@@ -2357,6 +2419,7 @@ impl NativeGeneration {
     }
 
     #[napi(js_name = listDirectory)]
+    /// Lists one bounded directory page using the caller's entry cursor.
     pub async fn list_directory(
         &self,
         path: String,
@@ -2374,6 +2437,7 @@ impl NativeGeneration {
     }
 
     #[napi(js_name = readSymbolicLink)]
+    /// Reads the raw target bytes of a symbolic link without following it.
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
         Box::pin(self.inner.read_symbolic_link(&path))
             .await
@@ -2382,6 +2446,7 @@ impl NativeGeneration {
     }
 
     #[napi(js_name = planExtents)]
+    /// Plans bounded sparse extents for a file range in this immutable generation.
     pub async fn plan_extents(
         &self,
         path: String,

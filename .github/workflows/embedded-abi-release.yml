@@ -1,0 +1,200 @@
+name: Embedded ABI release qualification
+
+on:
+  push:
+    tags:
+      - "acyclic-v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: embedded-abi-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-consumer:
+    name: ${{ matrix.platform }}
+    if: github.event_name == 'workflow_call' || github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/acyclic-v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64-msvc
+            runner: blacksmith-4vcpu-windows-2025
+            shell: pwsh
+            rust_target: x86_64-pc-windows-msvc
+            kind: windows
+          - platform: windows-arm64-msvc
+            # GitHub now provides native Windows ARM64 runners. This lane
+            # executes the installed package instead of treating ARM64 as a
+            # cross-compile-only artifact.
+            runner: windows-11-vs2026-arm
+            shell: pwsh
+            rust_target: aarch64-pc-windows-msvc
+            kind: windows-arm
+          - platform: linux-x64-musl
+            runner: blacksmith-4vcpu-ubuntu-2404
+            shell: bash
+            rust_target: x86_64-unknown-linux-musl
+            kind: musl-container
+            musl_image: rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452
+          - platform: linux-arm64-musl
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            shell: bash
+            rust_target: aarch64-unknown-linux-musl
+            kind: musl-container
+            musl_image: rust:1.98.1-alpine3.22@sha256:8c8136ecbaef3c248920e564a832a5217ff95819fa351984b48d39def57db223
+          - platform: macos-x64
+            runner: blacksmith-6vcpu-macos-15
+            shell: bash
+            rust_target: x86_64-apple-darwin
+            cmake_arch: x86_64
+            kind: unix
+          - platform: macos-arm64
+            runner: blacksmith-6vcpu-macos-15
+            shell: bash
+            rust_target: aarch64-apple-darwin
+            cmake_arch: arm64
+            kind: unix
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        if: matrix.kind != 'musl-container'
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install pinned Windows ARM64 LLVM
+        if: matrix.kind == 'windows-arm'
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 20.1.8
+          arch: arm64
+          directory: ${{ runner.temp }}/llvm
+          env: false
+
+      - name: Select native Windows ARM64 linker
+        if: matrix.kind == 'windows-arm'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "CC_aarch64_pc_windows_msvc=$env:RUNNER_TEMP\llvm\bin\clang.exe"
+
+      - name: Fetch locked embedded dependencies
+        if: matrix.kind != 'musl-container'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml
+
+      - name: Run the Windows installed-package consumers
+        if: matrix.kind == 'windows'
+        shell: pwsh
+        run: >-
+          pwsh -NoLogo -NoProfile -File cpp/embedded-consumer/portable-package-test.ps1
+          -Root $env:GITHUB_WORKSPACE
+          -BuildDirectory (Join-Path $env:RUNNER_TEMP 'embedded-abi')
+
+      - name: Run the native Windows ARM64 installed-package consumers
+        if: matrix.kind == 'windows-arm'
+        shell: pwsh
+        run: >-
+          pwsh -NoLogo -NoProfile -File cpp/embedded-consumer/portable-package-test.ps1
+          -Root $env:GITHUB_WORKSPACE
+          -BuildDirectory (Join-Path $env:RUNNER_TEMP 'embedded-abi')
+          -RustTarget ${{ matrix.rust_target }}
+
+      - name: Run the Unix and Darwin installed-package consumers
+        if: matrix.kind == 'unix'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          BUILD_DIRECTORY: ${{ runner.temp }}/embedded-abi
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_arch || '' }}
+        run: bash cpp/embedded-consumer/portable-package-test.sh
+
+      - name: Run native Alpine musl installed-package consumers
+        if: matrix.kind == 'musl-container'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          ALPINE_IMAGE: ${{ matrix.musl_image }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/embedded-abi"
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$RUNNER_TEMP/embedded-abi:/tmp/embedded-abi" \
+            --workdir /src \
+            --env RUST_TARGET="$RUST_TARGET" \
+            --env BUILD_DIRECTORY=/tmp/embedded-abi \
+            "$ALPINE_IMAGE" sh -euxc '
+              apk add --no-cache bash binutils build-base ca-certificates cmake git ninja python3
+              git config --global --add safe.directory /src
+              channel="$(grep -m1 ^channel rust-toolchain.toml | cut -d= -f2 | tr -cd A-Za-z0-9.)"
+              test -n "$channel"
+              rustc -Vv | grep -F "release: $channel"
+              rustc -Vv | grep -F "host: $RUST_TARGET"
+              cargo fetch --locked --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml
+              bash cpp/embedded-consumer/portable-package-test.sh
+            '
+
+      - name: Upload package, receipts, and consumer evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: embedded-abi-${{ matrix.platform }}
+          path: ${{ runner.temp }}/embedded-abi
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-platform-run:
+    name: Verify six-platform embedded ABI run
+    if: always()
+    needs: package-consumer
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact run source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Download all platform package artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: embedded-abi-*
+          path: ${{ runner.temp }}/embedded-abi-all
+          merge-multiple: false
+
+      - name: Verify exact six-platform receipts and package hashes
+        shell: pwsh
+        run: >-
+          pwsh -NoLogo -NoProfile -File research/acceptance/embedded/verify-platform-package-run.ps1
+          -ReceiptRoot $env:RUNNER_TEMP/embedded-abi-all
+          -SourceRoot $env:GITHUB_WORKSPACE
+          -OutputPath $env:RUNNER_TEMP/embedded-abi-all/embedded-abi-run-manifest.json
+
+      - name: Upload aggregate embedded ABI manifest
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: embedded-abi-run-manifest
+          path: ${{ runner.temp }}/embedded-abi-all/embedded-abi-run-manifest.json
+          if-no-files-found: warn
+          retention-days: 14
