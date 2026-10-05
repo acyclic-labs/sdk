@@ -1131,7 +1131,6 @@ impl RootMaterializingGitExecutor<'_> {
                 operation_id,
                 from: from.id(),
                 to,
-                excluded_names: &[".git"],
                 options: &options,
                 budget: WorkBudget::UNBOUNDED,
                 cancellation: &cancellation,

@@ -501,7 +501,6 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
                 operation_id,
                 from,
                 to,
-                excluded_names: &[".git"],
                 options: &options,
                 budget: WorkBudget::UNBOUNDED,
                 cancellation: &cancellation,

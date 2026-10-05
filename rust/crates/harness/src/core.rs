@@ -408,6 +408,12 @@ impl std::fmt::Debug for AuthorityVerifier {
 }
 
 impl AuthorityVerifier {
+    /// Stable non-secret identity of this verifier for durable host binding.
+    #[must_use]
+    pub fn identity_digest(&self) -> Result<[u8; 32]> {
+        crate::contract::canonical_json_digest(&("acyclic.authority-verifier.v1", &self.id, &self.audience))
+    }
+
     /// Returns the one aggregate this verifier is allowed to authenticate.
     #[must_use]
     pub const fn audience(&self) -> &Authority {

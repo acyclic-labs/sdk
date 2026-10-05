@@ -35,7 +35,12 @@ use std::{
 };
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-use acyclic_fs::{CaptureOptions, HostCheckout, SourceMode, SourceOptions};
+use acyclic_fs::{
+    CaptureOptions, CancellationToken, HostCheckout, HostCheckoutRestore, HostPathReplacement,
+    MaterializeOptions, SourceMode, SourceOptions, WorkBudget,
+};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+use std::path::{Path, PathBuf};
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
@@ -97,6 +102,7 @@ pub use swarm_local::{
     LocalModelForkResolver,
     LocalSessionPhase, LocalSwarmAgent, LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig,
     LocalSwarmMessage, LocalSwarmPage, LocalSwarmSession, LocalSwarmSnapshot, PersistentLocalSwarm,
+    LocalApprovedRootWriteback,
 };
 
 mod memory;
@@ -946,6 +952,8 @@ impl InternalContentClass {
 pub struct FilesystemHost<A, O> {
     filesystem: Fs<A, O>,
     provider: ProviderRef,
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    native_capture_boundary: Option<Arc<NativeCaptureBoundary>>,
 }
 
 impl<A, O> Clone for FilesystemHost<A, O> {
@@ -953,8 +961,86 @@ impl<A, O> Clone for FilesystemHost<A, O> {
         Self {
             filesystem: self.filesystem.clone(),
             provider: self.provider.clone(),
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            native_capture_boundary: self.native_capture_boundary.clone(),
         }
     }
+}
+
+/// Explicit host-owned roots that a native project capture may never overlap.
+///
+/// The boundary is configured by the local composition with its session root;
+/// no directory-name heuristic is used to classify user project content.
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeCaptureBoundary {
+    reserved_roots: Vec<std::path::PathBuf>,
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl NativeCaptureBoundary {
+    /// Binds one or more existing host-owned roots to the capture boundary.
+    pub fn new<I, P>(roots: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<std::path::Path>,
+    {
+        let mut reserved_roots = Vec::new();
+        for root in roots {
+            let canonical = std::fs::canonicalize(root.as_ref())
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            if !reserved_roots.contains(&canonical) {
+                reserved_roots.push(canonical);
+            }
+        }
+        if reserved_roots.is_empty() {
+            return Err(Error::Invalid(
+                "native capture boundary requires a host-owned root".into(),
+            ));
+        }
+        Ok(Self { reserved_roots })
+    }
+
+    fn validate_source_root(&self, source_root: &std::path::Path) -> Result<()> {
+        let source = std::fs::canonicalize(source_root)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if self
+            .reserved_roots
+            .iter()
+            .any(|reserved| native_path_overlaps(&source, reserved))
+        {
+            return Err(Error::Unauthorized(
+                "native capture overlaps host-owned session or runtime storage".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+fn native_path_overlaps(left: &std::path::Path, right: &std::path::Path) -> bool {
+    fn within(path: &std::path::Path, ancestor: &std::path::Path) -> bool {
+        let path = path.components().collect::<Vec<_>>();
+        let ancestor = ancestor.components().collect::<Vec<_>>();
+        path.len() >= ancestor.len()
+            && path
+                .iter()
+                .zip(ancestor.iter())
+                .all(|(left, right)| {
+                    #[cfg(windows)]
+                    {
+                        left.as_os_str()
+                            .to_string_lossy()
+                            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        left == right
+                    }
+                })
+    }
+
+    within(left, right) || within(right, left)
 }
 
 /// Provider-side proof for a parent-published project merge receipt.
@@ -1731,11 +1817,80 @@ impl<A, O> FilesystemHost<A, O> {
         Ok(Self {
             filesystem,
             provider,
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+            native_capture_boundary: None,
         })
+    }
+
+    /// Restricts native project capture to source roots that do not overlap
+    /// explicitly configured host-owned storage.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub fn with_native_capture_boundary(mut self, boundary: NativeCaptureBoundary) -> Self {
+        self.native_capture_boundary = Some(Arc::new(boundary));
+        self
     }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// Attaches one exact native checkout to this provider. The returned
+    /// bridge retains the provider-owned source binding; callers must keep it
+    /// behind an approved Harness operation before restoring files.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn attach_native_checkout(
+        &self,
+        name: impl AsRef<str>,
+        path: impl AsRef<Path>,
+        options: SourceOptions,
+    ) -> Result<HostCheckout<A, O>> {
+        let name = name.as_ref().to_owned();
+        let path = path.as_ref().to_owned();
+        match HostCheckout::attach(&self.filesystem, &name, &path, options).await {
+            Ok(checkout) => Ok(checkout),
+            Err(attach_error) => {
+                let workspace = self
+                    .open(&workspace_ref(self.provider.clone(), &name)?)
+                    .await
+                    .map_err(|_| Error::Storage(attach_error.to_string()))?;
+                HostCheckout::from_workspace(workspace)
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))
+            }
+        }
+    }
+
+    /// Restores an authenticated generation through one already attached
+    /// checkout. Revalidation is part of the same provider-owned boundary,
+    /// so a stale host generation cannot be published after an edit.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub(crate) async fn restore_native_checkout(
+        &self,
+        checkout: &HostCheckout<A, O>,
+        generation: &GenerationRef,
+        expected: &acyclic_fs::SourceBinding,
+        reconciliation_key: acyclic_fs::IdempotencyKey,
+        paths: &[PathBuf],
+        replacement: HostPathReplacement,
+        options: &MaterializeOptions,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<HostCheckoutRestore> {
+        let generation = self.generation(checkout.workspace(), generation).await?;
+        checkout
+            .restore_paths_after_revalidation(
+                &generation,
+                expected,
+                reconciliation_key,
+                paths,
+                replacement,
+                options,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))
+    }
+
     /// Forks a project workspace from one exact generation into a new project volume.
     async fn fork_project(
         &self,
@@ -1924,6 +2079,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "native capture requires a project volume on this provider".into(),
             ));
         }
+        let boundary = self.native_capture_boundary.as_ref().ok_or_else(|| {
+            Error::Unauthorized(
+                "native capture requires an explicit host-owned boundary".into(),
+            )
+        })?;
+        boundary.validate_source_root(&capture.source_root)?;
         let observed = acyclic_fs::capture_root_identity(&capture.source_root)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if observed != capture.expected_root_identity {
@@ -1949,6 +2110,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .revalidate_with_key(filesystem_key(idempotency_key))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
+        // Recheck the canonical source root after the native attachment and
+        // reconciliation. This closes the interval in which a path alias or
+        // reparse-point swap could replace the initially checked project root
+        // with one of the explicitly reserved host roots.
+        boundary.validate_source_root(&binding.source_root)?;
         let generation = self.generation_ref_id(binding.generation_id)?;
         self.retain_generation(
             &workspace_ref(self.provider.clone(), &project.storage_name()?)?,
@@ -2704,6 +2870,22 @@ mod tests {
         AgentId, Capabilities,
         conversation::{VolumeClass, VolumeOwner},
     };
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_capture_boundary_requires_explicit_host_roots() -> Result<()> {
+        let session_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let boundary = NativeCaptureBoundary::new([session_root.path()])?;
+        assert!(matches!(
+            boundary.validate_source_root(session_root.path()),
+            Err(Error::Unauthorized(_))
+        ));
+
+        let project_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(boundary.validate_source_root(project_root.path()).is_ok());
+        assert!(NativeCaptureBoundary::new(std::iter::empty::<&std::path::Path>()).is_err());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Result<()> {
