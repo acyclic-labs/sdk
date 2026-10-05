@@ -5024,6 +5024,19 @@ impl PersistentLocalSwarm {
         Ok(events)
     }
 
+    /// Replays the bounded, credential-free executor journal for one task
+    /// operation. This is a host diagnostic view: records contain only
+    /// durable lifecycle observations, digests, and private artifact refs;
+    /// callers must use the authenticated file API to inspect an artifact.
+    pub async fn read_execution_journal(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+    ) -> Result<Vec<crate::executor::ExecutionRecord>> {
+        let harness = self.open_session(task).await?;
+        harness.storage().journal().replay(operation).await
+    }
+
     /// Reads a bounded page of canonical conversation messages by sequence.
     /// Message content remains an immutable FileRef until the caller requests
     /// it through the authenticated private file API. This is an explicit
