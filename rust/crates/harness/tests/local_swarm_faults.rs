@@ -64,6 +64,10 @@ enum FaultWindow {
     // exercising it.
     AfterPreparedSeed = 3,
     BeforeCompletion = 4,
+    // The provider has emitted a complete model exchange, but disconnects
+    // before the executor can process the ordered tool batch. Replay must use
+    // the durable model observation without redispatching it.
+    AfterModelCompleted = 5,
 }
 
 impl FaultWindow {
@@ -73,6 +77,7 @@ impl FaultWindow {
             2 => Self::AfterIntent,
             3 => Self::AfterPreparedSeed,
             4 => Self::BeforeCompletion,
+            5 => Self::AfterModelCompleted,
             _ => Self::None,
         }
     }
@@ -305,6 +310,29 @@ impl ForkFaultProvider {
             1,
             "child B request was dispatched more than once"
         );
+        let child_indices = requests
+            .iter()
+            .enumerate()
+            .filter(|(_, request)| {
+                message_contains(request, "child task: child-a")
+                    || message_contains(request, "child task: child-b")
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(child_indices.len(), 2);
+        assert!(
+            child_indices.iter().all(|index| *index < continuation_root),
+            "parent continuation was dispatched before every child had produced its result"
+        );
+        assert!(
+            initial_root < *child_indices.iter().min().unwrap(),
+            "a child was dispatched before the initial parent request"
+        );
+        assert_eq!(
+            continuation_root,
+            requests.len() - 1,
+            "parent continuation must be the final request in the completed batch"
+        );
     }
 
     fn fork_events(&self) -> Vec<ModelEvent> {
@@ -392,6 +420,21 @@ impl ModelProvider for ForkFaultProvider {
                         }),
                     ),
                 );
+            }
+            if root_fault == FaultWindow::AfterModelCompleted {
+                return Box::pin(stream::iter(
+                    events
+                        .into_iter()
+                        .map(Ok::<ModelEvent, Error>)
+                        .chain([
+                            Ok(ModelEvent::Completed {
+                                metadata: Value::Null,
+                            }),
+                            Err(Error::Storage(
+                                "simulated disconnect after completed model exchange".into(),
+                            )),
+                        ]),
+                ));
             }
             return Box::pin(stream::iter(
                 events.into_iter().map(Ok::<ModelEvent, Error>).chain([Ok(
@@ -680,6 +723,60 @@ async fn fork_intent_disconnect_replays_publication_after_cold_restart() -> Resu
         assert!(reopened.published_seed(task).await.is_ok());
         assert!(reopened.prepared_report(task).await.is_ok());
         assert_eq!(reopened.outcome(task).await?.text, "ordinary completion");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn completed_model_disconnect_replays_ordered_fork_batch_without_redispatch() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (host, stream, project) = local_project(directory.path(), true).await?;
+    let child_a = operation(0xA7);
+    let child_b = operation(0xB7);
+    let provider = ForkFaultProvider::new(child_a, child_b);
+    provider.set_root_fault(FaultWindow::AfterModelCompleted);
+    let swarm = open_swarm(
+        directory.path(),
+        provider.clone(),
+        host.clone(),
+        stream.clone(),
+        project.clone(),
+    )
+    .await?;
+    let root_operation = operation(0x07);
+    assert!(
+        swarm
+            .run_root(root_operation, "replay completed model exchange")
+            .await
+            .is_err()
+    );
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 1);
+    let durable_prefix = provider.serialized();
+    assert_eq!(durable_prefix.len(), 1);
+    drop(swarm);
+    drop(host);
+    drop(stream);
+    drop(project);
+
+    // The completed model events are already durable. Reopening must process
+    // that exchange and its ordered fork results, rather than asking the
+    // provider for the same root request a second time.
+    let (host, stream, project) = local_project(directory.path(), false).await?;
+    let reopened = open_swarm(directory.path(), provider.clone(), host, stream, project).await?;
+    let output = reopened
+        .run_root(root_operation, "replay completed model exchange")
+        .await?;
+    assert_eq!(output.text, "ordinary completion");
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 4);
+    assert_eq!(&provider.serialized()[..durable_prefix.len()], durable_prefix);
+    provider.assert_request_digests();
+    provider.assert_completed_dispatch_trace(child_a, child_b);
+    for child in [child_a, child_b] {
+        assert_eq!(
+            reopened.session(task(child)).await?.phase,
+            LocalSessionPhase::Completed
+        );
+        assert_eq!(reopened.outcome(task(child)).await?.text, "ordinary completion");
     }
     Ok(())
 }
