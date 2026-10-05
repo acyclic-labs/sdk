@@ -759,6 +759,12 @@ pub trait DurableTaskHost: Send + Sync {
         false
     }
 
+    /// Whether this host retains an owner-journal admission for deadline
+    /// timers that may finish publication after lifecycle cancellation.
+    fn supports_admitted_timer_recovery(&self) -> bool {
+        false
+    }
+
     /// Reconciles an already committed message without publishing or staging
     /// a new payload. `true` means the exact endpoint, identity, and payload
     /// were already committed; `false` leaves a new send eligible for the
