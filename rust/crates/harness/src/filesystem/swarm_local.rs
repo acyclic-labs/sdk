@@ -10,7 +10,7 @@ use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool,
     FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
     LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
-    ProjectWorkspaceTree,
+    ProjectWorkspaceTree, VerifiedModelForkBoundary,
     PersistentLocalHarness, workspace_ref, workspace_tools,
 };
 use crate::{
@@ -789,6 +789,19 @@ pub struct LocalFilesystemForkResolver {
     target: StdMutex<Option<Weak<PersistentLocalSwarm>>>,
 }
 
+/// Verified parent state retained while the resolver chooses the restart or
+/// fresh allocation path. Keeping this as a small context lets each large
+/// filesystem branch run behind its own boxed future, so recursive resolver
+/// calls do not accumulate their preparation frames on the native stack.
+struct LocalForkResolveContext {
+    parent_harness: Arc<PersistentLocalHarness>,
+    parent_session: LocalSwarmSession,
+    verified: VerifiedModelForkBoundary<LocalStream>,
+    boundary: CompletedModelBoundary,
+    parent_revision: u64,
+    issuer_secret: [u8; 32],
+}
+
 impl LocalFilesystemForkResolver {
     /// Binds the local provider pair and the owner-selected source project.
     pub fn new(
@@ -879,6 +892,288 @@ impl LocalFilesystemForkResolver {
     #[must_use]
     pub fn stream_provider(&self) -> ProviderRef {
         self.stream_provider.clone()
+    }
+
+    /// Rebinds a durable report/declaration after a restart. This branch is
+    /// boxed separately from fresh preparation so recursive retries do not
+    /// retain the fresh workspace preparation frame.
+    fn resolve_existing_child<'a>(
+        &'a self,
+        intent: LocalForkIntent,
+        publication: ModelBatchPublication,
+        swarm: Arc<PersistentLocalSwarm>,
+        context: &'a LocalForkResolveContext,
+    ) -> BoxFuture<'a, Result<Option<LocalModelForkPlan>>> {
+        Box::pin(async move {
+            let child_task = TaskId::from_bytes(intent.child_operation.into_bytes());
+            let existing_report = swarm.reports.lock().await.get(&child_task).cloned();
+            let existing_declaration = swarm.declarations.lock().await.get(&child_task).cloned();
+            let (Some(report), Some(declaration)) = (existing_report, existing_declaration) else {
+                return Ok(None);
+            };
+            let storage = context.parent_harness.storage();
+            let parent = context.verified.parent();
+            let source_project = report
+                .request
+                .selections
+                .iter()
+                .find_map(|selection| match &selection.revision {
+                    ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| Error::Invalid("fork report has no project selection".into()))?;
+            let parent_reader = Arc::new(FilesystemContentVerifier::new(
+                self.host.clone(),
+                storage.verifier(),
+                storage.owner_scope().clone(),
+                swarm.config.limits.file_bytes,
+            )?);
+            let preparer = FilesystemForkPreparer::new(
+                self.host.clone(),
+                parent.reducer().clone(),
+                storage.verifier(),
+                storage.owner_scope().clone(),
+                source_project,
+                self.stream_provider.clone(),
+                parent_reader,
+            )?;
+            let mut original_request = report.request.clone();
+            original_request.parent_revision = report.captured_history_revision()?;
+            let rebind_proof = preparer
+                .authenticate_rebind_records(&original_request)
+                .await?;
+            report.validate_with_rebind_proof(&rebind_proof)?;
+            let seed = report.clone().into_seed_with_rebind_proof(&rebind_proof)?;
+            if seed.operation_id != intent.fork_operation
+                || seed.parent != *storage.conversation()
+                || seed.child != Self::child_authority(&intent)
+                || seed.child_agent != AgentId::from_bytes(intent.child_operation.into_bytes())
+                || declaration.boundary != context.boundary
+            {
+                return Err(Error::Conflict(
+                    "durable fork allocation does not match the selected publication".into(),
+                ));
+            }
+            let request = LocalForkRequest {
+                parent: intent.parent,
+                parent_operation: intent.parent_operation,
+                parent_step: intent.parent_step,
+                fork_operation: Some(intent.fork_operation),
+                child_operation: intent.child_operation,
+                child_authority: Some(seed.child.clone()),
+                child_agent: Some(seed.child_agent),
+                task: intent.task,
+                prompt: intent.prompt,
+            };
+            request.validate()?;
+            Ok(Some(LocalModelForkPlan {
+                parent: intent.parent,
+                publication_operation: publication.operation_id,
+                request,
+                resources: swarm
+                    .persisted_child_budget_resources(intent.child_operation)
+                    .await?,
+                report,
+                rebind_proof: Some(rebind_proof),
+                declaration,
+                host: self.host.clone(),
+                stream: self.stream.clone(),
+                issuer: Self::child_issuer(
+                    &seed.child,
+                    intent.child_operation,
+                    context.issuer_secret,
+                ),
+            }))
+        })
+    }
+
+    /// Allocates and prepares a new child from the verified immutable
+    /// boundary. This whole workspace-preparation branch is boxed
+    /// independently from restart rebinding to cap recursive poll depth.
+    fn resolve_fresh_child<'a>(
+        &'a self,
+        intent: LocalForkIntent,
+        publication: ModelBatchPublication,
+        swarm: Arc<PersistentLocalSwarm>,
+        context: LocalForkResolveContext,
+    ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
+        Box::pin(async move {
+            let storage = context.parent_harness.storage();
+            let parent = context.verified.parent();
+            let child_authority = Self::child_authority(&intent);
+            let child_agent = AgentId::from_bytes(intent.child_operation.into_bytes());
+            let child_issuer =
+                Self::child_issuer(&child_authority, intent.child_operation, context.issuer_secret);
+            let child_private = VolumeRef::new(
+                self.host.provider.clone(),
+                format!("local-private-{}", intent.child_operation),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(child_agent),
+            )?;
+            // A recursive child forks from the project generation its direct
+            // parent received. The configured project is only the root
+            // fallback; reusing it at every depth discards ancestor edits.
+            let parent_project = swarm
+                .reports
+                .lock()
+                .await
+                .get(&intent.parent)
+                .and_then(|report| {
+                    report
+                        .request
+                        .selections
+                        .iter()
+                        .zip(&report.captures)
+                        .find_map(|(selection, capture)| {
+                            if !matches!(&selection.revision, ResourceRevision::Project { .. }) {
+                                return None;
+                            }
+                            match capture {
+                                Capture::Captured(resource) => match &resource.revision {
+                                    ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            }
+                        })
+                });
+            let source_project = source_project_for_parent(
+                parent_project,
+                context.parent_session.parent.is_none(),
+                &self.project,
+            )?;
+            let project_ref = workspace_ref(
+                source_project.provider().clone(),
+                &source_project.storage_name()?,
+            )?;
+            let project_head = self.host.resolve(&project_ref).await?;
+            let source_generation = project_head.generation;
+            let child_project = workspace_tools::child_project_volume(
+                &source_project,
+                TaskId::from_bytes(intent.child_operation.into_bytes()),
+            )?;
+            let history = ResourceRevision::History(StreamRef::new(
+                self.stream_provider.clone(),
+                parent.reducer().authority().stream_path()?.into_bytes(),
+                Some(context.parent_revision.to_string()),
+            )?);
+            let inherited_through_sequence = parent
+                .reducer()
+                .conversation()
+                .map(|conversation| conversation.messages.len() as u64)
+                .ok_or_else(|| {
+                    Error::Conflict(
+                        "fork publication parent has no authoritative conversation.".into(),
+                    )
+                })?;
+            let mut request = ForkRequest {
+                operation_id: intent.fork_operation,
+                parent: parent.reducer().authority().clone(),
+                parent_revision: context.parent_revision,
+                child: child_authority.clone(),
+                child_agent,
+                attached_agents: Vec::new(),
+                preparation: ForkPreparation {
+                    child_project_volume: child_project,
+                    child_private_volume: child_private,
+                    inherited_through_sequence,
+                    maximum_inherited_messages: swarm.config.limits.context_messages as u64,
+                    maximum_inherited_bytes: swarm.config.limits.file_bytes,
+                    maximum_inherited_references: swarm.config.limits.attachments as u32,
+                },
+                selections: vec![
+                    ForkSelection {
+                        required: true,
+                        revision: history,
+                    },
+                    ForkSelection {
+                        required: true,
+                        revision: ResourceRevision::Project {
+                            volume: source_project.clone(),
+                            generation: source_generation,
+                        },
+                    },
+                ],
+                boundary: None,
+                model_boundary: None,
+            };
+            storage
+                .attach_model_fork_references(&context.verified, &mut request)
+                .await?;
+            // Admit before the filesystem preparer can claim either
+            // workspace. The scheduler has already persisted the exact
+            // prompt, parent, model, grants, and limits.
+            let child_admission = swarm
+                .admit_local_child_turn(
+                    TaskId::from_bytes(intent.child_operation.into_bytes()),
+                    intent.child_operation,
+                    &intent.prompt,
+                    intent.parent,
+                    &context.parent_harness,
+                )
+                .await?;
+            let _ = child_admission;
+            let parent_reader = Arc::new(FilesystemContentVerifier::new(
+                self.host.clone(),
+                storage.verifier(),
+                storage.owner_scope().clone(),
+                swarm.config.limits.file_bytes,
+            )?);
+            let preparer = FilesystemForkPreparer::new(
+                self.host.clone(),
+                parent.reducer().clone(),
+                storage.verifier(),
+                storage.owner_scope().clone(),
+                source_project.clone(),
+                self.stream_provider.clone(),
+                parent_reader,
+            )?;
+            let report = parent.prepare_fork(&preparer, request.clone()).await?;
+            let declaration = LocalInheritedModelDeclaration {
+                boundary: context.boundary,
+                suffix: vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(format!(
+                        "child task: {}; parent: {}; identity: {}; fresh scratch: true",
+                        intent.task,
+                        intent.parent,
+                        TaskId::from_bytes(intent.child_operation.into_bytes())
+                    )),
+                }],
+            };
+            declaration.context(swarm.config.limits)?;
+            Ok(LocalModelForkPlan {
+                parent: intent.parent,
+                publication_operation: publication.operation_id,
+                request: LocalForkRequest {
+                    parent: intent.parent,
+                    parent_operation: intent.parent_operation,
+                    parent_step: intent.parent_step,
+                    fork_operation: Some(intent.fork_operation),
+                    child_operation: intent.child_operation,
+                    child_authority: Some(child_authority),
+                    child_agent: Some(child_agent),
+                    task: intent.task,
+                    prompt: intent.prompt,
+                },
+                resources: apply_requested_resource_bound(
+                    swarm
+                        .child_budget_resources(
+                            intent.parent,
+                            context.parent_harness.bundle().limits(),
+                            swarm.config.run_limits,
+                        )
+                        .await?,
+                    intent.requested_resources,
+                )?,
+                report,
+                rebind_proof: Some(preparer.authenticate_rebind(&request).await?),
+                declaration,
+                host: self.host.clone(),
+                stream: self.stream.clone(),
+                issuer: child_issuer,
+            })
+        })
     }
 }
 
@@ -989,262 +1284,18 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             }
             crate::stack_diagnostics::marker("fork-physical-after-parent-authority");
 
-            // A restart may have committed the typed report and declaration
-            // before the live plan cache was reconstructed. Reuse that exact
-            // durable allocation after re-verifying the completed boundary;
-            // never allocate another pair of child volumes for one operation.
-            let child_task = TaskId::from_bytes(intent.child_operation.into_bytes());
-            let existing_report = swarm.reports.lock().await.get(&child_task).cloned();
-            let existing_declaration = swarm.declarations.lock().await.get(&child_task).cloned();
-            if let (Some(report), Some(declaration)) = (existing_report, existing_declaration) {
-                let source_project = report
-                    .request
-                    .selections
-                    .iter()
-                    .find_map(|selection| match &selection.revision {
-                        ResourceRevision::Project { volume, .. } => Some(volume.clone()),
-                        _ => None,
-                    })
-                    .ok_or_else(|| Error::Invalid("fork report has no project selection".into()))?;
-                let parent_reader = Arc::new(FilesystemContentVerifier::new(
-                    self.host.clone(),
-                    storage.verifier(),
-                    storage.owner_scope().clone(),
-                    swarm.config.limits.file_bytes,
-                )?);
-                let preparer = FilesystemForkPreparer::new(
-                    self.host.clone(),
-                    parent.reducer().clone(),
-                    storage.verifier(),
-                    storage.owner_scope().clone(),
-                    source_project,
-                    self.stream_provider.clone(),
-                    parent_reader,
-                )?;
-                let mut original_request = report.request.clone();
-                original_request.parent_revision = report.captured_history_revision()?;
-                let rebind_proof = preparer
-                    .authenticate_rebind_records(&original_request)
-                    .await?;
-                report.validate_with_rebind_proof(&rebind_proof)?;
-                let seed = report.clone().into_seed_with_rebind_proof(&rebind_proof)?;
-                if seed.operation_id != intent.fork_operation
-                    || seed.parent != *storage.conversation()
-                    || seed.child != Self::child_authority(&intent)
-                    || seed.child_agent != AgentId::from_bytes(intent.child_operation.into_bytes())
-                    || declaration.boundary != boundary
-                {
-                    return Err(Error::Conflict(
-                        "durable fork allocation does not match the selected publication".into(),
-                    ));
-                }
-                let request = LocalForkRequest {
-                    parent: intent.parent,
-                    parent_operation: intent.parent_operation,
-                    parent_step: intent.parent_step,
-                    fork_operation: Some(intent.fork_operation),
-                    child_operation: intent.child_operation,
-                    child_authority: Some(seed.child.clone()),
-                    child_agent: Some(seed.child_agent),
-                    task: intent.task,
-                    prompt: intent.prompt,
-                };
-                request.validate()?;
-                return Ok(LocalModelForkPlan {
-                    parent: intent.parent,
-                    publication_operation: publication.operation_id,
-                    request,
-                    resources: swarm
-                        .persisted_child_budget_resources(intent.child_operation)
-                        .await?,
-                    report,
-                    rebind_proof: Some(rebind_proof),
-                    declaration,
-                    host: self.host.clone(),
-                    stream: self.stream.clone(),
-                    issuer: Self::child_issuer(&seed.child, intent.child_operation, issuer_secret),
-                });
-            }
-
-            let child_authority = Self::child_authority(&intent);
-            let child_agent = AgentId::from_bytes(intent.child_operation.into_bytes());
-            let child_issuer =
-                Self::child_issuer(&child_authority, intent.child_operation, issuer_secret);
-            let child_private = VolumeRef::new(
-                self.host.provider.clone(),
-                format!("local-private-{}", intent.child_operation),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(child_agent),
-            )?;
-            // A recursive child must fork from the project generation that
-            // its direct parent received.  The root resolver's configured
-            // project is only the fallback for the root task; reusing it at
-            // every depth would silently discard edits made by an ancestor.
-            let parent_project =
-                swarm
-                    .reports
-                    .lock()
-                    .await
-                    .get(&intent.parent)
-                    .and_then(|report| {
-                        report
-                            .request
-                            .selections
-                            .iter()
-                            .zip(&report.captures)
-                            .find_map(|(selection, capture)| {
-                                if !matches!(&selection.revision, ResourceRevision::Project { .. })
-                                {
-                                    return None;
-                                }
-                                match capture {
-                                    Capture::Captured(resource) => match &resource.revision {
-                                        ResourceRevision::Project { volume, .. } => {
-                                            Some(volume.clone())
-                                        }
-                                        _ => None,
-                                    },
-                                    _ => None,
-                                }
-                            })
-                    });
-            let source_project = source_project_for_parent(
-                parent_project,
-                parent_session.parent.is_none(),
-                &self.project,
-            )?;
-            let project_ref = workspace_ref(
-                source_project.provider().clone(),
-                &source_project.storage_name()?,
-            )?;
-            let project_head = self.host.resolve(&project_ref).await?;
-            let source_generation = project_head.generation;
-            let child_project = workspace_tools::child_project_volume(
-                &source_project,
-                TaskId::from_bytes(intent.child_operation.into_bytes()),
-            )?;
-            let history = ResourceRevision::History(StreamRef::new(
-                self.stream_provider.clone(),
-                parent.reducer().authority().stream_path()?.into_bytes(),
-                Some(parent_revision.to_string()),
-            )?);
-            let inherited_through_sequence = parent
-                .reducer()
-                .conversation()
-                .map(|conversation| conversation.messages.len() as u64)
-                .ok_or_else(|| {
-                    Error::Conflict(
-                        "fork publication parent has no authoritative conversation".into(),
-                    )
-                })?;
-            let mut request = ForkRequest {
-                operation_id: intent.fork_operation,
-                parent: parent.reducer().authority().clone(),
-                parent_revision,
-                child: child_authority.clone(),
-                child_agent,
-                attached_agents: Vec::new(),
-                preparation: ForkPreparation {
-                    child_project_volume: child_project,
-                    child_private_volume: child_private,
-                    inherited_through_sequence,
-                    maximum_inherited_messages: swarm.config.limits.context_messages as u64,
-                    maximum_inherited_bytes: swarm.config.limits.file_bytes,
-                    maximum_inherited_references: swarm.config.limits.attachments as u32,
-                },
-                selections: vec![
-                    ForkSelection {
-                        required: true,
-                        revision: history,
-                    },
-                    ForkSelection {
-                        required: true,
-                        revision: ResourceRevision::Project {
-                            volume: source_project.clone(),
-                            generation: source_generation,
-                        },
-                    },
-                ],
-                boundary: None,
-                model_boundary: None,
-            };
-            storage
-                .attach_model_fork_references(&verified, &mut request)
-                .await?;
-            // Admit the child before the filesystem preparer can claim either
-            // workspace. The scheduler reserves the returned admission before
-            // invoking this resolver; the exact prompt, parent, model,
-            // grants, and limits are persisted in the owner registry first.
-            let child_admission = swarm
-                .admit_local_child_turn(
-                    child_task,
-                    intent.child_operation,
-                    &intent.prompt,
-                    intent.parent,
-                    &parent_harness,
-                )
-                .await?;
-            let _ = child_admission;
-            let parent_reader = Arc::new(FilesystemContentVerifier::new(
-                self.host.clone(),
-                storage.verifier(),
-                storage.owner_scope().clone(),
-                swarm.config.limits.file_bytes,
-            )?);
-            let preparer = FilesystemForkPreparer::new(
-                self.host.clone(),
-                parent.reducer().clone(),
-                storage.verifier(),
-                storage.owner_scope().clone(),
-                source_project.clone(),
-                self.stream_provider.clone(),
-                parent_reader,
-            )?;
-            let report = parent.prepare_fork(&preparer, request.clone()).await?;
-            let declaration = LocalInheritedModelDeclaration {
+            let context = LocalForkResolveContext {
+                parent_harness,
+                parent_session,
+                verified,
                 boundary,
-                suffix: vec![ModelMessage {
-                    role: ModelRole::System,
-                    content: ModelContent::Text(format!(
-                        "child task: {}; parent: {}; identity: {}; fresh scratch: true",
-                        intent.task,
-                        intent.parent,
-                        TaskId::from_bytes(intent.child_operation.into_bytes())
-                    )),
-                }],
+                parent_revision,
+                issuer_secret,
             };
-            declaration.context(swarm.config.limits)?;
-            Ok(LocalModelForkPlan {
-                parent: intent.parent,
-                publication_operation: publication.operation_id,
-                request: LocalForkRequest {
-                    parent: intent.parent,
-                    parent_operation: intent.parent_operation,
-                    parent_step: intent.parent_step,
-                    fork_operation: Some(intent.fork_operation),
-                    child_operation: intent.child_operation,
-                    child_authority: Some(child_authority),
-                    child_agent: Some(child_agent),
-                    task: intent.task,
-                    prompt: intent.prompt,
-                },
-                resources: apply_requested_resource_bound(
-                    swarm
-                        .child_budget_resources(
-                            intent.parent,
-                            parent_harness.bundle().limits(),
-                            swarm.config.run_limits,
-                        )
-                        .await?,
-                    intent.requested_resources,
-                )?,
-                report,
-                rebind_proof: Some(preparer.authenticate_rebind(&request).await?),
-                declaration,
-                host: self.host.clone(),
-                stream: self.stream.clone(),
-                issuer: child_issuer,
-            })
+            if let Some(plan) = Box::pin(self.resolve_existing_child(intent.clone(), publication.clone(), swarm.clone(), &context)).await? {
+                return Ok(plan);
+            }
+            Box::pin(self.resolve_fresh_child(intent, publication, swarm, context)).await
         })
     }
 }
