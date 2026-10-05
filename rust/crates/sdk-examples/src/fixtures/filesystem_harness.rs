@@ -665,6 +665,29 @@ impl FilesystemTransferRouter {
             destination: acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(destination),
         }
     }
+
+    /// Applies tonic's request decoding limit to both transfer contexts.
+    ///
+    /// The router presents one `FilesystemService` to tonic while dispatching
+    /// Import to the fresh destination service. Keep the generated server
+    /// limits identical on both sides so the hosted fixture has the same
+    /// admission policy regardless of which context handles a request.
+    #[must_use]
+    pub fn max_decoding_message_size(self, limit: usize) -> Self {
+        Self {
+            source: self.source.max_decoding_message_size(limit),
+            destination: self.destination.max_decoding_message_size(limit),
+        }
+    }
+
+    /// Applies tonic's response encoding limit to both transfer contexts.
+    #[must_use]
+    pub fn max_encoding_message_size(self, limit: usize) -> Self {
+        Self {
+            source: self.source.max_encoding_message_size(limit),
+            destination: self.destination.max_encoding_message_size(limit),
+        }
+    }
 }
 
 impl<B> Service<http::Request<B>> for FilesystemTransferRouter
