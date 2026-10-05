@@ -6,14 +6,14 @@
 //! language runtime actually executes it.
 #![recursion_limit = "256"]
 
-use acyclic_sdk_examples::{
-    filesystem_scenarios, guide_projections, harness_scenarios, inference_scenarios, machines_scenarios,
-    objects_scenarios, workers_scenarios, GUIDE_SCENARIOS, Language, RenderedSnippet,
-    TransportFixture, execute_actors_roundtrip, execute_stream_append_read, render_all, scenarios,
-    transport_fixtures,
-};
 use acyclic_sdk_examples::fixtures::{
     filesystem_harness_scenarios, qualification_scenarios, scenario_expectation,
+};
+use acyclic_sdk_examples::{
+    GUIDE_SCENARIOS, Language, RenderedSnippet, TransportFixture, execute_actors_roundtrip,
+    execute_stream_append_read, filesystem_scenarios, guide_projections, harness_scenarios,
+    inference_scenarios, machines_scenarios, objects_scenarios, render_all, scenarios,
+    transport_fixtures, workers_scenarios,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -190,7 +190,9 @@ fn write_qualification_receipt(
         .and_then(Value::as_u64)
         .ok_or("Rust-owned RPC scenario set is missing count")?;
     if rpc_scenario_count != 35 {
-        return Err(format!("Rust-owned RPC scenario set has {rpc_scenario_count} entries; expected 35"));
+        return Err(format!(
+            "Rust-owned RPC scenario set has {rpc_scenario_count} entries; expected 35"
+        ));
     }
     let rpc_scenarios_bytes = serde_json::to_vec(&rpc_scenarios)
         .map_err(|error| format!("encode RPC scenario evidence: {error}"))?;
@@ -348,12 +350,12 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
                     let receipt = runtime
                         .block_on(acyclic_sdk_examples::harness_scenarios::execute_harness_scenario());
                     Ok(json!({
-                            "status": if receipt.admitted_and_completed && receipt.cancellation_rejected_admission && receipt.recovered_with_fresh_group && receipt.journal_boundary_enforced { "passed" } else { "failed" },
+                            "status": if receipt.admitted_and_completed && receipt.cancellation_rejected_admission && receipt.durable_replay_after_restart && receipt.journal_boundary_enforced { "passed" } else { "failed" },
                             "scope": "rust-memory-provider",
                             "evidence": {
                                 "admitted_and_completed": receipt.admitted_and_completed,
                                 "cancellation_rejected_admission": receipt.cancellation_rejected_admission,
-                                "recovered_with_fresh_group": receipt.recovered_with_fresh_group,
+                                "durable_replay_after_restart": receipt.durable_replay_after_restart,
                                 "journal_boundary_enforced": receipt.journal_boundary_enforced,
                             },
                     }))
@@ -502,7 +504,6 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
         "files": files.keys().collect::<Vec<_>>(),
     }))
 }
-
 
 fn rust_rpc_scenarios() -> Vec<Value> {
     qualification_scenarios()
@@ -1172,10 +1173,10 @@ fn run_rust(
         "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
     );
-    let consumed_package_root = staging
-        .parent()
-        .unwrap_or(staging.as_path())
-        .join(format!(".sdk-examples-{}-consumed-sdk-package", snippet.metadata.id));
+    let consumed_package_root = staging.parent().unwrap_or(staging.as_path()).join(format!(
+        ".sdk-examples-{}-consumed-sdk-package",
+        snippet.metadata.id
+    ));
     if consumed_package_root.exists() {
         fs::remove_dir_all(&consumed_package_root)
             .map_err(|error| format!("remove stale consumed SDK package: {error}"))?;
@@ -1526,7 +1527,8 @@ assert!(matches!(
 ));
 let recovered = TaskGroup::new(1).try_spawn(async { 11_u8 }).await;
 assert!(matches!(recovered, Admission::Accepted(_)));
-"#.to_owned();
+"#
+    .to_owned();
     vec![
         (
             "actors-create-roundtrip",
@@ -1686,8 +1688,14 @@ Ok(())
             .map_err(|error| format!("start guide consumer test: {error}"))?;
         if !test.status.success() {
             let stderr = String::from_utf8_lossy(&test.stderr);
-            let _ = fs::write(guide_root.join(format!("{scenario_id}.stderr.log")), &test.stderr);
-            return Err(format!("guide {scenario_id} test failed: {}", stderr.trim()));
+            let _ = fs::write(
+                guide_root.join(format!("{scenario_id}.stderr.log")),
+                &test.stderr,
+            );
+            return Err(format!(
+                "guide {scenario_id} test failed: {}",
+                stderr.trim()
+            ));
         }
         let install = Command::new(&cargo)
             .args([
@@ -1716,9 +1724,14 @@ Ok(())
         } else {
             format!("guide-{scenario_id}")
         };
-        let executable = staging.join("install-root").join("bin").join(executable_name);
+        let executable = staging
+            .join("install-root")
+            .join("bin")
+            .join(executable_name);
         if !executable.is_file() {
-            return Err(format!("guide {scenario_id} install produced no executable"));
+            return Err(format!(
+                "guide {scenario_id} install produced no executable"
+            ));
         }
         let output = Command::new(&executable)
             .current_dir(&staging)
@@ -1760,8 +1773,7 @@ Ok(())
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
-        fs::remove_dir_all(&staging)
-            .map_err(|error| format!("remove guide staging: {error}"))?;
+        fs::remove_dir_all(&staging).map_err(|error| format!("remove guide staging: {error}"))?;
     }
     Ok(())
 }
@@ -2962,7 +2974,9 @@ mod tests {
         let snippets = all_rendered_snippets();
         let guide = snippets
             .iter()
-            .filter(|snippet| snippet.metadata.family != "actors" && snippet.metadata.family != "stream")
+            .filter(|snippet| {
+                snippet.metadata.family != "actors" && snippet.metadata.family != "stream"
+            })
             .collect::<Vec<_>>();
         assert_eq!(guide.len(), 54, "six guide families across nine languages");
         assert!(guide.iter().all(|snippet| !snippet.code.is_empty()));
@@ -3071,5 +3085,3 @@ mod tests {
         fs::remove_dir_all(relocated).expect("clean relocated source closure fixture");
     }
 }
-
-
