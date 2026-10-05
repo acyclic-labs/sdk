@@ -2866,7 +2866,164 @@ impl PersistentLocalSwarm {
     }
 
     fn local_turn_output_schema() -> Value {
-        json!({"type": "object", "additionalProperties": true})
+        json!({
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "file": {
+                                "type": "object",
+                                "properties": {
+                                    "volume": {
+                                        "type": "object",
+                                        "properties": {
+                                            "provider": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "namespace": {"type": "string"},
+                                                    "family": {"type": "string"},
+                                                    "version": {"type": "string"}
+                                                },
+                                                "required": ["namespace", "family", "version"],
+                                                "additionalProperties": false
+                                            },
+                                            "id": {"type": "string"},
+                                            "class": {
+                                                "enum": ["project", "agent_private", "session_shared"]
+                                            },
+                                            "owner": {
+                                                "oneOf": [
+                                                    {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "kind": {"const": "project"},
+                                                            "id": {"type": "string"}
+                                                        },
+                                                        "required": ["kind", "id"],
+                                                        "additionalProperties": false
+                                                    },
+                                                    {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "kind": {"const": "agent"},
+                                                            "id": {"type": "string", "format": "uuid"}
+                                                        },
+                                                        "required": ["kind", "id"],
+                                                        "additionalProperties": false
+                                                    },
+                                                    {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "kind": {"const": "session"},
+                                                            "id": {"type": "string"}
+                                                        },
+                                                        "required": ["kind", "id"],
+                                                        "additionalProperties": false
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "required": ["provider", "id", "class", "owner"],
+                                        "additionalProperties": false
+                                    },
+                                    "path": {"type": "string"},
+                                    "version": {"type": "string"},
+                                    "descriptor": {
+                                        "type": "object",
+                                        "properties": {
+                                            "sha256": {
+                                                "type": "array",
+                                                "items": {"type": "integer", "minimum": 0, "maximum": 255},
+                                                "minItems": 32,
+                                                "maxItems": 32
+                                            },
+                                            "byte_length": {"type": "integer", "minimum": 0},
+                                            "media_type": {"type": "string"}
+                                        },
+                                        "required": ["sha256", "byte_length", "media_type"],
+                                        "additionalProperties": false
+                                    },
+                                    "display_name": {"type": "string"}
+                                },
+                                "required": ["volume", "path", "version", "descriptor", "display_name"],
+                                "additionalProperties": false
+                            },
+                            "label": {"type": ["string", "null"]}
+                        },
+                        "required": ["file", "label"],
+                        "additionalProperties": false
+                    }
+                },
+                "metadata": {
+                    "type": ["object", "array", "string", "number", "boolean", "null"]
+                },
+                "steps": {"type": "integer", "minimum": 0}
+            },
+            "required": ["text", "attachments", "metadata", "steps"],
+            "additionalProperties": false
+        })
+    }
+
+    fn local_tool_contract(
+        &self,
+        task: TaskId,
+        harness: &PersistentLocalHarness,
+    ) -> Result<(Value, BTreeSet<String>)> {
+        let mut definitions = harness
+            .storage()
+            .default_tools(harness.bundle().limits())?
+            .definitions()?;
+        definitions.extend(self.bindings.tools_for(task)?.definitions()?);
+        definitions.sort_by(|left, right| {
+            (left.name.as_str(), left.revision.as_str())
+                .cmp(&(right.name.as_str(), right.revision.as_str()))
+        });
+        definitions.dedup_by(|left, right| {
+            left.name == right.name && left.revision == right.revision
+        });
+        let requirements = definitions
+            .iter()
+            .map(|definition| format!("tool:{}@{}", definition.name, definition.revision))
+            .chain([
+                "model".to_owned(),
+                "content".to_owned(),
+                "content:write".to_owned(),
+            ])
+            .collect();
+        Ok((
+            serde_json::to_value(definitions)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            requirements,
+        ))
+    }
+
+    /// Grants safe to retain before a child workspace exists. Volume grants
+    /// are deliberately excluded; the child storage authority adds its own
+    /// private/project capabilities after typed publication.
+    fn child_preallocation_grants(
+        tool_contract: &Value,
+    ) -> Result<Capabilities> {
+        let definitions = tool_contract
+            .as_array()
+            .ok_or_else(|| Error::Invalid("local tool contract is not an array".into()))?;
+        let mut grants = vec![
+            "model:generate".to_owned(),
+            "mail:send".to_owned(),
+            "mail:read".to_owned(),
+            "timer:wait".to_owned(),
+        ];
+        for definition in definitions {
+            let name = definition
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::Invalid("local tool contract has no name".into()))?;
+            grants.push(format!("tool:call:{name}"));
+        }
+        Ok(Capabilities::new(grants))
     }
 
     /// Admits the exact local turn through the authoritative swarm registry.
@@ -2891,10 +3048,12 @@ impl PersistentLocalSwarm {
         }
         let session = self.session(task).await?;
         let harness = self.open_session(task).await?;
+        let (tool_contract, requirements) = self.local_tool_contract(task, &harness)?;
         let machine_digest = crate::contract::canonical_json_digest(&json!({
             "model": self.config.model.clone(),
             "limits": harness.bundle().limits(),
             "run_limits": self.config.run_limits,
+            "tools": tool_contract,
         }))?;
         let admission = crate::runtime::TaskAdmissionRecord::from_parts(
             operation,
@@ -2903,7 +3062,7 @@ impl PersistentLocalSwarm {
             Value::String(prompt.to_owned()),
             Self::local_turn_input_schema(),
             Self::local_turn_output_schema(),
-            &BTreeSet::new(),
+            &requirements,
             &machine_digest,
             session.parent,
             Capabilities::new(
@@ -2948,10 +3107,12 @@ impl PersistentLocalSwarm {
                 ));
             }
         }
+        let (tool_contract, requirements) = self.local_tool_contract(task, parent_harness)?;
         let machine_digest = crate::contract::canonical_json_digest(&json!({
             "model": self.config.model.clone(),
             "limits": parent_harness.bundle().limits(),
             "run_limits": self.config.run_limits,
+            "tools": tool_contract,
         }))?;
         let admission = crate::runtime::TaskAdmissionRecord::from_parts(
             operation,
@@ -2960,17 +3121,10 @@ impl PersistentLocalSwarm {
             Value::String(prompt.to_owned()),
             Self::local_turn_input_schema(),
             Self::local_turn_output_schema(),
-            &BTreeSet::new(),
+            &requirements,
             &machine_digest,
             Some(parent),
-            Capabilities::new(
-                parent_harness
-                    .bundle()
-                    .capabilities()
-                    .iter()
-                    .map(str::to_owned)
-                    .chain(["mail:send".into(), "mail:read".into(), "timer:wait".into()]),
-            ),
+            Self::child_preallocation_grants(&tool_contract)?,
             parent_harness.bundle().limits(),
             self.config.run_limits,
             self.provider
@@ -3881,8 +4035,8 @@ impl PersistentLocalSwarm {
         }
         let parent = session.parent;
         let admission = self.admit_local_turn(task, operation, prompt).await?;
-        self.verify_admitted_task(task, parent, &admission).await?;
         let harness = self.open_session(task).await?;
+        self.verify_admitted_task(task, parent, &admission, &harness).await?;
         let max_steps = u32::try_from(
             self.config
                 .run_limits
@@ -4000,7 +4154,13 @@ impl PersistentLocalSwarm {
         }
         let parent_session = self.session(request.parent).await?;
         let parent_admission = self.authenticated_admission(request.parent).await?;
-        self.verify_admitted_task(request.parent, parent_session.parent, &parent_admission)
+        let parent_harness = self.open_session(request.parent).await?;
+        self.verify_admitted_task(
+            request.parent,
+            parent_session.parent,
+            &parent_admission,
+            &parent_harness,
+        )
             .await?;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         if let Some(existing) = self.requests.lock().await.get(&child)
@@ -4010,7 +4170,6 @@ impl PersistentLocalSwarm {
                 "child operation is already bound to another fork request".into(),
             ));
         }
-        let parent_harness = self.open_session(request.parent).await?;
         let publication = self.publications.lock().await.get(&child).cloned();
         let declaration = self.declarations.lock().await.get(&child).cloned();
         let stored_publication = publication.clone();
@@ -4127,7 +4286,7 @@ impl PersistentLocalSwarm {
                 }
             };
         let child_admission = self.authenticated_admission(child).await?;
-        self.verify_admitted_task(child, Some(request.parent), &child_admission)
+        self.verify_admitted_task(child, Some(request.parent), &child_admission, &harness)
             .await?;
         self.sessions.lock().await.insert(child, harness.clone());
         self.prepare_child_turn(
@@ -4636,7 +4795,7 @@ impl PersistentLocalSwarm {
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
         let admission = self.authenticated_admission(child).await?;
-        self.verify_admitted_task(child, Some(request.parent), &admission)
+        self.verify_admitted_task(child, Some(request.parent), &admission, &harness)
             .await?;
         Ok(LocalChildActivation::Ready(Box::new(LocalChildTurn {
             request, stream, harness, bundle, admission, max_steps, cancelled,
@@ -4926,6 +5085,9 @@ impl PersistentLocalSwarm {
             .grant("tool:call:acyclic.read_file")
             .grant("tool:call:acyclic.stage_file")
             .grant("tool:call:acyclic.list_files")
+            .grant("mail:send")
+            .grant("mail:read")
+            .grant("timer:wait")
             .limits(self.config.limits);
         self.bindings.tools_for(task)?.install_into(builder)?.build()
     }
@@ -4935,9 +5097,10 @@ impl PersistentLocalSwarm {
     /// parent, numeric limit, or run budget binding.
     async fn verify_admitted_task(
         &self,
-        _task: TaskId,
+        task: TaskId,
         parent: Option<TaskId>,
         admission: &crate::runtime::TaskAdmissionRecord,
+        harness: &PersistentLocalHarness,
     ) -> Result<()> {
         if admission.parent != parent
             || admission.limits != self.config.limits
@@ -4945,6 +5108,39 @@ impl PersistentLocalSwarm {
         {
             return Err(Error::Conflict(
                 "local swarm task admission no longer matches its pinned owner binding".into(),
+            ));
+        }
+        let (tool_contract, requirements) = self.local_tool_contract(task, harness)?;
+        let machine_digest = crate::contract::canonical_json_digest(&json!({
+            "model": self.config.model.clone(),
+            "limits": harness.bundle().limits(),
+            "run_limits": self.config.run_limits,
+            "tools": tool_contract,
+        }))?;
+        let expected = crate::runtime::TaskAdmissionRecord::from_parts(
+            admission.operation_id,
+            "acyclic.local-swarm.turn",
+            "1",
+            admission.input.clone(),
+            Self::local_turn_input_schema(),
+            Self::local_turn_output_schema(),
+            &requirements,
+            &machine_digest,
+            parent,
+            admission.grants.clone(),
+            admission.limits,
+            admission.run_limits,
+            admission.policy.clone(),
+            admission.extensions.clone(),
+            admission.execution.clone(),
+        )?;
+        if expected.task != admission.task
+            || expected.machine != admission.machine
+            || expected.input_schema != admission.input_schema
+            || expected.output_schema != admission.output_schema
+        {
+            return Err(Error::Conflict(
+                "local swarm task admission identity or contract changed".into(),
             ));
         }
         Ok(())
