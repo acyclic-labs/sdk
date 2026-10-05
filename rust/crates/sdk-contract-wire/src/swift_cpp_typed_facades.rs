@@ -45,6 +45,14 @@ fn swift_field_name(value: &str) -> String {
     }
 }
 
+fn swift_method_name(value: &str) -> String {
+    if matches!(value, "associatedtype" | "as" | "break" | "case" | "catch" | "class" | "continue" | "default" | "defer" | "deinit" | "do" | "else" | "enum" | "extension" | "fallthrough" | "false" | "for" | "func" | "guard" | "if" | "import" | "in" | "init" | "inout" | "internal" | "is" | "let" | "nil" | "none" | "open" | "operator" | "private" | "protocol" | "public" | "repeat" | "return" | "self" | "set" | "static" | "struct" | "subscript" | "super" | "switch" | "throw" | "throws" | "true" | "try" | "typealias" | "var" | "where" | "while") {
+        format!("{}{}{}", "`", value, "`")
+    } else {
+        value.to_owned()
+    }
+}
+
 fn swift_kind(kind: WireValueKind, name: &str) -> String {
     match kind { WireValueKind::String | WireValueKind::Bytes | WireValueKind::Message | WireValueKind::UnsignedInteger => name.to_owned(), WireValueKind::SignedInteger => "Int64".into(), WireValueKind::Boolean => "Bool".into(), WireValueKind::Timestamp => "Date".into(), WireValueKind::Enum | WireValueKind::Oneof => "WireChoice".into() }
 }
@@ -108,16 +116,16 @@ fn swift_nested_value_checks(field: &crate::type_policy::ResolvedRequestField, r
     if field.field != "value" || field.wire_type != Some(FieldType::Bytes as i32) {
         return String::new();
     }
-    let mut out = String::new();
+    let mut conditions = Vec::new();
     for rule in rules {
         match rule {
-            SemanticRule::NonEmpty => out.push_str(" guard let value, !value.isEmpty else { return nil };"),
-            SemanticRule::FixedLength(n) => out.push_str(&format!(" guard let value, value.count == {n} else {{ return nil }};")),
-            SemanticRule::Sha256Digest => out.push_str(" guard let value, value.count == 32 else { return nil };"),
+            SemanticRule::NonEmpty => conditions.push("!value.isEmpty".to_owned()),
+            SemanticRule::FixedLength(n) => conditions.push(format!("value.count == {n}")),
+            SemanticRule::Sha256Digest => conditions.push("value.count == 32".to_owned()),
             _ => {},
         }
     }
-    out
+    if conditions.is_empty() { String::new() } else { format!(" guard let value, {} else {{ return nil }};", conditions.join(", ")) }
 }
 
 fn cpp_message_checks(rules: &[SemanticRule]) -> String {
@@ -289,12 +297,16 @@ fn render_swift() -> String {
             WireValueKind::SignedInteger => out.push_str(&format!("public struct {}: Sendable {{ public let value: Int64; public init?(_ value: Int64) {{{} self.value = value }} }}\n", item.rust_name, swift_checks(item.wire_kind, item.rules))),
             WireValueKind::Message => {
                 let nested = semantic_nested_fields(item.rust_name);
-                let declarations = nested.iter().map(|field| format!("public let {}: {}?;", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::NestedMessage))).collect::<String>();
-                let params = nested.iter().map(|field| format!("{}: {}? = nil", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::NestedMessage))).collect::<Vec<_>>().join(", ");
-                let assignments = nested.iter().map(|field| format!("self.{0} = {0};", swift_field_name(&field.field))).collect::<String>();
-                let raw_assignments = nested.iter().map(|field| format!("self.{} = nil;", swift_field_name(&field.field))).collect::<String>();
+                let nested_type = |field: &crate::type_policy::ResolvedRequestField| {
+                    let ty = swift_field_type(field, PublicFieldDirection::NestedMessage);
+                    if ty.ends_with('?') { ty } else { format!("{ty}?") }
+                };
+                let declarations = nested.iter().map(|field| format!("public let {}: {};\n", swift_field_name(&field.field), nested_type(field))).collect::<String>();
+                let params = nested.iter().map(|field| format!("{}: {} = nil", swift_field_name(&field.field), nested_type(field))).collect::<Vec<_>>().join(", ");
+                let assignments = nested.iter().map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field))).collect::<String>();
+                let raw_assignments = nested.iter().map(|field| format!("self.{} = nil\n", swift_field_name(&field.field))).collect::<String>();
                 let typed_checks = nested.iter().map(|field| swift_nested_value_checks(field, item.rules)).collect::<String>();
-                out.push_str(&format!("public struct {}: Sendable {{ public let wire: RustWireMessage; {} public init?(_ wire: RustWireMessage) {{{} self.wire = wire; {} }} public init?(wire: RustWireMessage, {}) {{{} self.wire = wire; {} }} }}\n", item.rust_name, declarations, swift_message_checks(item.rules), raw_assignments, params, typed_checks, assignments));
+                out.push_str(&format!("public struct {}: Sendable {{\n public let wire: RustWireMessage\n{} public init?(_ wire: RustWireMessage) {{{} self.wire = wire\n{} }}\n public init?(wire: RustWireMessage, {}) {{{} self.wire = wire\n{} }}\n}}\n", item.rust_name, declarations, swift_message_checks(item.rules), raw_assignments, params, typed_checks, assignments));
             }
             _ => {}
         }
@@ -302,17 +314,18 @@ fn render_swift() -> String {
     out.push_str("\npublic enum WireChoice: Sendable { case known(tag: String, payload: Data); case unknown(rawTag: Int32, payload: Data) }\n\n");
     for ((module, message), fields) in request_groups() {
         let name = format!("{}{}Request", camel(&module), camel(message.trim_end_matches("Request")));
-        let field_declarations = fields.iter().map(|field| format!("public let {}: {};", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Request))).collect::<String>();
+        let field_declarations = fields.iter().map(|field| format!("public let {}: {};\n", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Request))).collect::<String>();
         let params = fields.iter().map(|field| format!("{}: {}", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Request))).collect::<Vec<_>>().join(", ");
-        let assignments = fields.iter().map(|field| format!("self.{0} = {0};", swift_field_name(&field.field))).collect::<String>();
+        let assignments = fields.iter().map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field))).collect::<String>();
         let wire_fields = fields.iter().map(|field| format!("\"{}\": {}", field.json_name, swift_field_name(&field.field))).collect::<Vec<_>>().join(", ");
-        out.push_str(&format!("public struct {name}: RustWireRequest, Sendable {{ {field_declarations} public init({params}) {{ {assignments} }} public typealias Wire = [String: Any]; public func toWire() -> [String: Any] {{ [{wire_fields}] }} }}\n"));
+        let wire_literal = if wire_fields.is_empty() { "[:]".to_owned() } else { format!("[{wire_fields}]") };
+        out.push_str(&format!("public struct {name}: RustWireRequest, Sendable {{\n{field_declarations} public init({params}) {{\n{assignments} }}\n public typealias Wire = [String: Any]\n public func toWire() -> [String: Any] {{ {wire_literal} }}\n}}\n"));
     }
     for ((module, message), fields) in response_groups() {
         let name = format!("{}{}Response", camel(&module), camel(&message));
-        let field_declarations = fields.iter().map(|field| format!("public let {}: {};", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Response))).collect::<String>();
+        let field_declarations = fields.iter().map(|field| format!("public let {}: {};\n", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Response))).collect::<String>();
         let params = fields.iter().map(|field| format!("{}: {}", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Response))).collect::<Vec<_>>().join(", ");
-        let assignments = fields.iter().map(|field| format!("self.{0} = {0};", swift_field_name(&field.field))).collect::<String>();
+        let assignments = fields.iter().map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field))).collect::<String>();
         let decodes = fields.iter().map(|field| {
             let cast = swift_field_cast(field);
             let key = &field.json_name;
@@ -325,8 +338,11 @@ fn render_swift() -> String {
                 format!("guard let {field} = wire[\"{key}\"] as? {cast} else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", field=swift_field_name(&field.field), key=key, cast=cast)
             }
         }).collect::<String>();
-        let args = fields.iter().map(|field| swift_field_name(&field.field)).collect::<Vec<_>>().join(", ");
-        out.push_str(&format!("public struct {name}: RustWireResponse, Sendable {{ {field_declarations} public init({params}) {{ {assignments} }} public typealias Wire = [String: Any]; public static func fromWire(_ wire: [String: Any]) throws -> Self {{ {decodes} return Self({args}) }} }}\n"));
+        let args = fields.iter().map(|field| {
+            let name = swift_field_name(&field.field);
+            format!("{name}: {name}")
+        }).collect::<Vec<_>>().join(", ");
+        out.push_str(&format!("public struct {name}: RustWireResponse, Sendable {{\n{field_declarations} public init({params}) {{\n{assignments} }}\n public typealias Wire = [String: Any]\n public static func fromWire(_ wire: [String: Any]) throws -> Self {{ {decodes} return Self({args}) }}\n}}\n"));
     }
     for (message, bindings) in nested_message_groups() {
         let fields = bindings.iter().map(|binding| {
@@ -378,7 +394,7 @@ fn render_swift() -> String {
             let request = format!("{}{}Request", camel(module), camel(message.trim_end_matches("Request")));
             let mut method_chars = method.method.chars();
             let method_name = method_chars.next().map(|first| first.to_lowercase().collect::<String>() + method_chars.as_str()).unwrap_or_else(|| method.method.clone());
-            out.push_str(&format!(" public func {}<Response: RustWireResponse>(_ request: {}) async throws -> Response {{ try await transport.call(\"{}\", request) }}\n", method_name, request, method.rpc));
+            out.push_str(&format!(" public func {}<Response: RustWireResponse>(_ request: {}) async throws -> Response {{ try await transport.call(\"{}\", request) }}\n", swift_method_name(&method_name), request, method.rpc));
         }
     }
     out.push_str("}\n");
@@ -397,8 +413,12 @@ fn render_cpp() -> String {
             WireValueKind::SignedInteger => out.push_str(&format!("struct {} {{ std::int64_t value; explicit {}(std::int64_t value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
             WireValueKind::Message => {
                 let nested = semantic_nested_fields(item.rust_name);
-                let declarations = nested.iter().map(|field| format!("std::optional<{}> {};", cpp_field_type(field, PublicFieldDirection::NestedMessage), field.field)).collect::<String>();
-                out.push_str(&format!("struct {} {{ RustWireMessage wire; {} explicit {}(RustWireMessage value) : wire(std::move(value)) {{{}}} }};\n", item.rust_name, declarations, item.rust_name, cpp_message_checks(item.rules)));
+                let declarations = nested.iter().map(|field| {
+                    let ty = cpp_field_type(field, PublicFieldDirection::NestedMessage);
+                    let ty = if ty.starts_with("std::optional<") { ty } else { format!("std::optional<{ty}>") };
+                    format!("{ty} {};\n", field.field)
+                }).collect::<String>();
+                out.push_str(&format!("struct {} {{ RustWireMessage wire; {} explicit {}(RustWireMessage value) {{{} wire = std::move(value); }} }};\n", item.rust_name, declarations, item.rust_name, cpp_message_checks(item.rules)));
             }
             _ => {}
         }
