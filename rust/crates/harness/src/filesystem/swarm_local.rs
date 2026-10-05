@@ -3641,8 +3641,9 @@ impl PersistentLocalSwarm {
         Err(Error::Conflict(input_conflict.into()))
     }
 
-    fn child_budget_resources(
+    async fn child_budget_resources(
         &self,
+        parent: TaskId,
         limits: Limits,
         run_limits: TaskRunLimits,
     ) -> Result<SwarmResourceRequest> {
@@ -3651,11 +3652,88 @@ impl PersistentLocalSwarm {
         let model_steps = run_limits
             .max_steps
             .map_or(limits.model_steps, |steps| steps.min(limits.model_steps));
-        let resources = SwarmResourceRequest {
+        let task_limits = SwarmResourceRequest {
             model_steps: u64::try_from(model_steps)
                 .map_err(|_| Error::Invalid("task model step limit is not representable".into()))?,
             output_bytes: limits.file_bytes.min(limits.render_bytes),
             execution_time_ms: self.config.budget.limits.max_execution_time_ms,
+        };
+        let parent_operation = self.budget_parent_operation(parent).await?;
+        let available = {
+            let journal = self.budget_journal.lock().await;
+            match parent_operation {
+                Some(operation) => {
+                    let parent = journal
+                        .reservation(operation)?
+                        .ok_or_else(|| Error::NotFound(format!("swarm parent {operation}")))?;
+                    SwarmResourceRequest {
+                        model_steps: parent
+                            .resources
+                            .model_steps
+                            .checked_sub(parent.usage.model_steps)
+                            .ok_or_else(|| {
+                                Error::Conflict("swarm parent model-step budget is exhausted".into())
+                            })?,
+                        output_bytes: parent
+                            .resources
+                            .output_bytes
+                            .checked_sub(parent.usage.output_bytes)
+                            .ok_or_else(|| {
+                                Error::Conflict("swarm parent output budget is exhausted".into())
+                            })?,
+                        execution_time_ms: parent
+                            .resources
+                            .execution_time_ms
+                            .checked_sub(parent.usage.execution_time_ms)
+                            .ok_or_else(|| {
+                                Error::Conflict("swarm parent time budget is exhausted".into())
+                            })?,
+                    }
+                }
+                None => journal.root_resource_limits()?,
+            }
+        };
+        if available.model_steps == 0
+            || available.output_bytes == 0
+            || available.execution_time_ms == 0
+        {
+            return Err(Error::Conflict(
+                "swarm parent has no remaining child resource budget".into(),
+            ));
+        }
+        let agent_count = self
+            .config
+            .budget
+            .limits
+            .max_total_agents
+            .max(1);
+        let children = u64::try_from(self.config.maximum_children)
+            .map_err(|_| Error::Invalid("local swarm child bound is not representable".into()))?
+            .max(1);
+        let per_agent = |limit: u64| limit.checked_div(agent_count).unwrap_or(0).max(1);
+        let per_parent = |limit: u64| {
+            limit
+                .checked_add(children.saturating_sub(1))
+                .map(|value| value / children)
+                .unwrap_or(limit)
+                .max(1)
+        };
+        let resources = SwarmResourceRequest {
+            model_steps: task_limits
+                .model_steps
+                .min(per_agent(self.config.budget.limits.max_model_steps))
+                .min(per_parent(available.model_steps))
+                .min(available.model_steps),
+            output_bytes: task_limits
+                .output_bytes
+                .min(per_agent(self.config.budget.limits.max_output_bytes))
+                .min(per_parent(available.output_bytes))
+                .min(available.output_bytes),
+            execution_time_ms: task_limits
+                .execution_time_ms
+                .min(per_agent(self.config.budget.limits.max_execution_time_ms))
+                .min(per_parent(available.execution_time_ms))
+                .min(available.execution_time_ms),
         };
         resources.validate()?;
         Ok(resources)
@@ -5183,10 +5261,13 @@ impl PersistentLocalSwarm {
                 // dispatching the child model again.
                 return Ok(());
             }
-            let child_resources = self.child_budget_resources(
-                parent_storage.bundle().limits(),
-                self.config.run_limits,
-            )?;
+            let child_resources = self
+                .child_budget_resources(
+                    request.parent,
+                    parent_storage.bundle().limits(),
+                    self.config.run_limits,
+                )
+                .await?;
             let _ = self
                 .admit_and_reserve_child(
                     child,
@@ -5252,10 +5333,13 @@ impl PersistentLocalSwarm {
         // Reserve before appending ForkPrepared. This is the resolver's
         // workspace boundary: a failed reservation publishes no child and
         // cannot consume active/total capacity after a restart.
-        let child_resources = self.child_budget_resources(
-            parent_storage.bundle().limits(),
-            self.config.run_limits,
-        )?;
+        let child_resources = self
+            .child_budget_resources(
+                request.parent,
+                parent_storage.bundle().limits(),
+                self.config.run_limits,
+            )
+            .await?;
         let _ = self
             .admit_and_reserve_child(
                 child,
