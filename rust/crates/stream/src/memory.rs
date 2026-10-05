@@ -322,7 +322,8 @@ struct Replay {
     result: IdempotencyOutcome,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl StreamProvider for MemoryStream {
     async fn inspect_idempotency(
         &self,
@@ -684,6 +685,64 @@ pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
     } else {
         Ok(())
     }
+}
+
+/// Validates one provider page against the request-relative hierarchy rules.
+/// This keeps custom providers from reimplementing direct-child, continuation,
+/// ordering, and hierarchy-version semantics in each language binding.
+pub(crate) fn validate_children_page_response(
+    request: &ChildrenPageRequest,
+    page: &ChildrenPage,
+) -> Result<(), StreamError> {
+    validate_children_page_request(request)?;
+    if request
+        .hierarchy_version
+        .is_some_and(|version| version != page.hierarchy_version)
+    {
+        return Err(StreamError::HierarchyChanged);
+    }
+    if page.children.len() > request.limit as usize {
+        return Err(StreamError::InvalidArgument);
+    }
+    let mut previous = request.after.as_ref();
+    for child in &page.children {
+        if request.parent.as_ref().map_or_else(
+            || child.path.parent().is_some(),
+            |parent| !is_direct_child(parent, &child.path),
+        ) || previous.is_some_and(|previous| child.path <= *previous)
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        previous = Some(&child.path);
+    }
+    if page
+        .next_after
+        .as_ref()
+        .is_some_and(|next| page.children.last().is_none_or(|child| &child.path != next))
+        || page.next_after.is_some() && page.children.is_empty()
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_children_page_request(
+    request: &ChildrenPageRequest,
+) -> Result<(), StreamError> {
+    validate_limit(request.limit)?;
+    if request.after.is_some() && request.hierarchy_version.is_none() {
+        return Err(StreamError::InvalidArgument);
+    }
+    if let Some(after) = request.after.as_ref() {
+        let valid_parent = request.parent.as_ref().map_or_else(
+            || after.parent().is_none(),
+            |parent| is_direct_child(parent, after),
+        );
+        if !valid_parent {
+            return Err(StreamError::InvalidArgument);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_records(records: &[Bytes]) -> Result<(), StreamError> {
@@ -1576,6 +1635,61 @@ mod tests {
             idempotency_key: None,
         };
         assert!(next_wire.encoded_len() > MAX_COMMAND_BYTES);
+        Ok(())
+    }
+
+    #[test]
+    fn children_page_validation_is_request_relative() -> Result<(), StreamError> {
+        let parent = path("agents")?;
+        let child_a = path("agents/a")?;
+        let child_b = path("agents/b")?;
+        let revision = CommitId::from_bytes([7; 32]);
+        let first = ChildrenPageRequest {
+            parent: Some(parent.clone()),
+            after: None,
+            hierarchy_version: None,
+            limit: 2,
+        };
+        assert!(validate_children_page_request(&first).is_ok());
+        let continuation = ChildrenPageRequest {
+            parent: Some(parent.clone()),
+            after: Some(child_a.clone()),
+            hierarchy_version: Some(revision),
+            limit: 2,
+        };
+        assert!(validate_children_page_request(&continuation).is_ok());
+        assert!(
+            validate_children_page_request(&ChildrenPageRequest {
+                hierarchy_version: None,
+                ..continuation.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_children_page_request(&ChildrenPageRequest {
+                parent: Some(path("other")?),
+                ..continuation.clone()
+            })
+            .is_err()
+        );
+        let page = ChildrenPage {
+            hierarchy_version: revision,
+            children: vec![Child {
+                path: child_b.clone(),
+            }],
+            next_after: Some(child_b),
+        };
+        assert!(validate_children_page_response(&continuation, &page).is_ok());
+        assert!(
+            validate_children_page_response(
+                &continuation,
+                &ChildrenPage {
+                    hierarchy_version: CommitId::from_bytes([8; 32]),
+                    ..page.clone()
+                }
+            )
+            .is_err()
+        );
         Ok(())
     }
 
