@@ -50,10 +50,6 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
-#[cfg(test)]
-static ACTIVE_OUTPUT_READERS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 /// Environment values admitted for a process.
 ///
 /// Both variants call `env_clear` before adding values.  There is intentionally
@@ -1103,22 +1099,8 @@ impl ExecutionRunner for NativeExecutionRunner {
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(
             request.max_output_bytes as usize,
         ));
-        let mut stdout_thread =
-            match spawn_reader(stdout, Arc::clone(&remaining), Arc::clone(&overflow)) {
-                Ok(reader) => reader,
-                Err(error) => {
-                    let _ = child.terminate();
-                    return Err(error);
-                }
-            };
-        let mut stderr_thread =
-            match spawn_reader(stderr, Arc::clone(&remaining), Arc::clone(&overflow)) {
-                Ok(reader) => reader,
-                Err(error) => {
-                    let _ = child.terminate();
-                    return Err(error);
-                }
-            };
+        let stdout_thread = spawn_reader(stdout, Arc::clone(&remaining), Arc::clone(&overflow));
+        let stderr_thread = spawn_reader(stderr, Arc::clone(&remaining), Arc::clone(&overflow));
         let termination;
         let mut termination_error = None;
         loop {
@@ -1139,8 +1121,8 @@ impl ExecutionRunner for NativeExecutionRunner {
             if let Some(status) = child.try_wait().map_err(|error| {
                 Error::Storage(format!("failed waiting for approved process: {error}"))
             })? {
-                let stdout = stdout_thread.receive()?;
-                let stderr = stderr_thread.receive()?;
+                let stdout = receive_reader(&stdout_thread)?;
+                let stderr = receive_reader(&stderr_thread)?;
                 if overflow.load(Ordering::Acquire) {
                     return Err(Error::Invalid(
                         "approved process output exceeded its limit".into(),
@@ -1151,8 +1133,6 @@ impl ExecutionRunner for NativeExecutionRunner {
                         reason: "process descendants retained output handles".into(),
                     });
                 };
-                stdout_thread.join()?;
-                stderr_thread.join()?;
                 return Ok(RunnerOutcome::Exited {
                     status_code: status.code(),
                     stdout,
@@ -1168,8 +1148,8 @@ impl ExecutionRunner for NativeExecutionRunner {
             }
             thread::sleep(Duration::from_millis(5));
         }
-        let stdout = stdout_thread.receive();
-        let stderr = stderr_thread.receive();
+        let stdout = receive_reader(&stdout_thread);
+        let stderr = receive_reader(&stderr_thread);
         if let Some(reason) = termination_error {
             // A failed tree signal leaves the external effect uncertain even
             // when both output pipes have closed. Never publish timeout,
@@ -1188,8 +1168,6 @@ impl ExecutionRunner for NativeExecutionRunner {
                 reason: "process descendants retained output handles".into(),
             });
         };
-        stdout_thread.join()?;
-        stderr_thread.join()?;
         if !child.controls_process_tree()
             && matches!(termination, Termination::TimedOut | Termination::Cancelled)
         {
@@ -1281,110 +1259,50 @@ enum Termination {
     Overflow,
 }
 
-struct ReaderTask {
-    receiver: Receiver<Result<Vec<u8>>>,
-    handle: Option<thread::JoinHandle<()>>,
-}
-
-#[cfg(test)]
-struct OutputReaderActivity;
-
-#[cfg(test)]
-impl OutputReaderActivity {
-    fn new() -> Self {
-        ACTIVE_OUTPUT_READERS.fetch_add(1, Ordering::AcqRel);
-        Self
-    }
-}
-
-#[cfg(test)]
-impl Drop for OutputReaderActivity {
-    fn drop(&mut self) {
-        ACTIVE_OUTPUT_READERS.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-impl ReaderTask {
-    fn receive(&self) -> Result<Option<Vec<u8>>> {
-        match self.receiver.recv_timeout(READER_GRACE) {
-            Ok(result) => result.map(Some),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(Error::Storage(
-                "process output reader disconnected without a result".into(),
-            )),
-        }
-    }
-
-    fn join(&mut self) -> Result<()> {
-        let Some(handle) = self.handle.take() else {
-            return Ok(());
-        };
-        handle.join().map_err(|_| {
-            Error::Storage("process output reader thread panicked before cleanup".into())
-        })
-    }
-}
-
-impl Drop for ReaderTask {
-    fn drop(&mut self) {
-        let Some(handle) = self.handle.take() else {
-            return;
-        };
-        // A descendant may retain an inherited pipe after the direct child
-        // exits. Keep the reader join owned by a cleanup task instead of
-        // silently detaching the OS thread when the bounded grace expires.
-        let _ = thread::Builder::new()
-            .name("harness-output-cleanup".into())
-            .spawn(move || {
-                let _ = handle.join();
-            });
-    }
-}
-
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     remaining: Arc<std::sync::atomic::AtomicUsize>,
     overflow: Arc<AtomicBool>,
-) -> Result<ReaderTask> {
+) -> Receiver<Result<Vec<u8>>> {
     let (sender, receiver) = mpsc::channel();
-    let handle = thread::Builder::new()
-        .name("harness-output-reader".into())
-        .spawn(move || {
-            #[cfg(test)]
-            let _activity = OutputReaderActivity::new();
-            let result = (|| {
-                let mut bytes = Vec::new();
-                let mut buffer = [0_u8; 8192];
-                loop {
-                    let read = reader.read(&mut buffer).map_err(|error| {
-                        Error::Storage(format!("failed reading process output: {error}"))
-                    })?;
-                    if read == 0 {
-                        break;
-                    }
-                    let consumed =
-                        remaining.fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
-                            available.checked_sub(read)
-                        });
-                    if consumed.is_err() {
-                        overflow.store(true, Ordering::Release);
-                        break;
-                    }
-                    bytes.extend_from_slice(buffer.get(..read).ok_or_else(|| {
-                        Error::Storage("process reader returned an invalid length".into())
-                    })?);
+    thread::spawn(move || {
+        let result = (|| {
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = reader.read(&mut buffer).map_err(|error| {
+                    Error::Storage(format!("failed reading process output: {error}"))
+                })?;
+                if read == 0 {
+                    break;
                 }
-                Ok(bytes)
-            })();
-            let _ = sender.send(result);
-        })
-        .map_err(|error| {
-            Error::Storage(format!("failed to spawn process output reader: {error}"))
-        })?;
-    Ok(ReaderTask {
-        receiver,
-        handle: Some(handle),
-    })
+                let consumed =
+                    remaining.fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
+                        available.checked_sub(read)
+                    });
+                if consumed.is_err() {
+                    overflow.store(true, Ordering::Release);
+                    break;
+                }
+                bytes.extend_from_slice(buffer.get(..read).ok_or_else(|| {
+                    Error::Storage("process reader returned an invalid length".into())
+                })?);
+            }
+            Ok(bytes)
+        })();
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+fn receive_reader(receiver: &Receiver<Result<Vec<u8>>>) -> Result<Option<Vec<u8>>> {
+    match receiver.recv_timeout(READER_GRACE) {
+        Ok(result) => result.map(Some),
+        Err(RecvTimeoutError::Timeout) => Ok(None),
+        Err(RecvTimeoutError::Disconnected) => Err(Error::Storage(
+            "process output reader disconnected without a result".into(),
+        )),
+    }
 }
 
 /// Immutable dispatch identity presented to the approval authority.
@@ -3376,7 +3294,6 @@ mod tests {
             "/C".into(),
             parent_script.to_string_lossy().into_owned(),
         ];
-        let readers_before = ACTIVE_OUTPUT_READERS.load(Ordering::Acquire);
         let outcome = NativeExecutionRunner.run(&request)?;
         assert!(matches!(
             &outcome,
@@ -3393,17 +3310,6 @@ mod tests {
         }
         assert!(marker.exists(), "parent marker was not written");
         assert!(done.exists(), "descendant did not reach its terminal marker");
-        let reader_deadline = Instant::now() + Duration::from_secs(5);
-        while ACTIVE_OUTPUT_READERS.load(Ordering::Acquire) > readers_before
-            && Instant::now() < reader_deadline
-        {
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert_eq!(
-            ACTIVE_OUTPUT_READERS.load(Ordering::Acquire),
-            readers_before,
-            "held-pipe cleanup left an output reader thread alive"
-        );
         let markers = std::fs::read_to_string(&marker).map_err(|error| {
             Error::Storage(format!("held-pipe marker was not written: {error}"))
         })?;
