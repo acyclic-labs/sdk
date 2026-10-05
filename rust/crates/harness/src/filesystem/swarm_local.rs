@@ -105,11 +105,27 @@ type MessageAdmissionPause = (Arc<tokio::sync::Barrier>, Arc<tokio::sync::Notify
 static MESSAGE_ADMISSION_PAUSE: OnceLock<StdMutex<Option<MessageAdmissionPause>>> = OnceLock::new();
 
 #[cfg(test)]
+static TIMER_ADMISSION_PAUSE: OnceLock<StdMutex<Option<MessageAdmissionPause>>> = OnceLock::new();
+
+#[cfg(test)]
 async fn pause_after_message_admission_append() {
     let pause = MESSAGE_ADMISSION_PAUSE
         .get_or_init(|| StdMutex::new(None))
         .lock()
         .expect("message admission pause lock")
+        .take();
+    if let Some((entered, release)) = pause {
+        entered.wait().await;
+        release.notified().await;
+    }
+}
+
+#[cfg(test)]
+async fn pause_after_timer_admission_append() {
+    let pause = TIMER_ADMISSION_PAUSE
+        .get_or_init(|| StdMutex::new(None))
+        .lock()
+        .expect("timer admission pause lock")
         .take();
     if let Some((entered, release)) = pause {
         entered.wait().await;
@@ -2595,6 +2611,14 @@ enum StoredEvent {
         message_id: OperationId,
         payload: FileRef,
     },
+    /// Owner-journal admission for one durable deadline timer. The timer
+    /// stream is only the publication surface; this record orders it against
+    /// task cancellation on the same lifecycle CAS.
+    TimerAdmitted {
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    },
     /// Atomically records the selected child and host issuer binding.
     ForkIntentSelected {
         intent: LocalForkIntent,
@@ -4648,6 +4672,102 @@ impl PersistentLocalSwarm {
                 if candidate_payload != *payload {
                     return Err(Error::Conflict(
                         "message identity was reused with another payload".into(),
+                    ));
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Wins the lifecycle journal CAS for one timer before its timer-stream
+    /// publication. An identical prior admission is safe to finish after a
+    /// cancellation; a cancellation that wins first rejects the timer.
+    pub(crate) async fn admit_timer(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    ) -> Result<bool> {
+        if task.into_bytes() == [0; 16]
+            || operation.into_bytes() == [0; 16]
+            || deadline == 0
+        {
+            return Err(Error::Invalid("timer admission identity is invalid".into()));
+        }
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        if self.find_timer_admission(task, operation, deadline).await? {
+            return Ok(true);
+        }
+        let session = self.session(task).await?;
+        if !matches!(
+            session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) {
+            return Err(Error::Conflict(
+                "timer admission lost the lifecycle cancellation race".into(),
+            ));
+        }
+        let event = StoredEvent::TimerAdmitted {
+            task,
+            operation,
+            deadline,
+        };
+        match append_record_at(&registry, event, observed_tail).await {
+            Ok(()) => {
+                *self.registry_tail.lock().await = observed_tail
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                #[cfg(test)]
+                pause_after_timer_admission_append().await;
+                Ok(true)
+            }
+            Err(error) => {
+                if self.refresh_registry_state().await.is_ok() {
+                    match self.find_timer_admission(task, operation, deadline).await {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if matches!(error, Error::Conflict(_)) {
+                    return Err(Error::Conflict(
+                        "timer admission lost its durable lifecycle race".into(),
+                    ));
+                }
+                Err(Error::Indeterminate(operation))
+            }
+        }
+    }
+
+    async fn find_timer_admission(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    ) -> Result<bool> {
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        for record in load_records(&registry).await? {
+            if let StoredEvent::TimerAdmitted {
+                task: candidate_task,
+                operation: candidate_operation,
+                deadline: candidate_deadline,
+            } = record.event
+                && candidate_task == task
+                && candidate_operation == operation
+            {
+                if candidate_deadline != deadline {
+                    return Err(Error::Conflict(
+                        "timer identity was reused with another deadline".into(),
                     ));
                 }
                 return Ok(true);
@@ -6932,6 +7052,23 @@ fn apply_record(
                 return Err(Error::Conflict(
                     "message admission endpoints are not direct parent and child".into(),
                 ));
+            }
+        }
+        StoredEvent::TimerAdmitted {
+            task,
+            operation,
+            deadline,
+        } => {
+            if task.into_bytes() == [0; 16]
+                || operation.into_bytes() == [0; 16]
+                || deadline == 0
+            {
+                return Err(Error::Conflict(
+                    "persisted timer admission identity is invalid".into(),
+                ));
+            }
+            if !sessions.contains_key(&task) {
+                return Err(Error::Storage("timer admission task is missing".into()));
             }
         }
         StoredEvent::ForkIntent { intent } => {
@@ -9399,6 +9536,36 @@ mod tests {
         assert!(first_admission?);
         assert!(second_admission?);
 
+        let timer = OperationId::from_bytes([0xE1; 16]);
+        assert!(swarm.admit_timer(child, timer, 10_000).await?);
+        assert!(matches!(
+            swarm.admit_timer(child, timer, 20_000).await,
+            Err(Error::Conflict(_))
+        ));
+
+        // Repeat the lost-ack recovery at the timer publication boundary.
+        let timer_entered = Arc::new(tokio::sync::Barrier::new(2));
+        let timer_release = Arc::new(tokio::sync::Notify::new());
+        *TIMER_ADMISSION_PAUSE
+            .get_or_init(|| StdMutex::new(None))
+            .lock()
+            .expect("timer admission pause lock") = Some((timer_entered.clone(), timer_release.clone()));
+        let third = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            Model::new("mock", "message-admission", "1", json!({}))?,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let uncertain_timer = OperationId::from_bytes([0xE2; 16]);
+        let pending_timer = tokio::spawn(async move {
+            third.admit_timer(child, uncertain_timer, 30_000).await
+        });
+        timer_entered.wait().await;
+        pending_timer.abort();
+        timer_release.notify_waiters();
+        assert!(pending_timer.await.is_err());
+
         // Abort after the LocalStream append but before the caller receives its
         // result. Reopen must recover the committed admission exactly once.
         let uncertain_entered = Arc::new(tokio::sync::Barrier::new(2));
@@ -9485,6 +9652,8 @@ mod tests {
         assert!(swarm
             .admit_message(parent, child, message, payload.clone())
             .await?);
+        assert!(swarm.admit_timer(child, timer, 10_000).await?);
+        assert!(swarm.admit_timer(child, uncertain_timer, 30_000).await?);
         let records = load_records(&registry).await?;
         assert_eq!(
             records
@@ -9514,10 +9683,14 @@ mod tests {
         )
         .await?;
         assert!(reopened
-            .admit_message(parent, child, message, payload)
+            .admit_message(parent, child, message, payload.clone())
             .await?);
         assert!(reopened
             .admit_message(parent, child, uncertain_message, payload.clone())
+            .await?);
+        assert!(reopened.admit_timer(child, timer, 10_000).await?);
+        assert!(reopened
+            .admit_timer(child, uncertain_timer, 30_000)
             .await?);
         let reopened_registry = reopened
             .registry
@@ -9535,6 +9708,28 @@ mod tests {
                         message_id,
                         ..
                     } if sender == parent && recipient == child && message_id == message
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            reopened_records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::TimerAdmitted { task, operation, deadline }
+                        if task == child && operation == timer && deadline == 10_000
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            reopened_records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::TimerAdmitted { task, operation, deadline }
+                        if task == child && operation == uncertain_timer && deadline == 30_000
                 ))
                 .count(),
             1
