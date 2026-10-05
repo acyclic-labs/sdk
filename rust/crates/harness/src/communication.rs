@@ -1119,6 +1119,19 @@ impl DurableCommunication {
                     Ok(None) | Err(Error::Unsupported(_)) => {}
                     Err(error) => return Err(error),
                 }
+                // Cancellation is an owner-authorized terminal transition,
+                // even after the task lifecycle has fenced new waits. Finish
+                // an admitted pending wait before returning the fence so a
+                // cold reopen cannot redispatch its timer or lose the typed
+                // Cancelled result.
+                if cancellation
+                    .as_ref()
+                    .is_some_and(|receiver| *receiver.borrow())
+                {
+                    let completion = waits.cancel(request.clone()).await?;
+                    request.validate_completion(&completion)?;
+                    return Ok(completion);
+                }
             }
             waiter_scope.require_new_mutation()?;
         }
@@ -2191,6 +2204,58 @@ mod tests {
             Err(Error::Conflict(message)) if message.contains("fenced")
         ));
         assert!(host.timers.lock().expect("test lock").is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fenced_pending_wait_is_cancelled_during_cold_reopen_without_timer_effect() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider.clone(),
+        )));
+        let request = WaitRequest {
+            operation_id: operation(48),
+            waiter: task(1),
+            target: WaitTarget::Deadline {
+                deadline_epoch_ms: unix_millis()?.saturating_add(10_000),
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(49)),
+        };
+
+        // Model the production interruption point: admission is durable, but
+        // the timer has not yet been dispatched and no completion exists.
+        assert_eq!(store.open(request.clone()).await?, None);
+        let stream = acyclic_stream::StreamClient::new(provider.clone())
+            .stream(format!("harness/v2/waits/{}", task(1)))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(stream.bounds().await?.tail, 1);
+
+        Arc::get_mut(&mut host)
+            .expect("test host has one owner")
+            .fenced
+            .insert(task(1));
+        let communication = DurableCommunication::new(host.clone()).with_wait_store(store);
+        let (_, receiver) = tokio::sync::watch::channel(true);
+        assert_eq!(
+            communication.wait(request.clone(), Some(receiver)).await?,
+            WaitCompletion::Cancelled
+        );
+        assert!(host.timers.lock().expect("test lock").is_empty());
+
+        // A second process must replay the committed cancellation without
+        // creating another admission, timer, or completion.
+        let reopened = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider,
+        )));
+        assert_eq!(
+            DurableCommunication::new(host)
+                .with_wait_store(reopened)
+                .wait(request, None)
+                .await?,
+            WaitCompletion::Cancelled
+        );
         Ok(())
     }
 
