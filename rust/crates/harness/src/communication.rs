@@ -3093,4 +3093,209 @@ mod tests {
         ));
         Ok(())
     }
+
+    /// Shared owner state used by the race regressions below.  The two
+    /// DurableCommunication handles deliberately share this host, as two
+    /// local swarm handles do after a reopen.  Publication is paused after
+    /// scope admission so cancellation can win the lifecycle race.
+    struct PublicationRaceHost {
+        inner: Arc<RecordingHost>,
+        send_entered: Arc<tokio::sync::Barrier>,
+        send_release: Arc<tokio::sync::Barrier>,
+        timer_entered: Arc<tokio::sync::Barrier>,
+        timer_release: Arc<tokio::sync::Barrier>,
+        cancelled: AtomicBool,
+        cancellation: tokio::sync::watch::Sender<bool>,
+    }
+
+    impl PublicationRaceHost {
+        fn scope(
+            &self,
+            task_id: TaskId,
+        ) -> futures::future::BoxFuture<'_, Result<TaskCommunicationScope>> {
+            let admission = self.inner.admissions.get(&task_id).cloned();
+            let accepts_new_mutations = !self.cancelled.load(Ordering::SeqCst);
+            Box::pin(async move {
+                let admission = admission.ok_or_else(|| Error::NotFound("task admission".into()))?;
+                Ok(TaskCommunicationScope {
+                    parent: admission.parent,
+                    grants: admission.grants,
+                    limits: admission.limits,
+                    run_limits: admission.run_limits,
+                    accepts_new_mutations,
+                })
+            })
+        }
+
+        fn cancel_for_second_handle(&self) {
+            self.cancelled.store(true, Ordering::SeqCst);
+            self.cancellation.send_replace(true);
+        }
+    }
+
+    impl DurableTaskHost for PublicationRaceHost {
+        fn communication_scope<'a>(
+            &'a self,
+            task_id: TaskId,
+        ) -> futures::future::BoxFuture<'a, Result<TaskCommunicationScope>> {
+            self.scope(task_id)
+        }
+
+        fn observe_admission<'a>(
+            &'a self,
+            task_id: TaskId,
+        ) -> futures::future::BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            let inner = self.inner.clone();
+            Box::pin(async move {
+                inner
+                    .admissions
+                    .get(&task_id)
+                    .cloned()
+                    .ok_or_else(|| Error::NotFound("task admission".into()))
+            })
+        }
+
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> futures::future::BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> futures::future::BoxFuture<'a, Result<()>> {
+            self.cancel_for_second_handle();
+            Box::pin(async { Ok(()) })
+        }
+
+        fn send<'a>(
+            &'a self,
+            sender: TaskId,
+            recipient: TaskId,
+            message_id: OperationId,
+            payload: FileRef,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                self.send_entered.wait().await;
+                self.send_release.wait().await;
+                self.inner
+                    .sent
+                    .lock()
+                    .map_err(|_| Error::Storage("recording host lock poisoned".into()))?
+                    .push(MessageRequest {
+                        sender,
+                        recipient,
+                        message_id,
+                        target: MessageTarget::Child,
+                        payload,
+                    });
+                Ok(())
+            })
+        }
+
+        fn wait_until<'a>(
+            &'a self,
+            _task_id: TaskId,
+            operation_id: OperationId,
+            _deadline_unix_ms: u64,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                self.timer_entered.wait().await;
+                self.timer_release.wait().await;
+                self.inner
+                    .timers
+                    .lock()
+                    .map_err(|_| Error::Storage("recording host lock poisoned".into()))?
+                    .push(operation_id);
+                Ok(())
+            })
+        }
+    }
+
+    struct PendingWaitStore;
+
+    impl DurableWaitStore for PendingWaitStore {
+        fn open<'a>(
+            &'a self,
+            _request: WaitRequest,
+        ) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _request: WaitRequest,
+            completion: WaitCompletion,
+        ) -> BoxFuture<'a, Result<WaitCompletion>> {
+            Box::pin(async move { Ok(completion) })
+        }
+    }
+
+    fn publication_race_host() -> Result<(Arc<PublicationRaceHost>, tokio::sync::watch::Receiver<bool>)> {
+        let inner = host(BTreeMap::new())?;
+        let (cancellation, receiver) = tokio::sync::watch::channel(false);
+        Ok((
+            Arc::new(PublicationRaceHost {
+                inner,
+                send_entered: Arc::new(tokio::sync::Barrier::new(2)),
+                send_release: Arc::new(tokio::sync::Barrier::new(2)),
+                timer_entered: Arc::new(tokio::sync::Barrier::new(2)),
+                timer_release: Arc::new(tokio::sync::Barrier::new(2)),
+                cancelled: AtomicBool::new(false),
+                cancellation,
+            }),
+            receiver,
+        ))
+    }
+
+    #[tokio::test]
+    async fn message_publication_is_rejected_when_second_handle_cancels_after_admission(
+    ) -> Result<()> {
+        let (host, _) = publication_race_host()?;
+        let first = DurableCommunication::new(host.clone());
+        let second = DurableCommunication::new(host.clone());
+        let request = MessageRequest {
+            sender: task(1),
+            recipient: task(2),
+            message_id: operation(90),
+            target: MessageTarget::Child,
+            payload: payload()?,
+        };
+        let mut sending = tokio::spawn(async move { first.send(request).await });
+        host.send_entered.wait().await;
+        second.host.cancel(task(2)).await?;
+        host.send_release.wait().await;
+        let result = (&mut sending)
+            .await
+            .map_err(|error| Error::Storage(format!("send task failed: {error}")))?;
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert!(host.inner.sent.lock().expect("recording host lock").is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn timer_publication_is_rejected_when_cancellation_wins_after_admission() -> Result<()> {
+        let (host, receiver) = publication_race_host()?;
+        let communication = DurableCommunication::new(host.clone())
+            .with_wait_store(Arc::new(PendingWaitStore));
+        let now = host.now_unix_millis();
+        let request = WaitRequest {
+            operation_id: operation(91),
+            waiter: task(1),
+            target: WaitTarget::Deadline {
+                deadline_epoch_ms: now + 60_000,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(92)),
+        };
+        let mut waiting = tokio::spawn(async move { communication.wait(request, Some(receiver)).await });
+        host.timer_entered.wait().await;
+        host.cancel_for_second_handle();
+        host.timer_release.wait().await;
+        let result = (&mut waiting)
+            .await
+            .map_err(|error| Error::Storage(format!("wait task failed: {error}")))??;
+        assert_eq!(result, WaitCompletion::Cancelled);
+        assert!(host.inner.timers.lock().expect("recording host lock").is_empty());
+        Ok(())
+    }
 }
