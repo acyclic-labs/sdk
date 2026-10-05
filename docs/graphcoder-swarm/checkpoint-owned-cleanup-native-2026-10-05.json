@@ -1,0 +1,44 @@
+{
+  "previous_failure": {
+    "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\110a8a9ee\\compile-failure",
+    "source_commit": "110a8a9eeea17eb6d5c2d1f88cc263accd7e879d",
+    "reason": "Moved cancellation key and incorrectly accessed tuple in test; corrected in a473a63dd.",
+    "exit": 101
+  },
+  "platform": "Windows native",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "suites": {
+    "harness": 376,
+    "native_runtime": 45
+  },
+  "source_commit": "a473a63dd6e6104af4520823cd19c4f7cfc00b78",
+  "protocol": "acyclic.graphcoder.native-checkpoint.v1",
+  "ignored": 1,
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\a473a63dd\\owned-cleanup\\acyclic_harness-012f082794ae6c50.exe",
+      "sha256": "d1393193085461b512c9390b57d245a0834cc170830e8dbc6766c32110ca60ec"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\a473a63dd\\owned-cleanup\\acyclic_native_runtime-ea49cbddc0dd5597.exe",
+      "sha256": "90aa208041e9bc8f04c81aec72cfbcbe68c8cfda2771444595cbeaaab95998ec"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\a473a63dd\\owned-cleanup\\native.log",
+      "sha256": "e93bf60667a3118577e9dbb4048a64564201898772c8e4601d6244cd6a7b5973"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\a473a63dd\\owned-cleanup\\source.zip",
+      "sha256": "a82417dd552207a026f5d36884c03b81549498daef05cb3775deec5a213dc935"
+    }
+  ],
+  "passed": 421,
+  "limits": [
+    "Existing owned_io_backend_baseline benchmark ignored; no whole native-runtime qualification claimed.",
+    "Early selector ownership documentation/tests remain pending integration.",
+    "Real descendant tests exercise Windows Job ownership, not a sandbox."
+  ],
+  "command": "cargo test -p acyclic-harness -p acyclic-native-runtime --features acyclic-harness/test-support,acyclic-harness/native-process-tree --lib",
+  "exit": 0,
+  "failed": 0
+}
