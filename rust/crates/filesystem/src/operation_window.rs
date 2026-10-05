@@ -229,6 +229,7 @@ pub enum WorkspaceOperationFinish<A, O> {
 }
 
 /// Durable optimistic-concurrency adapter for operation-window state.
+#[cfg(not(target_arch = "wasm32"))]
 pub trait OperationWindowStore: Send + Sync {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -246,6 +247,30 @@ pub trait OperationWindowStore: Send + Sync {
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+}
+
+/// Browser operation-window stores run on the single-threaded WebAssembly
+/// executor. Their futures intentionally remain local; requiring `Send` here
+/// would make a browser provider impossible to use and would leak native
+/// executor assumptions into the shared filesystem contract.
+#[cfg(target_arch = "wasm32")]
+pub trait OperationWindowStore {
+    /// Adapter error.
+    type Error: std::error::Error + 'static;
+
+    /// Loads current state, returning `None` before first use.
+    fn load(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> impl Future<Output = Result<Option<OperationWindowSnapshot>, Self::Error>>;
+
+    /// Replaces `expected_revision` atomically. Revision zero creates state.
+    fn compare_and_swap(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: OperationWindowSnapshot,
+    ) -> impl Future<Output = Result<bool, Self::Error>>;
 }
 
 /// Operation-window state stored beside generation authority in one Stream
@@ -282,48 +307,17 @@ pub enum StreamOperationWindowStoreError {
 }
 
 #[cfg(feature = "distributed")]
-impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperationWindowStore<P> {
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: acyclic_stream::StreamProvider + Send + Sync> OperationWindowStore
+    for StreamOperationWindowStore<P>
+{
     type Error = StreamOperationWindowStoreError;
 
     async fn load(
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Option<OperationWindowSnapshot>, Self::Error> {
-        let path = stream_window_path(workspace_id)?;
-        let tail = match self.provider.tail(path.clone()).await {
-            Ok(tail) => tail,
-            Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        if tail == 0 {
-            return Err(StreamOperationWindowStoreError::Corrupt(
-                "window stream is empty".to_owned(),
-            ));
-        }
-        let mut records = self
-            .provider
-            .read(acyclic_stream::ReadRequest {
-                path,
-                from: tail - 1,
-                limit: 1,
-            })
-            .await?;
-        let record = records.next().await.transpose()?.ok_or_else(|| {
-            StreamOperationWindowStoreError::Corrupt("window stream tail has no record".to_owned())
-        })?;
-        let snapshot: OperationWindowSnapshot = serde_json::from_slice(&record.value)
-            .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
-        if snapshot.revision != tail {
-            return Err(StreamOperationWindowStoreError::Corrupt(
-                "window revision does not match its stream tail".to_owned(),
-            ));
-        }
-        if !snapshot_shape_is_valid(&snapshot) {
-            return Err(StreamOperationWindowStoreError::Corrupt(
-                "window phase shape is invalid".to_owned(),
-            ));
-        }
-        Ok(Some(snapshot))
+        load_stream_window(self, workspace_id).await
     }
 
     async fn compare_and_swap(
@@ -332,87 +326,168 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
     ) -> Result<bool, Self::Error> {
-        if replacement.workspace_id != workspace_id
-            || replacement.revision != expected_revision.saturating_add(1)
-            || !snapshot_shape_is_valid(&replacement)
-        {
-            return Err(StreamOperationWindowStoreError::Corrupt(
-                "replacement identity or revision is invalid".to_owned(),
-            ));
-        }
-        let current = self.load(workspace_id).await?;
-        if current.as_ref().map_or(0, |snapshot| snapshot.revision) != expected_revision {
-            return Ok(false);
-        }
-        let before = current
-            .as_ref()
-            .map_or_else(BTreeMap::new, |snapshot| phase_leases(&snapshot.phase));
-        let after = phase_leases(&replacement.phase);
-        let state_path = stream_window_path(workspace_id)?;
-        let mut conditions = vec![if expected_revision == 0 {
-            acyclic_stream::CommitCondition::Absent {
-                path: state_path.clone(),
-            }
-        } else {
-            acyclic_stream::CommitCondition::Tail {
-                path: state_path.clone(),
-                expected: expected_revision,
-            }
-        }];
-        let encoded = serde_json::to_vec(&replacement)
-            .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
-        let mut mutations = vec![acyclic_stream::CommitMutation::Append {
-            path: state_path,
-            records: vec![encoded.into()],
-        }];
-        for lease_id in after
-            .keys()
-            .filter(|lease_id| !before.contains_key(lease_id))
-        {
-            let path = stream_lease_path(workspace_id, *lease_id)?;
-            conditions.push(acyclic_stream::CommitCondition::Absent { path: path.clone() });
-            mutations.push(acyclic_stream::CommitMutation::Append {
-                path,
-                records: vec![bytes::Bytes::from_static(b"active")],
-            });
-        }
-        for lease_id in before
-            .keys()
-            .filter(|lease_id| !after.contains_key(lease_id))
-        {
-            let path = stream_lease_path(workspace_id, *lease_id)?;
-            conditions.push(acyclic_stream::CommitCondition::Tail {
-                path: path.clone(),
-                expected: 1,
-            });
-            mutations.push(acyclic_stream::CommitMutation::Append {
-                path,
-                records: vec![bytes::Bytes::from_static(b"fenced")],
-            });
-        }
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"acyclic-operation-window-cas-v2\0");
-        hasher.update(&workspace_id.into_bytes());
-        hasher.update(&expected_revision.to_le_bytes());
-        hasher.update(
-            &serde_json::to_vec(&replacement)
-                .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?,
-        );
-        let key = acyclic_stream::IdempotencyKey::new(hasher.finalize().as_bytes().to_vec())?;
-        match self
-            .provider
-            .commit(acyclic_stream::CommitRequest {
-                conditions,
-                mutations,
-                idempotency_key: key,
-            })
-            .await?
-        {
-            acyclic_stream::CommitOutcome::Committed(_) => Ok(true),
-            acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
-        }
+        compare_and_swap_stream_window(self, workspace_id, expected_revision, replacement).await
     }
 }
+
+#[cfg(feature = "distributed")]
+#[cfg(target_arch = "wasm32")]
+impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperationWindowStore<P> {
+    type Error = StreamOperationWindowStoreError;
+
+    async fn load(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<OperationWindowSnapshot>, Self::Error> {
+        load_stream_window(self, workspace_id).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: OperationWindowSnapshot,
+    ) -> Result<bool, Self::Error> {
+        compare_and_swap_stream_window(self, workspace_id, expected_revision, replacement).await
+    }
+}
+
+#[cfg(feature = "distributed")]
+async fn load_stream_window<P: acyclic_stream::StreamProvider>(
+    store: &StreamOperationWindowStore<P>,
+    workspace_id: WorkspaceId,
+) -> Result<Option<OperationWindowSnapshot>, StreamOperationWindowStoreError> {
+    let path = stream_window_path(workspace_id)?;
+    let tail = match store.provider.tail(path.clone()).await {
+        Ok(tail) => tail,
+        Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if tail == 0 {
+        return Err(StreamOperationWindowStoreError::Corrupt(
+            "window stream is empty".to_owned(),
+        ));
+    }
+    let mut records = store
+        .provider
+        .read(acyclic_stream::ReadRequest {
+            path,
+            from: tail - 1,
+            limit: 1,
+        })
+        .await?;
+    let record = records.next().await.transpose()?.ok_or_else(|| {
+        StreamOperationWindowStoreError::Corrupt("window stream tail has no record".to_owned())
+    })?;
+    let snapshot: OperationWindowSnapshot = serde_json::from_slice(&record.value)
+        .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
+    if snapshot.revision != tail {
+        return Err(StreamOperationWindowStoreError::Corrupt(
+            "window revision does not match its stream tail".to_owned(),
+        ));
+    }
+    if !snapshot_shape_is_valid(&snapshot) {
+        return Err(StreamOperationWindowStoreError::Corrupt(
+            "window phase shape is invalid".to_owned(),
+        ));
+    }
+    Ok(Some(snapshot))
+}
+
+#[cfg(feature = "distributed")]
+async fn compare_and_swap_stream_window<P: acyclic_stream::StreamProvider>(
+    store: &StreamOperationWindowStore<P>,
+    workspace_id: WorkspaceId,
+    expected_revision: u64,
+    replacement: OperationWindowSnapshot,
+) -> Result<bool, StreamOperationWindowStoreError> {
+    if replacement.workspace_id != workspace_id
+        || replacement.revision != expected_revision.saturating_add(1)
+        || !snapshot_shape_is_valid(&replacement)
+    {
+        return Err(StreamOperationWindowStoreError::Corrupt(
+            "replacement identity or revision is invalid".to_owned(),
+        ));
+    }
+    let current = load_stream_window(store, workspace_id).await?;
+    if current.as_ref().map_or(0, |snapshot| snapshot.revision) != expected_revision {
+        return Ok(false);
+    }
+    let before = current
+        .as_ref()
+        .map_or_else(BTreeMap::new, |snapshot| phase_leases(&snapshot.phase));
+    let after = phase_leases(&replacement.phase);
+    let state_path = stream_window_path(workspace_id)?;
+    let mut conditions = vec![if expected_revision == 0 {
+        acyclic_stream::CommitCondition::Absent {
+            path: state_path.clone(),
+        }
+    } else {
+        acyclic_stream::CommitCondition::Tail {
+            path: state_path.clone(),
+            expected: expected_revision,
+        }
+    }];
+    let encoded = serde_json::to_vec(&replacement)
+        .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
+    let mut mutations = vec![acyclic_stream::CommitMutation::Append {
+        path: state_path,
+        records: vec![encoded.into()],
+    }];
+    for lease_id in after
+        .keys()
+        .filter(|lease_id| !before.contains_key(lease_id))
+    {
+        let path = stream_lease_path(workspace_id, *lease_id)?;
+        conditions.push(acyclic_stream::CommitCondition::Absent { path: path.clone() });
+        mutations.push(acyclic_stream::CommitMutation::Append {
+            path,
+            records: vec![bytes::Bytes::from_static(b"active")],
+        });
+    }
+    for lease_id in before
+        .keys()
+        .filter(|lease_id| !after.contains_key(lease_id))
+    {
+        let path = stream_lease_path(workspace_id, *lease_id)?;
+        conditions.push(acyclic_stream::CommitCondition::Tail {
+            path: path.clone(),
+            expected: 1,
+        });
+        mutations.push(acyclic_stream::CommitMutation::Append {
+            path,
+            records: vec![bytes::Bytes::from_static(b"fenced")],
+        });
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic-operation-window-cas-v2\0");
+    hasher.update(&workspace_id.into_bytes());
+    hasher.update(&expected_revision.to_le_bytes());
+    hasher.update(
+        &serde_json::to_vec(&replacement)
+            .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?,
+    );
+    let key = acyclic_stream::IdempotencyKey::new(hasher.finalize().as_bytes().to_vec())?;
+    match store
+        .provider
+        .commit(acyclic_stream::CommitRequest {
+            conditions,
+            mutations,
+            idempotency_key: key,
+        })
+        .await?
+    {
+        acyclic_stream::CommitOutcome::Committed(_) => Ok(true),
+        acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
+    }
+}
+
+/*
+ * The implementation bodies above intentionally live in helpers so the
+ * native and browser trait impls share exactly the same persistence rules.
+ * The browser impl keeps the provider future local through the wasm-only
+ * OperationWindowStore trait.
+ */
 
 #[cfg(feature = "distributed")]
 fn phase_leases(phase: &OperationWindowPhase) -> BTreeMap<OperationLeaseId, OperationLease> {
