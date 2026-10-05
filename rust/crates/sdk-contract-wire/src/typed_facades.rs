@@ -313,7 +313,7 @@ fn render_scala_responses() -> String {
             out.push_str("def etag: Option[RustSemanticTypesScala.OpaqueText] = if (value.getFrameCase != acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER) None else Option(RustSemanticTypesScala.OpaqueText.from(value.getHeader.getObject.getEtag).toOption).flatten; def frameChoice: RustSemanticTypesScala.WireChoice = RustTypedResponsesScala.frameChoice(value)");
         }
         if module == "inference" && message == "InspectEvaluationRequest" {
-            out.push_str("def specDigest: RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpec.getSpecDigest).toOption.get");
+            out.push_str("def specDigest: RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpec.getSpecDigest.toByteArray).toOption.get");
         }
         out.push_str(" }\n");
         out.push_str("  object ");
@@ -324,17 +324,20 @@ fn render_scala_responses() -> String {
         out.push_str(&name);
         out.push_str(" = ");
         if module == "inference" && message == "InspectEvaluationRequest" {
-            out.push_str("{ RustSemanticTypesScala.Sha256Digest.from(value.getSpec.getSpecDigest).toOption.get; ");
+            out.push_str("{ RustSemanticTypesScala.Sha256Digest.from(value.getSpec.getSpecDigest.toByteArray).toOption.get; ");
         } else if module == "objects" && message == "GetObjectRequest" {
             out.push_str("{ if (value.getFrameCase == acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER && !value.getHeader.getObject.getEtag.isEmpty) RustSemanticTypesScala.OpaqueText.from(value.getHeader.getObject.getEtag).toOption.get; ");
         }
         out.push_str(&name);
         out.push_str("(value)");
+        if (module == "inference" && message == "InspectEvaluationRequest") || (module == "objects" && message == "GetObjectRequest") {
+            out.push_str(" }");
+        }
         out.push_str(" }");
         out.push_str("\n\n");
     }
     out.push_str("  def mutationIdentityIdempotencyKey(value: acyclic.objects.v2.Objects.MutationIdentity): RustSemanticTypesScala.IdempotencyKeyText = RustSemanticTypesScala.IdempotencyKeyText.from(value.getIdempotencyKey).toOption.get\n");
-    out.push_str("  def evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpecDigest).toOption.get\n");
+    out.push_str("  def evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpecDigest.toByteArray).toOption.get\n");
     out.push_str("  def fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesScala.ResourcePath = RustSemanticTypesScala.ResourcePath.from(value.getNormalizedPath).toOption.get\n");
     out.push_str("  def preserveKnown(tag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Known(tag, payload)\n");
     out.push_str("  def preserveUnknown(tag: Int, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Unknown(tag, payload)\n");
@@ -520,9 +523,9 @@ fn render_scala_clients() -> String {
             out.push_str(binding.field);
         }
         if streaming {
-            out.push_str(")))(RustTypedResponsesScala.");
+            out.push_str(")), RustTypedResponsesScala.");
             out.push_str(&wrapper_name);
-            out.push_str(".fromWire)\n\n");
+            out.push_str(".fromWire _)\n\n");
         } else {
             out.push_str(")))\n\n");
         }
@@ -622,10 +625,11 @@ fn scala_value_expression(binding: &PublicFieldBinding, parameter: &str) -> Stri
             _ => unreachable!(),
         };
         return format!(
-            "acyclic.machines.v1.Machines.{message_type}.newBuilder().setValue({parameter}.toWire).build()"
+            "acyclic.machines.v1.Machines.{message_type}.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom({parameter}.toWire)).build()"
         );
     }
     match ty.wire_kind {
+        WireValueKind::Bytes => format!("com.google.protobuf.ByteString.copyFrom({parameter}.toWire)"),
         WireValueKind::Message => {
             let container = java_proto_container(binding.module);
             let message_type = match ty.rust_name {

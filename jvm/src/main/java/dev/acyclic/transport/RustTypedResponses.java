@@ -4,6 +4,7 @@ package dev.acyclic.transport;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 import java.util.function.Function;
 
 public final class RustTypedResponses {
@@ -18,13 +19,15 @@ public final class RustTypedResponses {
 
   public record InferenceInspectContextResponse(inference.customer.v1.Inference.ContextView value) { public static InferenceInspectContextResponse fromWire(inference.customer.v1.Inference.ContextView value) { return new InferenceInspectContextResponse(value); } public inference.customer.v1.Inference.ContextView toWire() { return value; } }
 
-  public record InferenceInspectEvaluationResponse(inference.customer.v1.Inference.EvaluationView value) { public static InferenceInspectEvaluationResponse fromWire(inference.customer.v1.Inference.EvaluationView value) { return new InferenceInspectEvaluationResponse(value); } public inference.customer.v1.Inference.EvaluationView toWire() { return value; } }
+  public record InferenceInspectEvaluationResponse(inference.customer.v1.Inference.EvaluationView value) { public static InferenceInspectEvaluationResponse fromWire(inference.customer.v1.Inference.EvaluationView value) { RustSemanticTypes.Sha256Digest.of(value.getSpec().getSpecDigest()); return new InferenceInspectEvaluationResponse(value); } public inference.customer.v1.Inference.EvaluationView toWire() { return value; } public RustSemanticTypes.Sha256Digest specDigest() { return RustSemanticTypes.Sha256Digest.of(value.getSpec().getSpecDigest()); } }
 
   public record InferenceInspectRunResponse(inference.customer.v1.Inference.RunView value) { public static InferenceInspectRunResponse fromWire(inference.customer.v1.Inference.RunView value) { return new InferenceInspectRunResponse(value); } public inference.customer.v1.Inference.RunView toWire() { return value; } }
 
   public record InferenceInspectWarmResponse(inference.customer.v1.Inference.WarmView value) { public static InferenceInspectWarmResponse fromWire(inference.customer.v1.Inference.WarmView value) { return new InferenceInspectWarmResponse(value); } public inference.customer.v1.Inference.WarmView toWire() { return value; } }
 
   public record MachinesCreateMachineResponse(acyclic.machines.v1.Machines.MachineAdmission value) { public static MachinesCreateMachineResponse fromWire(acyclic.machines.v1.Machines.MachineAdmission value) { return new MachinesCreateMachineResponse(value); } public acyclic.machines.v1.Machines.MachineAdmission toWire() { return value; } }
+
+  public record MachinesEventsResponse(acyclic.machines.v1.Machines.EventPage value) { public static MachinesEventsResponse fromWire(acyclic.machines.v1.Machines.EventPage value) { return new MachinesEventsResponse(value); } public acyclic.machines.v1.Machines.EventPage toWire() { return value; } }
 
   public record MachinesInspectCheckpointResponse(acyclic.machines.v1.Machines.CheckpointState value) { public static MachinesInspectCheckpointResponse fromWire(acyclic.machines.v1.Machines.CheckpointState value) { return new MachinesInspectCheckpointResponse(value); } public acyclic.machines.v1.Machines.CheckpointState toWire() { return value; } }
 
@@ -34,7 +37,9 @@ public final class RustTypedResponses {
 
   public record MachinesOperationResponse(acyclic.machines.v1.Machines.OperationState value) { public static MachinesOperationResponse fromWire(acyclic.machines.v1.Machines.OperationState value) { return new MachinesOperationResponse(value); } public acyclic.machines.v1.Machines.OperationState toWire() { return value; } }
 
-  public record ObjectsGetObjectResponse(acyclic.objects.v2.Objects.GetObjectResponse value) { public static ObjectsGetObjectResponse fromWire(acyclic.objects.v2.Objects.GetObjectResponse value) { return new ObjectsGetObjectResponse(value); } public acyclic.objects.v2.Objects.GetObjectResponse toWire() { return value; } }
+  public record MachinesQualifyImageResponse(acyclic.machines.v1.Machines.ImageQualification value) { public static MachinesQualifyImageResponse fromWire(acyclic.machines.v1.Machines.ImageQualification value) { return new MachinesQualifyImageResponse(value); } public acyclic.machines.v1.Machines.ImageQualification toWire() { return value; } }
+
+  public record ObjectsGetObjectResponse(acyclic.objects.v2.Objects.GetObjectResponse value) { public static ObjectsGetObjectResponse fromWire(acyclic.objects.v2.Objects.GetObjectResponse value) { if (value.getFrameCase() == acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER && !value.getHeader().getObject().getEtag().isEmpty()) RustSemanticTypes.OpaqueText.of(value.getHeader().getObject().getEtag()); return new ObjectsGetObjectResponse(value); } public acyclic.objects.v2.Objects.GetObjectResponse toWire() { return value; } public Optional<RustSemanticTypes.OpaqueText> etag() { if (value.getFrameCase() != acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER) return Optional.empty(); String etag = value.getHeader().getObject().getEtag(); return etag.isEmpty() ? Optional.empty() : Optional.of(RustSemanticTypes.OpaqueText.of(etag)); } public RustSemanticTypes.WireChoice frameChoice() { return RustTypedResponses.frameChoice(value); } }
 
   public record ObjectsListObjectsResponse(acyclic.objects.v2.Objects.ListObjectsResponse value) { public static ObjectsListObjectsResponse fromWire(acyclic.objects.v2.Objects.ListObjectsResponse value) { return new ObjectsListObjectsResponse(value); } public acyclic.objects.v2.Objects.ListObjectsResponse toWire() { return value; } }
 
@@ -60,5 +65,6 @@ public final class RustTypedResponses {
   public static RustSemanticTypes.WireChoice preserveKnown(String tag, com.google.protobuf.ByteString payload) { return new RustSemanticTypes.Known(tag, payload); }
   public static RustSemanticTypes.WireChoice preserveUnknown(int tag, com.google.protobuf.ByteString payload) { return new RustSemanticTypes.Unknown(tag, payload); }
   public static RustSemanticTypes.WireChoice preserveOneof(int tag, String knownTag, com.google.protobuf.ByteString payload) { return tag == 0 ? preserveKnown(knownTag, payload) : preserveUnknown(tag, payload); }
+  public static RustSemanticTypes.WireChoice frameChoice(acyclic.objects.v2.Objects.GetObjectResponse value) { switch (value.getFrameCase()) { case HEADER: return preserveKnown("header", value.getHeader().toByteString()); case BODY: return preserveKnown("body", value.getBody()); case ERROR: return preserveKnown("error", value.getError().toByteString()); default: for (var entry : value.getUnknownFields().asMap().entrySet()) { var fields = entry.getValue(); if (!fields.getLengthDelimitedList().isEmpty()) return preserveUnknown(entry.getKey(), fields.getLengthDelimitedList().get(0)); if (!fields.getVarintList().isEmpty()) return preserveUnknown(entry.getKey(), com.google.protobuf.ByteString.copyFromUtf8(Long.toString(fields.getVarintList().get(0)))); } return preserveUnknown(0, com.google.protobuf.ByteString.EMPTY); } }
 
 }
