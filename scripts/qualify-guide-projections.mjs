@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -117,7 +117,19 @@ function extension(language) {
 
 function compile(language, file, cwd, packageArtifact, environment = {}) {
   switch (language) {
-    case "rust": return command(binaries.rustfmt, ["--check", file], cwd, environment);
+    case "rust": {
+      // Rust guide snippets are deliberately expression fragments so the same
+      // scenario can be projected into prose. Parse them in the smallest
+      // executable context instead of treating a top-level `let` as a crate
+      // item. This keeps qualification tied to the installed Rust package
+      // while preserving the published snippet shape.
+      const wrapped = join(cwd, "__qualified_snippet.rs");
+      const source = readFileSync(file, "utf8");
+      writeFileSync(wrapped, `async fn main() -> Result<(), Box<dyn std::error::Error>> {\n${source}\nOk(())\n}\n`);
+      const result = command(binaries.rustfmt, ["--check", wrapped], cwd, environment);
+      try { unlinkSync(wrapped); } catch {}
+      return result;
+    }
     case "python": return command(environment.PYTHON_BIN ?? binaries.python, ["-m", "py_compile", file], cwd, environment);
     case "typescript": return command(binaries.bun, ["build", file, "--no-bundle", "--target=node"], cwd, environment);
     case "go": return command(binaries.go, ["test", "."], cwd, environment);
