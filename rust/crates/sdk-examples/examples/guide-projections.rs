@@ -21,6 +21,11 @@ fn main() {
                 "package_manager": projection.package.package_manager,
                 "package_name": projection.package.package_name,
                 "artifact_path": projection.package.artifact_path,
+                "qualification": {
+                    "install": projection.qualification.install,
+                    "compile": projection.qualification.compile,
+                    "execute": projection.qualification.execute,
+                },
                 "code": projection.code,
             })
         })

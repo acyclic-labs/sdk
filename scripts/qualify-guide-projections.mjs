@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,8 @@ const binaries = {
   rustfmt: process.env.SDK_RUSTFMT_BIN ?? process.env.RUSTFMT_BIN ?? "rustfmt",
   python: process.env.SDK_PYTHON_BIN ?? process.env.PYTHON_BIN ?? "python",
   bun: process.env.SDK_BUN_BIN ?? process.env.BUN_BIN ?? "bun",
+  node: process.env.SDK_NODE_BIN ?? process.env.NODE_BIN ?? "node",
+  tsc: process.env.SDK_TSC_BIN ?? process.env.TSC_BIN ?? "tsc",
   go: process.env.SDK_GO_BIN ?? process.env.GO_BIN ?? "go",
   maven: process.env.SDK_MAVEN_BIN ?? process.env.MAVEN_BIN ?? "mvn",
   dotnet: process.env.SDK_DOTNET_BIN ?? process.env.DOTNET_BIN ?? "dotnet",
@@ -59,7 +61,7 @@ function command(name, commandArgs, cwd = repo, extraEnv = {}) {
 async function startFixture() {
   const binary = join(repo, "rust", "crates", "sdk-examples", "target", "debug", process.platform === "win32" ? "fixture-server.exe" : "fixture-server");
   if (!existsSync(binary)) return null;
-  const child = spawn(binary, ["--port", "0", "--grpc-port", "0", "--max-requests", "128"], {
+  const child = spawn(binary, ["--port", "0", "--grpc-port", "0", "--max-requests", "512"], {
     cwd: repo,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -83,6 +85,8 @@ async function startFixture() {
     child.once("error", reject);
     child.once("exit", (code) => reject(new Error(`fixture server exited before readiness (${code})`)));
   });
+  child.stdout.unref();
+  child.stderr.unref();
   child.unref();
   return { child, address };
 }
@@ -93,13 +97,20 @@ function fixtureEnvironment(language, address) {
   return { FIXTURE_GRPC_ADDRESS: urlLanguages.has(language) ? address : normalized };
 }
 
-function allFiles(root) {
+function allFiles(root, seen = new Set()) {
   const files = [];
   if (!existsSync(root)) return files;
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) files.push(...allFiles(path));
-    else files.push(path);
+  const pending = [root];
+  while (pending.length) {
+    const directory = pending.pop();
+    const canonical = realpathSync(directory);
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory() && !entry.isSymbolicLink()) pending.push(path);
+      else files.push(path);
+    }
   }
   return files;
 }
@@ -111,7 +122,10 @@ function artifact(root, pattern) {
     return existsSync(path) && statSync(path).isFile() ? path : null;
   }
   const expression = new RegExp(`^${normalized.split("*").map((part) => part.replace(/[.+?^${}()|[\\]\\]/g, "\\$&")).join(".*")}$`, "i");
-  return allFiles(root).find((path) => expression.test(relative(root, path).replaceAll("\\", "/"))) ?? null;
+  const staticPrefix = normalized.slice(0, normalized.indexOf("*"));
+  const prefixSlash = staticPrefix.lastIndexOf("/");
+  const searchRoot = resolve(root, prefixSlash >= 0 ? staticPrefix.slice(0, prefixSlash) : ".");
+  return allFiles(searchRoot).find((path) => expression.test(relative(root, path).replaceAll("\\", "/"))) ?? null;
 }
 
 function extension(language) {
@@ -121,20 +135,15 @@ function extension(language) {
 function compile(language, file, cwd, packageArtifact, environment = {}) {
   switch (language) {
     case "rust": {
-      // Rust guide snippets are deliberately expression fragments so the same
-      // scenario can be projected into prose. Parse them in the smallest
-      // executable context instead of treating a top-level `let` as a crate
-      // item. This keeps qualification tied to the installed Rust package
-      // while preserving the published snippet shape.
-      const wrapped = join(cwd, "__qualified_snippet.rs");
+      // Compile the snippet as a consumer crate against the installed package
+      // artifact so API drift is caught.
       const source = readFileSync(file, "utf8");
-      writeFileSync(wrapped, `async fn main() -> Result<(), Box<dyn std::error::Error>> {\n${source}\nOk(())\n}\n`);
-      const result = command(binaries.rustfmt, ["--emit", "stdout", wrapped], cwd, environment);
-      try { unlinkSync(wrapped); } catch {}
-      return result;
+      mkdirSync(join(cwd, "src"), { recursive: true });
+      writeFileSync(join(cwd, "src", "main.rs"), `#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n${source}\nOk(())\n}\n`);
+      return command(cargo, ["check", "--offline", "--manifest-path", join(cwd, "Cargo.toml")], cwd, environment);
     }
     case "python": return command(environment.PYTHON_BIN ?? binaries.python, ["-m", "py_compile", file], cwd, environment);
-    case "typescript": return command(binaries.bun, ["build", file, "--no-bundle", "--target=node"], cwd, environment);
+    case "typescript": return command(binaries.tsc, ["--noEmit", "--strict", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--target", "ES2022", file], cwd, environment);
     case "go": return command(binaries.go, ["test", "."], cwd, environment);
     case "java": return command(binaries.maven, ["--offline", "--batch-mode", "-q", "-DskipTests", "package"], cwd, environment);
     case "csharp": return command(binaries.dotnet, ["build", join(cwd, "GuideSnippet.csproj"), "--nologo", "--verbosity", "quiet"], cwd, environment);
@@ -160,6 +169,7 @@ function execute(language, file, cwd, environment = {}) {
       return command(binaries.java, ["-cp", [targetClasses, classpath].filter(Boolean).join(";"), "GuideSnippet"], cwd, environment);
     }
     case "csharp": return command(binaries.dotnet, ["run", "--project", join(cwd, "GuideSnippet.csproj"), "--no-build"], cwd, environment);
+    case "rust": return command(cargo, ["run", "--offline", "--manifest-path", join(cwd, "Cargo.toml")], cwd, environment);
     default: return { command: "", exitCode: 125, stdout: "", stderr: `execution is release-only for ${language}` };
   }
 }
@@ -167,18 +177,23 @@ function execute(language, file, cwd, environment = {}) {
 function prepare(language, packageArtifact, directory) {
   if (!packageArtifact) return { status: "artifact-missing", install: null, environment: {} };
 
+  if (language === "rust" && packageArtifact.endsWith("Cargo.toml")) {
+    const packageRoot = resolve(packageArtifact, "..");
+    const packageToml = readFileSync(packageArtifact, "utf8");
+    const packageName = packageToml.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+    if (!packageName) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package name" };
+    writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${packageRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
+    return { status: "installed", install: { command: "cargo consumer package", exitCode: 0, stdout: "", stderr: "" }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
+  }
+
   if (language === "python" && packageArtifact.endsWith(".whl")) {
-    const venv = join(directory, ".venv");
-    const venvPython = join(venv, "Scripts", "python.exe");
-    const created = command(binaries.python, ["-m", "venv", "--system-site-packages", venv], directory);
-    if (created.exitCode !== 0) return { status: "install-failed", install: created, environment: {} };
     const site = join(directory, "site");
     mkdirSync(site, { recursive: true });
-    const install = command(venvPython, ["-m", "pip", "install", "--no-deps", "--target", site, packageArtifact], directory);
+    const install = command(binaries.python, ["-m", "pip", "install", "--no-deps", "--no-cache-dir", "--target", site, packageArtifact], directory);
     return {
       status: install.exitCode === 0 ? "installed" : "install-failed",
-      install: { ...install, command: `${created.command} && ${install.command}` },
-      environment: { PYTHON_BIN: venvPython, PYTHONPATH: [site, process.env.PYTHONPATH].filter(Boolean).join(";") },
+      install,
+      environment: { PYTHON_BIN: binaries.python, PYTHONPATH: [site, process.env.PYTHONPATH].filter(Boolean).join(";") },
     };
   }
 
@@ -190,15 +205,17 @@ function prepare(language, packageArtifact, directory) {
     writeFileSync(join(directory, "go.mod"), `module guide-snippet\n\n${packageGoMod}\nrequire ${module} v0.0.0\n\nreplace ${module} => ${moduleRoot.replaceAll("\\", "/")}\n`);
     const packageGoSum = join(moduleRoot, "go.sum");
     if (existsSync(packageGoSum)) writeFileSync(join(directory, "go.sum"), readFileSync(packageGoSum));
-    return { status: "installed", install: { command: "go mod replace", exitCode: 0, stdout: "", stderr: "" }, environment: {} };
+    return { status: "installed", install: { command: "go mod replace", exitCode: 0, stdout: "", stderr: "" }, environment: { GOPROXY: "off", GOTOOLCHAIN: "local" } };
   }
 
   if (language === "java") {
     mkdirSync(join(directory, "src", "main", "java"), { recursive: true });
     cpSync(join(directory, "GuideSnippet.java"), join(directory, "src", "main", "java", "GuideSnippet.java"));
     const jar = packageArtifact.replaceAll("\\", "/");
-    writeFileSync(join(directory, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>guide</groupId><artifactId>guide-snippet</artifactId><version>0.0.0</version><properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties><dependencies><dependency><groupId>dev.acyclic</groupId><artifactId>acyclic-sdk-jvm-transport</artifactId><version>0.2.0</version><scope>system</scope><systemPath>${jar}</systemPath></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-stub</artifactId><version>1.75.0</version></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-protobuf</artifactId><version>1.75.0</version></dependency><dependency><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>4.31.1</version></dependency></dependencies><build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>3.7.0</version></plugin></plugins></build></project>`);
-    const classpath = command(binaries.maven, ["--offline", "--batch-mode", "-q", "org.apache.maven.plugins:maven-dependency-plugin:3.7.0:build-classpath", "-Dmdep.outputFile=runtime-classpath.txt"], directory);
+    writeFileSync(join(directory, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>guide</groupId><artifactId>guide-snippet</artifactId><version>0.0.0</version><properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties><dependencies><dependency><groupId>dev.acyclic</groupId><artifactId>acyclic-sdk-jvm-transport</artifactId><version>0.2.0</version><scope>system</scope><systemPath>${jar}</systemPath></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-stub</artifactId><version>1.75.0</version></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-protobuf</artifactId><version>1.75.0</version></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-netty-shaded</artifactId><version>1.75.0</version></dependency><dependency><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>4.31.1</version></dependency></dependencies><build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>3.7.0</version></plugin></plugins></build></project>`);
+    const mavenArgs = ["--offline", "--batch-mode", "-q", "org.apache.maven.plugins:maven-dependency-plugin:3.7.0:build-classpath", "-Dmdep.outputFile=runtime-classpath.txt"];
+    if (process.env.SDK_MAVEN_REPO) mavenArgs.push(`-Dmaven.repo.local=${process.env.SDK_MAVEN_REPO}`);
+    const classpath = command(binaries.maven, mavenArgs, directory);
     if (classpath.exitCode !== 0) return { status: "install-failed", install: classpath, environment: {} };
     return { status: "installed", install: { command: "Maven consumer project", exitCode: 0, stdout: "", stderr: "" }, environment: {} };
   }
@@ -216,22 +233,20 @@ function prepare(language, packageArtifact, directory) {
         "@connectrpc/connect-node": "2.1.1",
       },
     }, null, 2));
-    const packageDirectory = join(directory, "node_modules", "@acyclic-labs", packageJson.name.split("/")[1]);
-    mkdirSync(resolve(packageDirectory, ".."), { recursive: true });
-    // A package directory is the installable local artifact in manual and
-    // release qualification. Copy it into node_modules to exercise package
-    // exports exactly as a consumer does.
-    if (!existsSync(packageDirectory)) {
-      cpSync(packageRoot, packageDirectory, { recursive: true });
-    }
     const install = command(binaries.bun, ["install", "--offline", "--no-progress"], directory);
     const nodePath = [join(directory, "node_modules"), join(repo, "typescript", "node_modules"), join(packageRoot, "node_modules")].join(";");
-    return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: { NODE_PATH: nodePath } };
+    return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: { NODE_PATH: nodePath, PATH: process.env.PATH } };
   }
 
   if (language === "csharp") {
     const hint = packageArtifact.replaceAll("\\", "/");
-    writeFileSync(join(directory, "GuideSnippet.csproj"), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><Reference Include="Acyclic.Sdk.Transport"><HintPath>${hint}</HintPath></Reference></ItemGroup></Project>\n`);
+    const dependencyRoot = join(repo, "dotnet", "consumer", "bin", "Debug", "net8.0");
+    const dependencyReferences = ["Google.Protobuf", "Grpc.Core.Api", "Grpc.Net.Client", "Grpc.Net.Common"]
+      .map((name) => join(dependencyRoot, `${name}.dll`))
+      .filter((path) => existsSync(path))
+      .map((path) => `<Reference Include="${path.split(/[\\/]/).at(-1).replace(/\.dll$/i, "")}"><HintPath>${path.replaceAll("\\", "/")}</HintPath></Reference>`)
+      .join("");
+    writeFileSync(join(directory, "GuideSnippet.csproj"), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><Reference Include="Acyclic.Sdk.Transport"><HintPath>${hint}</HintPath></Reference>${dependencyReferences}</ItemGroup></Project>\n`);
     return { status: "installed", install: { command: "local assembly reference", exitCode: 0, stdout: "", stderr: "" }, environment: {} };
   }
 
@@ -254,7 +269,14 @@ function prepare(language, packageArtifact, directory) {
       ? [process.env.SDK_COMPOSER_PHAR, "install", "--no-interaction", "--no-progress"]
       : ["install", "--no-interaction", "--no-progress"];
     const install = command(binaries.composer, composerArgs, directory);
-    return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: {} };
+    const ini = join(directory, "runtime.ini");
+    const grpcExtension = process.env.SDK_PHP_GRPC_EXTENSION ?? "";
+    const protobufExtension = process.env.SDK_PHP_PROTOBUF_EXTENSION ?? "";
+    const environment = existsSync(grpcExtension) && existsSync(protobufExtension)
+      ? { PHPRC: ini }
+      : {};
+    if (environment.PHPRC) writeFileSync(ini, `extension=${grpcExtension}\nextension=${protobufExtension}\n`);
+    return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment };
   }
 
   if (language === "ruby" && packageArtifact.endsWith(".gemspec")) {
@@ -285,7 +307,12 @@ function prepare(language, packageArtifact, directory) {
     };
   }
 
-  return { status: "installed", install: { command: "artifact present", exitCode: 0, stdout: "", stderr: "" }, environment: {} };
+  return {
+    status: "install-failed",
+    install: { command: "unsupported package installation", exitCode: 127, stdout: "", stderr: `no package installer for ${language}` },
+    environment: {},
+    error: `no package installer for ${language}`,
+  };
 }
 
 const projectionInput = args.get("--projections");
@@ -298,12 +325,12 @@ if (manifestCommand.exitCode !== 0) {
 }
 const parsedProjections = JSON.parse(manifestCommand.stdout);
 const projections = Array.isArray(parsedProjections) ? parsedProjections : [parsedProjections];
-const revisionCommand = command("git", ["rev-parse", "HEAD"]);
-const sourceRevision = revisionCommand.exitCode === 0
-  ? revisionCommand.stdout.trim()
-  : "working-tree";
 const sourceDigests = [...new Set(projections.map((projection) => projection.source_sha256).filter(Boolean))];
 const sourceSha256 = sourceDigests.length === 1 ? sourceDigests[0] : null;
+// Rust emits the source closure digest in every projection. It is the
+// authoritative identity for an archive or dirty checkout; Git HEAD is not
+// sufficient because it can describe a different tree than the producer.
+const sourceRevision = sourceSha256 ? `source-sha256:${sourceSha256}` : null;
 const receipts = [];
 const fixture = args.has("--execute") && !process.env.FIXTURE_GRPC_ADDRESS ? await startFixture() : null;
 if (args.has("--execute") && !process.env.FIXTURE_GRPC_ADDRESS && !fixture) {
@@ -334,8 +361,13 @@ for (const projection of projections) {
     package_artifact: packageArtifact ? relative(repo, packageArtifact).replaceAll("\\", "/") : null,
     package_sha256: packageArtifact ? createHash("sha256").update(readFileSync(packageArtifact)).digest("hex") : null,
     snippet_path: relative(repo, file).replaceAll("\\", "/"),
+    qualification: projection.qualification ?? null,
   };
-  if (!packageArtifact) {
+  const recipe = projection.qualification;
+  if (!recipe || !recipe.install || !recipe.compile || !recipe.execute) {
+    receipt.status = "install-failed";
+    receipt.install = { command: "Rust qualification recipe missing", exitCode: 127, stdout: "", stderr: "projection did not carry a Rust-owned install/compile/execute recipe" };
+  } else if (!packageArtifact) {
     receipt.status = "artifact-missing";
   } else {
     const prepared = prepare(projection.language, packageArtifact, directory);
@@ -348,7 +380,7 @@ for (const projection of projections) {
       receipt.compile = checked;
       receipt.status = checked.exitCode === 0 ? "compiled" : "compile-failed";
     }
-    if (receipt.status === "compiled" && args.has("--execute") && projection.language !== "rust") {
+    if (receipt.status === "compiled" && args.has("--execute")) {
       const executionEnvironment = {
         ...(fixture ? fixtureEnvironment(projection.language, fixture.address) : {}),
         ...prepared.environment,
@@ -378,4 +410,4 @@ const summary = {
 };
 writeFileSync(join(output, "qualification.json"), `${JSON.stringify(summary, null, 2)}\n`);
 console.log(JSON.stringify({ ...summary, receipts: undefined }, null, 2));
-if (args.has("--strict") && (summary.artifact_missing > 0 || summary.failed > 0 || summary.projection_count !== 54 || sourceRevision === "working-tree" || !sourceSha256 || projections.some((projection) => projection.source_sha256 !== sourceSha256))) process.exit(1);
+if (args.has("--strict") && (summary.artifact_missing > 0 || summary.failed > 0 || summary.projection_count !== 54 || !sourceRevision || !sourceSha256 || projections.some((projection) => projection.source_sha256 !== sourceSha256))) process.exit(1);

@@ -25,7 +25,69 @@ pub struct GuideProjection {
     pub mode: GuideProjectionMode,
     pub capability: CapabilityStatus,
     pub package: GuidePackageSpec,
+    /// Rust-owned installation, compile, and execution recipes consumed by
+    /// the thin qualification runner.
+    pub qualification: GuideQualificationRecipe,
     pub code: String,
+}
+
+/// Qualification operations are named in Rust so the runner cannot silently
+/// replace a semantic check with formatting or artifact-presence evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuideQualificationRecipe {
+    pub install: &'static str,
+    pub compile: &'static str,
+    pub execute: &'static str,
+}
+
+pub const fn qualification_recipe(language: Language) -> GuideQualificationRecipe {
+    match language {
+        Language::Rust => GuideQualificationRecipe {
+            install: "cargo-consumer-package",
+            compile: "cargo-check-consumer",
+            execute: "installed-consumer",
+        },
+        Language::Python => GuideQualificationRecipe {
+            install: "pip-wheel-target",
+            compile: "python-package-check",
+            execute: "python-installed-package",
+        },
+        Language::TypeScript => GuideQualificationRecipe {
+            install: "bun-package-install",
+            compile: "tsc-strict-consumer",
+            execute: "bun-installed-package",
+        },
+        Language::Go => GuideQualificationRecipe {
+            install: "go-module-replace",
+            compile: "go-test-consumer",
+            execute: "go-installed-package",
+        },
+        Language::Java => GuideQualificationRecipe {
+            install: "maven-system-package",
+            compile: "maven-package-consumer",
+            execute: "java-installed-package",
+        },
+        Language::CSharp => GuideQualificationRecipe {
+            install: "dotnet-package-reference",
+            compile: "dotnet-build-consumer",
+            execute: "dotnet-installed-package",
+        },
+        Language::Ruby => GuideQualificationRecipe {
+            install: "gem-local-package",
+            compile: "ruby-package-check",
+            execute: "ruby-installed-package",
+        },
+        Language::Dart => GuideQualificationRecipe {
+            install: "dart-path-package",
+            compile: "dart-package-analyze",
+            execute: "dart-installed-package",
+        },
+        Language::Php => GuideQualificationRecipe {
+            install: "composer-path-package",
+            compile: "php-package-check",
+            execute: "php-installed-package",
+        },
+    }
 }
 
 /// Installable artifact identity used to compile a projection against the
@@ -446,7 +508,7 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
                 )
             } else if family == "machines" {
                 format!(
-                    "request = {module}_pb2.{request}(protocol={module}_pb2.ProtocolVersion(major=1, minor=1), idempotency_key={module}_pb2.IdempotencyKey(value=bytes([1] * 16)))\nresponse = client.{method}(request)",
+                    "request = {module}_pb2.{request}(protocol={module}_pb2.ProtocolVersion(major=1, minor=1), idempotency_key={module}_pb2.IdempotencyKey(value=bytes([1] * 16)), image={module}_pb2.Image(kind=2, custom_digest=bytes([7] * 32)), compatibility={module}_pb2.CompatibilityPolicy(mode=1), suspension={module}_pb2.SuspensionPolicy(after_idle_ms=15000), expiration={module}_pb2.ExpirationPolicy(kind=1, value_ms=0), network_policy_digest=bytes([8] * 32), budgets={module}_pb2.Budgets(spend_micros=0, concurrency=0))\nresponse = client.{method}(request)",
                     module = module,
                     request = request,
                     method = method,
@@ -484,7 +546,7 @@ print(response)"#,
                 ""
             };
             let machines_import = if family == "machines" {
-                "import { IdempotencyKeySchema } from \"@acyclic-labs/machines/proto\";\n"
+                "import { BudgetsSchema, CompatibilityPolicySchema, ExpirationPolicySchema, IdempotencyKeySchema, ImageSchema, SuspensionPolicySchema } from \"@acyclic-labs/machines/proto\";\n"
             } else {
                 ""
             };
@@ -502,7 +564,7 @@ print(response)"#,
                 format!("const response = await client.{method}({harness_request});", method = method_camel, harness_request = harness_request)
             } else if family == "machines" {
                 format!(
-                    "const response = await client.{method}(create({request}Schema, {{ protocol: {{ major: 1, minor: 1 }}, idempotencyKey: create(IdempotencyKeySchema, {{ value: new Uint8Array(16).fill(1) }}) }}));",
+                    "const response = await client.{method}(create({request}Schema, {{ protocol: {{ major: 1, minor: 1 }}, idempotencyKey: create(IdempotencyKeySchema, {{ value: new Uint8Array(16).fill(1) }}), image: create(ImageSchema, {{ kind: 2, immutableReference: {{ case: \"customDigest\", value: new Uint8Array(32).fill(7) }} }}), compatibility: create(CompatibilityPolicySchema, {{ mode: 1 }}), suspension: create(SuspensionPolicySchema, {{ policy: {{ case: \"afterIdleMs\", value: 15000n }} }}), expiration: create(ExpirationPolicySchema, {{ kind: 1, valueMs: 0n }}), networkPolicyDigest: new Uint8Array(32).fill(8), budgets: create(BudgetsSchema, {{ spendMicros: 0n, concurrency: 0 }}) }}));",
                     method = method_camel,
                     request = request,
                 )
@@ -565,7 +627,18 @@ console.log(response);"#,
                 )
             } else if family == "machines" {
                 format!(
-                    "response, err := client.{method}(ctx, &generated.{request}{{Protocol: &generated.ProtocolVersion{{Major: 1, Minor: 1}}, IdempotencyKey: &generated.IdempotencyKey{{Value: []byte{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}}}}}})",
+                    r#"imageDigest := bytes.Repeat([]byte{{7}}, 32)
+    networkDigest := bytes.Repeat([]byte{{8}}, 32)
+    response, err := client.{method}(ctx, &generated.{request}{{
+        Protocol: &generated.ProtocolVersion{{Major: 1, Minor: 1}},
+        IdempotencyKey: &generated.IdempotencyKey{{Value: bytes.Repeat([]byte{{1}}, 16)}},
+        Image: &generated.Image{{Kind: generated.ImageKind_IMAGE_KIND_CUSTOM, ImmutableReference: &generated.Image_CustomDigest{{CustomDigest: imageDigest}}}},
+        Compatibility: &generated.CompatibilityPolicy{{Mode: generated.CompatibilityMode_COMPATIBILITY_MODE_BEST_EFFORT}},
+        Suspension: &generated.SuspensionPolicy{{Policy: &generated.SuspensionPolicy_AfterIdleMs{{AfterIdleMs: 15000}}}},
+        Expiration: &generated.ExpirationPolicy{{Kind: generated.ExpirationKind_EXPIRATION_KIND_NEVER}},
+        NetworkPolicyDigest: networkDigest,
+        Budgets: &generated.Budgets{{SpendMicros: 0, Concurrency: 0}},
+    }})"#,
                     method = method,
                     request = request,
                 )
@@ -583,6 +656,7 @@ package main
 import (
     "context"
 {go_crypto_import}
+{go_machine_import}
     "fmt"
     "os"
     generated "github.com/acyclic-labs/sdk/go/gen/{module}/{version}"
@@ -608,6 +682,11 @@ func main() {{
                 service = service,
                 go_crypto_import = if family == "workers" {
                     "    \"crypto/sha256\"\n"
+                } else {
+                    ""
+                },
+                go_machine_import = if family == "machines" {
+                    "    \"bytes\"\n"
                 } else {
                     ""
                 },
@@ -665,7 +744,7 @@ func main() {{
                 )
             } else if family == "machines" {
                 format!(
-                    "      var key = new byte[16];\n      java.util.Arrays.fill(key, (byte) 1);\n      var request = {package_type}.{request}.newBuilder().setProtocol({package_type}.ProtocolVersion.newBuilder().setMajor(1).setMinor(1)).setIdempotencyKey({package_type}.IdempotencyKey.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(key))).build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
+                    "      var key = new byte[16];\n      java.util.Arrays.fill(key, (byte) 1);\n      var imageDigest = new byte[32];\n      java.util.Arrays.fill(imageDigest, (byte) 7);\n      var networkDigest = new byte[32];\n      java.util.Arrays.fill(networkDigest, (byte) 8);\n      var image = {package_type}.Image.newBuilder().setKind({package_type}.ImageKind.IMAGE_KIND_CUSTOM).setCustomDigest(com.google.protobuf.ByteString.copyFrom(imageDigest)).build();\n      var request = {package_type}.{request}.newBuilder().setProtocol({package_type}.ProtocolVersion.newBuilder().setMajor(1).setMinor(1)).setIdempotencyKey({package_type}.IdempotencyKey.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom(key))).setImage(image).setCompatibility({package_type}.CompatibilityPolicy.newBuilder().setMode({package_type}.CompatibilityMode.COMPATIBILITY_MODE_BEST_EFFORT)).setSuspension({package_type}.SuspensionPolicy.newBuilder().setAfterIdleMs(15000L)).setExpiration({package_type}.ExpirationPolicy.newBuilder().setKind({package_type}.ExpirationKind.EXPIRATION_KIND_NEVER)).setNetworkPolicyDigest(com.google.protobuf.ByteString.copyFrom(networkDigest)).setBudgets({package_type}.Budgets.newBuilder().setSpendMicros(0L).setConcurrency(0)).build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
                     package_type = package_type,
                     request = request,
                     java_service_type = java_service_type,
@@ -738,7 +817,7 @@ public static void main(String[] args) throws Exception {{
                 )
             } else if family == "machines" {
                 format!(
-                    "var response = client.{method}(new {request} {{ Protocol = new ProtocolVersion {{ Major = 1, Minor = 1 }}, IdempotencyKey = new IdempotencyKey {{ Value = ByteString.CopyFrom(Enumerable.Repeat((byte)1, 16).ToArray()) }} }});",
+                    "var response = client.{method}(new {request} {{ Protocol = new ProtocolVersion {{ Major = 1, Minor = 1 }}, IdempotencyKey = new IdempotencyKey {{ Value = ByteString.CopyFrom(Enumerable.Repeat((byte)1, 16).ToArray()) }}, Image = new Image {{ Kind = ImageKind.Custom, CustomDigest = ByteString.CopyFrom(Enumerable.Repeat((byte)7, 32).ToArray()) }}, Compatibility = new CompatibilityPolicy {{ Mode = CompatibilityMode.BestEffort }}, Suspension = new SuspensionPolicy {{ AfterIdleMs = 15000 }}, Expiration = new ExpirationPolicy {{ Kind = ExpirationKind.Never }}, NetworkPolicyDigest = ByteString.CopyFrom(Enumerable.Repeat((byte)8, 32).ToArray()), Budgets = new Budgets {{ SpendMicros = 0, Concurrency = 0 }} }});",
                     method = method,
                     request = request,
                 )
@@ -771,7 +850,7 @@ Console.WriteLine(response);"#,
         Language::Ruby => {
             let call = if family == "workers" {
                 format!(
-                    "$module = {module:?}\n$request = Acyclic::{package_type}::{version_type}::{request}.new(javascript_module: $module, expected_sha256: Digest::SHA256.digest($module), idempotency_key: \"publish-example-v1\")\n$response = client.{method_snake}($request)",
+                    "$module = {module:?}\n$request = Acyclic::{package_type}::{version_type}::{request}.new(javascript_module: $module, expected_sha256: Digest::SHA256.digest($module), idempotency_key: \"publish-example-v1\")\nresponse = client.{method_snake}($request)",
                     module = workers_module_text(),
                     package_type = package_type,
                     version_type = version_type,
@@ -792,8 +871,7 @@ Console.WriteLine(response);"#,
                 )
             } else if family == "inference" {
                 format!(
-                    "request = Acyclic::{package_type}::{version_type}::{request}.new(run_id: ([2] * 16).pack(\"C*\"), from_sequence: 0)\nresponse = client.{method_snake}(request)",
-                    package_type = package_type,
+                    "request = Inference::Customer::{version_type}::{request}.new(run_id: ([2] * 16).pack(\"C*\"), from_sequence: 0)\nresponse = client.{method_snake}(request)",
                     version_type = version_type,
                     request = request,
                     method_snake = method_snake,
@@ -810,7 +888,7 @@ Console.WriteLine(response);"#,
                 )
             } else if family == "machines" {
                 format!(
-                    "request = Acyclic::{package_type}::{version_type}::{request}.new(protocol: Acyclic::{package_type}::{version_type}::ProtocolVersion.new(major: 1, minor: 1), idempotency_key: Acyclic::{package_type}::{version_type}::IdempotencyKey.new(value: ([1] * 16).pack(\"C*\")))\nresponse = client.{method_snake}(request)",
+                    "request = Acyclic::{package_type}::{version_type}::{request}.new(protocol: Acyclic::{package_type}::{version_type}::ProtocolVersion.new(major: 1, minor: 1), idempotency_key: Acyclic::{package_type}::{version_type}::IdempotencyKey.new(value: ([1] * 16).pack(\"C*\")), image: Acyclic::{package_type}::{version_type}::Image.new(kind: 2, custom_digest: ([7] * 32).pack(\"C*\")), compatibility: Acyclic::{package_type}::{version_type}::CompatibilityPolicy.new(mode: 1), suspension: Acyclic::{package_type}::{version_type}::SuspensionPolicy.new(after_idle_ms: 15000), expiration: Acyclic::{package_type}::{version_type}::ExpirationPolicy.new(kind: 1, value_ms: 0), network_policy_digest: ([8] * 32).pack(\"C*\"), budgets: Acyclic::{package_type}::{version_type}::Budgets.new(spend_micros: 0, concurrency: 0))\nresponse = client.{method_snake}(request)",
                     package_type = package_type,
                     version_type = version_type,
                     request = request,
@@ -831,19 +909,22 @@ require "acyclic_sdk"
 require "digest"
 
 endpoint = ENV.fetch("FIXTURE_GRPC_ADDRESS")
-client = Acyclic::{package_type}::{version_type}::{service}::Stub.new(endpoint, :this_channel_is_insecure)
+                client = {ruby_namespace}::{service}::Stub.new(endpoint, :this_channel_is_insecure)
 {call}
-puts response"#,
+                puts response"#,
                 scenario_id = scenario_id,
-                package_type = package_type,
-                version_type = version_type,
                 service = service,
+                ruby_namespace = if family == "inference" {
+                    format!("Inference::Customer::{version_type}")
+                } else {
+                    format!("Acyclic::{package_type}::{version_type}")
+                },
                 call = call,
             )
         }
         Language::Dart => {
             let dart_imports = format!(
-                "import 'dart:io';\n{}{}{}import 'package:grpc/grpc.dart';",
+                "import 'dart:io';\n{}{}{}{}import 'package:grpc/grpc.dart';",
                 if matches!(family, "workers" | "objects") {
                     "import 'dart:convert';\n"
                 } else {
@@ -856,6 +937,11 @@ puts response"#,
                 },
                 if family == "workers" {
                     "import 'package:crypto/crypto.dart';\n"
+                } else {
+                    ""
+                },
+                if matches!(family, "inference" | "machines") {
+                    "import 'package:fixnum/fixnum.dart';\n"
                 } else {
                     ""
                 },
@@ -879,7 +965,7 @@ puts response"#,
                 )
             } else if family == "inference" {
                 format!(
-                    "final response = await client.{method_camel}(generated.{request}()..runId = (Uint8List(16)..fillRange(0, 16, 2))..fromSequence = 0);",
+                    "final response = await client.{method_camel}(generated.{request}()..runId = (Uint8List(16)..fillRange(0, 16, 2))..fromSequence = Int64.ZERO);",
                     method_camel = method_camel,
                     request = request,
                 )
@@ -893,7 +979,7 @@ puts response"#,
                 )
             } else if family == "machines" {
                 format!(
-                    "final response = await client.{method_camel}(generated.{request}()..protocol = (generated.ProtocolVersion()..major = 1..minor = 1)..idempotencyKey = (generated.IdempotencyKey()..value = (Uint8List(16)..fillRange(0, 16, 1))));",
+                    "final response = await client.{method_camel}(generated.{request}()..protocol = (generated.ProtocolVersion()..major = 1..minor = 1)..idempotencyKey = (generated.IdempotencyKey()..value = (Uint8List(16)..fillRange(0, 16, 1)))..image = (generated.Image()..kind = generated.ImageKind.IMAGE_KIND_CUSTOM..customDigest = (Uint8List(32)..fillRange(0, 32, 7)))..compatibility = (generated.CompatibilityPolicy()..mode = generated.CompatibilityMode.COMPATIBILITY_MODE_BEST_EFFORT)..suspension = (generated.SuspensionPolicy()..afterIdleMs = Int64(15000))..expiration = (generated.ExpirationPolicy()..kind = generated.ExpirationKind.EXPIRATION_KIND_NEVER)..networkPolicyDigest = (Uint8List(32)..fillRange(0, 32, 8))..budgets = (generated.Budgets()..spendMicros = Int64.ZERO..concurrency = 0));",
                     method_camel = method_camel,
                     request = request,
                 )
@@ -941,7 +1027,6 @@ Future<void> main() async {{
             let call = if family == "workers" {
                 format!(
                     "$request = new \\Acyclic\\{package_type}\\{version}\\{request}(['javascript_module' => {module:?}, 'expected_sha256' => hash('sha256', {module:?}, true), 'idempotency_key' => 'publish-example-v1']);\n[$response, $status] = $client->{method}($request)->wait();",
-                    package_type = package_type,
                     version = version,
                     request = request,
                     module = workers_module_text(),
@@ -962,9 +1047,8 @@ $call->writesDone();
                 )
             } else if family == "inference" {
                 format!(
-                    r#"$request = new \Acyclic\{package_type}\{version}\{request}(['run_id' => str_repeat(chr(2), 16), 'from_sequence' => 0]);
+                    r#"$request = new \Inference\Customer\{version}\{request}(['run_id' => str_repeat(chr(2), 16), 'from_sequence' => 0]);
 [$response, $status] = $client->{method}($request)->wait();"#,
-                    package_type = package_type,
                     version = version,
                     request = request,
                     method = method,
@@ -987,9 +1071,15 @@ $call->writesDone();
                 )
             } else if family == "machines" {
                 format!(
-                    r#"$request = new \\Acyclic\{package_type}\{version}\{request}([
-    'protocol' => new \\Acyclic\{package_type}\{version}\ProtocolVersion(['major' => 1, 'minor' => 1]),
-    'idempotency_key' => new \\Acyclic\{package_type}\{version}\IdempotencyKey(['value' => str_repeat(chr(1), 16)]),
+                r#"$request = new \Acyclic\{package_type}\{version}\{request}([
+    'protocol' => new \Acyclic\{package_type}\{version}\ProtocolVersion(['major' => 1, 'minor' => 1]),
+    'idempotency_key' => new \Acyclic\{package_type}\{version}\IdempotencyKey(['value' => str_repeat(chr(1), 16)]),
+    'image' => new \Acyclic\{package_type}\{version}\Image(['kind' => 2, 'custom_digest' => str_repeat(chr(7), 32)]),
+    'compatibility' => new \Acyclic\{package_type}\{version}\CompatibilityPolicy(['mode' => 1]),
+    'suspension' => new \Acyclic\{package_type}\{version}\SuspensionPolicy(['after_idle_ms' => 15000]),
+    'expiration' => new \Acyclic\{package_type}\{version}\ExpirationPolicy(['kind' => 1, 'value_ms' => 0]),
+    'network_policy_digest' => str_repeat(chr(8), 32),
+    'budgets' => new \Acyclic\{package_type}\{version}\Budgets(['spend_micros' => 0, 'concurrency' => 0]),
 ]);
 [$response, $status] = $client->{method}($request)->wait();"#,
                     package_type = package_type,
@@ -1010,10 +1100,10 @@ $call->writesDone();
             format!(
                 r#"<?php
 // Rust scenario: {scenario_id}
-require dirname(__DIR__) . '/vendor/autoload.php';
+ require __DIR__ . '/vendor/autoload.php';
 
 $endpoint = getenv('FIXTURE_GRPC_ADDRESS');
-$client = new \Acyclic\{package_type}\{version}\{service}Client(
+$client = new \{client_namespace}\{service}Client(
     $endpoint,
     ['credentials' => \Grpc\ChannelCredentials::createInsecure()]
 );
@@ -1021,9 +1111,12 @@ $client = new \Acyclic\{package_type}\{version}\{service}Client(
 if ($status->code !== \Grpc\STATUS_OK) throw new RuntimeException($status->details);
 echo $response->serializeToJsonString(), PHP_EOL;"#,
                 scenario_id = scenario_id,
-                package_type = package_type,
-                version = version,
                 service = service,
+                client_namespace = if family == "inference" {
+                    format!("Inference\\Customer\\{version}")
+                } else {
+                    format!("Acyclic\\{package_type}\\{version}")
+                },
                 call = call,
             )
         }
@@ -1041,6 +1134,7 @@ echo $response->serializeToJsonString(), PHP_EOL;"#,
         },
         capability: CapabilityStatus::Supported,
         package,
+        qualification: qualification_recipe(language),
         code,
     })
 }
@@ -1101,6 +1195,10 @@ mod tests {
                 assert_eq!(projection.source, source);
                 assert!(!projection.package.package_name.is_empty());
                 assert!(!projection.package.artifact_path.is_empty());
+                assert!(!projection.qualification.install.is_empty());
+                assert!(!projection.qualification.compile.is_empty());
+                assert!(!projection.qualification.execute.is_empty());
+                assert_eq!(projection.qualification, qualification_recipe(language));
                 if language == Language::Rust {
                     assert_eq!(projection.mode, GuideProjectionMode::Embedded);
                     assert!(!projection.code.is_empty());
