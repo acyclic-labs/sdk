@@ -1784,6 +1784,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
 
     fn publish<'a>(&'a self, publication: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            crate::stack_diagnostics::marker("fork-publisher-enter");
             let publication_digest = crate::contract::canonical_json_digest(&publication)?;
             if let Some(completed) = self
                 .plans
@@ -6358,6 +6359,9 @@ fn apply_record(
 
 #[cfg(test)]
 mod tests {
+    #[path = "../../../verification/real_harness_trace.rs"]
+    mod real_harness_trace;
+
     use super::*;
     use crate::context::ContextStage;
     use crate::interaction::Interaction;
