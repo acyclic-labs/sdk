@@ -1,4 +1,4 @@
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Client, type Interceptor } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
@@ -26,6 +26,8 @@ import {
   FileKind,
   FilesystemProfile,
   FilesystemService,
+  CapabilitiesSchema,
+  HandshakeResponseSchema,
   JoinHistory,
   JoinStatus as WireJoinStatus,
   MutationSchema,
@@ -87,6 +89,7 @@ import type {
 } from "./contracts.js";
 import { rustOwnedServiceEndpoint } from "./endpoint.js";
 import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { validateFilesystemHandshake } from "./remote-web.js";
 
 /**
  * Rust-owned hosted request policy exported by the generated WASM package.
@@ -188,18 +191,14 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
       required: { capabilities: [{ name: "filesystem", version: DEFAULT_HOSTED_OPTIONS.protocolVersion }] },
     },
   }));
-  const negotiated = required(handshake.protocol, "handshake response");
-  const protocol = required(negotiated.protocol, "handshake protocol");
-  if (protocol.version !== DEFAULT_HOSTED_OPTIONS.protocolVersion) throw new HostedFsError("protocol", "filesystem protocol version is unsupported");
-  if (protocol.descriptorDigest !== FILESYSTEM_DESCRIPTOR_DIGEST) throw new HostedFsError("protocol", "filesystem descriptor digest does not match");
-  const supported = required(negotiated.supported, "supported capabilities");
-  if (!supported.capabilities.some(capability => capability.name === "filesystem" && capability.version === DEFAULT_HOSTED_OPTIONS.protocolVersion)) {
-    throw new HostedFsError("protocol", "filesystem capability version is unsupported");
-  }
-  const advertised = required(handshake.capabilities, "filesystem capabilities");
-  if (advertised.contractVersion !== DEFAULT_HOSTED_OPTIONS.protocolVersion) throw new HostedFsError("protocol", "filesystem contract version is unsupported");
-  if (advertised.maximumRequestBytes <= 0n || advertised.maximumResponseBytes <= 0n) {
-    throw new HostedFsError("protocol", "filesystem capabilities contain an unbounded byte limit");
+  let advertised: NonNullable<typeof handshake.capabilities>;
+  try {
+    const encoded = await validateFilesystemHandshake(
+      toBinary(HandshakeResponseSchema, handshake),
+    );
+    advertised = fromBinary(CapabilitiesSchema, encoded);
+  } catch (error) {
+    throw new HostedFsError("protocol", error instanceof Error ? error.message : String(error));
   }
   negotiatedMaximumRequestBytes = advertised.maximumRequestBytes;
   positiveSafeInteger(advertised.maximumTransactionMutations, "maximum transaction mutations");
