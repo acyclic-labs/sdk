@@ -1,0 +1,53 @@
+{
+  "schema": "acyclic.sdk.stream.installed-package.browser-qualification.v1",
+  "status": "passed",
+  "sourceRevision": "a487e97819a82976f8d8fded3f3d23fa4abc2cce",
+  "source": {
+    "family": "stream",
+    "rustCrate": "acyclic-stream",
+    "sourceKind": "rust-model",
+    "sourceContentSha256": "b6129072e2319ea600a59ed5af9529a636bc1710fe00801a3fd979cac27fd650",
+    "descriptorSha256": "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c",
+    "transportPolicy": "typescript/packages/stream/src/generated-client.ts",
+    "defaultBrowserTransport": "http",
+    "handshake": "/v1/sdk/stream/handshake"
+  },
+  "sourceFiles": {
+    "typescript/packages/stream/src/client.ts": "93251aeeaf74f8dba4563c5775c187987cd7eaa77f881633fa89cd24f644ca8c",
+    "typescript/packages/stream/src/http.ts": "5c4155b79c16a8ff4d32aba94fe5277fdacc27024be8872013d642651e561ca2",
+    "typescript/packages/stream/src/generated-client.ts": "5fb7ba2ec9d66a361fa6d58c1ddfc32c397610aa966c4558069a4f926c5b9b0b",
+    "rust/crates/stream/src/http.rs": "939e8f290e03ea7741061cfb6cb33949e4f15d62ec19f02dc9141c4c2028e0e5",
+    "rust/crates/stream/Cargo.toml": "de70037a1013aa6e4a77e61b1b062f256a5fb38f4758555d2d4242f3898248ef"
+  },
+  "artifact": {
+    "manifest": "typescript/packages/stream/package.json",
+    "manifestSha256": "1075d462ea981d3ba80e2df04c604c9a251c684101b8435fbdd9e350103214e1",
+    "browserEntry": "work/stream-installed-consumer/dist2/index.js",
+    "browserEntrySha256": "48fcb7e90b0e716ff0d96bdc54a18b2c7af2dba588b8a40af73e12b27e1d6123",
+    "sharedChunk": "work/stream-installed-consumer/dist2/index-sgkevqmt.js",
+    "sharedChunkSha256": "9fb6a1a59aa11e59a75addda86267dac41f28b41b488c18affc5a0fa986e82ef",
+    "nativeChunk": "work/stream-installed-consumer/dist2/grpc-mb4d1fa7.js",
+    "nativeChunkSha256": "e93af484c84db90e28494ca6dc046c263018bb28ef21e6c7c4b8e72cf81222df",
+    "rustWasm": "work/stream-installed-consumer/generated/wasm/acyclic_stream_wasm_bg.wasm",
+    "rustWasmSha256": "ec2b119401a79550021592683368c69bdb685673add13a0e3851566dc280ea24"
+  },
+  "fixture": {
+    "runner": "work/stream-installed-browser-consumer.mjs",
+    "runnerSha256": "37c2129a7590031bd824afddeac068f398df4cd664e61db3a794689164872aee",
+    "page": "work/stream-installed-consumer/index.html",
+    "pageSha256": "a8d598c1d1c392eadfc0d6014d8e79e13e92bf71a2732696e95b7d3c2518eb29",
+    "log": "work/stream-installed-browser-consumer.log",
+    "logSha256": "6f95431aa3e85ac9ba527d829ef57c951588d207c49e6b97f20735460a21c3d7",
+    "runtime": "Microsoft Edge headless via DevTools",
+    "operations": ["inspect", "append", "tail", "fork", "read", "follow", "children", "children_page", "commit", "read_commit"],
+    "transport": "HttpStreamProvider",
+    "recovery": "503 unavailable then successful tail",
+    "cancellation": "pending follow AbortController cancellation observed as peer close by the fixture",
+    "observedRoutes": ["idempotency/inspect", "append", "tail", "fork", "read", "children", "children/page", "commit", "commits/read"]
+  },
+  "generation": {
+    "entrypoint": "bun build typescript/packages/stream/src/index.ts --outdir work/stream-installed-consumer/dist2 --target browser --format esm --splitting",
+    "generatedFromRust": true,
+    "sourceAuthority": "rust/crates/sdk-contract-wire"
+  }
+}
