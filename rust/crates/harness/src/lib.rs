@@ -108,7 +108,7 @@ pub use contract::{
     COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities, ConversationId,
     EffectAttemptId, EffectId, Error, GroupId, IdempotencyKey, InteractionId, InteractionRejection,
     OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
-    is_valid_component_label, resolve_policies, resolve_policy_layers,
+    canonical_json_bytes, is_valid_component_label, resolve_policies, resolve_policy_layers,
 };
 pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,

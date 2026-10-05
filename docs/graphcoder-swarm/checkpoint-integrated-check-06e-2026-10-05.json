@@ -1,0 +1,27 @@
+{
+  "tests_executed": 0,
+  "platform": "Windows",
+  "exit": 101,
+  "compiler_errors": 1,
+  "qualification_complete": false,
+  "suite": "integrated-check",
+  "outcome": "Harness library compiled; integration fixture imported private canonical serializer",
+  "artifacts": [
+    {
+      "bytes": 5018,
+      "path": "target/graphcoder-qualification/evidence/06e2e597c/integrated-check/check.log",
+      "sha256": "54be1622875374a7f4a7510105562d6f5ca495a4018b8c047b45c5dbec9d989c"
+    },
+    {
+      "bytes": 5,
+      "path": "target/graphcoder-qualification/evidence/06e2e597c/integrated-check/exit.txt",
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95"
+    },
+    {
+      "bytes": 7719220,
+      "path": "target/graphcoder-qualification/evidence/06e2e597c/integrated-check/source.zip",
+      "sha256": "217ab72e4847ec428ff99a4a48464b46322a33d966139cbdfec4d1d4c5d680dc"
+    }
+  ],
+  "source_commit": "06e2e597c354981053189c3e211aa874d7caf101"
+}

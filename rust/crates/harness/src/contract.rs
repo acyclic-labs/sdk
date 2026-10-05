@@ -15,7 +15,7 @@ pub const COMPONENT_LABEL_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// Conversion through Value preserves full-width serde integer values while
 /// avoiding struct declaration order as an accidental wire contract.
-pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     let mut bytes = Vec::new();
     write_canonical_json(&value, &mut bytes, 0)?;

@@ -8,7 +8,7 @@
 
 use acyclic_harness::{
     Error, IdempotencyKey, OperationId,
-    contract::canonical_json_bytes,
+    canonical_json_bytes,
     model::{ModelEvent, ProviderDispatchContext},
     swarm_budget::{SwarmUsage, SwarmUsageSource},
 };

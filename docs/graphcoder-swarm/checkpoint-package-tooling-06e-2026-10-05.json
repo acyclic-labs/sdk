@@ -1,0 +1,29 @@
+{
+  "platform": "Windows",
+  "passed": 39,
+  "skipped": 0,
+  "exit": 0,
+  "tests": 39,
+  "qualification_complete": false,
+  "outcome": "Six qualification tooling suites passed; no runtime or packaged qualification implied",
+  "suite": "package-tooling",
+  "failed": 0,
+  "artifacts": [
+    {
+      "bytes": 3,
+      "path": "target/graphcoder-qualification/evidence/06e2e597c/package-tooling/exit.txt",
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "bytes": 7719220,
+      "path": "target/graphcoder-qualification/evidence/06e2e597c/package-tooling/source.zip",
+      "sha256": "217ab72e4847ec428ff99a4a48464b46322a33d966139cbdfec4d1d4c5d680dc"
+    },
+    {
+      "bytes": 3682,
+      "path": "target/graphcoder-qualification/evidence/06e2e597c/package-tooling/tests.log",
+      "sha256": "ff4218baf3c0d700ac507f1c53416b704f3d804e225ad7a8a84865602a3be7ed"
+    }
+  ],
+  "source_commit": "06e2e597c354981053189c3e211aa874d7caf101"
+}
