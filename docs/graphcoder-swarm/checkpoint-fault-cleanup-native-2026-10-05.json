@@ -1,0 +1,30 @@
+{
+  "scope": "Focused production fault regression after retained dispatch notifications and abort/await failure cleanup. Original 30-second dispatch and 2/5-second stop bounds retained. Full integrated parallel run, library, exact-input, installed and complete acceptance remain required.",
+  "platform": "Windows native",
+  "suites": {
+    "faults": {
+      "ignored": 0,
+      "passed": 6,
+      "failed": 0
+    }
+  },
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "prior_failure": "checkpoint-default-communication-native-2026-10-05.json",
+  "source": "c708ad98e711d4842fd82029127f18d2f467013e",
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\c708ad98e\\fault-cleanup\\default-mail-composition-fault-cleanup.log",
+      "sha256": "52b65162458ceef5af1b521e7cea5c4cad88d7011cdf796ddab07f41734d828e"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\c708ad98e\\fault-cleanup\\local_swarm_faults-cf47ef77f7bcbf61.exe",
+      "sha256": "3964fe708d93e9cf7cd8d73757c09ade14d399073e03c71c499a86df3ea5f922"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\c708ad98e\\fault-cleanup\\local_swarm_faults.rs",
+      "sha256": "65596925846009e7767cf2673704e39c8a03ef3953f51140115b4c6f575a4474"
+    }
+  ],
+  "command": "cargo test -p acyclic-harness --features filesystem-local --test local_swarm_faults -- --nocapture --test-threads=1",
+  "exit_code": 0
+}
