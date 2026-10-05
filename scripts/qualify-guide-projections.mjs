@@ -197,7 +197,7 @@ function prepare(language, packageArtifact, directory) {
     let packaged = { command: "", exitCode: 0, stdout: "", stderr: "" };
     if (!existsSync(archive)) {
       mkdirSync(bundleSource, { recursive: true });
-      cpSync(join(repo, "rust"), join(bundleSource, "rust"), { recursive: true, filter: (path) => !path.includes(`${String.fromCharCode(92)}target${String.fromCharCode(92)}`) && !path.includes(`${String.fromCharCode(92)}.git${String.fromCharCode(92)}`) });
+      cpSync(join(repo, "rust"), join(bundleSource, "rust"), { recursive: true, filter: (path) => !/(^|[\\/])(target|\.git)([\\/]|$)/i.test(path) });
       cpSync(join(repo, "Cargo.toml"), join(bundleSource, "Cargo.toml"));
       cpSync(join(repo, "Cargo.lock"), join(bundleSource, "Cargo.lock"));
       packaged = command(process.env.SDK_TAR_BIN ?? "tar", ["-cf", archive, "-C", bundleSource, "."], directory);
