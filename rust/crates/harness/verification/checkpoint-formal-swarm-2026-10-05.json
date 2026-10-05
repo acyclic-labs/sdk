@@ -1,6 +1,6 @@
 {
-  "source_commit": "04ba4e5014e5f452124fff64530c6f829d7dbe39",
-  "source_tree": "df0d7d8df6de5ee9d002b3a74cba64cc2fea0974",
+  "source_commit": "2d05ab46b1e5312005ba32321ca312303b06f0ab",
+  "source_tree": "eb7214b8f5a667d49aaeee4682224c5fcb8f4b6e",
   "worktree": "C:/Users/varun/.codex/worktrees/swarm-formal-verified/sdk",
   "platform": "Windows 11; Java 17.0.14; TLC 2.19 from TLA+ v1.7.4",
   "tools_jar": {
@@ -9,7 +9,7 @@
   },
   "runner": {
     "path": "rust/crates/harness/verification/check-models.ps1",
-    "sha256": "9a6f8a6c2781d319ae1e46c19bf7fa9e2c07d89d24fc5af4b7a5efa3e1b4f655",
+    "sha256": "9a774e24c40b22992cda7c1aa728d7bbbb9d0e79c6ab9a0e776f728400860166",
     "workers": 1,
     "fingerprint_index": 0,
     "seed": 1,
@@ -38,7 +38,13 @@
     "ForkBoundaryMutableCapture.cfg": "af39bbda42f28ba9af9a9d4f745651b525cfd36eec68945489e0f8dca4319576",
     "SwarmMessageUnsafeDuplicate.cfg": "fc74a0bead027721e880455c23a12973a92dc5aa1e69090d2f35b35f5097882f",
     "ForkBoundary.cfg": "4c2e7dafbcf318af102f0d2eab186443964ee918a1fab26bbe54fd10ddd143bd",
-    "SwarmPublication.tla": "94bcffcfcbcdbc8382d0e9dbd95dceb05153cc470e98c580de9c2b627486c5e5"
+    "SwarmPublication.tla": "94bcffcfcbcdbc8382d0e9dbd95dceb05153cc470e98c580de9c2b627486c5e5",
+    "SwarmIntegration.tla": "bd7eb6c155fec10d68dbf9616c5f612aac89ddc19460b13c30590bcbb59670cd",
+    "SwarmIntegration.cfg": "b9fe1d59170cd2c525f9183982c3b8dfc8de1bad5d459b97f7e796a59df90d5f",
+    "SwarmIntegrationUnsafeSibling.cfg": "2e60cfb195af58ca99f65ce67aebcd92efb1f1e6986d93908f4af941e4db9692",
+    "SwarmIntegrationUnsafeGrandchild.cfg": "cfe3ee3e25a88491bf6af652e9ad39c9484c6d4ca92afdd23e7fa8e8b057346b",
+    "SwarmIntegrationUnsafeStaleApproval.cfg": "c221b68c73a7dc268862222102f97b97a7b2dcbbb3295db3a15c7984eecba4f6",
+    "SwarmIntegrationUnsafeMismatchedApproval.cfg": "f3788655449c4afc312f88a01fcae7e11a3ab911ef71099dcc5bd6fec460bfbc"
   },
   "model_results": [
     {
@@ -183,6 +189,45 @@
           "invariant": "InheritedCaptureRemainsPinned"
         }
       ]
+    },
+    {
+      "model": "SwarmIntegration",
+      "cases": [
+        {
+          "name": "safe",
+          "result": "pass",
+          "generated": 1545,
+          "distinct": 624
+        },
+        {
+          "name": "unsafe-sibling",
+          "result": "expected counterexample",
+          "generated": 21,
+          "distinct": 18,
+          "invariant": "DirectIntegrationAuthority"
+        },
+        {
+          "name": "unsafe-grandchild",
+          "result": "expected counterexample",
+          "generated": 138,
+          "distinct": 90,
+          "invariant": "RootWritebackScope"
+        },
+        {
+          "name": "unsafe-stale-approval",
+          "result": "expected counterexample",
+          "generated": 13,
+          "distinct": 13,
+          "invariant": "ApprovalBinding"
+        },
+        {
+          "name": "unsafe-mismatched-approval",
+          "result": "expected counterexample",
+          "generated": 13,
+          "distinct": 13,
+          "invariant": "ApprovalBinding"
+        }
+      ]
     }
   ],
   "log_sha256": {
@@ -202,7 +247,12 @@
     "SwarmBudget/7123179288bd430da27fd5062d547fc0-safe.log": "78e510ffdac476c54f730dd80aeb65bcbdcd26b01c405054446be1a2c61309f9",
     "SwarmAuthority/6e50a214659149668902343dcb6fd1b6-unsafe-authority.log": "8e8dd9577a1aa67f1b19756bc913f98d89d95aafe9c299690bfe44e5e6ed3e25",
     "SwarmMessage/14ea45efbac44598870f40f3270d5730-safe.log": "5f804534fd8ed8045e6e5886500f19c210a8f5218bdcc9118b1f8e7d1a1c5b8a",
-    "SwarmPublication/500aa2267df649ada134a298b50ce2af-unsafe-stale.log": "c99fce609b6a132177e93e64275792668ecf749ba9cfe954d6a91a9ed339a56a"
+    "SwarmPublication/500aa2267df649ada134a298b50ce2af-unsafe-stale.log": "c99fce609b6a132177e93e64275792668ecf749ba9cfe954d6a91a9ed339a56a",
+    "SwarmIntegration/9219edbc747448a48e9f99e95bfbdbb1-safe.log": "40ae17b0f7eb56ee6afb1201c4c1151c38438be4eaa1c15660ed0ba3f42aff9f",
+    "SwarmIntegration/9219edbc747448a48e9f99e95bfbdbb1-unsafe-sibling.log": "12328e406ea8059559926ac91fd7fc2b620a4444b06c0cc37543bf56c23bb474",
+    "SwarmIntegration/9219edbc747448a48e9f99e95bfbdbb1-unsafe-grandchild.log": "baa0ef8ee606123cc554b35f3978c7ebcb0f004c3c722c0d67603874ec69ee23",
+    "SwarmIntegration/9219edbc747448a48e9f99e95bfbdbb1-unsafe-stale-approval.log": "2acd8d0a020a3ab0af1267d2ad0fa03cf6f05012b681150e014387287dc4075b",
+    "SwarmIntegration/9219edbc747448a48e9f99e95bfbdbb1-unsafe-mismatched-approval.log": "96e9f7873648b7ba3d444552febafd13121ef8792a32b782ef871f9a5eb0d05e"
   },
   "trace_adapter": {
     "runner": "rust/crates/harness/verification/check-trace-fixtures.ps1",
@@ -229,12 +279,12 @@
   "runtime_conformance": {
     "status": "open",
     "qualification": "rust/crates/harness/verification/qualify-real-trace.ps1",
-    "reason": "No Cargo/native real-trace gate was run in this slot; complete source semantic binding and mutation checks are implemented for the named gate, but actual runtime evidence remains open."
+    "reason": "No Cargo/native real-trace gate was run in this slot; the bounded integration/approval model and transition matrix are qualified, but actual runtime evidence remains open."
   },
-  "scope": "bounded finite safety design evidence only; no Rust refinement, liveness, OS confinement, approval/budget trace proof, or whole-swarm theorem",
+  "scope": "bounded finite safety design evidence only; no Rust refinement, liveness, OS confinement, approval/budget trace proof, causal total order, or whole-swarm theorem",
   "model_evidence": {
-    "evidence_directory": "D:/graphcoder-builds/formal-evidence/formal-6e80cc375-20261005",
-    "run_scope": "model inputs unchanged since the pinned TLC run; current model/config/checker hashes are recorded in model_files and runner",
+    "evidence_directory": "D:/graphcoder-builds/formal-evidence/formal-integration-precommit4-20261005",
+    "run_scope": "SwarmIntegration safe plus four reachable negative controls; source model and runner files are bound to source_commit/source_tree and model_files/runner; TLC output logs are bound by log_sha256.",
     "model_files_unchanged_since_run": true
   }
 }
