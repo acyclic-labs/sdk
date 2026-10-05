@@ -112,9 +112,11 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
         if prefix_ref.file.path() != ".system/inherited-conversation/prefix.json"
             || prefix_ref.file.display_name() != "inherited-conversation.json"
             || prefix_ref.file.descriptor().media_type()
-            != "application/vnd.acyclic.harness.inherited-conversation+json"
+                != "application/vnd.acyclic.harness.inherited-conversation+json"
         {
-            return Err(Error::Conflict("inherited conversation prefix has an invalid media type".into()));
+            return Err(Error::Conflict(
+                "inherited conversation prefix has an invalid media type".into(),
+            ));
         }
         let expected_descriptor = crate::conversation::FileDescriptor::from_bytes(
             &bytes,
@@ -126,12 +128,18 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
             ));
         }
         let prefix: crate::fork::InheritedConversationPrefix = serde_json::from_slice(&bytes)
-            .map_err(|error| Error::Storage(format!("inherited conversation prefix is invalid: {error}")))?;
+            .map_err(|error| {
+                Error::Storage(format!("inherited conversation prefix is invalid: {error}"))
+            })?;
         if prefix.canonical_bytes()? != bytes {
-            return Err(Error::Conflict("inherited conversation prefix is not canonical".into()));
+            return Err(Error::Conflict(
+                "inherited conversation prefix is not canonical".into(),
+            ));
         }
         if prefix.through_sequence != prefix.messages.len() as u64 {
-            return Err(Error::Conflict("inherited conversation prefix sequence is invalid".into()));
+            return Err(Error::Conflict(
+                "inherited conversation prefix sequence is invalid".into(),
+            ));
         }
         if prefix.parent != prefix_ref.parent
             || prefix.parent_revision != prefix_ref.parent_revision
@@ -148,10 +156,15 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
             inherited.validate()?;
             if inherited.sequence != index as u64 + 1
                 || !ids.insert(inherited.id)
-                || historical.messages.iter().find(|message| message.id == inherited.id)
+                || historical
+                    .messages
+                    .iter()
+                    .find(|message| message.id == inherited.id)
                     .is_some_and(|message| message != inherited)
             {
-                return Err(Error::Conflict("historical message differs from frozen inherited prefix".into()));
+                return Err(Error::Conflict(
+                    "historical message differs from frozen inherited prefix".into(),
+                ));
             }
         }
         Some(ids)
@@ -160,53 +173,79 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
     };
     let mut evidence = Vec::new();
     for message_id in &selection.message_ids {
-        let Some(message) = historical.messages.iter().find(|message| &message.id == message_id)
+        let Some(message) = historical
+            .messages
+            .iter()
+            .find(|message| &message.id == message_id)
         else {
-            return Err(Error::Conflict("selected rejection message is absent".into()));
+            return Err(Error::Conflict(
+                "selected rejection message is absent".into(),
+            ));
         };
         let Some(binding_ref) = message.extensions.get(REJECTION_JOURNAL_BINDING) else {
             continue;
         };
         if message.kind != crate::conversation::MessageKind::ToolResult {
-            return Err(Error::Conflict("rejection binding is not attached to a tool result".into()));
+            return Err(Error::Conflict(
+                "rejection binding is not attached to a tool result".into(),
+            ));
         }
         // A recursive child carries the parent's hidden binding refs in its
         // authenticated frozen prefix. Its immutable rejection evidence is
         // supplied by the inherited boundary; only child-owned suffix refs
         // are resolved against this journal.
-        if inherited_ids.as_ref().is_some_and(|ids| ids.contains(&message.id)) {
+        if inherited_ids
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&message.id))
+        {
             continue;
         }
         let binding_bytes = journal.load(binding_ref).await?;
-        let binding: RejectionJournalBinding = serde_json::from_slice(&binding_bytes)
-            .map_err(|error| Error::Storage(format!("rejection journal binding is invalid: {error}")))?;
+        let binding: RejectionJournalBinding =
+            serde_json::from_slice(&binding_bytes).map_err(|error| {
+                Error::Storage(format!("rejection journal binding is invalid: {error}"))
+            })?;
         if binding.message_id != message.id {
-            return Err(Error::Conflict("rejection binding message identity differs from history".into()));
+            return Err(Error::Conflict(
+                "rejection binding message identity differs from history".into(),
+            ));
         }
         if message.tool_call_id.as_deref() != Some(binding.call_id.as_str()) {
-            return Err(Error::Conflict("rejection binding call identity differs from conversation result".into()));
+            return Err(Error::Conflict(
+                "rejection binding call identity differs from conversation result".into(),
+            ));
         }
         let call_id = message.reply_to.ok_or_else(|| {
             Error::Conflict("rejection result has no tool-call reply target".into())
         })?;
-        let call = historical.messages.iter().find(|candidate| candidate.id == call_id)
+        let call = historical
+            .messages
+            .iter()
+            .find(|candidate| candidate.id == call_id)
             .ok_or_else(|| Error::Conflict("rejection result reply target is absent".into()))?;
         if call.kind != crate::conversation::MessageKind::ToolCall
             || call.tool_call_id.as_deref() != Some(binding.call_id.as_str())
             || call.id != binding.reply_to
         {
-            return Err(Error::Conflict("rejection result reply target is not its tool call".into()));
+            return Err(Error::Conflict(
+                "rejection result reply target is not its tool call".into(),
+            ));
         }
         let records = journal.replay(binding.operation_id).await?;
-        let message_invocation: crate::tool::ToolInvocation = serde_json::from_slice(
-            &journal.load(&call.content).await?,
-        )
-        .map_err(|error| Error::Storage(format!("tool-call invocation is invalid: {error}")))?;
+        let message_invocation: crate::tool::ToolInvocation =
+            serde_json::from_slice(&journal.load(&call.content).await?).map_err(|error| {
+                Error::Storage(format!("tool-call invocation is invalid: {error}"))
+            })?;
         if message_invocation.call_id != binding.call_id {
-            return Err(Error::Conflict("tool-call content identity differs from binding".into()));
+            return Err(Error::Conflict(
+                "tool-call content identity differs from binding".into(),
+            ));
         }
-        if crate::contract::canonical_json_digest(&message_invocation)? != binding.invocation_digest {
-            return Err(Error::Conflict("rejection binding invocation digest differs from call".into()));
+        if crate::contract::canonical_json_digest(&message_invocation)? != binding.invocation_digest
+        {
+            return Err(Error::Conflict(
+                "rejection binding invocation digest differs from call".into(),
+            ));
         }
         let mut found = None;
         for record in records {
@@ -227,14 +266,21 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
                 continue;
             }
             if invocation != message_invocation {
-                return Err(Error::Conflict("tool-call content differs from authoritative invocation".into()));
+                return Err(Error::Conflict(
+                    "tool-call content differs from authoritative invocation".into(),
+                ));
             }
             if found.is_some() {
-                return Err(Error::Storage("rejection journal binding is duplicated".into()));
+                return Err(Error::Storage(
+                    "rejection journal binding is duplicated".into(),
+                ));
             }
-            let feedback: crate::tool::ToolRejectionFeedback = load_json(journal, &feedback).await?;
+            let feedback: crate::tool::ToolRejectionFeedback =
+                load_json(journal, &feedback).await?;
             if feedback.call_id != invocation.call_id || feedback.name != invocation.name {
-                return Err(Error::Conflict("rejection journal evidence changed identity".into()));
+                return Err(Error::Conflict(
+                    "rejection journal evidence changed identity".into(),
+                ));
             }
             found = Some(feedback);
         }
@@ -244,7 +290,9 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
         evidence.push(feedback);
     }
     if evidence.len() > limits.context_messages {
-        return Err(Error::Invalid("rejection evidence exceeds context limit".into()));
+        return Err(Error::Invalid(
+            "rejection evidence exceeds context limit".into(),
+        ));
     }
     Ok(evidence)
 }

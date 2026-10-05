@@ -1,9 +1,8 @@
 //! Publish the exact completed model exchange into ref-only conversation storage.
-use super::*;
 use super::super::execution_journal::{
-    selected_rejection_evidence_from_journal, RejectionJournalBinding,
-    REJECTION_JOURNAL_BINDING,
+    REJECTION_JOURNAL_BINDING, RejectionJournalBinding, selected_rejection_evidence_from_journal,
 };
+use super::*;
 use crate::{
     executor::{ExecutionRecord, load_json},
     model::{ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelRequest, ModelRole},
@@ -342,15 +341,7 @@ where
                     }
                     let (result, projection, rejection_binding) = self
                         .history_result(
-                            operation,
-                            step,
-                            id,
-                            *call,
-                            invocation,
-                            path,
-                            value,
-                            tools,
-                            records,
+                            operation, step, id, *call, invocation, path, value, tools, records,
                         )
                         .await?;
                     let mut extensions = BTreeMap::new();

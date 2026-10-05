@@ -914,10 +914,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 )
                 .await?;
             let concurrent_target = host
-                .resolve(&workspace_ref(
-                    provider.clone(),
-                    &project.storage_name()?,
-                )?)
+                .resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?)
                 .await?;
             assert_eq!(
                 host.generation_ref_id(terminal_plan.target_head())?,
@@ -936,16 +933,12 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 )
                 .await?;
             assert_ne!(
-                edited_target,
-                concurrent_target.generation,
+                edited_target, concurrent_target.generation,
                 "the concurrent provider edit must advance the target generation"
             );
-            let resolved_after_edit = host
-                .resolve(&concurrent_target.workspace)
-                .await?;
+            let resolved_after_edit = host.resolve(&concurrent_target.workspace).await?;
             assert_eq!(
-                resolved_after_edit.generation,
-                edited_target,
+                resolved_after_edit.generation, edited_target,
                 "the prepared merge and concurrent edit must use the same physical workspace"
             );
             let terminal_operation = OperationId::from_bytes([93; 16]);
@@ -965,11 +958,10 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 grant_scope.clone(),
                 64 * 1_024,
             )?;
-            let terminal_recovery = ProjectMergeRecovery::new(&terminal_journal, terminal_operation);
-            let terminal_request = RootWritebackRequest::new(
-                terminal_approval,
-                grant_scope.clone(),
-            );
+            let terminal_recovery =
+                ProjectMergeRecovery::new(&terminal_journal, terminal_operation);
+            let terminal_request =
+                RootWritebackRequest::new(terminal_approval, grant_scope.clone());
             let terminal_outcome = reopened_facade
                 .apply_root_writeback_plan_for_child_with_recovery_outcome(
                     &terminal_request,
@@ -985,9 +977,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .await?;
             let terminal_outcome_kind = match &terminal_outcome {
                 acyclic_harness::merge::ProjectJoinOutcome::Applied(_) => "Applied",
-                acyclic_harness::merge::ProjectJoinOutcome::AlreadyApplied(_) => {
-                    "AlreadyApplied"
-                }
+                acyclic_harness::merge::ProjectJoinOutcome::AlreadyApplied(_) => "AlreadyApplied",
                 acyclic_harness::merge::ProjectJoinOutcome::NoChanges(_) => "NoChanges",
                 acyclic_harness::merge::ProjectJoinOutcome::StaleTarget(_) => "StaleTarget",
                 acyclic_harness::merge::ProjectJoinOutcome::Conflicted { .. } => "Conflicted",
@@ -1031,10 +1021,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             // real provider conflict. Its terminal result must survive a
             // restart and remain idempotent without publishing a candidate.
             let conflict_target = host
-                .resolve(&workspace_ref(
-                    provider.clone(),
-                    &project.storage_name()?,
-                )?)
+                .resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?)
                 .await?;
             host.apply(
                 &conflict_target.workspace,
@@ -1076,10 +1063,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             )?;
             let conflict_recovery =
                 ProjectMergeRecovery::new(&conflict_journal, conflict_operation);
-            let conflict_request = RootWritebackRequest::new(
-                conflict_approval,
-                grant_scope.clone(),
-            );
+            let conflict_request =
+                RootWritebackRequest::new(conflict_approval, grant_scope.clone());
             let conflict_outcome = reopened_facade
                 .apply_root_writeback_plan_for_child_with_recovery_outcome(
                     &conflict_request,
@@ -1109,10 +1094,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 b"target conflict edit",
                 "conflict publication must leave the concurrent target edit intact"
             );
-            let conflict_entry = conflict_recovery
-                .reopen()
-                .await?
-                .ok_or_else(|| Error::Conflict("conflict terminal result was not retained".into()))?;
+            let conflict_entry = conflict_recovery.reopen().await?.ok_or_else(|| {
+                Error::Conflict("conflict terminal result was not retained".into())
+            })?;
             assert!(matches!(
                 conflict_entry.terminal,
                 Some(acyclic_harness::filesystem::ProjectMergeTerminal::Conflicted { .. })
@@ -1207,12 +1191,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     )?;
                     let conflict_recovery =
                         ProjectMergeRecovery::new(&conflict_journal, conflict_operation);
-                    let conflict_entry = conflict_recovery
-                        .reopen()
-                        .await?
-                        .ok_or_else(|| {
-                            Error::Conflict("cold conflict terminal result was lost".into())
-                        })?;
+                    let conflict_entry = conflict_recovery.reopen().await?.ok_or_else(|| {
+                        Error::Conflict("cold conflict terminal result was lost".into())
+                    })?;
                     assert!(matches!(
                         conflict_entry.terminal,
                         Some(acyclic_harness::filesystem::ProjectMergeTerminal::Conflicted { .. })

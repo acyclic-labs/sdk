@@ -45,6 +45,8 @@ pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
 pub mod model_input;
+pub mod native_host;
+pub mod native_tool;
 #[cfg(feature = "objects")]
 pub mod objects;
 pub mod projection;

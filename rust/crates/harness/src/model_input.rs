@@ -1,11 +1,11 @@
 //! Versioned model-input admission and immutable fork prefixes.
 use crate::{
+    Error, Result,
     conversation::{FileRef, Limits},
     model::{
         ModelContent, ModelContentPart, ModelMessage, ModelOptionPolicy, ModelRequest, ModelRole,
     },
     registry::ComponentIdentity,
-    Error, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -528,7 +528,11 @@ fn validate_rejection_evidence(
         };
         for part in parts {
             match part {
-                ModelContentPart::ToolCall { call_id, name, arguments } => {
+                ModelContentPart::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
                     crate::tool::ToolInvocation::validate_identity(call_id, name)?;
                     if message.role != ModelRole::Assistant {
                         return Err(Error::Invalid("tool call has invalid model role".into()));
@@ -543,7 +547,10 @@ fn validate_rejection_evidence(
                     )
                     .is_err();
                     if pending
-                        .insert(call_id.clone(), (name.clone(), arguments.clone(), malformed))
+                        .insert(
+                            call_id.clone(),
+                            (name.clone(), arguments.clone(), malformed),
+                        )
                         .is_some()
                     {
                         return Err(Error::Conflict(
@@ -551,7 +558,11 @@ fn validate_rejection_evidence(
                         ));
                     }
                 }
-                ModelContentPart::ToolResult { call_id, name, value } => {
+                ModelContentPart::ToolResult {
+                    call_id,
+                    name,
+                    value,
+                } => {
                     if message.role != ModelRole::Tool {
                         return Err(Error::Invalid("tool result has invalid model role".into()));
                     }
@@ -612,7 +623,9 @@ fn validate_rejection_evidence(
         }
     }
     if !pending.is_empty() {
-        return Err(Error::Invalid("rejection evidence has an unfinished tool call".into()));
+        return Err(Error::Invalid(
+            "rejection evidence has an unfinished tool call".into(),
+        ));
     }
     if observed.len() != rejections.len() || observed != rejections {
         return Err(Error::Conflict(
@@ -855,9 +868,15 @@ mod tests {
     }
     #[test]
     fn tool_messages_require_nonempty_paired_results() -> Result<()> {
-        for content in [ModelContent::Text("forged".into()), ModelContent::Parts(Vec::new())] {
+        for content in [
+            ModelContent::Text("forged".into()),
+            ModelContent::Parts(Vec::new()),
+        ] {
             let mut input = request()?;
-            input.messages.push(ModelMessage { role: ModelRole::Tool, content });
+            input.messages.push(ModelMessage {
+                role: ModelRole::Tool,
+                content,
+            });
             assert!(matches!(
                 PreparedModelInput::prepare(input, Limits::default()),
                 Err(Error::Invalid(_))
@@ -872,7 +891,10 @@ mod tests {
         let boundary = CompletedModelBoundary::capture(request()?, limits)?;
         let suffix = vec![text("notification; explicit task; fresh scratch")];
         let declaration = InheritedModelContext::new(boundary.clone(), suffix.clone(), limits)?;
-        let own = vec![text("authoritative child input \u{03bb}\n"), text("child result")];
+        let own = vec![
+            text("authoritative child input \u{03bb}\n"),
+            text("child result"),
+        ];
         let mut completed = boundary.request.clone();
         completed.messages.extend(suffix);
         completed.messages.extend(own.iter().cloned());
@@ -1052,14 +1074,18 @@ mod tests {
         );
         let mut changed = request()?;
         changed.messages.swap(0, 1);
-        assert!(prefix
-            .verify(&PreparedModelInput::prepare(changed, Limits::default())?)
-            .is_err());
+        assert!(
+            prefix
+                .verify(&PreparedModelInput::prepare(changed, Limits::default())?)
+                .is_err()
+        );
         let mut changed = request()?;
         changed.model.revision = "2".into();
-        assert!(prefix
-            .verify(&PreparedModelInput::prepare(changed, Limits::default())?)
-            .is_err());
+        assert!(
+            prefix
+                .verify(&PreparedModelInput::prepare(changed, Limits::default())?)
+                .is_err()
+        );
         let mut corrupt = prefix;
         corrupt.message_bytes[0].push(b' ');
         assert!(corrupt.verify(&parent).is_err());
@@ -1094,14 +1120,17 @@ mod tests {
             Limits::default(),
             Some(&policy),
         )?;
-        let second = PreparedModelInput::prepare_with_policy(
-            request,
-            Limits::default(),
-            Some(&changed),
-        )?;
+        let second =
+            PreparedModelInput::prepare_with_policy(request, Limits::default(), Some(&changed))?;
         assert_eq!(first.bytes(), second.bytes());
-        assert_ne!(first.manifest().binding_digest, second.manifest().binding_digest);
-        assert_eq!(first.manifest().model_option_policy, Some(policy.identity.clone()));
+        assert_ne!(
+            first.manifest().binding_digest,
+            second.manifest().binding_digest
+        );
+        assert_eq!(
+            first.manifest().model_option_policy,
+            Some(policy.identity.clone())
+        );
         assert_ne!(
             first.manifest().model_option_schema_digest,
             second.manifest().model_option_schema_digest
@@ -1131,11 +1160,8 @@ mod tests {
             Some(&policy),
         )?;
         policy.schema = json!({"type": "object", "properties": {"mode": {"type": "string"}}});
-        let second = PreparedModelInput::prepare_with_policy(
-            request,
-            Limits::default(),
-            Some(&policy),
-        )?;
+        let second =
+            PreparedModelInput::prepare_with_policy(request, Limits::default(), Some(&policy))?;
         assert_ne!(
             first.manifest().model_option_schema_digest,
             second.manifest().model_option_schema_digest
@@ -1226,16 +1252,10 @@ mod tests {
             prepared.bytes(),
             crate::contract::canonical_json_bytes(prepared.request())?
         );
-        let manifest_json = String::from_utf8(crate::contract::canonical_json_bytes(
-            prepared.manifest(),
-        )?)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        validate_manifest(
-            malformed.clone(),
-            Limits::default(),
-            None,
-            &manifest_json,
-        )?;
+        let manifest_json =
+            String::from_utf8(crate::contract::canonical_json_bytes(prepared.manifest())?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        validate_manifest(malformed.clone(), Limits::default(), None, &manifest_json)?;
         let restored: ModelInputManifest = serde_json::from_slice(
             &serde_json::to_vec(prepared.manifest())
                 .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -1330,15 +1350,17 @@ mod tests {
     fn aggregate_limit_does_not_silently_truncate() -> Result<()> {
         let mut input = request()?;
         input.messages = vec![text(&"x".repeat(1024)); 3];
-        assert!(PreparedModelInput::prepare(
-            input,
-            Limits {
-                file_bytes: 2048,
-                render_bytes: 2048,
-                ..Limits::default()
-            }
-        )
-        .is_err());
+        assert!(
+            PreparedModelInput::prepare(
+                input,
+                Limits {
+                    file_bytes: 2048,
+                    render_bytes: 2048,
+                    ..Limits::default()
+                }
+            )
+            .is_err()
+        );
         Ok(())
     }
     #[test]
@@ -1368,17 +1390,16 @@ mod tests {
     fn manifest_validator_owns_schema_and_canonical_bytes() -> Result<()> {
         let request = request()?;
         let prepared = PreparedModelInput::prepare(request.clone(), Limits::default())?;
-        let manifest_json = String::from_utf8(crate::contract::canonical_json_bytes(
-            prepared.manifest(),
-        )?)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        let manifest_json =
+            String::from_utf8(crate::contract::canonical_json_bytes(prepared.manifest())?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
         validate_manifest(request.clone(), Limits::default(), None, &manifest_json)?;
 
-        let mut forged: serde_json::Value =
-            serde_json::from_str(&manifest_json).map_err(|error| Error::Invalid(error.to_string()))?;
-        forged["unexpected"] = serde_json::Value::Bool(true);
-        let forged_json = serde_json::to_string(&forged)
+        let mut forged: serde_json::Value = serde_json::from_str(&manifest_json)
             .map_err(|error| Error::Invalid(error.to_string()))?;
+        forged["unexpected"] = serde_json::Value::Bool(true);
+        let forged_json =
+            serde_json::to_string(&forged).map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(validate_manifest(request.clone(), Limits::default(), None, &forged_json).is_err());
 
         let noncanonical = format!(" {manifest_json}");
@@ -1389,10 +1410,10 @@ mod tests {
     #[tokio::test]
     async fn prefix_provider_rejects_before_downstream_dispatch() -> Result<()> {
         use crate::model::{ModelAttempt, ModelEvent, ModelProvider};
-        use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
+        use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
         use std::sync::{
-            atomic::{AtomicUsize, Ordering},
             Arc,
+            atomic::{AtomicUsize, Ordering},
         };
         struct Capture(AtomicUsize);
         impl ModelProvider for Capture {
@@ -1414,11 +1435,16 @@ mod tests {
         let mut child = input.request().clone();
         child.messages.push(text("explicit child task"));
         assert!(provider.admit(&child).is_ok());
-        assert!(provider
-            .generate(PreparedModelInput::prepare(child.clone(), Limits::default())?)
-            .next()
-            .await
-            .is_none());
+        assert!(
+            provider
+                .generate(PreparedModelInput::prepare(
+                    child.clone(),
+                    Limits::default()
+                )?)
+                .next()
+                .await
+                .is_none()
+        );
         assert_eq!(capture.0.load(Ordering::SeqCst), 1);
         let attempt = crate::model::ModelAttempt {
             operation_id: crate::OperationId::new(),
@@ -1427,49 +1453,57 @@ mod tests {
             observed: vec![],
         };
         assert!(provider.reconcile(attempt.clone()).await.is_err());
-        assert!(provider
-            .reconcile_admitted(
-                PreparedModelInput::prepare(child.clone(), Limits::default())?,
-                attempt.clone(),
-            )
-            .await?
-            .is_none());
+        assert!(
+            provider
+                .reconcile_admitted(
+                    PreparedModelInput::prepare(child.clone(), Limits::default())?,
+                    attempt.clone(),
+                )
+                .await?
+                .is_none()
+        );
         let mut corrupt_attempt = attempt.clone();
         corrupt_attempt.request_digest = [0; 32];
-        assert!(provider
-            .reconcile_admitted(
-                PreparedModelInput::prepare(child.clone(), Limits::default())?,
-                corrupt_attempt,
-            )
-            .await
-            .is_err());
+        assert!(
+            provider
+                .reconcile_admitted(
+                    PreparedModelInput::prepare(child.clone(), Limits::default())?,
+                    corrupt_attempt,
+                )
+                .await
+                .is_err()
+        );
         child.messages[0] = text("changed inherited content");
-        assert!(provider
-            .reconcile_admitted(
-                PreparedModelInput::prepare(child.clone(), Limits::default())?,
-                attempt,
-            )
-            .await
-            .is_err());
+        assert!(
+            provider
+                .reconcile_admitted(
+                    PreparedModelInput::prepare(child.clone(), Limits::default())?,
+                    attempt,
+                )
+                .await
+                .is_err()
+        );
         assert!(provider.admit(&child).is_err());
-        assert!(provider
-            .generate(PreparedModelInput::prepare(child, Limits::default())?)
-            .next()
-            .await
-            .unwrap()
-            .is_err());
+        assert!(
+            provider
+                .generate(PreparedModelInput::prepare(child, Limits::default())?)
+                .next()
+                .await
+                .unwrap()
+                .is_err()
+        );
         assert_eq!(capture.0.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
     #[tokio::test]
-    async fn prefix_provider_rejects_same_options_with_a_different_policy_before_dispatch(
-    ) -> Result<()> {
+    async fn prefix_provider_rejects_same_options_with_a_different_policy_before_dispatch()
+    -> Result<()> {
         use crate::model::{ModelAttempt, ModelEvent, ModelProvider};
-        use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
+        use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
         use std::sync::{
-            atomic::{AtomicUsize, Ordering},
             Arc,
+            atomic::{AtomicUsize, Ordering},
         };
 
         struct PolicyProvider {
@@ -1541,8 +1575,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prefix_reconciliation_receives_original_prepared_bytes_manifest_and_policy(
-    ) -> Result<()> {
+    async fn prefix_reconciliation_receives_original_prepared_bytes_manifest_and_policy()
+    -> Result<()> {
         use crate::model::{ModelAttempt, ModelEvent, ModelProvider};
         use futures::{future::BoxFuture, stream::BoxStream};
         use std::sync::{Arc, Mutex};
@@ -1602,8 +1636,8 @@ mod tests {
         let expected_bytes = prepared.bytes().to_vec();
         let expected_manifest = prepared.manifest().clone();
         let prefix = FrozenModelPrefix::capture(&prepared, prepared.request().messages.len())?;
-        let persisted_prefix = serde_json::to_vec(&prefix)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let persisted_prefix =
+            serde_json::to_vec(&prefix).map_err(|error| Error::Invalid(error.to_string()))?;
         let restored_prefix: FrozenModelPrefix = serde_json::from_slice(&persisted_prefix)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let restored_request: ModelRequest = serde_json::from_slice(&expected_bytes)
@@ -1617,11 +1651,8 @@ mod tests {
             policy: policy.clone(),
             seen: Mutex::new(Vec::new()),
         });
-        let provider = PrefixBoundModelProvider::new(
-            restored_prefix,
-            Limits::default(),
-            downstream.clone(),
-        )?;
+        let provider =
+            PrefixBoundModelProvider::new(restored_prefix, Limits::default(), downstream.clone())?;
         provider
             .reconcile_admitted(
                 restored_prepared.clone(),
@@ -1658,7 +1689,10 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct Script(Mutex<Vec<ModelRequest>>);
         impl ModelProvider for Script {
-            fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+            fn generate<'a>(
+                &'a self,
+                prepared: PreparedModelInput,
+            ) -> BoxStream<'a, Result<ModelEvent>> {
                 let request = prepared.request().clone();
                 let mut requests = self.0.lock().unwrap();
                 requests.push(request);
@@ -1772,7 +1806,10 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct Capture(Mutex<Vec<(ModelRequest, Vec<u8>, [u8; 32])>>);
         impl ModelProvider for Capture {
-            fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+            fn generate<'a>(
+                &'a self,
+                prepared: PreparedModelInput,
+            ) -> BoxStream<'a, Result<ModelEvent>> {
                 self.0
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1847,22 +1884,31 @@ mod tests {
             manifest.request_digest
         );
         assert_eq!(*blake3::hash(wire_bytes).as_bytes(), *wire_digest);
-        assert_eq!(wire_bytes, &crate::contract::canonical_json_bytes(received)?);
+        assert_eq!(
+            wire_bytes,
+            &crate::contract::canonical_json_bytes(received)?
+        );
         let input_manifest = manifest
             .messages
             .iter()
             .find(|message| !message.files.is_empty())
             .ok_or_else(|| Error::Storage("attachment is missing from input manifest".into()))?;
         assert_eq!(input_manifest.files, vec![content.clone()]);
-        assert!(wire_bytes
-            .windows(content.path().len())
-            .any(|window| window == content.path().as_bytes()));
-        assert!(!wire_bytes
-            .windows(b"Whitespace:".len())
-            .any(|window| window == b"Whitespace:"));
-        assert!(!wire_bytes
-            .windows(b"metadata".len())
-            .any(|window| window == b"metadata"));
+        assert!(
+            wire_bytes
+                .windows(content.path().len())
+                .any(|window| window == content.path().as_bytes())
+        );
+        assert!(
+            !wire_bytes
+                .windows(b"Whitespace:".len())
+                .any(|window| window == b"Whitespace:")
+        );
+        assert!(
+            !wire_bytes
+                .windows(b"metadata".len())
+                .any(|window| window == b"metadata")
+        );
         let manifest_index = records
             .iter()
             .position(|record| matches!(&record.event, ExecutionEvent::ModelInputPrepared { .. }));

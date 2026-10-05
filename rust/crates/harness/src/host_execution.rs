@@ -22,10 +22,9 @@ use std::{
     path::Path,
     process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
-        OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -1041,8 +1040,7 @@ pub struct NativeExecutionRunner;
 static RETAINED_NATIVE_RECOVERIES: OnceLock<Mutex<BTreeMap<u64, ProcessTree>>> = OnceLock::new();
 
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
-static NEXT_NATIVE_RECOVERY: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
+static NEXT_NATIVE_RECOVERY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
 fn retained_native_recoveries() -> std::sync::MutexGuard<'static, BTreeMap<u64, ProcessTree>> {
@@ -1158,7 +1156,9 @@ impl ExecutionRunner for NativeExecutionRunner {
                     Ok(true) => {}
                     Ok(false) => {
                         return Ok(RunnerOutcome::Unknown {
-                            reason: "process root exited before native ownership boundary completed".into(),
+                            reason:
+                                "process root exited before native ownership boundary completed"
+                                    .into(),
                         });
                     }
                     Err(error) => {
@@ -2862,8 +2862,9 @@ mod tests {
     #[cfg(all(windows, not(feature = "native-process-tree")))]
     #[test]
     fn native_runner_reports_unknown_for_hidden_descendant_held_pipe() -> Result<()> {
-        let temporary = tempfile::tempdir()
-            .map_err(|error| Error::Storage(format!("failed creating held-pipe fixture: {error}")))?;
+        let temporary = tempfile::tempdir().map_err(|error| {
+            Error::Storage(format!("failed creating held-pipe fixture: {error}"))
+        })?;
         let marker = temporary.path().join("parent-started.marker");
         let done = temporary.path().join("descendant-finished.marker");
         let parent_script = temporary.path().join("parent.cmd");
@@ -2914,7 +2915,10 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(marker.exists(), "parent marker was not written");
-        assert!(done.exists(), "descendant did not reach its terminal marker");
+        assert!(
+            done.exists(),
+            "descendant did not reach its terminal marker"
+        );
         let markers = std::fs::read_to_string(&marker).map_err(|error| {
             Error::Storage(format!("held-pipe marker was not written: {error}"))
         })?;

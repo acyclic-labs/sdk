@@ -794,7 +794,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_batch_communication_requires_and_uses_authenticated_task_identity() -> Result<()> {
+    async fn model_batch_communication_requires_and_uses_authenticated_task_identity() -> Result<()>
+    {
         let host = Arc::new(RecordingHost(Mutex::new(None)));
         let executor = CommunicationExecutor {
             host: host.clone(),
@@ -829,7 +830,9 @@ mod tests {
             task_id: Some(task(7)),
         };
         assert!(matches!(
-            executor.execute_in_model_batch(authenticated, invocation.clone()).await,
+            executor
+                .execute_in_model_batch(authenticated, invocation.clone())
+                .await,
             Err(Error::Invalid(_))
         ));
         assert_eq!(*host.0.lock().expect("recording host lock"), None);
@@ -840,12 +843,15 @@ mod tests {
             VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
         )?;
         let payload = FileRef::new(
-            volume, "message.json", "v1",
-            FileDescriptor::from_bytes(b"{}", "application/json")?, "message.json",
+            volume,
+            "message.json",
+            "v1",
+            FileDescriptor::from_bytes(b"{}", "application/json")?,
+            "message.json",
         )?;
         let mut invocation = invocation;
-        invocation.arguments["payload"] = serde_json::to_value(payload)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        invocation.arguments["payload"] =
+            serde_json::to_value(payload).map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(matches!(
             executor
                 .execute_in_model_batch(authenticated, invocation)

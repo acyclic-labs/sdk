@@ -772,9 +772,9 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
+    use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::{Duration, Instant};
-    use std::sync::atomic::Ordering;
 
     const MODE: &str = "ACYCLIC_PROCESS_TREE_TEST_MODE";
     const ROOT: &str = "ACYCLIC_PROCESS_TREE_TEST_ROOT";

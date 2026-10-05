@@ -9,6 +9,7 @@
 //! by a test-only context builder.
 
 use acyclic_harness::{
+    Error, OperationId, Result,
     conversation::{FileDescriptor, FileRef, Limits},
     executor::ExecutionEvent,
     filesystem::PersistentLocalHarness,
@@ -19,16 +20,15 @@ use acyclic_harness::{
     model_input::{ModelInputManifest, PreparedModelInput},
     registry::ComponentIdentity,
     tool::ToolDefinition,
-    Error, OperationId, Result,
 };
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 use tempfile::tempdir;
 
@@ -107,10 +107,12 @@ impl ModelProvider for CapturingProvider {
         // a production serialization or admission bug.
         if let Some(credential) = &self.provider_private_credential {
             assert!(!credential.is_empty());
-            assert!(!prepared
-                .bytes()
-                .windows(credential.len())
-                .any(|window| window == credential.as_bytes()));
+            assert!(
+                !prepared
+                    .bytes()
+                    .windows(credential.len())
+                    .any(|window| window == credential.as_bytes())
+            );
         }
         self.requests
             .lock()
@@ -481,9 +483,11 @@ fn assert_request_allowlist(request: &ModelRequest) -> Result<()> {
         "sibling-history",
         "ui_state",
     ] {
-        assert!(!serialized
-            .windows(forbidden.len())
-            .any(|w| w == forbidden.as_bytes()));
+        assert!(
+            !serialized
+                .windows(forbidden.len())
+                .any(|w| w == forbidden.as_bytes())
+        );
     }
     Ok(())
 }
@@ -518,8 +522,8 @@ fn assert_manifest_matches_request(
 }
 
 #[tokio::test]
-async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_replays_without_dispatch(
-) -> Result<()> {
+async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_replays_without_dispatch()
+-> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let provider_secret = "provider-private-credential::synthetic";
     let (provider, requests) = CapturingProvider::complete_with_private_credential(provider_secret);
@@ -571,13 +575,17 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
     let request_json =
         serde_json::to_vec(&first_request).map_err(|error| Error::Invalid(error.to_string()))?;
     for excluded_path in ["sibling/transcript.json", "ui/state.json"] {
-        assert!(!request_json
-            .windows(excluded_path.len())
-            .any(|window| { window == excluded_path.as_bytes() }));
+        assert!(
+            !request_json
+                .windows(excluded_path.len())
+                .any(|window| { window == excluded_path.as_bytes() })
+        );
     }
-    assert!(!first_bytes[0]
-        .windows(provider_secret.len())
-        .any(|window| window == provider_secret.as_bytes()));
+    assert!(
+        !first_bytes[0]
+            .windows(provider_secret.len())
+            .any(|window| window == provider_secret.as_bytes())
+    );
     let prompt_file = first_request
         .messages
         .iter()
@@ -599,12 +607,16 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
     let first_json =
         serde_json::to_value(&first_request).map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(first_json.get("transport_metadata").is_none());
-    assert!(!first_bytes[0]
-        .windows(b"ui_state".len())
-        .any(|w| w == b"ui_state"));
-    assert!(!first_bytes[0]
-        .windows(b"sibling-history".len())
-        .any(|w| w == b"sibling-history"));
+    assert!(
+        !first_bytes[0]
+            .windows(b"ui_state".len())
+            .any(|w| w == b"ui_state")
+    );
+    assert!(
+        !first_bytes[0]
+            .windows(b"sibling-history".len())
+            .any(|w| w == b"sibling-history")
+    );
     let records = session.storage().journal().replay(operation).await?;
     let (manifest_ref, request_ref) = records
         .iter()
@@ -633,9 +645,11 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
     for record in records {
         let event_bytes =
             serde_json::to_vec(&record.event).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert!(!event_bytes
-            .windows(provider_secret.len())
-            .any(|window| window == provider_secret.as_bytes()));
+        assert!(
+            !event_bytes
+                .windows(provider_secret.len())
+                .any(|window| window == provider_secret.as_bytes())
+        );
         let references = match record.event {
             ExecutionEvent::ModelInputPrepared {
                 manifest, request, ..
@@ -667,9 +681,11 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
         };
         for reference in references {
             let bytes = session.storage().journal().load(&reference).await?;
-            assert!(!bytes
-                .windows(provider_secret.len())
-                .any(|window| window == provider_secret.as_bytes()));
+            assert!(
+                !bytes
+                    .windows(provider_secret.len())
+                    .any(|window| window == provider_secret.as_bytes())
+            );
         }
     }
     drop(session);
@@ -729,8 +745,8 @@ async fn persistent_admission_rejects_malformed_tool_schema_before_filesystem_ef
 }
 
 #[tokio::test]
-async fn persistent_tool_exchange_preserves_call_identity_result_pairing_and_journal_effect(
-) -> Result<()> {
+async fn persistent_tool_exchange_preserves_call_identity_result_pairing_and_journal_effect()
+-> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (provider, requests) = CapturingProvider::valid_tool_sequence();
     let session =
@@ -828,12 +844,16 @@ async fn persistent_output_overflow_is_typed_and_remains_durable_uncertainty() -
     );
     assert_eq!(captured(&requests).len(), 1);
     let records = session.storage().journal().replay(operation).await?;
-    assert!(records
-        .iter()
-        .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { step: 0, .. })));
-    assert!(!records
-        .iter()
-        .any(|record| matches!(record.event, ExecutionEvent::Model { step: 0, .. })));
+    assert!(
+        records
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { step: 0, .. }))
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::Model { step: 0, .. }))
+    );
     drop(session);
     let reopened = PersistentLocalHarness::open(root.path(), model, provider, limits).await?;
     assert!(matches!(
@@ -849,8 +869,8 @@ async fn persistent_output_overflow_is_typed_and_remains_durable_uncertainty() -
 }
 
 #[tokio::test]
-async fn persistent_admission_rejects_oversized_context_and_undeclared_options_before_generate(
-) -> Result<()> {
+async fn persistent_admission_rejects_oversized_context_and_undeclared_options_before_generate()
+-> Result<()> {
     let mut limits = Limits::default();
     limits.file_bytes = 1024;
     limits.render_bytes = 8;
@@ -920,8 +940,8 @@ async fn persistent_admission_rejects_oversized_context_and_undeclared_options_b
 }
 
 #[tokio::test]
-async fn persistent_generation_refs_remain_pinned_across_restart_replacement_and_corruption(
-) -> Result<()> {
+async fn persistent_generation_refs_remain_pinned_across_restart_replacement_and_corruption()
+-> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (provider, requests) = CapturingProvider::complete();
     let model = model(json!({}))?;
@@ -1015,17 +1035,19 @@ async fn persistent_generation_refs_remain_pinned_across_restart_replacement_and
         "missing.txt",
     )?;
     let before_missing = captured(&requests).len();
-    assert!(reopened
-        .storage()
-        .run_conversation(
-            reopened.bundle(),
-            operation(0x47),
-            missing.clone(),
-            vec![],
-            1
-        )
-        .await
-        .is_err());
+    assert!(
+        reopened
+            .storage()
+            .run_conversation(
+                reopened.bundle(),
+                operation(0x47),
+                missing.clone(),
+                vec![],
+                1
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(captured(&requests).len(), before_missing);
     let corrupt = FileRef::new(
         original.volume().clone(),
@@ -1035,17 +1057,19 @@ async fn persistent_generation_refs_remain_pinned_across_restart_replacement_and
         original.display_name(),
     )?;
     let before_corrupt = captured(&requests).len();
-    assert!(reopened
-        .storage()
-        .run_conversation(
-            reopened.bundle(),
-            operation(0x48),
-            corrupt.clone(),
-            vec![],
-            1
-        )
-        .await
-        .is_err());
+    assert!(
+        reopened
+            .storage()
+            .run_conversation(
+                reopened.bundle(),
+                operation(0x48),
+                corrupt.clone(),
+                vec![],
+                1
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(captured(&requests).len(), before_corrupt);
     Ok(())
 }
