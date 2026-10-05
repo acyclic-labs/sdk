@@ -564,8 +564,9 @@ fn render_nested_models(out: &mut String) {
 
 fn render_object_stream(out: &mut String) {
     out.push_str("public sealed record ObjectsGetObjectHeader(OpaqueText? Etag)\n{\n    internal static ObjectsGetObjectHeader FromWire(Acyclic.Objects.V2.GetObjectHeader message) => new(message.Object is null || string.IsNullOrEmpty(message.Object.Etag) ? null : new OpaqueText(message.Object.Etag));\n}\n\n");
-    out.push_str("public abstract record ObjectsGetObjectFrame\n{\n    public sealed record Header(ObjectsGetObjectHeader Value) : ObjectsGetObjectFrame;\n    public sealed record Body(ByteString Value) : ObjectsGetObjectFrame;\n    public sealed record Error(Acyclic.Objects.V2.ErrorDetail Value) : ObjectsGetObjectFrame;\n    // Retain the original protobuf message when a newer sender adds an unknown oneof arm.\n    public sealed record Unknown(Acyclic.Objects.V2.GetObjectResponse Wire) : ObjectsGetObjectFrame;\n    public sealed record Empty : ObjectsGetObjectFrame;\n}\n\n");
-    out.push_str("public sealed record ObjectsGetObjectResponse(ObjectsGetObjectFrame Frame)\n{\n    internal static ObjectsGetObjectResponse FromWire(Acyclic.Objects.V2.GetObjectResponse message) => message.FrameCase switch\n    {\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Header => new(new ObjectsGetObjectFrame.Header(ObjectsGetObjectHeader.FromWire(message.Header))),\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Body => new(new ObjectsGetObjectFrame.Body(message.Body)),\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Error => new(new ObjectsGetObjectFrame.Error(message.Error)),\n        _ => new(new ObjectsGetObjectFrame.Unknown(message)),\n    };\n}\n\n");
+    out.push_str("public sealed record ObjectsErrorDetail(int Code, string RequestId)\n{\n    internal static ObjectsErrorDetail FromWire(Acyclic.Objects.V2.ErrorDetail message) => new((int)message.Code, message.RequestId);\n}\n\n");
+    out.push_str("public abstract record ObjectsGetObjectFrame\n{\n    public sealed record Header(ObjectsGetObjectHeader Value) : ObjectsGetObjectFrame;\n    public sealed record Body(ByteString Value) : ObjectsGetObjectFrame;\n    public sealed record Error(ObjectsErrorDetail Value) : ObjectsGetObjectFrame;\n    public sealed record Unknown(int RawCase, ByteString WireBytes) : ObjectsGetObjectFrame;\n    public sealed record Empty : ObjectsGetObjectFrame;\n}\n\n");
+    out.push_str("public sealed record ObjectsGetObjectResponse(ObjectsGetObjectFrame Frame)\n{\n    internal static ObjectsGetObjectResponse FromWire(Acyclic.Objects.V2.GetObjectResponse message) => message.FrameCase switch\n    {\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Header => new(new ObjectsGetObjectFrame.Header(ObjectsGetObjectHeader.FromWire(message.Header))),\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Body => new(new ObjectsGetObjectFrame.Body(message.Body)),\n        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Error => new(new ObjectsGetObjectFrame.Error(ObjectsErrorDetail.FromWire(message.Error))),\n        _ => new(new ObjectsGetObjectFrame.Unknown((int)message.FrameCase, ByteString.CopyFrom(message.ToByteArray()))),\n    };\n}\n\n");
     out.push_str("public sealed class ObjectsGetObjectStream\n{\n    private readonly AsyncServerStreamingCall<Acyclic.Objects.V2.GetObjectResponse> _inner;\n    internal ObjectsGetObjectStream(AsyncServerStreamingCall<Acyclic.Objects.V2.GetObjectResponse> inner) => _inner = inner;\n    public async IAsyncEnumerable<ObjectsGetObjectResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)\n    {\n        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return ObjectsGetObjectResponse.FromWire(_inner.ResponseStream.Current);\n    }\n}\n\n");
 }
 
@@ -573,9 +574,8 @@ fn render_object_stream(out: &mut String) {
 /// response returned by unary multipart completion. The original protobuf
 /// message remains available for forward-compatible ordinary fields.
 fn render_object_info_response(out: &mut String) {
-    out.push_str(
-        "public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, Acyclic.Objects.V2.ObjectMetadata Metadata, Google.Protobuf.WellKnownTypes.Timestamp LastModified, Acyclic.Objects.V2.ObjectInfo Wire)\n{\n    internal static ObjectsObjectInfo FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(\n        string.IsNullOrEmpty(message.Etag) ? null : new OpaqueText(message.Etag),\n        message.Size,\n        message.Metadata,\n        message.LastModified,\n        message);\n}\n\n",
-    );
+    out.push_str("public sealed record ObjectsObjectMetadata(string ContentType, IReadOnlyDictionary<string, string> User, string ContentEncoding, string CacheControl, string ContentDisposition, string ContentLanguage, long? ExpiresUnixSeconds)\n{\n    internal static ObjectsObjectMetadata FromWire(Acyclic.Objects.V2.ObjectMetadata message) => new(message.ContentType, new Dictionary<string, string>(message.User), message.ContentEncoding, message.CacheControl, message.ContentDisposition, message.ContentLanguage, message.HasExpiresUnixSeconds ? message.ExpiresUnixSeconds : null);\n}\n\n");
+    out.push_str("public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, ObjectsObjectMetadata Metadata, DateTimeOffset? LastModified)\n{\n    internal static ObjectsObjectInfo FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(\n        string.IsNullOrEmpty(message.Etag) ? null : new OpaqueText(message.Etag),\n        message.Size,\n        message.Metadata is null ? new ObjectsObjectMetadata(string.Empty, new Dictionary<string, string>(), string.Empty, string.Empty, string.Empty, string.Empty, null) : ObjectsObjectMetadata.FromWire(message.Metadata),\n        message.LastModified?.ToDateTimeOffset());\n}\n\n");
     // PutObject is client-streaming, so expose the semantic ObjectInfo response
     // through an adapter while preserving the generated call lifecycle and raw
     // request stream. The ObjectInfo.etag binding remains Rust-owned above.
@@ -968,7 +968,7 @@ fn render_response_models(out: &mut String) {
     for (family, root) in roots {
         let Some(model) = response_model_name(&family, &root) else { continue };
         let wire = qualified_fq_message(&root, &family);
-        out.push_str(&format!("public sealed record {model}({wire} Wire)\n{{\n"));
+        out.push_str(&format!("public sealed record {model}\n{{\n    private {wire} Wire {{ get; }}\n    private {model}({wire} wire) => Wire = wire;\n"));
         // A response descriptor may be contributed by several Rust-owned
         // evidence paths with distinct source numbers but the same canonical
         // field name. C# cannot emit duplicate properties, so deduplicate on
@@ -1889,10 +1889,10 @@ mod tests {
     }
 
     #[test]
-    fn csharp_response_projection_retains_unknown_oneof_wire_message() {
+    fn csharp_response_projection_retains_unknown_oneof_wire_bytes() {
         let (_, source) = generate_csharp_typed_facade();
-        assert!(source.contains("record Unknown(Acyclic.Objects.V2.GetObjectResponse Wire)"));
-        assert!(source.contains("ObjectsGetObjectFrame.Unknown(message)"));
+        assert!(source.contains("record Unknown(int RawCase, ByteString WireBytes)"));
+        assert!(source.contains("ObjectsGetObjectFrame.Unknown((int)message.FrameCase, ByteString.CopyFrom(message.ToByteArray()))"));
     }
 
     #[test]
