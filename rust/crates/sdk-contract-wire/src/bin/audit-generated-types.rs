@@ -1,6 +1,7 @@
 //! Executable acceptance check over generated public SDK type surfaces.
 use acyclic_sdk_contract_wire::type_policy::{
     REQUIRED_PRODUCT_SURFACES, audit_generated_type_features,
+    audit_required_generated_descriptor_shape_coverage,
     audit_required_generated_public_surfaces,
 };
 use serde_json::{Value, json};
@@ -96,9 +97,21 @@ fn audit(root: &Path, required: &[String]) -> Result<(Value, bool), String> {
     let languages = required.iter().map(String::as_str).collect::<Vec<_>>();
     let mut errors = Vec::new();
     let mut violations = Vec::new();
-    match audit_required_generated_public_surfaces(&root, &languages) {
-        Ok(found) => violations.extend(found),
-        Err(error) => errors.push(error),
+    let surfaces_present = match audit_required_generated_public_surfaces(&root, &languages) {
+        Ok(found) => {
+            violations.extend(found);
+            true
+        }
+        Err(error) => {
+            errors.push(error);
+            false
+        }
+    };
+    if surfaces_present {
+        match audit_required_generated_descriptor_shape_coverage(&root, &languages) {
+            Ok(found) => violations.extend(found),
+            Err(error) => errors.push(error),
+        }
     }
     match audit_generated_type_features(&root) {
         Ok(found) => violations.extend(found),
@@ -202,5 +215,34 @@ mod tests {
         let root =
             env::temp_dir().join(format!("acyclic-missing-type-audit-{}", std::process::id()));
         assert!(audit(&root, &["typescript".into()]).is_err());
+    }
+
+    #[test]
+    fn generic_markers_cannot_bypass_descriptor_shape_gate() {
+        let root = env::temp_dir().join(format!(
+            "acyclic-generic-shape-audit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("jvm")).unwrap();
+        fs::write(
+            root.join("jvm").join("RustSemanticTypes.java"),
+            "public final class Unknown {}\n"
+                .to_owned()
+                + "public final class Optional {}\n"
+                + "public final class Oneof {}\n"
+                + "public final class IdempotencyKey {}\n",
+        )
+        .unwrap();
+
+        let (report, passed) = audit(&root, &["jvm".into()]).unwrap();
+        assert!(!passed);
+        assert!(report["violations"].as_array().unwrap().iter().any(|finding| {
+            finding["reason"] == "generated facade omits a Rust descriptor enum identity"
+        }));
+        fs::remove_dir_all(root).unwrap();
     }
 }
