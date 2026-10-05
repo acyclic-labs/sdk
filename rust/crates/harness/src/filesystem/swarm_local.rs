@@ -3654,6 +3654,17 @@ impl PersistentLocalSwarm {
             ));
         }
         let parent = session.parent;
+        if parent.is_some() {
+            let requests = self.requests.lock().await;
+            let request = requests.get(&task).ok_or_else(|| {
+                Error::Conflict("child session has no retained fork request".into())
+            })?;
+            if request.child_operation != operation || request.prompt != prompt {
+                return Err(Error::Conflict(
+                    "child run differs from its retained operation or prompt".into(),
+                ));
+            }
+        }
         self.verify_admitted_task(task, parent).await?;
         let harness = self.open_session(task).await?;
         let max_steps = u32::try_from(
@@ -4732,12 +4743,14 @@ impl PersistentLocalSwarm {
             .get(&task)
             .cloned()
             .ok_or_else(|| Error::NotFound(format!("local swarm fork request {task}")))?;
-        if let Ok(output) = self.outcome(task).await {
-            return Ok(LocalForkOutcome {
+        match self.outcome(task).await {
+            Ok(output) => return Ok(LocalForkOutcome {
                 child: task,
                 operation: request.child_operation,
                 output,
-            });
+            }),
+            Err(Error::NotFound(_)) => {}
+            Err(error) => return Err(error),
         }
         // The caller may hold a parent aggregate opened before another
         // process published this seed. Refresh the authenticated parent
