@@ -1,0 +1,38 @@
+{
+  "kind": "failed-native-diagnostic-checkpoint",
+  "source_commit": "dcd03176b54bc8b1adbb238c1cea4de065d7d2ef",
+  "platform": "Windows native",
+  "session": 75636,
+  "exit_code": -1073741571,
+  "evidence_directory": "D:\\graphcoder-builds\\root-qualification-artifacts\\dcd03176b\\stack-diagnostics",
+  "artifacts": [
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\dcd03176b\\stack-diagnostics\\exit-code.txt",
+      "Hash": "1602CCF83366DE7ED9E8F4EE1D96E439341193541B6918982146BAF7B227655D"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\dcd03176b\\stack-diagnostics\\local_model_swarm-d3511dedf296d78f.exe",
+      "Hash": "6567240CBABA36E13205276DA217DFFF2A281997F0FAE88CC957FA0B59C5C8E2"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\dcd03176b\\stack-diagnostics\\native.log",
+      "Hash": "13D2FAC0418F693CC08D4D5E3313DCDB9EF6122533E76AF88EFB4D7E71D12F82"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\dcd03176b\\stack-diagnostics\\source.zip",
+      "Hash": "1CD373D1A94B6E4314C15277D9184AAD272095B52563241229CB1BA968AC90FB"
+    }
+  ],
+  "observations": {
+    "child_execution_marker_observed": false,
+    "bundle_run_future_bytes": 416,
+    "local_run_body_future_bytes": 17744,
+    "last_marker": "fork-publication-enter",
+    "model_step_future_bytes": 4424,
+    "run_existing_future_bytes": 36944,
+    "provider_dispatch_completed": true
+  },
+  "interpretation": "Failure occurs after root provider dispatch and at batch publication; child recursive-poll hypothesis is not established. Need publisher entry/allocation/poll diagnostics. Future sizes measure instrumented source; not a stack trace or proof of cause.",
+  "qualification": "failed",
+  "remaining_gate": "Repair actual native stack cause and qualify all recursive scenarios without stack inflation or detached ownership"
+}
