@@ -257,24 +257,12 @@ impl DurableTaskHost for SwarmCommunicationHost {
             let storage = recipient_harness.storage();
             let sender_harness = swarm.open_session(sender).await?;
             let bytes = sender_harness.storage().read(&payload).await?;
+            // The endpoint operation remains the stable identity for the
+            // recipient-owned staged bytes. It is deliberately not a second
+            // journal: the mailbox record below is the sole durable
+            // publication effect, while staged content is unpublished until
+            // that record commits.
             let transfer = message_endpoint_operation(sender, recipient, message);
-            let transfers = self
-                .stream
-                .stream(format!("harness/v2/mail-transfers/{recipient}"))
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            let admitted = crate::contract::canonical_json_bytes(&json!({
-                "schema_version": 1, "sender": sender, "recipient": recipient,
-                "message": message, "payload": payload,
-            }))?;
-            publish_control_record(
-                &self.stream,
-                &transfers,
-                "mail-transfer",
-                recipient,
-                transfer,
-                &admitted,
-            )
-            .await?;
             let delivered = if payload.volume() == storage.volume() {
                 // A recipient-owned ref still requires explicit sender read
                 // authority, checked above. Identity knowledge is not a grant.
