@@ -29,6 +29,19 @@ pub struct ResponseFrameRecord {
     pub response_sha256: String,
 }
 
+/// One encoded protobuf request frame emitted by a Rust fixture stream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestFrameRecord {
+    /// Monotonic zero-based position in the request stream.
+    pub sequence: usize,
+    /// Fully-qualified protobuf request message identity.
+    pub request_type: String,
+    /// Canonically encoded request bytes as base64.
+    pub request_base64: String,
+    /// SHA-256 of the canonical request bytes.
+    pub request_sha256: String,
+}
+
 /// One deterministic request record emitted for a Rust contract RPC.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypedRequestRecord {
@@ -42,6 +55,8 @@ pub struct TypedRequestRecord {
     pub request_base64: String,
     /// SHA-256 of the canonical request bytes, lower-case hexadecimal.
     pub request_sha256: String,
+    /// All request frames for client-streaming RPCs, in wire order.
+    pub request_frames: Vec<RequestFrameRecord>,
     /// Wire expectation shared by all generated consumers.
     pub expected_wire: String,
     /// Exact protobuf response bytes observed from a Rust fixture, when present.
@@ -185,6 +200,7 @@ pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequ
             request_type: request_type.to_owned(),
             request_base64: request_base64.to_owned(),
             request_sha256: request_sha256.to_owned(),
+            request_frames: Vec::new(),
             expected_wire: format!("{EXPECTED_WIRE};sha256={request_sha256}"),
             response_type: None,
             response_base64: None,
@@ -607,7 +623,17 @@ async fn actor_worker_records() -> Result<Vec<TypedRequestRecord>, String> {
     let inspect_response = actors.inspect_actor(Request::new(inspect.clone())).await.map_err(|error| format!("Actors InspectActor: {error}"))?.into_inner();
     let add = actors_wire::AddSubscriptionRequest {
         actor_id: created.actor_id.clone(),
-        subscription: Some(actors_wire::SubscriptionSpec { subscription_id: "audit".into(), stream_path: "/audit".into(), start: None, placement_anchor: false }),
+        subscription: Some(actors_wire::SubscriptionSpec {
+            subscription_id: "audit".into(),
+            stream_path: "/audit".into(),
+            // The public Actors contract requires an explicit cursor policy
+            // for newly-created subscriptions.  Keep this request valid in
+            // the Rust producer and every generated consumer.
+            start: Some(actors_wire::SubscriptionStart {
+                start: Some(actors_wire::subscription_start::Start::CurrentHead(true)),
+            }),
+            placement_anchor: false,
+        }),
         idempotency_key: "add-1".into(),
     };
     let add_response = actors.add_subscription(Request::new(add.clone())).await.map_err(|error| format!("Actors AddSubscription: {error}"))?.into_inner();
@@ -1003,6 +1029,43 @@ fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String>
         .get("sha256")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("{rpc} request sha256 is missing"))?;
+    let request_frames = object
+        .get("request_frames")
+        .and_then(Value::as_array)
+        .map(|frames| {
+            frames
+                .iter()
+                .enumerate()
+                .map(|(sequence, frame)| {
+                    let frame = frame
+                        .as_object()
+                        .ok_or_else(|| format!("{rpc} request frame is not an object"))?;
+                    Ok(RequestFrameRecord {
+                        sequence: frame
+                            .get("sequence")
+                            .and_then(Value::as_u64)
+                            .map_or(sequence, |value| value as usize),
+                        request_type: frame
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} request frame type is missing"))?
+                            .to_owned(),
+                        request_base64: frame
+                            .get("bytes_base64")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} request frame bytes are missing"))?
+                            .to_owned(),
+                        request_sha256: frame
+                            .get("sha256")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} request frame digest is missing"))?
+                            .to_owned(),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
     let expected_status = if object
         .get("response")
         .and_then(Value::as_object)
@@ -1079,6 +1142,7 @@ fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String>
         request_type: request_type.to_owned(),
         request_base64: request_base64.to_owned(),
         request_sha256: request_sha256.to_owned(),
+        request_frames,
         expected_wire: format!("canonical-protobuf-v3;sha256={request_sha256}"),
         response_type,
         response_base64,
@@ -1102,6 +1166,7 @@ fn record_from_bytes(
         request_type: request_type.to_owned(),
         request_base64: base64(bytes),
         request_sha256: request_sha256.clone(),
+        request_frames: Vec::new(),
         expected_wire: format!("canonical-protobuf-v3;sha256={request_sha256}"),
         response_type: None,
         response_base64: None,
@@ -1266,6 +1331,7 @@ fn append_pool(
                     request_type: input.full_name().to_owned(),
                     request_base64: base64(&bytes),
                     request_sha256: request_sha256.clone(),
+                    request_frames: Vec::new(),
                     expected_wire: format!("{EXPECTED_WIRE};sha256={request_sha256}"),
                     response_type: None,
                     response_base64: None,
@@ -1286,6 +1352,12 @@ fn record_json(record: &TypedRequestRecord) -> Value {
         "request_type": record.request_type,
         "request_base64": record.request_base64,
         "request_sha256": record.request_sha256,
+        "request_frames": record.request_frames.iter().map(|frame| json!({
+            "sequence": frame.sequence,
+            "type": frame.request_type,
+            "bytes_base64": frame.request_base64,
+            "sha256": frame.request_sha256,
+        })).collect::<Vec<_>>(),
         "expected_wire": record.expected_wire,
         "response_type": record.response_type,
         "response_base64": record.response_base64,
@@ -1384,6 +1456,7 @@ mod tests {
             request_type: "acyclic.actors.v1.CreateActorRequest".to_owned(),
             request_base64: encoded.clone(),
             request_sha256: digest.to_owned(),
+            request_frames: Vec::new(),
             expected_wire: "canonical-protobuf-v3".to_owned(),
             response_type: Some("acyclic.actors.v1.CreateActorResponse".to_owned()),
             response_base64: Some(encoded.clone()),
