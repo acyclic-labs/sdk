@@ -1863,7 +1863,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 // closed if the bound root disappeared or was replaced.
                 let bound_path = std::fs::canonicalize(&binding.source_root)
                     .map_err(|error| Error::Storage(format!("native checkout root: {error}")))?;
-                if bound_path != path {
+                let current_identity = acyclic_fs::NativeRootIdentity::of_root_path(&path)
+                    .map_err(|error| Error::Storage(format!("native checkout root: {error}")))?;
+                if bound_path != path || current_identity != binding.root_identity {
                     return Err(Error::Conflict(
                         "native checkout name is bound to another host path".into(),
                     ));
