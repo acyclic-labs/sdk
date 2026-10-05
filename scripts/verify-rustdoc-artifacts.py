@@ -48,6 +48,14 @@ def validate(output_dir: Path) -> dict[str, object]:
     artifacts = generation.get("artifacts")
     if not isinstance(artifacts, list):
         raise ValueError("generation receipt artifacts is not an array")
+    if generation.get("schema_version") != 1:
+        errors.append("unsupported generation receipt schema")
+    if not artifacts:
+        errors.append("generation receipt contains no artifacts")
+    for field in ("source_revision", "toolchain"):
+        if not isinstance(generation.get(field), str) or not generation[field].strip():
+            errors.append(f"generation receipt is missing {field}")
+    identities: set[tuple[str, str, str, tuple[str, ...]]] = set()
     observed: list[dict[str, object]] = []
     profiles: Counter[str] = Counter()
     source_revision = generation.get("source_revision")
@@ -58,6 +66,20 @@ def validate(output_dir: Path) -> dict[str, object]:
             continue
         profile = str(artifact.get("profile", ""))
         package = str(artifact.get("package_name", ""))
+        target = artifact.get("target")
+        features = artifact.get("features")
+        if not isinstance(artifact.get("profile"), str) or not isinstance(artifact.get("package_name"), str) or not profile.strip() or not package.strip() or not isinstance(target, str) or not target.strip():
+            errors.append(f"artifact[{index}] has incomplete compiler identity")
+        if not isinstance(features, list) or any(not isinstance(feature, str) or not feature for feature in features):
+            errors.append(f"artifact[{index}] has invalid features")
+            continue
+        identity = (profile, package, str(target), tuple(sorted(features)))
+        if identity in identities:
+            errors.append(f"artifact[{index}] duplicates compiler identity")
+        identities.add(identity)
+        for field in ("source_blake3", "profile_blake3"):
+            if not isinstance(artifact.get(field), str) or not artifact[field].strip():
+                errors.append(f"artifact[{index}] is missing {field}")
         profiles[profile] += 1
         json_rel = artifact.get("rustdoc_json")
         receipt_rel = artifact.get("receipt")
@@ -66,6 +88,10 @@ def validate(output_dir: Path) -> dict[str, object]:
             continue
         json_path = output_dir / json_rel
         receipt_path = output_dir / receipt_rel
+        root = output_dir.resolve()
+        if not json_path.resolve().is_relative_to(root) or not receipt_path.resolve().is_relative_to(root):
+            errors.append(f"artifact[{index}] path escapes artifact tree")
+            continue
         if not json_path.is_file():
             errors.append(f"missing rustdoc JSON: {json_rel}")
             continue
@@ -80,6 +106,11 @@ def validate(output_dir: Path) -> dict[str, object]:
         if not isinstance(receipt, dict):
             errors.append(f"receipt is not an object: {receipt_rel}")
             continue
+        if receipt.get("schema_version") != 1:
+            errors.append(f"unsupported artifact receipt schema: {receipt_rel}")
+        for field in ("package_name", "profile", "target", "features", "source_blake3", "profile_blake3"):
+            if receipt.get(field) != artifact.get(field):
+                errors.append(f"receipt {field} mismatch: {receipt_rel}")
         if receipt.get("source_revision") != source_revision:
             errors.append(f"source revision mismatch: {receipt_rel}")
         if receipt.get("toolchain") != toolchain:
