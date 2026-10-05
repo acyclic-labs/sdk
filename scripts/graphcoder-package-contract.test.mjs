@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { gzipSync } from "node:zlib";
+import { fileURLToPath } from "node:url";
 import { assertLazyCounters, inspectInstalledPackage } from "./fixtures/graphcoder-qualification/package-contract.mjs";
+
+const sdkRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const graphCoderPackageRoot = join(sdkRoot, "typescript", "packages", "graphcoder");
 
 function fixturePackage() {
   const root = mkdtempSync(join(tmpdir(), "graphcoder-package-contract-"));
@@ -67,6 +71,50 @@ test("installed package contract records export and bin identities", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("installed package contract rejects manifest bytes that differ from the archive", () => {
+  const root = fixturePackage();
+  try {
+    const archive = fixtureArchive(root);
+    const packageJsonPath = join(root, "package.json");
+    writeFileSync(packageJsonPath, `${readFileSync(packageJsonPath, "utf8")}\n`);
+    assert.throws(
+      () => inspectInstalledPackage(root, { artifactPath: archive }),
+      /manifest bytes differ from package artifact/u,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("installed package contract rejects exported bytes that differ from the archive", () => {
+  const root = fixturePackage();
+  try {
+    const archive = fixtureArchive(root);
+    writeFileSync(join(root, "dist", "index.js"), "export const tampered = true;\n");
+    assert.throws(
+      () => inspectInstalledPackage(root, { artifactPath: archive }),
+      /installed package file differs from package artifact/u,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("GraphCoder release metadata includes the public package contract", () => {
+  const release = JSON.parse(readFileSync(join(sdkRoot, "release", "npm-packages.json"), "utf8"));
+  const entry = release.find(item => item?.name === "@acyclic-labs/graphcoder");
+  assert.deepEqual(entry, {
+    slug: "graphcoder",
+    directory: "graphcoder",
+    name: "@acyclic-labs/graphcoder",
+    source: "typescript",
+  });
+  const manifest = JSON.parse(readFileSync(join(graphCoderPackageRoot, "package.json"), "utf8"));
+  assert.equal(manifest.private, false);
+  assert.ok(manifest.files.includes("CHANGELOG.md"));
+  assert.match(readFileSync(join(graphCoderPackageRoot, "CHANGELOG.md"), "utf8"), /## 0\.2\.0\b/u);
 });
 
 test("real-host lazy observations require zero listing side effects", () => {

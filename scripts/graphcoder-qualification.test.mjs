@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 import { loadMatrix, makePendingReceipt, validateReceipt } from "./graphcoder-qualification.mjs";
+import { workingTreeDigest } from "./graphcoder-source-fence.mjs";
 
 const matrix = loadMatrix();
 const digest = value => createHash("sha256").update(value).digest("hex");
@@ -155,6 +156,39 @@ test("gate.final refuses a missing artifact even without --final", () => {
     fresh: true,
   }];
   assert.throws(() => validate(receipt), /artifact is missing/);
+});
+
+test("final evidence rejects fixture-only commands for non-mock suites", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-final-fixture-"));
+  try {
+    const suite = suiteFixture(directory, "native");
+    const descriptor = JSON.parse(readFileSync(suite.descriptor_path, "utf8"));
+    Object.assign(descriptor, {
+      descriptor: suite.descriptor,
+      source_clean: true,
+      source_working_tree_sha256: workingTreeDigest(TEST_ROOT),
+      command: {
+        executable: process.execPath,
+        args: ["scripts/graphcoder-production-entrypoint.mjs", "--fixture=deterministic"],
+        cwd: TEST_ROOT,
+        env: [],
+      },
+    });
+    const bytes = `${JSON.stringify(descriptor)}\n`;
+    writeFileSync(suite.descriptor_path, bytes);
+    suite.descriptor_sha256 = digest(bytes);
+    const receipt = pendingReceipt();
+    receipt.suites = [suite];
+    receipt.cases[0] = {
+      id: receipt.cases[0].id,
+      status: "passed",
+      evidence: [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [] }],
+    };
+    receipt.gate = { final: true, failed: 0, skipped: 0, flaky: 0, missing: 67 };
+    assert.throws(() => validate(receipt, { final: true }), /fixture-only command/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("evidence cannot relabel a compile suite as native", () => {

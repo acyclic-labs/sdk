@@ -26,7 +26,19 @@ const git = (...args) => spawnSync("git", args, { cwd: rootPath, encoding: "utf8
 const tracked = git("ls-files", "-z", "--cached", "--others", "--exclude-standard");
 if (tracked.error || tracked.status !== 0) throw tracked.error ?? new Error(tracked.stderr.trim());
 const exemptPrefixes = ["arena/"];
-const isExempt = path => exemptPrefixes.some(prefix => path.startsWith(prefix));
+// The local Windows PTY lane intentionally keeps its native winpty drivers in
+// Python. These exact paths are qualification adapters, not retired runtime
+// source. Every other retired-runtime suffix remains rejected.
+const qualificationRuntimeAdapters = new Set([
+  "scripts/graphcoder-production-pty-winpty.py",
+  "scripts/graphcoder-production-pty-winpty.test.py",
+  "typescript/packages/graphcoder/test/pty_smoke.py",
+  // The real-trace verifier is a Windows PowerShell qualification adapter;
+  // it resolves the host's Python launcher for a native lane and is not
+  // imported by the runtime or shipped in a package.
+  "rust/crates/harness/verification/check-real-trace.ps1",
+]);
+const isExempt = path => exemptPrefixes.some(prefix => path.startsWith(prefix)) || qualificationRuntimeAdapters.has(path);
 const presentFiles = tracked.stdout
   .split("\0")
   .filter(Boolean)
@@ -40,7 +52,11 @@ const presentFiles = tracked.stdout
   });
 const retiredFile = presentFiles.find(({ path }) => hasRetiredSuffix(path))?.path;
 if (retiredFile) throw new Error(`retired-runtime source exists: ${retiredFile}`);
-const retiredContent = presentFiles.find(({ fullPath }) => {
+// Historical receipts and documentation retain references to old and native
+// runtimes as evidence. Scan implementation and configuration source instead;
+// the filename check above still rejects retired source files everywhere.
+const sourceContent = /\.(?:c|cc|cpp|h|hh|hpp|rs|ts|tsx|js|jsx|mjs|cjs|mts|cts|java|go|swift|sh|ps1|psm1|bat|cmd|toml|yaml|yml)$/iu;
+const retiredContent = presentFiles.filter(({ path }) => path !== "scripts/check-metadata.mjs" && sourceContent.test(path)).find(({ fullPath }) => {
   const content = readFileSync(fullPath);
   return !content.includes(0) && fixturePattern.test(content.toString("utf8"));
 })?.path;

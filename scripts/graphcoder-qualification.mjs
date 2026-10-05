@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
+import { workingTreeDigest } from "./graphcoder-source-fence.mjs";
 
 const DEFAULT_MATRIX = "docs/graphcoder-swarm/requirements.json";
 const RECEIPT_PROTOCOL = "acyclic.graphcoder.qualification-receipt.v1";
@@ -71,7 +72,7 @@ export function validateMatrix(matrix) {
   return matrix;
 }
 
-function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree) {
+function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree, { final = false, gitRoot } = {}) {
   let descriptor;
   try {
     descriptor = JSON.parse(readFileSync(resolve(suite.descriptor_path), "utf8"));
@@ -82,9 +83,22 @@ function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifi
     failure(`suite ${suite.id} descriptor protocol is invalid`);
   }
   if (descriptor.id !== suite.id) failure(`suite ${suite.id} descriptor id does not match the suite`);
+  if (descriptor.descriptor !== suite.descriptor) failure(`suite ${suite.id} descriptor label does not match the suite`);
   if (descriptor.source_commit !== qualifiedCommit) failure(`suite ${suite.id} descriptor source commit does not match the qualified source`);
   if (descriptor.source_tree !== qualifiedTree) failure(`suite ${suite.id} descriptor source tree does not match the qualified source`);
+  if (descriptor.platform !== suite.platform) failure(`suite ${suite.id} descriptor platform does not match the suite`);
   if (descriptor.execution_kind !== suite.execution_kind) failure(`suite ${suite.id} descriptor execution kind does not match the suite`);
+  if (final) {
+    if (descriptor.source_clean !== true) failure(`suite ${suite.id} final descriptor is not bound to a clean source`);
+    if (typeof descriptor.source_working_tree_sha256 !== "string" || !HEX64.test(descriptor.source_working_tree_sha256)) failure(`suite ${suite.id} final descriptor lacks a working-tree digest`);
+    if (typeof gitRoot !== "string" || descriptor.source_working_tree_sha256 !== workingTreeDigest(gitRoot)) failure(`suite ${suite.id} final descriptor working-tree digest is stale`);
+    if (!descriptor.command || typeof descriptor.command !== "object" || !Array.isArray(descriptor.command.args) || typeof descriptor.command.executable !== "string") {
+      failure(`suite ${suite.id} final descriptor lacks an executable command`);
+    }
+    if (suite.execution_kind !== "mock" && (descriptor.command.args.some(arg => typeof arg === "string" && /(?:^|=)--fixture(?:=|$)/u.test(arg)) || (Array.isArray(descriptor.command.env) && descriptor.command.env.some(key => typeof key === "string" && /(?:MOCK_FIXTURE|PTY_FIXTURE|ALLOW_FIXTURE)/u.test(key))))) {
+      failure(`suite ${suite.id} final descriptor invokes a fixture-only command`);
+    }
+  }
   if (!Array.isArray(descriptor.consumed_artifacts)) failure(`suite ${suite.id} descriptor lacks consumed artifacts`);
   const descriptorArtifacts = new Map();
   for (const [index, item] of descriptor.consumed_artifacts.entries()) {
@@ -105,7 +119,7 @@ function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifi
   if (JSON.stringify(descriptorPaths) !== JSON.stringify(suitePaths)) failure(`suite ${suite.id} descriptor artifact use does not match the suite`);
 }
 
-function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qualifiedTree) {
+function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qualifiedTree, gitOps) {
   if (!suite || typeof suite !== "object") failure(`suite ${index} is not an object`);
   for (const field of ["id", "descriptor", "descriptor_path", "descriptor_sha256", "platform", "execution_kind", "status", "started_at", "completed_at", "transcript_path", "transcript_sha256"]) {
     if (typeof suite[field] !== "string" || suite[field].trim() === "") failure(`suite ${index} lacks ${field}`);
@@ -124,7 +138,7 @@ function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qua
     const actual = fileDigest(path);
     if (actual !== expected) failure(`suite ${suite.id} ${kind} digest mismatch: ${path}`);
   }
-  validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree);
+  validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree, { final, gitRoot: final ? gitOps.gitRoot() : undefined });
 }
 
 function validateArtifact(artifact, index, final, qualifiedCommit, qualifiedTree) {
@@ -213,7 +227,7 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   const artifactByPath = new Map(receipt.artifacts.map(artifact => [artifact?.path, artifact]));
   const qualifiedTree = gitOps.gitTree(qualifiedCommit);
   for (const [index, suite] of receipt.suites.entries()) {
-    validateSuite(suite, index, effectiveFinal, artifactByPath, qualifiedCommit, qualifiedTree);
+    validateSuite(suite, index, effectiveFinal, artifactByPath, qualifiedCommit, qualifiedTree, gitOps);
     if (suiteIds.has(suite.id)) failure(`duplicate suite id ${suite.id}`);
     suiteIds.add(suite.id);
   }

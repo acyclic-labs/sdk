@@ -44,10 +44,10 @@ function inspectArtifact(archive, packageJson) {
   try { expanded = readBoundedGzip(archive, 100 * 1024 * 1024, 512 * 1024 * 1024).expanded; }
   catch (error) { fail(`package artifact is not a valid bounded gzip archive: ${error instanceof Error ? error.message : String(error)}`); }
   let manifestEntry;
-  const files = new Set();
+  const files = new Map();
   for (const entry of tarEntries(expanded)) {
     if (entry.path.startsWith("package/") && (entry.type === "0" || entry.type === "\\0")) {
-      files.add(entry.path);
+      files.set(entry.path, entry.body);
       if (entry.path === "package/package.json") manifestEntry = entry;
     }
   }
@@ -77,6 +77,7 @@ function inspectArtifact(archive, packageJson) {
     manifest_sha256: createHash("sha256").update(manifestEntry.body).digest("hex"),
     exports: exportedTargets(packageJson.exports),
     bins: exportedTargets(packageJson.bin),
+    bodyForTarget: target => files.get(`package/${target.replaceAll("\\", "/")}`),
   };
 }
 
@@ -125,6 +126,16 @@ export function inspectInstalledPackage(packageRoot, { artifactPath } = {}) {
     const archive = resolve(artifactPath);
     regularFile(archive, "package artifact");
     const artifactContract = inspectArtifact(archive, packageJson);
+    if (artifactContract.manifest_sha256 !== identity.package_json_sha256) {
+      fail("installed package manifest bytes differ from package artifact");
+    }
+    for (const [label, resolved] of Object.entries({ ...exports, ...bins })) {
+      const relativeTarget = relative(root, resolved).replaceAll("\\", "/");
+      const packagedBytes = artifactContract.bodyForTarget(relativeTarget);
+      if (!Buffer.isBuffer(packagedBytes) || !packagedBytes.equals(readFileSync(resolved))) {
+        fail(`installed package file differs from package artifact: ${label}`);
+      }
+    }
     identity.artifact = {
       path: archive,
       sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"),

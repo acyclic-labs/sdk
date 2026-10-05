@@ -26,7 +26,18 @@ function run(configPath) {
 function suiteRecord(directory, id = "mock-suite") {
   const descriptorPath = join(directory, `${id}.descriptor.json`);
   const transcriptPath = join(directory, `${id}.transcript.log`);
-  const descriptor = `{"suite":"${id}"}\n`;
+  const descriptor = `${JSON.stringify({
+    protocol: "acyclic.graphcoder.suite-descriptor.v1",
+    id,
+    descriptor: id,
+    source_commit: TEST_COMMIT,
+    source_tree: TEST_TREE,
+    source_clean: true,
+    source_working_tree_sha256: "d".repeat(64),
+    platform: "windows-x86_64",
+    execution_kind: "mock",
+    consumed_artifacts: [],
+  })}\n`;
   const transcript = `suite ${id} passed\n`;
   writeFileSync(descriptorPath, descriptor);
   writeFileSync(transcriptPath, transcript);

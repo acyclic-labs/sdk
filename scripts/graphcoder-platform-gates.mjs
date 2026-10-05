@@ -138,6 +138,13 @@ function validateQualificationLanes(manifest) {
 function readLaneReceipt(path, lane, executionKind, source, platform) {
   const receiptPath = resolve(path);
   if (!existsSync(receiptPath)) fail(`${lane.id} ${executionKind} receipt is missing: ${receiptPath}`);
+  const qualifiedWorktree = source.canonical_worktree;
+  if (typeof qualifiedWorktree !== "string" || qualifiedWorktree.trim() === "") fail(`${lane.id} ${executionKind} receipt source worktree is missing`);
+  const receiptRoot = resolve(qualifiedWorktree);
+  if (!isWithin(receiptRoot, receiptPath)) fail(`${lane.id} ${executionKind} receipt path escapes the qualified worktree`);
+  assertCanonicalParents(receiptRoot, receiptPath, `${lane.id} ${executionKind} receipt`, false);
+  const receiptMetadata = lstatSync(receiptPath);
+  if (!receiptMetadata.isFile() || receiptMetadata.isSymbolicLink()) fail(`${lane.id} ${executionKind} receipt is not a regular file`);
   let record;
   try { record = JSON.parse(readFileSync(receiptPath, "utf8")); }
   catch (error) { fail(`${lane.id} ${executionKind} receipt is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
@@ -145,14 +152,26 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   if (!suite || suite.status !== "passed") fail(`${lane.id} ${executionKind} receipt is not passed`);
   if (suite.execution_kind !== executionKind || suite.platform !== platform) fail(`${lane.id} ${executionKind} receipt execution identity is invalid`);
   if (!Array.isArray(record.artifacts) || record.artifacts.length === 0) fail(`${lane.id} ${executionKind} receipt has no artifact evidence`);
+  if (typeof suite.id !== "string" || suite.id.trim() === "") fail(`${lane.id} ${executionKind} suite id is invalid`);
+  if (!Array.isArray(suite.artifact_paths) || suite.artifact_paths.length === 0) fail(`${lane.id} ${executionKind} suite has no artifact paths`);
   const descriptorPath = suite.descriptor_path;
   if (typeof descriptorPath !== "string" || !existsSync(descriptorPath)) fail(`${lane.id} ${executionKind} descriptor is missing`);
-  const descriptorBytes = readFileSync(descriptorPath);
+  const ownedPath = (candidate, label) => {
+    const resolvedPath = resolve(candidate);
+    if (!isWithin(receiptRoot, resolvedPath)) fail(`${lane.id} ${executionKind} ${label} escapes the qualified worktree`);
+    assertCanonicalParents(receiptRoot, resolvedPath, `${lane.id} ${executionKind} ${label}`, false);
+    const metadata = lstatSync(resolvedPath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${lane.id} ${executionKind} ${label} is not a regular file`);
+    return resolvedPath;
+  };
+  const ownedDescriptorPath = ownedPath(descriptorPath, "descriptor");
+  const descriptorBytes = readFileSync(ownedDescriptorPath);
   if (suite.descriptor_sha256 !== hash(descriptorBytes)) fail(`${lane.id} ${executionKind} descriptor digest does not match its bytes`);
   let descriptor;
   try { descriptor = JSON.parse(descriptorBytes.toString("utf8")); }
   catch (error) { fail(`${lane.id} ${executionKind} descriptor is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
-  if (descriptor.id !== suite.id || descriptor.execution_kind !== executionKind || descriptor.platform !== platform) fail(`${lane.id} ${executionKind} descriptor identity is invalid`);
+  if (descriptor.protocol !== "acyclic.graphcoder.suite-descriptor.v1") fail(`${lane.id} ${executionKind} descriptor protocol is invalid`);
+  if (descriptor.id !== suite.id || descriptor.descriptor !== suite.descriptor || descriptor.execution_kind !== executionKind || descriptor.platform !== platform) fail(`${lane.id} ${executionKind} descriptor identity is invalid`);
   if (descriptor.source_commit !== source.commit || descriptor.source_tree !== source.tree || descriptor.source_clean !== true) fail(`${lane.id} ${executionKind} receipt is bound to a different or dirty source`);
   if (source.canonical_worktree === undefined || descriptor.source_working_tree_sha256 !== workingTreeDigest(source.canonical_worktree)) fail(`${lane.id} ${executionKind} receipt working-tree digest is stale`);
   const command = descriptor.command;
@@ -161,13 +180,45 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   if (basename(command.executable).toLowerCase() !== "node" && basename(command.executable).toLowerCase() !== "node.exe") fail(`${lane.id} ${executionKind} descriptor executable is not Node`);
   if (source.canonical_worktree !== undefined && resolve(command.cwd) !== resolve(source.canonical_worktree)) fail(`${lane.id} ${executionKind} descriptor cwd is not the qualified worktree`);
   if (!Array.isArray(command.env) || command.env.some(key => typeof key !== "string" || !QUALIFICATION_ENVIRONMENT_KEYS.has(key) || /(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY|API_KEY)/iu.test(key))) fail(`${lane.id} ${executionKind} descriptor environment is not filtered`);
+  if (lane.allows_mock_fixture === false && (command.args.some(arg => /(?:^|=)--fixture(?:=|$)/u.test(arg)) || command.env.some(key => /(?:MOCK_FIXTURE|PTY_FIXTURE|ALLOW_FIXTURE)/u.test(key)))) {
+    fail(`${lane.id} ${executionKind} descriptor invokes a mock or fixture launch recipe`);
+  }
+  if (!Array.isArray(descriptor.consumed_artifacts)) fail(`${lane.id} ${executionKind} descriptor lacks consumed artifacts`);
+  const receiptArtifacts = new Map();
   for (const artifact of record.artifacts) {
+    if (!artifact || typeof artifact !== "object") fail(`${lane.id} ${executionKind} artifact record is invalid`);
     if (typeof artifact.path !== "string" || !existsSync(artifact.path)) fail(`${lane.id} ${executionKind} artifact is missing`);
-    const metadata = lstatSync(artifact.path);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${lane.id} ${executionKind} artifact is not a regular file`);
-    if (typeof artifact.sha256 !== "string" || artifact.sha256 !== hash(readFileSync(artifact.path))) fail(`${lane.id} ${executionKind} artifact digest does not match its bytes`);
+    const ownedArtifactPath = ownedPath(artifact.path, "artifact");
+    const artifactKey = process.platform === "win32" ? ownedArtifactPath.toLowerCase() : ownedArtifactPath;
+    if (receiptArtifacts.has(artifactKey)) fail(`${lane.id} ${executionKind} receipt repeats artifact ${artifact.path}`);
+    receiptArtifacts.set(artifactKey, { ...artifact, path: ownedArtifactPath });
+    if (typeof artifact.sha256 !== "string" || artifact.sha256 !== hash(readFileSync(ownedArtifactPath))) fail(`${lane.id} ${executionKind} artifact digest does not match its bytes`);
     if (artifact.source_commit !== source.commit || artifact.source_tree !== source.tree || artifact.fresh !== true) fail(`${lane.id} ${executionKind} artifact provenance is stale or not fresh`);
   }
+  const descriptorArtifacts = new Map();
+  for (const [index, artifact] of descriptor.consumed_artifacts.entries()) {
+    if (!artifact || typeof artifact.path !== "string" || artifact.path.trim() === "") fail(`${lane.id} ${executionKind} descriptor artifact ${index} is invalid`);
+    const descriptorArtifactPath = ownedPath(artifact.path, `descriptor artifact ${index}`);
+    const artifactKey = process.platform === "win32" ? descriptorArtifactPath.toLowerCase() : descriptorArtifactPath;
+    if (descriptorArtifacts.has(artifactKey)) fail(`${lane.id} ${executionKind} descriptor repeats artifact ${artifact.path}`);
+    const receiptArtifact = receiptArtifacts.get(artifactKey);
+    if (receiptArtifact === undefined) fail(`${lane.id} ${executionKind} descriptor references an unknown artifact`);
+    for (const field of ["sha256", "source_commit", "source_tree", "build_id"]) {
+      if (typeof artifact[field] !== "string" || artifact[field] !== receiptArtifact[field]) fail(`${lane.id} ${executionKind} descriptor artifact ${artifact.path} does not match the receipt artifact`);
+    }
+    descriptorArtifacts.set(artifactKey, artifact);
+  }
+  const suiteArtifactKeys = suite.artifact_paths.map(pathValue => {
+    if (typeof pathValue !== "string" || pathValue.trim() === "") fail(`${lane.id} ${executionKind} suite artifact path is invalid`);
+    const suiteArtifactPath = ownedPath(pathValue, "suite artifact");
+    return process.platform === "win32" ? suiteArtifactPath.toLowerCase() : suiteArtifactPath;
+  });
+  if (new Set(suiteArtifactKeys).size !== suiteArtifactKeys.length || JSON.stringify([...descriptorArtifacts.keys()].sort()) !== JSON.stringify([...receiptArtifacts.keys()].sort()) || JSON.stringify([...new Set(suiteArtifactKeys)].sort()) !== JSON.stringify([...receiptArtifacts.keys()].sort())) {
+    fail(`${lane.id} ${executionKind} descriptor, suite, and receipt artifact use do not match`);
+  }
+  if (typeof suite.transcript_path !== "string" || !existsSync(suite.transcript_path)) fail(`${lane.id} ${executionKind} transcript is missing`);
+  const ownedTranscriptPath = ownedPath(suite.transcript_path, "transcript");
+  if (typeof suite.transcript_sha256 !== "string" || suite.transcript_sha256 !== hash(readFileSync(ownedTranscriptPath))) fail(`${lane.id} ${executionKind} transcript digest does not match its bytes`);
   return { lane: lane.id, execution_kind: executionKind, receipt_path: receiptPath, suite_id: suite.id, descriptor_path: descriptorPath };
 }
 
@@ -390,8 +441,15 @@ function helperArtifacts(manifestBytes, gate) {
     { path: runnerPath, sha256: hash(readFileSync(runnerPath)) },
   ];
   if (gate.command.args.includes("scripts/graphcoder-package-gate.mjs")) {
-    const packageHelperPath = resolve(ROOT, "scripts", "graphcoder-package-gate.mjs");
-    artifacts.push({ path: packageHelperPath, sha256: hash(readFileSync(packageHelperPath)) });
+    for (const packageHelperPath of [
+      resolve(ROOT, "scripts", "graphcoder-package-gate.mjs"),
+      resolve(ROOT, "scripts", "graphcoder-package-contract.test.mjs"),
+      resolve(ROOT, "scripts", "fixtures", "graphcoder-qualification", "package-contract.mjs"),
+      resolve(ROOT, "release", "npm-packages.json"),
+      resolve(ROOT, "typescript", "packages", "graphcoder", "package.json"),
+    ]) {
+      artifacts.push({ path: packageHelperPath, sha256: hash(readFileSync(packageHelperPath)) });
+    }
   }
   return artifacts;
 }

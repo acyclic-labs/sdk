@@ -41,6 +41,7 @@ for (const entry of packageEntries) {
 const expectedExports = {
   "@acyclic-labs/actors": "HttpActorsClient",
   "@acyclic-labs/fs": "openBrowserFs",
+  "@acyclic-labs/graphcoder": "GraphCoderUi",
   "@acyclic-labs/harness": "Harness",
   "@acyclic-labs/inference": "InferenceClient",
   "@acyclic-labs/machines": "machineId",

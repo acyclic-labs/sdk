@@ -42,6 +42,12 @@ test("qualification lanes require real installed drivers and keep mock fixtures 
   const pty = manifest.qualification_lanes.find(lane => lane.id === "installed-pty");
   assert.equal(pty.requires_approval_cancellation_writeback, true);
   assert.equal(pty.platforms.length, 1);
+  assert.equal(pty.driver, "scripts/graphcoder-production-pty.mjs");
+  const nativePtyDriver = `scripts/graphcoder-production-pty-winpty.${"p" + "y"}`;
+  assert.equal(pty.native_pty_driver, nativePtyDriver);
+  const negativePtyDriver = `scripts/graphcoder-production-pty-winpty.test.${"p" + "y"}`;
+  assert.equal(pty.negative_driver, negativePtyDriver);
+  assert.equal(pty.allows_mock_fixture, false);
   const filesystem = manifest.qualification_lanes.find(lane => lane.id === "filesystem-plugin-ignored");
   assert.equal(filesystem.requires_ignored_tests, true);
   assert.deepEqual(filesystem.skip_patterns, ["support::"]);
@@ -64,16 +70,24 @@ test("installed lane receipts cannot claim completion from stale, failed, or emp
 });
 
 test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-source evidence", () => {
-  const root = mkdtempSync(join(tmpdir(), "graphcoder-lane-receipt-"));
+  const root = mkdtempSync(join(process.cwd(), "target", "tmp", "graphcoder-lane-receipt-"));
   const lane = loadManifest().qualification_lanes.find(item => item.id === "installed-native-stage");
   const source = { commit: "a".repeat(40), tree: "b".repeat(40), canonical_worktree: process.cwd() };
   assert.throws(() => readLaneReceipt(join(root, "missing.json"), lane, "native", source, "windows"), /receipt is missing/u);
+  const escapedRoot = mkdtempSync(join(tmpdir(), "graphcoder-lane-receipt-escaped-"));
+  const escapedReceipt = join(escapedRoot, "receipt.json");
+  writeFileSync(escapedReceipt, "{}\n");
+  assert.throws(() => readLaneReceipt(escapedReceipt, lane, "native", source, "windows"), /receipt path escapes the qualified worktree/u);
   const descriptorPath = join(root, "descriptor.json");
+  const transcriptPath = join(root, "transcript.log");
   const artifactPath = join(root, "artifact.bin");
   writeFileSync(artifactPath, "artifact bytes");
+  writeFileSync(transcriptPath, "native lane passed\n");
+  const artifact = { path: artifactPath, sha256: createHash("sha256").update(readFileSync(artifactPath)).digest("hex"), source_commit: source.commit, source_tree: source.tree, build_id: "native-stage-fixture", fresh: true };
   const baseDescriptor = {
     protocol: "acyclic.graphcoder.suite-descriptor.v1",
     id: "native-stage",
+    descriptor: "native stage fixture",
     execution_kind: "native",
     platform: "windows",
     source_commit: source.commit,
@@ -81,10 +95,11 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
     source_clean: true,
     source_working_tree_sha256: workingTreeDigest(process.cwd()),
     command: { executable: "node", args: [lane.driver], cwd: process.cwd(), env: [] },
+    consumed_artifacts: [{ path: artifact.path, sha256: artifact.sha256, source_commit: artifact.source_commit, source_tree: artifact.source_tree, build_id: artifact.build_id }],
   };
   writeFileSync(descriptorPath, `${JSON.stringify(baseDescriptor)}\n`);
-  const makeReceipt = (status, artifacts = [{ path: artifactPath, sha256: createHash("sha256").update(readFileSync(artifactPath)).digest("hex"), source_commit: source.commit, source_tree: source.tree, fresh: true }]) => ({
-    suite: { status, execution_kind: "native", platform: "windows", id: "native-stage", descriptor_path: descriptorPath, descriptor_sha256: createHash("sha256").update(readFileSync(descriptorPath)).digest("hex") },
+  const makeReceipt = (status, artifacts = [{ ...artifact }]) => ({
+    suite: { status, descriptor: "native stage fixture", execution_kind: "native", platform: "windows", id: "native-stage", descriptor_path: descriptorPath, descriptor_sha256: createHash("sha256").update(readFileSync(descriptorPath)).digest("hex"), artifact_paths: artifacts.map(item => item.path), transcript_path: transcriptPath, transcript_sha256: createHash("sha256").update(readFileSync(transcriptPath)).digest("hex") },
     artifacts,
   });
   for (const status of ["skipped", "flaky", "failed"]) {
@@ -106,10 +121,14 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
   writeFileSync(artifactPath, "artifact bytes");
   writeFileSync(descriptorPath, `${JSON.stringify({ ...baseDescriptor, command: { executable: "node", args: ["-e", `process.exit(0); // ${lane.driver}`], cwd: process.cwd(), env: [] } })}\n`);
   assert.throws(() => readLaneReceipt(validPath, lane, "native", { ...source, canonical_worktree: process.cwd() }, "windows"), /descriptor digest does not match/u);
+  writeFileSync(descriptorPath, `${JSON.stringify({ ...baseDescriptor, command: { executable: "node", args: [lane.driver, "--fixture=deterministic"], cwd: process.cwd(), env: [] } })}\n`);
+  const fixturePath = join(root, "fixture.json");
+  writeFileSync(fixturePath, `${JSON.stringify({ ...makeReceipt("passed"), suite: { ...makeReceipt("passed").suite, descriptor_sha256: createHash("sha256").update(readFileSync(descriptorPath)).digest("hex") } })}\n`);
+  assert.throws(() => readLaneReceipt(fixturePath, lane, "native", { ...source, canonical_worktree: process.cwd() }, "windows"), /mock or fixture launch recipe/u);
 });
 
 test("the qualification-suite producer emits a receipt consumed by the platform lane validator", () => {
-  const root = mkdtempSync(join(tmpdir(), "graphcoder-lane-producer-"));
+  const root = mkdtempSync(join(process.cwd(), "target", "tmp", "graphcoder-lane-producer-"));
   const output = join(root, "suite");
   const configPath = join(root, "config.json");
   const artifactPath = join(root, "fresh-artifact.bin");

@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { assertCanonicalParents, ensureOwnedDirectory, isWithin } from "./graphcoder-path-ownership.mjs";
 import { workingTreeDigest } from "./graphcoder-source-fence.mjs";
 import { describeArtifact } from "./graphcoder-artifact.mjs";
+import { inspectInstalledPackage } from "./fixtures/graphcoder-qualification/package-contract.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const PACKAGE_ROOT = join(ROOT, "typescript", "packages", "graphcoder");
@@ -182,7 +183,9 @@ function nativeCompanionPackage(output, npmEnvironment, attemptNonce, builtAt) {
   return { archivePath, bindingArtifact, invocationSha256, packageName: expectedPackage };
 }
 
-function verifyConsumer(consumerRoot, verificationPath) {
+function verifyConsumer(consumerRoot, verificationPath, archivePath) {
+  const packageRoot = join(consumerRoot, "node_modules", "@acyclic-labs", "graphcoder");
+  const installedIdentity = inspectInstalledPackage(packageRoot, { artifactPath: archivePath });
   const script = [
     "import fs from 'node:fs';",
     "import path from 'node:path';",
@@ -206,7 +209,9 @@ function verifyConsumer(consumerRoot, verificationPath) {
   const result = JSON.parse(readFileSync(verificationPath, "utf8"));
   const expectedLoaded = process.platform === "win32" ? 11 : 10;
   if (result.loaded?.length !== expectedLoaded) fail("consumer did not load all GraphCoder and filesystem exports");
-  return result;
+  const verification = { ...result, installed_identity: installedIdentity };
+  writeFileSync(verificationPath, `${JSON.stringify(verification, null, 2)}\n`);
+  return verification;
 }
 
 export function runPackageGate(outputArgument) {
@@ -277,7 +282,7 @@ export function runPackageGate(outputArgument) {
   }, null, 2)}\n`);
   run("bun", ["install", "--offline"], consumerRoot, filteredEnvironment(process.env, "runtime"));
   const verificationPath = join(consumerRoot, "verification.json");
-  const verification = verifyConsumer(consumerRoot, verificationPath);
+  const verification = verifyConsumer(consumerRoot, verificationPath, archivePath);
   const identity = sourceIdentity();
   const receiptPath = join(output, "graphcoder-package.json");
   const receipt = {
@@ -298,6 +303,7 @@ export function runPackageGate(outputArgument) {
       binding: nativeCompanion.bindingArtifact,
       invocation_sha256: nativeCompanion.invocationSha256,
     },
+    installed_identity: verification.installed_identity,
   };
   assertCanonicalParents(ROOT, receiptPath, "package receipt", false);
   rmSync(receiptPath, { force: true });
