@@ -2024,7 +2024,7 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
         module: "harness",
         message: "FileRef",
         wire_field: "normalized_path",
-        direction: PublicFieldDirection::Response,
+        direction: PublicFieldDirection::EmbeddedOnly,
     },
     // Response and nested response semantics are source-owned too.  These
     // bindings intentionally cover only values with stable identity,
@@ -2584,6 +2584,9 @@ pub fn audit_generated_public_surfaces(
                 "python" if python_erased_oneof_payload(line) => {
                     Some("Python oneof payload is erased to object")
                 }
+                "python" if python_opaque_oneof_payload(line) => {
+                    Some("Python oneof payload is erased to an opaque wire payload")
+                }
                 "python" if python_raw_public_return(&source, line_number, line) => {
                     Some("public Python route returns the raw transport response")
                 }
@@ -2601,6 +2604,9 @@ pub fn audit_generated_public_surfaces(
                 }
                 "go" if go_erased_oneof_payload(line) => {
                     Some("Go oneof payload is erased to any")
+                }
+                "go" if go_opaque_oneof_payload(line) => {
+                    Some("Go oneof payload is erased to an opaque wire payload")
                 }
                 "jvm"
                     if jvm_opaque_message_projection(line) => {
@@ -2623,13 +2629,22 @@ pub fn audit_generated_public_surfaces(
                 "swift" if line.contains("public let wire: RustWireMessage") => {
                     Some("public Swift wrapper exposes an opaque RustWireMessage")
                 }
+                "swift" if swift_erased_known_oneof(line) => {
+                    Some("Swift known oneof payload is erased to raw bytes")
+                }
                 "cpp"
                     if line.contains("RustWireMessage wire;") && !line.contains("private:") =>
                 {
                     Some("public C++ wrapper exposes an opaque RustWireMessage")
                 }
+                "cpp" if cpp_erased_known_oneof(line) => {
+                    Some("C++ known oneof payload is erased to raw bytes")
+                }
                 "csharp" if csharp_raw_public_wire_record(line) => {
                     Some("public C# facade record exposes a raw protobuf message")
+                }
+                "csharp" if csharp_erased_known_oneof(line) => {
+                    Some("C# known oneof payload is erased to an opaque wire payload")
                 }
                 "csharp" if csharp_timestamp_precision_loss(line) => {
                     Some("C# timestamp projection can lose protobuf nanosecond precision")
@@ -2746,11 +2761,49 @@ fn python_erased_oneof_payload(line: &str) -> bool {
         && !trimmed.starts_with("#")
 }
 
+fn python_opaque_oneof_payload(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    (trimmed.starts_with("payload: WirePayload")
+        || trimmed.starts_with("def known_oneof(payload: WirePayload)"))
+        && !trimmed.starts_with("#")
+}
+
 fn go_erased_oneof_payload(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with("type KnownOneof struct") && trimmed.contains("Payload any")
         || trimmed.starts_with("func NewKnownOneof(payload any)")
         || trimmed.starts_with("Payload any `json:\"payload")
+}
+
+fn go_opaque_oneof_payload(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    (trimmed.starts_with("type KnownOneof struct") && trimmed.contains("Payload WirePayload"))
+        || trimmed.starts_with("func NewKnownOneof(payload WirePayload)")
+        || trimmed.starts_with("Payload WirePayload `json:\"payload")
+}
+
+fn swift_erased_known_oneof(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.contains("case known(")
+        && (trimmed.contains(": Data")
+            || trimmed.contains(": [UInt8]")
+            || trimmed.contains(": WirePayload"))
+}
+
+fn cpp_erased_known_oneof(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    (trimmed.starts_with("struct KnownOneof") || trimmed.starts_with("class KnownOneof"))
+        && (trimmed.contains("std::vector<std::uint8_t>")
+            || trimmed.contains("std::string payload")
+            || trimmed.contains("WirePayload"))
+}
+
+fn csharp_erased_known_oneof(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("public sealed record KnownOneof")
+        && (trimmed.contains("ByteString")
+            || trimmed.contains("byte[]")
+            || trimmed.contains("WirePayload"))
 }
 
 fn go_raw_protobuf_response(line: &str) -> bool {
@@ -3242,6 +3295,9 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("python")).expect("audit fixture directory");
         fs::create_dir_all(root.join("go")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("swift")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("cpp").join("include")).expect("audit fixture directory");
+        fs::create_dir_all(root.join("csharp")).expect("audit fixture directory");
         fs::write(
             root.join("python").join("remote.py"),
             "@dataclass(frozen=True)\nclass KnownOneof:\n    payload: object\ndef known_oneof(payload: object) -> KnownOneof:\n    return KnownOneof(payload=payload)\n",
@@ -3252,6 +3308,21 @@ mod tests {
             "type KnownOneof struct { Tag string; Payload any }\nfunc NewKnownOneof(payload any) KnownOneof { return KnownOneof{Payload: payload} }\n",
         )
         .expect("go fixture");
+        fs::write(
+            root.join("swift").join("RustTypedClients.swift"),
+            "public enum WireChoice { case known(tag: String, payload: Data); case unknown(rawTag: Int32, payload: Data) }\n",
+        )
+        .expect("swift fixture");
+        fs::write(
+            root.join("cpp").join("include").join("rust_typed_clients.hpp"),
+            "struct KnownOneof { std::string tag; std::vector<std::uint8_t> payload; };\n",
+        )
+        .expect("cpp fixture");
+        fs::write(
+            root.join("csharp").join("RustTypedClients.cs"),
+            "public sealed record KnownOneof(string Tag, ByteString Payload);\n",
+        )
+        .expect("csharp fixture");
 
         let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
         assert!(findings.iter().any(|finding| {
@@ -3260,6 +3331,18 @@ mod tests {
         }));
         assert!(findings.iter().any(|finding| {
             finding.language == "go" && finding.reason == "Go oneof payload is erased to any"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "swift"
+                && finding.reason == "Swift known oneof payload is erased to raw bytes"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "cpp"
+                && finding.reason == "C++ known oneof payload is erased to raw bytes"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.language == "csharp"
+                && finding.reason == "C# known oneof payload is erased to an opaque wire payload"
         }));
         let _ = fs::remove_dir_all(root);
     }
@@ -3446,7 +3529,7 @@ mod tests {
         fs::create_dir_all(&root).expect("audit fixture directory");
         fs::write(
             root.join("RustTypedClients.swift"),
-            "unknown Optional IdempotencyKey\n",
+            "public struct IdempotencyKey { let value: String }\npublic enum WireChoice { case known(payload: KnownPayload); case unknown(rawTag: Int32, payload: Data) }\npublic struct Presence { var value: Optional<String> }\n",
         )
         .expect("swift fixture");
         assert!(audit_generated_type_features(&root)

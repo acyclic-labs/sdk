@@ -162,3 +162,13 @@ test("full hosted qualification requires release or explicit force", () => {
   assert.doesNotMatch(downstream, /if: github.event_name == 'release' \|\| github.event_name == 'workflow_dispatch'/);
   assert.match(downstream, /inputs\.force/);
 });
+
+test("reusable package qualification does not duplicate central release runs", () => {
+  const names = ["additional-language-qualification.yml", "python-go-release-qualification.yml", "http-target-release-qualification.yml", "dotnet-native-rid-manual.yml", "embedded-abi-release.yml"];
+  for (const name of names) {
+    const workflow = readFileSync(`.github/workflows/${name}`, "utf8").replaceAll("\r\n", "\n");
+    assert.doesNotMatch(workflow, /^  (release|push):/m, name);
+    assert.match(workflow, /^  workflow_call:/m, name);
+    assert.match(workflow, /^  workflow_dispatch:/m, name);
+  }
+});
