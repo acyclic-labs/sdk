@@ -2197,6 +2197,62 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
+    async fn native_tree_backend_recovery_refuses_external_edit_after_staging() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        let target = operation.join("target");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&target).expect("target");
+        std::fs::write(root.join("file.txt"), b"before").expect("before");
+        std::fs::write(target.join("file.txt"), b"after").expect("after");
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+        let plan = backend
+            .plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["file.txt".to_owned()],
+            )
+            .expect("plan");
+        let preimage = backend.capture(&plan.edits[0]).await.expect("capture");
+        let store = MemoryMaterializationJournalStore::default();
+        store
+            .compare_and_swap(
+                plan.operation_id,
+                0,
+                MaterializationJournal {
+                    version: JOURNAL_VERSION,
+                    revision: 1,
+                    plan: plan.clone(),
+                    preimages: vec![preimage],
+                    phase: MaterializationPhase::Prepared,
+                    applied: 0,
+                    restored: 0,
+                },
+            )
+            .await
+            .expect("journal staged plan");
+
+        // This models a process restart: staging and admission were durable,
+        // but a user changed the live checkout before recovery resumed.
+        std::fs::write(root.join("file.txt"), b"user-edit").expect("external edit");
+        let recovered = JournaledMaterializer::new(store, backend)
+            .recover(plan.operation_id, MaterializationRecovery::Complete)
+            .await;
+        assert!(matches!(
+            recovered,
+            Err(MaterializationError::ExternalMutation)
+        ));
+        assert_eq!(
+            std::fs::read(root.join("file.txt")).expect("external remains"),
+            b"user-edit"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
     async fn native_tree_backend_rejects_tampered_or_missing_staged_targets() {
         for replacement in [Some(b"tampered".as_slice()), None] {
             let temporary = tempfile::tempdir().expect("temporary root");
