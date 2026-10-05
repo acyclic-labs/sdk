@@ -2557,6 +2557,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
+    /// Reads the immutable generation published by an exact workspace operation.
+    pub(crate) async fn operation_generation(
+        &self,
+        reference: &WorkspaceRef,
+        key: &IdempotencyKey,
+    ) -> Result<Option<GenerationRef>> {
+        let generation = self
+            .open(reference)
+            .await?
+            .operation_generation(filesystem_key(key))
+            .await
+            .map_err(map_error)?;
+        generation
+            .as_ref()
+            .map(|generation| self.generation_ref(generation))
+            .transpose()
+    }
+
     async fn open(&self, reference: &WorkspaceRef) -> Result<Workspace<A, O>> {
         reference.validate()?;
         self.validate_provider(reference.as_resource().provider())?;
