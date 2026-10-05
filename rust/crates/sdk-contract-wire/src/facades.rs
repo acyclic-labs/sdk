@@ -507,8 +507,7 @@ module Acyclic
 
       def validate_bearer(token)
         value = String(token)
-        raise ArgumentError, "invalid bearer credential" if value.strip.empty? || value.match?(/[\r
-]/)
+        raise ArgumentError, "invalid bearer credential" if value.strip.empty? || value.match?(/[\r\n]/)
 
         value
       end
@@ -1090,8 +1089,7 @@ public static class GeneratedRemotePolicy
 
     public static string ValidateBearer(string token)
     {
-        if (string.IsNullOrWhiteSpace(token) || token.Contains('\r') || token.Contains('
-'))
+        if (string.IsNullOrWhiteSpace(token) || token.Contains('\r') || token.Contains('\n'))
             throw new ArgumentException("invalid bearer credential", nameof(token));
         return token;
     }
@@ -1439,8 +1437,7 @@ class GeneratedRemotePolicy {
   }
 
   static String validateBearer(String token) {
-    if (token.trim().isEmpty || token.contains(RegExp(r'[\r
-]'))) {
+    if (token.trim().isEmpty || token.contains(RegExp(r'[\r\n]'))) {
       throw ArgumentError('invalid bearer credential');
     }
     return token;
@@ -2503,6 +2500,31 @@ mod tests {
                 output
                     .source
                     .contains("acyclic.stream.v2.StreamService/Read")
+            );
+        }
+    }
+
+    #[test]
+    fn generated_credentials_escape_control_character_literals() {
+        let expected = [
+            (FacadeLanguage::Ruby, "/[\\r\\n]/"),
+            (
+                FacadeLanguage::Csharp,
+                "token.Contains('\\r') || token.Contains('\\n')",
+            ),
+            (FacadeLanguage::Dart, "RegExp(r'[\\r\\n]')"),
+        ];
+        for (language, fragment) in expected {
+            let source = generate_remote_facade(language).source;
+            assert!(
+                source.contains(fragment),
+                "{} omitted escaped credential check",
+                language.name()
+            );
+            assert!(
+                !source.contains("token.Contains('\\r') || token.Contains('\n')"),
+                "{} emitted a literal newline inside a C# character literal",
+                language.name()
             );
         }
     }
