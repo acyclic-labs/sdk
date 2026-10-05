@@ -2391,6 +2391,12 @@ pub struct GeneratedSurfaceViolation {
     pub reason: &'static str,
 }
 
+/// Generated facade families emitted by the Rust product generator.  The
+/// TypeScript package has a separate package generator and supplies its own
+/// required list when it invokes the same audit.
+pub const REQUIRED_PRODUCT_SURFACES: &[&str] =
+    &["python", "go", "jvm", "csharp", "swift", "cpp"];
+
 /// Check generated public facades for known type-erasing shapes.
 ///
 /// This is intentionally source based: it runs immediately after generation,
@@ -2475,6 +2481,39 @@ pub fn audit_generated_public_surfaces(
     Ok(violations)
 }
 
+/// Run the public-surface audit while also requiring every expected facade
+/// family to be present.  A missing generated file is a generation failure,
+/// never an empty passing report.
+pub fn audit_required_generated_public_surfaces(
+    artifact_root: &Path,
+    required_languages: &[&str],
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    let mut files = Vec::new();
+    if !artifact_root.is_dir() {
+        return Err(format!("generated artifact root does not exist: {}", artifact_root.display()));
+    }
+    collect_surface_files(artifact_root, &mut files);
+    let mut present = std::collections::BTreeSet::new();
+    for path in &files {
+        if let Some(language) = surface_language(path) {
+            present.insert(language);
+        }
+    }
+    let missing = required_languages
+        .iter()
+        .filter(|language| !present.contains(**language))
+        .copied()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "missing generated public SDK surfaces in {}: {}",
+            artifact_root.display(),
+            missing.join(", ")
+        ));
+    }
+    audit_generated_public_surfaces(artifact_root)
+}
+
 fn collect_surface_files(root: &Path, files: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
@@ -2503,6 +2542,8 @@ fn surface_language(path: &Path) -> Option<&'static str> {
         Some("swift")
     } else if name == "rust_typed_clients.hpp" {
         Some("cpp")
+    } else if name == "RustTypedClients.cs" {
+        Some("csharp")
     } else {
         None
     }
@@ -2601,6 +2642,26 @@ mod tests {
                 .expect("audit fixture")
                 .is_empty()
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn required_surface_audit_rejects_missing_language_families() {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-surface-audit-missing-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("audit fixture directory");
+        fs::write(root.join("RustTypedClients.cs"), "// generated\n")
+            .expect("csharp fixture");
+        let error = audit_required_generated_public_surfaces(&root, REQUIRED_PRODUCT_SURFACES)
+            .expect_err("missing generated surfaces must fail closed");
+        assert!(error.contains("python"));
+        assert!(error.contains("go"));
+        assert!(error.contains("jvm"));
+        assert!(error.contains("swift"));
+        assert!(error.contains("cpp"));
         let _ = fs::remove_dir_all(root);
     }
 
