@@ -59,12 +59,30 @@ impl ProcessTree {
 
     /// Terminates every process in the tree and reaps the direct child.
     pub fn terminate(&mut self) -> io::Result<()> {
-        self.terminate_descendants()?;
-        if let Some(child) = self.child.as_mut() {
-            child.wait()?;
-            self.child.take();
+        // Always reap the direct child even when the platform tree signal
+        // fails. Returning early here would drop `std::process::Child`
+        // without waiting; Rust does not terminate a child from `Child`'s
+        // destructor, so a failed tree signal could leak a process. Keep the
+        // tree error for the caller (the descendant outcome is then unknown),
+        // but still make a best-effort direct-child kill and wait.
+        let tree_error = self.terminate_descendants().err();
+        let child_error = if let Some(child) = self.child.as_mut() {
+            if tree_error.is_some() {
+                let _ = child.kill();
+            }
+            let result = child.wait();
+            if result.is_ok() {
+                self.child.take();
+            }
+            result.err()
+        } else {
+            None
+        };
+        match (tree_error, child_error) {
+            (Some(error), _) => Err(error),
+            (None, Some(error)) => Err(error),
+            (None, None) => Ok(()),
         }
-        Ok(())
     }
 
     /// Signals termination to the entire tree while retaining the direct child
@@ -151,6 +169,24 @@ mod tests {
             fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
             return;
         }
+        if mode == "parent-exits" {
+            let mut grandchild = Command::new(std::env::current_exe().expect("test executable"));
+            grandchild
+                .args(["--exact", "process_tree::tests::process_tree_helper"])
+                .env(MODE, "grandchild")
+                .env(ROOT, &root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let _grandchild = grandchild.spawn().expect("spawn grandchild");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(root.join("grandchild-ready").exists());
+            fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
+            return;
+        }
         assert_eq!(mode, "child");
         let mut grandchild = Command::new(std::env::current_exe().expect("test executable"));
         grandchild
@@ -188,6 +224,38 @@ mod tests {
         }
         assert!(temporary.path().join("tree-ready").exists());
         tree.terminate().expect("terminate process tree");
+        thread::sleep(Duration::from_secs(1));
+        assert!(!temporary.path().join("escaped").exists());
+    }
+
+    #[test]
+    fn drop_contains_descendants_after_direct_child_exit() {
+        let temporary = tempfile::tempdir().expect("temporary process-tree directory");
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args(["--exact", "process_tree::tests::process_tree_helper"])
+            .env(MODE, "parent-exits")
+            .env(ROOT, temporary.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn process tree");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(temporary.path().join("tree-ready").exists());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut exited = false;
+        while Instant::now() < deadline {
+            if tree.try_wait().expect("poll process tree").is_some() {
+                exited = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(exited, "direct child did not exit before the cleanup check");
+        drop(tree);
         thread::sleep(Duration::from_secs(1));
         assert!(!temporary.path().join("escaped").exists());
     }
