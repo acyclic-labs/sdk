@@ -37,6 +37,7 @@ use sha2::{Digest, Sha256};
 use std::env;
 use std::collections::HashMap;
 use std::io;
+use std::net::IpAddr;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -85,6 +86,7 @@ const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Options {
+    bind_address: IpAddr,
     port: u16,
     grpc_port: u16,
     max_requests: usize,
@@ -1201,9 +1203,9 @@ impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = parse_args(env::args().skip(1))?;
-    let listener = TcpListener::bind(("127.0.0.1", options.port)).await?;
+    let listener = TcpListener::bind((options.bind_address, options.port)).await?;
     let address = listener.local_addr()?;
-    let grpc_listener = TcpListener::bind(("127.0.0.1", options.grpc_port)).await?;
+    let grpc_listener = TcpListener::bind((options.bind_address, options.grpc_port)).await?;
     let grpc_address = grpc_listener.local_addr()?;
     let fixtures = transport_fixtures();
     let source_sha256 = source_sha256();
@@ -1396,12 +1398,18 @@ where
 {
     let mut arguments = arguments.into_iter();
     let mut options = Options {
+        bind_address: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         port: 0,
         grpc_port: 0,
         max_requests: DEFAULT_MAX_REQUESTS,
     };
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
+            "--bind-address" => {
+                options.bind_address = next_value(&mut arguments, "--bind-address")?
+                    .parse()
+                    .map_err(|_| "--bind-address must be an IP address".to_owned())?;
+            }
             "--port" => {
                 options.port = next_value(&mut arguments, "--port")?
                     .parse()
@@ -1423,7 +1431,7 @@ where
                 }
             }
             "--help" | "-h" => {
-                println!("fixture-server [--port PORT] [--grpc-port PORT] [--max-requests N]");
+                println!("fixture-server [--bind-address IP] [--port PORT] [--grpc-port PORT] [--max-requests N]");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument {other}")),
@@ -2475,6 +2483,139 @@ mod tests {
         .actor
         .expect("replayed actor observation");
         assert_eq!(replay.configuration_revision, 2);
+    }
+
+    #[tokio::test]
+    async fn workers_fixture_replays_inspects_cancels_and_rejects_invalid_requests() {
+        let fixture = WorkersFixture::default();
+        let module = b"export default 42".to_vec();
+        let digest = Sha256::digest(&module).to_vec();
+        let publish = workers_wire::PublishVersionRequest {
+            javascript_module: module,
+            expected_sha256: digest.clone(),
+            idempotency_key: "publish-workers".to_owned(),
+        };
+        let published = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::publish_version(
+            &fixture,
+            Request::new(publish.clone()),
+        )
+        .await
+        .expect("publish Worker version")
+        .into_inner()
+        .version
+        .expect("published version");
+        assert_eq!(published.sha256, digest);
+        let replayed_publish = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::publish_version(
+            &fixture,
+            Request::new(publish),
+        )
+        .await
+        .expect("replay Worker publication")
+        .into_inner()
+        .version
+        .expect("replayed version");
+        assert_eq!(replayed_publish, published);
+
+        let deployment = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::select_deployment(
+            &fixture,
+            Request::new(workers_wire::SelectDeploymentRequest {
+                alias: "production".to_owned(),
+                version_sha256: published.sha256.clone(),
+                expected_revision: None,
+                idempotency_key: "select-workers".to_owned(),
+            }),
+        )
+        .await
+        .expect("select Worker deployment")
+        .into_inner()
+        .deployment
+        .expect("deployment");
+        assert_eq!(deployment.revision, 1);
+
+        let submit = workers_wire::SubmitJobRequest {
+            target: Some(workers_wire::JobTarget {
+                target: Some(workers_wire::job_target::Target::DeploymentAlias(
+                    "production".to_owned(),
+                )),
+            }),
+            input: Some(workers_wire::Payload {
+                source: Some(workers_wire::payload::Source::InlineBytes(b"input".to_vec())),
+            }),
+            limits: Some(workers_wire::JobLimits {
+                timeout_millis: 1_000,
+                memory_bytes: 1_024,
+                output_bytes: 1_024,
+            }),
+            retry: Some(workers_wire::RetryPolicy {
+                max_attempts: 1,
+                backoff_millis: 0,
+            }),
+            idempotency_key: "job-workers".to_owned(),
+        };
+        let accepted = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::submit_job(
+            &fixture,
+            Request::new(submit.clone()),
+        )
+        .await
+        .expect("submit Worker job")
+        .into_inner()
+        .job
+        .expect("accepted job");
+        assert_eq!(accepted.state, workers_wire::JobState::Succeeded as i32);
+        assert_eq!(accepted.result.as_ref().unwrap().body, b"input");
+        let replayed = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::submit_job(
+            &fixture,
+            Request::new(submit),
+        )
+        .await
+        .expect("replay Worker job")
+        .into_inner()
+        .job
+        .expect("replayed job");
+        assert_eq!(replayed, accepted);
+
+        let cancelled = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::cancel_job(
+            &fixture,
+            Request::new(workers_wire::CancelJobRequest {
+                job_id: accepted.job_id.clone(),
+                idempotency_key: "cancel-workers".to_owned(),
+            }),
+        )
+        .await
+        .expect("cancel Worker job")
+        .into_inner()
+        .job
+        .expect("cancelled job");
+        assert_eq!(cancelled.state, workers_wire::JobState::Cancelled as i32);
+        assert!(cancelled.cancellation_requested);
+        let inspected = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::inspect_job(
+            &fixture,
+            Request::new(workers_wire::InspectJobRequest {
+                job_id: accepted.job_id.clone(),
+            }),
+        )
+        .await
+        .expect("inspect cancelled Worker job")
+        .into_inner()
+        .job
+        .expect("inspected job");
+        assert_eq!(inspected, cancelled);
+        let invalid = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::publish_version(
+            &fixture,
+            Request::new(workers_wire::PublishVersionRequest::default()),
+        )
+        .await
+        .expect_err("invalid publication must be rejected");
+        assert_eq!(invalid.code(), tonic::Code::InvalidArgument);
+        let missing = <WorkersFixture as workers_wire::workers_service_server::WorkersService>::inspect_job(
+            &fixture,
+            Request::new(workers_wire::InspectJobRequest {
+                job_id: "missing-job".to_owned(),
+            }),
+        )
+        .await
+        .expect_err("unknown job must be rejected");
+        assert_eq!(missing.code(), tonic::Code::NotFound);
     }
 
     #[tokio::test]
