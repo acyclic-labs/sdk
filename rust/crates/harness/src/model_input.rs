@@ -59,42 +59,45 @@ pub(crate) fn message_file_refs(
     message: &ModelMessage,
     tools: &[crate::tool::ToolDefinition],
 ) -> Result<Vec<FileRef>> {
-    let mut refs = message
-        .content
-        .file_refs()
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
     let parts = match &message.content {
         ModelContent::Text(_) => &[][..],
         ModelContent::Part(part) => std::slice::from_ref(part),
         ModelContent::Parts(parts) => parts.as_slice(),
     };
+    let mut refs = Vec::new();
     for part in parts {
-        let ModelContentPart::ToolResult { name, value, .. } = part else { continue; };
-        // Rejection envelopes are authenticated by validate_exchanges against
-        // the malformed call and pinned input schema. They intentionally do
-        // not satisfy the successful model-output schema and carry no files.
-        if crate::tool::ToolRejectionFeedback::from_model_value(value)?.is_some() {
-            continue;
+        match part {
+            ModelContentPart::File { file, .. } => refs.push(file.clone()),
+            ModelContentPart::ToolResult { name, value, .. } => {
+                // Rejection envelopes are authenticated by validate_exchanges
+                // against the malformed call and pinned input schema. They
+                // intentionally do not satisfy the successful model-output
+                // schema and carry no files.
+                if crate::tool::ToolRejectionFeedback::from_model_value(value)?.is_some() {
+                    continue;
+                }
+                let definition = tools
+                    .iter()
+                    .find(|tool| tool.name == *name)
+                    .ok_or_else(|| Error::Storage(format!("tool result names unknown tool {name}")))?;
+                let declared = definition.model_output_file_refs(value)?;
+                if declared.is_empty()
+                    && name == "acyclic.stage_file"
+                    && value
+                        .get("file")
+                        .and_then(|file| serde_json::from_value::<FileRef>(file.clone()).ok())
+                        .is_some()
+                {
+                    return Err(Error::Conflict(
+                        "acyclic.stage_file result uses an unsupported historical schema revision"
+                            .into(),
+                    ));
+                }
+                refs.extend(declared);
+            }
+            ModelContentPart::Text { .. }
+            | ModelContentPart::ToolCall { .. } => {}
         }
-        let definition = tools
-            .iter()
-            .find(|tool| tool.name == *name)
-            .ok_or_else(|| Error::Storage(format!("tool result names unknown tool {name}")))?;
-        let declared = definition.model_output_file_refs(value)?;
-        if declared.is_empty()
-            && name == "acyclic.stage_file"
-            && value
-                .get("file")
-                .and_then(|file| serde_json::from_value::<FileRef>(file.clone()).ok())
-                .is_some()
-        {
-            return Err(Error::Conflict(
-                "acyclic.stage_file result uses an unsupported historical schema revision".into(),
-            ));
-        }
-        refs.extend(declared);
     }
     Ok(refs)
 }
@@ -857,7 +860,12 @@ impl crate::model::ModelProvider for PrefixBoundModelProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Model;
+    use crate::{
+        AgentId,
+        conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
+        model::Model,
+        resources::ProviderRef,
+    };
     use serde_json::json;
     fn text(value: &str) -> ModelMessage {
         ModelMessage {
@@ -898,6 +906,73 @@ mod tests {
             }],
             max_output_tokens: Some(100),
         })
+    }
+
+    fn file_ref(name: &str, bytes: &[u8]) -> Result<FileRef> {
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "filesystem", "2")?,
+            "input",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([3; 16])),
+        )?;
+        FileRef::new(
+            volume,
+            format!("input/{name}"),
+            "generation-1",
+            FileDescriptor::from_bytes(bytes, "text/plain")?,
+            name,
+        )
+    }
+
+    #[test]
+    fn file_reference_walker_preserves_interleaved_content_order() -> Result<()> {
+        let first = file_ref("first.txt", b"first")?;
+        let result = file_ref("result.txt", b"result")?;
+        let last = file_ref("last.txt", b"last")?;
+        let tools = vec![crate::tool::ToolDefinition {
+            name: "read-result".into(),
+            revision: "1".into(),
+            description: "returns one declared immutable reference".into(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            output_schema: json!({
+                "type": "object",
+                "properties": {"file": {"type": "object"}},
+                "required": ["file"],
+                "additionalProperties": false
+            }),
+            model_output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "file": {"type": "object", "x-acyclic-file-ref": true}
+                },
+                "required": ["file"],
+                "additionalProperties": false
+            }),
+        }];
+        // The exchange validator separately rejects a mixed tool message; the
+        // walker itself is intentionally tested with this synthetic mixed
+        // content so its reference ordering is independently pinned.
+        let message = ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Parts(vec![
+                ModelContentPart::File {
+                    file: first.clone(),
+                    policy: crate::model::FileProjectionPolicy::Reference,
+                },
+                ModelContentPart::ToolResult {
+                    call_id: "result-1".into(),
+                    name: "read-result".into(),
+                    value: json!({"file": result}),
+                },
+                ModelContentPart::File {
+                    file: last.clone(),
+                    policy: crate::model::FileProjectionPolicy::Reference,
+                },
+            ]),
+        };
+        let refs = message_file_refs(&message, &tools)?;
+        assert_eq!(refs, vec![first, result, last]);
+        Ok(())
     }
     #[test]
     fn tool_messages_require_nonempty_paired_results() -> Result<()> {

@@ -515,21 +515,27 @@ fn assert_manifest_matches_request(
         assert_eq!(entry.position, position);
         assert_eq!(entry.role, message.role);
         assert_eq!(entry.digest, prepared.manifest().messages[position].digest);
-        let mut expected_files = message.content.file_refs().into_iter().cloned().collect::<Vec<_>>();
+        let mut expected_files = Vec::new();
         let parts = match &message.content {
             ModelContent::Text(_) => &[][..],
             ModelContent::Part(part) => std::slice::from_ref(part),
             ModelContent::Parts(parts) => parts.as_slice(),
         };
-        // The frozen stage_file v2 schema above declares exactly this output
-        // position. Keep this expectation independent of the runtime walker.
         for part in parts {
-            if let ModelContentPart::ToolResult { name, value, .. } = part
-                && name == "acyclic.stage_file"
-                && let Some(file) = value.get("file")
-            {
-                expected_files.push(serde_json::from_value(file.clone())
-                    .expect("stage_file v2 output must carry a valid immutable FileRef"));
+            match part {
+                ModelContentPart::File { file, .. } => expected_files.push(file.clone()),
+                ModelContentPart::ToolResult { name, value, .. }
+                    if name == "acyclic.stage_file" =>
+                {
+                    if let Some(file) = value.get("file") {
+                        expected_files.push(serde_json::from_value(file.clone()).expect(
+                            "stage_file v2 output must carry a valid immutable FileRef",
+                        ));
+                    }
+                }
+                ModelContentPart::Text { .. }
+                | ModelContentPart::ToolCall { .. }
+                | ModelContentPart::ToolResult { .. } => {}
             }
         }
         assert_eq!(entry.files, expected_files);
