@@ -1,0 +1,24 @@
+{
+  "kind": "failed-native-recursive-checkpoint",
+  "source_commit": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+  "platform": "Windows native",
+  "suite": "local_model_swarm::default_local_composition_runs_recursive_models_and_reopens_without_dispatch",
+  "features": ["test-support", "native-process-tree"],
+  "build_jobs": 1,
+  "stack_override": false,
+  "exit_code": 101,
+  "tests": {"passed": 0, "failed": 1, "ignored": 0, "filtered": 5},
+  "evidence_directory": "target/graphcoder-qualification/c3d82376d-recursive",
+  "artifacts": [
+    {"path": "source.tar", "sha256": "0f6895879dd07a64c60f34fdf1d2fde531f05787500d483a7624ac6b27c3469a"},
+    {"path": "native.log", "sha256": "8af4de77a8102904af82c23e10170f6af76edeab4f326d86678425cc8b227142"},
+    {"path": "local_model_swarm.exe", "sha256": "1e1ba584aa3756d11e9361f6f2f673533758ebc8e850928ff30aa61c103b4c77"}
+  ],
+  "observations": [
+    "The process does not reproduce the previous resolver stack overflow.",
+    "Both child workspace seed publications complete before child preparation.",
+    "Child preparation fails with local swarm task admission identity or contract changed."
+  ],
+  "qualification": "failed",
+  "remaining_gate": "Preserve the admitted execution contract when constructing the scoped child runtime; rerun recursive execution, recovery and integration."
+}
