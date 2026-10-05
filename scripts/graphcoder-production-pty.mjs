@@ -143,6 +143,31 @@ export function assertTypedTerminalRecords(transcript) {
   return records;
 }
 
+/**
+ * A production PTY lane may contain arbitrary terminal commands, but when it
+ * exercises a fresh root turn it must do so after selecting the persisted
+ * session again. This catches a driver that accidentally tests a new session
+ * or reuses the initial operation identity before spawning native ConPTY.
+ */
+export function validateFreshInputSequence(commands) {
+  const inputIndex = commands.findIndex(command => /^\s*input\s+\S+\s+\S[\s\S]*$/u.test(command));
+  if (inputIndex < 0) return;
+  const inputParts = commands[inputIndex].trim().split(/\s+/u);
+  const inputOperation = inputParts[1];
+  const inputPrompt = commands[inputIndex].trim().slice(commands[inputIndex].trim().indexOf(inputOperation) + inputOperation.length).trim();
+  if (inputOperation === undefined || inputPrompt === "") fail("input command must carry a distinct operation and prompt");
+  const prior = commands.slice(0, inputIndex);
+  if (!prior.some(command => /^\s*(?:open|resume)\s+\S+/u.test(command))) {
+    fail("input command must follow an open or resume command in the PTY scenario");
+  }
+  for (const command of prior) {
+    const parts = command.trim().split(/\s+/u);
+    if ((parts[0] === "start" || parts[0] === "input") && parts[1] === inputOperation) {
+      fail(`input operation ${inputOperation} reuses an earlier operation identity`);
+    }
+  }
+}
+
 function expandCommand(command, transcript) {
   return command.replace(/\{\{([a-z_]+)\}\}/g, (_, name) => {
     const value = commandContext(transcript)[name];
@@ -203,6 +228,7 @@ async function waitForClose(processClosed, processError, child) {
 
 export async function run(commands) {
   if (commands.length === 0) fail("at least one terminal command is required");
+  validateFreshInputSequence(commands);
   if (process.platform !== "win32") fail("Windows ConPTY qualification requires a Windows host");
   if (process.env.GRAPHCODER_MOCK_FIXTURE !== undefined) fail("mock fixture environment cannot be used by the production PTY lane");
   const sdkRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
