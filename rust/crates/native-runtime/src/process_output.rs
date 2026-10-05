@@ -62,6 +62,10 @@ impl OutputReader {
 
     /// Joins a reader that has already delivered its output.
     pub fn join(&mut self) -> io::Result<()> {
+        // The reader has completed, so release the platform cancellation
+        // handle before joining. This avoids sending a late wakeup to a
+        // finished native thread when the task is subsequently dropped.
+        self.cancel.take();
         self.join_inner()
     }
 
