@@ -79,7 +79,14 @@ pub(crate) fn message_file_refs(
                 let definition = tools
                     .iter()
                     .find(|tool| tool.name == *name)
-                    .ok_or_else(|| Error::Storage(format!("tool result names unknown tool {name}")))?;
+                    // This helper is also used while admitting newly produced
+                    // context, before the request has reached durable model
+                    // input preparation. An unknown result tool is malformed
+                    // model content; storage corruption is classified by the
+                    // journal replay validators after request admission.
+                    .ok_or_else(|| {
+                        Error::Invalid(format!("tool result names unknown tool {name}"))
+                    })?;
                 let declared = definition.model_output_file_refs(value)?;
                 if declared.is_empty()
                     && name == "acyclic.stage_file"
