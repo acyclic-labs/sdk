@@ -1904,6 +1904,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                     swarm.workers.enqueue(child, Self::run_scheduled_child(owner, turn)).await?;
                 }
             }
+            crate::stack_diagnostics::marker("fork-publisher-complete");
             self.plans
                 .mark_completed(
                     publication.operation_id,
@@ -4255,7 +4256,9 @@ impl PersistentLocalSwarm {
     /// Runs a root prompt under the shared durable local harness.
     pub async fn run_root(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
         let task = self.root_task().await?;
-        self.run_existing(task, operation, prompt).await
+        let run = self.run_existing(task, operation, prompt);
+        crate::stack_diagnostics::future_size("run-existing", &run);
+        run.await
     }
 
     /// Runs a known session with an explicit operation identity.
@@ -4265,7 +4268,9 @@ impl PersistentLocalSwarm {
         operation: OperationId,
         prompt: &str,
     ) -> Result<TurnOutput> {
-        self.run_existing(task, operation, prompt).await
+        let run = self.run_existing(task, operation, prompt);
+        crate::stack_diagnostics::future_size("run-existing", &run);
+        run.await
     }
 
     async fn run_existing(

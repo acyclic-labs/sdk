@@ -1150,6 +1150,7 @@ impl StockExecutor {
                 }
                 Err(error) => return Err(error),
             }
+            crate::stack_diagnostics::marker("provider-dispatch-enter");
             let mut stream = self.provider.generate(prepared);
             let mut observed = Vec::new();
             while let Some(event) = stream.next().await {
@@ -1170,6 +1171,7 @@ impl StockExecutor {
                     .await?;
                 observed.push(event);
             }
+            crate::stack_diagnostics::marker("provider-dispatch-complete");
             observed
         };
         Ok(model_events)
@@ -1364,7 +1366,9 @@ impl StockExecutor {
                 if guarantee != EffectGuarantee::IdempotentRetry {
                     return Err(Error::Indeterminate(publication.operation_id));
                 }
+                crate::stack_diagnostics::marker("fork-publication-enter-retry");
                 publisher.publish(publication.clone()).await?;
+                crate::stack_diagnostics::marker("fork-publication-complete-retry");
             }
         } else {
             let key = format!("model:{step}:publication");
@@ -1383,7 +1387,9 @@ impl StockExecutor {
             {
                 return Err(Error::Indeterminate(publication.operation_id));
             }
+            crate::stack_diagnostics::marker("fork-publication-enter");
             publisher.publish(publication.clone()).await?;
+            crate::stack_diagnostics::marker("fork-publication-complete");
         }
         if publisher.identity() != publication.publisher
             || publisher.guarantee() != publication.guarantee
@@ -2088,16 +2094,16 @@ impl Executor for StockExecutor {
                 let step_text_start = text.len();
                 let mut calls = Vec::new();
                 let mut completed = None;
-                let model_events = self
-                    .run_model_step(
-                        journal,
-                        &input,
-                        step,
-                        &prior_messages,
-                        &rejection_evidence,
-                        text.len() as u64,
-                    )
-                    .await?;
+                let model_step = self.run_model_step(
+                    journal,
+                    &input,
+                    step,
+                    &prior_messages,
+                    &rejection_evidence,
+                    text.len() as u64,
+                );
+                crate::stack_diagnostics::future_size("run-model-step", &model_step);
+                let model_events = model_step.await?;
                 for event in model_events {
                     match event {
                         ModelEvent::Content { delta } => {
