@@ -593,7 +593,10 @@ where
             self.volume.clone(),
             self.maximum_file_bytes,
         )?);
-        Ok(InteractionOperatorAuthorizer::new(host, self.issuer.clone()))
+        Ok(InteractionOperatorAuthorizer::new(
+            host,
+            self.issuer.clone(),
+        ))
     }
 
     /// Builds the local ref-only file tools against this exact owner volume.
@@ -861,7 +864,10 @@ where
     /// alongside the agent-private volume. The caller must provide the exact
     /// typed capabilities for that project; this method does not derive or
     /// widen them from model content.
-    #[allow(clippy::too_many_arguments, reason = "provider and authority boundaries remain explicit")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
     pub(crate) async fn from_providers_with_reads(
         agent: AgentId,
         maximum_file_bytes: u64,
@@ -1832,7 +1838,10 @@ mod tests {
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     impl ModelProvider for TextModel {
-        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             self.0
                 .lock()
@@ -1896,27 +1905,13 @@ mod tests {
             storage.maximum_file_bytes,
         )?;
         assert!(matches!(
-            host.resolve_approval(
-                operation_id,
-                declined,
-                interaction_id,
-                1,
-                true,
-                None,
-            )
-            .await,
+            host.resolve_approval(operation_id, declined, interaction_id, 1, true, None,)
+                .await,
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
-            host.resolve_approval(
-                operation_id,
-                approved,
-                interaction_id,
-                1,
-                false,
-                None,
-            )
-            .await,
+            host.resolve_approval(operation_id, approved, interaction_id, 1, false, None,)
+                .await,
             Err(Error::Unauthorized(_))
         ));
         host.resolve_approval(
@@ -2205,7 +2200,10 @@ mod tests {
     }
 
     impl ModelProvider for ReadFileModel {
-        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 let Some(file) = self

@@ -58,8 +58,7 @@ mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
 pub use interaction_host::{
-    FilesystemInteractionHost, InteractionApprovalAuthorization,
-    InteractionOperatorAuthorizer,
+    FilesystemInteractionHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
 };
 mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
@@ -73,21 +72,21 @@ pub use workflow_journal::FilesystemWorkflowJournal;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub(crate) use local::ensure_session_signing_key;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{
     DurableHarnessStorage, FilesystemExecutionReceiptStore, LocalHarnessTools,
     PersistentLocalHarness,
 };
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub(crate) use local::ensure_session_signing_key;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod swarm_local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use swarm_local::{
-    LocalForkIntent, LocalForkOutcome, LocalForkRequest, LocalInheritedModelDeclaration,
-    LocalFilesystemForkResolver, LocalModelForkPlan, LocalModelForkPlans, LocalModelForkPublisher,
-    LocalModelForkResolver,
-    LocalSessionPhase, LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig,
-    LocalSwarmMessage, LocalSwarmSession, LocalSwarmSnapshot, PersistentLocalSwarm,
+    LocalFilesystemForkResolver, LocalForkIntent, LocalForkOutcome, LocalForkRequest,
+    LocalInheritedModelDeclaration, LocalModelForkPlan, LocalModelForkPlans,
+    LocalModelForkPublisher, LocalModelForkResolver, LocalSessionPhase, LocalSwarmApproval,
+    LocalSwarmBindings, LocalSwarmConfig, LocalSwarmMessage, LocalSwarmSession, LocalSwarmSnapshot,
+    PersistentLocalSwarm,
 };
 
 mod memory;

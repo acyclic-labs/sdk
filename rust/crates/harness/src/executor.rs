@@ -8,8 +8,8 @@ use crate::{
     core::EffectGuarantee,
     interaction::{Interaction, InteractionOutcome},
     model::{
-        Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
-        ModelDispatchPermit, ModelProvider, ModelRequest, ModelRole,
+        Model, ModelAttempt, ModelContent, ModelContentPart, ModelDispatchPermit, ModelEvent,
+        ModelMessage, ModelProvider, ModelRequest, ModelRole,
     },
     projection::SelectedModelContext,
     registry::ComponentIdentity,
@@ -558,9 +558,7 @@ impl StockExecutor {
                 }
                 ExecutionEvent::ModelStarted { step, .. } => {
                     if !prepared_steps.contains(step) {
-                        return Err(Error::Storage(
-                            "model start is missing preparation".into(),
-                        ));
+                        return Err(Error::Storage("model start is missing preparation".into()));
                     }
                     if !started_steps.insert(*step) {
                         return Err(Error::Storage(
@@ -772,7 +770,7 @@ impl StockExecutor {
                 },
                 self.limits,
                 self.provider.model_option_policy(),
-)?
+            )?
             .with_rejection_evidence(context.rejection_evidence.clone())?;
             prepared.validate_complete_exchange()?;
             self.provider.admit(prepared.request())?;
@@ -1851,13 +1849,7 @@ impl Executor for StockExecutor {
                 let mut calls = Vec::new();
                 let mut completed = None;
                 let model_events = self
-                    .run_model_step(
-                        journal,
-                        &input,
-                        step,
-                        &prior_messages,
-                        &rejection_evidence,
-                    )
+                    .run_model_step(journal, &input, step, &prior_messages, &rejection_evidence)
                     .await?;
                 for event in model_events {
                     match event {
@@ -1925,14 +1917,15 @@ impl Executor for StockExecutor {
                     };
                     message.content.validate_limits(self.limits)?;
                     prior_messages.push(message);
-                    if let Some(feedback) = self.resolve_tool_call(
-                        journal,
-                        input.operation_id,
-                        step,
-                        invocation,
-                        &mut prior_messages,
-                    )
-                    .await?
+                    if let Some(feedback) = self
+                        .resolve_tool_call(
+                            journal,
+                            input.operation_id,
+                            step,
+                            invocation,
+                            &mut prior_messages,
+                        )
+                        .await?
                     {
                         if !rejection_evidence.contains(&feedback) {
                             rejection_evidence.push(feedback);

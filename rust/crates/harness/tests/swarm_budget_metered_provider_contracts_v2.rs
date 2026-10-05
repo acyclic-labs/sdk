@@ -1,16 +1,19 @@
 use acyclic_harness::{
+    Error, IdempotencyKey, OperationId, Result,
+    conversation::Limits,
     model::{Model, ModelContent, ModelEvent, ModelMessage, ModelProvider, ModelRole},
     model_input::PreparedModelInput,
-    conversation::Limits,
     swarm_budget::{
         MeteredModelProvider, SwarmBudget, SwarmBudgetLimits, SwarmOwnerFence, SwarmUsage,
         SwarmUsageSource,
     },
-    Error, IdempotencyKey, OperationId, Result,
 };
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use serde_json::Value;
-use std::{collections::VecDeque, sync::{Arc, Mutex}};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 struct MeasuredSource {
     snapshots: Mutex<VecDeque<SwarmUsage>>,
@@ -18,7 +21,9 @@ struct MeasuredSource {
 
 impl MeasuredSource {
     fn new(snapshots: impl IntoIterator<Item = SwarmUsage>) -> Self {
-        Self { snapshots: Mutex::new(snapshots.into_iter().collect()) }
+        Self {
+            snapshots: Mutex::new(snapshots.into_iter().collect()),
+        }
     }
 }
 
@@ -43,10 +48,17 @@ impl SwarmUsageSource for MeasuredSource {
 struct StreamingModel;
 
 impl ModelProvider for StreamingModel {
-    fn generate<'a>(&'a self, _: PreparedModelInput) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        _: PreparedModelInput,
+    ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
         Box::pin(stream::iter([
-            Ok(ModelEvent::Content { delta: "measured answer".into() }),
-            Ok(ModelEvent::Completed { metadata: Value::Null }),
+            Ok(ModelEvent::Content {
+                delta: "measured answer".into(),
+            }),
+            Ok(ModelEvent::Completed {
+                metadata: Value::Null,
+            }),
         ]))
     }
 
@@ -128,7 +140,10 @@ async fn metered_provider_rejects_host_receipt_behind_measured_counters() -> Res
     let prepared = PreparedModelInput::prepare(request(), Limits::default())?;
     let _ = metered.generate(prepared).collect::<Vec<_>>().await;
     let cursor = meter.receipt_cursor()?;
-    assert!(matches!(meter.issue_usage_receipt(), Err(Error::Conflict(_))));
+    assert!(matches!(
+        meter.issue_usage_receipt(),
+        Err(Error::Conflict(_))
+    ));
     assert_eq!(meter.receipt_cursor()?, cursor);
     Ok(())
 }

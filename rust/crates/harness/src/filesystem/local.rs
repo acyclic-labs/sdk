@@ -26,7 +26,10 @@ use acyclic_stream::{
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// Persistent providers own durability; storage semantics are shared with memory.
 pub type DurableHarnessStorage =
@@ -967,8 +970,8 @@ pub(crate) async fn ensure_session_signing_key(
         .await
         .ok_or_else(|| Error::Storage("local descriptor is missing".into()))?
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let descriptor: SessionDescriptor = serde_json::from_slice(&record.value)
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    let descriptor: SessionDescriptor =
+        serde_json::from_slice(&record.value).map_err(|error| Error::Storage(error.to_string()))?;
     validate_descriptor(&descriptor, model, limits, project)?;
     if descriptor.private_volume.provider() != &host.provider
         || descriptor
@@ -1888,7 +1891,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Mock(AtomicUsize);
     impl ModelProvider for Mock {
-        fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content {

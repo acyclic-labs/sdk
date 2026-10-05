@@ -10,18 +10,14 @@ use crate::{
     contract::canonical_json_bytes,
     runtime::TaskAdmissionRecord,
     swarm_budget::{
-        ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
-        SwarmBudgetUsage, SwarmDispatchContext, SwarmDispatchToken, SwarmForkRequest,
-        SwarmForkReservation,
-        RootBudgetClaim, RootBudgetRefresh, SwarmOwnerFence, SwarmResourceRequest,
-        SwarmRootDispatchContext, SwarmUsage,
-        SwarmUsageReceiptCursor,
-        VerifiedForkPublication, VerifiedSwarmUsageReceipt, DispatchConfirmation,
+        DispatchConfirmation, ForkPublication, RootBudgetClaim, RootBudgetRefresh,
+        SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits, SwarmBudgetUsage,
+        SwarmDispatchContext, SwarmDispatchToken, SwarmForkRequest, SwarmForkReservation,
+        SwarmOwnerFence, SwarmResourceRequest, SwarmRootDispatchContext, SwarmUsage,
+        SwarmUsageReceiptCursor, VerifiedForkPublication, VerifiedSwarmUsageReceipt,
     },
 };
-use acyclic_stream::{
-    AppendOutcome, Stream, StreamClient, StreamError, StreamProvider,
-};
+use acyclic_stream::{AppendOutcome, Stream, StreamClient, StreamError, StreamProvider};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, sync::Arc};
@@ -185,7 +181,8 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         if tail != 0 {
             let mut reopened = Self::open(client, session_id).await?;
             let (_, observed_owner, observed_limits) = reopened.descriptor()?;
-            if observed_limits == limits && reopened.budget.root_dispatch_id()? == root_dispatch_id {
+            if observed_limits == limits && reopened.budget.root_dispatch_id()? == root_dispatch_id
+            {
                 if observed_owner == owner {
                     return Ok(reopened);
                 }
@@ -268,9 +265,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
 
     /// Creates the provider guard that root model work must use before it
     /// consumes another session resource slice.
-    pub fn root_usage_limiter(
-        &self,
-    ) -> Result<crate::swarm_budget::SwarmUsageLimiter> {
+    pub fn root_usage_limiter(&self) -> Result<crate::swarm_budget::SwarmUsageLimiter> {
         self.budget.root_usage_limiter()
     }
 
@@ -330,9 +325,11 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         S: crate::swarm_budget::SwarmUsageSource + Send + Sync + 'static,
     {
         let context = self.root_usage_context(source)?;
-        Ok(crate::swarm_budget::MeteredModelProvider::new_root_with_refresh(
-            provider, context, refresh,
-        ))
+        Ok(
+            crate::swarm_budget::MeteredModelProvider::new_root_with_refresh(
+                provider, context, refresh,
+            ),
+        )
     }
 
     /// Wraps root work with durable refresh and claim callbacks. A fresh
@@ -377,12 +374,11 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         S: crate::swarm_budget::SwarmUsageSource + Send + Sync + 'static,
     {
         let context = self.root_usage_context(source)?;
-        Ok(crate::swarm_budget::MeteredModelProvider::new_root_with_refresh_and_permit(
-            provider,
-            context,
-            refresh,
-            permit,
-        ))
+        Ok(
+            crate::swarm_budget::MeteredModelProvider::new_root_with_refresh_and_permit(
+                provider, context, refresh, permit,
+            ),
+        )
     }
 
     /// Wraps a real child provider with the admitted reservation boundary.
@@ -423,11 +419,13 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         S: crate::swarm_budget::SwarmUsageSource + Send + Sync + 'static,
     {
         let context = self.usage_context(token, source)?;
-        Ok(crate::swarm_budget::MeteredModelProvider::new_with_dispatch_confirmation(
-            provider,
-            context,
-            confirmation,
-        ))
+        Ok(
+            crate::swarm_budget::MeteredModelProvider::new_with_dispatch_confirmation(
+                provider,
+                context,
+                confirmation,
+            ),
+        )
     }
 
     /// Wraps a child provider with a cross-stream permit factory. The first
@@ -449,11 +447,11 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         S: crate::swarm_budget::SwarmUsageSource + Send + Sync + 'static,
     {
         let context = self.usage_context(token, source)?;
-        Ok(crate::swarm_budget::MeteredModelProvider::new_with_dispatch_permit(
-            provider,
-            context,
-            permit,
-        ))
+        Ok(
+            crate::swarm_budget::MeteredModelProvider::new_with_dispatch_permit(
+                provider, context, permit,
+            ),
+        )
     }
 
     /// Reloads all committed records from the provider's current tail.
@@ -593,17 +591,18 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         let projected = SwarmBudget::replay(self.events.clone())?;
         let token = projected.confirm_dispatch(operation_id, owner, dispatch_id.clone())?;
         let request_digest = *blake3::hash(dispatch_id.0.as_bytes()).as_bytes();
-        let applied = self.commit(
-            SwarmBudgetEvent::ChildDispatchConfirmed {
+        let applied = self
+            .commit(
+                SwarmBudgetEvent::ChildDispatchConfirmed {
+                    operation_id,
+                    owner: owner.clone(),
+                    dispatch_id,
+                    step: 0,
+                    request_digest,
+                },
                 operation_id,
-                owner: owner.clone(),
-                dispatch_id,
-                step: 0,
-                request_digest,
-            },
-            operation_id,
-        )
-        .await?;
+            )
+            .await?;
         if !applied {
             return Err(Error::Indeterminate(operation_id));
         }
@@ -632,7 +631,9 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 crate::swarm_budget::SwarmReservationState::Active
             )
         {
-            return Err(Error::Conflict("stale or inactive swarm dispatch permit".into()));
+            return Err(Error::Conflict(
+                "stale or inactive swarm dispatch permit".into(),
+            ));
         }
         if reservation.dispatch_id.as_ref() != Some(&dispatch_id) {
             if reservation.dispatch_id.is_none() {
@@ -654,7 +655,9 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
             if existing_digest == &request_digest && existing_id == &dispatch_id {
                 return Err(Error::Indeterminate(operation_id));
             }
-            return Err(Error::Conflict("swarm model dispatch identity differs".into()));
+            return Err(Error::Conflict(
+                "swarm model dispatch identity differs".into(),
+            ));
         }
         let event = SwarmBudgetEvent::ChildDispatchConfirmed {
             operation_id,
@@ -741,9 +744,9 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         token: &SwarmDispatchToken,
         source: S,
     ) -> Result<SwarmDispatchContext<S>> {
-        let reservation = self
-            .reservation(token.operation_id())?
-            .ok_or_else(|| Error::NotFound(format!("swarm reservation {}", token.operation_id())))?;
+        let reservation = self.reservation(token.operation_id())?.ok_or_else(|| {
+            Error::NotFound(format!("swarm reservation {}", token.operation_id()))
+        })?;
         if !matches!(
             reservation.state,
             crate::swarm_budget::SwarmReservationState::Active
@@ -930,9 +933,9 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     ) -> Result<SwarmUsage> {
         let receipt = receipt.into_receipt();
         let projected = SwarmBudget::replay(self.events.clone())?;
-        let root_dispatch_id = projected.root_dispatch_id()?.ok_or_else(|| {
-            Error::Unauthorized("canonical root dispatch lease required".into())
-        })?;
+        let root_dispatch_id = projected
+            .root_dispatch_id()?
+            .ok_or_else(|| Error::Unauthorized("canonical root dispatch lease required".into()))?;
         if receipt.dispatch_id != root_dispatch_id {
             return Err(Error::Conflict(
                 "swarm root usage receipt is not bound to the canonical root lease".into(),
@@ -1449,16 +1452,15 @@ mod tests {
             .await,
             Err(Error::Conflict(_))
         ));
-        let recovered =
-            SwarmBudgetJournal::start_with_root_dispatch_recovering_with_proof(
-                &client,
-                session_id,
-                replacement,
-                limits(),
-                dispatch_id,
-                Arc::new(ExpiredProof),
-            )
-            .await?;
+        let recovered = SwarmBudgetJournal::start_with_root_dispatch_recovering_with_proof(
+            &client,
+            session_id,
+            replacement,
+            limits(),
+            dispatch_id,
+            Arc::new(ExpiredProof),
+        )
+        .await?;
         assert_eq!(recovered.descriptor()?.1.owner, "replacement");
         assert_eq!(recovered.descriptor()?.1.generation, 1);
         Ok(())
@@ -1482,15 +1484,14 @@ mod tests {
             dispatch_id,
         )
         .await?;
-        let mut child_handle =
-            SwarmBudgetJournal::start_with_root_dispatch_recovering(
-                &client,
-                session_id,
-                owner.clone(),
-                limits,
-                IdempotencyKey::new("root-cas")?,
-            )
-            .await?;
+        let mut child_handle = SwarmBudgetJournal::start_with_root_dispatch_recovering(
+            &client,
+            session_id,
+            owner.clone(),
+            limits,
+            IdempotencyKey::new("root-cas")?,
+        )
+        .await?;
         child_handle
             .reserve_child(SwarmForkRequest {
                 operation_id: OperationId::new(),
@@ -1531,16 +1532,17 @@ mod tests {
             dispatch_id.clone(),
         )
         .await?;
-        let mut current =
-            SwarmBudgetJournal::start_with_root_dispatch_recovering(
-                &client,
-                session_id,
-                original.clone(),
-                limits(),
-                dispatch_id,
-            )
+        let mut current = SwarmBudgetJournal::start_with_root_dispatch_recovering(
+            &client,
+            session_id,
+            original.clone(),
+            limits(),
+            dispatch_id,
+        )
+        .await?;
+        current
+            .takeover(&original, replacement.owner.clone())
             .await?;
-        current.takeover(&original, replacement.owner.clone()).await?;
 
         let error = stale
             .claim_root_model_step(&original, OperationId::new(), 0, [1; 32])
@@ -1575,15 +1577,14 @@ mod tests {
             dispatch_id.clone(),
         )
         .await?;
-        let mut concurrent =
-            SwarmBudgetJournal::start_with_root_dispatch_recovering(
-                &client,
-                session_id,
-                owner.clone(),
-                limits,
-                dispatch_id,
-            )
-            .await?;
+        let mut concurrent = SwarmBudgetJournal::start_with_root_dispatch_recovering(
+            &client,
+            session_id,
+            owner.clone(),
+            limits,
+            dispatch_id,
+        )
+        .await?;
         let mut issuer = root.root_usage_receipt_issuer(source.clone())?;
         let receipt = issuer.issue()?;
         concurrent
@@ -1768,19 +1769,11 @@ mod tests {
             )
             .await?;
         journal
-            .confirm_dispatch(
-                child,
-                &owner,
-                IdempotencyKey::new("receipt-dispatch")?,
-            )
+            .confirm_dispatch(child, &owner, IdempotencyKey::new("receipt-dispatch")?)
             .await?;
         assert!(matches!(
             journal
-                .confirm_dispatch(
-                    child,
-                    &owner,
-                    IdempotencyKey::new("receipt-dispatch")?,
-                )
+                .confirm_dispatch(child, &owner, IdempotencyKey::new("receipt-dispatch")?,)
                 .await,
             Err(Error::Indeterminate(_))
         ));

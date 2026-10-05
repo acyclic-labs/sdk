@@ -41,9 +41,10 @@ fn operation(byte: u8) -> OperationId {
 }
 
 fn has_task(request: &ModelRequest, task: &str) -> bool {
-    request.messages.iter().any(|message| {
-        matches!(&message.content, ModelContent::Text(text) if text.contains(task))
-    })
+    request
+        .messages
+        .iter()
+        .any(|message| matches!(&message.content, ModelContent::Text(text) if text.contains(task)))
 }
 
 struct BudgetProvider {
@@ -77,7 +78,10 @@ impl ModelProvider for BudgetProvider {
     ) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.requests.lock().expect("request lock").push(request.clone());
+        self.requests
+            .lock()
+            .expect("request lock")
+            .push(request.clone());
         let is_child = has_task(&request, "child task:");
         if is_child {
             self.child_started.fetch_add(1, Ordering::SeqCst);
@@ -233,7 +237,11 @@ async fn persistent_local_swarm_budget_is_shared_across_children_handles_and_reo
 
     let run = tokio::spawn({
         let swarm = swarm.clone();
-        async move { swarm.run_root(operation(0x01), "start budget children").await }
+        async move {
+            swarm
+                .run_root(operation(0x01), "start budget children")
+                .await
+        }
     });
     timeout(Duration::from_secs(5), async {
         loop {
@@ -270,7 +278,10 @@ async fn persistent_local_swarm_budget_is_shared_across_children_handles_and_reo
     .await?;
     let reopened_usage = reopened.budget_usage().await?.unwrap();
     assert_eq!(reopened_usage, usage);
-    assert_eq!(reopened.session(reopened.root_task().await?).await?.phase, LocalSessionPhase::Completed);
+    assert_eq!(
+        reopened.session(reopened.root_task().await?).await?.phase,
+        LocalSessionPhase::Completed
+    );
     assert!(provider.calls.load(Ordering::SeqCst) <= 3);
     Ok(())
 }

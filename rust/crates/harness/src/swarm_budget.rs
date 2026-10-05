@@ -24,16 +24,35 @@ use std::{
 
 /// Refreshes a root provider's remaining ceiling from its durable budget
 /// projection immediately before a model request.
-pub type RootBudgetRefresh = Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<SwarmResourceRequest>> + Send + Sync>;
+pub type RootBudgetRefresh = Arc<
+    dyn Fn() -> futures::future::BoxFuture<'static, Result<SwarmResourceRequest>> + Send + Sync,
+>;
 
 /// Claims a root model step in the durable budget before provider work starts.
-pub type RootBudgetClaim = Arc<dyn Fn(OperationId, u32, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+pub type RootBudgetClaim = Arc<
+    dyn Fn(OperationId, u32, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>>
+        + Send
+        + Sync,
+>;
 
 /// Confirms a child dispatch after its model request has been prepared.
-pub type DispatchConfirmation = Arc<dyn Fn(OperationId, IdempotencyKey, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+pub type DispatchConfirmation = Arc<
+    dyn Fn(OperationId, IdempotencyKey, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>>
+        + Send
+        + Sync,
+>;
 
 /// Produces the opaque cross-stream mutation committed with `ModelStarted`.
-pub type DispatchPermitFactory = Arc<dyn Fn(OperationId, u32, [u8; 32]) -> futures::future::BoxFuture<'static, Result<crate::model::ModelDispatchPermit>> + Send + Sync>;
+pub type DispatchPermitFactory = Arc<
+    dyn Fn(
+            OperationId,
+            u32,
+            [u8; 32],
+        )
+            -> futures::future::BoxFuture<'static, Result<crate::model::ModelDispatchPermit>>
+        + Send
+        + Sync,
+>;
 
 /// Maximum number of agents one budget projection may retain.
 pub const MAX_SWARM_AGENTS: u64 = 1_000_000;
@@ -242,10 +261,7 @@ impl SwarmUsageLimiter {
                 "restored provider usage exceeds the child reservation ceiling".into(),
             ));
         }
-        Ok(Self {
-            limits,
-            usage,
-        })
+        Ok(Self { limits, usage })
     }
 
     /// Returns cumulative usage admitted by the provider guard.
@@ -273,7 +289,10 @@ impl SwarmUsageLimiter {
 
     /// Reserves output bytes before accepting them from the provider.
     pub fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
-        let remaining = self.limits.output_bytes.saturating_sub(self.usage.output_bytes);
+        let remaining = self
+            .limits
+            .output_bytes
+            .saturating_sub(self.usage.output_bytes);
         if bytes > remaining {
             self.usage.output_bytes = self.limits.output_bytes;
             return Err(Error::Conflict("provider output ceiling exhausted".into()));
@@ -1058,8 +1077,7 @@ impl<S: SwarmUsageSource> Stream for MeteredStream<'_, S> {
         }
         if this.deadline.as_mut().poll(cx).is_ready() {
             this.finished = true;
-            let elapsed_ms =
-                u64::try_from(this.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let elapsed_ms = u64::try_from(this.started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let delta = elapsed_ms.saturating_sub(this.charged_ms);
             return Poll::Ready(Some(match this.meter.admit_execution_time(delta) {
                 Ok(_) => Err(Error::Conflict(
@@ -1219,7 +1237,13 @@ where
         refresh: RootBudgetRefresh,
         permit: DispatchPermitFactory,
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
-        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None, Some(permit))
+        Self::new_root_with_refresh_and_options(
+            provider,
+            context,
+            Some(refresh),
+            None,
+            Some(permit),
+        )
     }
 
     fn new_root_with_refresh_and_options(
@@ -1313,9 +1337,10 @@ where
     }
 
     async fn refresh_root_ceiling(&self) -> Result<()> {
-        let (Some(refresh), Some(dynamic_limits)) =
-            (self.root_refresh.as_ref(), self.root_dynamic_limits.as_ref())
-        else {
+        let (Some(refresh), Some(dynamic_limits)) = (
+            self.root_refresh.as_ref(),
+            self.root_dynamic_limits.as_ref(),
+        ) else {
             return Ok(());
         };
         let limits = refresh().await?;
@@ -1367,7 +1392,9 @@ where
         request_digest: [u8; 32],
     ) -> futures::future::BoxFuture<'a, Result<Option<crate::model::ModelDispatchPermit>>> {
         if let Some(factory) = self.dispatch_permit.clone() {
-            return Box::pin(async move { factory(operation_id, step, request_digest).await.map(Some) });
+            return Box::pin(
+                async move { factory(operation_id, step, request_digest).await.map(Some) },
+            );
         }
         if let Some(claim) = self.root_claim.clone() {
             return Box::pin(async move {
@@ -2129,9 +2156,10 @@ impl SwarmBudget {
         source: S,
     ) -> Result<SwarmUsageReceiptIssuer<S>> {
         let state = self.lock()?;
-        let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
-            Error::Unauthorized("canonical root dispatch lease required".into())
-        })?;
+        let dispatch_id = state
+            .root_dispatch_id
+            .clone()
+            .ok_or_else(|| Error::Unauthorized("canonical root dispatch lease required".into()))?;
         let limits = root_resource_limits(&state)?;
         let cursor = SwarmUsageReceiptCursor::new(
             state.root_usage_sequence,
@@ -2156,9 +2184,10 @@ impl SwarmBudget {
         let state = self.lock()?;
         let limits = root_resource_limits(&state)?;
         let limiter = SwarmUsageLimiter::resume(limits, state.root_usage)?;
-        let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
-            Error::Unauthorized("canonical root dispatch lease required".into())
-        })?;
+        let dispatch_id = state
+            .root_dispatch_id
+            .clone()
+            .ok_or_else(|| Error::Unauthorized("canonical root dispatch lease required".into()))?;
         let cursor = SwarmUsageReceiptCursor::new(
             state.root_usage_sequence,
             (state.root_usage_sequence != 0).then_some(state.root_usage),
@@ -2464,7 +2493,9 @@ impl SwarmBudget {
             return Err(Error::Conflict("swarm reservation is not active".into()));
         }
         if !reservation.confirmed_dispatches.is_empty() {
-            return Err(Error::Conflict("swarm dispatch is already confirmed".into()));
+            return Err(Error::Conflict(
+                "swarm dispatch is already confirmed".into(),
+            ));
         }
         let publication = reservation.publication.as_ref().ok_or_else(|| {
             Error::Storage("active swarm reservation has no fork publication".into())
@@ -2543,9 +2574,7 @@ impl SwarmBudget {
                 ));
             }
         }
-        if let Some((existing_digest, existing_id)) =
-            reservation.confirmed_dispatches.get(&step)
-        {
+        if let Some((existing_digest, existing_id)) = reservation.confirmed_dispatches.get(&step) {
             if *existing_digest != request_digest || existing_id != &dispatch_id {
                 return Err(Error::Conflict("swarm dispatch retry differs".into()));
             }
@@ -2607,7 +2636,9 @@ impl SwarmBudget {
             return Err(Error::Conflict("root model step budget exhausted".into()));
         }
         if operation_id != state.session_id {
-            return Err(Error::Unauthorized("root model claim must use the session identity".into()));
+            return Err(Error::Unauthorized(
+                "root model claim must use the session identity".into(),
+            ));
         }
         // Reserve the complete remaining root ceiling for the in-flight
         // dispatch.  The provider reports the actual output and elapsed time
@@ -2626,12 +2657,16 @@ impl SwarmBudget {
             execution_time_ms: remaining
                 .execution_time_ms
                 .checked_sub(state.root_usage.execution_time_ms)
-                .ok_or_else(|| Error::Storage("root execution-time claim ceiling regressed".into()))?,
+                .ok_or_else(|| {
+                    Error::Storage("root execution-time claim ceiling regressed".into())
+                })?,
         };
         if claim.model_steps == 0 || claim.output_bytes == 0 || claim.execution_time_ms == 0 {
             return Err(Error::Conflict("root model step budget exhausted".into()));
         }
-        state.root_claims.insert(key, (request_digest, dispatch_id, claim));
+        state
+            .root_claims
+            .insert(key, (request_digest, dispatch_id, claim));
         Ok(state.root_usage)
     }
 
@@ -2817,13 +2852,7 @@ impl SwarmBudget {
                 step,
                 request_digest,
             } => self
-                .confirm_dispatch_step(
-                    operation_id,
-                    &owner,
-                    dispatch_id,
-                    step,
-                    request_digest,
-                )
+                .confirm_dispatch_step(operation_id, &owner, dispatch_id, step, request_digest)
                 .map(|_| ()),
             SwarmBudgetEvent::RootModelStepClaimed {
                 owner,
@@ -2971,10 +3000,12 @@ fn reservation_resources(reservation: &SwarmForkReservation) -> SwarmUsage {
 }
 
 fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest> {
-    let root_claimed = state.root_claims.values().try_fold(
-        SwarmUsage::default(),
-        |total, (_, _, claim)| add_usage(total, *claim),
-    )?;
+    let root_claimed = state
+        .root_claims
+        .values()
+        .try_fold(SwarmUsage::default(), |total, (_, _, claim)| {
+            add_usage(total, *claim)
+        })?;
     let ceiling = |limit: u64, consumed: u64, root: u64, reserved: u64| {
         limit
             .checked_sub(consumed)
@@ -2987,22 +3018,36 @@ fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest
             state.limits.max_model_steps,
             state.usage.consumed.model_steps,
             state.root_usage.model_steps,
-            state.usage.reserved.model_steps.checked_add(root_claimed.model_steps)
+            state
+                .usage
+                .reserved
+                .model_steps
+                .checked_add(root_claimed.model_steps)
                 .ok_or_else(|| Error::Storage("root model claim projection overflow".into()))?,
         )?,
         output_bytes: ceiling(
             state.limits.max_output_bytes,
             state.usage.consumed.output_bytes,
             state.root_usage.output_bytes,
-            state.usage.reserved.output_bytes.checked_add(root_claimed.output_bytes)
+            state
+                .usage
+                .reserved
+                .output_bytes
+                .checked_add(root_claimed.output_bytes)
                 .ok_or_else(|| Error::Storage("root output claim projection overflow".into()))?,
         )?,
         execution_time_ms: ceiling(
             state.limits.max_execution_time_ms,
             state.usage.consumed.execution_time_ms,
             state.root_usage.execution_time_ms,
-            state.usage.reserved.execution_time_ms.checked_add(root_claimed.execution_time_ms)
-                .ok_or_else(|| Error::Storage("root execution-time claim projection overflow".into()))?,
+            state
+                .usage
+                .reserved
+                .execution_time_ms
+                .checked_add(root_claimed.execution_time_ms)
+                .ok_or_else(|| {
+                    Error::Storage("root execution-time claim projection overflow".into())
+                })?,
         )?,
     };
     if limits.model_steps == 0 || limits.output_bytes == 0 || limits.execution_time_ms == 0 {
@@ -3343,9 +3388,10 @@ fn update_root_usage(
             .root_usage_sequence
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("swarm root usage receipt sequence exhausted".into()))?;
-        let root_dispatch_id = state.root_dispatch_id.as_ref().ok_or_else(|| {
-            Error::Unauthorized("canonical root dispatch lease required".into())
-        })?;
+        let root_dispatch_id = state
+            .root_dispatch_id
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("canonical root dispatch lease required".into()))?;
         if receipt.operation_id != state.session_id
             || receipt.usage != usage
             || receipt.sequence != expected_sequence

@@ -306,7 +306,11 @@ impl CompositeForkVerifier {
             .inherited_context
             .iter()
             .chain(seed.reference_grants.iter().map(|grant| &grant.file))
-            .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
+            .chain(
+                seed.model_boundary
+                    .iter()
+                    .flat_map(|boundary| boundary.files.iter()),
+            )
         {
             if !verified_files.insert(file.read_capability()?) {
                 continue;
@@ -573,7 +577,11 @@ impl ForkSeedVerifier for ContentForkVerifier {
                 .inherited_context
                 .iter()
                 .chain(seed.reference_grants.iter().map(|grant| &grant.file))
-            .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
+                .chain(
+                    seed.model_boundary
+                        .iter()
+                        .flat_map(|boundary| boundary.files.iter()),
+                )
                 .chain(seed.attachment_manifests.iter())
             {
                 if file.volume().provider() == &self.provider
