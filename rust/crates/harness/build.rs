@@ -1,5 +1,5 @@
 //! Builds the canonical harness Protobuf messages and descriptor set, plus
-//! the tonic service glue under the `grpc` feature.
+//! the tonic service glue for native targets.
 //!
 //! The Rust model descriptor is the default binding input. The immutable
 //! handshake archive is copied separately to `OUT_DIR`; it is never replaced
@@ -65,8 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ARCHIVED_DESCRIPTOR.to_vec()
     };
     std::fs::write(out_dir.join("harness_descriptor.bin"), archive)?;
-    #[cfg(feature = "grpc")]
-    {
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32") {
         // Tonic service glue reuses the canonical messages generated above;
         // it lives in its own directory because it shares the package name.
         let out = std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("grpc");
