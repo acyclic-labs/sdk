@@ -25,10 +25,11 @@ use crate::{
         ToolRegistry, ToolRejectionFeedback, ToolResult, validate_value,
     },
 };
+use acyclic_stream::{SystemUnixMillisClock, UnixMillisClock};
 use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::{BTreeMap, BTreeSet}, sync::Arc, time::Instant};
+use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -687,6 +688,7 @@ pub struct StockExecutor {
     batch_identity: Option<ComponentIdentity>,
     batch_guarantee: Option<EffectGuarantee>,
     authenticated_task: Option<TaskId>,
+    execution_clock: Arc<dyn UnixMillisClock>,
 }
 
 impl StockExecutor {
@@ -724,7 +726,20 @@ impl StockExecutor {
             batch_identity: None,
             batch_guarantee: None,
             authenticated_task: None,
+            execution_clock: Arc::new(SystemUnixMillisClock),
         }
+    }
+
+    /// Uses the host-provided clock for provider execution accounting.
+    ///
+    /// Provider timing is part of the durable admission boundary, so the
+    /// executor must use the same platform clock abstraction on native and
+    /// WASM targets. Applications can inject a deterministic clock for
+    /// replay and qualification without changing model-visible input.
+    #[must_use]
+    pub fn with_execution_clock(mut self, clock: Arc<dyn UnixMillisClock>) -> Self {
+        self.execution_clock = clock;
+        self
     }
 
     /// Applies the composition's checked bounds to the stock loop.
@@ -1175,7 +1190,7 @@ impl StockExecutor {
             if let Some(budget) = budget.as_deref_mut() {
                 budget.admit_model_step()?;
             }
-            let provider_started = Instant::now();
+            let provider_started = self.execution_clock.now_unix_millis();
             let mut admitted_time_ms = 0;
             let attempt = ModelAttempt {
                 operation_id: input.operation_id,
@@ -1197,7 +1212,10 @@ impl StockExecutor {
             let mut observed = replayed_model;
             for event in continuation.drain(..) {
                 if let Some(budget) = budget.as_deref_mut() {
-                    let elapsed_ms = provider_started.elapsed().as_millis() as u64;
+                    let elapsed_ms = self
+                        .execution_clock
+                        .now_unix_millis()
+                        .saturating_sub(provider_started);
                     let delta_ms = elapsed_ms.saturating_sub(admitted_time_ms);
                     if delta_ms != 0 {
                         budget.admit_execution_time_ms(delta_ms)?;
@@ -1279,7 +1297,7 @@ impl StockExecutor {
                 .as_deref()
                 .map(|budget| budget.provider_dispatch_context(step, request_digest))
                 .transpose()?;
-            let provider_started = Instant::now();
+            let provider_started = self.execution_clock.now_unix_millis();
             let mut admitted_time_ms = 0;
             let mut stream = match dispatch {
                 Some(dispatch) => self.provider.generate_with_dispatch(prepared, dispatch),
@@ -1289,7 +1307,10 @@ impl StockExecutor {
             while let Some(event) = stream.next().await {
                 let event = event?;
                 if let Some(budget) = budget.as_deref_mut() {
-                    let elapsed_ms = provider_started.elapsed().as_millis() as u64;
+                    let elapsed_ms = self
+                        .execution_clock
+                        .now_unix_millis()
+                        .saturating_sub(provider_started);
                     let delta_ms = elapsed_ms.saturating_sub(admitted_time_ms);
                     if delta_ms != 0 {
                         budget.admit_execution_time_ms(delta_ms)?;
