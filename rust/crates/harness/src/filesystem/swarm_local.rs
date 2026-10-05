@@ -1386,6 +1386,10 @@ pub struct LocalModelForkPlans {
     /// storage detail and does not represent the model's ordered batch.
     intent_order: Mutex<BTreeMap<(OperationId, OperationId), u64>>,
     issuer_bindings: Mutex<BTreeMap<(OperationId, OperationId), [u8; 32]>>,
+    /// Durable aliases for owner-prepared plans that may publish without a
+    /// model-selected intent. The alias distinguishes an expected fork from
+    /// a proven no-fork model batch during recovery.
+    expected_plans: Mutex<BTreeMap<OperationId, BTreeSet<(OperationId, OperationId)>>>,
     completed: Mutex<BTreeMap<OperationId, [u8; 32]>>,
     resolver: Option<Arc<dyn LocalModelForkResolver>>,
     journal: Mutex<Option<StreamClient<LocalStream>>>,
@@ -1411,6 +1415,33 @@ fn replay_fork_publication_completion(
         ));
     }
     completed.insert(*operation, *digest);
+    Ok(())
+}
+
+fn replay_fork_plan_registration(
+    event: &StoredEvent,
+    expected_plans: &mut BTreeMap<OperationId, BTreeSet<(OperationId, OperationId)>>,
+) -> Result<()> {
+    let StoredEvent::ForkPlanRegistered {
+        publication,
+        fork_operation,
+        child_operation,
+    } = event
+    else {
+        return Ok(());
+    };
+    if publication.into_bytes() == [0; 16]
+        || fork_operation.into_bytes() == [0; 16]
+        || child_operation.into_bytes() == [0; 16]
+    {
+        return Err(Error::Conflict(
+            "persisted fork plan registration identity is empty".into(),
+        ));
+    }
+    expected_plans
+        .entry(*publication)
+        .or_default()
+        .insert((*fork_operation, *child_operation));
     Ok(())
 }
 
@@ -1510,6 +1541,7 @@ impl Default for LocalModelForkPlans {
             intents: Mutex::new(BTreeMap::new()),
             intent_order: Mutex::new(BTreeMap::new()),
             issuer_bindings: Mutex::new(BTreeMap::new()),
+            expected_plans: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(BTreeMap::new()),
             resolver: None,
             journal: Mutex::new(None),
@@ -1557,9 +1589,11 @@ impl LocalModelForkPlans {
         let mut intents = self.intents.lock().await;
         let mut intent_order = self.intent_order.lock().await;
         let mut issuer_bindings = self.issuer_bindings.lock().await;
+        let mut expected_plans = self.expected_plans.lock().await;
         let mut completed = self.completed.lock().await;
         for (position, record) in records.into_iter().enumerate() {
             replay_fork_publication_completion(&record.event, &mut completed)?;
+            replay_fork_plan_registration(&record.event, &mut expected_plans)?;
             replay_fork_intent_record(
                 position as u64,
                 record,
@@ -1607,9 +1641,11 @@ impl LocalModelForkPlans {
         let mut intents = self.intents.lock().await;
         let mut intent_order = self.intent_order.lock().await;
         let mut issuer_bindings = self.issuer_bindings.lock().await;
+        let mut expected_plans = self.expected_plans.lock().await;
         let mut completed = self.completed.lock().await;
         for (position, record) in records.into_iter().enumerate() {
             replay_fork_publication_completion(&record.event, &mut completed)?;
+            replay_fork_plan_registration(&record.event, &mut expected_plans)?;
             replay_fork_intent_record(
                 position as u64,
                 record,
@@ -1619,6 +1655,119 @@ impl LocalModelForkPlans {
             )?;
         }
         Ok(())
+    }
+
+    async fn has_expected_plan(&self, publication: OperationId) -> Result<bool> {
+        self.refresh_journal_state().await?;
+        Ok(self
+            .expected_plans
+            .lock()
+            .await
+            .get(&publication)
+            .is_some_and(|plans| !plans.is_empty()))
+    }
+
+    async fn expected_plan_status(
+        &self,
+        publication: OperationId,
+        fork_operation: OperationId,
+        child_operation: OperationId,
+    ) -> bool {
+        self.expected_plans
+            .lock()
+            .await
+            .get(&publication)
+            .is_some_and(|plans| plans.contains(&(fork_operation, child_operation)))
+    }
+
+    /// Persists the expectation for an owner-prepared plan before a model
+    /// publication can be admitted. This is an alias only: the plan remains
+    /// the in-memory typed payload and no child lifecycle state is changed.
+    async fn record_plan_registration(
+        &self,
+        publication: OperationId,
+        fork_operation: OperationId,
+        child_operation: OperationId,
+    ) -> Result<()> {
+        if publication.into_bytes() == [0; 16]
+            || fork_operation.into_bytes() == [0; 16]
+            || child_operation.into_bytes() == [0; 16]
+        {
+            return Err(Error::Invalid("fork plan registration identity is empty".into()));
+        }
+        self.refresh_journal_state().await?;
+        if self
+            .expected_plan_status(publication, fork_operation, child_operation)
+            .await
+        {
+            return Ok(());
+        }
+        let registry = self.journal.lock().await.clone();
+        let Some(registry) = registry else {
+            self.expected_plans
+                .lock()
+                .await
+                .entry(publication)
+                .or_default()
+                .insert((fork_operation, child_operation));
+            return Ok(());
+        };
+        let stream = registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let event = StoredEvent::ForkPlanRegistered {
+            publication,
+            fork_operation,
+            child_operation,
+        };
+        let mut last_conflict = None;
+        for _ in 0..4 {
+            let (observed_tail, _) = load_records_with_tail(&stream).await?;
+            self.refresh_journal_state().await?;
+            if self
+                .expected_plan_status(publication, fork_operation, child_operation)
+                .await
+            {
+                return Ok(());
+            }
+            match append_record_at(&stream, event.clone(), observed_tail).await {
+                Ok(()) => {
+                    self.refresh_journal_state().await?;
+                    if self
+                        .expected_plan_status(publication, fork_operation, child_operation)
+                        .await
+                    {
+                        return Ok(());
+                    }
+                    return Err(Error::Conflict(
+                        "durable fork plan registration was not visible after append".into(),
+                    ));
+                }
+                Err(error @ Error::Conflict(_)) => {
+                    last_conflict = Some(error);
+                    self.refresh_journal_state().await?;
+                    if self
+                        .expected_plan_status(publication, fork_operation, child_operation)
+                        .await
+                    {
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    self.refresh_journal_state().await?;
+                    if self
+                        .expected_plan_status(publication, fork_operation, child_operation)
+                        .await
+                    {
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Err(last_conflict.unwrap_or_else(|| {
+            Error::Conflict("fork plan registration did not reach a stable tail".into())
+        }))
     }
 
     async fn record_intent(&self, intent: LocalForkIntent) -> Result<()> {
@@ -1842,12 +1991,19 @@ impl LocalModelForkPlans {
         let key = (operation, plan.request.child_operation);
         let mut plans = self.plans.lock().await;
         if let Some(existing) = plans.get(&key)
-            && existing.request != plan.request
+            && (existing.request != plan.request
+                || existing.publication_operation != plan.publication_operation)
         {
             return Err(Error::Conflict(
                 "model fork operation is already bound to another request".into(),
             ));
         }
+        self.record_plan_registration(
+            plan.publication_operation,
+            operation,
+            plan.request.child_operation,
+        )
+        .await?;
         plans.insert(key, plan);
         Ok(())
     }
@@ -2107,6 +2263,13 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             };
             if !has_intent && prepared_plans.is_empty() {
                 crate::stack_diagnostics::marker("fork-publisher-no-plans");
+                if self
+                    .plans
+                    .has_expected_plan(publication.operation_id)
+                    .await?
+                {
+                    return Err(Error::Indeterminate(publication.operation_id));
+                }
                 return Ok(());
             }
             crate::stack_diagnostics::marker("fork-publisher-before-resolve");
@@ -2240,6 +2403,13 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 .get_for_publication(publication.operation_id)
                 .await;
             if plans.is_empty() {
+                if self
+                    .plans
+                    .has_expected_plan(publication.operation_id)
+                    .await?
+                {
+                    return Ok(None);
+                }
                 if !self.plans.has_intent(publication.operation_id).await? {
                     return Ok(Some(()));
                 }
@@ -2841,6 +3011,14 @@ enum StoredEvent {
         operation: OperationId,
         child_operation: OperationId,
         digest: [u8; 32],
+    },
+    /// Durable alias for an owner-prepared plan that may publish without a
+    /// model-selected intent. It records expectation only; it does not admit
+    /// a child or authorize workspace publication.
+    ForkPlanRegistered {
+        publication: OperationId,
+        fork_operation: OperationId,
+        child_operation: OperationId,
     },
     /// Prepared request retained before provider publication. This event is
     /// replayable but does not authorize child activation by itself.
@@ -7496,7 +7674,7 @@ fn apply_record(
                 ));
             }
         }
-        StoredEvent::ForkIssuerBinding { .. } => {}
+        StoredEvent::ForkIssuerBinding { .. } | StoredEvent::ForkPlanRegistered { .. } => {}
         StoredEvent::ForkActivationClaimed { child, operation } => {
             if child.into_bytes() == [0; 16] || operation.into_bytes() == [0; 16] {
                 return Err(Error::Conflict(
@@ -7788,6 +7966,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::batch_publication::ModelBatchPublisher;
     use crate::context::ContextStage;
     use crate::interaction::Interaction;
     use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
@@ -8476,6 +8655,80 @@ mod tests {
             1,
             "a retry from another handle must reuse the durable intent"
         );
+        Ok(())
+    }
+
+    fn test_batch_publication(operation: OperationId) -> Result<ModelBatchPublication> {
+        let provider = ProviderRef::new("local", "filesystem", "2")?;
+        let volume = VolumeRef::new(
+            provider,
+            format!("publication-{operation}"),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([0xA1; 16])),
+        )?;
+        let descriptor = crate::conversation::FileDescriptor::from_bytes(
+            b"{}",
+            "application/json",
+        )?;
+        let request = FileRef::new(
+            volume.clone(),
+            "request.json",
+            "1",
+            descriptor.clone(),
+            "request",
+        )?;
+        let boundary = FileRef::new(volume, "boundary.json", "1", descriptor, "boundary")?;
+        Ok(ModelBatchPublication {
+            operation_id: operation,
+            parent_operation: OperationId::from_bytes([0xA2; 16]),
+            step: 0,
+            request,
+            boundary,
+            publisher: ComponentIdentity {
+                name: "test.publisher".into(),
+                version: "1".into(),
+                digest: [0xA3; 32],
+            },
+            guarantee: EffectGuarantee::IdempotentRetry,
+        })
+    }
+
+    #[tokio::test]
+    async fn registered_plan_alias_survives_reopen_without_false_completion() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let client = StreamClient::new(provider);
+        let publication = OperationId::from_bytes([0xA4; 16]);
+        let fork = OperationId::from_bytes([0xA5; 16]);
+        let child = OperationId::from_bytes([0xA6; 16]);
+        let first = LocalModelForkPlans::new();
+        first.bind_journal(client.clone()).await?;
+        first
+            .record_plan_registration(publication, fork, child)
+            .await?;
+
+        // A cold reopen loses the in-memory typed plan but retains the
+        // expectation alias in the same LocalStream registry.
+        let reopened = Arc::new(LocalModelForkPlans::new());
+        reopened.bind_journal(client).await?;
+        assert!(reopened.has_expected_plan(publication).await?);
+        let publisher = LocalModelForkPublisher::new(reopened);
+        let batch = test_batch_publication(publication)?;
+        assert!(publisher.reconcile(batch.clone()).await?.is_none());
+        assert!(matches!(
+            publisher.publish(batch).await,
+            Err(Error::Indeterminate(operation)) if operation == publication
+        ));
+
+        // An ordinary no-fork publication has no alias and remains a proven
+        // no-op, so the recovery fence does not turn every batch into an
+        // indeterminate result.
+        let empty = LocalModelForkPublisher::new(Arc::new(LocalModelForkPlans::new()));
+        assert!(empty.publish(test_batch_publication(OperationId::from_bytes([0xA7; 16]))?).await.is_ok());
         Ok(())
     }
 
