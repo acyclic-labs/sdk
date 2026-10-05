@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
-    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, semantic_type, PublicFieldDirection,
-    PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, SEMANTIC_TYPES, SemanticRule, WireValueKind,
-    WIRE_UNION_VARIANTS,
+    PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldDirection, SEMANTIC_TYPES,
+    SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, field_semantic_type, resolved_request_fields,
+    resolved_response_fields, resolved_rpc_methods, semantic_type,
 };
 use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
 
@@ -17,20 +17,131 @@ pub const SWIFT_TYPED_PATH: &str = "swift/RustTypedClients.swift";
 pub const CPP_TYPED_PATH: &str = "cpp/include/acyclic/rust_typed_clients.hpp";
 
 pub fn generate_swift_cpp_typed_facades() -> Vec<(&'static str, String)> {
-    vec![(SWIFT_TYPED_PATH, render_swift()), (CPP_TYPED_PATH, render_cpp())]
+    vec![
+        (SWIFT_TYPED_PATH, render_swift()),
+        (CPP_TYPED_PATH, render_cpp()),
+    ]
 }
 
 fn camel(value: &str) -> String {
-    value.split('_').filter(|part| !part.is_empty()).map(|part| {
-        let mut chars = part.chars();
-        chars.next().map(|first| first.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
-    }).collect()
+    value
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 fn cpp_method_name(value: &str) -> String {
     let mut chars = value.chars();
-    let candidate = chars.next().map(|first| first.to_lowercase().collect::<String>() + chars.as_str()).unwrap_or_else(|| value.to_owned());
-    if matches!(candidate.as_str(), "alignas" | "alignof" | "and" | "and_eq" | "asm" | "atomic_cancel" | "atomic_commit" | "atomic_noexcept" | "auto" | "bitand" | "bitor" | "bool" | "break" | "case" | "catch" | "char" | "char8_t" | "char16_t" | "char32_t" | "class" | "compl" | "concept" | "const" | "consteval" | "constexpr" | "constinit" | "const_cast" | "co_await" | "co_return" | "co_yield" | "decltype" | "default" | "delete" | "do" | "double" | "dynamic_cast" | "else" | "enum" | "explicit" | "export" | "extern" | "false" | "float" | "for" | "friend" | "goto" | "if" | "inline" | "int" | "long" | "mutable" | "namespace" | "new" | "noexcept" | "not" | "not_eq" | "nullptr" | "operator" | "or" | "or_eq" | "private" | "protected" | "public" | "reflexpr" | "register" | "reinterpret_cast" | "requires" | "return" | "short" | "signed" | "sizeof" | "static" | "static_assert" | "static_cast" | "struct" | "switch" | "synchronized" | "template" | "this" | "thread_local" | "throw" | "true" | "try" | "typedef" | "typeid" | "typename" | "union" | "unsigned" | "using" | "virtual" | "void" | "volatile" | "wchar_t" | "while" | "xor" | "xor_eq") {
+    let candidate = chars
+        .next()
+        .map(|first| first.to_lowercase().collect::<String>() + chars.as_str())
+        .unwrap_or_else(|| value.to_owned());
+    if matches!(
+        candidate.as_str(),
+        "alignas"
+            | "alignof"
+            | "and"
+            | "and_eq"
+            | "asm"
+            | "atomic_cancel"
+            | "atomic_commit"
+            | "atomic_noexcept"
+            | "auto"
+            | "bitand"
+            | "bitor"
+            | "bool"
+            | "break"
+            | "case"
+            | "catch"
+            | "char"
+            | "char8_t"
+            | "char16_t"
+            | "char32_t"
+            | "class"
+            | "compl"
+            | "concept"
+            | "const"
+            | "consteval"
+            | "constexpr"
+            | "constinit"
+            | "const_cast"
+            | "co_await"
+            | "co_return"
+            | "co_yield"
+            | "decltype"
+            | "default"
+            | "delete"
+            | "do"
+            | "double"
+            | "dynamic_cast"
+            | "else"
+            | "enum"
+            | "explicit"
+            | "export"
+            | "extern"
+            | "false"
+            | "float"
+            | "for"
+            | "friend"
+            | "goto"
+            | "if"
+            | "inline"
+            | "int"
+            | "long"
+            | "mutable"
+            | "namespace"
+            | "new"
+            | "noexcept"
+            | "not"
+            | "not_eq"
+            | "nullptr"
+            | "operator"
+            | "or"
+            | "or_eq"
+            | "private"
+            | "protected"
+            | "public"
+            | "reflexpr"
+            | "register"
+            | "reinterpret_cast"
+            | "requires"
+            | "return"
+            | "short"
+            | "signed"
+            | "sizeof"
+            | "static"
+            | "static_assert"
+            | "static_cast"
+            | "struct"
+            | "switch"
+            | "synchronized"
+            | "template"
+            | "this"
+            | "thread_local"
+            | "throw"
+            | "true"
+            | "try"
+            | "typedef"
+            | "typeid"
+            | "typename"
+            | "union"
+            | "unsigned"
+            | "using"
+            | "virtual"
+            | "void"
+            | "volatile"
+            | "wchar_t"
+            | "while"
+            | "xor"
+            | "xor_eq"
+    ) {
         format!("rpc_{candidate}")
     } else {
         candidate
@@ -38,15 +149,151 @@ fn cpp_method_name(value: &str) -> String {
 }
 
 fn swift_field_name(value: &str) -> String {
-    if matches!(value, "associatedtype" | "as" | "break" | "case" | "catch" | "class" | "continue" | "convenience" | "default" | "defer" | "deinit" | "didSet" | "do" | "dynamic" | "else" | "enum" | "extension" | "fallthrough" | "false" | "fileprivate" | "final" | "for" | "func" | "get" | "guard" | "if" | "import" | "in" | "indirect" | "infix" | "init" | "inout" | "internal" | "is" | "let" | "mutating" | "nil" | "none" | "nonmutating" | "open" | "operator" | "optional" | "override" | "postfix" | "prefix" | "private" | "protocol" | "public" | "repeat" | "required" | "rethrows" | "return" | "self" | "set" | "some" | "static" | "struct" | "subscript" | "super" | "switch" | "throws" | "throw" | "true" | "try" | "typealias" | "unowned" | "var" | "weak" | "where" | "while" | "willSet") {
+    if matches!(
+        value,
+        "associatedtype"
+            | "as"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "continue"
+            | "convenience"
+            | "default"
+            | "defer"
+            | "deinit"
+            | "didSet"
+            | "do"
+            | "dynamic"
+            | "else"
+            | "enum"
+            | "extension"
+            | "fallthrough"
+            | "false"
+            | "fileprivate"
+            | "final"
+            | "for"
+            | "func"
+            | "get"
+            | "guard"
+            | "if"
+            | "import"
+            | "in"
+            | "indirect"
+            | "infix"
+            | "init"
+            | "inout"
+            | "internal"
+            | "is"
+            | "let"
+            | "mutating"
+            | "nil"
+            | "none"
+            | "nonmutating"
+            | "open"
+            | "operator"
+            | "optional"
+            | "override"
+            | "postfix"
+            | "prefix"
+            | "private"
+            | "protocol"
+            | "public"
+            | "repeat"
+            | "required"
+            | "rethrows"
+            | "return"
+            | "self"
+            | "set"
+            | "some"
+            | "static"
+            | "struct"
+            | "subscript"
+            | "super"
+            | "switch"
+            | "throws"
+            | "throw"
+            | "true"
+            | "try"
+            | "typealias"
+            | "unowned"
+            | "var"
+            | "weak"
+            | "where"
+            | "while"
+            | "willSet"
+    ) {
         format!("`{value}`")
     } else {
         value.to_owned()
     }
 }
 
+fn swift_local_name(value: &str) -> String {
+    match value {
+        "protocol" => "protocolValue".into(),
+        "class" => "classValue".into(),
+        "struct" => "structValue".into(),
+        "self" => "selfValue".into(),
+        _ => value.to_owned(),
+    }
+}
+
 fn swift_method_name(value: &str) -> String {
-    if matches!(value, "associatedtype" | "as" | "break" | "case" | "catch" | "class" | "continue" | "default" | "defer" | "deinit" | "do" | "else" | "enum" | "extension" | "fallthrough" | "false" | "for" | "func" | "guard" | "if" | "import" | "in" | "init" | "inout" | "internal" | "is" | "let" | "nil" | "none" | "open" | "operator" | "private" | "protocol" | "public" | "repeat" | "return" | "self" | "set" | "static" | "struct" | "subscript" | "super" | "switch" | "throw" | "throws" | "true" | "try" | "typealias" | "var" | "where" | "while") {
+    if matches!(
+        value,
+        "associatedtype"
+            | "as"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "continue"
+            | "default"
+            | "defer"
+            | "deinit"
+            | "do"
+            | "else"
+            | "enum"
+            | "extension"
+            | "fallthrough"
+            | "false"
+            | "for"
+            | "func"
+            | "guard"
+            | "if"
+            | "import"
+            | "in"
+            | "init"
+            | "inout"
+            | "internal"
+            | "is"
+            | "let"
+            | "nil"
+            | "none"
+            | "open"
+            | "operator"
+            | "private"
+            | "protocol"
+            | "public"
+            | "repeat"
+            | "return"
+            | "self"
+            | "set"
+            | "static"
+            | "struct"
+            | "subscript"
+            | "super"
+            | "switch"
+            | "throw"
+            | "throws"
+            | "true"
+            | "try"
+            | "typealias"
+            | "var"
+            | "where"
+            | "while"
+    ) {
         format!("{}{}{}", "`", value, "`")
     } else {
         value.to_owned()
@@ -54,16 +301,35 @@ fn swift_method_name(value: &str) -> String {
 }
 
 fn swift_kind(kind: WireValueKind, name: &str) -> String {
-    match kind { WireValueKind::String | WireValueKind::Bytes | WireValueKind::Message | WireValueKind::UnsignedInteger => name.to_owned(), WireValueKind::SignedInteger => "Int64".into(), WireValueKind::Boolean => "Bool".into(), WireValueKind::Timestamp => "Date".into(), WireValueKind::Enum | WireValueKind::Oneof => "WireChoice".into() }
+    match kind {
+        WireValueKind::String
+        | WireValueKind::Bytes
+        | WireValueKind::Message
+        | WireValueKind::UnsignedInteger => name.to_owned(),
+        WireValueKind::SignedInteger => "Int64".into(),
+        WireValueKind::Boolean => "Bool".into(),
+        WireValueKind::Timestamp => "Date".into(),
+        WireValueKind::Enum | WireValueKind::Oneof => "WireChoice".into(),
+    }
 }
 
 fn cpp_kind(kind: WireValueKind, name: &str) -> String {
-    match kind { WireValueKind::String | WireValueKind::Bytes | WireValueKind::Message | WireValueKind::UnsignedInteger => name.to_owned(), WireValueKind::SignedInteger => "std::int64_t".into(), WireValueKind::Boolean => "bool".into(), WireValueKind::Timestamp => "std::chrono::system_clock::time_point".into(), WireValueKind::Enum | WireValueKind::Oneof => "WireChoice".into() }
+    match kind {
+        WireValueKind::String
+        | WireValueKind::Bytes
+        | WireValueKind::Message
+        | WireValueKind::UnsignedInteger => name.to_owned(),
+        WireValueKind::SignedInteger => "std::int64_t".into(),
+        WireValueKind::Boolean => "bool".into(),
+        WireValueKind::Timestamp => "std::chrono::system_clock::time_point".into(),
+        WireValueKind::Enum | WireValueKind::Oneof => "WireChoice".into(),
+    }
 }
 
 fn swift_checks(kind: WireValueKind, rules: &[SemanticRule]) -> String {
     let mut out = String::new();
-    for rule in rules { match rule {
+    for rule in rules {
+        match rule {
         SemanticRule::NonEmpty => match kind { WireValueKind::String | WireValueKind::Bytes => out.push_str(" guard !value.isEmpty else { return nil };"), WireValueKind::Message => out.push_str(" guard !value.wire.isEmpty else { return nil };"), _ => panic!("NonEmpty is not supported for this Swift semantic kind") },
         SemanticRule::Utf8 => if !matches!(kind, WireValueKind::String) { panic!("Utf8 requires a Swift String") },
         SemanticRule::NonNegative => match kind { WireValueKind::SignedInteger => out.push_str(" guard value >= 0 else { return nil };"), WireValueKind::UnsignedInteger => {}, _ => panic!("NonNegative requires an integer") },
@@ -76,13 +342,15 @@ fn swift_checks(kind: WireValueKind, rules: &[SemanticRule]) -> String {
         SemanticRule::CanonicalResourceName => match kind { WireValueKind::String => out.push_str(" guard !value.isEmpty && value == value.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil };"), _ => panic!("CanonicalResourceName requires text") },
         SemanticRule::Immutable | SemanticRule::ExactOneof | SemanticRule::ExplicitPresence | SemanticRule::PreserveUnknownEnum | SemanticRule::PreserveUnknownOneof => {},
         SemanticRule::Monotonic => panic!("Monotonic requires cross-value state and cannot be projected to a scalar constructor"),
-    } }
+    }
+    }
     out
 }
 
 fn cpp_checks(kind: WireValueKind, rules: &[SemanticRule]) -> String {
     let mut out = String::new();
-    for rule in rules { match rule {
+    for rule in rules {
+        match rule {
         SemanticRule::NonEmpty => match kind { WireValueKind::String | WireValueKind::Bytes => out.push_str(" if (value.empty()) throw std::invalid_argument(\"value must be non-empty\");"), WireValueKind::Message => out.push_str(" if (value.wire.empty()) throw std::invalid_argument(\"value must be non-empty\");"), _ => panic!("NonEmpty is not supported for this C++ semantic kind") },
         SemanticRule::Utf8 => if !matches!(kind, WireValueKind::String) { panic!("Utf8 requires a C++ string") },
         SemanticRule::NonNegative => match kind { WireValueKind::SignedInteger => out.push_str(" if (value < 0) throw std::invalid_argument(\"value must be non-negative\");"), WireValueKind::UnsignedInteger => {}, _ => panic!("NonNegative requires an integer") },
@@ -95,7 +363,8 @@ fn cpp_checks(kind: WireValueKind, rules: &[SemanticRule]) -> String {
         SemanticRule::CanonicalResourceName => match kind { WireValueKind::String => out.push_str(" if (value.empty() || value.front() == ' ' || value.back() == ' ') throw std::invalid_argument(\"value must be canonical\");"), _ => panic!("CanonicalResourceName requires text") },
         SemanticRule::Immutable | SemanticRule::ExactOneof | SemanticRule::ExplicitPresence | SemanticRule::PreserveUnknownEnum | SemanticRule::PreserveUnknownOneof => {},
         SemanticRule::Monotonic => panic!("Monotonic requires cross-value state and cannot be projected to a scalar constructor"),
-    } }
+    }
+    }
     out
 }
 
@@ -103,16 +372,25 @@ fn swift_message_checks(rules: &[SemanticRule]) -> String {
     let mut out = String::new();
     for rule in rules {
         match rule {
-            SemanticRule::NonEmpty => out.push_str(" guard !wire.wire.isEmpty else { return nil };"),
-            SemanticRule::Immutable | SemanticRule::ExactOneof | SemanticRule::ExplicitPresence | SemanticRule::PreserveUnknownEnum | SemanticRule::PreserveUnknownOneof => {},
-            SemanticRule::FixedLength(_) => {},
+            SemanticRule::NonEmpty => {
+                out.push_str(" guard !wire.wire.isEmpty else { return nil };")
+            }
+            SemanticRule::Immutable
+            | SemanticRule::ExactOneof
+            | SemanticRule::ExplicitPresence
+            | SemanticRule::PreserveUnknownEnum
+            | SemanticRule::PreserveUnknownOneof => {}
+            SemanticRule::FixedLength(_) => {}
             other => panic!("unsupported message constructor rule: {other:?}"),
         }
     }
     out
 }
 
-fn swift_nested_value_checks(field: &crate::type_policy::ResolvedRequestField, rules: &[SemanticRule]) -> String {
+fn swift_nested_value_checks(
+    field: &crate::type_policy::ResolvedRequestField,
+    rules: &[SemanticRule],
+) -> String {
     if field.field != "value" || field.wire_type != Some(FieldType::Bytes as i32) {
         return String::new();
     }
@@ -122,10 +400,17 @@ fn swift_nested_value_checks(field: &crate::type_policy::ResolvedRequestField, r
             SemanticRule::NonEmpty => conditions.push("!value.isEmpty".to_owned()),
             SemanticRule::FixedLength(n) => conditions.push(format!("value.count == {n}")),
             SemanticRule::Sha256Digest => conditions.push("value.count == 32".to_owned()),
-            _ => {},
+            _ => {}
         }
     }
-    if conditions.is_empty() { String::new() } else { format!(" guard let value, {} else {{ return nil }};", conditions.join(", ")) }
+    if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " guard let value, {} else {{ return nil }};",
+            conditions.join(", ")
+        )
+    }
 }
 
 fn cpp_message_checks(rules: &[SemanticRule]) -> String {
@@ -141,18 +426,32 @@ fn cpp_message_checks(rules: &[SemanticRule]) -> String {
     out
 }
 
-fn semantic_request_groups() -> BTreeMap<(&'static str, &'static str), Vec<&'static crate::type_policy::PublicFieldBinding>> {
+fn semantic_request_groups()
+-> BTreeMap<(&'static str, &'static str), Vec<&'static crate::type_policy::PublicFieldBinding>> {
     let mut groups = BTreeMap::new();
-    for binding in PUBLIC_FIELD_BINDINGS.iter().filter(|binding| binding.direction == PublicFieldDirection::Request) {
-        groups.entry((binding.module, binding.message)).or_insert_with(Vec::new).push(binding);
+    for binding in PUBLIC_FIELD_BINDINGS
+        .iter()
+        .filter(|binding| binding.direction == PublicFieldDirection::Request)
+    {
+        groups
+            .entry((binding.module, binding.message))
+            .or_insert_with(Vec::new)
+            .push(binding);
     }
     groups
 }
 
-fn nested_message_groups() -> BTreeMap<&'static str, Vec<&'static crate::type_policy::PublicFieldBinding>> {
+fn nested_message_groups()
+-> BTreeMap<&'static str, Vec<&'static crate::type_policy::PublicFieldBinding>> {
     let mut groups = BTreeMap::new();
-    for binding in PUBLIC_FIELD_BINDINGS.iter().filter(|binding| binding.direction == PublicFieldDirection::NestedMessage) {
-        groups.entry(binding.message).or_insert_with(Vec::new).push(binding);
+    for binding in PUBLIC_FIELD_BINDINGS
+        .iter()
+        .filter(|binding| binding.direction == PublicFieldDirection::NestedMessage)
+    {
+        groups
+            .entry(binding.message)
+            .or_insert_with(Vec::new)
+            .push(binding);
     }
     groups
 }
@@ -161,15 +460,35 @@ fn message_leaf(path: &str) -> &str {
     path.rsplit('.').next().unwrap_or(path)
 }
 
-fn descriptor_groups(fields: Vec<crate::type_policy::ResolvedRequestField>) -> BTreeMap<(String, String), Vec<crate::type_policy::ResolvedRequestField>> {
+/// The descriptor's fully-qualified type name is part of the Rust-owned wire
+/// contract.  Keep that identity in generated public fields instead of
+/// collapsing every ordinary message or enum to the catch-all wire holder.
+fn descriptor_type_name(field: &crate::type_policy::ResolvedRequestField) -> Option<String> {
+    field
+        .type_name
+        .as_deref()
+        .map(|name| format!("{}{}Wire", camel(&field.family), message_leaf(name)))
+}
+
+fn descriptor_groups(
+    fields: Vec<crate::type_policy::ResolvedRequestField>,
+) -> BTreeMap<(String, String), Vec<crate::type_policy::ResolvedRequestField>> {
     let mut groups = BTreeMap::new();
     for field in fields {
         if message_leaf(&field.message_path) != message_leaf(&field.root_message) {
             continue;
         }
-        let key = (field.family.clone(), message_leaf(&field.root_message).to_owned());
+        let key = (
+            field.family.clone(),
+            message_leaf(&field.root_message).to_owned(),
+        );
         let group = groups.entry(key).or_insert_with(Vec::new);
-        if !group.iter().any(|existing: &crate::type_policy::ResolvedRequestField| existing.field == field.field) {
+        if !group
+            .iter()
+            .any(|existing: &crate::type_policy::ResolvedRequestField| {
+                existing.field == field.field
+            })
+        {
             group.push(field);
         }
     }
@@ -177,19 +496,92 @@ fn descriptor_groups(fields: Vec<crate::type_policy::ResolvedRequestField>) -> B
 }
 
 fn request_groups() -> BTreeMap<(String, String), Vec<crate::type_policy::ResolvedRequestField>> {
-    let mut groups = descriptor_groups(resolved_request_fields().expect("Rust request descriptors must resolve"));
+    let mut groups = descriptor_groups(
+        resolved_request_fields().expect("Rust request descriptors must resolve"),
+    );
     for method in resolved_rpc_methods().expect("Rust RPC identities must resolve") {
-        groups.entry((method.family, message_leaf(&method.input_message).to_owned())).or_default();
+        groups
+            .entry((
+                method.family,
+                message_leaf(&method.input_message).to_owned(),
+            ))
+            .or_default();
     }
     groups
 }
 
 fn response_groups() -> BTreeMap<(String, String), Vec<crate::type_policy::ResolvedRequestField>> {
-    let mut groups = descriptor_groups(resolved_response_fields().expect("Rust response descriptors must resolve"));
+    let mut groups = descriptor_groups(
+        resolved_response_fields().expect("Rust response descriptors must resolve"),
+    );
     for method in resolved_rpc_methods().expect("Rust RPC identities must resolve") {
-        groups.entry((method.family, message_leaf(&method.output_message).to_owned())).or_default();
+        groups
+            .entry((
+                method.family,
+                message_leaf(&method.output_message).to_owned(),
+            ))
+            .or_default();
     }
     groups
+}
+
+fn ordinary_descriptor_names(kind: FieldType) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for field in resolved_request_fields()
+        .expect("Rust request descriptors must resolve")
+        .into_iter()
+        .chain(resolved_response_fields().expect("Rust response descriptors must resolve"))
+    {
+        if field.wire_type == Some(kind as i32) {
+            if let Some(name) = descriptor_type_name(&field) {
+                names.insert(name);
+            }
+        }
+    }
+    for item in SEMANTIC_TYPES
+        .iter()
+        .filter(|item| item.wire_kind == WireValueKind::Message)
+    {
+        for field in resolved_request_fields().expect("Rust request descriptors must resolve") {
+            if message_leaf(&field.message_path) == item.rust_name
+                && field.wire_type == Some(kind as i32)
+            {
+                if let Some(name) = descriptor_type_name(&field) {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Return the complete Rust-descriptor field inventory for an ordinary
+/// message.  The previous emitter declared ordinary messages as a single
+/// opaque wire holder, which meant a nested protobuf field lost its nominal
+/// target-language type.  Keep the wire envelope for forward compatibility,
+/// but expose every descriptor field with its recursively resolved public
+/// type as well.
+fn ordinary_descriptor_fields(name: &str) -> Vec<crate::type_policy::ResolvedRequestField> {
+    let mut fields = Vec::new();
+    for field in resolved_request_fields()
+        .expect("Rust request descriptors must resolve")
+        .into_iter()
+        .chain(
+            resolved_response_fields()
+                .expect("Rust response descriptors must resolve")
+                .into_iter(),
+        )
+    {
+        if descriptor_type_name(&field).as_deref() == Some(name)
+            && !fields.iter().any(|existing: &crate::type_policy::ResolvedRequestField| {
+                existing.field == field.field && existing.number == field.number
+            })
+        {
+            fields.push(field);
+        }
+    }
+    fields.sort_by_key(|field| field.number);
+    fields
 }
 
 fn semantic_nested_fields(message: &str) -> Vec<crate::type_policy::ResolvedRequestField> {
@@ -197,7 +589,11 @@ fn semantic_nested_fields(message: &str) -> Vec<crate::type_policy::ResolvedRequ
     for field in resolved_request_fields().expect("Rust request descriptors must resolve") {
         if message_leaf(&field.message_path) == message
             && message_leaf(&field.message_path) != message_leaf(&field.root_message)
-            && !fields.iter().any(|existing: &crate::type_policy::ResolvedRequestField| existing.field == field.field)
+            && !fields
+                .iter()
+                .any(|existing: &crate::type_policy::ResolvedRequestField| {
+                    existing.field == field.field
+                })
         {
             fields.push(field);
         }
@@ -205,23 +601,104 @@ fn semantic_nested_fields(message: &str) -> Vec<crate::type_policy::ResolvedRequ
     fields
 }
 
-fn semantic_binding(family: &str, message: &str, field: &str, direction: PublicFieldDirection) -> Option<&'static crate::type_policy::PublicFieldBinding> {
-    PUBLIC_FIELD_BINDINGS.iter().find(|binding| binding.family == family && binding.message == message && binding.field == field && binding.direction == direction)
+fn semantic_nested_descriptor_names(kind: FieldType) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for item in SEMANTIC_TYPES
+        .iter()
+        .filter(|item| item.wire_kind == WireValueKind::Message)
+    {
+        for field in semantic_nested_fields(item.rust_name) {
+            if field.wire_type == Some(kind as i32) {
+                if let Some(name) = descriptor_type_name(&field) {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+fn semantic_binding(
+    family: &str,
+    message: &str,
+    field: &str,
+    direction: PublicFieldDirection,
+) -> Option<&'static crate::type_policy::PublicFieldBinding> {
+    PUBLIC_FIELD_BINDINGS.iter().find(|binding| {
+        binding.family == family
+            && binding.message == message
+            && (binding.field == field || binding.wire_field == field)
+            && binding.direction == direction
+    })
+}
+
+fn semantic_field(
+    field: &crate::type_policy::ResolvedRequestField,
+    direction: PublicFieldDirection,
+) -> Option<&'static crate::type_policy::SemanticType> {
+    let message = if direction == PublicFieldDirection::NestedMessage {
+        message_leaf(&field.message_path)
+    } else {
+        message_leaf(&field.root_message)
+    };
+    field
+        .semantic_type
+        .as_deref()
+        .and_then(semantic_type)
+        .or_else(|| {
+            semantic_binding(&field.family, message, &field.field, direction)
+                .and_then(|binding| semantic_type(binding.semantic_type))
+        })
+        .or_else(|| field_semantic_type(&field.family, &field.field))
+}
+
+fn public_nested_type_name(message: &str) -> String {
+    let name = camel(message);
+    if SEMANTIC_TYPES.iter().any(|item| item.rust_name == name)
+        || ordinary_descriptor_names(FieldType::Message).contains(&name)
+        || ordinary_descriptor_names(FieldType::Enum).contains(&name)
+    {
+        format!("{name}Fields")
+    } else {
+        name
+    }
 }
 
 fn swift_wire_type(field: &crate::type_policy::ResolvedRequestField) -> String {
     match field.wire_type {
         Some(kind) if kind == FieldType::String as i32 => "String".into(),
         Some(kind) if kind == FieldType::Bytes as i32 => "Data".into(),
-        Some(kind) if kind == FieldType::Int64 as i32 || kind == FieldType::Sfixed64 as i32 || kind == FieldType::Sint64 as i32 => "Int64".into(),
-        Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 => "UInt64".into(),
-        Some(kind) if kind == FieldType::Int32 as i32 || kind == FieldType::Sfixed32 as i32 || kind == FieldType::Sint32 as i32 => "Int32".into(),
-        Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 => "UInt32".into(),
+        Some(kind)
+            if kind == FieldType::Int64 as i32
+                || kind == FieldType::Sfixed64 as i32
+                || kind == FieldType::Sint64 as i32 =>
+        {
+            "Int64".into()
+        }
+        Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 => {
+            "UInt64".into()
+        }
+        Some(kind)
+            if kind == FieldType::Int32 as i32
+                || kind == FieldType::Sfixed32 as i32
+                || kind == FieldType::Sint32 as i32 =>
+        {
+            "Int32".into()
+        }
+        Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 => {
+            "UInt32".into()
+        }
         Some(kind) if kind == FieldType::Bool as i32 => "Bool".into(),
         Some(kind) if kind == FieldType::Double as i32 => "Double".into(),
         Some(kind) if kind == FieldType::Float as i32 => "Float".into(),
-        Some(kind) if kind == FieldType::Enum as i32 => "RustWireEnum".into(),
-        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => "RustWireMessage".into(),
+        Some(kind) if kind == FieldType::Enum as i32 => {
+            descriptor_type_name(field).unwrap_or_else(|| "RustWireEnum".into())
+        }
+        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
+            descriptor_type_name(field)
+                .map(|name| format!("std::shared_ptr<{name}>"))
+                .unwrap_or_else(|| "std::shared_ptr<RustWireMessage>".into())
+        }
         _ => "Data".into(),
     }
 }
@@ -230,23 +707,44 @@ fn cpp_wire_type(field: &crate::type_policy::ResolvedRequestField) -> String {
     match field.wire_type {
         Some(kind) if kind == FieldType::String as i32 => "std::string".into(),
         Some(kind) if kind == FieldType::Bytes as i32 => "std::vector<std::uint8_t>".into(),
-        Some(kind) if kind == FieldType::Int64 as i32 || kind == FieldType::Sfixed64 as i32 || kind == FieldType::Sint64 as i32 => "std::int64_t".into(),
-        Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 => "std::uint64_t".into(),
-        Some(kind) if kind == FieldType::Int32 as i32 || kind == FieldType::Sfixed32 as i32 || kind == FieldType::Sint32 as i32 => "std::int32_t".into(),
-        Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 => "std::uint32_t".into(),
+        Some(kind)
+            if kind == FieldType::Int64 as i32
+                || kind == FieldType::Sfixed64 as i32
+                || kind == FieldType::Sint64 as i32 =>
+        {
+            "std::int64_t".into()
+        }
+        Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 => {
+            "std::uint64_t".into()
+        }
+        Some(kind)
+            if kind == FieldType::Int32 as i32
+                || kind == FieldType::Sfixed32 as i32
+                || kind == FieldType::Sint32 as i32 =>
+        {
+            "std::int32_t".into()
+        }
+        Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 => {
+            "std::uint32_t".into()
+        }
         Some(kind) if kind == FieldType::Bool as i32 => "bool".into(),
         Some(kind) if kind == FieldType::Double as i32 => "double".into(),
         Some(kind) if kind == FieldType::Float as i32 => "float".into(),
-        Some(kind) if kind == FieldType::Enum as i32 => "RustWireEnum".into(),
-        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => "RustWireMessage".into(),
+        Some(kind) if kind == FieldType::Enum as i32 => {
+            descriptor_type_name(field).unwrap_or_else(|| "RustWireEnum".into())
+        }
+        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
+            descriptor_type_name(field).unwrap_or_else(|| "RustWireMessage".into())
+        }
         _ => "std::vector<std::uint8_t>".into(),
     }
 }
 
-fn swift_field_type(field: &crate::type_policy::ResolvedRequestField, direction: PublicFieldDirection) -> String {
-    let message = if direction == PublicFieldDirection::NestedMessage { message_leaf(&field.message_path) } else { message_leaf(&field.root_message) };
-    let base = semantic_binding(&field.family, message, &field.field, direction)
-        .and_then(|binding| semantic_type(binding.semantic_type))
+fn swift_field_type(
+    field: &crate::type_policy::ResolvedRequestField,
+    direction: PublicFieldDirection,
+) -> String {
+    let base = semantic_field(field, direction)
         .map(|semantic| swift_kind(semantic.wire_kind, semantic.rust_name))
         .unwrap_or_else(|| swift_wire_type(field));
     let repeated = field.label == Some(FieldLabel::Repeated as i32);
@@ -255,21 +753,39 @@ fn swift_field_type(field: &crate::type_policy::ResolvedRequestField, direction:
     if optional { format!("{value}?") } else { value }
 }
 
-fn cpp_field_type(field: &crate::type_policy::ResolvedRequestField, direction: PublicFieldDirection) -> String {
-    let message = if direction == PublicFieldDirection::NestedMessage { message_leaf(&field.message_path) } else { message_leaf(&field.root_message) };
-    let base = semantic_binding(&field.family, message, &field.field, direction)
-        .and_then(|binding| semantic_type(binding.semantic_type))
+fn cpp_field_type(
+    field: &crate::type_policy::ResolvedRequestField,
+    direction: PublicFieldDirection,
+) -> String {
+    let base = semantic_field(field, direction)
         .map(|semantic| cpp_kind(semantic.wire_kind, semantic.rust_name))
         .unwrap_or_else(|| cpp_wire_type(field));
     let repeated = field.label == Some(FieldLabel::Repeated as i32);
     let optional = !repeated && (field.proto3_optional || field.oneof_index.is_some());
-    let value = if repeated { format!("std::vector<{base}>") } else { base };
-    if optional { format!("std::optional<{value}>") } else { value }
+    let value = if repeated {
+        format!("std::vector<{base}>")
+    } else {
+        base
+    };
+    if optional {
+        format!("std::optional<{value}>")
+    } else {
+        value
+    }
 }
 
 fn swift_field_cast(field: &crate::type_policy::ResolvedRequestField) -> String {
-    let base = swift_wire_type(field);
-    if field.label == Some(FieldLabel::Repeated as i32) { format!("[{base}]") } else { base }
+    // Dictionaries carry the protobuf wire holder.  Public fields may use a
+    // named descriptor wrapper, so decoding must cast the raw holder before
+    // constructing that wrapper.
+    let base = match field.wire_type {
+        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
+            "RustWireMessage".to_owned()
+        }
+        Some(kind) if kind == FieldType::Enum as i32 => "RustWireEnum".to_owned(),
+        _ => swift_wire_type(field),
+    };
+    base
 }
 
 fn swift_wire_cast(kind: WireValueKind) -> &'static str {
@@ -286,10 +802,14 @@ fn swift_wire_cast(kind: WireValueKind) -> &'static str {
 }
 
 fn render_swift() -> String {
-    let mut out = String::from("// Generated by acyclic-sdk-contract-wire; do not edit.\nimport Foundation\n\npublic enum RustWireDecodeError: Error { case missingField(String); case invalidField(String) }\npublic struct RustWireMessage: Sendable { public let wire: Data; public init(wire: Data) { self.wire = wire } }\npublic struct RustWireEnum: Sendable { public let raw: Int32; public init(raw: Int32) { self.raw = raw } }\npublic protocol RustWireRequest { associatedtype Wire; func toWire() -> Wire }\npublic protocol RustWireResponse { associatedtype Wire; static func fromWire(_ wire: Wire) throws -> Self }\n\n");
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\nimport Foundation\n\npublic enum RustWireDecodeError: Error {\n case missingField(String)\n case invalidField(String)\n}\npublic struct RustWireMessage: Sendable { public let wire: Data; public init(wire: Data) { self.wire = wire } }\npublic struct RustWireEnum: Sendable { public let raw: Int32; public init(raw: Int32) { self.raw = raw } }\npublic protocol RustWireRequest { associatedtype Wire; func toWire() -> Wire }\npublic protocol RustWireResponse { associatedtype Wire; static func fromWire(_ wire: Wire) throws -> Self }\n\n",
+    );
     let mut seen = BTreeSet::new();
     for item in SEMANTIC_TYPES {
-        if !seen.insert(item.rust_name) { continue; }
+        if !seen.insert(item.rust_name) {
+            continue;
+        }
         match item.wire_kind {
             WireValueKind::String => out.push_str(&format!("public struct {}: Sendable {{ public let value: String; public init?(_ value: String) {{{} self.value = value }} }}\n", item.rust_name, swift_checks(item.wire_kind, item.rules))),
             WireValueKind::Bytes => out.push_str(&format!("public struct {}: Sendable {{ public let value: Data; public init?(_ value: Data) {{{} self.value = value }} }}\n", item.rust_name, swift_checks(item.wire_kind, item.rules))),
@@ -311,89 +831,298 @@ fn render_swift() -> String {
             _ => {}
         }
     }
+    // Preserve ordinary descriptor identities as public nominal holders.  The
+    // raw bytes remain available for forward compatibility, while a field's
+    // generated type still tells consumers which message or enum it carries.
+    let mut ordinary_messages = ordinary_descriptor_names(FieldType::Message);
+    ordinary_messages.extend(semantic_nested_descriptor_names(FieldType::Message));
+    for name in ordinary_messages {
+        let fields = ordinary_descriptor_fields(&name);
+        let declarations = fields
+            .iter()
+            .map(|field| {
+                let ty = swift_field_type(field, PublicFieldDirection::NestedMessage);
+                let ty = if field.proto3_optional || field.oneof_index.is_some() {
+                    ty
+                } else {
+                    format!("{ty}?")
+                };
+                format!(" public let {}: {ty};\n", swift_field_name(&field.field))
+            })
+            .collect::<String>();
+        let raw_assignments = fields
+            .iter()
+            .map(|field| format!(" self.{} = nil;\n", swift_field_name(&field.field)))
+            .collect::<String>();
+        let params = fields
+            .iter()
+            .map(|field| {
+                let ty = swift_field_type(field, PublicFieldDirection::NestedMessage);
+                let ty = if field.proto3_optional || field.oneof_index.is_some() {
+                    ty
+                } else {
+                    format!("{ty}?")
+                };
+                format!("{}: {ty} = nil", swift_field_name(&field.field))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let assignments = fields
+            .iter()
+            .map(|field| format!(" self.{0} = {0};\n", swift_field_name(&field.field)))
+            .collect::<String>();
+        out.push_str(&format!(
+            "public struct {name}: Sendable {{\n public let wire: RustWireMessage\n{declarations} public init(_ wire: RustWireMessage) {{ self.wire = wire\n{raw_assignments} }}\n public init(wire: RustWireMessage = RustWireMessage(wire: Data()), {params}) {{ self.wire = wire\n{assignments} }}\n}}\n"
+        ));
+    }
+    let mut ordinary_enums = ordinary_descriptor_names(FieldType::Enum);
+    ordinary_enums.extend(semantic_nested_descriptor_names(FieldType::Enum));
+    for name in ordinary_enums {
+        out.push_str(&format!("public struct {name}: Sendable {{ public let raw: Int32; public init(raw: Int32) {{ self.raw = raw }}; public init(_ value: RustWireEnum) {{ self.raw = value.raw }} }}\n"));
+    }
     out.push_str("\npublic enum WireChoice: Sendable { case known(tag: String, payload: Data); case unknown(rawTag: Int32, payload: Data) }\n\n");
     for ((module, message), fields) in request_groups() {
-        let name = format!("{}{}Request", camel(&module), camel(message.trim_end_matches("Request")));
-        let field_declarations = fields.iter().map(|field| format!("public let {}: {};\n", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Request))).collect::<String>();
-        let params = fields.iter().map(|field| format!("{}: {}", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Request))).collect::<Vec<_>>().join(", ");
-        let assignments = fields.iter().map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field))).collect::<String>();
-        let wire_fields = fields.iter().map(|field| format!("\"{}\": {}", field.json_name, swift_field_name(&field.field))).collect::<Vec<_>>().join(", ");
-        let wire_literal = if wire_fields.is_empty() { "[:]".to_owned() } else { format!("[{wire_fields}]") };
+        let name = format!(
+            "{}{}Request",
+            camel(&module),
+            camel(message.trim_end_matches("Request"))
+        );
+        let field_declarations = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "public let {}: {};\n",
+                    swift_field_name(&field.field),
+                    swift_field_type(field, PublicFieldDirection::Request)
+                )
+            })
+            .collect::<String>();
+        let params = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "{}: {}",
+                    swift_field_name(&field.field),
+                    swift_field_type(field, PublicFieldDirection::Request)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let assignments = fields
+            .iter()
+            .map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field)))
+            .collect::<String>();
+        let wire_fields = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "\"{}\": {}",
+                    field.json_name,
+                    swift_field_name(&field.field)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let wire_literal = if wire_fields.is_empty() {
+            "[:]".to_owned()
+        } else {
+            format!("[{wire_fields}]")
+        };
         out.push_str(&format!("public struct {name}: RustWireRequest, Sendable {{\n{field_declarations} public init({params}) {{\n{assignments} }}\n public typealias Wire = [String: Any]\n public func toWire() -> [String: Any] {{ {wire_literal} }}\n}}\n"));
     }
     for ((module, message), fields) in response_groups() {
         let name = format!("{}{}Response", camel(&module), camel(&message));
-        let field_declarations = fields.iter().map(|field| format!("public let {}: {};\n", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Response))).collect::<String>();
-        let params = fields.iter().map(|field| format!("{}: {}", swift_field_name(&field.field), swift_field_type(field, PublicFieldDirection::Response))).collect::<Vec<_>>().join(", ");
-        let assignments = fields.iter().map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field))).collect::<String>();
+        let field_declarations = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "public let {}: {};\n",
+                    swift_field_name(&field.field),
+                    swift_field_type(field, PublicFieldDirection::Response)
+                )
+            })
+            .collect::<String>();
+        let params = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "{}: {}",
+                    swift_field_name(&field.field),
+                    swift_field_type(field, PublicFieldDirection::Response)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let assignments = fields
+            .iter()
+            .map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field)))
+            .collect::<String>();
         let decodes = fields.iter().map(|field| {
             let cast = swift_field_cast(field);
             let key = &field.json_name;
-            if field.proto3_optional || field.oneof_index.is_some() {
+            let local = swift_local_name(&field.field);
+            let field_name = swift_field_name(&field.field);
+            let named_descriptor = semantic_field(field, PublicFieldDirection::Response).is_none() && matches!(field.wire_type, Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 || kind == FieldType::Enum as i32)
+                && descriptor_type_name(field).is_some();
+            if named_descriptor {
+                let target = swift_wire_type(field);
+                if field.label == Some(FieldLabel::Repeated as i32) {
+                    format!("guard let raw_{local} = wire[\"{key}\"] as? [{cast}] else {{ throw RustWireDecodeError.invalidField(\"{key}\") }}; let {field_name} = raw_{local}.map {{ {target}($0) }};", local=local, field_name=field_name, key=key, cast=cast, target=target)
+                } else if field.proto3_optional || field.oneof_index.is_some() {
+                    format!("let {field_name} = (wire[\"{key}\"] as? {cast}).map {{ {target}($0) }};", field_name=field_name, key=key, cast=cast, target=target)
+                } else {
+                    format!("guard let raw_{local} = wire[\"{key}\"] as? {cast} else {{ throw RustWireDecodeError.invalidField(\"{key}\") }}; let {field_name} = {target}(raw_{local});", local=local, field_name=field_name, key=key, cast=cast, target=target)
+                }
+            } else if (field.proto3_optional || field.oneof_index.is_some()) && semantic_field(field, PublicFieldDirection::Response).is_none() {
                 format!("let {field} = wire[\"{key}\"] as? {cast};", field=swift_field_name(&field.field), key=key, cast=cast)
-            } else if let Some(binding) = semantic_binding(&field.family, message_leaf(&field.root_message), &field.field, PublicFieldDirection::Response) {
-                let semantic = semantic_type(binding.semantic_type).expect("Rust policy response binding");
-                format!("guard let raw_{field} = wire[\"{key}\"] as? {cast}, let {field} = {ty}(raw_{field}) else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", field=swift_field_name(&field.field), key=key, cast=swift_wire_cast(semantic.wire_kind), ty=semantic.rust_name)
+            } else if let Some(semantic) = semantic_field(field, PublicFieldDirection::Response) {
+                let wire_cast = swift_wire_cast(semantic.wire_kind);
+                if field.label == Some(FieldLabel::Repeated as i32) {
+                    format!("guard let raw_{local} = wire[\"{key}\"] as? [{wire_cast}] else {{ throw RustWireDecodeError.invalidField(\"{key}\") }}; let {field_name} = raw_{local}.compactMap {{ {ty}($0) }};", local=local, field_name=field_name, key=key, wire_cast=wire_cast, ty=semantic.rust_name)
+                } else {
+                    format!("guard let raw_{local} = wire[\"{key}\"] as? {wire_cast}, let {field_name} = {ty}(raw_{local}) else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", local=local, field_name=field_name, key=key, wire_cast=wire_cast, ty=semantic.rust_name)
+                }
             } else {
-                format!("guard let {field} = wire[\"{key}\"] as? {cast} else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", field=swift_field_name(&field.field), key=key, cast=cast)
+                if field.label == Some(FieldLabel::Repeated as i32) {
+                    format!("guard let {field_name} = wire[\"{key}\"] as? [{cast}] else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", field_name=field_name, key=key, cast=cast)
+                } else {
+                    format!("guard let {field_name} = wire[\"{key}\"] as? {cast} else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", field_name=field_name, key=key, cast=cast)
+                }
             }
         }).collect::<String>();
-        let args = fields.iter().map(|field| {
-            let name = swift_field_name(&field.field);
-            format!("{name}: {name}")
-        }).collect::<Vec<_>>().join(", ");
+        let args = fields
+            .iter()
+            .map(|field| {
+                let name = swift_field_name(&field.field);
+                format!("{name}: {name}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         out.push_str(&format!("public struct {name}: RustWireResponse, Sendable {{\n{field_declarations} public init({params}) {{\n{assignments} }}\n public typealias Wire = [String: Any]\n public static func fromWire(_ wire: [String: Any]) throws -> Self {{ {decodes} return Self({args}) }}\n}}\n"));
     }
     for (message, bindings) in nested_message_groups() {
-        let fields = bindings.iter().map(|binding| {
-            let semantic = semantic_type(binding.semantic_type).expect("Rust policy nested binding");
-            format!("public let {}: {};", swift_field_name(binding.field), swift_kind(semantic.wire_kind, semantic.rust_name))
-        }).collect::<String>();
-        let params = bindings.iter().map(|binding| {
-            let semantic = semantic_type(binding.semantic_type).expect("Rust policy nested binding");
-            format!("{}: {}", swift_field_name(binding.field), swift_kind(semantic.wire_kind, semantic.rust_name))
-        }).collect::<Vec<_>>().join(", ");
-        let assignments = bindings.iter().map(|binding| format!("self.{0} = {0};", swift_field_name(binding.field))).collect::<String>();
-        out.push_str(&format!("public struct {}: Sendable {{ {} public init({}) {{ {} }} }}\n", camel(message), fields, params, assignments));
+        let fields = bindings
+            .iter()
+            .map(|binding| {
+                let semantic =
+                    semantic_type(binding.semantic_type).expect("Rust policy nested binding");
+                format!(
+                    "public let {}: {};",
+                    swift_field_name(binding.field),
+                    swift_kind(semantic.wire_kind, semantic.rust_name)
+                )
+            })
+            .collect::<String>();
+        let params = bindings
+            .iter()
+            .map(|binding| {
+                let semantic =
+                    semantic_type(binding.semantic_type).expect("Rust policy nested binding");
+                format!(
+                    "{}: {}",
+                    swift_field_name(binding.field),
+                    swift_kind(semantic.wire_kind, semantic.rust_name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let assignments = bindings
+            .iter()
+            .map(|binding| format!("self.{0} = {0};", swift_field_name(binding.field)))
+            .collect::<String>();
+        out.push_str(&format!(
+            "public struct {}: Sendable {{ {} public init({}) {{ {} }} }}\n",
+            public_nested_type_name(message),
+            fields,
+            params,
+            assignments
+        ));
     }
-    let nested_messages = PUBLIC_NESTED_ROUTES.iter().flat_map(|route| route.fields.iter()).filter_map(|(_, kind)| match kind {
-        crate::type_policy::PublicNestedFieldKind::Message(message) => Some(*message),
-        crate::type_policy::PublicNestedFieldKind::Text => None,
-    }).collect::<BTreeSet<_>>();
+    let nested_messages = PUBLIC_NESTED_ROUTES
+        .iter()
+        .flat_map(|route| route.fields.iter())
+        .filter_map(|(_, kind)| match kind {
+            crate::type_policy::PublicNestedFieldKind::Message(message) => Some(*message),
+            crate::type_policy::PublicNestedFieldKind::Text => None,
+        })
+        .collect::<BTreeSet<_>>();
     for message in nested_messages {
         if !nested_message_groups().contains_key(message) {
-            out.push_str(&format!("public struct {}: Sendable {{ public let wire: Data; public init(wire: Data) {{ self.wire = wire }} }}\n", camel(message)));
+            out.push_str(&format!("public struct {}: Sendable {{ public let wire: Data; public init(wire: Data) {{ self.wire = wire }} }}\n", public_nested_type_name(message)));
         }
     }
     for route in PUBLIC_NESTED_ROUTES {
-        let fields = route.fields.iter().map(|(field, kind)| {
-            let ty = match kind {
-                crate::type_policy::PublicNestedFieldKind::Text => "String".to_owned(),
-                crate::type_policy::PublicNestedFieldKind::Message(message) => camel(message),
-            };
-            format!("public let {}: {ty};", swift_field_name(field))
-        }).collect::<String>();
-        let params = route.fields.iter().map(|(field, kind)| {
-            let ty = match kind {
-                crate::type_policy::PublicNestedFieldKind::Text => "String".to_owned(),
-                crate::type_policy::PublicNestedFieldKind::Message(message) => camel(message),
-            };
-            format!("{}: {ty}", swift_field_name(field))
-        }).collect::<Vec<_>>().join(", ");
-        let assignments = route.fields.iter().map(|(field, _)| format!("self.{0} = {0};", swift_field_name(field))).collect::<String>();
-        out.push_str(&format!("public struct {}{}NestedRequest: Sendable {{ {} public init({}) {{ {} }} }}\n", camel(route.module), camel(route.operation), fields, params, assignments));
+        let fields = route
+            .fields
+            .iter()
+            .map(|(field, kind)| {
+                let ty = match kind {
+                    crate::type_policy::PublicNestedFieldKind::Text => "String".to_owned(),
+                    crate::type_policy::PublicNestedFieldKind::Message(message) => {
+                        public_nested_type_name(message)
+                    }
+                };
+                format!("public let {}: {ty};", swift_field_name(field))
+            })
+            .collect::<String>();
+        let params = route
+            .fields
+            .iter()
+            .map(|(field, kind)| {
+                let ty = match kind {
+                    crate::type_policy::PublicNestedFieldKind::Text => "String".to_owned(),
+                    crate::type_policy::PublicNestedFieldKind::Message(message) => {
+                        public_nested_type_name(message)
+                    }
+                };
+                format!("{}: {ty}", swift_field_name(field))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let assignments = route
+            .fields
+            .iter()
+            .map(|(field, _)| format!("self.{0} = {0};", swift_field_name(field)))
+            .collect::<String>();
+        out.push_str(&format!(
+            "public struct {}{}NestedRequest: Sendable {{ {} public init({}) {{ {} }} }}\n",
+            camel(route.module),
+            camel(route.operation),
+            fields,
+            params,
+            assignments
+        ));
     }
     out.push_str("\npublic protocol RustTypedRemoteTransport { func call<Request: RustWireRequest, Response: RustWireResponse>(_ rpc: String, _ request: Request) async throws -> Response }\npublic struct RustTypedClient<Transport: RustTypedRemoteTransport> { public let transport: Transport; public init(transport: Transport) { self.transport = transport }\n");
     let mut methods = BTreeSet::new();
     for method in resolved_rpc_methods().expect("Rust RPC identities must resolve") {
         let message = message_leaf(&method.input_message);
-        let module = semantic_request_groups().iter().find_map(|((module, candidate), bindings)| {
-            (*candidate == message && bindings.first().map(|binding| binding.family == method.family).unwrap_or(false)).then_some(*module)
-        }).unwrap_or(method.family.as_str());
-        if methods.insert((method.family.clone(), method.rpc.clone(), message.to_owned())) {
-            let request = format!("{}{}Request", camel(module), camel(message.trim_end_matches("Request")));
+        let module = semantic_request_groups()
+            .iter()
+            .find_map(|((module, candidate), bindings)| {
+                (*candidate == message
+                    && bindings
+                        .first()
+                        .map(|binding| binding.family == method.family)
+                        .unwrap_or(false))
+                .then_some(*module)
+            })
+            .unwrap_or(method.family.as_str());
+        if methods.insert((
+            method.family.clone(),
+            method.rpc.clone(),
+            message.to_owned(),
+        )) {
+            let request = format!(
+                "{}{}Request",
+                camel(module),
+                camel(message.trim_end_matches("Request"))
+            );
             let mut method_chars = method.method.chars();
-            let method_name = method_chars.next().map(|first| first.to_lowercase().collect::<String>() + method_chars.as_str()).unwrap_or_else(|| method.method.clone());
+            let method_name = method_chars
+                .next()
+                .map(|first| first.to_lowercase().collect::<String>() + method_chars.as_str())
+                .unwrap_or_else(|| method.method.clone());
             out.push_str(&format!(" public func {}<Response: RustWireResponse>(_ request: {}) async throws -> Response {{ try await transport.call(\"{}\", request) }}\n", swift_method_name(&method_name), request, method.rpc));
         }
     }
@@ -402,13 +1131,45 @@ fn render_swift() -> String {
 }
 
 fn render_cpp() -> String {
-    let mut out = String::from("// Generated by acyclic-sdk-contract-wire; do not edit.\n#pragma once\n#include <chrono>\n#include <cstdint>\n#include <optional>\n#include <stdexcept>\n#include <string>\n#include <utility>\n#include <variant>\n#include <vector>\nnamespace acyclic::rust_typed {\n\nstruct RustWireMessage { std::vector<std::uint8_t> wire; };\nstruct RustWireEnum { std::int32_t raw; };\n\n");
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n#pragma once\n#include <chrono>\n#include <cstdint>\n#include <memory>\n#include <optional>\n#include <stdexcept>\n#include <string>\n#include <utility>\n#include <variant>\n#include <vector>\nnamespace acyclic::rust_typed {\n\nstruct RustWireMessage { std::vector<std::uint8_t> wire; };\nstruct RustWireEnum { std::int32_t raw; };\n\n",
+    );
+    // C++ requires nominal field types to be declared before any semantic
+    // message that embeds them.  Emit descriptor-derived ordinary messages
+    // and enums first so nested public fields never fall back to an opaque
+    // RustWireMessage/RustWireEnum solely because of declaration order.
+    let mut ordinary_messages = ordinary_descriptor_names(FieldType::Message);
+    ordinary_messages.extend(semantic_nested_descriptor_names(FieldType::Message));
+    for name in &ordinary_messages {
+        out.push_str(&format!("struct {name};\n"));
+    }
+    for name in ordinary_messages {
+        let fields = ordinary_descriptor_fields(&name);
+        let declarations = fields
+            .iter()
+            .map(|field| {
+                let mut ty = cpp_field_type(field, PublicFieldDirection::NestedMessage);
+                if !ty.starts_with("std::vector<") && !ty.starts_with("std::optional<") {
+                    ty = format!("std::optional<{ty}>");
+                }
+                format!(" {ty} {};\n", field.field)
+            })
+            .collect::<String>();
+        out.push_str(&format!("struct {name} {{ RustWireMessage wire;{declarations} explicit {name}(RustWireMessage value) : wire(std::move(value)) {{}} }};\n"));
+    }
+    let mut ordinary_enums = ordinary_descriptor_names(FieldType::Enum);
+    ordinary_enums.extend(semantic_nested_descriptor_names(FieldType::Enum));
+    for name in ordinary_enums {
+        out.push_str(&format!("struct {name} {{ std::int32_t raw; explicit {name}(std::int32_t value) : raw(value) {{}} explicit {name}(RustWireEnum value) : raw(value.raw) {{}} }};\n"));
+    }
     let mut seen = BTreeSet::new();
     for item in SEMANTIC_TYPES {
-        if !seen.insert(item.rust_name) { continue; }
+        if !seen.insert(item.rust_name) {
+            continue;
+        }
         match item.wire_kind {
-            WireValueKind::String => out.push_str(&format!("struct {} {{ std::string value; explicit {}(std::string value) : value(std::move(value)) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
-            WireValueKind::Bytes => out.push_str(&format!("struct {} {{ std::vector<std::uint8_t> value; explicit {}(std::vector<std::uint8_t> value) : value(std::move(value)) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
+            WireValueKind::String => out.push_str(&format!("struct {} {{ std::string value; explicit {}(std::string value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
+            WireValueKind::Bytes => out.push_str(&format!("struct {} {{ std::vector<std::uint8_t> value; explicit {}(std::vector<std::uint8_t> value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
             WireValueKind::UnsignedInteger => out.push_str(&format!("struct {} {{ std::uint64_t value; explicit {}(std::uint64_t value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
             WireValueKind::SignedInteger => out.push_str(&format!("struct {} {{ std::int64_t value; explicit {}(std::int64_t value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
             WireValueKind::Message => {
@@ -426,50 +1187,118 @@ fn render_cpp() -> String {
     let _ = WIRE_UNION_VARIANTS;
     out.push_str("struct KnownOneof { std::string tag; std::vector<std::uint8_t> payload; };\nstruct UnknownOneof { std::int32_t raw_tag; std::vector<std::uint8_t> payload; };\nusing WireChoice = std::variant<KnownOneof, UnknownOneof>;\n\n");
     for ((module, message), fields) in request_groups() {
-        let name = format!("{}{}Request", camel(&module), camel(message.trim_end_matches("Request")));
-        let fields = fields.iter().map(|field| format!("{} {};", cpp_field_type(field, PublicFieldDirection::Request), field.field)).collect::<String>();
+        let name = format!(
+            "{}{}Request",
+            camel(&module),
+            camel(message.trim_end_matches("Request"))
+        );
+        let fields = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "{} {};",
+                    cpp_field_type(field, PublicFieldDirection::Request),
+                    field.field
+                )
+            })
+            .collect::<String>();
         out.push_str(&format!("struct {name} {{ {fields} }};\n"));
     }
     for ((module, message), fields) in response_groups() {
         let name = format!("{}{}Response", camel(&module), camel(&message));
-        let fields = fields.iter().map(|field| format!("{} {};", cpp_field_type(field, PublicFieldDirection::Response), field.field)).collect::<String>();
+        let fields = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "{} {};",
+                    cpp_field_type(field, PublicFieldDirection::Response),
+                    field.field
+                )
+            })
+            .collect::<String>();
         out.push_str(&format!("struct {name} {{ {fields} }};\n"));
     }
     for (message, bindings) in nested_message_groups() {
-        let fields = bindings.iter().map(|binding| {
-            let semantic = semantic_type(binding.semantic_type).expect("Rust policy nested binding");
-            format!("{} {};", cpp_kind(semantic.wire_kind, semantic.rust_name), binding.field)
-        }).collect::<String>();
-        out.push_str(&format!("struct {} {{ {} }};\n", camel(message), fields));
+        let fields = bindings
+            .iter()
+            .map(|binding| {
+                let semantic =
+                    semantic_type(binding.semantic_type).expect("Rust policy nested binding");
+                format!(
+                    "{} {};",
+                    cpp_kind(semantic.wire_kind, semantic.rust_name),
+                    binding.field
+                )
+            })
+            .collect::<String>();
+        out.push_str(&format!(
+            "struct {} {{ {} }};\n",
+            public_nested_type_name(message),
+            fields
+        ));
     }
-    let nested_messages = PUBLIC_NESTED_ROUTES.iter().flat_map(|route| route.fields.iter()).filter_map(|(_, kind)| match kind {
-        crate::type_policy::PublicNestedFieldKind::Message(message) => Some(*message),
-        crate::type_policy::PublicNestedFieldKind::Text => None,
-    }).collect::<BTreeSet<_>>();
+    let nested_messages = PUBLIC_NESTED_ROUTES
+        .iter()
+        .flat_map(|route| route.fields.iter())
+        .filter_map(|(_, kind)| match kind {
+            crate::type_policy::PublicNestedFieldKind::Message(message) => Some(*message),
+            crate::type_policy::PublicNestedFieldKind::Text => None,
+        })
+        .collect::<BTreeSet<_>>();
     for message in nested_messages {
         if !nested_message_groups().contains_key(message) {
-            out.push_str(&format!("struct {} {{ std::vector<std::uint8_t> wire; }};\n", camel(message)));
+            out.push_str(&format!(
+                "struct {} {{ std::vector<std::uint8_t> wire; }};\n",
+                public_nested_type_name(message)
+            ));
         }
     }
     for route in PUBLIC_NESTED_ROUTES {
-        let fields = route.fields.iter().map(|(field, kind)| {
-            let ty = match kind {
-                crate::type_policy::PublicNestedFieldKind::Text => "std::string".to_owned(),
-                crate::type_policy::PublicNestedFieldKind::Message(message) => camel(message),
-            };
-            format!("{} {};", ty, field)
-        }).collect::<String>();
-        out.push_str(&format!("struct {}{}NestedRequest {{ {} }};\n", camel(route.module), camel(route.operation), fields));
+        let fields = route
+            .fields
+            .iter()
+            .map(|(field, kind)| {
+                let ty = match kind {
+                    crate::type_policy::PublicNestedFieldKind::Text => "std::string".to_owned(),
+                    crate::type_policy::PublicNestedFieldKind::Message(message) => {
+                        public_nested_type_name(message)
+                    }
+                };
+                format!("{} {};", ty, field)
+            })
+            .collect::<String>();
+        out.push_str(&format!(
+            "struct {}{}NestedRequest {{ {} }};\n",
+            camel(route.module),
+            camel(route.operation),
+            fields
+        ));
     }
     out.push_str("\ntemplate<class Transport> class RustTypedClient { Transport& transport_; public: explicit RustTypedClient(Transport& transport) : transport_(transport) {} template<class Request, class Response> Response call(const char* rpc, const Request& request) { return transport_.template call<Request, Response>(rpc, request); }\n");
     let mut methods = BTreeSet::new();
     for method_info in resolved_rpc_methods().expect("Rust RPC identities must resolve") {
         let message = message_leaf(&method_info.input_message);
-        let module = semantic_request_groups().iter().find_map(|((module, candidate), bindings)| {
-            (*candidate == message && bindings.first().map(|binding| binding.family == method_info.family).unwrap_or(false)).then_some(*module)
-        }).unwrap_or(method_info.family.as_str());
-        if methods.insert((method_info.family.clone(), method_info.rpc.clone(), message.to_owned())) {
-            let request = format!("{}{}Request", camel(module), camel(message.trim_end_matches("Request")));
+        let module = semantic_request_groups()
+            .iter()
+            .find_map(|((module, candidate), bindings)| {
+                (*candidate == message
+                    && bindings
+                        .first()
+                        .map(|binding| binding.family == method_info.family)
+                        .unwrap_or(false))
+                .then_some(*module)
+            })
+            .unwrap_or(method_info.family.as_str());
+        if methods.insert((
+            method_info.family.clone(),
+            method_info.rpc.clone(),
+            message.to_owned(),
+        )) {
+            let request = format!(
+                "{}{}Request",
+                camel(module),
+                camel(message.trim_end_matches("Request"))
+            );
             let method_name = cpp_method_name(&method_info.method);
             out.push_str(&format!(" template<class Response> Response {}(const {}& request) {{ return call<{}, Response>(\"{}\", request); }}\n", method_name, request, request, method_info.rpc));
         }
@@ -484,8 +1313,20 @@ mod tests {
     #[test]
     fn emits_nominal_clients_and_open_unions() {
         let files = generate_swift_cpp_typed_facades();
-        assert!(files.iter().any(|(_, source)| source.contains("RustTypedRemoteTransport")));
-        assert!(files.iter().any(|(_, source)| source.contains("RustTypedClient")));
-        assert!(files.iter().any(|(_, source)| source.contains("WireChoice")));
+        assert!(
+            files
+                .iter()
+                .any(|(_, source)| source.contains("RustTypedRemoteTransport"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|(_, source)| source.contains("RustTypedClient"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|(_, source)| source.contains("WireChoice"))
+        );
     }
 }
