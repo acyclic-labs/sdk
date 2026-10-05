@@ -1,0 +1,130 @@
+{
+  "artifacts": [
+    {
+      "sha256": "3aef88c03c9426c70b1b484177a0494d43c6980c4aaf9db64de29c28b21a8453",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\child-execution-boundary-native-corrected.log"
+    },
+    {
+      "sha256": "c8931cbf85c360ee4568eefe4aeafa9eb43ae32f1177d4d0ac742d9a49a2214c",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\child-execution-boundary-native.log"
+    },
+    {
+      "sha256": "21ec8bc0f2ba6422b2f9546f4c0272f5ef0a8bff2aa84fb6286b66624c7a2221",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\fork-boundary-formal.log"
+    },
+    {
+      "sha256": "7b7d2f1b77b3c16029a9e4b0f7d0698f7a80a1954ddfeda8f7fba1476ca245e5",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\activation-shared-runner.log"
+    },
+    {
+      "sha256": "8c33f46ffa5f8ee9bb6b6d6fe9cdbad229aefe31f4eb04d744d02b73ff92fbb0",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\communication_local-f660b0dd85aaba50.exe"
+    },
+    {
+      "sha256": "c6bc46f20e18c961558ac430bb2cfec6411b23308b84eb4e2b0c49cc742a4d08",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\local_model_swarm-2a4724405f2fc4cd.exe"
+    },
+    {
+      "sha256": "fc80ffa7f53627aa8819ac69c3266b69a803740a5415bde1d82b2468bf9ab6bd",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\local_swarm_faults-f5ff69a39607b16d.exe"
+    },
+    {
+      "sha256": "df96c28c7307e9b0a3137a2682fcb4f223fc0d8394b17b25c0a17d7081ccd414",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\acc1eb3162f64374ab24362087dec7b1-early-dispatch.log"
+    },
+    {
+      "sha256": "24c4e1c6652d79d0bac40c59e6575ac0a7bd0b981ed296f5cf65af160dc51330",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\acc1eb3162f64374ab24362087dec7b1-mutable-capture.log"
+    },
+    {
+      "sha256": "f0da421c8b47613d5310dbeaec076c3b48f6de49798baae7c7ffc6f59ffd5bf7",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\acc1eb3162f64374ab24362087dec7b1-safe.log"
+    },
+    {
+      "sha256": "6d0629d5b5fdcb0bf3301f13f4436a7bfd7dfcd6a95ab3dc5944db9009c0c7d8",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\c016804abaf64bf6853e5ae284bab303-safe.log"
+    },
+    {
+      "sha256": "6818f7fbc093a73b544abd7cef1c994bae0f03b9ed1c56693b52db39da858938",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\c016804abaf64bf6853e5ae284bab303-unsafe.log"
+    },
+    {
+      "sha256": "ef177ff1db0d60de1863d3eeed9e2fb5620f8bc5c900356a44bed12085756a49",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\32d5cb734\\child-execution-and-forks\\source.zip"
+    }
+  ],
+  "descriptors": [
+    {
+      "sha256": "c845ee21f43abe96c0aa0c9e48dbf8ea28cd7fa134ce94ca6d69409a273cd70d",
+      "path": "rust/crates/harness/tests/communication_local.rs"
+    },
+    {
+      "sha256": "6fb78325c9316fe157b14afba5858388274d875390bd36354c5799ddcff75292",
+      "path": "rust/crates/harness/tests/local_model_swarm.rs"
+    },
+    {
+      "sha256": "65596925846009e7767cf2673704e39c8a03ef3953f51140115b4c6f575a4474",
+      "path": "rust/crates/harness/tests/local_swarm_faults.rs"
+    },
+    {
+      "sha256": "b297a088b7e4790f2d02bd367d7dc9131c9cc5e5095d460dec82c9e4400958b4",
+      "path": "rust/crates/harness/verification/ForkBoundary.tla"
+    },
+    {
+      "sha256": "4c2e7dafbcf318af102f0d2eab186443964ee918a1fab26bbe54fd10ddd143bd",
+      "path": "rust/crates/harness/verification/ForkBoundary.cfg"
+    },
+    {
+      "sha256": "9e6fefcd4dfa530cdf1a367bf78fa028a3b413689a070a8e637c41d98eb3f876",
+      "path": "rust/crates/harness/verification/ForkBoundaryEarlyDispatch.cfg"
+    },
+    {
+      "sha256": "af39bbda42f28ba9af9a9d4f745651b525cfd36eec68945489e0f8dca4319576",
+      "path": "rust/crates/harness/verification/ForkBoundaryMutableCapture.cfg"
+    },
+    {
+      "sha256": "69865947df740eff78412935b0d648e6875ee85a25ea114b136828d1f37a817b",
+      "path": "rust/crates/harness/verification/check-models.ps1"
+    }
+  ],
+  "native": {
+    "communication_passed": 4,
+    "faults_passed": 6,
+    "exit": 0,
+    "initial_command_error": "Nonexistent local_swarm_communication target; no tests executed. Corrected to communication_local.",
+    "recursive_passed": 4,
+    "features": [
+      "test-support",
+      "native-process-tree"
+    ],
+    "ignored": 0,
+    "failed": 0
+  },
+  "version": 1,
+  "source": "32d5cb7343fe383c5660ff5ee5607dd628db3156",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "formal": {
+    "early_dispatch_negative": {
+      "exit": 12,
+      "invariant": "DispatchRequiresCompleteBatch"
+    },
+    "activation_compatibility_runner_exit": 0,
+    "mutable_capture_negative": {
+      "exit": 12,
+      "invariant": "InheritedCaptureRemainsPinned"
+    },
+    "fork_safe": {
+      "distinct": 51,
+      "exit": 0,
+      "generated": 84
+    },
+    "tools_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+  },
+  "limitations": [
+    "Bounded design model; no machine-checked implementation refinement, byte serialization proof, or liveness theorem.",
+    "Publisher still waits for child completion; live concurrent parent-child scheduling remains unmet.",
+    "Earlier fault preparation watchdog failures remain unresolved despite this passing run.",
+    "Installed artifacts, full matrix, budgets, execution approvals and writeback qualification remain unmet."
+  ],
+  "native_source": "75859a6d7eb6661ba6c2c32a45d42feb07763102"
+}
