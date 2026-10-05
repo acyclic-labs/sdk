@@ -2,6 +2,7 @@ package acyclic.installed
 
 import io.grpc.{ManagedChannelBuilder, StatusRuntimeException}
 import com.google.protobuf.ByteString
+import dev.acyclic.transport.{RustTypedClientsScala, RustTypedRequestsScala}
 import inference.customer.v1.inference.{ContextProvenance, ContextView, Empty}
 import java.lang.reflect.InvocationTargetException
 import java.nio.file.{Files, Path}
@@ -50,6 +51,50 @@ object ScalaRustTypedManifestConsumerV2 extends App {
   require(methods.size == count && methods.map(_._2).distinct.size == count, s"expected $count distinct Rust records, got ${methods.size}")
   val channel = ManagedChannelBuilder.forTarget(endpoint.stripPrefix("http://").stripPrefix("https://")).usePlaintext().build()
   val observations = ArrayBuffer.empty[String]
+  val installedFacadeMethods = RustTypedClientsScala.getClass.getMethods
+    .count(_.getName.matches("[a-z].*"))
+  require(installedFacadeMethods >= 106, s"installed Scala facade exposes only $installedFacadeMethods generated methods")
+  // Exercise the installed Rust-owned Scala facade directly before the broad
+  // descriptor-driven reachability sweep.  The Java protobuf/gRPC classes and
+  // these nominal wrappers come from the installed JVM artifact in lib/.
+  val typedActors = acyclic.actors.v1.ActorsServiceGrpc.newBlockingStub(channel)
+  val typedActorRequest = RustTypedRequestsScala.ActorsActorsCreateActorRequest(
+    acyclic.actors.v1.Actors.CreateActorRequest.newBuilder()
+      .setHomeRegion("fixture")
+      .setIdempotencyKey("scala-typed-facade-create")
+      .setCodeSha256(ByteString.copyFrom(Array.fill[Byte](32)(1)))
+      .setLimits(acyclic.actors.v1.Actors.ActorLimits.newBuilder()
+        .setHandlerTimeoutMillis(1000).setMemoryBytes(1048576).setCheckpointBytes(4096))
+      .build())
+  val typedActorResponse = RustTypedClientsScala.actorsActorsCreateActor(typedActors, typedActorRequest)
+  require(typedActorResponse.hasActor && typedActorResponse.actorActorId.value == "fixture-actor", "Scala typed actor facade response")
+  require(typedActorResponse.actor.getHomeRegion == "fixture", "Scala typed actor projection")
+
+  val typedStream = acyclic.stream.v2.StreamServiceGrpc.newBlockingStub(channel)
+  val typedAppend = RustTypedRequestsScala.StreamStreamAppendRequest(
+    acyclic.stream.v2.Stream.AppendRequest.newBuilder()
+      .setPath("fixture/scala-typed-facade")
+      .setIfTail(0)
+      .setIdempotencyKey(ByteString.copyFromUtf8("scala-typed-facade-append"))
+      .addRecords(ByteString.copyFromUtf8("typed-first"))
+      .build())
+  require(typedAppend.path.value == "fixture/scala-typed-facade" && typedAppend.hasIfTail, "Scala typed append request")
+  require(typedAppend.idempotencyKey.value.toStringUtf8 == "scala-typed-facade-append", "Scala typed idempotency key")
+  val typedCommitted = RustTypedClientsScala.streamStreamAppend(typedStream, typedAppend)
+  require(typedCommitted.hasCommitted && typedCommitted.committed.getTail == 1L, "Scala typed append response")
+  require(typedCommitted.committedCommitId.value.size == 32, "Scala typed commit identity")
+  val typedReplay = RustTypedClientsScala.streamStreamAppend(typedStream, typedAppend)
+  require(typedReplay.toWire == typedCommitted.toWire, "Scala typed idempotency replay")
+  val typedRead = RustTypedClientsScala.streamStreamRead(
+    typedStream,
+    RustTypedRequestsScala.StreamStreamReadRequest(
+      acyclic.stream.v2.Stream.ReadRequest.newBuilder()
+        .setPath("fixture/scala-typed-facade").setFrom(0).setLimit(1).build()))
+  require(typedRead.hasNext && typedRead.next().hasRecord, "Scala typed read response")
+  val typedFacadeObservation = sys.env.get("ACYCLIC_SCALA_TYPED_FACADE_OBSERVATION_FILE")
+  typedFacadeObservation.foreach { path =>
+    Files.writeString(Path.of(path), s"{\"schema\":\"acyclic.scala.typed-facade.v1\",\"source_git_sha\":\"$sourceSha\",\"actor\":true,\"stream\":true,\"replay\":true}\n")
+  }
   def jsonEscape(value: String): String = value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
   def sha256(bytes: Array[Byte]): String = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).map(b => f"$b%02x").mkString
   def b64(bytes: Array[Byte]): String = Base64.getEncoder.encodeToString(bytes)
@@ -141,4 +186,3 @@ object ScalaRustTypedManifestConsumerV2 extends App {
   println(s"ScalaPB schema-v2 generated-stub $mode: $attempted/$count methods from $sourceSha; status observations $statusErrors")
   private def unwrap(error: Throwable): Throwable = error match { case e: InvocationTargetException => unwrap(e.getTargetException); case other => other }
 }
-
