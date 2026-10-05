@@ -83,6 +83,16 @@ begin
    if not Result.Actor.Actor_Id.Present then
       raise Program_Error with "generated Ada response did not decode actor_id";
    end if;
+   declare
+      Inspect_Request : AcyclicActors.Models.AcyclicActorsV1InspectActorRequest_Type;
+      Inspect_Result : AcyclicActors.Models.AcyclicActorsV1InspectActorResponse_Type;
+   begin
+      Inspect_Request.Actor_Id := Result.Actor.Actor_Id;
+      AcyclicActors.Clients.Inspect_Actor (Client, Inspect_Request, Inspect_Result);
+      if not Inspect_Result.Actor.Actor_Id.Present then
+         raise Program_Error with "generated Ada inspect response did not decode actor_id";
+      end if;
+   end;
 end Qualification;
 EOF
       cat >"$actor_project/qualification.gpr" <<EOF
@@ -96,6 +106,7 @@ EOF
       run_logged ada-transport env ACYCLIC_FIXTURE_HTTP_ENDPOINT="$ACYCLIC_FIXTURE_HTTP_ENDPOINT" "$actor_project/bin/qualification"
       cp "$actor_project/src/qualification.adb" "$transport_dir/qualification.adb"
       client_transport='ada-generated-client-aws-fixture-roundtrip'
+      client_operations='actors.create_actor,actors.inspect_actor'
     else
       client_transport='not-run-fixture-endpoint-unset'
     fi
@@ -457,10 +468,13 @@ EOF
   *) echo "unsupported HTTP target: $target" >&2; exit 2 ;;
 esac
 
-python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" "$archive_sha256" "${client_transport:-not-run}" <<'PY'
+python3 - "$output_root/runtime-qualification.json" "$target" "$runtime" "${ACYCLIC_RUST_SOURCE_REVISION:-unknown}" "$archive" "$archive_sha256" "${client_transport:-not-run}" "${client_operations:-}" <<'PY'
 import json, pathlib, sys
-path, target, runtime, revision, archive, archive_sha256, client_transport = sys.argv[1:]
+path, target, runtime, revision, archive, archive_sha256, client_transport, client_operations = sys.argv[1:]
 fixture_roundtrip = client_transport.endswith("fixture-roundtrip")
+operations = [item for item in client_operations.split(",") if item]
+if fixture_roundtrip and not operations:
+    operations = ["actors.create_actor"]
 payload = {
     "schema": "acyclic.sdk.http-target-runtime-qualification.v1",
     "target": target,
@@ -473,7 +487,7 @@ payload = {
     "installed_from_archive": bool(archive),
     "client_transport": client_transport,
     "semantic_qualification": "fixture-roundtrip" if fixture_roundtrip else "compile-only",
-    "qualified_operations": ["actors.create_actor"] if fixture_roundtrip else [],
+    "qualified_operations": operations if fixture_roundtrip else [],
     "coverage_note": "This receipt proves only the listed generated operation; it does not imply full service or family coverage.",
     "streaming": "not-applicable-to-http-projection",
     "native_grpc": "unqualified",
