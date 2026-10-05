@@ -1063,7 +1063,7 @@ impl LocalFilesystemForkResolver {
                 .map(|conversation| conversation.messages.len() as u64)
                 .ok_or_else(|| {
                     Error::Conflict(
-                        "fork publication parent has no authoritative conversation.".into(),
+                        "fork publication parent has no authoritative conversation".into(),
                     )
                 })?;
             let mut request = ForkRequest {
@@ -1292,10 +1292,19 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 parent_revision,
                 issuer_secret,
             };
-            if let Some(plan) = Box::pin(self.resolve_existing_child(intent.clone(), publication.clone(), swarm.clone(), &context)).await? {
+            if let Some(plan) = self
+                .resolve_existing_child(
+                    intent.clone(),
+                    publication.clone(),
+                    swarm.clone(),
+                    &context,
+                )
+                .await?
+            {
                 return Ok(plan);
             }
-            Box::pin(self.resolve_fresh_child(intent, publication, swarm, context)).await
+            self.resolve_fresh_child(intent, publication, swarm, context)
+                .await
         })
     }
 }
