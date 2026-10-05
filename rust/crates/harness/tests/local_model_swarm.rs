@@ -109,6 +109,7 @@ struct DeterministicProvider {
     child_read_verified: AtomicBool,
     grandchild_inherited_read: AtomicBool,
     sibling_fork_sent: AtomicBool,
+    sibling_fork_requested: AtomicBool,
     communication_enabled: AtomicBool,
     communication_sent: AtomicBool,
     dispatches: AtomicUsize,
@@ -207,6 +208,7 @@ impl DeterministicProvider {
             child_read_verified: AtomicBool::new(false),
             grandchild_inherited_read: AtomicBool::new(false),
             sibling_fork_sent: AtomicBool::new(false),
+            sibling_fork_requested: AtomicBool::new(false),
             communication_enabled: AtomicBool::new(false),
             communication_sent: AtomicBool::new(false),
             dispatches: AtomicUsize::new(0),
@@ -277,7 +279,8 @@ impl ModelProvider for DeterministicProvider {
         let is_child_a = declared_task == Some("child-a");
         let is_child_b = declared_task == Some("child-b");
         let is_grandchild = declared_task == Some("grandchild");
-        let sibling_fork_attempt = message_contains(&request, "attempt sibling fork")
+        let sibling_fork_attempt = is_child_a
+            && self.sibling_fork_requested.load(Ordering::SeqCst)
             && !self.sibling_fork_sent.load(Ordering::SeqCst);
         let root = !is_child_a && !is_child_b && !is_grandchild;
         if is_grandchild && has_read_result(&request) {
@@ -581,6 +584,7 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
     // A completed child cannot select its sibling as a new child. The
     // authenticated parent binding and durable operation index reject the
     // forged sibling fork before another child is admitted.
+    provider.sibling_fork_requested.store(true, Ordering::SeqCst);
     let sibling_error = swarm
         .run(child_a_task, id(0xA2), "attempt sibling fork")
         .await;
@@ -743,7 +747,10 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
                 .await
         })
     };
-    let started = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    // This watchdog includes real filesystem allocation and durable journal
+    // preparation. The separate five-second shutdown bound below begins only
+    // after the owned provider stream is running; this is not a startup-latency test.
+    let started = tokio::time::timeout(std::time::Duration::from_secs(120), async {
         loop {
             if provider.child_dispatches.load(Ordering::SeqCst) > 0 {
                 break;
