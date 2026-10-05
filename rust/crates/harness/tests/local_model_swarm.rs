@@ -1212,6 +1212,17 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream() 
             "cancellable root returned an unexpected result".into(),
         ));
     }
+    let root_task = swarm.root_task().await?;
+    let child_task = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
+    let message_id = id(0xD3);
+    let message_body = b"durable replay survives cancelled recipient";
+    let receipt = swarm
+        .send_message(root_task, child_task, message_id, message_body)
+        .await?;
+    let before_cancel = swarm.read_inbox(child_task, 0, 8).await?;
+    assert_eq!(before_cancel.len(), 1);
+    swarm.cancel(child_task).await?;
+    assert_eq!(swarm.session(child_task).await?.phase, LocalSessionPhase::Cancelled);
     swarm.shutdown_workers().await;
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -1221,13 +1232,34 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream() 
     .expect("shutting down the swarm left the child provider stream running");
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
 
-    let child_task = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
+    drop(swarm);
+    let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+        directory.path(),
+        model,
+        provider.clone(),
+        limits,
+    )
+    .await?;
+    provider.bind_swarm(&reopened);
+    assert_eq!(reopened.session(child_task).await?.phase, LocalSessionPhase::Cancelled);
+    // The fresh host must recover the exact committed mailbox record before
+    // the cancelled recipient's lifecycle fence. A changed body with the
+    // same identity remains a conflict and cannot append another record.
     assert_eq!(
-        swarm.session(child_task).await?.phase,
-        LocalSessionPhase::Activating
+        reopened
+            .send_message(root_task, child_task, message_id, message_body)
+            .await?,
+        receipt
     );
-    // Dropping the running stream does not publish successful completion or
-    // redispatch. Cold recovery of its admitted model attempt is a separate gate.
+    assert_eq!(reopened.read_inbox(child_task, 0, 8).await?, before_cancel);
+    assert!(matches!(
+        reopened
+            .send_message(root_task, child_task, message_id, b"changed replay body")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(reopened.read_inbox(child_task, 0, 8).await?, before_cancel);
+    // Cancellation and cold recovery must not redispatch the admitted model.
     assert_eq!(provider.dispatches.load(Ordering::SeqCst), 3);
     assert_eq!(provider.child_dispatches.load(Ordering::SeqCst), 1);
     assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
