@@ -23,17 +23,24 @@ pub struct OutputReader {
     receiver: Receiver<io::Result<Vec<u8>>>,
     cancel: Option<Box<dyn FnOnce() -> io::Result<()> + Send>>,
     handle: Option<JoinHandle<()>>,
+    completed: bool,
 }
 
 impl OutputReader {
     /// Receives the completed output, waiting at most `timeout`.
-    pub fn receive(&self, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
+    pub fn receive(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
         match self.receiver.recv_timeout(timeout) {
-            Ok(result) => result.map(Some),
+            Ok(result) => {
+                self.completed = true;
+                result.map(Some)
+            }
             Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(io::Error::other(
-                "process output reader disconnected without a result",
-            )),
+            Err(RecvTimeoutError::Disconnected) => {
+                self.completed = true;
+                Err(io::Error::other(
+                    "process output reader disconnected without a result",
+                ))
+            }
         }
     }
 
@@ -64,11 +71,22 @@ impl OutputReader {
 
     /// Joins a reader that has already delivered its output.
     pub fn join(&mut self) -> io::Result<()> {
-        // The reader has completed, so release the platform cancellation
-        // handle before joining. This avoids sending a late wakeup to a
-        // finished native thread when the task is subsequently dropped.
-        self.cancel.take();
-        self.join_inner()
+        let cancellation = if self.completed {
+            // The reader has completed, so release the platform cancellation
+            // handle before joining. This avoids sending a late wakeup to a
+            // finished native thread when the task is subsequently dropped.
+            self.cancel.take();
+            None
+        } else {
+            // Joining an unread reader must wake the worker before joining.
+            self.cancel.take().and_then(|cancel| cancel().err())
+        };
+        let joined = self.join_inner();
+        joined?;
+        if let Some(error) = cancellation {
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn join_inner(&mut self) -> io::Result<()> {
@@ -154,31 +172,47 @@ mod unix {
         F: FnMut(&[u8]) -> bool + Send + 'static,
     {
         let (cancel_read, cancel_write) = make_cancel_pipe()?;
+        let cancel_read = std::sync::Arc::new(cancel_read);
+        let worker_cancel_read = std::sync::Arc::clone(&cancel_read);
         let (sender, receiver) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("acyclic-output-reader".into())
             .spawn(move || {
-                let result = run_reader_poll(reader, cancel_read, consume);
+                let result = run_reader_poll(reader, worker_cancel_read, consume);
                 let _ = sender.send(result);
             })?;
         let cancel = Box::new(move || {
             let byte = [1_u8];
-            let written =
-                unsafe { libc::write(cancel_write.as_raw_fd(), byte.as_ptr().cast(), byte.len()) };
-            if written == 1 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
+            loop {
+                let written = unsafe {
+                    libc::write(cancel_write.as_raw_fd(), byte.as_ptr().cast(), byte.len())
+                };
+                if written == 1 {
+                    return Ok(());
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                // Keep the read end alive through this closure so a failed
+                // worker cannot turn cancellation into SIGPIPE.
+                let _ = &cancel_read;
+                return Err(error);
             }
         });
         Ok(OutputReader {
             receiver,
             cancel: Some(cancel),
             handle: Some(handle),
+            completed: false,
         })
     }
 
-    fn run_reader_poll<R, F>(mut reader: R, cancel: OwnedFd, mut consume: F) -> io::Result<Vec<u8>>
+    fn run_reader_poll<R, F>(
+        mut reader: R,
+        cancel: std::sync::Arc<OwnedFd>,
+        mut consume: F,
+    ) -> io::Result<Vec<u8>>
     where
         R: Read + AsRawFd,
         F: FnMut(&[u8]) -> bool,
@@ -235,13 +269,42 @@ mod unix {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn make_cancel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+        let mut descriptors = [0; 2];
+        if unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: pipe initialized both descriptors on success and ownership
+        // is transferred exactly once to these OwnedFd values.
+        Ok(unsafe {
+            (
+                OwnedFd::from_raw_fd(descriptors[0]),
+                OwnedFd::from_raw_fd(descriptors[1]),
+            )
+        })
+    }
+
+    #[cfg(target_vendor = "apple")]
     fn make_cancel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
         let mut descriptors = [0; 2];
         if unsafe { libc::pipe(descriptors.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: pipe initialized both descriptors on success and ownership
-        // is transferred exactly once to these OwnedFd values.
+        for descriptor in descriptors {
+            let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+            if flags < 0
+                || unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0
+            {
+                unsafe {
+                    libc::close(descriptors[0]);
+                    libc::close(descriptors[1]);
+                }
+                return Err(io::Error::last_os_error());
+            }
+        }
+        // SAFETY: pipe initialized both descriptors and ownership is
+        // transferred exactly once to these values.
         Ok(unsafe {
             (
                 OwnedFd::from_raw_fd(descriptors[0]),
@@ -326,6 +389,7 @@ mod windows {
             receiver,
             cancel: Some(cancel),
             handle: Some(handle),
+            completed: false,
         })
     }
 
@@ -489,6 +553,20 @@ mod windows_tests {
         let (reader_file, _writer_file) = anonymous_pipe();
         let mut reader = spawn_output_reader(reader_file, |_| true).expect("spawn reader");
         assert_eq!(reader.cancel_and_join().expect("cancel and join"), None);
+    }
+
+    #[test]
+    fn join_before_receive_cancels_reader() {
+        let (reader_file, _writer_file) = anonymous_pipe();
+        let mut reader = spawn_output_reader(reader_file, |_| true).expect("spawn reader");
+        reader.join().expect("join reader");
+    }
+
+    #[test]
+    fn drop_cancels_reader_with_writer_alive() {
+        let (reader_file, _writer_file) = anonymous_pipe();
+        let reader = spawn_output_reader(reader_file, |_| true).expect("spawn reader");
+        drop(reader);
     }
 
     #[test]
