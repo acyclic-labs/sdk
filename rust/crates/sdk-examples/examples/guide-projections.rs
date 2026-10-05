@@ -1,7 +1,16 @@
 use acyclic_sdk_examples::guide_projections;
 use serde_json::json;
+use std::process::Command;
 
 fn main() {
+    let source_git_revision = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|revision| !revision.is_empty());
     let projections = guide_projections::all()
         .into_iter()
         .map(|projection| {
@@ -17,6 +26,7 @@ fn main() {
                 // qualification harness carries this through every package
                 // install and execution receipt.
                 "source_sha256": env!("SDK_EXAMPLES_SOURCE_SHA256"),
+                "source_git_revision": source_git_revision,
                 "capability": projection.capability.as_str(),
                 "package_manager": projection.package.package_manager,
                 "package_name": projection.package.package_name,

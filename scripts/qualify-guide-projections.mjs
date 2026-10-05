@@ -327,6 +327,8 @@ const parsedProjections = JSON.parse(manifestCommand.stdout);
 const projections = Array.isArray(parsedProjections) ? parsedProjections : [parsedProjections];
 const sourceDigests = [...new Set(projections.map((projection) => projection.source_sha256).filter(Boolean))];
 const sourceSha256 = sourceDigests.length === 1 ? sourceDigests[0] : null;
+const sourceGitRevisions = [...new Set(projections.map((projection) => projection.source_git_revision).filter(Boolean))];
+const sourceGitRevision = sourceGitRevisions.length === 1 ? sourceGitRevisions[0] : null;
 // Rust emits the source closure digest in every projection. It is the
 // authoritative identity for an archive or dirty checkout; Git HEAD is not
 // sufficient because it can describe a different tree than the producer.
@@ -354,6 +356,7 @@ for (const projection of projections) {
     mode: projection.mode,
     source: projection.source,
     source_revision: sourceRevision,
+    source_git_revision: sourceGitRevision,
     source_sha256: projection.source_sha256 ?? null,
     package_manager: projection.package_manager,
     package_name: projection.package_name,
@@ -397,6 +400,7 @@ for (const projection of projections) {
 const summary = {
   schema: "acyclic.sdk.guide-projection-qualification.v1",
   source_revision: sourceRevision,
+  source_git_revision: sourceGitRevision,
   source_sha256: sourceSha256,
   source: "rust/crates/sdk-examples/src/guide_projections.rs",
   projection_count: receipts.length,
