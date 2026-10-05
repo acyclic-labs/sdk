@@ -10,8 +10,9 @@ use super::super::*;
 use crate::{
     Error, OperationId, Result,
     executor::ExecutionEvent,
-    model::{Model, ModelAttempt, ModelEvent, ModelProvider},
+    model::{Model, ModelAttempt, ModelEvent, ModelOptionPolicy, ModelProvider, ModelRequest},
     model_input::PreparedModelInput,
+    swarm_budget::SwarmUsageSource,
 };
 use acyclic_stream::{LocalStream, StreamError};
 use futures::{StreamExt as _, future::BoxFuture, stream::BoxStream};
@@ -30,15 +31,11 @@ use tempfile::tempdir;
 struct TraceModel {
     child_operation: OperationId,
     calls: AtomicUsize,
-    request_bytes: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
 }
 
 impl ModelProvider for TraceModel {
-    fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, _prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut captured) = self.request_bytes.lock() {
-            captured.push(prepared.bytes().to_vec());
-        }
         if call == 0 {
             return Box::pin(futures::stream::iter([
                 Ok(ModelEvent::ToolCall {
@@ -70,6 +67,51 @@ impl ModelProvider for TraceModel {
         _attempt: ModelAttempt,
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async { Ok(None) })
+    }
+}
+
+/// Captures the exact admitted request bytes while preserving the provider
+/// boundary. The wrapper delegates policy, admission, authenticated usage,
+/// and recovery to the inner provider; capture is observational only and
+/// never changes the prepared model payload.
+struct CaptureProvider {
+    inner: Arc<dyn ModelProvider>,
+    request_bytes: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+}
+
+impl ModelProvider for CaptureProvider {
+    fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+        self.inner.model_option_policy()
+    }
+
+    fn swarm_usage_source(&self) -> Option<Arc<dyn SwarmUsageSource>> {
+        self.inner.swarm_usage_source()
+    }
+
+    fn admit(&self, request: &ModelRequest) -> Result<()> {
+        self.inner.admit(request)
+    }
+
+    fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        if let Ok(mut captured) = self.request_bytes.lock() {
+            captured.push(prepared.bytes().to_vec());
+        }
+        self.inner.generate(prepared)
+    }
+
+    fn reconcile_admitted<'a>(
+        &'a self,
+        prepared: PreparedModelInput,
+        attempt: ModelAttempt,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        self.inner.reconcile_admitted(prepared, attempt)
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        attempt: ModelAttempt,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        self.inner.reconcile(attempt)
     }
 }
 
@@ -196,7 +238,9 @@ fn generation_projection(report: &ForkReport) -> Result<(u64, Value)> {
             // Filesystem generations are opaque provider identities. This
             // finite adapter retains the raw generation in the manifest and
             // maps the first observed immutable generation to ordinal zero.
-            return Ok((0, serde_json::to_value(generation)?));
+            return serde_json::to_value(generation)
+                .map(|value| (0, value))
+                .map_err(|error| Error::Storage(format!("invalid formal generation: {error}")));
         }
     }
     Err(Error::Storage(
@@ -230,16 +274,19 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let child_operation = OperationId::from_bytes([2; 16]);
     let root_operation = OperationId::from_bytes([1; 16]);
-    let provider = Arc::new(TraceModel {
-        child_operation,
-        calls: AtomicUsize::new(0),
+    let capture = Arc::new(CaptureProvider {
+        inner: Arc::new(TraceModel {
+            child_operation,
+            calls: AtomicUsize::new(0),
+        }),
         request_bytes: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
+    let provider: Arc<dyn ModelProvider> = capture.clone();
     let model = Model::new("mock", "formal-real-trace", "1", json!({}))?;
     let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
         root.path(),
         model,
-        Arc::clone(&provider),
+        provider,
         crate::conversation::Limits::default(),
     )
     .await?;
@@ -448,7 +495,7 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         .journal()
         .load(&model_request_ref)
         .await?;
-    let captured_requests = provider
+    let captured_requests = capture
         .request_bytes
         .lock()
         .map_err(|_| Error::Storage("real mock provider request capture was poisoned".into()))?
@@ -556,7 +603,8 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "outcome_durable": true
         }),
     ];
-    let bytes = serde_json::to_vec_pretty(&trace)?;
+    let bytes = serde_json::to_vec_pretty(&trace)
+        .map_err(|error| Error::Storage(format!("invalid formal trace: {error}")))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| Error::Storage(error.to_string()))?;
     }
@@ -676,8 +724,9 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         "normalization": normalization,
         "assumptions": assumptions
     });
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| Error::Storage(format!("invalid formal trace manifest: {error}")))?;
+    fs::write(&manifest_path, manifest_bytes).map_err(|error| Error::Storage(error.to_string()))?;
     Ok(())
 }
 
