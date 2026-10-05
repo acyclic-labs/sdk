@@ -180,7 +180,10 @@ function prepare(language, packageArtifact, directory) {
     const moduleRoot = resolve(packageArtifact, "..");
     const module = readFileSync(packageArtifact, "utf8").match(/^module\s+([^\r\n]+)/m)?.[1]?.trim();
     if (!module) return { status: "install-failed", install: null, environment: {}, error: "go.mod has no module declaration" };
-    writeFileSync(join(directory, "go.mod"), `module guide-snippet\n\ngo 1.27\n\nrequire ${module} v0.0.0\n\nreplace ${module} => ${moduleRoot.replaceAll("\\", "/")}\n`);
+    const packageGoMod = readFileSync(packageArtifact, "utf8").replace(/^module\s+[^\r\n]+\r?\n?/m, "");
+    writeFileSync(join(directory, "go.mod"), `module guide-snippet\n\n${packageGoMod}\nrequire ${module} v0.0.0\n\nreplace ${module} => ${moduleRoot.replaceAll("\\", "/")}\n`);
+    const packageGoSum = join(moduleRoot, "go.sum");
+    if (existsSync(packageGoSum)) writeFileSync(join(directory, "go.sum"), readFileSync(packageGoSum));
     return { status: "installed", install: { command: "go mod replace", exitCode: 0, stdout: "", stderr: "" }, environment: {} };
   }
 
