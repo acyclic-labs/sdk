@@ -126,6 +126,23 @@ fn canonical_json_hex<T: serde::Serialize>(value: &T) -> Result<String> {
     Ok(hex_bytes(&crate::contract::canonical_json_bytes(value)?))
 }
 
+fn merge_json_objects(parts: impl IntoIterator<Item = Value>) -> Result<Value> {
+    let mut merged = serde_json::Map::new();
+    for part in parts {
+        let object = part
+            .as_object()
+            .ok_or_else(|| Error::Storage("formal manifest part is not an object".into()))?;
+        for (key, value) in object {
+            if merged.insert(key.clone(), value.clone()).is_some() {
+                return Err(Error::Storage(format!(
+                    "formal manifest field is duplicated: {key}"
+                )));
+            }
+        }
+    }
+    Ok(Value::Object(merged))
+}
+
 fn file_sha256(path: &Path) -> Result<String> {
     let bytes = fs::read(path).map_err(|error| Error::Storage(error.to_string()))?;
     Ok(sha256_hex(&bytes))
@@ -547,10 +564,8 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     let trace_digest = sha256_hex(&bytes);
 
     let manifest_path = path.with_extension("manifest.json");
-    let manifest = json!({
-        "kind": "real_harness_trace_manifest",
-        "trace": path,
-        "source": {
+    let source = merge_json_objects([
+        json!({
             "registry_stream": REGISTRY_STREAM,
             "admission_record": admission_kind,
             "fork_admitted_sequence": admission_sequence,
@@ -564,7 +579,9 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "child_execution_model_started_step": model_step,
             "child_execution_model_started_request_digest_hex": model_request_digest,
             "child_execution_model_started_request_bytes_hex": hex_bytes(&captured_request_bytes),
-            "child_execution_model_started_request_bytes_sha256": sha256_hex(&captured_request_bytes),
+            "child_execution_model_started_request_bytes_sha256": sha256_hex(&captured_request_bytes)
+        }),
+        json!({
             "admission_record_bytes_hex": admission_record_bytes,
             "admission_record_sha256": sha256_hex(&hex_decode(&admission_record_bytes)?),
             "parent_event_canonical_bytes_hex": hex_bytes(&publication_event_bytes),
@@ -572,7 +589,9 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "child_model_event_canonical_bytes_hex": hex_bytes(&model_record_bytes),
             "child_model_event_sha256": sha256_hex(&model_record_bytes),
             "completion_record_bytes_hex": completion_record_bytes,
-            "completion_record_sha256": sha256_hex(&hex_decode(&completion_record_bytes)?),
+            "completion_record_sha256": sha256_hex(&hex_decode(&completion_record_bytes)?)
+        }),
+        json!({
             "root_task": root_task,
             "child_task": child_task,
             "child_depth": child_session.depth,
@@ -580,7 +599,9 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "parent_step": parent_step,
             "task": task,
             "prompt": prompt,
-            "child_agent": child_agent,
+            "child_agent": child_agent
+        }),
+        json!({
             "seed": seed,
             "seed_canonical_bytes_hex": canonical_json_hex(&seed)?,
             "seed_sha256": sha256_hex(&crate::contract::canonical_json_bytes(&seed)?),
@@ -593,54 +614,67 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "publication_sha256": sha256_hex(&crate::contract::canonical_json_bytes(&publication)?),
             "declaration": declaration,
             "declaration_canonical_bytes_hex": canonical_json_hex(&declaration)?,
-            "declaration_sha256": sha256_hex(&crate::contract::canonical_json_bytes(&declaration)?),
+            "declaration_sha256": sha256_hex(&crate::contract::canonical_json_bytes(&declaration)?)
+        }),
+        json!({
             "root_operation": root_operation,
             "fork_operation": fork_operation,
             "publication_operation": publication.operation_id,
             "publication_parent_operation": publication.parent_operation,
             "publication_step": publication.step,
             "parent_seed_authority": publication_seed.parent,
-            "parent_seed_revision": publication_seed.parent_revision,
+            "parent_seed_revision": publication_seed.parent_revision
+        }),
+        json!({
             "completion_operation": completion_operation,
             "completion_output": completion_output,
             "completion_output_ref": completion_output_ref,
             "completion_output_digest": completion_output_digest
-        },
-        "identity_binding": {
-            "fork_operation_id": fork_operation,
-            "publication_operation_id": publication.operation_id,
-            "child_operation_id": child_operation,
-            "parent_event_operation_id": publication_event_operation,
-            "completion_operation_id": completion_operation
-        },
+        }),
+    ])?;
+    let identity_binding = json!({
+        "fork_operation_id": fork_operation,
+        "publication_operation_id": publication.operation_id,
+        "child_operation_id": child_operation,
+        "parent_event_operation_id": publication_event_operation,
+        "completion_operation_id": completion_operation
+    });
+    let ordering = json!({
+        "basis": "causal projection across independently ordered durable streams",
+        "registry": "registry sequence orders ForkPrepared and ForkCompleted",
+        "parent_conversation": "conversation revision identifies ForkPublished",
+        "child_execution": "child journal sequence identifies ModelStarted",
+        "cross_stream_sequences_compared": false,
+        "source_chronology_is_not_projected": true
+    });
+    let normalization = json!({
+        "task_ids": {"1": root_task, "2": child_task},
+        "agent_ids": {"2": child_agent},
+        "generation": {
+            "finite_ordinal": generation,
+            "raw_captured_generation": raw_generation,
+            "rule": "first observed immutable project generation maps to ordinal zero"
+        }
+    });
+    let assumptions = json!([
+        "The trace is one real local Filesystem-backed Harness run using a deterministic mock provider.",
+        "Task and opaque generation identities are normalized only at the adapter boundary.",
+        "Current project generation is not independently observed by this trace, so publication freshness is not claimed.",
+        "This trace does not prove approval handling, aggregate budget exhaustion, Rust refinement, liveness, OS confinement, or a total order across streams."
+    ]);
+    let manifest = json!({
+        "kind": "real_harness_trace_manifest",
+        "trace": path,
+        "source": source,
+        "identity_binding": identity_binding,
         "trace_binding": {
             "trace_path": path,
             "trace_sha256": trace_digest
         },
         "provenance": verification_provenance()?,
-        "ordering": {
-            "basis": "causal projection across independently ordered durable streams",
-            "registry": "registry sequence orders ForkPrepared and ForkCompleted",
-            "parent_conversation": "conversation revision identifies ForkPublished",
-            "child_execution": "child journal sequence identifies ModelStarted",
-            "cross_stream_sequences_compared": false,
-            "source_chronology_is_not_projected": true
-        },
-        "normalization": {
-            "task_ids": {"1": root_task, "2": child_task},
-            "agent_ids": {"2": child_agent},
-            "generation": {
-                "finite_ordinal": generation,
-                "raw_captured_generation": raw_generation,
-                "rule": "first observed immutable project generation maps to ordinal zero"
-            }
-        },
-        "assumptions": [
-            "The trace is one real local Filesystem-backed Harness run using a deterministic mock provider.",
-            "Task and opaque generation identities are normalized only at the adapter boundary.",
-            "Current project generation is not independently observed by this trace, so publication freshness is not claimed.",
-            "This trace does not prove approval handling, aggregate budget exhaustion, Rust refinement, liveness, OS confinement, or a total order across streams."
-        ]
+        "ordering": ordering,
+        "normalization": normalization,
+        "assumptions": assumptions
     });
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
         .map_err(|error| Error::Storage(error.to_string()))?;
