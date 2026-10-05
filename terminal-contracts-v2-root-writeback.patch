@@ -1,0 +1,495 @@
+diff --git a/rust/crates/graphcoder-cli/src/main.rs b/rust/crates/graphcoder-cli/src/main.rs
+index b2bd6ca98..aa352e435 100644
+--- a/rust/crates/graphcoder-cli/src/main.rs
++++ b/rust/crates/graphcoder-cli/src/main.rs
+@@ -362,9 +362,11 @@ impl Runtime {
+             "list_approvals" => self.list_approvals(&request.params).await,
+             "operator_approve" => self.operator_approve(&request.params).await,
+             "resolve_approval" => self.resolve_approval(&request.params).await,
++            "inspect_writeback" => self.inspect_writeback(&request.params).await,
++            "approve_writeback" => self.approve_writeback(&request.params).await,
+             "cancel_session" => self.cancel_session(&request.params).await,
+             "read_file" => self.read_file(&request.params).await,
+-            "list_changes" | "read_change" | "approve_writeback" => {
++            "list_changes" | "read_change" => {
+                 Err(DispatchError::unsupported(
+                     "the durable local constructor does not expose this projection yet",
+                 ))
+@@ -682,6 +684,70 @@ impl Runtime {
+         Ok(approval_value(approval))
+     }
+ 
++    async fn inspect_writeback(&self, params: &Value) -> Result<Value, DispatchError> {
++        let params = object(params)?;
++        let task = task_from_value(params, "session_id")?;
++        let operation = required_text(params, "operation_id")?;
++        if operation.trim().is_empty() || operation.len() > 256 {
++            return Err(DispatchError::invalid(
++                "operation_id must be nonempty and at most 256 bytes",
++            ));
++        }
++        let inspection = self
++            .swarm
++            .inspect_root_writeback(task, operation_for(operation))
++            .await
++            .map_err(DispatchError::from_harness)?;
++        serde_json::to_value(inspection).map_err(|error| {
++            DispatchError::invalid(format!("writeback inspection is not serializable: {error}"))
++        })
++    }
++
++    /// Resolves a root-writeback ticket through the authenticated host control
++    /// channel.  A public model request cannot mint a root approval or supply
++    /// a workspace generation; the durable ticket is revalidated by Harness.
++    async fn approve_writeback(&self, params: &Value) -> Result<Value, DispatchError> {
++        let params = object(params)?;
++        let token = required_text(params, "operator_token")?;
++        let expected = self.operator_token.as_deref().ok_or_else(|| {
++            DispatchError::unsupported("operator control is not configured")
++        })?;
++        if token != expected {
++            return Err(DispatchError {
++                code: "denied",
++                message: "operator control credential is invalid".into(),
++            });
++        }
++        let task = task_from_value(params, "session_id")?;
++        let id = InteractionId::parse(required_text(params, "approval_id")?)
++            .map_err(DispatchError::from_harness)?;
++        let operation_text = required_text(params, "operation_id")?;
++        if operation_text.trim().is_empty() || operation_text.len() > 256 {
++            return Err(DispatchError::invalid(
++                "operation_id must be nonempty and at most 256 bytes",
++            ));
++        }
++        let operation_id = operation_for(operation_text);
++        let approved = params
++            .get("approved")
++            .and_then(Value::as_bool)
++            .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
++        let resolution = self
++            .swarm
++            .resolve_root_writeback(task, id, approved)
++            .await
++            .map_err(DispatchError::from_harness)?;
++        if resolution.operation_id != operation_id {
++            return Err(DispatchError {
++                code: "denied",
++                message: "writeback operation does not match the inspected ticket".into(),
++            });
++        }
++        serde_json::to_value(resolution).map_err(|error| {
++            DispatchError::invalid(format!("writeback resolution is not serializable: {error}"))
++        })
++    }
++
+     async fn cancel_session(&self, params: &Value) -> Result<Value, DispatchError> {
+         let params = object(params)?;
+         let task = task_from_value(params, "session_id")?;
+diff --git a/rust/crates/harness/src/filesystem/swarm_local.rs b/rust/crates/harness/src/filesystem/swarm_local.rs
+index 3f130d975..0e389e6fd 100644
+--- a/rust/crates/harness/src/filesystem/swarm_local.rs
++++ b/rust/crates/harness/src/filesystem/swarm_local.rs
+@@ -9,7 +9,8 @@
+ use super::{
+     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
+     InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
+-    LocalHarnessTools, PersistentLocalHarness, workspace_ref,
++    LocalHarnessTools, ParentProjectController, PersistentLocalHarness, RootWritebackApproval,
++    RootWritebackRequest, workspace_ref,
+ };
+ use crate::{
+     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
+@@ -22,7 +23,7 @@ use crate::{
+         Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
+         ResourceRevision,
+     },
+-    interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
++    interaction::{Interaction, InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
+     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
+     model_input::{CompletedModelBoundary, InheritedModelContext},
+     registry::ComponentIdentity,
+@@ -1732,6 +1733,77 @@ pub struct LocalSwarmApproval {
+     pub resolution: Option<InteractionResolution>,
+ }
+ 
++/// Immutable root-writeback admission returned after inspecting a direct
++/// child.  The interaction ticket is owned by the parent session; the child
++/// identity is retained so a later resolve cannot redirect the admission to a
++/// sibling or a different project.
++#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct LocalSwarmWritebackInspection {
++    /// Child session whose project was inspected.
++    pub task: TaskId,
++    /// Parent session that owns the writeback interaction.
++    pub approval_task: TaskId,
++    /// Durable operator interaction awaiting a choice.
++    pub approval_id: InteractionId,
++    /// Operation identity selected by the caller.
++    pub operation_id: OperationId,
++    /// Digest binding the operation, child, projects, and generations.
++    pub action_digest: [u8; 32],
++    /// Child project generation inspected as the source.
++    pub source_generation: GenerationRef,
++    /// Parent project generation pinned as the CAS target.
++    pub expected_target_generation: GenerationRef,
++    /// Child project bound by the published fork.
++    pub source_project: VolumeRef,
++    /// Parent project that owns the root writeback.
++    pub target_project: VolumeRef,
++}
++
++/// Durable result of resolving a writeback operator interaction.  Approval is
++/// reported only after the interaction outcome is committed; provider effects
++/// remain behind the existing authenticated facade and recovery boundary.
++#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct LocalSwarmWritebackResolution {
++    /// Child session whose inspected action was resolved.
++    pub task: TaskId,
++    /// Parent session that owns the approval ticket.
++    pub approval_task: TaskId,
++    /// Durable interaction identity.
++    pub approval_id: InteractionId,
++    /// Operation identity bound by the interaction.
++    pub operation_id: OperationId,
++    /// Exact action digest revalidated at resolution.
++    pub action_digest: [u8; 32],
++    /// Durable decision committed by the interaction journal.
++    pub outcome: InteractionOutcome,
++    /// Whether the exact root writeback request was admitted.  This is true
++    /// only for an approved interaction; it does not claim provider success.
++    pub admitted: bool,
++}
++
++#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
++struct RootWritebackActionBinding<'a> {
++    version: u8,
++    operation_id: OperationId,
++    child: &'a Authority,
++    parent: &'a Authority,
++    source_project: &'a VolumeRef,
++    target_project: &'a VolumeRef,
++    source_generation: &'a GenerationRef,
++    expected_target_generation: &'a GenerationRef,
++}
++
++#[derive(Clone, Debug)]
++struct PreparedRootWriteback {
++    source_project: VolumeRef,
++    target_project: VolumeRef,
++    source_generation: GenerationRef,
++    expected_target_generation: GenerationRef,
++    action_digest: [u8; 32],
++}
++
+ /// A durable sender receipt returned after the owner host accepts a message.
+ #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+@@ -2404,6 +2476,223 @@ impl PersistentLocalSwarm {
+         Ok(outcome)
+     }
+ 
++    /// Inspects a direct child's published project through the parent-owned
++    /// merge controller and opens one durable, exact approval ticket.  No
++    /// provider mutation occurs here.  The action digest includes both
++    /// immutable generations so a later resolve cannot reuse the ticket after
++    /// either side has advanced.
++    pub async fn inspect_root_writeback(
++        &self,
++        task: TaskId,
++        operation_id: OperationId,
++    ) -> Result<LocalSwarmWritebackInspection> {
++        let prepared = self.prepare_root_writeback(task, operation_id).await?;
++        let approval_task = self
++            .session(task)
++            .await?
++            .parent
++            .ok_or_else(|| Error::Invalid("root writeback requires a direct child".into()))?;
++        let parent_harness = self.open_session(approval_task).await?;
++        let interaction_id = InteractionId::new();
++        parent_harness
++            .storage()
++            .open_interaction(
++                interaction_id,
++                Interaction::approval(
++                    "Approve exact root project writeback",
++                    operation_id,
++                    prepared.action_digest,
++                )?,
++            )
++            .await?;
++        Ok(LocalSwarmWritebackInspection {
++            task,
++            approval_task,
++            approval_id: interaction_id,
++            operation_id,
++            action_digest: prepared.action_digest,
++            source_generation: prepared.source_generation,
++            expected_target_generation: prepared.expected_target_generation,
++            source_project: prepared.source_project,
++            target_project: prepared.target_project,
++        })
++    }
++
++    /// Authenticates and durably resolves the exact operator decision for a
++    /// previously inspected child.  The current provider plan is rebuilt and
++    /// its binding is compared before the interaction is resolved, so stale
++    /// generations fail closed.  The returned `admitted` bit means only that
++    /// an exact `RootWritebackRequest` can now be constructed by the existing
++    /// provider facade; it never reports a workspace mutation as successful.
++    pub async fn resolve_root_writeback(
++        &self,
++        task: TaskId,
++        approval_id: InteractionId,
++        approved: bool,
++    ) -> Result<LocalSwarmWritebackResolution> {
++        let approval_task = self
++            .session(task)
++            .await?
++            .parent
++            .ok_or_else(|| Error::Invalid("root writeback requires a direct child".into()))?;
++        let approval = self
++            .list_approvals(approval_task)
++            .await?
++            .into_iter()
++            .find(|approval| approval.ticket.id == approval_id)
++            .ok_or_else(|| Error::NotFound(format!("root writeback approval {approval_id}")))?;
++        let binding = approval.ticket.approval.ok_or_else(|| {
++            Error::Invalid("root writeback ticket has no exact operation binding".into())
++        })?;
++        if approval.resolution.is_some() {
++            return Err(Error::Conflict(
++                "root writeback approval is no longer pending".into(),
++            ));
++        }
++        let prepared = self
++            .prepare_root_writeback(task, binding.operation_id)
++            .await?;
++        if prepared.action_digest != binding.action_digest {
++            return Err(Error::Conflict(
++                "root writeback inspected generations are stale; inspect again".into(),
++            ));
++        }
++
++        // The operator choice is accepted only through the host-owned
++        // credential boundary.  The existing resolver then signs the exact
++        // interaction grant and commits the outcome to the durable journal.
++        self.record_operator_approval(approval_task, approval_id, approved)
++            .await?;
++        let outcome = self
++            .resolve_recorded_operator_approval(approval_task, approval_id, approved)
++            .await?;
++        let admitted = matches!(outcome, InteractionOutcome::Approved);
++        Ok(LocalSwarmWritebackResolution {
++            task,
++            approval_task,
++            approval_id,
++            operation_id: binding.operation_id,
++            action_digest: binding.action_digest,
++            outcome,
++            admitted,
++        })
++    }
++
++    /// Reconstructs the existing facade request after a durable approved
++    /// outcome.  The caller supplies the host-authenticated parent scope; a
++    /// model-facing boolean cannot manufacture this request.  Provider
++    /// dispatch remains the responsibility of `FilesystemGitFacade`.
++    pub async fn approved_root_writeback_request(
++        &self,
++        task: TaskId,
++        approval_id: InteractionId,
++        scope: Scope,
++    ) -> Result<RootWritebackRequest> {
++        let approval_task = self
++            .session(task)
++            .await?
++            .parent
++            .ok_or_else(|| Error::Invalid("root writeback requires a direct child".into()))?;
++        let approval = self
++            .list_approvals(approval_task)
++            .await?
++            .into_iter()
++            .find(|approval| approval.ticket.id == approval_id)
++            .ok_or_else(|| Error::NotFound(format!("root writeback approval {approval_id}")))?;
++        let binding = approval.ticket.approval.ok_or_else(|| {
++            Error::Invalid("root writeback ticket has no exact operation binding".into())
++        })?;
++        if approval.resolution.as_ref().map(|resolution| &resolution.outcome)
++            != Some(&InteractionOutcome::Approved)
++        {
++            return Err(Error::Unauthorized(
++                "root writeback requires a durable approved operator outcome".into(),
++            ));
++        }
++        let prepared = self
++            .prepare_root_writeback(task, binding.operation_id)
++            .await?;
++        if prepared.action_digest != binding.action_digest {
++            return Err(Error::Conflict(
++                "root writeback inspected generations are stale; inspect again".into(),
++            ));
++        }
++        let parent_harness = self.open_session(approval_task).await?;
++        let storage = parent_harness.storage();
++        let approval = RootWritebackApproval::issue(
++            &storage.verifier(),
++            &scope,
++            prepared.target_project,
++            binding.operation_id,
++            prepared.source_generation,
++            prepared.expected_target_generation,
++        )?;
++        Ok(RootWritebackRequest::new(approval, scope))
++    }
++
++    async fn prepare_root_writeback(
++        &self,
++        task: TaskId,
++        operation_id: OperationId,
++    ) -> Result<PreparedRootWriteback> {
++        let child_session = self.session(task).await?;
++        let approval_task = child_session
++            .parent
++            .ok_or_else(|| Error::Invalid("root writeback requires a direct child".into()))?;
++        let seed = self.published_seed(task).await?;
++        seed.validate()?;
++        let project = seed
++            .resources
++            .iter()
++            .find_map(|resource| match (&resource.source, &resource.revision) {
++                (
++                    ResourceRevision::Project { volume: source, .. },
++                    ResourceRevision::Project { volume: child, .. },
++                ) => Some((source.clone(), child.clone())),
++                _ => None,
++            })
++            .ok_or_else(|| Error::NotFound("published child has no project capture".into()))?;
++        let parent_harness = self.open_session(approval_task).await?;
++        let aggregate = parent_harness
++            .conversation_aggregate(self.config.limits)
++            .await?;
++        let parent = aggregate.reducer();
++        if parent.authority() != &seed.parent || parent.fork(&seed.child).is_none() {
++            return Err(Error::Conflict(
++                "published child identity no longer matches its parent binding".into(),
++            ));
++        }
++        let storage = parent_harness.storage();
++        let verifier = storage.verifier();
++        let controller = ParentProjectController::new(
++            &self.filesystem_host,
++            parent,
++            &verifier,
++            storage.owner_scope(),
++            project.0.clone(),
++        )?;
++        let plan = controller.prepare_project_merge(&project.1).await?;
++        let source_generation = self.filesystem_host.generation_ref_id(plan.source_head())?;
++        let expected_target_generation =
++            self.filesystem_host.generation_ref_id(plan.target_head())?;
++        let action_digest = root_writeback_action_digest(
++            operation_id,
++            &seed.child,
++            &seed.parent,
++            &project.1,
++            &project.0,
++            &source_generation,
++            &expected_target_generation,
++        )?;
++        Ok(PreparedRootWriteback {
++            source_project: project.1,
++            target_project: project.0,
++            source_generation,
++            expected_target_generation,
++            action_digest,
++        })
++    }
++
+     /// Lists canonical session descriptors without starting workers or
+     /// reading child filesystem content.
+     pub async fn sessions(&self) -> Vec<LocalSwarmSession> {
+@@ -4064,6 +4353,27 @@ fn operator_choice_key(task: TaskId, id: InteractionId) -> String {
+     format!("{task}:{id}")
+ }
+ 
++fn root_writeback_action_digest(
++    operation_id: OperationId,
++    child: &Authority,
++    parent: &Authority,
++    source_project: &VolumeRef,
++    target_project: &VolumeRef,
++    source_generation: &GenerationRef,
++    expected_target_generation: &GenerationRef,
++) -> Result<[u8; 32]> {
++    crate::contract::canonical_json_digest(&RootWritebackActionBinding {
++        version: 1,
++        operation_id,
++        child,
++        parent,
++        source_project,
++        target_project,
++        source_generation,
++        expected_target_generation,
++    })
++}
++
+ fn normalized_path(path: &Path) -> PathBuf {
+     let path = if path.is_absolute() {
+         path.to_path_buf()
+@@ -4629,4 +4939,53 @@ mod tests {
+         ));
+         Ok(())
+     }
++
++    #[test]
++    fn root_writeback_action_digest_binds_both_generations() -> Result<()> {
++        let provider = ProviderRef::new("local", "filesystem", "2")?;
++        let parent_project = VolumeRef::new(
++            provider.clone(),
++            "parent-project",
++            VolumeClass::Project,
++            VolumeOwner::Project("owner".into()),
++        )?;
++        let child_project = VolumeRef::new(
++            provider.clone(),
++            "child-project",
++            VolumeClass::Project,
++            VolumeOwner::Project("owner".into()),
++        )?;
++        let source = GenerationRef::new(provider.clone(), [0x11; 32], Some("source".into()))?;
++        let target = GenerationRef::new(provider.clone(), [0x22; 32], Some("target".into()))?;
++        let operation = OperationId::from_bytes([0x33; 16]);
++        let child = Authority {
++            kind: AggregateKind::Conversation,
++            id: "child".into(),
++        };
++        let parent = Authority {
++            kind: AggregateKind::Conversation,
++            id: "parent".into(),
++        };
++        let original = root_writeback_action_digest(
++            operation,
++            &child,
++            &parent,
++            &child_project,
++            &parent_project,
++            &source,
++            &target,
++        )?;
++        let changed_source = GenerationRef::new(provider, [0x44; 32], Some("source".into()))?;
++        let changed = root_writeback_action_digest(
++            operation,
++            &child,
++            &parent,
++            &child_project,
++            &parent_project,
++            &changed_source,
++            &target,
++        )?;
++        assert_ne!(original, changed);
++        Ok(())
++    }
+ }

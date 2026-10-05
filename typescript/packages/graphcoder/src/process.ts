@@ -186,6 +186,9 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
 
   /** Resolves only after the owned child emits `close`, or reports unknown. */
   waitForExit(timeoutMs = 5_000): Promise<OwnedChildClose | { readonly kind: "timeout" }> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) {
+      return Promise.reject(new GraphCoderError("invalid_input", "bridge exit timeout must be a nonnegative integer"));
+    }
     return this.#ownedChild.waitForClose(timeoutMs);
   }
 

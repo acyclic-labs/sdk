@@ -20,14 +20,14 @@ process.stdin.on("data", chunk => {
     buffer = buffer.slice(newline + 1);
     if (!line.trim()) continue;
     const request = JSON.parse(line);
-    const delay = request.params && request.params.delay ? request.params.delay : 0;
+    const delay = Number(request.params?.query?.after ?? 0);
     setTimeout(() => process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: request.params }) + "\\n"), delay);
   }
 });
 `;
 
 function request(id: string, delay = 0): GraphCoderWireRequest {
-  return { request_id: id, method: "list_sessions", params: { delay } };
+  return { request_id: id, method: "list_sessions", params: { query: { after: String(delay) } } };
 }
 
 function env(): NodeJS.ProcessEnv {
@@ -72,32 +72,39 @@ describe("JSON-lines process bridge", () => {
   test("composes the process bridge with the public transport adapter", async () => {
     const script = `let buffer = ""; process.stdin.on("data", chunk => { buffer += chunk.toString(); for (;;) { const newline = buffer.indexOf("\\n"); if (newline < 0) break; const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (!line.trim()) continue; const request = JSON.parse(line); process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: { items: [] } }) + "\\n"); } });`;
     const connection = createNodeGraphCoderConnection({ executable: process.execPath, args: ["-e", script], env: env() });
-    const page = await connection.transport.listSessions();
-    expect(page.items).toEqual([]);
-    connection.bridge.close();
-    await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    try {
+      const page = await connection.transport.listSessions();
+      expect(page.items).toEqual([]);
+    } finally {
+      connection.bridge.close();
+      await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    }
   });
 
   test("runs headless terminal lifecycle through the owned runtime process", async () => {
     const lines: string[] = [];
     const output = { write(value: string, callback?: (error?: Error | null) => void): boolean { lines.push(value); callback?.(); return true; } } as unknown as NodeJS.WritableStream;
     const connection = createNodeGraphCoderConnection({ executable: process.execPath, args: ["-e", runtimeScript], env: env() });
-    const terminal = new GraphCoderTerminal(connection.transport, { output });
-    const status = await terminal.headless([
-      "start op-runtime inspect",
-      "open session-1",
-      "resume session-1",
-      "approvals",
-      "approve approval-1 yes",
-      "cancel",
-    ]);
-    expect(status).toBe(0);
-    const responses = lines.map(line => JSON.parse(line) as { readonly ok: boolean; readonly value?: { readonly summary?: { readonly state?: string } } });
-    expect(responses).toHaveLength(6);
-    expect(responses.every(response => response.ok)).toBe(true);
-    expect(responses.at(-1)?.value?.summary?.state).toBe("cancelled");
-    connection.bridge.close();
-    await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    try {
+      const terminal = new GraphCoderTerminal(connection.transport, { output });
+      const status = await terminal.headless([
+        "start op-runtime inspect",
+        "open session-1",
+        "resume session-1",
+        "approvals",
+        "approve approval-1 yes",
+        "cancel",
+      ]);
+      expect(status).toBe(0);
+      const responses = lines.map(line => JSON.parse(line) as { readonly ok: boolean; readonly value?: { readonly summary?: { readonly state?: string } }; readonly result?: { readonly summary?: { readonly state?: string } } });
+      expect(responses).toHaveLength(6);
+      expect(responses.every(response => response.ok)).toBe(true);
+      const last = responses.at(-1);
+      expect(last?.value?.summary?.state ?? last?.result?.summary?.state).toBe("cancelled");
+    } finally {
+      connection.bridge.close();
+      await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    }
   });
 
   test("runs the interactive terminal entrypoint against the owned runtime process", async () => {
@@ -106,22 +113,26 @@ describe("JSON-lines process bridge", () => {
     const lines: string[] = [];
     output.on("data", chunk => lines.push(String(chunk)));
     const connection = createNodeGraphCoderConnection({ executable: process.execPath, args: ["-e", runtimeScript], env: env() });
-    const terminal = new GraphCoderTerminal(connection.transport, { input, output });
-    const running = terminal.interactive();
-    input.write("start op-interactive inspect\n");
-    const firstDeadline = Date.now() + 2_000;
-    while (lines.length < 1 && Date.now() < firstDeadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
-    expect(lines.length).toBeGreaterThanOrEqual(1);
-    input.write("cancel\n");
-    const secondDeadline = Date.now() + 2_000;
-    while (lines.length < 2 && Date.now() < secondDeadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
-    expect(lines.length).toBeGreaterThanOrEqual(2);
-    input.write("quit\n");
-    input.end();
-    await running;
-    expect(lines.join("")).toContain('"exited":true');
-    connection.bridge.close();
-    await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    try {
+      const terminal = new GraphCoderTerminal(connection.transport, { input, output });
+      const running = terminal.interactive();
+      input.write("start op-interactive inspect\n");
+      const firstDeadline = Date.now() + 2_000;
+      while (lines.length < 1 && Date.now() < firstDeadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
+      expect(lines.length).toBeGreaterThanOrEqual(1);
+      input.write("cancel\n");
+      const secondDeadline = Date.now() + 2_000;
+      while (lines.length < 2 && Date.now() < secondDeadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
+      expect(lines.length).toBeGreaterThanOrEqual(2);
+      input.write("quit\n");
+      input.end();
+      await running;
+      expect(lines.join("")).toContain('"exited":true');
+    } finally {
+      input.end();
+      connection.bridge.close();
+      await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    }
   });
 
   test("reports close evidence and keeps a timeout observable", async () => {
@@ -138,8 +149,8 @@ describe("JSON-lines process bridge", () => {
   test("correlates concurrent responses and preserves explicit parameters", async () => {
     const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
     const [slow, fast] = await Promise.all([bridge.request(request("slow", 40)), bridge.request(request("fast"))]);
-    expect(slow).toMatchObject({ request_id: "slow", ok: true, result: { delay: 40 } });
-    expect(fast).toMatchObject({ request_id: "fast", ok: true, result: { delay: 0 } });
+    expect(slow).toMatchObject({ request_id: "slow", ok: true, result: { query: { after: "40" } } });
+    expect(fast).toMatchObject({ request_id: "fast", ok: true, result: { query: { after: "0" } } });
     bridge.close();
   });
 
@@ -192,13 +203,21 @@ describe("JSON-lines process bridge", () => {
 
   test("rejects pending calls on clean EOF and reports malformed output", async () => {
     const eof = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "process.exit(0)"], env: env() });
-    await expect(eof.request(request("eof"))).rejects.toMatchObject({ code: "transport" });
-    await expect(eof.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed", code: 0 });
+    try {
+      await expect(eof.request(request("eof"))).rejects.toMatchObject({ code: "transport" });
+      await expect(eof.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed", code: 0 });
+    } finally {
+      eof.close();
+    }
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
     const malformed = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "console.log('malformed')"], env: env(), onDiagnostic: event => diagnostics.push(event), maximumLineBytes: 128 });
-    await expect(malformed.request(request("malformed"))).rejects.toMatchObject({ code: "transport" });
-    expect(diagnostics.some(event => event.kind === "malformed_line")).toBe(true);
-    await expect(malformed.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    try {
+      await expect(malformed.request(request("malformed"))).rejects.toMatchObject({ code: "transport" });
+      expect(diagnostics.some(event => event.kind === "malformed_line")).toBe(true);
+      await expect(malformed.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    } finally {
+      malformed.close();
+    }
   });
 
   test("sends operator approval only through the host control method", async () => {
@@ -218,9 +237,12 @@ process.stdin.on("data", chunk => {
 });
 `;
     const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", script], env: env() });
-    await expect(bridge.operatorApprove({ approvalId: "approval-1", approved: true, sessionId: "session-1" })).resolves.toBeUndefined();
-    bridge.close();
-    await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    try {
+      await expect(bridge.operatorApprove({ approvalId: "approval-1", approved: true, sessionId: "session-1" })).resolves.toBeUndefined();
+    } finally {
+      bridge.close();
+      await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    }
   });
 
   test("rejects output with invalid UTF-8 before JSON decoding", async () => {
