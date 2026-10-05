@@ -774,6 +774,8 @@
           "{source_root}/jvm/kotlin-producer-adapter.ps1",
           "-Authority",
           "{wire_root}",
+          "-Request",
+          "{request}",
           "-Output",
           "{target_output}"
         ],

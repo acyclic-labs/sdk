@@ -1,15 +1,17 @@
 param(
   [Parameter(Mandatory = $true)][string]$Authority,
+  [Parameter(Mandatory = $true)][string]$Request,
   [Parameter(Mandatory = $true)][string]$Output
 )
 
 $ErrorActionPreference = 'Stop'
 $authority = [System.IO.Path]::GetFullPath($Authority)
+$request = [System.IO.Path]::GetFullPath($Request)
 $output = [System.IO.Path]::GetFullPath($Output)
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $pom = Join-Path $root 'jvm\pom.xml'
 $plugin = Join-Path $root 'jvm\grpc-kotlin-plugin.cmd'
-foreach ($path in @($authority, $pom, $plugin)) {
+foreach ($path in @($authority, $request, $pom, $plugin)) {
   if (-not (Test-Path -LiteralPath $path)) { throw "Required Kotlin producer input is missing: $path" }
 }
 $null = New-Item -ItemType Directory -Force -Path $output
