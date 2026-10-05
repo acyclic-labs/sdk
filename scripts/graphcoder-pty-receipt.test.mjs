@@ -24,7 +24,7 @@ function writePtyReceipt(root, source, { fixture = false, fresh = true } = {}) {
   const transcriptPath = join(root, "pty.transcript.log");
   const descriptorPath = join(root, "pty.descriptor.json");
   writeFileSync(artifactPath, "fresh installed package bytes\n");
-  writeFileSync(transcriptPath, "pty passed\n");
+  writeFileSync(transcriptPath, "pty passed\ngraphcoder-case: CLI-02 pty-receipt passed\ngraphcoder-executed-count: 1\n");
   const artifact = {
     path: artifactPath,
     sha256: digest(readFileSync(artifactPath)),
@@ -43,12 +43,15 @@ function writePtyReceipt(root, source, { fixture = false, fresh = true } = {}) {
     source_working_tree_sha256: workingTreeDigest(source.canonical_worktree),
     platform: "windows",
     execution_kind: "pty",
+    coverage: [{ requirement_id: "CLI-02", assertion: "pty-receipt" }],
     command: {
       executable: process.execPath,
       args: [lane.driver, ...(fixture ? ["--fixture=deterministic"] : [])],
       cwd: source.canonical_worktree,
       env: [],
     },
+    expected_exit_code: 0,
+    execution_assertion: { marker: "graphcoder-executed-count", minimum_executed: 1 },
     consumed_artifacts: [{
       path: artifact.path,
       sha256: artifact.sha256,
@@ -75,6 +78,14 @@ function writePtyReceipt(root, source, { fixture = false, fresh = true } = {}) {
         artifact_paths: [artifact.path],
         transcript_path: transcriptPath,
         transcript_sha256: digest(readFileSync(transcriptPath)),
+        execution_evidence: {
+          marker: "graphcoder-executed-count",
+          executed_count: 1,
+          minimum_executed: 1,
+          raw_exit_code: 0,
+          signal: null,
+          cases: [{ requirement_id: "CLI-02", assertion: "pty-receipt", status: "passed" }],
+        },
       },
       artifacts: [artifact],
     },
