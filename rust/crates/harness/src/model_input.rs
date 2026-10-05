@@ -894,6 +894,26 @@ mod tests {
         assert_eq!(refs, vec![first, result, last]);
         Ok(())
     }
+
+    #[test]
+    fn unknown_tool_result_is_invalid_model_content() -> Result<()> {
+        let message = ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: "unknown-result".into(),
+                name: "missing-tool".into(),
+                value: json!({"unexpected": true}),
+            }),
+        };
+        let error = message_file_refs(&message, &[])
+            .expect_err("an unknown result tool must be rejected before file resolution");
+        assert!(matches!(
+            error,
+            Error::Invalid(message) if message == "tool result names unknown tool missing-tool"
+        ));
+        Ok(())
+    }
+
     #[test]
     fn tool_messages_require_nonempty_paired_results() -> Result<()> {
         for content in [ModelContent::Text("forged".into()), ModelContent::Parts(Vec::new())] {
