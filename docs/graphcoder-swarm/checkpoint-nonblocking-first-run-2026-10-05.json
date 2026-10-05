@@ -1,0 +1,52 @@
+{
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "limits": [
+    "Nonblocking publication introduced; cancellation/depth outcome contracts under repair.",
+    "Session-wide budget default wiring remains unintegrated.",
+    "No scheduler qualification or full-matrix completion claimed."
+  ],
+  "platform": "Windows native",
+  "ignored": 0,
+  "failed": 2,
+  "artifacts": [
+    {
+      "sha256": "cebdfa2e2ae1a78046b9ca4c8b8781b541ce9ccab754ebef0f0d7eca3290ac8c",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\ebd74c762\\nonblocking-first-run\\acyclic_harness-012f082794ae6c50.exe"
+    },
+    {
+      "sha256": "f00993782cb113cbf14c261ca97c30e62eedb67beb2dc383a6995b3ce3ced919",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\ebd74c762\\nonblocking-first-run\\local_model_swarm-2a4724405f2fc4cd.exe"
+    },
+    {
+      "sha256": "d842dd68318074d008e3accb028d2509ba9d01272a16ccaf4ea45606fbae30eb",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\ebd74c762\\nonblocking-first-run\\local_swarm_faults-f5ff69a39607b16d.exe"
+    },
+    {
+      "sha256": "f13a499a0eda67509abb33f79cc8f4be8ed0cb5c47e4bece5be590cda5b2bed7",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\ebd74c762\\nonblocking-first-run\\native.log"
+    },
+    {
+      "sha256": "ce66910eced75fcacd811778ee07dd5639c9a719dd37b89650c0440eaab8f431",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\ebd74c762\\nonblocking-first-run\\source.zip"
+    }
+  ],
+  "suites": {
+    "harness": {
+      "passed": 380,
+      "failed": 0
+    },
+    "local_model_swarm": {
+      "passed": 2,
+      "failed": 2
+    },
+    "local_swarm_faults": "Not executed after preceding suite failure"
+  },
+  "failures": [
+    "cancelled_recursive_activation_drops_the_owned_child_provider_stream",
+    "model_selected_child_rejects_grandchild_at_configured_depth"
+  ],
+  "protocol": "acyclic.graphcoder.native-checkpoint.v1",
+  "passed": 382,
+  "source_commit": "ebd74c762291d5cf2145f056a3a85235634bcfb6",
+  "exit": 101
+}
