@@ -189,6 +189,22 @@ test("platform manifest rejects artifact paths that escape the worktree", () => 
   assert.throws(() => validateManifest(traversal), /relative paths without parent traversal/u);
 });
 
+test("package gate requires the Windows native companion archive declaration", () => {
+  const manifest = loadManifest();
+  const packageGate = manifest.gates.find(gate => gate.id === "graphcoder-package");
+  assert.deepEqual(packageGate.produced_artifacts_by_platform.windows, [
+    "target/graphcoder-package-qualification/acyclic-fs-native-package.tgz",
+  ]);
+  const omitted = structuredClone(manifest);
+  delete omitted.gates.find(gate => gate.id === "graphcoder-package").produced_artifacts_by_platform;
+  assert.throws(() => validateManifest(omitted), /must declare the Windows native companion archive/u);
+  const wrong = structuredClone(manifest);
+  wrong.gates.find(gate => gate.id === "graphcoder-package").produced_artifacts_by_platform.windows = [
+    "target/graphcoder-package-qualification/other-native-package.tgz",
+  ];
+  assert.throws(() => validateManifest(wrong), /must declare the Windows native companion archive/u);
+});
+
 test("platform execution environments exclude credentials and ambient settings", () => {
   const environment = {
     PATH: "tool-path",

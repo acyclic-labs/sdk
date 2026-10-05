@@ -25,6 +25,7 @@ const EXECUTION_COUNT_LINE = /^graphcoder-executed-count:\s*(\d+)\s*$/gmu;
 const CASE_WITNESS_LINE = /^graphcoder-case:\s*([A-Z][A-Z0-9-]*-\d+)\s+([a-z][a-z0-9._-]*)\s+passed\s*$/gmu;
 const REQUIREMENT_ID = /^[A-Z][A-Z0-9-]*-\d+$/u;
 const ASSERTION_NAME = /^[a-z][a-z0-9._-]*$/u;
+const WINDOWS_NATIVE_COMPANION_ARCHIVE = "target/graphcoder-package-qualification/acyclic-fs-native-package.tgz";
 const SAFE_ENVIRONMENT_KEYS = new Set([
   "PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP",
   "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_HOME", "RUSTFLAGS", "RUSTDOCFLAGS",
@@ -94,17 +95,36 @@ function validateManifest(manifest) {
       fail(`${gate.id} command executable is invalid`);
     }
     if (!Array.isArray(gate.command.args) || gate.command.args.some(arg => typeof arg !== "string")) fail(`${gate.id} command args are invalid`);
-    if (gate.produced_artifacts !== undefined && (!Array.isArray(gate.produced_artifacts) || gate.produced_artifacts.some(path => {
-      if (typeof path !== "string" || path.trim() === "") return true;
-      const normalized = path.replaceAll("\\", "/");
-      const segments = normalized.split("/");
-      return normalized.includes("\0") || normalized.startsWith("/") || /^[A-Za-z]:\//u.test(normalized) || segments.some(segment => segment === "" || segment === "." || segment === "..");
-    }))) {
-      fail(`${gate.id} produced_artifacts must be relative paths without parent traversal`);
+    const validateProducedArtifactPaths = (paths, label) => {
+      if (!Array.isArray(paths) || paths.some(path => {
+        if (typeof path !== "string" || path.trim() === "") return true;
+        const normalized = path.replaceAll("\\", "/");
+        const segments = normalized.split("/");
+        return normalized.includes("\0") || normalized.startsWith("/") || /^[A-Za-z]:\//u.test(normalized) || segments.some(segment => segment === "" || segment === "." || segment === "..");
+      })) fail(`${gate.id} ${label} must be relative paths without parent traversal`);
+    };
+    validateProducedArtifactPaths(gate.produced_artifacts ?? [], "produced_artifacts");
+    if (gate.produced_artifacts_by_platform !== undefined) {
+      if (!gate.produced_artifacts_by_platform || typeof gate.produced_artifacts_by_platform !== "object" || Array.isArray(gate.produced_artifacts_by_platform)) fail(`${gate.id} produced_artifacts_by_platform is invalid`);
+      for (const [platform, paths] of Object.entries(gate.produced_artifacts_by_platform)) {
+        if (!PLATFORMS.has(platform) || !gate.platforms.includes(platform)) fail(`${gate.id} produced_artifacts_by_platform has unsupported platform ${platform}`);
+        validateProducedArtifactPaths(paths, `produced_artifacts_by_platform.${platform}`);
+      }
+    }
+    for (const platform of gate.platforms) {
+      const paths = [...(gate.produced_artifacts ?? []), ...(gate.produced_artifacts_by_platform?.[platform] ?? [])];
+      if (new Set(paths).size !== paths.length) fail(`${gate.id} produced artifacts repeat a path for ${platform}`);
+    }
+    if (gate.id === "graphcoder-package" && gate.platforms.includes("windows") && !gate.produced_artifacts_by_platform?.windows?.includes(WINDOWS_NATIVE_COMPANION_ARCHIVE)) {
+      fail(`${gate.id} must declare the Windows native companion archive`);
     }
     if (!Number.isInteger(gate.timeout_ms) || gate.timeout_ms <= 0) fail(`${gate.id} timeout_ms is invalid`);
   }
   return manifest;
+}
+
+function producedArtifactPaths(gate, platform) {
+  return [...(gate.produced_artifacts ?? []), ...(gate.produced_artifacts_by_platform?.[platform] ?? [])];
 }
 
 function validateQualificationLanes(manifest) {
@@ -506,9 +526,9 @@ function artifactPath(worktree, path, gateId) {
   return candidate;
 }
 
-function prepareProducedArtifacts(gate, worktree) {
+function prepareProducedArtifacts(gate, worktree, platform) {
   const before = new Map();
-  for (const path of gate.produced_artifacts ?? []) {
+  for (const path of producedArtifactPaths(gate, platform)) {
     const candidate = artifactPath(worktree, path, gate.id);
     if (existsSync(candidate)) {
       const metadata = lstatSync(candidate);
@@ -579,8 +599,8 @@ function cargoTargetDirectory(output, source) {
   return target;
 }
 
-function producedArtifactDigests(gate, worktree, source, commandDigest, attemptNonce, before, producerResult) {
-  return (gate.produced_artifacts ?? []).map(path => {
+function producedArtifactDigests(gate, worktree, platform, source, commandDigest, attemptNonce, before, producerResult) {
+  return producedArtifactPaths(gate, platform).map(path => {
     const artifactPath = artifactPathForRecord(worktree, path, gate.id);
     if (!existsSync(artifactPath)) fail(`${gate.id} declared produced artifact was not created by the producer: ${path}`);
     const metadata = lstatSync(artifactPath);
@@ -664,7 +684,7 @@ export async function run(manifest, { platform = platformName(), output = ".qual
     const helperArtifactDigests = helperArtifacts(manifestBytes, gate);
     const startedAt = new Date().toISOString();
     const attemptNonce = randomUUID();
-    const producedBefore = prepareProducedArtifacts(gate, sourceBefore.worktree);
+    const producedBefore = prepareProducedArtifacts(gate, sourceBefore.worktree, platform);
     const environment = /^cargo(?:\.exe)?$/iu.test(gate.command.executable)
       ? { ...process.env, CARGO_TARGET_DIR: cargoTarget }
       : process.env;
@@ -730,7 +750,7 @@ export async function run(manifest, { platform = platformName(), output = ".qual
       // are helper artifacts, not distributable SDK artifacts.
       helper_artifacts: [...helperArtifactDigests, { path: transcriptPath, sha256: hash(Buffer.from(transcript)) }],
       qualification_artifacts: producerSourceFence && producerPassed
-        ? producedArtifactDigests(gate, sourceBefore.worktree, sourceBefore, commandDigest, attemptNonce, producedBefore, result)
+        ? producedArtifactDigests(gate, sourceBefore.worktree, platform, sourceBefore, commandDigest, attemptNonce, producedBefore, result)
         : [],
       source: sourceBefore,
       source_before: sourceBefore,
