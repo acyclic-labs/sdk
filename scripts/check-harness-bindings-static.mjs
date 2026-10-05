@@ -131,8 +131,16 @@ const rustContracts = [
   ["local workspace tools", "rust/crates/harness/src/filesystem/workspace_tools.rs", [
     /WORKSPACE_EDIT/, /WORKSPACE_READ/, /WORKSPACE_SEARCH/, /max_matches/,
   ]],
+  ["recursive fork tool v3", "rust/crates/harness/src/filesystem/swarm_local.rs", [
+    /name:\s*"acyclic\.fork_child"/, /revision:\s*"3"/, /requested_resources/,
+    /model_steps.*output_bytes.*execution_time_ms/s,
+  ]],
   ["host execution", "rust/crates/harness/src/host_execution.rs", [
     /pub trait ExecutionRunner\b/, /pub trait ExecutionApprovalVerifier\b/,
+  ]],
+  ["interaction operator authorization", "rust/crates/harness/src/filesystem/interaction_host.rs", [
+    /pub struct InteractionApprovalAuthorization\b/, /pub struct InteractionOperatorAuthorizer\b/,
+    /pub async fn issue_scope\b/,
   ]],
   ["root writeback", "rust/crates/harness/src/filesystem/git_facade.rs", [
     /pub struct RootWritebackApproval\b/, /pub struct RootWritebackRequest\b/,
@@ -326,6 +334,7 @@ const contractSources = [
   "rust/crates/harness/src/filesystem/swarm_local.rs",
   "rust/crates/harness/src/filesystem/workspace_tools.rs",
   "rust/crates/harness/src/host_execution.rs",
+  "rust/crates/harness/src/filesystem/interaction_host.rs",
   "rust/crates/harness/src/runtime.rs",
   "rust/crates/harness/src/model.rs",
   "rust/crates/harness/src/executor.rs",
@@ -370,6 +379,14 @@ const surfaceMappings = [
   {
     contract: "generation-pinned workspace tools",
     rust: ["rust/crates/harness/src/filesystem/workspace_tools.rs", "rust/crates/harness/src/filesystem/swarm_local.rs"],
+    generated: [],
+    runtimeTests: [],
+    binding: "native-rust-host-boundary",
+    qualification: "native-runtime-required",
+  },
+  {
+    contract: "recursive fork tool v3 / requested resources",
+    rust: ["rust/crates/harness/src/filesystem/swarm_local.rs", "rust/crates/harness/src/swarm_budget.rs"],
     generated: [],
     runtimeTests: [],
     binding: "native-rust-host-boundary",
@@ -425,6 +442,14 @@ const surfaceMappings = [
     binding: "native-host-boundary",
     qualification: "source-owned",
   },
+  {
+    contract: "interaction operator authorization",
+    rust: ["rust/crates/harness/src/filesystem/interaction_host.rs"],
+    generated: [],
+    runtimeTests: [],
+    binding: "native-host-boundary",
+    qualification: "native-runtime-required",
+  },
 ];
 const surfaceChecks = surfaceMappings.flatMap(mapping => [
   ...mapping.rust,
@@ -469,6 +494,20 @@ const publicContractAudit = [
     owner: "rust/crates/harness/src/host_execution.rs",
     generatedExposure: "none",
     reason: "host-only signer; credentials and authority stay outside model input",
+  },
+  {
+    contract: "InteractionOperatorAuthorizer / InteractionApprovalAuthorization",
+    owner: "rust/crates/harness/src/filesystem/interaction_host.rs",
+    generatedExposure: "none",
+    reason: "host-only approval signer; ticket identity, operation binding, and decision scope stay outside model input",
+    qualification: "native-runtime-required",
+  },
+  {
+    contract: "ForkToolV3 / SwarmResourceRequest",
+    owner: "rust/crates/harness/src/filesystem/swarm_local.rs",
+    generatedExposure: "none",
+    reason: "native model-tool schema; requested child resources are validated and clamped against the parent budget before activation",
+    qualification: "native-runtime-required",
   },
   {
     contract: "ProviderDispatchContext v6",
