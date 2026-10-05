@@ -129,6 +129,7 @@ jobs:
       - name: Generate Rust-owned executable typed request manifest
         if: matrix.language != 'lua-remote'
         run: |
+          export ACYCLIC_RUST_SOURCE_REVISION="$(git rev-parse HEAD)"
           cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml \
             --bin typed-request-manifest > "$RUNNER_TEMP/rust-typed-request-manifest.json"
           test -s "$RUNNER_TEMP/rust-typed-request-manifest.json"
