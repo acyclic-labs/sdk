@@ -444,6 +444,9 @@ impl Runtime {
                     VolumeClass::Project,
                     VolumeOwner::Project(project_id.clone()),
                 )?;
+                // Checkout composition is intentionally Harness-owned. The
+                // default bindings carry no authority; Harness attaches the
+                // checkout and creates or reopens its durable host issuer.
                 PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings(
                     &args.root,
                     model,

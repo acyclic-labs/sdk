@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const driver = readFileSync("scripts/graphcoder-terminal-interface-fixture.mjs", "utf8");
+const cli = readFileSync("rust/crates/graphcoder-cli/src/main.rs", "utf8");
 
 test("terminal fixture drives one generic public controller surface", () => {
   for (const method of [
@@ -33,6 +34,16 @@ test("terminal fixture rejects ambient credentials and unbound writeback", () =>
   assert.match(driver, /bare checkout path cannot authorize/u);
   assert.match(driver, /writeback accepted an unbound inspection handle/u);
   assert.doesNotMatch(driver, /process\.env\.PATH.*bridgeEnvironment/u);
+});
+
+test("checkout authority stays inside the durable Harness composition", () => {
+  assert.match(
+    cli,
+    /open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings\(/u,
+  );
+  assert.match(cli, /LocalSwarmBindings::default\(\)/u);
+  assert.doesNotMatch(cli, /with_operator_issuer\(/u);
+  assert.doesNotMatch(cli, /AuthorityIssuer::new\(/u);
 });
 
 test("terminal fixture closes its owned bridge on success and failure", () => {
