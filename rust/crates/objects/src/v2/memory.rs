@@ -56,7 +56,9 @@ struct Bucket {
     info: wire::Bucket,
     objects: OrdMap<String, Stored>,
 }
-#[derive(Clone)]
+// Equality lets a commit find what changed by walking only the subtrees two
+// persistent maps do not share (`OrdMap::diff`).
+#[derive(Clone, PartialEq)]
 struct Stored {
     info: wire::ObjectInfo,
     body: StoredBody,
@@ -68,7 +70,7 @@ struct Upload {
     metadata: Option<wire::ObjectMetadata>,
     parts: BTreeMap<u32, (wire::UploadedPart, StoredBody)>,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Receipt {
     digest: [u8; 32],
     response: Vec<u8>,

@@ -507,8 +507,12 @@ impl Journal {
             return Err(QuotaExceeded.into());
         }
         let mut inline_data = Vec::new();
-        for bucket in next.buckets.values_mut() {
-            let keys = bucket.objects.keys().cloned().collect::<Vec<_>>();
+        // Only an object this mutation added or replaced can hold a body not yet
+        // persisted: the committed state holds none. Walking just those keeps a
+        // commit proportional to its change rather than to the store, and leaves
+        // every other subtree shared with `before`, so `difference` skips it too.
+        for (name, bucket) in &mut next.buckets {
+            let keys = changed_keys(before.buckets.get(name), bucket);
             for key in keys {
                 let object = bucket
                     .objects
@@ -663,12 +667,34 @@ fn bodies(body: &StoredBody) -> Result<Vec<BodyRecord>, Error> {
     Ok(out)
 }
 
-fn difference(before: &State, next: &State, ordinal: u64) -> Result<Delta, Error> {
-    let mut delta = Delta {
-        sequence: next.sequence,
-        ordinal,
-        ..Default::default()
+/// Keys of `next`'s objects that are new or differ from `before`'s, in key order.
+fn changed_keys(before: Option<&Bucket>, next: &Bucket) -> Vec<String> {
+    match before {
+        Some(before) => before
+            .objects
+            .diff(&next.objects)
+            .filter_map(|item| match item {
+                imbl::ordmap::DiffItem::Add(key, _)
+                | imbl::ordmap::DiffItem::Update { new: (key, _), .. } => Some(key.clone()),
+                imbl::ordmap::DiffItem::Remove(..) => None,
+            })
+            .collect(),
+        None => next.objects.keys().cloned().collect(),
+    }
+}
+
+/// Bucket and object changes from `before` to `next`, into `delta`.
+fn bucket_changes(before: &State, next: &State, delta: &mut Delta) -> Result<(), Error> {
+    let changed = |key: &String, value: &Stored| -> Result<ObjectChange, Error> {
+        Ok(ObjectChange {
+            bucket: String::new(),
+            key: key.clone(),
+            info: Some(value.info.clone()),
+            bodies: bodies(&value.body)?,
+        })
     };
+    // Removals follow every addition and replacement, bucket by bucket.
+    let mut removed = Vec::new();
     for (name, bucket) in &next.buckets {
         let old = before.buckets.get(name);
         if old.is_none_or(|old| old.info != bucket.info) {
@@ -677,44 +703,67 @@ fn difference(before: &State, next: &State, ordinal: u64) -> Result<Delta, Error
                 info: Some(bucket.info.clone()),
             });
         }
-        for (key, value) in &bucket.objects {
-            let old = old.and_then(|old| old.objects.get(key));
-            let refs = bodies(&value.body)?;
-            if old.is_none_or(|old| old.info != value.info)
-                || old
-                    .map(|old| bodies(&old.body))
-                    .transpose()?
-                    .is_some_and(|old| old != refs)
-            {
+        let Some(old) = old else {
+            for (key, value) in &bucket.objects {
                 delta.objects.push(ObjectChange {
                     bucket: name.clone(),
-                    key: key.clone(),
-                    info: Some(value.info.clone()),
-                    bodies: refs,
+                    ..changed(key, value)?
                 });
             }
-        }
-    }
-    for (name, bucket) in &before.buckets {
-        if let Some(new) = next.buckets.get(name) {
-            for key in bucket
-                .objects
-                .keys()
-                .filter(|key| !new.objects.contains_key(*key))
-            {
-                delta.objects.push(ObjectChange {
+            continue;
+        };
+        for item in old.objects.diff(&bucket.objects) {
+            match item {
+                imbl::ordmap::DiffItem::Add(key, value) => delta.objects.push(ObjectChange {
+                    bucket: name.clone(),
+                    ..changed(key, value)?
+                }),
+                imbl::ordmap::DiffItem::Update {
+                    old: (_, old),
+                    new: (key, value),
+                } => {
+                    let refs = bodies(&value.body)?;
+                    if old.info != value.info || bodies(&old.body)? != refs {
+                        delta.objects.push(ObjectChange {
+                            bucket: name.clone(),
+                            key: key.clone(),
+                            info: Some(value.info.clone()),
+                            bodies: refs,
+                        });
+                    }
+                }
+                imbl::ordmap::DiffItem::Remove(key, _) => removed.push(ObjectChange {
                     bucket: name.clone(),
                     key: key.clone(),
                     ..Default::default()
-                });
+                }),
             }
-        } else {
-            delta.buckets.push(BucketChange {
-                name: name.clone(),
-                info: None,
-            });
         }
     }
+    delta.objects.extend(removed);
+    for name in before
+        .buckets
+        .keys()
+        .filter(|name| !next.buckets.contains_key(*name))
+    {
+        delta.buckets.push(BucketChange {
+            name: name.clone(),
+            info: None,
+        });
+    }
+    Ok(())
+}
+
+/// The journal record taking `before` to `next`. Object maps are compared with
+/// `OrdMap::diff`, which skips every subtree the two states share, so the cost
+/// follows the change, not the number of stored objects.
+fn difference(before: &State, next: &State, ordinal: u64) -> Result<Delta, Error> {
+    let mut delta = Delta {
+        sequence: next.sequence,
+        ordinal,
+        ..Default::default()
+    };
+    bucket_changes(before, next, &mut delta)?;
     for (id, upload) in &next.uploads {
         let old = before.uploads.get(id);
         if old.is_none() {
@@ -752,8 +801,9 @@ fn difference(before: &State, next: &State, ordinal: u64) -> Result<Delta, Error
             ..Default::default()
         });
     }
-    for (key, receipt) in &next.receipts {
-        if !before.receipts.contains_key(key) {
+    // Receipts are only ever added.
+    for item in before.receipts.diff(&next.receipts) {
+        if let imbl::ordmap::DiffItem::Add(key, receipt) = item {
             delta.receipts.push(ReceiptChange {
                 key: key.clone(),
                 digest: receipt.digest.to_vec(),

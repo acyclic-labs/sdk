@@ -37,48 +37,143 @@ impl Journal {
             _ => self.external(body),
         }
     }
+    /// Moves every body the journal carries into segments, so a checkpoint can
+    /// drop the frames that carried them. Bodies are packed into as few
+    /// segments as the segment bounds allow, each synchronized as it is
+    /// written, and their directory entries are made durable once, before the
+    /// relocated state is returned for the checkpoint to record: a compaction
+    /// costs a few synchronizations, not two for every small body.
     pub(super) fn materialize_inline(&self, state: &mut State) -> Result<(), LocalOpenError> {
+        let mut carried = BTreeMap::new();
+        for object in state
+            .buckets
+            .values()
+            .flat_map(|bucket| bucket.objects.values())
+        {
+            journal_bodies(&object.body, &mut carried);
+        }
+        for upload in state.uploads.values() {
+            for (_, body) in upload.parts.values() {
+                journal_bodies(body, &mut carried);
+            }
+        }
+        if carried.is_empty() {
+            return Ok(());
+        }
+        let journal = File::open(self.root.join("mutations.log"))?;
+        let mut moves = LocalBodyRelocations::new();
+        let mut batch = Materialized::default();
+        let mut entries = carried.into_iter().peekable();
+        while let Some(((offset, digest), length)) = entries.next() {
+            if !batch.holds(&digest) {
+                let bytes = crate::physical::read_journal_body(&journal, offset, &digest, length)
+                    .map_err(corrupt)?;
+                batch.add(digest, bytes);
+            }
+            batch.carried.push((offset, digest));
+            let full = entries.peek().is_none_or(|((_, next_digest), next)| {
+                !batch.holds(next_digest)
+                    && (batch.bodies.len() == crate::physical::MAXIMUM_SEGMENT_BODIES
+                        || batch.bytes + next > crate::physical::MAXIMUM_SEGMENT_BYTES)
+            });
+            if full {
+                self.write_materialized(&mut batch, &mut moves)?;
+            }
+        }
+        crate::physical::sync_segment_directory(&self.root, self.limits.durability)
+            .map_err(|_| LocalOpenError::Unavailable)?;
         for bucket in state.buckets.values_mut() {
-            let keys = bucket.objects.keys().cloned().collect::<Vec<_>>();
-            for key in keys {
-                let object = bucket
+            let relocated = bucket
+                .objects
+                .iter()
+                .filter_map(|(key, object)| {
+                    object
+                        .body
+                        .relocated(&moves)
+                        .map(|body| (key.clone(), body))
+                })
+                .collect::<Vec<_>>();
+            for (key, body) in relocated {
+                bucket
                     .objects
                     .get_mut(&key)
-                    .ok_or(LocalOpenError::Corrupt)?;
-                object.body = self.materialized(&object.body)?;
+                    .ok_or(LocalOpenError::Corrupt)?
+                    .body = body;
             }
         }
         for upload in state.uploads.values_mut() {
             for (_, body) in upload.parts.values_mut() {
-                *body = self.materialized(body)?;
+                if let Some(moved) = body.relocated(&moves) {
+                    *body = moved;
+                }
             }
         }
         Ok(())
     }
-    fn materialized(&self, body: &StoredBody) -> Result<StoredBody, LocalOpenError> {
-        match body {
-            StoredBody::Local {
-                digest,
-                length,
-                location: LocalBodyLocation::Journal { offset },
-                ..
-            } => {
-                let journal = File::open(self.root.join("mutations.log"))?;
-                let bytes = crate::physical::read_journal_body(&journal, *offset, digest, *length)
-                    .map_err(corrupt)?;
-                self.external(&StoredBody::Memory(bytes))
-                    .map_err(|_| LocalOpenError::Unavailable)
-            }
-            StoredBody::Composite { parts, length } => Ok(StoredBody::Composite {
-                parts: parts
-                    .iter()
-                    .map(|part| self.materialized(part))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into(),
-                length: *length,
-            }),
-            _ => Ok(body.clone()),
+    /// Writes one segment of journal bodies and records where each moved.
+    fn write_materialized(
+        &self,
+        batch: &mut Materialized,
+        moves: &mut LocalBodyRelocations,
+    ) -> Result<(), LocalOpenError> {
+        let (id, offsets) =
+            crate::physical::write_segment(&self.root, &batch.bodies, self.limits.durability)
+                .map_err(|_| LocalOpenError::Unavailable)?;
+        for (offset, digest) in batch.carried.drain(..) {
+            let index = *batch.index.get(&digest).ok_or(LocalOpenError::Corrupt)?;
+            moves.insert(
+                (LocalBodyLocation::Journal { offset }, digest),
+                LocalBodyLocation::Segment {
+                    id,
+                    offset: *offsets.get(index).ok_or(LocalOpenError::Corrupt)?,
+                },
+            );
         }
+        *batch = Materialized::default();
+        Ok(())
+    }
+}
+
+/// One segment's worth of journal bodies being materialized. A segment holds
+/// each distinct body once: the journal may carry equal bodies, such as empty
+/// ones, at several offsets, and they all move to the same record.
+#[derive(Default)]
+struct Materialized {
+    bodies: Vec<([u8; 32], bytes::Bytes)>,
+    index: BTreeMap<[u8; 32], usize>,
+    bytes: usize,
+    /// Every journal location moving into this segment.
+    carried: Vec<(u64, [u8; 32])>,
+}
+
+impl Materialized {
+    fn holds(&self, digest: &[u8; 32]) -> bool {
+        self.index.contains_key(digest)
+    }
+    fn add(&mut self, digest: [u8; 32], bytes: bytes::Bytes) {
+        self.index.insert(digest, self.bodies.len());
+        self.bytes += bytes.len();
+        self.bodies.push((digest, bytes));
+    }
+}
+
+/// Every distinct journal-carried leaf of `body`, with its length.
+fn journal_bodies(body: &StoredBody, out: &mut BTreeMap<(u64, [u8; 32]), usize>) {
+    match body {
+        StoredBody::Local {
+            digest,
+            length,
+            location: LocalBodyLocation::Journal { offset },
+            ..
+        } => {
+            out.insert((*offset, *digest), *length);
+        }
+        StoredBody::Composite { parts, .. } => {
+            for part in parts.iter() {
+                journal_bodies(part, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -124,23 +219,16 @@ pub(super) fn place(delta: &mut Delta, state: &mut State, frame: u64) -> Result<
             body.offset = offset;
         }
     }
-    for bucket in state.buckets.values_mut() {
-        let relocated = bucket
-            .objects
-            .iter()
-            .filter_map(|(key, object)| {
-                object
-                    .body
-                    .relocated(&moves)
-                    .map(|body| (key.clone(), body))
-            })
-            .collect::<Vec<_>>();
-        for (key, body) in relocated {
-            bucket
-                .objects
-                .get_mut(&key)
-                .ok_or(Error::from(Unavailable))?
-                .body = body;
+    // Only a body this record carries can sit at a placeholder offset, so only
+    // the objects it adds or replaces can move.
+    for change in delta.objects.iter().filter(|change| change.info.is_some()) {
+        let object = state
+            .buckets
+            .get_mut(&change.bucket)
+            .and_then(|bucket| bucket.objects.get_mut(&change.key))
+            .ok_or(Error::from(Unavailable))?;
+        if let Some(body) = object.body.relocated(&moves) {
+            object.body = body;
         }
     }
     for upload in state.uploads.values_mut() {

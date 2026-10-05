@@ -13,7 +13,8 @@ pub(crate) enum BodyError {
     Unavailable,
 }
 
-#[derive(Clone)]
+/// Equality is structural: the same bytes or the same physical references.
+#[derive(Clone, PartialEq)]
 pub(crate) enum StoredBody {
     Memory(bytes::Bytes),
     Composite {

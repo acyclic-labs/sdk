@@ -13,8 +13,8 @@ const MAXIMUM_INLINE_BODY_BYTES: usize = 64 * 1_024;
 const SEGMENT_MAGIC: &[u8; 24] = b"ACYCLIC-OBJECT-SEGMENT\0\x02";
 const SEGMENT_HEADER_BYTES: usize = SEGMENT_MAGIC.len() + 4;
 const SEGMENT_RECORD_BYTES: usize = 32 + 8;
-const MAXIMUM_SEGMENT_BODIES: usize = 1_024;
-const MAXIMUM_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAXIMUM_SEGMENT_BODIES: usize = 1_024;
+pub(crate) const MAXIMUM_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PhysicalError {
@@ -25,8 +25,34 @@ pub(crate) enum PhysicalError {
     #[error("Objects storage I/O failed: {0}")]
     Io(#[from] std::io::Error),
 }
-#[allow(clippy::too_many_lines)]
+/// Publishes one segment holding `bodies` and makes its directory entry
+/// durable: the segment's identity and the offset of each body.
 pub(crate) fn persist_segment(
+    root: &Path,
+    bodies: &[([u8; 32], bytes::Bytes)],
+    durability: LocalDurability,
+) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
+    let published = write_segment(root, bodies, durability)?;
+    sync_segment_directory(root, durability)?;
+    Ok(published)
+}
+
+/// Makes the directory entries of every segment [`write_segment`] published
+/// durable, so one synchronization covers a batch of segments.
+pub(crate) fn sync_segment_directory(
+    root: &Path,
+    durability: LocalDurability,
+) -> Result<(), PhysicalError> {
+    sync_parent(&root.join("segments"), durability)
+}
+
+/// Publishes one synchronized segment holding `bodies`, without making its
+/// directory entry durable: a caller must call [`sync_segment_directory`]
+/// before anything durable refers to the segment. A segment already published
+/// is validated and reused, and needs that synchronization just the same: the
+/// write that published it may not have made its entry durable yet.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn write_segment(
     root: &Path,
     bodies: &[([u8; 32], bytes::Bytes)],
     durability: LocalDurability,
@@ -85,9 +111,6 @@ pub(crate) fn persist_segment(
     let destination = segment_path(root, &id);
     if destination.exists() {
         validate_segment_file(&destination, &id, position)?;
-        // Another put may have published it and not yet synchronized its
-        // directory entry; this put's acknowledgement depends on that entry.
-        sync_parent(&parent, durability)?;
         return Ok((id, offsets));
     }
     let identity = hex(&id);
@@ -141,7 +164,6 @@ pub(crate) fn persist_segment(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    sync_parent(&parent, durability)?;
     Ok((id, offsets))
 }
 
@@ -641,11 +663,11 @@ fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), PhysicalE
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     thread_local! {
         /// Directory synchronizations issued on this thread.
-        pub(super) static PARENT_SYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        pub(crate) static PARENT_SYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
 
     /// A put that finds its segment already published still makes the
