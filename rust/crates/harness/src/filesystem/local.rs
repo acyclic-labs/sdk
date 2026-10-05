@@ -937,6 +937,17 @@ impl LocalHarnessTools {
         }
     }
 
+    /// Adds one owner-assembled tool to the local composition.
+    ///
+    /// The tool's executor and projection remain pinned in the registry; the
+    /// local constructor grants its model call capability when the bundle is
+    /// built. This is the narrow seam used by provider-owned tools such as
+    /// the typed Filesystem Git facade.
+    pub fn with_tool(mut self, tool: crate::tool::Tool) -> Result<Self> {
+        self.tools.register(tool)?;
+        Ok(self)
+    }
+
     /// Binds the owner mediated completed batch publisher used by model turns.
     #[must_use]
     pub fn with_batch_publisher(
