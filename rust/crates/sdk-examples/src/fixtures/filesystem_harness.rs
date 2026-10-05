@@ -4,7 +4,7 @@
 //! wire service. The Harness fixture keeps a small durable operation journal,
 //! so every response and handshake is produced by the Rust protocol types.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, task::{Context, Poll}};
 
 use bytes::Bytes;
 
@@ -26,6 +26,7 @@ use futures::{
     stream::{self, BoxStream},
 };
 use tokio::sync::Mutex;
+use tonic::codegen::{Body, BoxFuture, Service, StdError, http};
 use tonic::{Request, Status};
 
 /// Every RPC in the canonical Filesystem service is backed by the real wire adapter.
@@ -640,16 +641,69 @@ pub fn empty_filesystem_service() -> std::result::Result<FilesystemFixtureServic
     FilesystemWireService::new(deterministic_memory_fs(), FilesystemWireLimits::default())
 }
 
-/// Returns the Filesystem tonic server with all thirty generated handlers.
-pub fn filesystem_server() -> std::result::Result<
-    acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer<
+/// Routes the positive Import transfer into a fresh Rust Filesystem service.
+///
+/// Export and Import intentionally use separate production contexts: the
+/// source service owns `scenario-export`, while the destination service starts
+/// empty and authenticates the imported closure before creating its authority.
+/// This preserves the product's duplicate-create behavior while making a
+/// long-lived hosted replay observe the same semantics as the Rust scenario.
+pub struct FilesystemTransferRouter {
+    source: acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer<
         FilesystemFixtureService,
     >,
-    Status,
-> {
+    destination: acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer<
+        FilesystemFixtureService,
+    >,
+}
+
+impl FilesystemTransferRouter {
+    fn new(source: FilesystemFixtureService, destination: FilesystemFixtureService) -> Self {
+        Self {
+            source: acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(source),
+            destination: acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(destination),
+        }
+    }
+}
+
+impl<B> Service<http::Request<B>> for FilesystemTransferRouter
+where
+    B: Body + Send + 'static,
+    B::Error: Into<StdError> + Send + 'static,
+{
+    type Response = http::Response<tonic::body::Body>;
+    type Error = std::convert::Infallible;
+    type Future = BoxFuture<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let source = self.source.poll_ready(cx);
+        let destination = self.destination.poll_ready(cx);
+        match (source, destination) {
+            (Poll::Ready(Ok(())), Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
+            (Poll::Ready(Err(error)), _) | (_, Poll::Ready(Err(error))) => match error {},
+            _ => Poll::Pending,
+        }
+    }
+
+    fn call(&mut self, request: http::Request<B>) -> Self::Future {
+        if request.uri().path().ends_with("/Import") {
+            self.destination.call(request)
+        } else {
+            self.source.call(request)
+        }
+    }
+}
+
+impl tonic::server::NamedService for FilesystemTransferRouter {
+    const NAME: &'static str = "acyclic.filesystem.v2.FilesystemService";
+}
+
+/// Returns the Filesystem tonic server with all thirty generated handlers.
+pub fn filesystem_server() -> std::result::Result<FilesystemTransferRouter, Status> {
     let service = filesystem_service()?;
     futures::executor::block_on(ensure_transfer_source(&service))?;
-    Ok(acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(service))
+    let destination = empty_filesystem_service()?;
+    Ok(FilesystemTransferRouter::new(service, destination))
 }
 
 /// Stateful in-memory Harness backend used by the five RPC fixture handlers.
