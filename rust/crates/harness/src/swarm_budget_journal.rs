@@ -1225,6 +1225,18 @@ mod tests {
             .report_root_usage_with_receipt(&owner, root_receipt)
             .await?;
         let admission = journal.reserve_child(request.clone()).await?;
+        // The parent projection can change between a successful reservation
+        // and a retry. The accepted child allocation remains stable and must
+        // replay instead of being re-derived from this smaller remainder.
+        let mut later_root_context = journal.root_usage_context(FixedSource(SwarmUsage {
+            model_steps: 2,
+            output_bytes: 16,
+            execution_time_ms: 20,
+        }))?;
+        let later_root_receipt = later_root_context.issue_usage_receipt()?;
+        journal
+            .report_root_usage_with_receipt(&owner, later_root_receipt)
+            .await?;
         let retry = journal.reserve_child(request).await?;
         assert!(retry.replayed);
         assert_eq!(retry.reservation, admission.reservation);

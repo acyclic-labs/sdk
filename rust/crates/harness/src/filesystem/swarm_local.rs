@@ -474,6 +474,10 @@ pub struct LocalModelForkPlan {
     pub publication_operation: OperationId,
     /// Exact local request and child turn identity.
     pub request: LocalForkRequest,
+    /// Owner-selected bounded resource allocation retained with the plan.
+    /// This is carried into the durable reservation; it is never inferred
+    /// from model output or recomputed during a retry.
+    pub resources: SwarmResourceRequest,
     /// Provider-prepared report retained for publication and recovery.
     pub report: ForkReport,
     pub(crate) rebind_proof: Option<ForkRebindProof>,
@@ -590,6 +594,63 @@ fn validate_recursive_depth(parent_depth: usize, maximum_depth: usize) -> Result
         return Err(Error::Unauthorized(LOCAL_DEPTH_LIMIT_ERROR.into()));
     }
     Ok(())
+}
+
+fn bounded_child_resources(
+    task_limits: SwarmResourceRequest,
+    available: SwarmResourceRequest,
+    budget_limits: SwarmBudgetLimits,
+    maximum_children: usize,
+) -> Result<SwarmResourceRequest> {
+    budget_limits.validate()?;
+    if maximum_children == 0 {
+        return Err(Error::Invalid("local swarm child bound is not representable".into()));
+    }
+    if available.model_steps == 0
+        || available.output_bytes == 0
+        || available.execution_time_ms == 0
+    {
+        return Err(Error::Conflict(
+            "swarm parent has no remaining child resource budget".into(),
+        ));
+    }
+    let agent_count = budget_limits.max_active_agents.max(1);
+    let children = u64::try_from(maximum_children)
+        .map_err(|_| Error::Invalid("local swarm child bound is not representable".into()))?
+        .max(1);
+    let per_agent = |limit: u64| limit.checked_div(agent_count).unwrap_or(0).max(1);
+    let per_parent = |limit: u64| {
+        limit
+            .checked_add(children.saturating_sub(1))
+            .map(|value| value / children)
+            .unwrap_or(limit)
+            .max(1)
+    };
+    // A recursive child needs one step to perform its read/tool boundary and
+    // one step to publish completion. Keep that minimum only when the parent
+    // actually has two steps available; the admission ceiling still wins.
+    let per_parent_steps = per_parent(available.model_steps)
+        .max(2.min(available.model_steps))
+        .min(available.model_steps);
+    let resources = SwarmResourceRequest {
+        model_steps: task_limits
+            .model_steps
+            .min(per_agent(budget_limits.max_model_steps))
+            .min(per_parent_steps)
+            .min(available.model_steps),
+        output_bytes: task_limits
+            .output_bytes
+            .min(per_agent(budget_limits.max_output_bytes))
+            .min(per_parent(available.output_bytes))
+            .min(available.output_bytes),
+        execution_time_ms: task_limits
+            .execution_time_ms
+            .min(per_agent(budget_limits.max_execution_time_ms))
+            .min(per_parent(available.execution_time_ms))
+            .min(available.execution_time_ms),
+    };
+    resources.validate()?;
+    Ok(resources)
 }
 
 fn checked_child_depth(parent_depth: usize) -> Result<u32> {
@@ -926,6 +987,9 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     parent: intent.parent,
                     publication_operation: publication.operation_id,
                     request,
+                    resources: swarm
+                        .persisted_child_budget_resources(intent.child_operation)
+                        .await?,
                     report,
                     rebind_proof: Some(rebind_proof),
                     declaration,
@@ -1107,6 +1171,13 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     task: intent.task,
                     prompt: intent.prompt,
                 },
+                resources: swarm
+                    .child_budget_resources(
+                        intent.parent,
+                        parent_harness.bundle().limits(),
+                        swarm.config.run_limits,
+                    )
+                    .await?,
                 report,
                 rebind_proof: Some(preparer.authenticate_rebind(&request).await?),
                 declaration,
@@ -1123,6 +1194,7 @@ impl LocalModelForkPlan {
     /// model-facing tool.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
+        self.resources.validate()?;
         if self.publication_operation.into_bytes() == [0; 16] {
             return Err(Error::Invalid(
                 "model fork plan publication identity is empty".into(),
@@ -1961,6 +2033,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                         plan.report.clone(),
                         publication.clone(),
                         plan.declaration.clone(),
+                        Some(plan.resources),
                         plan.rebind_proof.as_ref(),
                     )
                     .await?;
@@ -3429,50 +3502,26 @@ impl PersistentLocalSwarm {
                 None => journal.root_resource_limits()?,
             }
         };
-        if available.model_steps == 0
-            || available.output_bytes == 0
-            || available.execution_time_ms == 0
-        {
-            return Err(Error::Conflict(
-                "swarm parent has no remaining child resource budget".into(),
-            ));
-        }
-        let agent_count = self
-            .config
-            .budget
-            .limits
-            .max_total_agents
-            .max(1);
-        let children = u64::try_from(self.config.maximum_children)
-            .map_err(|_| Error::Invalid("local swarm child bound is not representable".into()))?
-            .max(1);
-        let per_agent = |limit: u64| limit.checked_div(agent_count).unwrap_or(0).max(1);
-        let per_parent = |limit: u64| {
-            limit
-                .checked_add(children.saturating_sub(1))
-                .map(|value| value / children)
-                .unwrap_or(limit)
-                .max(1)
-        };
-        let resources = SwarmResourceRequest {
-            model_steps: task_limits
-                .model_steps
-                .min(per_agent(self.config.budget.limits.max_model_steps))
-                .min(per_parent(available.model_steps))
-                .min(available.model_steps),
-            output_bytes: task_limits
-                .output_bytes
-                .min(per_agent(self.config.budget.limits.max_output_bytes))
-                .min(per_parent(available.output_bytes))
-                .min(available.output_bytes),
-            execution_time_ms: task_limits
-                .execution_time_ms
-                .min(per_agent(self.config.budget.limits.max_execution_time_ms))
-                .min(per_parent(available.execution_time_ms))
-                .min(available.execution_time_ms),
-        };
-        resources.validate()?;
-        Ok(resources)
+        bounded_child_resources(
+            task_limits,
+            available,
+            self.config.budget.limits,
+            self.config.maximum_children,
+        )
+    }
+
+    async fn persisted_child_budget_resources(
+        &self,
+        operation: OperationId,
+    ) -> Result<SwarmResourceRequest> {
+        self.budget_journal
+            .lock()
+            .await
+            .reservation(operation)?
+            .map(|reservation| reservation.resources)
+            .ok_or_else(|| {
+                Error::Conflict("existing child admission has no durable budget reservation".into())
+            })
     }
 
     fn child_budget_idempotency(
@@ -4879,6 +4928,7 @@ impl PersistentLocalSwarm {
         seed: &ForkSeed,
         publication: ModelBatchPublication,
         declaration: LocalInheritedModelDeclaration,
+        planned_resources: Option<SwarmResourceRequest>,
         rebind_proof: Option<&ForkRebindProof>,
     ) -> Result<()> {
         request.validate()?;
@@ -4997,12 +5047,12 @@ impl PersistentLocalSwarm {
                 // dispatching the child model again.
                 return Ok(());
             }
+            // A durable child retry must use the exact resource request that
+            // was accepted originally. Recomputing from the parent's mutable
+            // remainder would change the fork request digest after usage and
+            // turn an idempotent retry into a different allocation.
             let child_resources = self
-                .child_budget_resources(
-                    request.parent,
-                    parent_storage.bundle().limits(),
-                    self.config.run_limits,
-                )
+                .persisted_child_budget_resources(request.child_operation)
                 .await?;
             let _ = self
                 .admit_and_reserve_child(
@@ -5069,13 +5119,14 @@ impl PersistentLocalSwarm {
         // Reserve before appending ForkPrepared. This is the resolver's
         // workspace boundary: a failed reservation publishes no child and
         // cannot consume active/total capacity after a restart.
-        let child_resources = self
-            .child_budget_resources(
+        let child_resources = planned_resources.unwrap_or(
+            self.child_budget_resources(
                 request.parent,
                 parent_storage.bundle().limits(),
                 self.config.run_limits,
             )
-            .await?;
+            .await?,
+        );
         let _ = self
             .admit_and_reserve_child(
                 child,
@@ -5191,6 +5242,7 @@ impl PersistentLocalSwarm {
                 publication,
                 declaration,
                 None,
+                None,
             )
             .await?;
         self.activate_published_child(request, host, stream, issuer, parent, &seed)
@@ -5209,6 +5261,7 @@ impl PersistentLocalSwarm {
         report: ForkReport,
         publication: ModelBatchPublication,
         declaration: LocalInheritedModelDeclaration,
+        planned_resources: Option<SwarmResourceRequest>,
         rebind_proof: Option<&ForkRebindProof>,
     ) -> Result<ForkSeed> {
         request.validate()?;
@@ -5248,6 +5301,7 @@ impl PersistentLocalSwarm {
             &preview,
             publication,
             declaration,
+            planned_resources,
             rebind_proof,
         )
         .await?;
@@ -7380,6 +7434,62 @@ mod tests {
             task: format!("child-{child}"),
             prompt: "preserve this exact prompt".into(),
         }
+    }
+
+    #[test]
+    fn bounded_child_resources_uses_active_capacity_and_keeps_grandchild_steps() {
+        let limits = SwarmBudgetLimits {
+            max_active_agents: 8,
+            max_total_agents: 64,
+            max_recursion_depth: 8,
+            max_model_steps: 512,
+            max_output_bytes: 512,
+            max_execution_time_ms: 512,
+        };
+        let task = SwarmResourceRequest {
+            model_steps: 512,
+            output_bytes: 512,
+            execution_time_ms: 512,
+        };
+        let root_child = bounded_child_resources(
+            task,
+            SwarmResourceRequest {
+                model_steps: 512,
+                output_bytes: 512,
+                execution_time_ms: 512,
+            },
+            limits,
+            8,
+        )
+        .expect("root child allocation");
+        assert_eq!(root_child.model_steps, 64);
+
+        let grandchild = bounded_child_resources(
+            task,
+            SwarmResourceRequest {
+                model_steps: root_child.model_steps,
+                output_bytes: root_child.output_bytes,
+                execution_time_ms: root_child.execution_time_ms,
+            },
+            limits,
+            8,
+        )
+        .expect("grandchild allocation");
+        assert_eq!(grandchild.model_steps, 8);
+
+        let final_child = bounded_child_resources(
+            task,
+            SwarmResourceRequest {
+                model_steps: grandchild.model_steps,
+                output_bytes: grandchild.output_bytes,
+                execution_time_ms: grandchild.execution_time_ms,
+            },
+            limits,
+            8,
+        )
+        .expect("final child allocation");
+        assert!(final_child.model_steps >= 2);
+        assert!(final_child.model_steps <= grandchild.model_steps);
     }
 
     #[test]
