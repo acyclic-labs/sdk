@@ -7114,9 +7114,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if self.has_pending_mutations() {
             return Err(OperationFailure::before_work(FsError::PendingLiveMutation));
         }
+        // Authored identities belong to the live operation being published.
+        // Scope this binding to compilation so a fixture/importer binding
+        // cannot leak into a later retry or ordinary customer mutation.
+        let previous_authored_operation = self.authored_operation_id;
+        self.authored_operation_id = Some(operation_id);
         let transaction = self
             .apply_authored_transaction(authored, budget, cancellation)
-            .await?;
+            .await;
+        self.authored_operation_id = previous_authored_operation;
+        let transaction = transaction?;
         let mut work = transaction.work;
         let created_file_ids = transaction.value.created_file_ids;
         let publication = self
@@ -8548,8 +8555,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
     }
 
-    pub(crate) fn bind_authored_operation(&mut self, operation_id: OperationId) {
-        self.authored_operation_id = Some(operation_id);
+    /// Binds authored identities to one caller supplied operation key.
+    ///
+    /// This deterministic composition seam is intended for Rust-owned
+    /// fixtures and importers. Normal customer mutations should use the
+    /// transaction APIs, which bind identity from their idempotency key.
+    #[doc(hidden)]
+    pub fn bind_authored_operation(&mut self, operation_id: OperationId) {
+        match self.authored_operation_id {
+            None => self.authored_operation_id = Some(operation_id),
+            Some(bound) => {
+                // An authored checkout has one identity domain for its whole
+                // mutation sequence. Rebinding it would make a retry of the
+                // same path derive a different file identity, so keep the
+                // first binding and fail loudly in debug fixture builds.
+                debug_assert_eq!(
+                    bound, operation_id,
+                    "authored operation identity cannot be rebound"
+                );
+            }
+        }
     }
 
     /// Compiles the creation of one regular file with identity `file_id`
@@ -8904,7 +8929,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         work = metadata.1;
-        let file_id = FileId::new();
+        let file_id = self.authored_file_id(FileKind::Regular, &path);
         let mut operations = Vec::new();
         if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
             operations.push(Mutation::Create {
@@ -9001,7 +9026,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         work = tree.1;
-        let file_id = FileId::new();
+        let file_id = self.authored_file_id(FileKind::Directory, &path);
         let mutation = self
             .mutate(
                 vec![Mutation::Create {
@@ -9258,7 +9283,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         work = metadata.1;
-        let file_id = FileId::new();
+        let file_id = self.authored_file_id(kind, &path);
         let mutation = self
             .mutate(
                 vec![Mutation::Create {

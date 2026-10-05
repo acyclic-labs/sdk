@@ -16,6 +16,7 @@ use acyclic_fs::{
     kernel::{LogicalName, NamespacePath},
     model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
 };
+use acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemService;
 use acyclic_harness::{
     Error, Result as HarnessResult, wire,
     wire_api::{HarnessWireApi, OperationControlRequest, current_protocol, negotiate},
@@ -25,7 +26,7 @@ use futures::{
     stream::{self, BoxStream},
 };
 use tokio::sync::Mutex;
-use tonic::Status;
+use tonic::{Request, Status};
 
 /// Every RPC in the canonical Filesystem service is backed by the real wire adapter.
 pub const FILESYSTEM_RPC_COUNT: usize = 30;
@@ -594,6 +595,46 @@ pub fn filesystem_service() -> std::result::Result<FilesystemFixtureService, Sta
     FilesystemWireService::new(seeded_memory_fs()?, FilesystemWireLimits::default())
 }
 
+/// Ensure the deterministic transfer source used by the Export/Import scenario
+/// exists on every hosted fixture instance. The producer and hosted service
+/// both create it through the generated wire adapter with the same idempotency
+/// key, so they share one Rust-owned workspace identity.
+pub async fn ensure_transfer_source(
+    service: &FilesystemFixtureService,
+) -> std::result::Result<acyclic_fs::wire::filesystem::v2::Workspace, Status> {
+    use acyclic_fs::wire::filesystem::v2::{
+        OpenWorkspaceRequest, open_workspace_request::Selector,
+    };
+
+    if let Ok(response) = service
+        .open_workspace(Request::new(OpenWorkspaceRequest {
+            selector: Some(Selector::Name("scenario-export".to_owned())),
+        }))
+        .await
+    {
+        return response
+            .into_inner()
+            .workspace
+            .ok_or_else(|| Status::internal("transfer source omitted workspace"));
+    }
+
+    let response = service
+        .create_workspace(Request::new(
+            acyclic_fs::wire::filesystem::v2::CreateWorkspaceRequest {
+                name: "scenario-export".to_owned(),
+                profile: acyclic_fs::wire::filesystem::v2::FilesystemProfile::Portable as i32,
+                operation: Some(acyclic_fs::wire::filesystem::v2::OperationOptions {
+                    idempotency_key: vec![0x12; 16],
+                }),
+            },
+        ))
+        .await?;
+    response
+        .into_inner()
+        .workspace
+        .ok_or_else(|| Status::internal("transfer source omitted workspace"))
+}
+
 /// Builds an empty production Filesystem service for an imported volume.
 pub fn empty_filesystem_service() -> std::result::Result<FilesystemFixtureService, Status> {
     FilesystemWireService::new(deterministic_memory_fs(), FilesystemWireLimits::default())
@@ -606,11 +647,9 @@ pub fn filesystem_server() -> std::result::Result<
     >,
     Status,
 > {
-    Ok(
-        acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(
-            filesystem_service()?,
-        ),
-    )
+    let service = filesystem_service()?;
+    futures::executor::block_on(ensure_transfer_source(&service))?;
+    Ok(acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(service))
 }
 
 /// Stateful in-memory Harness backend used by the five RPC fixture handlers.

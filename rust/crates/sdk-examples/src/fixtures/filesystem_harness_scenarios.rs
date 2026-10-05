@@ -25,7 +25,7 @@ use acyclic_harness::{
 };
 
 use super::{
-    filesystem_harness::{empty_filesystem_service, filesystem_service},
+    filesystem_harness::{empty_filesystem_service, ensure_transfer_source, filesystem_service},
     harness_backend::StatefulHarnessFixtureBackend as HarnessFixtureBackend,
 };
 
@@ -34,6 +34,9 @@ const SOURCE: &str = "rust/crates/sdk-examples/src/fixtures/filesystem_harness_s
 /// Export all typed scenario evidence from one fresh production fixture.
 pub async fn export() -> Result<Vec<Value>, String> {
     let service = filesystem_service().map_err(|error| error.to_string())?;
+    ensure_transfer_source(&service)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut evidence = export_filesystem(service)
         .await
         .map_err(|error| error.to_string())?;
@@ -538,19 +541,14 @@ where
         "acyclic.filesystem.v2.RetainGenerationRequest",
         "acyclic.filesystem.v2.RetainGenerationResponse"
     );
-    // Build the transfer source in a Rust-owned setup step that is deliberately
-    // absent from the ordered consumer plan. Replaying the plan against one
-    // long-lived service must leave this destination name uncreated so Import
-    // can publish its authority exactly once.
-    let transfer_create = fs_wire::CreateWorkspaceRequest {
-        name: "scenario-export".into(),
-        profile: fs_wire::FilesystemProfile::Portable as i32,
-        operation: Some(fs_wire::OperationOptions {
-            idempotency_key: vec![0x12; 16],
-        }),
-    };
+    // The transfer source is shared with the hosted fixture setup. Open the
+    // Rust-created identity instead of creating a producer-only workspace.
     let transfer_workspace = service
-        .create_workspace(Request::new(transfer_create))
+        .open_workspace(Request::new(fs_wire::OpenWorkspaceRequest {
+            selector: Some(fs_wire::open_workspace_request::Selector::Name(
+                "scenario-export".to_owned(),
+            )),
+        }))
         .await?
         .into_inner()
         .workspace

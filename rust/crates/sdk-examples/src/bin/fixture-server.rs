@@ -2412,7 +2412,7 @@ fn source_sha256() -> String {
     // Advertise the same source-closure identity used by the Rust generator;
     // hashing only lib.rs made hosted receipts appear bound to an older
     // fixture even when the provider and manifest had changed together.
-    format!("sha256:{}", env!("SDK_EXAMPLES_SOURCE_SHA256"))
+    env!("SDK_EXAMPLES_SOURCE_SHA256").to_owned()
 }
 
 #[cfg(test)]
