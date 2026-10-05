@@ -6,10 +6,16 @@ version = 4
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-sdk-contract-wire",
+ "futures",
  "prost",
  "prost-build",
+ "prost-reflect",
  "prost-types",
+ "reqwest",
+ "serde_json",
  "sha2",
+ "thiserror",
  "tonic-prost-build",
 ]
 
@@ -36,6 +42,7 @@ dependencies = [
  "prost",
  "prost-reflect",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -89,6 +96,7 @@ dependencies = [
  "hyper",
  "js-sys",
  "prost",
+ "prost-reflect",
  "protoc-bin-vendored",
  "reqwest",
  "serde",
@@ -101,9 +109,11 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tsify-next",
+ "url",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
