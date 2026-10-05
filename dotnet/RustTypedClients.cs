@@ -19,7 +19,7 @@ public readonly record struct ActorId
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("ActorId must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct MethodName
@@ -30,7 +30,7 @@ public readonly record struct MethodName
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("MethodName must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct ResourcePath
@@ -41,7 +41,7 @@ public readonly record struct ResourcePath
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("ResourcePath must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct SourceName
@@ -52,7 +52,7 @@ public readonly record struct SourceName
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("SourceName must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct DestinationName
@@ -63,7 +63,7 @@ public readonly record struct DestinationName
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("DestinationName must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct BucketName
@@ -74,7 +74,7 @@ public readonly record struct BucketName
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("BucketName must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct ObjectKey
@@ -85,7 +85,7 @@ public readonly record struct ObjectKey
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("ObjectKey must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct VersionAlias
@@ -96,7 +96,7 @@ public readonly record struct VersionAlias
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("VersionAlias must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct JobId
@@ -107,58 +107,85 @@ public readonly record struct JobId
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("JobId must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct MachineId
 {
+    private readonly byte[] _value;
     public MachineId(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
         if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
+        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct OperationId
 {
+    private readonly byte[] _value;
     public OperationId(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
         if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
+        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct CheckpointId
 {
+    private readonly byte[] _value;
     public CheckpointId(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
         if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
+        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct IdempotencyKeyBytes
 {
+    private readonly byte[] _value;
     public IdempotencyKeyBytes(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct IdempotencyKeyText
@@ -169,19 +196,25 @@ public readonly record struct IdempotencyKeyText
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("IdempotencyKeyText must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct IdempotencyKey
 {
+    private readonly byte[] _value;
     public IdempotencyKey(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
         if (bytes.Length != 16) throw new ArgumentException("IdempotencyKey must be a 16-byte UUID", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+        if (bytes.Length != 16) throw new ArgumentException("IdempotencyKey must be a 16-byte UUID", nameof(Value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct OpaqueText
@@ -192,7 +225,7 @@ public readonly record struct OpaqueText
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("OpaqueText must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct UploadId
@@ -203,32 +236,45 @@ public readonly record struct UploadId
         Value = value;
     }
     public string Value { get; }
-    internal string ToWire() => Value;
+    internal string ToWire() => string.IsNullOrEmpty(Value) ? throw new ArgumentException("UploadId must be non-empty", nameof(Value)) : Value;
 }
 
 public readonly record struct Sha256Digest
 {
+    private readonly byte[] _value;
     public Sha256Digest(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length != 32) throw new ArgumentException("value has the wrong length", nameof(value));
         // Rust policy marks this as a SHA-256 digest; length is enforced above.
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length != 32) throw new ArgumentException("value has the wrong length", nameof(value));
+        // Rust policy marks this as a SHA-256 digest; length is enforced above.
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct RevisionDigest
 {
+    private readonly byte[] _value;
     public RevisionDigest(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length != 32) throw new ArgumentException("value has the wrong length", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length != 32) throw new ArgumentException("value has the wrong length", nameof(value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct Revision
@@ -239,31 +285,47 @@ public readonly record struct Revision
         Value = value;
     }
     public ulong Value { get; }
-    internal ulong ToWire() => Value;
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        return Value;
+    }
 }
 
 public readonly record struct RunId
 {
+    private readonly byte[] _value;
     public RunId(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct EvaluationId
 {
+    private readonly byte[] _value;
     public EvaluationId(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public readonly record struct PageLimit
@@ -275,7 +337,12 @@ public readonly record struct PageLimit
         Value = value;
     }
     public ulong Value { get; }
-    internal ulong ToWire() => Value;
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        if (value > 1000) throw new ArgumentOutOfRangeException(nameof(value));
+        return Value;
+    }
 }
 
 public readonly record struct StreamPageLimit
@@ -287,7 +354,12 @@ public readonly record struct StreamPageLimit
         Value = value;
     }
     public ulong Value { get; }
-    internal ulong ToWire() => Value;
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        if (value > 1024) throw new ArgumentOutOfRangeException(nameof(value));
+        return Value;
+    }
 }
 
 public readonly record struct MachinePageLimit
@@ -299,7 +371,12 @@ public readonly record struct MachinePageLimit
         Value = value;
     }
     public ulong Value { get; }
-    internal ulong ToWire() => Value;
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        if (value > 256) throw new ArgumentOutOfRangeException(nameof(value));
+        return Value;
+    }
 }
 
 public readonly record struct MachineEventPageLimit
@@ -311,19 +388,30 @@ public readonly record struct MachineEventPageLimit
         Value = value;
     }
     public ulong Value { get; }
-    internal ulong ToWire() => Value;
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        if (value > 1024) throw new ArgumentOutOfRangeException(nameof(value));
+        return Value;
+    }
 }
 
 public readonly record struct CommitId
 {
+    private readonly byte[] _value;
     public CommitId(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
-        Value = bytes;
+        _value = bytes;
     }
-    public byte[] Value { get; }
-    internal ByteString ToWire() => ByteString.CopyFrom(Value);
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
+        return ByteString.CopyFrom(bytes);
+    }
 }
 
 public abstract record ImmutableImage
@@ -1693,6 +1781,265 @@ internal static class RustOperationValidation
 
     // Bucket emptiness is provider state. The server remains authoritative;
     // the generated client preserves this rule as operation metadata.
+}
+
+internal enum RustOperationEnforcement { ClientLocal, ProviderState, ResponseInvariant }
+
+internal sealed record RustOperationPolicy(string Family, string Rpc, string Validation, string Target, RustOperationEnforcement Enforcement);
+
+internal static class RustOperationPolicies
+{
+    internal static IReadOnlyList<RustOperationPolicy> All { get; } = new[]
+    {
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/AddSubscription", "idempotency_key.non_empty_utf8", "idempotency_key.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/CheckpointActor", "actor_id.non_empty_utf8", "actor_id.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/CreateActor", "idempotency_key.non_empty_utf8", "idempotency_key.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/InspectActor", "actor_id.non_empty_utf8", "actor_id.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/InvokeActor", "actor_id.non_empty_utf8", "actor_id.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/InvokeActor", "method.non_empty_utf8", "method.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/RemoveSubscription", "idempotency_key.non_empty_utf8", "idempotency_key.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/ResumeSubscription", "idempotency_key.non_empty_utf8", "idempotency_key.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/UpdateActor", "actor_id.non_empty_utf8", "actor_id.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("actors", "acyclic.actors.v1.ActorsService/UpdateActor", "expected_configuration_revision.non_negative", "expected_configuration_revision.non_negative", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ApplyJoin", "join.plan_identity.matches", "join.plan_identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ApplyJoin", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ApplyTransaction", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ApplyTransaction", "mutation.oneof", "mutation", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ApplyTransaction", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ApplyTransaction", "transaction.bounded", "transaction", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Cancel", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Cancel", "operation_id.16_bytes", "operation_id", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Cancel", "response.identity.matches", "response.identity", RustOperationEnforcement.ResponseInvariant),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Checkpoint", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Checkpoint", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/CreateWorkspace", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/CreateWorkspace", "profile.supported", "profile.supported", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/CreateWorkspace", "workspace_name.valid", "workspace_name.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Diff", "diff.bounds.bounded", "diff.bounds.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Diff", "generation.references.required", "generation.references", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Export", "cursor.valid", "cursor.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Export", "export.bounds.bounded", "export.bounds.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Export", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ForkWorkspace", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ForkWorkspace", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ForkWorkspace", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/GetGeneration", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/GetGeneration", "generation_id.32_bytes", "generation_id.32_bytes", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/GetHead", "workspace.identity.matches", "identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/GetHead", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/GetSourceState", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Handshake", "descriptor_digest.matches", "identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Handshake", "protocol.version.exact", "protocol", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Handshake", "request.bounded", "request.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Import", "cursor.valid", "cursor.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Import", "import.stream.nonempty", "import.stream.nonempty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Import", "object.order.exact", "object.order.exact", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Import", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/IssueMountCredential", "credential.expiry.bounded", "credential.expiry.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/IssueMountCredential", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/IssueMountCredential", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/IssueMountCredential", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/IssueS3Credential", "credential.expiry.bounded", "credential.expiry.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/IssueS3Credential", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/IssueS3Credential", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/IssueS3Credential", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ListDirectory", "cursor.valid", "cursor.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ListDirectory", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ListDirectory", "page.maximum_items.bounded", "page.maximum_items.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Observe", "operation_id.16_bytes", "operation_id", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Observe", "response.identity.matches", "response.identity", RustOperationEnforcement.ResponseInvariant),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/OpenWorkspace", "workspace.identity.matches", "identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/OpenWorkspace", "workspace.selector.required", "workspace.selector", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Pin", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Pin", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/PlanExtents", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/PlanExtents", "path.valid", "path.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/PlanExtents", "range.valid", "range.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/PlanJoin", "generation.references.required", "generation.references", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/PlanJoin", "join.bounds.bounded", "join.bounds.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/PlanJoin", "join.history.valid", "join.history.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Read", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Read", "maximum_bytes.bounded", "maximum_bytes.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Read", "path.valid", "path.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Read", "range.bounded", "range.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ReadLink", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ReadLink", "maximum_bytes.bounded", "maximum_bytes.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ReadLink", "path.valid", "path.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Rebase", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Rebase", "rebase.bounds.bounded", "rebase.bounds.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Rebase", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/RebaseTransaction", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/RebaseTransaction", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/RebaseTransaction", "transaction.bounded", "transaction", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ReconcileSource", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/ReconcileSource", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/RescanSource", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/RescanSource", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/SealSource", "operation.idempotency_key.16_bytes", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/SealSource", "workspace.reference.required", "workspace.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Stat", "generation.reference.required", "generation.reference", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("filesystem", "acyclic.filesystem.v2.FilesystemService/Stat", "path.valid", "path.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Cancel", "idempotency_key.nonempty", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Cancel", "operation_id.nonempty", "operation_id", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Cancel", "owner.required", "owner", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Cancel", "protocol.identity.exact", "protocol", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Cancel", "scope.capability.operation_cancel", "scope.capability", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Cancel", "scope.required", "scope", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Cancel", "status.identity.matches", "response.identity", RustOperationEnforcement.ResponseInvariant),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Handshake", "protocol.identity.exact", "protocol", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Handshake", "required_capability.nonempty", "required_capability", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Handshake", "required_capability.supported", "required_capability", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Observe", "operation_id.nonempty", "operation_id", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Observe", "owner.required", "owner", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Observe", "protocol.identity.exact", "protocol", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Observe", "scope.capability.operation_observe", "scope.capability", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Observe", "scope.required", "scope", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Observe", "status.identity.matches", "response.identity", RustOperationEnforcement.ResponseInvariant),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Replay", "delivery.identity.preserving", "delivery.identity", RustOperationEnforcement.ResponseInvariant),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Replay", "protocol.identity.exact", "protocol", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Replay", "resume_cursor.contiguous", "resume_cursor.contiguous", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Submit", "admission.identity.matches", "admission.identity", RustOperationEnforcement.ResponseInvariant),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Submit", "idempotency_key.nonempty", "idempotency_key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Submit", "operation_id.nonempty", "operation_id", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("harness", "acyclic.harness.v2.HarnessService/Submit", "protocol.identity.exact", "protocol", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Cancel", "operation_id.nonzero", "operation_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Checkpoint", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Checkpoint", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Create", "contract.valid", "contract", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Create", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Create", "limits.valid", "limits", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/DestroyCheckpoint", "checkpoint_id.nonzero", "checkpoint_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/DestroyCheckpoint", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/DestroyMachine", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/DestroyMachine", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Events", "cursor.valid", "cursor.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Events", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Events", "page_limit.bounded", "page_limit.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Fork", "checkpoint_id.nonzero", "checkpoint_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Fork", "count.bounded", "count.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Fork", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/ForkMachine", "count.bounded", "count.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/ForkMachine", "fidelity.declared", "fidelity.declared", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/ForkMachine", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/InspectCheckpoint", "checkpoint_id.nonzero", "checkpoint_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/InspectMachine", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/InspectOperation", "operation_id.nonzero", "operation_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/ListMachines", "cursor.valid", "cursor.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/ListMachines", "page_limit.bounded", "page_limit.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/QualifyImage", "capabilities.proven", "capabilities.proven", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/QualifyImage", "image.immutable_digest", "image.immutable_digest", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Recover", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/SetSuspensionPolicy", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/SetSuspensionPolicy", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/SetSuspensionPolicy", "policy.valid", "policy.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Suspend", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Suspend", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Usage", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Usage", "time_range.valid", "time_range.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Wake", "idempotency_key.nonzero", "idempotency_key.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/Wake", "machine_id.nonzero", "machine_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/WatchOperation", "cursor.monotonic", "cursor.monotonic", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/WatchOperation", "operation_id.nonzero", "operation_id.nonzero", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("machines", "acyclic.machines.v1.MachinesService/WatchOperation", "terminal.required", "terminal.required", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.BucketsService/CreateBucket", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.BucketsService/CreateBucket", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.BucketsService/DeleteBucket", "bucket.empty", "bucket", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.BucketsService/DeleteBucket", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.BucketsService/DeleteBucket", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.BucketsService/HeadBucket", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/AbortMultipart", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/AbortMultipart", "upload_id.non_empty", "upload_id.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/CompleteMultipart", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/CompleteMultipart", "parts.ordered_exact", "parts", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/CompleteMultipart", "upload_id.non_empty", "upload_id.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/CreateMultipart", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/CreateMultipart", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/CreateMultipart", "object.key.non_empty", "object.key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/ListParts", "pagination.bounded", "pagination.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/ListParts", "upload_id.non_empty", "upload_id.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/UploadPart", "part_number.positive", "part_number.positive", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/UploadPart", "upload.completion_frame", "upload.completion_frame", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.MultipartService/UploadPart", "upload_id.non_empty", "upload_id.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "object.key.non_empty", "object.key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "preconditions.atomic", "preconditions.atomic", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/GetObject", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/GetObject", "object.key.non_empty", "object.key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/GetObject", "range.valid", "range.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/GetObject", "response.bounded", "response.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/HeadObject", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/HeadObject", "object.key.non_empty", "object.key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/ListObjects", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/ListObjects", "pagination.bounded", "pagination.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "object.key.non_empty", "object.key", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "preconditions.atomic", "preconditions.atomic", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "upload.completion_frame", "upload.completion_frame", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Append", "path.non_empty_utf8", "path.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Append", "records.max_bytes", "records", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Children", "limit.max_stream_items", "limit.max_stream_items", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/ChildrenPage", "limit.max_stream_items", "limit.max_stream_items", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Commit", "mutations.max_command_bytes", "mutations", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Follow", "path.non_empty_utf8", "path.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Fork", "destination.non_empty_utf8", "destination.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Fork", "source.non_empty_utf8", "source.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/InspectIdempotency", "idempotency_key.non_empty_bytes", "idempotency_key.non_empty_bytes", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Read", "limit.max_stream_items", "limit.max_stream_items", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Read", "path.non_empty_utf8", "path.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/ReadCommit", "commit_id.non_empty_bytes", "commit_id.non_empty_bytes", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Tail", "path.non_empty_utf8", "path.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/CancelJob", "job_id.non_empty_utf8", "job_id.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/InspectJob", "job_id.non_empty_utf8", "job_id.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/InvokeDeployment", "alias.non_empty_utf8", "alias.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/InvokeDeployment", "method.non_empty_utf8", "method.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/InvokeVersion", "method.non_empty_utf8", "method.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/InvokeVersion", "version_sha256.length_32", "version_sha256.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/PublishVersion", "expected_sha256.length_32", "expected_sha256.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/PublishVersion", "javascript_module.non_empty_bytes", "javascript_module.non_empty_bytes", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/SelectDeployment", "alias.non_empty_utf8", "alias.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/SelectDeployment", "version_sha256.length_32", "version_sha256.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("workers", "acyclic.workers.v1.WorkersService/SubmitJob", "idempotency_key.non_empty_utf8", "idempotency_key.non_empty_utf8", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Create", "items.bounded", "items.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Create", "message.bounded", "message", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Create", "model.non_empty", "model.non_empty", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Create", "request_identity.nonzero", "request_identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Inspect", "revision.length_32", "revision.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Mutate", "action.present", "action", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Mutate", "message.bounded", "message", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Mutate", "request_identity.nonzero", "request_identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ContextsService/Mutate", "source.present", "source.present", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("inference", "inference.customer.v1.EvaluationsService/Create", "candidates.bounded", "candidates.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.EvaluationsService/Create", "cases.bounded", "cases.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.EvaluationsService/Create", "message.bounded", "message", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.EvaluationsService/Create", "metrics.bounded", "metrics.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.EvaluationsService/Create", "request_identity.nonzero", "request_identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.EvaluationsService/Create", "spec_digest.length_32", "spec_digest.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.EvaluationsService/Inspect", "evaluation_id.length_16", "evaluation_id.length_16", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ModelsService/List", "model_capabilities.bounded", "model_capabilities.bounded", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.ModelsService/List", "retention_profiles.valid", "retention_profiles.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Cancel", "run_id.length_16", "run_id.length_16", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Generate", "context.length_32", "context.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Generate", "maximum_output.positive", "maximum_output.positive", RustOperationEnforcement.ProviderState),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Generate", "message.bounded", "message", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Generate", "request_identity.nonzero", "request_identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Inspect", "run_id.length_16", "run_id.length_16", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Watch", "cursor.monotonic", "cursor.monotonic", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Watch", "run_id.length_16", "run_id.length_16", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.RunsService/Watch", "terminal.required", "terminal.required", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Inspect", "commitment.length_32", "commitment.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Release", "commitment.length_32", "commitment.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Release", "request_identity.nonzero", "request_identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Renew", "commitment.length_32", "commitment.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Renew", "policy.valid", "policy.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Renew", "request_identity.nonzero", "request_identity", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Retain", "context.length_32", "context.length_32", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Retain", "policy.valid", "policy.valid", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("inference", "inference.customer.v1.WarmContextsService/Retain", "request_identity.nonzero", "request_identity", RustOperationEnforcement.ClientLocal),
+    };
 }
 
 public sealed class ActorsClient
