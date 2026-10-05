@@ -4,8 +4,8 @@
 use super::*;
 use crate::{
     Outcome,
-    communication::message_endpoint_operation,
-    durable_mail::{MailboxStore, publish_control_record},
+    communication::{message_endpoint_operation, publish_control_record},
+    durable_mail::MailboxStore,
     runtime::{DurableTaskHost, TaskCommunicationScope},
     scheduler::InboxItem,
 };
@@ -52,11 +52,27 @@ impl DurableTaskHost for SwarmCommunicationHost {
         Box::pin(async move {
             let swarm = self.swarm()?;
             let admission = swarm.authenticated_admission(task).await?;
+            let session = swarm.session(task).await?;
+            // A completed task may be explicitly resumed for a new user
+            // turn. Cancellation and failure are owner fences: they retain
+            // reads and committed replay, but cannot admit fresh mutations.
+            if session.parent != admission.parent {
+                return Err(Error::Conflict(
+                    "task session parent differs from its authenticated admission".into(),
+                ));
+            }
+            let accepts_new_mutations = matches!(
+                &session.phase,
+                LocalSessionPhase::Ready
+                    | LocalSessionPhase::Activating
+                    | LocalSessionPhase::Completed
+            );
             Ok(TaskCommunicationScope {
                 parent: admission.parent,
                 grants: admission.grants,
                 limits: admission.limits,
                 run_limits: admission.run_limits,
+                accepts_new_mutations,
             })
         })
     }
@@ -103,6 +119,8 @@ impl DurableTaskHost for SwarmCommunicationHost {
             let swarm = self.swarm()?;
             let sender_scope = self.communication_scope(sender).await?;
             let recipient_scope = self.communication_scope(recipient).await?;
+            sender_scope.require_new_mutation()?;
+            recipient_scope.require_new_mutation()?;
             if sender_scope.parent != Some(recipient) && recipient_scope.parent != Some(sender) {
                 return Err(Error::Unauthorized(
                     "message endpoints are not direct parent and child".into(),
@@ -175,7 +193,9 @@ impl DurableTaskHost for SwarmCommunicationHost {
         deadline: u64,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            self.communication_scope(task).await?;
+            self.communication_scope(task)
+                .await?
+                .require_new_mutation()?;
             let timer = self
                 .stream
                 .stream(format!("harness/v2/swarm-timers/{task}"))

@@ -666,6 +666,25 @@ pub struct TaskCommunicationScope {
     pub limits: Limits,
     /// Owner-pinned task execution bounds.
     pub run_limits: TaskRunLimits,
+    /// Whether new communication mutations may be admitted for this task.
+    ///
+    /// Hosts may keep this enabled for completed tasks that explicitly accept
+    /// a new user turn. Cancelled or otherwise fenced tasks should disable it;
+    /// reads and replay of already committed records remain separate paths.
+    pub accepts_new_mutations: bool,
+}
+
+impl TaskCommunicationScope {
+    /// Rejects a new message or timer admission when the owner has fenced it.
+    pub fn require_new_mutation(&self) -> Result<()> {
+        if self.accepts_new_mutations {
+            Ok(())
+        } else {
+            Err(Error::Conflict(
+                "task communication mutations are fenced".into(),
+            ))
+        }
+    }
 }
 
 /// Provider boundary for stable durable admission and outcome observation.
@@ -727,6 +746,7 @@ pub trait DurableTaskHost: Send + Sync {
                 grants: admission.grants,
                 limits: admission.limits,
                 run_limits: admission.run_limits,
+                accepts_new_mutations: true,
             })
         })
     }

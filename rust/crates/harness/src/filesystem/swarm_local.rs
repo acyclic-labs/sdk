@@ -4063,6 +4063,15 @@ impl PersistentLocalSwarm {
             self.bindings.communication_host.clone().ok_or_else(|| {
                 Error::Unsupported("durable communication host is not bound".into())
             })?;
+        // Fence cancelled or failed senders before staging bytes. Completed
+        // tasks remain eligible for an explicit new user turn, while the
+        // durable host still rechecks both endpoints at publication time.
+        host.communication_scope(sender)
+            .await?
+            .require_new_mutation()?;
+        host.communication_scope(recipient)
+            .await?
+            .require_new_mutation()?;
         // The sender owns the explicit source. The communication host checks
         // sender read authority and transfers it into recipient-private storage
         // before publishing the inbox record.

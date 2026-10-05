@@ -11,8 +11,8 @@ use crate::{
     scheduler::InboxItem,
 };
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
-    SystemUnixMillisClock, UnixMillisClock,
+    AppendOutcome, IdempotencyKey as StreamKey, IdempotencyOutcome, StreamClient, StreamError,
+    StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -55,6 +55,78 @@ pub fn message_endpoint_operation(
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
     OperationId::from_bytes(bytes)
+}
+
+/// Publishes one owner-retained control record with stable idempotency and
+/// explicit recovery for an acknowledgement lost after the provider may have
+/// committed the append.
+///
+/// Mail, timers, and wait journals all use this path. Keeping reconciliation
+/// here prevents one durable side effect from silently treating an unknown
+/// provider outcome as an ordinary storage error while another retries it.
+pub(crate) async fn publish_control_record<P: StreamProvider>(
+    client: &StreamClient<P>,
+    stream: &acyclic_stream::Stream<P>,
+    kind: &str,
+    task: TaskId,
+    operation: OperationId,
+    bytes: &[u8],
+) -> Result<()> {
+    let identity = format!("harness/v2/{kind}/{task}/{operation}");
+    let key = StreamKey::new(Bytes::copy_from_slice(
+        blake3::hash(identity.as_bytes()).as_bytes(),
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let outcome = match stream
+        .append_batch(vec![Bytes::copy_from_slice(bytes)], None, Some(key.clone()))
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(StreamError::Unavailable) => match client.inspect_idempotency(key).await {
+            Ok(Some(observation)) => match observation.outcome {
+                IdempotencyOutcome::Append(outcome) => outcome,
+                _ => {
+                    return Err(Error::Conflict(
+                        "control identity has another operation kind".into(),
+                    ));
+                }
+            },
+            Ok(None) | Err(_) => return Err(Error::Indeterminate(operation)),
+        },
+        Err(StreamError::IdempotencyMismatch) => {
+            return Err(Error::Conflict(
+                "control identity reused with different content".into(),
+            ));
+        }
+        Err(error) => return Err(Error::Storage(error.to_string())),
+    };
+    match outcome {
+        AppendOutcome::Committed(receipt) if receipt.end == receipt.start + 1 => {
+            let records = stream
+                .read(receipt.start, 1)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            let [record] = records.as_slice() else {
+                return Err(Error::Conflict(
+                    "control publication differs from its committed record".into(),
+                ));
+            };
+            if record.sequence != receipt.start
+                || record.commit_id != receipt.commit_id
+                || record.value.as_ref() != bytes
+            {
+                return Err(Error::Conflict(
+                    "control publication differs from its committed record".into(),
+                ));
+            }
+            Ok(())
+        }
+        AppendOutcome::Committed(_) => Err(Error::Storage("invalid control append receipt".into())),
+        AppendOutcome::TailConflict { .. } => Err(Error::Conflict(
+            "unconditional control append conflicted".into(),
+        )),
+    }
 }
 
 fn nonzero_task(task: TaskId, label: &str) -> Result<()> {
@@ -653,17 +725,6 @@ impl<P: StreamProvider> StreamWaitStore<P> {
             .map_err(|error| Error::Storage(error.to_string()))
     }
 
-    fn event_key(kind: &str, request: &WaitRequest) -> Result<StreamKey> {
-        let identity = format!(
-            "harness/v2/waits/{kind}/{}/{}",
-            request.waiter, request.operation_id
-        );
-        StreamKey::new(Bytes::copy_from_slice(
-            blake3::hash(identity.as_bytes()).as_bytes(),
-        ))
-        .map_err(|error| Error::Storage(error.to_string()))
-    }
-
     async fn read_events(
         &self,
         stream: &acyclic_stream::Stream<P>,
@@ -768,20 +829,20 @@ impl<P: StreamProvider> StreamWaitStore<P> {
         kind: &str,
     ) -> Result<()> {
         let bytes = event.canonical_bytes()?;
-        let key = Self::event_key(kind, request)?;
-        match stream
-            .append_batch(vec![Bytes::from(bytes)], None, Some(key))
-            .await
-        {
-            Ok(AppendOutcome::Committed(_)) => Ok(()),
-            Ok(AppendOutcome::TailConflict { .. }) => Err(Error::Storage(
-                "wait journal append unexpectedly conflicted on tail".into(),
-            )),
-            Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
-                "wait journal operation identity was reused".into(),
-            )),
-            Err(error) => Err(Error::Storage(error.to_string())),
-        }
+        // Preserve the existing wait identity namespace while using the
+        // shared publication/reconciliation path. In particular, an
+        // unavailable acknowledgement is now distinguished from a rejected
+        // append and can be replayed safely after restart.
+        let control_kind = format!("waits/{kind}");
+        publish_control_record(
+            &self.stream,
+            stream,
+            &control_kind,
+            request.waiter,
+            request.operation_id,
+            &bytes,
+        )
+        .await
     }
 }
 
@@ -954,6 +1015,8 @@ impl DurableCommunication {
         request.validate()?;
         let sender = self.host.communication_scope(request.sender).await?;
         let recipient = self.host.communication_scope(request.recipient).await?;
+        sender.require_new_mutation()?;
+        recipient.require_new_mutation()?;
         request.target.authorize(
             request.sender,
             request.recipient,
@@ -999,6 +1062,12 @@ impl DurableCommunication {
             ));
         }
         self.authorize_wait(&request).await?;
+        if matches!(&request.target, WaitTarget::Deadline { .. }) {
+            self.host
+                .communication_scope(request.waiter)
+                .await?
+                .require_new_mutation()?;
+        }
         if let Some(waits) = &self.waits {
             if let Some(completion) = waits.open(request.clone()).await? {
                 request.validate_completion_at(&completion, Some(self.host.now_unix_millis()))?;
@@ -1244,7 +1313,9 @@ mod tests {
         Capabilities,
         conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
         resources::ProviderRef,
-        runtime::{DurableTaskHost, TaskAdmissionRecord, TaskRunLimits},
+        runtime::{
+            DurableTaskHost, TaskAdmissionRecord, TaskCommunicationScope, TaskRunLimits,
+        },
     };
     use serde_json::json;
     use std::{collections::BTreeMap, sync::Mutex};
@@ -1468,6 +1539,26 @@ mod tests {
                 .is_err()
         );
         Ok(())
+    }
+
+    #[test]
+    fn communication_scope_fence_allows_explicit_completed_turns_only_when_enabled() {
+        let fenced = TaskCommunicationScope {
+            parent: None,
+            grants: Capabilities::new(["mail:send"]),
+            limits: Limits::default(),
+            run_limits: TaskRunLimits::default(),
+            accepts_new_mutations: false,
+        };
+        assert!(matches!(
+            fenced.require_new_mutation(),
+            Err(Error::Conflict(message)) if message.contains("fenced")
+        ));
+        let resumed = TaskCommunicationScope {
+            accepts_new_mutations: true,
+            ..fenced
+        };
+        assert!(resumed.require_new_mutation().is_ok());
     }
 
     #[test]
