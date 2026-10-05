@@ -89,6 +89,7 @@ fn render() -> String {
     render_full_semantic_request_models(&mut out);
     render_nested_models(&mut out);
     render_object_stream(&mut out);
+    render_object_info_response(&mut out);
     render_operation_validation(&mut out);
     render_operation_validation_policy(&mut out);
     render_clients(&mut out);
@@ -555,6 +556,15 @@ fn render_object_stream(out: &mut String) {
     out.push_str("public sealed class ObjectsGetObjectStream\n{\n    private readonly AsyncServerStreamingCall<Acyclic.Objects.V2.GetObjectResponse> _inner;\n    internal ObjectsGetObjectStream(AsyncServerStreamingCall<Acyclic.Objects.V2.GetObjectResponse> inner) => _inner = inner;\n    public async IAsyncEnumerable<ObjectsGetObjectResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)\n    {\n        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return ObjectsGetObjectResponse.FromWire(_inner.ResponseStream.Current);\n    }\n}\n\n");
 }
 
+/// Expose the Rust semantic `ObjectInfo.etag` binding through the public
+/// response returned by unary multipart completion. The original protobuf
+/// message remains available for forward-compatible ordinary fields.
+fn render_object_info_response(out: &mut String) {
+    out.push_str(
+        "public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, Acyclic.Objects.V2.ObjectMetadata Metadata, Google.Protobuf.WellKnownTypes.Timestamp LastModified, Acyclic.Objects.V2.ObjectInfo Wire)\n{\n    internal static ObjectsObjectInfo FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(\n        string.IsNullOrEmpty(message.Etag) ? null : new OpaqueText(message.Etag),\n        message.Size,\n        message.Metadata,\n        message.LastModified,\n        message);\n}\n\n",
+    );
+}
+
 fn render_operation_validation(out: &mut String) {
     let rules = resolved_operation_rules();
     out.push_str(
@@ -782,7 +792,7 @@ fn render_family_client(
                 "    public ObjectsGetObjectStream GetObject({public_input} request, {args}) => new(_{service_field}.GetObject({request_expr}, headers, deadline, cancellationToken));\n"
             )),
             ("objects", "CompleteMultipart") => out.push_str(&format!(
-                "    public {output} CompleteMultipart({public_input} request, {args}) {{ RustOperationValidation.ValidateOrderedPartNumbers(System.Linq.Enumerable.Select(request.Parts, part => part.PartNumber)); return _{service_field}.CompleteMultipart({request_expr}, headers, deadline, cancellationToken); }}\n"
+                "    public ObjectsObjectInfo CompleteMultipart({public_input} request, {args}) {{ RustOperationValidation.ValidateOrderedPartNumbers(System.Linq.Enumerable.Select(request.Parts, part => part.PartNumber)); return ObjectsObjectInfo.FromWire(_{service_field}.CompleteMultipart({request_expr}, headers, deadline, cancellationToken)); }}\n"
             )),
             ("stream", "Append") => out.push_str(&format!(
                 "    public {output} Append({public_input} request, {args}) {{ RustOperationValidation.ValidateRecordBytes(request.Records); return _{service_field}.Append({request_expr}, headers, deadline, cancellationToken); }}\n"
@@ -1057,6 +1067,25 @@ mod tests {
         assert!(source.contains(
             "if (Value > 256) throw new ArgumentOutOfRangeException(nameof(Value));"
         ));
+    }
+
+    #[test]
+    fn csharp_wire_assignments_preserve_rust_owned_numeric_and_identifier_shapes() {
+        let (_, source) = generate_csharp_typed_facade();
+        for message in ["MachineId", "CheckpointId", "OperationId"] {
+            assert!(
+                source.contains(&format!(
+                    "new Acyclic.Machines.V1.{message} {{ Value ="
+                )),
+                "machine identifier wrapper {message} missing"
+            );
+        }
+        assert!(source.contains("checked((uint)Limit.ToWire())"));
+        assert!(source.contains("checked((uint)PageSize.ToWire())"));
+        assert!(source.contains("wire.IdleTimeoutMs = IdleTimeoutMs ?? 0;"));
+        assert!(source.contains("wire.IfTail = IfTail ?? 0;"));
+        assert!(source.contains("wire.AtTail = AtTail ?? 0;"));
+        assert!(source.contains("wire.ExpectedRevision = ExpectedRevision ?? 0;"));
     }
 
     #[test]

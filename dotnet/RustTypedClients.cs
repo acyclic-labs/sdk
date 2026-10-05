@@ -1823,6 +1823,16 @@ public sealed class ObjectsGetObjectStream
     }
 }
 
+public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, Acyclic.Objects.V2.ObjectMetadata Metadata, Google.Protobuf.WellKnownTypes.Timestamp LastModified, Acyclic.Objects.V2.ObjectInfo Wire)
+{
+    internal static ObjectsObjectInfo FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(
+        string.IsNullOrEmpty(message.Etag) ? null : new OpaqueText(message.Etag),
+        message.Size,
+        message.Metadata,
+        message.LastModified,
+        message);
+}
+
 internal static class RustOperationValidation
 {
     internal const int MaxMultipartParts = 10000;
@@ -2284,7 +2294,7 @@ public sealed class ObjectsClient
     public Acyclic.Objects.V2.DeleteBucketResponse DeleteBucket(Acyclic.Objects.V2.DeleteBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.DeleteBucket(request, headers, deadline, cancellationToken);
     public Acyclic.Objects.V2.Bucket HeadBucket(Acyclic.Objects.V2.HeadBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.HeadBucket(request, headers, deadline, cancellationToken);
     public Acyclic.Objects.V2.AbortMultipartResponse AbortMultipart(RustObjectsAbortMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.AbortMultipart(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Objects.V2.ObjectInfo CompleteMultipart(RustObjectsCompleteMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateOrderedPartNumbers(System.Linq.Enumerable.Select(request.Parts, part => part.PartNumber)); return _multipart.CompleteMultipart(request.ToWire(), headers, deadline, cancellationToken); }
+    public ObjectsObjectInfo CompleteMultipart(RustObjectsCompleteMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateOrderedPartNumbers(System.Linq.Enumerable.Select(request.Parts, part => part.PartNumber)); return ObjectsObjectInfo.FromWire(_multipart.CompleteMultipart(request.ToWire(), headers, deadline, cancellationToken)); }
     public Acyclic.Objects.V2.MultipartUpload CreateMultipart(RustObjectsCreateMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.CreateMultipart(request.ToWire(), headers, deadline, cancellationToken);
     public Acyclic.Objects.V2.ListPartsResponse ListParts(RustObjectsListPartsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.ListParts(request.ToWire(), headers, deadline, cancellationToken);
     public AsyncClientStreamingCall<Acyclic.Objects.V2.UploadPartRequest, Acyclic.Objects.V2.UploadedPart> UploadPart(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.UploadPart(headers, deadline, cancellationToken);
