@@ -1064,8 +1064,16 @@ impl DurableCommunication {
         {
             return Ok(());
         }
-        sender.require_new_mutation()?;
-        recipient.require_new_mutation()?;
+        // A host with an owner-journal message admission may finish an
+        // already admitted publication after cancellation. The host owns
+        // that admission CAS and must reject any operation that did not win
+        // it before the lifecycle fence. Generic hosts remain fail-closed.
+        if (sender.accepts_new_mutations && recipient.accepts_new_mutations)
+            || !self.host.supports_admitted_message_recovery()
+        {
+            sender.require_new_mutation()?;
+            recipient.require_new_mutation()?;
+        }
         self.host
             .send(
                 request.sender,
@@ -1106,6 +1114,8 @@ impl DurableCommunication {
         }
         self.authorize_wait(&request).await?;
         let waiter_scope = self.host.communication_scope(request.waiter).await?;
+        let allows_admitted_timer = matches!(&request.target, WaitTarget::Deadline { .. })
+            && self.host.supports_admitted_timer_recovery();
         if !waiter_scope.accepts_new_mutations {
             if let Some(waits) = &self.waits {
                 match waits.replay(request.clone()).await {
@@ -1133,7 +1143,9 @@ impl DurableCommunication {
                     return Ok(completion);
                 }
             }
-            waiter_scope.require_new_mutation()?;
+            if !allows_admitted_timer {
+                waiter_scope.require_new_mutation()?;
+            }
         }
         if let Some(waits) = &self.waits {
             if let Some(completion) = waits.open(request.clone()).await? {

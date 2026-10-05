@@ -21,7 +21,13 @@ use std::{
 #[derive(Default)]
 pub struct FixtureUsage {
     provider: String,
-    usage: Mutex<BTreeMap<(OperationId, String), SwarmUsage>>,
+    usage: Mutex<BTreeMap<(OperationId, String), FixtureMeasurement>>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct FixtureMeasurement {
+    usage: SwarmUsage,
+    elapsed_sample_ms: u64,
 }
 
 impl FixtureUsage {
@@ -32,39 +38,52 @@ impl FixtureUsage {
         })
     }
 
-    pub fn begin(&self, dispatch: &ProviderDispatchContext) {
-        if let Ok(mut usage) = self.usage.lock() {
-            usage
-                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                .or_default()
-                .model_steps = 1;
-        }
+    pub fn begin(&self, dispatch: &ProviderDispatchContext) -> acyclic_harness::Result<()> {
+        let key = (dispatch.operation_id, dispatch.dispatch_id.0.clone());
+        let mut usage = self
+            .usage
+            .lock()
+            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
+        let entry = usage.entry(key.clone()).or_default();
+        entry.usage.model_steps = entry
+            .usage
+            .model_steps
+            .checked_add(1)
+            .ok_or_else(|| Error::Conflict("fixture model-step measurement overflow".into()))?;
+        entry.elapsed_sample_ms = 0;
+        Ok(())
     }
 
-    pub fn record(&self, dispatch: &ProviderDispatchContext, started: Instant, event: &ModelEvent) {
-        let bytes = canonical_json_bytes(event)
-            .map(|bytes| bytes.len() as u64)
-            .unwrap_or_default();
-        if let Ok(mut usage) = self.usage.lock() {
-            let entry = usage
-                .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
-                .or_default();
-            entry.output_bytes = entry.output_bytes.saturating_add(bytes);
-            entry.execution_time_ms = entry
-                .execution_time_ms
-                .max(started.elapsed().as_millis() as u64);
-        }
-    }
-
-    pub fn record_events(
+    pub fn record(
         &self,
         dispatch: &ProviderDispatchContext,
         started: Instant,
-        events: &[ModelEvent],
-    ) {
-        for event in events {
-            self.record(dispatch, started, event);
-        }
+        event: &ModelEvent,
+    ) -> acyclic_harness::Result<()> {
+        let bytes = canonical_json_bytes(event)?.len() as u64;
+        let key = (dispatch.operation_id, dispatch.dispatch_id.0.clone());
+        let elapsed = u64::try_from(started.elapsed().as_millis())
+            .map_err(|_| Error::Conflict("fixture elapsed measurement overflow".into()))?;
+        let mut usage = self
+            .usage
+            .lock()
+            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
+        let entry = usage.entry(key).or_default();
+        entry.usage.output_bytes = entry
+            .usage
+            .output_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| Error::Conflict("fixture output measurement overflow".into()))?;
+        let delta = elapsed
+            .checked_sub(entry.elapsed_sample_ms)
+            .ok_or_else(|| Error::Conflict("fixture elapsed measurement regressed".into()))?;
+        entry.elapsed_sample_ms = elapsed;
+        entry.usage.execution_time_ms = entry
+            .usage
+            .execution_time_ms
+            .checked_add(delta)
+            .ok_or_else(|| Error::Conflict("fixture time measurement overflow".into()))?;
+        Ok(())
     }
 }
 
@@ -78,15 +97,14 @@ impl SwarmUsageSource for FixtureUsage {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
     ) -> acyclic_harness::Result<SwarmUsage> {
-        self.usage
+        let usage = self
+            .usage
             .lock()
-            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))
-            .map(|usage| {
-                usage
-                    .get(&(operation_id, dispatch_id.0.clone()))
-                    .copied()
-                    .unwrap_or_default()
-            })
+            .map_err(|_| Error::Conflict("fixture usage lock poisoned".into()))?;
+        usage
+            .get(&(operation_id, dispatch_id.0.clone()))
+            .map(|measurement| measurement.usage)
+            .ok_or_else(|| Error::NotFound("fixture usage receipt".into()))
     }
 }
 
@@ -95,10 +113,11 @@ pub fn record_result(
     dispatch: &ProviderDispatchContext,
     started: Instant,
     event: &acyclic_harness::Result<ModelEvent>,
-) {
+) -> acyclic_harness::Result<()> {
     if let Ok(event) = event {
-        usage.record(dispatch, started, event);
+        usage.record(dispatch, started, event)?;
     }
+    Ok(())
 }
 
 /// Adds the provider boundary methods required by a budgeted fixture whose
@@ -121,12 +140,18 @@ macro_rules! fixture_budget_methods {
             prepared: acyclic_harness::model_input::PreparedModelInput,
             dispatch: ProviderDispatchContext,
         ) -> BoxStream<'a, Result<ModelEvent>> {
-            self.usage.begin(&dispatch);
+            if let Err(error) = self.usage.begin(&dispatch) {
+                return Box::pin(futures::stream::once(async move { Err(error) }));
+            }
             let started = std::time::Instant::now();
             let stream = self.generate(prepared);
             let usage = self.usage.clone();
             Box::pin(stream.map(move |event| {
-                swarm_provider_support::record_result(&usage, &dispatch, started, &event);
+                if let Err(error) =
+                    swarm_provider_support::record_result(&usage, &dispatch, started, &event)
+                {
+                    return Err(error);
+                }
                 event
             }))
         }
@@ -137,7 +162,6 @@ macro_rules! fixture_budget_methods {
             attempt: acyclic_harness::model::ModelAttempt,
             dispatch: ProviderDispatchContext,
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            let usage = self.usage.clone();
             Box::pin(async move {
                 if dispatch.operation_id != attempt.operation_id
                     || dispatch.request_digest != attempt.request_digest
@@ -146,11 +170,7 @@ macro_rules! fixture_budget_methods {
                         "fixture dispatch context does not match admitted attempt".into(),
                     ));
                 }
-                let started = std::time::Instant::now();
                 let events = self.reconcile_admitted(prepared, attempt).await?;
-                if let Some(events) = &events {
-                    usage.record_events(&dispatch, started, events);
-                }
                 Ok(events)
             })
         }
@@ -176,24 +196,34 @@ mod tests {
             request_digest: [3; 32],
             dispatch_id: IdempotencyKey::new("dispatch-b").expect("dispatch id"),
         };
-        source.begin(&first);
-        source.record(
-            &first,
-            Instant::now(),
-            &ModelEvent::Content {
-                delta: "measured".into(),
-            },
-        );
+        source.begin(&first).expect("begin measurement");
+        source
+            .record(
+                &first,
+                Instant::now(),
+                &ModelEvent::Content {
+                    delta: "measured".into(),
+                },
+            )
+            .expect("record measurement");
+        source.begin(&first).expect("begin retry measurement");
+        source
+            .record(
+                &first,
+                Instant::now(),
+                &ModelEvent::Content {
+                    delta: "again".into(),
+                },
+            )
+            .expect("record retry measurement");
         let observed = source
             .cumulative_usage(first.operation_id, &first.dispatch_id)
             .expect("first receipt");
-        assert_eq!(observed.model_steps, 1);
+        assert_eq!(observed.model_steps, 2);
         assert!(observed.output_bytes > 0);
-        assert_eq!(
-            source
-                .cumulative_usage(second.operation_id, &second.dispatch_id)
-                .expect("unseen dispatch receipt"),
-            SwarmUsage::default()
-        );
+        assert!(matches!(
+            source.cumulative_usage(second.operation_id, &second.dispatch_id),
+            Err(Error::NotFound(_))
+        ));
     }
 }

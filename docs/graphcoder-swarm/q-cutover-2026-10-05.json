@@ -1,0 +1,13 @@
+{
+  "branch": "codex/graphcoder-sdk",
+  "old_native_evidence": "Not retained on Q; do not count as currently available qualification evidence",
+  "root_worktree": "Q:/worktrees/graphcoder-swarm-root",
+  "unavailable_operator_commit": "d0e3ac21f",
+  "qualification_complete": false,
+  "original_checkout_files_unchanged": true,
+  "object_storage": "Q:/sdk/.git/objects",
+  "operator_recovery_base": "ebdb0d204faede74aae37a790daa753c79bc653a",
+  "recovered_source": "ed6b08a6a577e57053f4092b80b6b757017a9c27",
+  "git_common_dir": "Q:/sdk/.git",
+  "old_c_registrations_not_pruned": true
+}

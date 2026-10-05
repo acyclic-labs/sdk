@@ -559,6 +559,10 @@ pub struct LocalForkIntent {
     pub task: String,
     /// Fresh child user input.
     pub prompt: String,
+    /// Optional model-selected upper bound. The owner still clamps this to
+    /// the authoritative remaining session budget before preparing a plan.
+    #[serde(default)]
+    pub requested_resources: Option<SwarmResourceRequest>,
 }
 
 impl LocalForkIntent {
@@ -577,6 +581,9 @@ impl LocalForkIntent {
             || self.task.trim().is_empty()
             || self.task.len() > 4 * 1024
             || self.prompt.len() > 64 * 1024
+            || self
+                .requested_resources
+                .is_some_and(|resources| resources.validate().is_err())
         {
             return Err(Error::Invalid(
                 "model-selected fork intent is invalid".into(),
@@ -692,6 +699,25 @@ fn bounded_child_resources(
     };
     resources.validate()?;
     Ok(resources)
+}
+
+fn apply_requested_resource_bound(
+    bounded: SwarmResourceRequest,
+    requested: Option<SwarmResourceRequest>,
+) -> Result<SwarmResourceRequest> {
+    let Some(requested) = requested else {
+        return Ok(bounded);
+    };
+    requested.validate()?;
+    if requested.model_steps > bounded.model_steps
+        || requested.output_bytes > bounded.output_bytes
+        || requested.execution_time_ms > bounded.execution_time_ms
+    {
+        return Err(Error::Conflict(
+            "model-selected child resources exceed the remaining session budget".into(),
+        ));
+    }
+    Ok(requested)
 }
 
 fn checked_child_depth(parent_depth: usize) -> Result<u32> {
@@ -1202,13 +1228,16 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     task: intent.task,
                     prompt: intent.prompt,
                 },
-                resources: swarm
-                    .child_budget_resources(
-                        intent.parent,
-                        parent_harness.bundle().limits(),
-                        swarm.config.run_limits,
-                    )
-                    .await?,
+                resources: apply_requested_resource_bound(
+                    swarm
+                        .child_budget_resources(
+                            intent.parent,
+                            parent_harness.bundle().limits(),
+                            swarm.config.run_limits,
+                        )
+                        .await?,
+                    intent.requested_resources,
+                )?,
                 report,
                 rebind_proof: Some(preparer.authenticate_rebind(&request).await?),
                 declaration,
@@ -1841,6 +1870,7 @@ impl LocalModelForkPlans {
                 intent.child_operation == input.child_operation
                     && intent.task == input.task
                     && intent.prompt == input.prompt
+                    && intent.requested_resources == input.requested_resources
                     && input
                         .fork_operation
                         .is_none_or(|operation| operation == intent.fork_operation)
@@ -2145,6 +2175,8 @@ struct LocalForkToolInput {
     child_operation: OperationId,
     task: String,
     prompt: String,
+    #[serde(default)]
+    requested_resources: Option<SwarmResourceRequest>,
 }
 
 fn bind_local_fork_input(
@@ -2273,6 +2305,7 @@ impl ToolExecutor for LocalForkToolExecutor {
                 call_id: Some(invocation.call_id),
                 task: input.task,
                 prompt: input.prompt,
+                requested_resources: input.requested_resources,
             };
             self.plans.record_intent(intent).await?;
             Ok(selected_fork_tool_result(fork_operation, input.child_operation))
@@ -2341,7 +2374,7 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
     Tool {
         definition: ToolDefinition {
             name: "acyclic.fork_child".into(),
-            revision: "2".into(),
+            revision: "3".into(),
             description:
                 "Request an owner-prepared recursive child after this model batch completes".into(),
             input_schema: json!({
@@ -2351,7 +2384,17 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
                     "fork_operation": {"type": "string"},
                     "child_operation": {"type": "string"},
                     "task": {"type": "string", "minLength": 1, "maxLength": 4096},
-                    "prompt": {"type": "string", "maxLength": 65536}
+                    "prompt": {"type": "string", "maxLength": 65536},
+                    "requested_resources": {
+                        "type": "object",
+                        "required": ["model_steps", "output_bytes", "execution_time_ms"],
+                        "properties": {
+                            "model_steps": {"type": "integer", "minimum": 1},
+                            "output_bytes": {"type": "integer", "minimum": 1},
+                            "execution_time_ms": {"type": "integer", "minimum": 1}
+                        },
+                        "additionalProperties": false
+                    }
                 },
                 "additionalProperties": false
             }),
@@ -2663,6 +2706,23 @@ enum StoredEvent {
     TaskAdmitted {
         task: TaskId,
         admission: Value,
+    },
+    /// Owner-journal admission for a message publication. This is the
+    /// lifecycle CAS that orders a send against cancellation; the mailbox
+    /// remains the only user-visible publication stream.
+    MessageAdmitted {
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: FileRef,
+    },
+    /// Owner-journal admission for one durable deadline timer. The timer
+    /// stream is only the publication surface; this record orders it against
+    /// task cancellation on the same lifecycle CAS.
+    TimerAdmitted {
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
     },
     /// Atomically records the selected child and host issuer binding.
     ForkIntentSelected {
@@ -4043,9 +4103,10 @@ impl PersistentLocalSwarm {
             Err(error) => return Err(error),
         }
         self.admissions.lock().await.insert(task, admission.clone());
-        *self.registry_tail.lock().await = observed_tail
+        let committed_tail = observed_tail
             .checked_add(1)
             .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+        self.retain_registry_tail(committed_tail).await;
         Ok(admission)
     }
 
@@ -4643,11 +4704,16 @@ impl PersistentLocalSwarm {
                 });
             }
         }
-        // Fence cancelled or failed senders before staging bytes. Completed
-        // tasks remain eligible for an explicit new user turn, while the
-        // durable host still rechecks both endpoints at publication time.
-        sender_scope.require_new_mutation()?;
-        recipient_scope.require_new_mutation()?;
+        // Generic hosts fence before staging. The local host also supports
+        // replaying a previously journal-admitted message after cancellation;
+        // its owner CAS and mailbox publication path decide whether this is
+        // a recovery or a new mutation.
+        if (sender_scope.accepts_new_mutations && recipient_scope.accepts_new_mutations)
+            || !host.supports_admitted_message_recovery()
+        {
+            sender_scope.require_new_mutation()?;
+            recipient_scope.require_new_mutation()?;
+        }
         // The sender owns the explicit source. The communication host checks
         // sender read authority and transfers it into recipient-private storage
         // before publishing the inbox record.
@@ -4678,6 +4744,230 @@ impl PersistentLocalSwarm {
             message_id,
             payload,
         })
+    }
+
+    /// Wins the lifecycle journal CAS for one message before the host stages
+    /// recipient-owned content. An existing identical admission is recoverable and
+    /// may finish after cancellation; a cancellation that wins the same
+    /// registry tail prevents a new admission.
+    pub(crate) async fn admit_message(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: FileRef,
+    ) -> Result<()> {
+        if sender.into_bytes() == [0; 16]
+            || recipient.into_bytes() == [0; 16]
+            || message_id.into_bytes() == [0; 16]
+            || sender == recipient
+        {
+            return Err(Error::Invalid("message admission identity is invalid".into()));
+        }
+        payload.validate()?;
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let sender_session = self.session(sender).await?;
+        let recipient_session = self.session(recipient).await?;
+        if sender_session.parent != Some(recipient)
+            && recipient_session.parent != Some(sender)
+        {
+            return Err(Error::Unauthorized(
+                "message endpoints are not direct parent and child".into(),
+            ));
+        }
+        if self
+            .find_message_admission(sender, recipient, message_id, &payload)
+            .await?
+        {
+            return Ok(());
+        }
+        if !matches!(
+            sender_session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) || !matches!(
+            recipient_session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) {
+            return Err(Error::Conflict(
+                "message admission lost the lifecycle cancellation race".into(),
+            ));
+        }
+        let event = StoredEvent::MessageAdmitted {
+            sender,
+            recipient,
+            message_id,
+            payload: payload.clone(),
+        };
+        match append_record_at(&registry, event, observed_tail).await {
+            Ok(()) => {
+                let committed_tail = observed_tail
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                self.retain_registry_tail(committed_tail).await;
+                Ok(())
+            }
+            Err(error) => {
+                if self.refresh_registry_state().await.is_ok() {
+                    match self
+                        .find_message_admission(sender, recipient, message_id, &payload)
+                        .await
+                    {
+                        Ok(true) => return Ok(()),
+                        Ok(false) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if matches!(error, Error::Conflict(_)) {
+                    return Err(Error::Conflict(
+                        "message admission lost its durable lifecycle race".into(),
+                    ));
+                }
+                Err(Error::Indeterminate(message_id))
+            }
+        }
+    }
+
+    async fn find_message_admission(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: &FileRef,
+    ) -> Result<bool> {
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        // Message identity is scoped to the sender. The recipient is part of
+        // the immutable operation binding, so changing it must conflict
+        // rather than create a second mailbox publication.
+        for record in load_records(&registry).await? {
+            if let StoredEvent::MessageAdmitted {
+                sender: candidate_sender,
+                recipient: candidate_recipient,
+                message_id: candidate_message,
+                payload: candidate_payload,
+            } = record.event
+                && candidate_sender == sender
+                && candidate_message == message_id
+            {
+                if candidate_recipient != recipient {
+                    return Err(Error::Conflict(
+                        "message identity was reused with another recipient".into(),
+                    ));
+                }
+                if candidate_payload != *payload {
+                    return Err(Error::Conflict(
+                        "message identity was reused with another payload".into(),
+                    ));
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Wins the lifecycle journal CAS for one timer before its timer-stream
+    /// publication. An identical prior admission is safe to finish after a
+    /// cancellation; a cancellation that wins first rejects the timer.
+    pub(crate) async fn admit_timer(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    ) -> Result<()> {
+        if task.into_bytes() == [0; 16]
+            || operation.into_bytes() == [0; 16]
+            || deadline == 0
+        {
+            return Err(Error::Invalid("timer admission identity is invalid".into()));
+        }
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        if self.find_timer_admission(task, operation, deadline).await? {
+            return Ok(());
+        }
+        let session = self.session(task).await?;
+        if !matches!(
+            session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) {
+            return Err(Error::Conflict(
+                "timer admission lost the lifecycle cancellation race".into(),
+            ));
+        }
+        let event = StoredEvent::TimerAdmitted {
+            task,
+            operation,
+            deadline,
+        };
+        match append_record_at(&registry, event, observed_tail).await {
+            Ok(()) => {
+                let committed_tail = observed_tail
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
+                self.retain_registry_tail(committed_tail).await;
+                Ok(())
+            }
+            Err(error) => {
+                if self.refresh_registry_state().await.is_ok() {
+                    match self.find_timer_admission(task, operation, deadline).await {
+                        Ok(true) => return Ok(()),
+                        Ok(false) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if matches!(error, Error::Conflict(_)) {
+                    return Err(Error::Conflict(
+                        "timer admission lost its durable lifecycle race".into(),
+                    ));
+                }
+                Err(Error::Indeterminate(operation))
+            }
+        }
+    }
+
+    async fn find_timer_admission(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    ) -> Result<bool> {
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        for record in load_records(&registry).await? {
+            if let StoredEvent::TimerAdmitted {
+                task: candidate_task,
+                operation: candidate_operation,
+                deadline: candidate_deadline,
+            } = record.event
+                && candidate_task == task
+                && candidate_operation == operation
+            {
+                if candidate_deadline != deadline {
+                    return Err(Error::Conflict(
+                        "timer identity was reused with another deadline".into(),
+                    ));
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Reads a bounded durable inbox page for a task.
@@ -5383,14 +5673,17 @@ impl PersistentLocalSwarm {
         // Reserve before appending ForkPrepared. This is the resolver's
         // workspace boundary: a failed reservation publishes no child and
         // cannot consume active/total capacity after a restart.
-        let child_resources = planned_resources.unwrap_or(
-            self.child_budget_resources(
-                request.parent,
-                parent_storage.bundle().limits(),
-                self.config.run_limits,
-            )
-            .await?,
-        );
+        let child_resources = match planned_resources {
+            Some(resources) => resources,
+            None => {
+                self.child_budget_resources(
+                    request.parent,
+                    parent_storage.bundle().limits(),
+                    self.config.run_limits,
+                )
+                .await?
+            }
+        };
         let _ = self
             .admit_and_reserve_child(
                 child,
@@ -6468,6 +6761,15 @@ impl PersistentLocalSwarm {
         self.refresh_registry_state_with_tail().await.map(|_| ())
     }
 
+    /// Retains the highest locally observed registry tail. An append can
+    /// commit concurrently with another handle; publishing `observed + 1`
+    /// must never move this cache backwards and make a later refresh reject a
+    /// valid durable suffix.
+    async fn retain_registry_tail(&self, committed_tail: u64) {
+        let mut known_tail = self.registry_tail.lock().await;
+        *known_tail = (*known_tail).max(committed_tail);
+    }
+
     async fn refresh_registry_state_with_tail(&self) -> Result<u64> {
         let _refresh = self.registry_refresh.lock().await;
         let stream = self
@@ -6939,6 +7241,53 @@ fn apply_record(
                 ));
             }
             admissions.insert(task, admission);
+        }
+        StoredEvent::MessageAdmitted {
+            sender,
+            recipient,
+            message_id,
+            payload,
+        } => {
+            if sender.into_bytes() == [0; 16]
+                || recipient.into_bytes() == [0; 16]
+                || message_id.into_bytes() == [0; 16]
+                || sender == recipient
+            {
+                return Err(Error::Conflict(
+                    "persisted message admission identity is invalid".into(),
+                ));
+            }
+            payload.validate()?;
+            let sender_session = sessions
+                .get(&sender)
+                .ok_or_else(|| Error::Storage("message admission sender is missing".into()))?;
+            let recipient_session = sessions
+                .get(&recipient)
+                .ok_or_else(|| Error::Storage("message admission recipient is missing".into()))?;
+            if sender_session.parent != Some(recipient)
+                && recipient_session.parent != Some(sender)
+            {
+                return Err(Error::Conflict(
+                    "message admission endpoints are not direct parent and child".into(),
+                ));
+            }
+        }
+        StoredEvent::TimerAdmitted {
+            task,
+            operation,
+            deadline,
+        } => {
+            if task.into_bytes() == [0; 16]
+                || operation.into_bytes() == [0; 16]
+                || deadline == 0
+            {
+                return Err(Error::Conflict(
+                    "persisted timer admission identity is invalid".into(),
+                ));
+            }
+            if !sessions.contains_key(&task) {
+                return Err(Error::Storage("timer admission task is missing".into()));
+            }
         }
         StoredEvent::ForkIntent { intent } => {
             intent.validate()?;
@@ -7701,6 +8050,7 @@ mod tests {
             call_id: Some(format!("fork-{child}")),
             task: format!("child-{child}"),
             prompt: "preserve this exact prompt".into(),
+            requested_resources: None,
         }
     }
 
@@ -7758,11 +8108,37 @@ mod tests {
         .expect("final child allocation");
         assert!(final_child.model_steps >= 2);
         assert!(final_child.model_steps <= grandchild.model_steps);
+
+        let selected = apply_requested_resource_bound(
+            final_child,
+            Some(SwarmResourceRequest {
+                model_steps: 2,
+                output_bytes: 1,
+                execution_time_ms: 1,
+            }),
+        )
+        .expect("bounded model selection");
+        assert_eq!(selected.model_steps, 2);
+        assert!(matches!(
+            apply_requested_resource_bound(
+                final_child,
+                Some(SwarmResourceRequest {
+                    model_steps: final_child.model_steps + 1,
+                    ..final_child
+                }),
+            ),
+            Err(Error::Conflict(message)) if message.contains("model-selected child resources")
+        ));
     }
 
     #[test]
     fn intent_replay_rejects_zero_issuer_and_conflicting_payloads() {
-        let intent = test_fork_intent(6);
+        let mut intent = test_fork_intent(6);
+        intent.requested_resources = Some(SwarmResourceRequest {
+            model_steps: 2,
+            output_bytes: 8,
+            execution_time_ms: 16,
+        });
         let mut intents = BTreeMap::new();
         let mut order = BTreeMap::new();
         let mut bindings = BTreeMap::new();
@@ -7786,6 +8162,11 @@ mod tests {
             .expect("first durable intent replays");
         let mut changed = intent;
         changed.prompt = "changed after selection".into();
+        changed.requested_resources = Some(SwarmResourceRequest {
+            model_steps: 3,
+            output_bytes: 8,
+            execution_time_ms: 16,
+        });
         let conflicting = StoredRecord {
             version: REGISTRY_VERSION,
             event: StoredEvent::ForkIntent { intent: changed },
@@ -9430,6 +9811,148 @@ mod tests {
         assert_eq!(reopened.open_session(task).await?.signing_key(), first_key);
         assert!(reopened.bindings.filesystem_fork_resolver.is_some());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn message_admission_orders_cancellation_in_owner_registry() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
+        });
+        let model = Model::new("mock", "message-admission", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider,
+            Limits::default(),
+        )
+        .await?;
+        let parent = swarm.root_task().await?;
+        let child = TaskId::from_bytes([0xD8; 16]);
+        let child_operation = OperationId::from_bytes([0xD9; 16]);
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let tail = match registry.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        append_record_at(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: child,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "message child".into(),
+                operation: Some(child_operation),
+                phase: StoredPhase::Ready,
+            }),
+            tail,
+        )
+        .await?;
+        let mut admission = swarm.authenticated_admission(parent).await?;
+        admission.operation_id = child_operation;
+        admission.parent = Some(parent);
+        swarm.persist_local_admission(child, admission).await?;
+        let sibling = TaskId::from_bytes([0xE0; 16]);
+        let sibling_operation = OperationId::from_bytes([0xE1; 16]);
+        let sibling_tail = match registry.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        append_record_at(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: sibling,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "message sibling".into(),
+                operation: Some(sibling_operation),
+                phase: StoredPhase::Ready,
+            }),
+            sibling_tail,
+        )
+        .await?;
+        let mut sibling_admission = swarm.authenticated_admission(parent).await?;
+        sibling_admission.operation_id = sibling_operation;
+        sibling_admission.parent = Some(parent);
+        swarm
+            .persist_local_admission(sibling, sibling_admission)
+            .await?;
+        swarm.refresh_registry_state().await?;
+        let source = swarm.open_session(parent).await?;
+        let payload = source
+            .storage()
+            .stage(
+                OperationId::from_bytes([0xDA; 16]),
+                "system/test-message.txt",
+                b"message",
+                "text/plain",
+                "message.txt",
+            )
+            .await?;
+        // The admission owner must enforce the direct parent/child
+        // relationship itself; callers cannot turn an invalid target into a
+        // durable admission by bypassing the host preflight.
+        assert!(matches!(
+            swarm
+                .admit_message(
+                    child,
+                    child,
+                    OperationId::from_bytes([0xDE; 16]),
+                    payload.clone(),
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let message = OperationId::from_bytes([0xDB; 16]);
+        swarm.admit_message(parent, child, message, payload.clone()).await?;
+        assert!(matches!(
+            swarm
+                .admit_message(parent, sibling, message, payload.clone())
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let timer = OperationId::from_bytes([0xDC; 16]);
+        swarm.admit_timer(child, timer, 10_000).await?;
+        swarm.cancel(child).await?;
+        swarm.admit_message(parent, child, message, payload).await?;
+        swarm.admit_timer(child, timer, 10_000).await?;
+        let records = load_records(&registry).await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::MessageAdmitted {
+                        sender,
+                        recipient,
+                        message_id,
+                        ..
+                    } if sender == parent && recipient == child && message_id == message
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::TimerAdmitted { task, operation, deadline }
+                        if task == child && operation == timer && deadline == 10_000
+                ))
+                .count(),
+            1
+        );
         Ok(())
     }
 

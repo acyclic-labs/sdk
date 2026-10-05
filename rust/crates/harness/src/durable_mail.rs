@@ -70,6 +70,35 @@ impl<P: StreamProvider> MailboxStore<P> {
         message_id: OperationId,
         payload: FileRef,
     ) -> Result<()> {
+        self.send_inner(host, sender_id, recipient_id, message_id, payload, false)
+            .await
+    }
+
+    /// Completes a message whose owner-journal admission won before a
+    /// lifecycle fence. The mailbox remains the only publication record;
+    /// this path only changes the lifecycle check, never authorization or
+    /// payload verification.
+    pub(crate) async fn send_admitted(
+        &self,
+        host: &dyn DurableTaskHost,
+        sender_id: TaskId,
+        recipient_id: TaskId,
+        message_id: OperationId,
+        payload: FileRef,
+    ) -> Result<()> {
+        self.send_inner(host, sender_id, recipient_id, message_id, payload, true)
+            .await
+    }
+
+    async fn send_inner(
+        &self,
+        host: &dyn DurableTaskHost,
+        sender_id: TaskId,
+        recipient_id: TaskId,
+        message_id: OperationId,
+        payload: FileRef,
+        admitted: bool,
+    ) -> Result<()> {
         payload.validate()?;
         let sender = host.communication_scope(sender_id).await?;
         if !sender.grants.contains("mail:send") {
@@ -80,6 +109,10 @@ impl<P: StreamProvider> MailboxStore<P> {
             return Err(Error::Unauthorized(
                 "message endpoints are not direct parent and child".into(),
             ));
+        }
+        if !admitted {
+            sender.require_new_mutation()?;
+            recipient.require_new_mutation()?;
         }
         recipient.limits.validate_file(&payload)?;
         if !read_granted(&recipient.grants, &payload)? {

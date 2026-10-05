@@ -50,6 +50,14 @@ impl SwarmCommunicationHost {
 }
 
 impl DurableTaskHost for SwarmCommunicationHost {
+    fn supports_admitted_message_recovery(&self) -> bool {
+        true
+    }
+
+    fn supports_admitted_timer_recovery(&self) -> bool {
+        true
+    }
+
     fn observe_admission<'a>(
         &'a self,
         task: TaskId,
@@ -251,30 +259,22 @@ impl DurableTaskHost for SwarmCommunicationHost {
             {
                 return Ok(());
             }
-            sender_scope.require_new_mutation()?;
-            recipient_scope.require_new_mutation()?;
             let recipient_harness = swarm.open_session(recipient).await?;
             let storage = recipient_harness.storage();
             let sender_harness = swarm.open_session(sender).await?;
+            // Validate sender read authority and content residency before the
+            // lifecycle CAS. An admission must never survive a malformed or
+            // inaccessible source payload.
             let bytes = sender_harness.storage().read(&payload).await?;
+            swarm
+                .admit_message(sender, recipient, message, payload.clone())
+                .await?;
+            // The endpoint operation remains the stable identity for the
+            // recipient-owned staged bytes. It is deliberately not a second
+            // journal: the mailbox record below is the sole durable
+            // publication effect, while staged content is unpublished until
+            // that record commits.
             let transfer = message_endpoint_operation(sender, recipient, message);
-            let transfers = self
-                .stream
-                .stream(format!("harness/v2/mail-transfers/{recipient}"))
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            let admitted = crate::contract::canonical_json_bytes(&json!({
-                "schema_version": 1, "sender": sender, "recipient": recipient,
-                "message": message, "payload": payload,
-            }))?;
-            publish_control_record(
-                &self.stream,
-                &transfers,
-                "mail-transfer",
-                recipient,
-                transfer,
-                &admitted,
-            )
-            .await?;
             let delivered = if payload.volume() == storage.volume() {
                 // A recipient-owned ref still requires explicit sender read
                 // authority, checked above. Identity knowledge is not a grant.
@@ -292,7 +292,7 @@ impl DurableTaskHost for SwarmCommunicationHost {
                     .await?
             };
             MailboxStore::new(self.stream.clone(), storage.content_verifier())
-                .send(self, sender, recipient, message, delivered)
+                .send_admitted(self, sender, recipient, message, delivered)
                 .await
         })
     }
@@ -319,9 +319,8 @@ impl DurableTaskHost for SwarmCommunicationHost {
         deadline: u64,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            self.communication_scope(task)
-                .await?
-                .require_new_mutation()?;
+            let swarm = self.swarm()?;
+            swarm.admit_timer(task, operation, deadline).await?;
             let timer = self
                 .stream
                 .stream(format!("harness/v2/swarm-timers/{task}"))
