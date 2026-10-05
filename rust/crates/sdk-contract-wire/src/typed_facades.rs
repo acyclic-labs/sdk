@@ -8,9 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
-    resolved_rpc_methods, PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection,
-    SEMANTIC_TYPES, SemanticRule, SemanticType, WireValueKind, semantic_type,
+    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, PUBLIC_FIELD_BINDINGS,
+    PublicFieldBinding, PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule,
+    SemanticType, WireValueKind, semantic_type,
 };
+use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
 
 pub const JAVA_PATH: &str = "jvm/src/main/java/dev/acyclic/transport/RustSemanticTypes.java";
 pub const KOTLIN_PATH: &str = "jvm/src/main/kotlin/dev/acyclic/transport/RustSemanticTypes.kt";
@@ -429,6 +431,325 @@ fn render_scala_responses() -> String {
 /// Semantic refinements above remain the ergonomic overloads; these DTOs make
 /// the complete Rust operation inventory available without a handwritten RPC
 /// table or a raw protobuf return type.
+fn descriptor_fields(method: &crate::type_policy::ResolvedRpcMethod, request: bool) -> Vec<ResolvedRequestField> {
+    let fields = if request {
+        resolved_request_fields().expect("Rust request fields must resolve before JVM generation")
+    } else {
+        resolved_response_fields().expect("Rust response fields must resolve before JVM generation")
+    };
+    fields
+        .into_iter()
+        .filter(|field| field.family == method.family && field.rpc == method.rpc)
+        .collect()
+}
+
+fn descriptor_field_chain(fields: &[ResolvedRequestField], target: &ResolvedRequestField) -> Option<Vec<ResolvedRequestField>> {
+    let mut current = target.message_path.clone();
+    let mut chain = Vec::new();
+    while current != target.root_message {
+        let parent = fields.iter().find(|field| {
+            field.message_path != current
+                && field.type_name.as_deref().map(|name| name.trim_start_matches('.')) == Some(current.as_str())
+        })?;
+        if parent.label == Some(FieldLabel::Repeated as i32) {
+            return None;
+        }
+        chain.push(parent.clone());
+        current = parent.message_path.clone();
+    }
+    chain.reverse();
+    Some(chain)
+}
+
+fn descriptor_projected_fields(method: &crate::type_policy::ResolvedRpcMethod, request: bool) -> Vec<(ResolvedRequestField, Vec<ResolvedRequestField>)> {
+    let fields = descriptor_fields(method, request);
+    fields
+        .iter()
+        .filter_map(|field| {
+            if field.message_path == field.root_message || field.semantic_type.is_some() {
+                descriptor_field_chain(&fields, field).map(|chain| (field.clone(), chain))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn descriptor_field_suffix(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
+    let mut suffix = String::new();
+    for parent in chain {
+        suffix.push_str(&upper_camel(&parent.field));
+    }
+    suffix.push_str(&upper_camel(&field.field));
+    suffix
+}
+
+fn descriptor_semantic_type(field: &ResolvedRequestField) -> Option<&'static SemanticType> {
+    let semantic = field.semantic_type.as_deref().and_then(semantic_type)?;
+    let wire = field.wire_type.and_then(|kind| FieldType::try_from(kind).ok());
+    let applies = match semantic.wire_kind {
+        WireValueKind::Message => matches!(wire, Some(FieldType::Message | FieldType::Group)),
+        WireValueKind::String => matches!(wire, Some(FieldType::String)),
+        WireValueKind::Bytes => matches!(wire, Some(FieldType::Bytes))
+            || (matches!(wire, Some(FieldType::Message | FieldType::Group))
+                && matches!(semantic.rust_name, "MachineId" | "CheckpointId" | "OperationId")),
+        WireValueKind::Boolean => matches!(wire, Some(FieldType::Bool)),
+        WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => matches!(
+            wire,
+            Some(
+                FieldType::Int32
+                    | FieldType::Sint32
+                    | FieldType::Sfixed32
+                    | FieldType::Uint32
+                    | FieldType::Fixed32
+                    | FieldType::Int64
+                    | FieldType::Sint64
+                    | FieldType::Sfixed64
+                    | FieldType::Uint64
+                    | FieldType::Fixed64
+            )
+        ),
+        WireValueKind::Enum => matches!(wire, Some(FieldType::Enum)),
+        WireValueKind::Timestamp => matches!(wire, Some(FieldType::Message | FieldType::Group)),
+        WireValueKind::Oneof => field.oneof_index.is_some(),
+    };
+    applies.then_some(semantic)
+}
+
+fn descriptor_field_type(family: &str, field: &ResolvedRequestField, language: &str) -> String {
+    let semantic = descriptor_semantic_type(field);
+    let repeated = field.label == Some(FieldLabel::Repeated as i32);
+    let base = if let Some(semantic) = semantic {
+        match language {
+            "java" => format!("RustSemanticTypes.{}", semantic.rust_name),
+            "kotlin" => format!("RustSemanticTypesKotlin.{}", semantic.rust_name),
+            "scala" => format!("RustSemanticTypesScala.{}", semantic.rust_name),
+            _ => unreachable!(),
+        }
+    } else {
+        match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+            Some(FieldType::String) => "String".to_owned(),
+            Some(FieldType::Bytes) => "com.google.protobuf.ByteString".to_owned(),
+            Some(FieldType::Bool) => match language { "scala" => "Boolean", _ => "boolean" }.to_owned(),
+            Some(FieldType::Double) => "double".to_owned(),
+            Some(FieldType::Float) => "float".to_owned(),
+            Some(FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 | FieldType::Uint32 | FieldType::Fixed32 | FieldType::Enum) => match language { "scala" => "Int", _ => "int" }.to_owned(),
+            Some(FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 | FieldType::Uint64 | FieldType::Fixed64) => match language { "scala" => "Long", _ => "long" }.to_owned(),
+            Some(FieldType::Message | FieldType::Group) => {
+                let type_name = field.type_name.as_deref().unwrap_or("com.google.protobuf.Message").trim_start_matches('.');
+                if type_name.starts_with("google.protobuf.") {
+                    format!("com.google.protobuf.{}", type_name.rsplit('.').next().unwrap_or("Message"))
+                } else {
+                    descriptor_message_type(family, type_name)
+                }
+            }
+            _ => "com.google.protobuf.Message".to_owned(),
+        }
+    };
+    if repeated {
+        let boxed = if language == "java" {
+            match base.as_str() {
+                "int" => "Integer".to_owned(),
+                "long" => "Long".to_owned(),
+                "boolean" => "Boolean".to_owned(),
+                "float" => "Float".to_owned(),
+                "double" => "Double".to_owned(),
+                other => other.to_owned(),
+            }
+        } else {
+            base.clone()
+        };
+        match language {
+            "java" => format!("java.util.List<{boxed}>") ,
+            "kotlin" => format!("kotlin.collections.List<{boxed}>") ,
+            "scala" => format!("java.util.List[{boxed}]") ,
+            _ => unreachable!(),
+        }
+    } else {
+        base
+    }
+}
+
+fn descriptor_field_expression(field: &ResolvedRequestField, chain: &[ResolvedRequestField], receiver: &str) -> String {
+    let mut expression = receiver.to_owned();
+    for parent in chain {
+        expression.push_str(".get");
+        expression.push_str(&upper_camel(&parent.field));
+        expression.push_str("()");
+    }
+    expression.push_str(".get");
+    expression.push_str(&upper_camel(&field.field));
+    if field.label == Some(FieldLabel::Repeated as i32) {
+        expression.push_str("List");
+    } else if field.wire_type == Some(FieldType::Enum as i32) {
+        expression.push_str("Value");
+    }
+    expression.push_str("()");
+    if field.semantic_type.is_some()
+        && field.wire_type == Some(FieldType::Message as i32)
+        && field.label != Some(FieldLabel::Repeated as i32)
+    {
+        expression.push_str(".getValue()");
+    }
+    expression
+}
+
+fn descriptor_field_has_expression(field: &ResolvedRequestField, receiver: &str) -> Option<String> {
+    if field.label == Some(FieldLabel::Repeated as i32) {
+        return None;
+    }
+    if field.oneof_index.is_some() || field.proto3_optional || matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) {
+        Some(format!("{receiver}.has{}()", upper_camel(&field.field)))
+    } else {
+        None
+    }
+}
+
+fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
+    let expression = descriptor_field_expression(field, chain, "value");
+    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none() {
+        expression
+    } else {
+        format!("RustSemanticTypes.{}.of({expression})", descriptor_semantic_type(field).unwrap().rust_name)
+    }
+}
+
+fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
+    let expression = descriptor_field_expression(field, chain, "value");
+    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none() {
+        expression
+    } else {
+        format!("RustSemanticTypesKotlin.{}.of({expression})", descriptor_semantic_type(field).unwrap().rust_name)
+    }
+}
+
+fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
+    let expression = descriptor_field_expression(field, chain, "value");
+    if field.label == Some(FieldLabel::Repeated as i32) || descriptor_semantic_type(field).is_none() {
+        expression
+    } else {
+        format!("RustSemanticTypesScala.{}.from({expression}).toOption.get", descriptor_semantic_type(field).unwrap().rust_name)
+    }
+}
+
+fn render_java_descriptor_projection(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+    for (field, chain) in descriptor_projected_fields(method, request) {
+        let suffix = descriptor_field_suffix(&field, &chain);
+        let method_name = suffix[..1].to_lowercase() + &suffix[1..];
+        let ty = descriptor_field_type(&method.family, &field, "java");
+        out.push_str(" public ");
+        out.push_str(&ty);
+        out.push(' ');
+        out.push_str(&method_name);
+        out.push_str("() { return ");
+        out.push_str(&descriptor_java_value(&field, &chain));
+        out.push_str("; }");
+        if chain.is_empty() {
+            if let Some(has) = descriptor_field_has_expression(&field, "value") {
+                out.push_str(" public boolean has");
+                out.push_str(&suffix);
+                out.push_str("() { return ");
+                out.push_str(&has);
+                out.push_str("; }");
+            }
+        }
+    }
+}
+
+fn render_kotlin_descriptor_projection(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+    for (field, chain) in descriptor_projected_fields(method, request) {
+        let suffix = descriptor_field_suffix(&field, &chain);
+        let method_name = suffix[..1].to_lowercase() + &suffix[1..];
+        out.push_str(" fun ");
+        out.push_str(&method_name);
+        out.push_str("(): ");
+        out.push_str(&descriptor_field_type(&method.family, &field, "kotlin"));
+        out.push_str(" = ");
+        out.push_str(&descriptor_kotlin_value(&field, &chain));
+        out.push(';');
+        if chain.is_empty() {
+            if let Some(has) = descriptor_field_has_expression(&field, "value") {
+                out.push_str(" fun has");
+                out.push_str(&suffix);
+                out.push_str("(): Boolean = ");
+                out.push_str(&has);
+                out.push(';');
+            }
+        }
+    }
+}
+
+fn render_scala_descriptor_projection(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+    for (field, chain) in descriptor_projected_fields(method, request) {
+        let suffix = descriptor_field_suffix(&field, &chain);
+        let method_name = suffix[..1].to_lowercase() + &suffix[1..];
+        out.push_str(" def ");
+        out.push_str(&method_name);
+        out.push_str(": ");
+        out.push_str(&descriptor_field_type(&method.family, &field, "scala"));
+        out.push_str(" = ");
+        out.push_str(&descriptor_scala_value(&field, &chain));
+        out.push(';');
+        if chain.is_empty() {
+            if let Some(has) = descriptor_field_has_expression(&field, "value") {
+                out.push_str(" def has");
+                out.push_str(&suffix);
+                out.push_str(": Boolean = ");
+                out.push_str(&has);
+                out.push(';');
+            }
+        }
+    }
+}
+
+fn render_java_descriptor_validation(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+    for (field, chain) in descriptor_projected_fields(method, request) {
+        if !chain.is_empty() || descriptor_semantic_type(&field).is_none() || field.label == Some(FieldLabel::Repeated as i32) {
+            continue;
+        }
+        let value = descriptor_java_value(&field, &chain);
+        if let Some(has) = descriptor_field_has_expression(&field, "value") {
+            out.push_str("if (");
+            out.push_str(&has);
+            out.push_str(") ");
+        }
+        out.push_str(" ");
+        out.push_str(&value);
+        out.push_str(";");
+    }
+}
+
+fn render_kotlin_descriptor_validation(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+    for (field, chain) in descriptor_projected_fields(method, request) {
+        if !chain.is_empty() || descriptor_semantic_type(&field).is_none() || field.label == Some(FieldLabel::Repeated as i32) {
+            continue;
+        }
+        let value = descriptor_kotlin_value(&field, &chain);
+        if let Some(has) = descriptor_field_has_expression(&field, "value") {
+            out.push_str("if (");
+            out.push_str(&has);
+            out.push_str(") ");
+        }
+        out.push_str(value.as_str());
+        out.push(';');
+    }
+}
+
+fn render_scala_descriptor_validation(out: &mut String, method: &crate::type_policy::ResolvedRpcMethod, request: bool) {
+    for (field, chain) in descriptor_projected_fields(method, request) {
+        if !chain.is_empty() || descriptor_semantic_type(&field).is_none() || field.label == Some(FieldLabel::Repeated as i32) {
+            continue;
+        }
+        let value = descriptor_scala_value(&field, &chain);
+        if let Some(has) = descriptor_field_has_expression(&field, "value") {
+            out.push_str("if (");
+            out.push_str(&has);
+            out.push_str(") ");
+        }
+        out.push_str(value.as_str());
+        out.push(';');
+    }
+}
 fn render_java_descriptor_responses(out: &mut String) {
     let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
@@ -442,11 +763,15 @@ fn render_java_descriptor_responses(out: &mut String) {
         out.push_str(&name);
         out.push_str(" fromWire(");
         out.push_str(&wire);
-        out.push_str(" value) { return new ");
+        out.push_str(" value) { ");
+        render_java_descriptor_validation(out, &method, false);
+        out.push_str(" return new ");
         out.push_str(&name);
         out.push_str("(java.util.Objects.requireNonNull(value)); } public ");
         out.push_str(&wire);
-        out.push_str(" toWire() { return value; } }\n\n");
+        out.push_str(" toWire() { return value; }");
+        render_java_descriptor_projection(out, &method, false);
+        out.push_str(" }\n\n");
     }
 }
 
@@ -461,13 +786,16 @@ fn render_kotlin_descriptor_responses(out: &mut String) {
         out.push_str(&wire);
         out.push_str(") { fun toWire(): ");
         out.push_str(&wire);
-        out.push_str(" = value; companion object { fun fromWire(value: ");
+        out.push_str(" = value;");
+        render_kotlin_descriptor_projection(out, &method, false);
+        out.push_str(" companion object { fun fromWire(value: ");
         out.push_str(&wire);
         out.push_str("): ");
         out.push_str(&name);
-        out.push_str(" = ");
+        out.push_str(" = run { ");
+        render_kotlin_descriptor_validation(out, &method, false);
         out.push_str(&name);
-        out.push_str("(value) } }\n\n");
+        out.push_str("(value) } } }\n\n");
     }
 }
 
@@ -482,16 +810,19 @@ fn render_scala_descriptor_responses(out: &mut String) {
         out.push_str(&wire);
         out.push_str(") { def toWire: ");
         out.push_str(&wire);
-        out.push_str(" = value }\n");
+        out.push_str(" = value;");
+        render_scala_descriptor_projection(out, &method, false);
+        out.push_str(" }\n");
         out.push_str("  object ");
         out.push_str(&name);
         out.push_str(" { def fromWire(value: ");
         out.push_str(&wire);
         out.push_str("): ");
         out.push_str(&name);
-        out.push_str(" = ");
+        out.push_str(" = { ");
+        render_scala_descriptor_validation(out, &method, false);
         out.push_str(&name);
-        out.push_str("(value) }\n\n");
+        out.push_str("(value) } }\n\n");
     }
 }
 
@@ -1119,11 +1450,15 @@ fn render_java_descriptor_requests(out: &mut String) {
         out.push_str(&name);
         out.push_str(" fromWire(");
         out.push_str(&wire);
-        out.push_str(" value) { return new ");
+        out.push_str(" value) { ");
+        render_java_descriptor_validation(out, &method, true);
+        out.push_str(" return new ");
         out.push_str(&name);
         out.push_str("(java.util.Objects.requireNonNull(value)); } public ");
         out.push_str(&wire);
-        out.push_str(" toWire() { return value; } }\n\n");
+        out.push_str(" toWire() { return value; }");
+        render_java_descriptor_projection(out, &method, true);
+        out.push_str(" }\n\n");
     }
 }
 
@@ -1138,13 +1473,16 @@ fn render_kotlin_descriptor_requests(out: &mut String) {
         out.push_str(&wire);
         out.push_str(") { fun toWire(): ");
         out.push_str(&wire);
-        out.push_str(" = value; companion object { fun fromWire(value: ");
+        out.push_str(" = value;");
+        render_kotlin_descriptor_projection(out, &method, true);
+        out.push_str(" companion object { fun fromWire(value: ");
         out.push_str(&wire);
         out.push_str("): ");
         out.push_str(&name);
-        out.push_str(" = ");
+        out.push_str(" = run { ");
+        render_kotlin_descriptor_validation(out, &method, true);
         out.push_str(&name);
-        out.push_str("(value) } }\n\n");
+        out.push_str("(value) } } }\n\n");
     }
 }
 
@@ -1159,16 +1497,19 @@ fn render_scala_descriptor_requests(out: &mut String) {
         out.push_str(&wire);
         out.push_str(") { def toWire: ");
         out.push_str(&wire);
-        out.push_str(" = value }\n");
+        out.push_str(" = value;");
+        render_scala_descriptor_projection(out, &method, true);
+        out.push_str(" }\n");
         out.push_str("  object ");
         out.push_str(&name);
         out.push_str(" { def fromWire(value: ");
         out.push_str(&wire);
         out.push_str("): ");
         out.push_str(&name);
-        out.push_str(" = ");
+        out.push_str(" = { ");
+        render_scala_descriptor_validation(out, &method, true);
         out.push_str(&name);
-        out.push_str("(value) }\n\n");
+        out.push_str("(value) } }\n\n");
     }
 }
 
