@@ -56,7 +56,7 @@ where
         request: &mut crate::fork::ForkRequest,
     ) -> Result<()> {
         request.validate()?;
-        let parent = verified.parent.reducer();
+        let parent = verified.parent().reducer();
         if request.parent != *parent.authority()
             || request.parent != *self.issuer.verifier().audience()
             || request.parent_revision != parent.revision()
