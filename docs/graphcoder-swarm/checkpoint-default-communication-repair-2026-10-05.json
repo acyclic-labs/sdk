@@ -1,0 +1,38 @@
+{
+  "platform": "Windows native",
+  "scope": "Default composition message and wait delivery, immutable payload bytes and cold inbox/wait replay pass. Complete recursive suite fails and is not qualified. No executable retained for this failed checkpoint; newer build is in progress.",
+  "repair": "Reopen published children through existing authenticated fork storage, and reuse inherited bundle construction for later child turns. Explicit fixture response selection and a separate preparation watchdog are being verified at a later source.",
+  "exit_code": 101,
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\05f67679c\\default-communication-repair\\default-mail-composition-focused.log",
+      "sha256": "3a637ae994a71820ccb0b0d331ef304ba5fa948032ae219d09d2fcd3d7acfbe8"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\05f67679c\\default-communication-repair\\default-mail-composition-reopen-repair.log",
+      "sha256": "bf51a78c43fa1847fcff189c35bf16f344af30377a3235e99b875be5d2041aab"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\05f67679c\\default-communication-repair\\default-mail-composition-prefix-repair.log",
+      "sha256": "dda379903e7e48b11128675e363111a6a3ff10caef60c25cba7b81e8d626fbe6"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\05f67679c\\default-communication-repair\\source.zip",
+      "sha256": "642118d01686c1b818b9f71703edb73f490b7f810e3338ff51c68bbd88727cc0"
+    }
+  ],
+  "source": "05f67679c6d1cbef8c5456eccb284b6c4b7c632f",
+  "command": "cargo test -p acyclic-harness --features filesystem-local --test local_model_swarm -- --nocapture --test-threads=1",
+  "failures": [
+    "Cleanup fixture startup watchdog expires before child provider dispatch; shutdown safety is not exercised by the failed case.",
+    "Forbidden-fork fixture searches text while new user prompt is delivered as an immutable file reference; fixture never emits its forbidden call. Completed-session operation fencing returns an unrelated conflict."
+  ],
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "suites": {
+    "recursive": {
+      "failed": 2,
+      "passed": 2,
+      "ignored": 0
+    }
+  }
+}
