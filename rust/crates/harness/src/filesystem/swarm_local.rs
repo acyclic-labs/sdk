@@ -4456,19 +4456,6 @@ impl PersistentLocalSwarm {
         })
     }
 
-    /// Compatibility entry point that deliberately requires the interaction
-    /// ticket to carry its exact path set; callers must use the path-bound form
-    /// to perform a native restore.
-    pub async fn issue_host_approved_root_task_writeback(
-        &self,
-        task: TaskId,
-        interaction: InteractionId,
-    ) -> Result<LocalApprovedRootWriteback> {
-        Err(Error::Invalid(format!(
-            "root-task native writeback requires explicit approved paths for task {task} interaction {interaction}"
-        )))
-    }
-
     /// Returns the stable root task without opening any child session.
     pub async fn root_task(&self) -> Result<TaskId> {
         self.records

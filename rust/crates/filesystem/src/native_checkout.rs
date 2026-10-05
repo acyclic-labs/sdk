@@ -259,28 +259,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
                     });
                 }
             }
-            return self
-                .restore_paths(
-                    generation,
-                    &actual,
-                    paths,
-                    replacement,
-                    options,
-                    budget,
-                    cancellation,
-                )
-                .await;
         }
-        self.restore_paths(
-            generation,
-            expected,
-            paths,
-            replacement,
-            options,
-            budget,
-            cancellation,
-        )
-        .await
+        let restored = self
+            .restore_paths(
+                generation,
+                &actual,
+                paths,
+                replacement,
+                options,
+                budget,
+                cancellation,
+            )
+            .await?;
+        // A successful host mutation is not complete until the source has
+        // durably observed its post-mutation state. Use a deterministic
+        // follow-up identity so a lost acknowledgement can be reconciled
+        // without replaying the publication itself.
+        self.revalidate_with_key(post_reconciliation_key(reconciliation_key))
+            .await?;
+        Ok(restored)
     }
 
     async fn path_state(
@@ -303,6 +300,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         };
         Ok(Some((stat, bytes)))
     }
+}
+
+fn post_reconciliation_key(key: IdempotencyKey) -> IdempotencyKey {
+    let mut input = Vec::with_capacity(64);
+    input.extend_from_slice(b"acyclic.native-checkout.post-reconcile.v1\0");
+    input.extend_from_slice(&key.into_bytes());
+    let digest = blake3::hash(&input);
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    IdempotencyKey::from_bytes(bytes)
 }
 
 #[cfg(test)]

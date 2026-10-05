@@ -1845,17 +1845,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<HostCheckout<A, O>> {
         let name = name.as_ref().to_owned();
         let path = path.as_ref().to_owned();
-        match HostCheckout::attach(&self.filesystem, &name, &path, options).await {
-            Ok(checkout) => Ok(checkout),
-            Err(attach_error) => {
-                let workspace = self
-                    .open(&workspace_ref(self.provider.clone(), &name)?)
+        let reference = workspace_ref(self.provider.clone(), &name)?;
+        // Reopen only an existing provider workspace that explicitly resolves
+        // to this host path. Other open failures must remain visible; treating
+        // arbitrary attach errors as "already attached" can silently bind a
+        // stale, corrupt, or unauthorized checkout.
+        match self.open(&reference).await {
+            Ok(workspace) => {
+                let checkout = HostCheckout::from_workspace(workspace)
                     .await
-                    .map_err(|_| Error::Storage(attach_error.to_string()))?;
-                HostCheckout::from_workspace(workspace)
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                let binding = checkout.binding().await;
+                if binding.source_root != path {
+                    return Err(Error::Conflict(
+                        "native checkout name is bound to another host path".into(),
+                    ));
+                }
+                Ok(checkout)
             }
+            Err(Error::NotFound(_)) => HostCheckout::attach(
+                &self.filesystem,
+                &name,
+                &path,
+                options,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string())),
+            Err(error) => Err(error),
         }
     }
 
