@@ -1511,6 +1511,16 @@ impl PersistentLocalHarness {
         prompt: &str,
         max_steps: u32,
     ) -> Result<TurnOutput> {
+        self.run_with_bundle(&self.bundle, operation, prompt, max_steps).await
+    }
+
+    pub(crate) async fn run_with_bundle(
+        &self,
+        bundle: &crate::Harness,
+        operation: OperationId,
+        prompt: &str,
+        max_steps: u32,
+    ) -> Result<TurnOutput> {
         let content = self
             .storage
             .stage(
@@ -1522,7 +1532,7 @@ impl PersistentLocalHarness {
             )
             .await?;
         self.storage
-            .run_conversation(&self.bundle, operation, content, vec![], max_steps)
+            .run_conversation(bundle, operation, content, vec![], max_steps)
             .await
     }
     /// Provider-bound storage for tools and recovery.

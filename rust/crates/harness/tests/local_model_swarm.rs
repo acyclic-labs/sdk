@@ -277,8 +277,7 @@ impl ModelProvider for DeterministicProvider {
         let is_child_a = declared_task == Some("child-a");
         let is_child_b = declared_task == Some("child-b");
         let is_grandchild = declared_task == Some("grandchild");
-        let sibling_fork_attempt = is_child_a
-            && message_contains(&request, "attempt sibling fork")
+        let sibling_fork_attempt = message_contains(&request, "attempt sibling fork")
             && !self.sibling_fork_sent.load(Ordering::SeqCst);
         let root = !is_child_a && !is_child_b && !is_grandchild;
         if is_grandchild && has_read_result(&request) {
@@ -586,7 +585,7 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         .run(child_a_task, id(0xA2), "attempt sibling fork")
         .await;
     assert!(sibling_error.is_err());
-    assert!(provider.sibling_fork_sent.load(Ordering::SeqCst));
+    assert!(provider.sibling_fork_sent.load(Ordering::SeqCst), "sibling attempt failed before model dispatch: {sibling_error:?}");
 
     let dispatches_before_restart = provider.dispatches.load(Ordering::SeqCst);
     let requests_before_restart = provider.serialized_requests();
@@ -754,6 +753,9 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
     })
     .await;
     if started.is_err() {
+        if running.is_finished() {
+            panic!("root ended before child dispatch: {:?}", running.await);
+        }
         // A failed fixture must not detach its owning swarm task. Preserve
         // dispatch counters in the failure instead of leaking the run.
         running.abort();
@@ -803,7 +805,8 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
     let root = swarm.root_task().await?;
     let child_a = acyclic_harness::TaskId::from_bytes(id(0xF1).into_bytes());
     let child_b = acyclic_harness::TaskId::from_bytes(id(0xF2).into_bytes());
-    let inbox = swarm.read_inbox(child_a, 0, 8).await?;
+    let inbox = swarm.read_inbox(child_a, 0, 8).await
+        .map_err(|error| Error::Storage(format!("live child inbox: {error}")))?;
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].sender, root);
     assert_eq!(swarm.read_file(child_a, inbox[0].payload.path(), None).await?.1, ROOT_FILE.as_bytes());
@@ -851,7 +854,8 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
         directory.path(), model, provider.clone(), limits,
     ).await?;
     provider.bind_swarm(&reopened);
-    assert_eq!(reopened.read_inbox(child_a, 0, 8).await?, inbox);
+    assert_eq!(reopened.read_inbox(child_a, 0, 8).await
+        .map_err(|error| Error::Storage(format!("reopened child inbox: {error}")))?, inbox);
     assert_eq!(reopened.read_inbox(root, 0, 8).await?, root_inbox);
     assert_eq!(reopened.wait(wait).await?, completion);
     assert_eq!(reopened.read_file(root, root_inbox[0].payload.path(), None).await?.1,

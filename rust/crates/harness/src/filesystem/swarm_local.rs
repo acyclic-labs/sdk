@@ -3410,9 +3410,13 @@ impl PersistentLocalSwarm {
         )
         .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task });
-        let output = harness
-            .run_with_max_steps(operation, prompt, max_steps)
-            .await?;
+        let declaration = self.declarations.lock().await.get(&task).cloned();
+        let output = if let Some(declaration) = declaration {
+            let bundle = self.inherited_task_bundle(task, &harness, &declaration)?;
+            harness.run_with_bundle(&bundle, operation, prompt, max_steps).await?
+        } else {
+            harness.run_with_max_steps(operation, prompt, max_steps).await?
+        };
         // The per-task mutex only fences handles in this process.  A second
         // process can cancel the task while the model is running, so the
         // registry must be refreshed before the terminal Session event is
@@ -4230,21 +4234,8 @@ impl PersistentLocalSwarm {
                 )),
             }]
         });
-        let bundle = match harness
-            .storage()
-            .inherited_builder(boundary, suffix, self.provider.clone(), self.config.limits)
-            .and_then(|builder| {
-                let builder = builder
-                    .tools(harness.storage().default_tools(self.config.limits)?)
-                    .grant("tool:call:acyclic.read_file")
-                    .grant("tool:call:acyclic.stage_file")
-                    .grant("tool:call:acyclic.list_files")
-                    .limits(self.config.limits);
-                self.bindings
-                    .tools_for(child)?
-                    .install_into(builder)?
-                    .build()
-            }) {
+        let declaration = LocalInheritedModelDeclaration { boundary, suffix };
+        let bundle = match self.inherited_task_bundle(child, &harness, &declaration) {
             Ok(bundle) => bundle,
             Err(error) => {
                 self.mark_activation_failed_if_safe(
@@ -4499,20 +4490,26 @@ impl PersistentLocalSwarm {
         request: LocalForkRequest,
         max_steps: u32,
     ) -> Result<TurnOutput> {
-        let content = harness
-            .storage()
-            .stage(
-                request.child_operation,
-                &format!("turns/{}/user.txt", request.child_operation),
-                request.prompt.as_bytes(),
-                "text/plain",
-                "prompt.txt",
-            )
-            .await?;
         harness
-            .storage()
-            .run_conversation(&bundle, request.child_operation, content, vec![], max_steps)
+            .run_with_bundle(&bundle, request.child_operation, &request.prompt, max_steps)
             .await
+    }
+
+    fn inherited_task_bundle(
+        &self,
+        task: TaskId,
+        harness: &PersistentLocalHarness,
+        declaration: &LocalInheritedModelDeclaration,
+    ) -> Result<crate::Harness> {
+        let builder = harness.storage()
+            .inherited_builder(declaration.boundary.clone(), declaration.suffix.clone(),
+                self.provider.clone(), self.config.limits)?
+            .tools(harness.storage().default_tools(self.config.limits)?)
+            .grant("tool:call:acyclic.read_file")
+            .grant("tool:call:acyclic.stage_file")
+            .grant("tool:call:acyclic.list_files")
+            .limits(self.config.limits);
+        self.bindings.tools_for(task)?.install_into(builder)?.build()
     }
 
     /// Rechecks the owner-retained admission immediately before model
@@ -4633,6 +4630,36 @@ impl PersistentLocalSwarm {
         }
         if let Some(existing) = self.sessions.lock().await.get(&task).cloned() {
             return Ok(existing);
+        }
+        let published_seed = self.seeds.lock().await.get(&task).cloned();
+        if let Some(seed) = published_seed {
+            let session = self.session(task).await?;
+            let parent = session.parent.ok_or_else(|| {
+                Error::Conflict("published child has no parent session".into())
+            })?;
+            let resolver = self.bindings.filesystem_fork_resolver.as_ref().ok_or_else(|| {
+                Error::Unsupported("reopening a published child requires its filesystem resolver".into())
+            })?;
+            let secret = resolver.issuer_secret.ok_or_else(|| {
+                Error::Unauthorized("local fork resolver has no durable host secret".into())
+            })?;
+            let operation = session.operation.ok_or_else(|| {
+                Error::Conflict("published child has no operation identity".into())
+            })?;
+            let parent_harness = Box::pin(self.open_session(parent)).await?;
+            let parent_aggregate = parent_harness.conversation_aggregate(self.config.limits).await?;
+            let harness = Arc::new(
+                PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
+                    self.config.model.clone(), self.provider.clone(), self.config.limits,
+                    resolver.host.clone(), resolver.stream.clone(),
+                    LocalFilesystemForkResolver::child_issuer(&seed.child, operation, secret),
+                    &parent_aggregate, &seed, self.bindings.tools_for(task)?,
+                    self.stream_provider.clone(),
+                ).await?,
+            );
+            self.sessions.lock().await.insert(task, harness.clone());
+            self.observe(LocalSwarmObservation::HarnessOpened { task });
+            return Ok(harness);
         }
         let harness = Arc::new(
             PersistentLocalHarness::open_with_tools_and_project_on_providers(
