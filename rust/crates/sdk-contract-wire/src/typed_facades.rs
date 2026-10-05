@@ -166,6 +166,11 @@ fn request_method_name(module: &str, message: &str) -> String {
 }
 
 fn descriptor_message_type(family: &str, message: &str) -> String {
+    let message = message.trim_start_matches('.');
+    if message.starts_with("google.protobuf.") {
+        let leaf = message.rsplit('.').next().unwrap_or(message);
+        return format!("com.google.protobuf.{leaf}");
+    }
     let outer = if message.starts_with("acyclic.protocol.v1.") {
         java_proto_container("protocol")
     } else if message.starts_with("acyclic.transport.v1.") {
@@ -770,14 +775,16 @@ fn descriptor_field_type(_family: &str, field: &ResolvedRequestField, language: 
                 _ => "long",
             }
             .to_owned(),
-            Some(FieldType::Message | FieldType::Group) => {
-                match language {
+            Some(FieldType::Message | FieldType::Group) => field
+                .type_name
+                .as_deref()
+                .map(|message| descriptor_message_type(&field.family, message))
+                .unwrap_or_else(|| match language {
                     "java" => "RustSemanticTypes.WireMessage".to_owned(),
                     "kotlin" => "RustSemanticTypesKotlin.WireMessage".to_owned(),
                     "scala" => "RustSemanticTypesScala.WireMessage".to_owned(),
                     _ => unreachable!(),
-                }
-            }
+                }),
             _ => "com.google.protobuf.Message".to_owned(),
         }
     };
@@ -872,7 +879,7 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
         {
             Some(FieldType::Bytes) => format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> RustSemanticTypes.WireBytes.of(e.getValue())))"),
             Some(FieldType::Enum) => format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> RustSemanticTypes.WireEnum.of(e.getValue())))"),
-            Some(FieldType::Message | FieldType::Group) => format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> RustSemanticTypes.WireMessage.of(e.getValue())))"),
+            Some(FieldType::Message | FieldType::Group) => expression,
             _ => expression,
         }
     } else if field.label == Some(FieldLabel::Repeated as i32) {
@@ -881,7 +888,7 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.stream().map(RustSemanticTypes.WireEnum::of).collect(java.util.stream.Collectors.toList())")
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
-            format!("{expression}.stream().map(RustSemanticTypes.WireMessage::of).collect(java.util.stream.Collectors.toList())")
+            expression
         } else {
             expression
         }
@@ -891,7 +898,7 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypes.WireBytes.of({expression})"),
             Some(FieldType::Enum) => format!("RustSemanticTypes.WireEnum.of({expression})"),
-            Some(FieldType::Message | FieldType::Group) => format!("RustSemanticTypes.WireMessage.of({expression})"),
+            Some(FieldType::Message | FieldType::Group) => expression,
             _ => expression,
         }
     }
@@ -919,7 +926,7 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
         {
             Some(FieldType::Bytes) => format!("{expression}.mapValues {{ (_, value) -> RustSemanticTypesKotlin.WireBytes.of(value) }}"),
             Some(FieldType::Enum) => format!("{expression}.mapValues {{ (_, value) -> RustSemanticTypesKotlin.WireEnum.of(value) }}"),
-            Some(FieldType::Message | FieldType::Group) => format!("{expression}.mapValues {{ (_, value) -> RustSemanticTypesKotlin.WireMessage.of(value) }}"),
+            Some(FieldType::Message | FieldType::Group) => expression,
             _ => expression,
         }
     } else if field.label == Some(FieldLabel::Repeated as i32) {
@@ -928,7 +935,7 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.map {{ RustSemanticTypesKotlin.WireEnum.of(it) }}")
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
-            format!("{expression}.map {{ RustSemanticTypesKotlin.WireMessage.of(it) }}")
+            expression
         } else {
             expression
         }
@@ -938,7 +945,7 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypesKotlin.WireBytes.of({expression})"),
             Some(FieldType::Enum) => format!("RustSemanticTypesKotlin.WireEnum.of({expression})"),
-            Some(FieldType::Message | FieldType::Group) => format!("RustSemanticTypesKotlin.WireMessage.of({expression})"),
+            Some(FieldType::Message | FieldType::Group) => expression,
             _ => expression,
         }
     }
@@ -952,7 +959,7 @@ fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequest
         {
             Some(FieldType::Bytes) => format!("{expression}.asScala.map {{ case (key, value) => (key, RustSemanticTypesScala.WireBytes.from(value).toOption.get) }}.asJava"),
             Some(FieldType::Enum) => format!("{expression}.asScala.map {{ case (key, value) => (key, RustSemanticTypesScala.WireEnum.from(value).toOption.get) }}.asJava"),
-            Some(FieldType::Message | FieldType::Group) => format!("{expression}.asScala.map {{ case (key, value) => (key, RustSemanticTypesScala.WireMessage.from(value).toOption.get) }}.asJava"),
+            Some(FieldType::Message | FieldType::Group) => expression,
             _ => expression,
         }
     } else if field.label == Some(FieldLabel::Repeated as i32) {
@@ -961,7 +968,7 @@ fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequest
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.asScala.map(RustSemanticTypesScala.WireEnum.from(_).toOption.get).asJava")
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
-            format!("{expression}.asScala.map(RustSemanticTypesScala.WireMessage.from(_).toOption.get).asJava")
+            expression
         } else {
             expression
         }
@@ -971,7 +978,7 @@ fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequest
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypesScala.WireBytes.from({expression}).toOption.get"),
             Some(FieldType::Enum) => format!("RustSemanticTypesScala.WireEnum.from({expression}).toOption.get"),
-            Some(FieldType::Message | FieldType::Group) => format!("RustSemanticTypesScala.WireMessage.from({expression}).toOption.get"),
+            Some(FieldType::Message | FieldType::Group) => expression,
             _ => expression,
         }
     }
