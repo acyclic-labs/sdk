@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { generationInvocation } from "./rust-sdk-generation.mjs";
 
 const options = {
@@ -50,10 +51,28 @@ test("missing path values fail before a compiler or generator starts", () => {
   }
 });
 
+test("explicit output cannot reintroduce generated files into the frozen source", () => {
+  assert.throws(
+    () => generationInvocation("generate", ["--source-root", "/frozen/sdk", "--output", "/frozen/sdk/target/sdk-generation"], options),
+    /generation output must be outside the Rust source root/,
+  );
+});
+
 test("configured Rust output defaults also apply through the thin launcher", () => {
   const configured = { ...options, environment: { ACYCLIC_SDK_GENERATION_OUTPUT: "retained-artifacts" } };
   const implicit = generationInvocation("generate", [], configured);
   assert.equal(value(implicit, "--output"), resolve(options.callerDirectory, "retained-artifacts"));
   const explicit = generationInvocation("generate", ["--output", "explicit"], configured);
   assert.equal(value(explicit, "--output"), resolve(options.callerDirectory, "explicit"));
+});
+
+test("contract launcher keeps its PowerShell and Node entrypoints source-independent", () => {
+  const powershell = readFileSync(new URL("./run-rust-contract-generator.ps1", import.meta.url), "utf8");
+  const node = readFileSync(new URL("./run-rust-contract-generator.mjs", import.meta.url), "utf8");
+  assert.match(powershell, /ACYCLIC_SDK_WORK_ROOT/);
+  assert.match(powershell, /Contract output must be outside the Rust source root/);
+  assert.doesNotMatch(powershell, /C:\\Users\\varun\\\.codex\\worktrees/);
+  assert.match(node, /--bin/, "Node launcher must invoke the Rust-owned binary");
+  assert.match(node, /CARGO_TARGET_DIR/, "Node launcher must isolate Cargo output");
+  assert.match(node, /invokedAsCli/, "PowerShell launcher must have a callable Node entrypoint");
 });
