@@ -6468,7 +6468,7 @@ fn apply_record(
 
 #[cfg(test)]
 mod tests {
-    #[path = "../../../verification/real_harness_trace.rs"]
+    #[path = "../../../../verification/real_harness_trace.rs"]
     mod real_harness_trace;
 
     use super::*;

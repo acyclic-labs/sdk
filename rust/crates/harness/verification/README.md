@@ -228,9 +228,13 @@ capture report, model publication, and inherited declaration. The checker
 re-parses those values from the durable admission envelope and binds parent
 step/task/prompt/agent fields, parent conversation operation/revision, parent
 seed authority/revision, project generation, ModelStarted step/request digest,
-and completion output/digest. It also requires the normalized trace's captured
-generation to equal the source generation ordinal before passing the finite
-event reducer.
+completion output/digest, and the exact canonical provider-neutral request
+bytes captured at the mock provider boundary. The request bytes are compared
+with the child journal's staged `ModelInputPrepared` request, independently
+hashed with BLAKE3, and checked against the durable `ModelStarted` digest;
+their SHA-256 is retained as artifact evidence. It also requires the
+normalized trace's captured generation to equal the source generation ordinal
+before passing the finite event reducer.
 The registry admission and completion retain raw envelope bytes; the current
 conversation and execution-journal APIs expose typed events, so those two
 source witnesses are recorded as canonical typed event bytes rather than
@@ -257,7 +261,8 @@ budget exhaustion, or OS confinement.
 The named gate requires a clean tracked and untracked source worktree, binds
 both the commit and tree object, and records the workspace manifest and lockfile
 digests as the build closure. It also mutates representative source fields and
-requires the semantic checker to reject every mutation. There is no production
+requires the semantic checker to reject every mutation, including corrupted
+and reordered serialized model-request bytes. There is no production
 causal publication negative case because the current APIs expose independent
 registry, conversation, and child-journal orderings without an authenticated
 cross-stream causal witness; the gate does not invent one.

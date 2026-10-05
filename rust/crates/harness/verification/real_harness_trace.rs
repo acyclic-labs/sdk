@@ -30,11 +30,15 @@ use tempfile::tempdir;
 struct TraceModel {
     child_operation: OperationId,
     calls: AtomicUsize,
+    request_bytes: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
 }
 
 impl ModelProvider for TraceModel {
-    fn generate<'a>(&'a self, _prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut captured) = self.request_bytes.lock() {
+            captured.push(prepared.bytes().to_vec());
+        }
         if call == 0 {
             return Box::pin(futures::stream::iter([
                 Ok(ModelEvent::ToolCall {
@@ -212,12 +216,13 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     let provider = Arc::new(TraceModel {
         child_operation,
         calls: AtomicUsize::new(0),
+        request_bytes: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
     let model = Model::new("mock", "formal-real-trace", "1", json!({}))?;
     let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
         root.path(),
         model,
-        provider,
+        Arc::clone(&provider),
         crate::conversation::Limits::default(),
     )
     .await?;
@@ -412,6 +417,58 @@ async fn export_real_trace(path: &Path) -> Result<()> {
     let model_digest = operation_digest(&model_record.event);
     let (model_step, model_request_digest) = model_started_projection(&model_record.event)
         .ok_or_else(|| Error::Storage("real child ModelStarted projection disappeared".into()))?;
+    let model_request_ref = child_records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ModelInputPrepared { step, request, .. } if *step == model_step => {
+                Some(request.clone())
+            }
+            _ => None,
+        })
+        .ok_or_else(|| Error::Storage("real child journal has no prepared model request".into()))?;
+    let journal_request_bytes = child_harness
+        .storage()
+        .journal()
+        .load(&model_request_ref)
+        .await?;
+    let captured_requests = provider
+        .request_bytes
+        .lock()
+        .map_err(|_| Error::Storage("real mock provider request capture was poisoned".into()))?
+        .clone();
+    let matching_requests = captured_requests
+        .into_iter()
+        .filter(|bytes| *bytes == journal_request_bytes)
+        .collect::<Vec<_>>();
+    if matching_requests.len() != 1 {
+        return Err(Error::Conflict(format!(
+            "real mock provider captured {} requests matching the child durable request",
+            matching_requests.len()
+        )));
+    }
+    let captured_request_bytes = matching_requests
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Storage("real mock provider did not capture child request".into()))?;
+    if captured_request_bytes != journal_request_bytes {
+        return Err(Error::Conflict(
+            "real provider request bytes differ from the durable prepared request".into(),
+        ));
+    }
+    let request_digest = *blake3::hash(&captured_request_bytes).as_bytes();
+    let journal_request_digest = match &model_record.event {
+        ExecutionEvent::ModelStarted { request_digest, .. } => *request_digest,
+        _ => {
+            return Err(Error::Storage(
+                "real child ModelStarted record changed".into(),
+            ));
+        }
+    };
+    if request_digest != journal_request_digest {
+        return Err(Error::Conflict(
+            "real provider request bytes do not match ModelStarted request digest".into(),
+        ));
+    }
     let model_record_bytes = crate::contract::canonical_json_bytes(&model_record.event)?;
     let (
         completion_sequence,
@@ -471,7 +528,9 @@ async fn export_real_trace(path: &Path) -> Result<()> {
         json!({
             "kind": "model_started",
             "child_operation_id": child_operation.to_string(),
-            "agent": 2
+            "agent": 2,
+            "request_digest": model_request_digest,
+            "request_bytes_sha256": sha256_hex(&captured_request_bytes)
         }),
         json!({
             "kind": "agent_completed",
@@ -504,6 +563,8 @@ async fn export_real_trace(path: &Path) -> Result<()> {
             "child_execution_model_started_request_digest": model_digest,
             "child_execution_model_started_step": model_step,
             "child_execution_model_started_request_digest_hex": model_request_digest,
+            "child_execution_model_started_request_bytes_hex": hex_bytes(&captured_request_bytes),
+            "child_execution_model_started_request_bytes_sha256": sha256_hex(&captured_request_bytes),
             "admission_record_bytes_hex": admission_record_bytes,
             "admission_record_sha256": sha256_hex(&hex_decode(&admission_record_bytes)?),
             "parent_event_canonical_bytes_hex": hex_bytes(&publication_event_bytes),

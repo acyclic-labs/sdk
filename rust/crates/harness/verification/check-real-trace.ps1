@@ -19,6 +19,8 @@ foreach ($name in @(
     'child_execution_operation',
     'child_execution_model_started_step',
     'child_execution_model_started_request_digest_hex',
+    'child_execution_model_started_request_bytes_hex',
+    'child_execution_model_started_request_bytes_sha256',
     'root_task',
     'child_task',
     'child_depth',
@@ -324,6 +326,30 @@ if ((JsonByteArrayHex $childModelEvent.request_digest 'child ModelStarted reques
     ([string]$manifest.source.child_execution_model_started_request_digest_hex).ToLowerInvariant()) {
     throw 'child ModelStarted request digest does not match the source binding.'
 }
+$requestBytes = DecodeHex ([string]$manifest.source.child_execution_model_started_request_bytes_hex) 'child model request bytes'
+if ((Hex $requestBytes) -ne ([string]$manifest.source.child_execution_model_started_request_bytes_hex).ToLowerInvariant()) {
+    throw 'child model request bytes are not normalized hexadecimal.'
+}
+$requestCanonicalHex = InvokePythonHex $requestBytes $canonicalJsonCode 'child model request'
+if ($requestCanonicalHex -ne (Hex $requestBytes)) {
+    throw 'child model request bytes are not canonical JSON.'
+}
+try {
+    $requestJson = ([System.Text.Encoding]::UTF8.GetString($requestBytes) | ConvertFrom-Json)
+} catch {
+    throw 'child model request bytes are not valid JSON.'
+}
+$requestDigest = InvokePythonHex $requestBytes $blake3Code 'child model request digest'
+if ($requestDigest -ne ([string]$manifest.source.child_execution_model_started_request_digest_hex).ToLowerInvariant() -or
+    $requestDigest -ne (JsonByteArrayHex $childModelEvent.request_digest 'child ModelStarted request digest')) {
+    throw 'child model request bytes do not match the durable ModelStarted request digest.'
+}
+if ((Sha256Hex $requestBytes) -ne ([string]$manifest.source.child_execution_model_started_request_bytes_sha256).ToLowerInvariant()) {
+    throw 'child model request byte digest does not match its source binding.'
+}
+if ($null -eq $requestJson.model -or $null -eq $requestJson.messages -or $null -eq $requestJson.tools) {
+    throw 'child model request bytes do not contain the required provider-neutral request fields.'
+}
 $projectCaptures = @($reportCanonical.captures | Where-Object {
     $_.kind -eq 'captured' -and $null -ne $_.value -and
     $null -ne $_.value.revision -and $_.value.revision.kind -eq 'project'
@@ -388,6 +414,12 @@ if ($admission[0].parent -ne 1 -or $admission[0].child -ne 2 -or
     $publication[0].parent -ne 1 -or $publication[0].child -ne 2 -or
     $started[0].agent -ne 2 -or $completed[0].agent -ne 2) {
     throw 'real trace normalization labels do not match the declared task/agent witnesses.'
+}
+if ([string]$started[0].request_digest -ne
+    ([string]$manifest.source.child_execution_model_started_request_digest_hex).ToLowerInvariant() -or
+    [string]$started[0].request_bytes_sha256 -ne
+    ([string]$manifest.source.child_execution_model_started_request_bytes_sha256).ToLowerInvariant()) {
+    throw 'real trace model-start request byte witnesses do not match the durable source binding.'
 }
 if ([int64]$admission[0].captured_generation -ne
     [int64]$manifest.normalization.generation.finite_ordinal -or

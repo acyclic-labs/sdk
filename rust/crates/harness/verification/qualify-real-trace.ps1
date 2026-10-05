@@ -64,6 +64,14 @@ function Sha256Hex([byte[]]$Bytes) {
         $algorithm.Dispose()
     }
 }
+function DecodeHexBytes([string]$Hex) {
+    if (($Hex.Length % 2) -ne 0) { throw 'request witness hex has odd length.' }
+    $bytes = [byte[]]::new($Hex.Length / 2)
+    for ($index = 0; $index -lt $bytes.Length; $index++) {
+        $bytes[$index] = [Convert]::ToByte($Hex.Substring($index * 2, 2), 16)
+    }
+    return $bytes
+}
 
 $traceMutationEvidence = Join-Path $evidence 'trace-mutations'
 New-Item -ItemType Directory -Force -Path $traceMutationEvidence | Out-Null
@@ -109,7 +117,31 @@ $mutations = @(
     @{ Name = 'generation-ordinal'; Apply = { param($m) $m.normalization.generation.finite_ordinal = 1 } },
     @{ Name = 'parent-revision'; Apply = { param($m) $m.source.parent_conversation_revision = [int64]$m.source.parent_conversation_revision + 1 } },
     @{ Name = 'model-start'; Apply = { param($m) $m.source.child_execution_model_started_step = [int64]$m.source.child_execution_model_started_step + 1 } },
-    @{ Name = 'completion-digest'; Apply = { param($m) $m.source.completion_output_digest = @(0..31) } }
+    @{ Name = 'completion-digest'; Apply = { param($m) $m.source.completion_output_digest = @(0..31) } },
+    @{ Name = 'request-bytes-corrupt'; Apply = { param($m) $m.source.child_execution_model_started_request_bytes_hex = "20$($m.source.child_execution_model_started_request_bytes_hex)" } },
+    @{ Name = 'request-bytes-reordered'; Apply = {
+        param($m)
+        $bytes = DecodeHexBytes ([string]$m.source.child_execution_model_started_request_bytes_hex)
+        $request = [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+        $messages = @($request.messages)
+        [array]::Reverse($messages)
+        $request.messages = $messages
+        $serialized = $request | ConvertTo-Json -Compress -Depth 100
+        $serializedBytes = [System.Text.Encoding]::UTF8.GetBytes($serialized)
+        $serializedHex = (-join ($serializedBytes | ForEach-Object { $_.ToString('x2') }))
+        if ($serializedHex -eq [string]$m.source.child_execution_model_started_request_bytes_hex) {
+            $tools = @($request.tools)
+            [array]::Reverse($tools)
+            $request.tools = $tools
+            $serialized = $request | ConvertTo-Json -Compress -Depth 100
+            $serializedBytes = [System.Text.Encoding]::UTF8.GetBytes($serialized)
+        }
+        if ((-join ($serializedBytes | ForEach-Object { $_.ToString('x2') })) -eq
+            [string]$m.source.child_execution_model_started_request_bytes_hex) {
+            $serializedBytes = [System.Text.Encoding]::UTF8.GetBytes(" $serialized")
+        }
+        $m.source.child_execution_model_started_request_bytes_hex = (-join ($serializedBytes | ForEach-Object { $_.ToString('x2') }))
+    } }
 )
 $mutationEvidence = Join-Path $evidence 'mutations'
 New-Item -ItemType Directory -Force -Path $mutationEvidence | Out-Null
