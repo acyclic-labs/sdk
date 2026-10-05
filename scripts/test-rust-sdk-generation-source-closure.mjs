@@ -363,3 +363,35 @@ test('standalone lock closure rejects an omitted manifest dependency', () => {
   assert.notEqual(changed, manifest, 'negative control must remove the actual prost dependency');
   assert.throws(() => assertStandaloneRootLockEdges(changed, read(`${base}/Cargo.lock`)), /dependency prost has no manifest declaration/);
 });
+
+function assertEmbeddedAbiSourceClosure(workflow, source) {
+  const block = workflow.match(/\$required\s*=\s*@\(([\s\S]*?)\)/);
+  assert.ok(block, "native qualification must declare its checked ABI export set");
+  const required = [...block[1].matchAll(/'(acyclic_[A-Za-z0-9_]+)'/g)].map((match) => match[1]);
+  assert.ok(required.length > 0, "native qualification ABI export set must not be empty");
+  assert.equal(new Set(required).size, required.length, "native qualification ABI exports must be distinct");
+  const declared = new Set(
+    [...source.matchAll(/^\s*pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+([A-Za-z0-9_]+)\s*\(/gm)]
+      .map((match) => match[1]),
+  );
+  for (const name of required) {
+    assert.ok(declared.has(name), `native qualification requires missing Rust ABI declaration ${name}`);
+  }
+}
+
+test("native qualification ABI exports have committed Rust source declarations", () => {
+  assertEmbeddedAbiSourceClosure(
+    read(".github/workflows/dotnet-embedded-rid-manual.yml"),
+    read("rust/crates/sdk-embedded-prototype/src/lib.rs"),
+  );
+});
+
+test("native ABI source closure rejects missing exports and comment-only declarations", () => {
+  const workflow = "$required = @(\n'acyclic_example'\n)";
+  assertEmbeddedAbiSourceClosure(workflow, 'pub unsafe extern "C" fn acyclic_example() {}');
+  assert.throws(() => assertEmbeddedAbiSourceClosure(workflow, ""), /missing Rust ABI declaration acyclic_example/);
+  assert.throws(
+    () => assertEmbeddedAbiSourceClosure(workflow, '// pub unsafe extern "C" fn acyclic_example() {}'),
+    /missing Rust ABI declaration acyclic_example/,
+  );
+});
