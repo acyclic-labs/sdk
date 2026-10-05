@@ -105,6 +105,23 @@ impl<T> Drop for AbortOnDrop<T> {
 
 type LocalFilesystemHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 
+/// Prepared through the typed fork path, with its live writer fence retained
+/// until execution and durable completion have both finished.
+struct LocalChildTurn {
+    request: LocalForkRequest,
+    stream: acyclic_stream::Stream<LocalStream>,
+    harness: Arc<PersistentLocalHarness>,
+    bundle: crate::Harness,
+    max_steps: u32,
+    cancelled: tokio::sync::watch::Receiver<bool>,
+    _activation_guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+enum LocalChildActivation {
+    Completed(LocalForkOutcome),
+    Ready(LocalChildTurn),
+}
+
 /// LocalStream journals are process-exclusive. Keep one authenticated provider
 /// handle per composition root so independently opened swarm handles observe
 /// the same journal and CAS boundary.
@@ -3512,6 +3529,24 @@ impl PersistentLocalSwarm {
         parent: &StreamAggregate<LocalStream>,
         seed: &ForkSeed,
     ) -> Result<LocalForkOutcome> {
+        let activation = self.prepare_published_child(
+            request, host, stream, issuer, parent, seed,
+        ).await?;
+        match activation {
+            LocalChildActivation::Completed(outcome) => Ok(outcome),
+            LocalChildActivation::Ready(turn) => self.execute_child_turn(turn).await,
+        }
+    }
+
+    async fn prepare_published_child(
+        &self,
+        request: LocalForkRequest,
+        host: Arc<LocalFilesystemHost>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<LocalStream>,
+        seed: &ForkSeed,
+    ) -> Result<LocalChildActivation> {
         self.refresh_registry_state().await?;
         request.validate()?;
         seed.validate()?;
@@ -3614,11 +3649,11 @@ impl PersistentLocalSwarm {
                         ));
                     }
                     let output = self.outcome(child).await?;
-                    return Ok(LocalForkOutcome {
+                    return Ok(LocalChildActivation::Completed(LocalForkOutcome {
                         child,
                         operation: request.child_operation,
                         output,
-                    });
+                    }));
                 }
                 if session.phase == LocalSessionPhase::Cancelled {
                     return Err(Error::Conflict(
@@ -3664,11 +3699,11 @@ impl PersistentLocalSwarm {
                             "completed child operation differs from the retry binding".into(),
                         ));
                     }
-                    return Ok(LocalForkOutcome {
+                    return Ok(LocalChildActivation::Completed(LocalForkOutcome {
                         child,
                         operation: request.child_operation,
                         output: self.outcome(child).await?,
-                    });
+                    }));
                 }
                 // Another handle admitted this exact child while the
                 // preparation checks ran. Its observed tail is newer than
@@ -3775,7 +3810,7 @@ impl PersistentLocalSwarm {
         // The durable claim permits cold recovery, but a live writer still
         // owns the child journal. All handles share this per-child fence.
         let activation_gate = self.task_gate(child)?;
-        let _activation_guard = activation_gate.try_lock()
+        let activation_guard = activation_gate.try_lock_owned()
             .map_err(|_| Error::Indeterminate(request.child_operation))?;
         let harness =
             match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
@@ -3803,13 +3838,14 @@ impl PersistentLocalSwarm {
         self.verify_admitted_task(child, Some(request.parent))
             .await?;
         self.sessions.lock().await.insert(child, harness.clone());
-        self.activate_child_with_harness(
+        self.prepare_child_turn(
             request,
             child,
             registry,
             boundary,
             harness,
             declared_suffix,
+            activation_guard,
         )
         .await
     }
@@ -4199,7 +4235,7 @@ impl PersistentLocalSwarm {
         Ok(())
     }
 
-    async fn activate_child_with_harness(
+    async fn prepare_child_turn(
         &self,
         request: LocalForkRequest,
         child: TaskId,
@@ -4207,7 +4243,8 @@ impl PersistentLocalSwarm {
         boundary: crate::model_input::CompletedModelBoundary,
         harness: Arc<PersistentLocalHarness>,
         declared_suffix: Option<Vec<ModelMessage>>,
-    ) -> Result<LocalForkOutcome> {
+        activation_guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<LocalChildActivation> {
         // Subscribe before the durable check so cancellation cannot fall
         // between that check and live task registration.
         self.live.cancellation.register(child)?;
@@ -4227,21 +4264,21 @@ impl PersistentLocalSwarm {
             ));
         }
         if let Some(output) = self.outcomes.lock().await.get(&child).cloned() {
-            return Ok(LocalForkOutcome {
+            return Ok(LocalChildActivation::Completed(LocalForkOutcome {
                 child,
                 operation: request.child_operation,
                 output,
-            });
+            }));
         }
         if let Some(output) = self
             .recover_completed_output(&stream, child, request.child_operation, &harness)
             .await?
         {
-            return Ok(LocalForkOutcome {
+            return Ok(LocalChildActivation::Completed(LocalForkOutcome {
                 child,
                 operation: request.child_operation,
                 output,
-            });
+            }));
         }
         if !self
             .claim_child_activation(&stream, child, request.child_operation)
@@ -4252,11 +4289,11 @@ impl PersistentLocalSwarm {
                 .recover_completed_output(&stream, child, request.child_operation, &harness)
                 .await?
             {
-                return Ok(LocalForkOutcome {
+                return Ok(LocalChildActivation::Completed(LocalForkOutcome {
                     child,
                     operation: request.child_operation,
                     output,
-                });
+                }));
             }
             // Only a journaled model admission makes retrying an existing
             // claim safe: run_child_turn will reconcile that admission. If
@@ -4295,6 +4332,17 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
+        Ok(LocalChildActivation::Ready(LocalChildTurn {
+            request, stream, harness, bundle, max_steps, cancelled,
+            _activation_guard: activation_guard,
+        }))
+    }
+
+    async fn execute_child_turn(&self, turn: LocalChildTurn) -> Result<LocalForkOutcome> {
+        let LocalChildTurn {
+            request, stream, harness, bundle, max_steps, cancelled, _activation_guard,
+        } = turn;
+        let child = TaskId::from_bytes(request.child_operation.into_bytes());
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
         let child_result = Self::run_owned_child_turn(
             harness.clone(), bundle, request.clone(), max_steps, cancelled,
