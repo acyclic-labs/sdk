@@ -34,7 +34,11 @@ const packagePaths = {
 };
 for (const [name, path] of Object.entries(packagePaths)) if (!existsSync(path)) throw new Error(`missing generated consumer entry ${name}: ${path}`);
 const fixtureRoot = mkdtempSync(join(tmpdir(), "acyclic-sdk-generated-consumer-"));
-const sourcePath = join(fixtureRoot, "consumer.ts");
+// .mts makes the fixture an ES module even when it lives in a temporary
+// directory outside this repository's package boundary.  The generated SDK
+// packages are all type=module packages, so the consumer must be checked in
+// the same mode as an installed application.
+const sourcePath = join(fixtureRoot, "consumer.mts");
 writeFileSync(sourcePath, `
 import { fromEnv as actorsFromEnv } from "${packages.actors}";
 import { fromEnv as workersFromEnv } from "${packages.workers}";
@@ -43,8 +47,8 @@ import { StreamClient } from "${packages.stream}";
 import { fromEnv as inferenceFromEnv } from "${packages.inference}";
 import { Machines } from "${packages.machines}";
 import { openHostedFs } from "${packages.filesystem}/hosted";
-import { ACTORS_REMOTE_POLICY } from "${packages.actors}/generated-client";
-import { STREAM_REMOTE_POLICY } from "${packages.stream}/generated-client";
+import { ACTORS_REMOTE_POLICY } from "${packages.actors}";
+import { STREAM_REMOTE_POLICY } from "${packages.stream}";
 
 export async function generatedConsumerSmoke(endpoint: string, token: string): Promise<void> {
   const actors = await actorsFromEnv({ endpoint, token });
@@ -55,7 +59,7 @@ export async function generatedConsumerSmoke(endpoint: string, token: string): P
   const machines = Machines.fromEnv({ endpoint });
   const filesystem = openHostedFs({ endpoint, bearerToken: token });
   void [actors, workers, objects, stream, inference, machines, filesystem];
-  if (ACTORS_REMOTE_POLICY.transport.native.length === 0 || STREAM_REMOTE_POLICY.transport.native.length === 0) throw new Error("Rust transport policy is empty");
+  if (!(ACTORS_REMOTE_POLICY.transport.native.length > 0) || !(STREAM_REMOTE_POLICY.transport.native.length > 0)) throw new Error("Rust transport policy is empty");
 }
 `);
 const configPath = join(fixtureRoot, "tsconfig.json");
