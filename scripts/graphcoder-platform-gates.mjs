@@ -103,7 +103,7 @@ function validateManifest(manifest) {
         return normalized.includes("\0") || normalized.startsWith("/") || /^[A-Za-z]:\//u.test(normalized) || segments.some(segment => segment === "" || segment === "." || segment === "..");
       })) fail(`${gate.id} ${label} must be relative paths without parent traversal`);
     };
-    validateProducedArtifactPaths(gate.produced_artifacts ?? [], "produced_artifacts");
+    if (gate.produced_artifacts !== undefined) validateProducedArtifactPaths(gate.produced_artifacts, "produced_artifacts");
     if (gate.produced_artifacts_by_platform !== undefined) {
       if (!gate.produced_artifacts_by_platform || typeof gate.produced_artifacts_by_platform !== "object" || Array.isArray(gate.produced_artifacts_by_platform)) fail(`${gate.id} produced_artifacts_by_platform is invalid`);
       for (const [platform, paths] of Object.entries(gate.produced_artifacts_by_platform)) {
