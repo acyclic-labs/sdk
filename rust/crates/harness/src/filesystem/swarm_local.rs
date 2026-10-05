@@ -314,6 +314,9 @@ pub struct LocalSwarmBindings {
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
     /// Optional host-only observation sink for lazy qualification metrics.
     pub observer: Option<Arc<dyn LocalSwarmObserver>>,
+    /// Owner-selected project workspace adapter shared by local task bundles.
+    /// The adapter derives child project identities from their durable task IDs.
+    pub(crate) workspace_tools: Option<workspace_tools::WorkspaceToolsBinding>,
 }
 
 impl LocalSwarmBindings {
@@ -332,6 +335,7 @@ impl LocalSwarmBindings {
             model_fork_plans: None,
             filesystem_fork_resolver: None,
             observer: None,
+            workspace_tools: None,
         }
     }
 
@@ -371,12 +375,37 @@ impl LocalSwarmBindings {
         self
     }
 
+    /// Installs the Harness-owned project workspace tools for this swarm.
+    #[must_use]
+    pub(crate) fn with_workspace_tools(
+        mut self,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        root_project: VolumeRef,
+        root_task: TaskId,
+        limits: Limits,
+    ) -> Self {
+        self.workspace_tools = Some(workspace_tools::WorkspaceToolsBinding {
+            host,
+            root_project,
+            root_task,
+            limits,
+        });
+        self
+    }
+
     fn tools_for(&self, parent: TaskId) -> Result<LocalHarnessTools> {
         let Some(host) = self.communication_host.clone() else {
             let mut tools = LocalHarnessTools::new();
-            if let Some(plans) = &self.model_fork_plans {
+            if self.model_fork_plans.is_some() || self.workspace_tools.is_some() {
                 let mut registry = ToolRegistry::new();
-                registry.register(local_fork_tool(parent, plans.clone()))?;
+                if let Some(plans) = &self.model_fork_plans {
+                    registry.register(local_fork_tool(parent, plans.clone()))?;
+                }
+                if let Some(workspace) = &self.workspace_tools {
+                    for tool in workspace.tools_for(parent)? {
+                        registry.register(tool)?;
+                    }
+                }
                 tools = LocalHarnessTools::from_registry(registry);
             }
             return Ok(match &self.model_batch_publisher {
@@ -392,6 +421,11 @@ impl LocalSwarmBindings {
             )?;
         if let Some(plans) = &self.model_fork_plans {
             registry.register(local_fork_tool(parent, plans.clone()))?;
+        }
+        if let Some(workspace) = &self.workspace_tools {
+            for tool in workspace.tools_for(parent)? {
+                registry.register(tool)?;
+            }
         }
         let tools = LocalHarnessTools::from_registry(registry).with_authenticated_task(parent);
         Ok(match &self.model_batch_publisher {
@@ -2718,6 +2752,7 @@ impl PersistentLocalSwarm {
         swarm.bindings = LocalSwarmBindings::communication(
             communication.clone(), Some(waits), Some(swarm.live.clone()),
         )
+            .with_workspace_tools(host.clone(), project.clone(), root_task, limits)
             .with_filesystem_fork_resolver(resolver)
             .with_model_fork_plans(plans.clone())
             .with_model_batch_publisher(publisher.clone());
