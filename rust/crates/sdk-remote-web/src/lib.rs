@@ -160,6 +160,7 @@ mod wasm {
         client: GeneratedClient,
         authorization: MetadataValue<Ascii>,
         capabilities: BrowserFilesystemCapabilities,
+        maximum_response_bytes: u64,
     }
 
     impl BrowserFilesystemClient {
@@ -234,6 +235,7 @@ mod wasm {
                 capabilities: BrowserFilesystemCapabilities {
                     inner: capabilities,
                 },
+                maximum_response_bytes: response_limit,
             })
         }
 
@@ -349,6 +351,7 @@ mod wasm {
                 .await
                 .map_err(|error| JsValue::from_str(&error.to_string()))?;
             let chunks = Array::new();
+            let mut observed_bytes = 0_u64;
             while let Some(chunk) = stream
                 .message()
                 .await
@@ -358,6 +361,12 @@ mod wasm {
                 chunk
                     .encode(&mut encoded)
                     .map_err(|error| JsValue::from_str(&error.to_string()))?;
+                observed_bytes = validate_remote_web_response_chunk(
+                    observed_bytes,
+                    u64::try_from(encoded.len())
+                        .map_err(|_| JsValue::from_str("export chunk is too large"))?,
+                    self.maximum_response_bytes,
+                )?;
                 chunks.push(&Uint8Array::from(encoded.as_slice()));
             }
             Ok(chunks)
