@@ -266,6 +266,14 @@ where
             parent,
         };
         crate::stack_diagnostics::marker("fork-boundary-after-result");
+        drop(selected);
+        crate::stack_diagnostics::marker("fork-boundary-after-selected-drop");
+        drop(original_prefix);
+        crate::stack_diagnostics::marker("fork-boundary-after-prefix-drop");
+        drop(original);
+        crate::stack_diagnostics::marker("fork-boundary-after-input-drop");
+        drop(records);
+        crate::stack_diagnostics::marker("fork-boundary-after-records-drop");
         Ok(verified)
     }
 }
