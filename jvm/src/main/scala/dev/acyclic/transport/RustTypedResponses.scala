@@ -6,6 +6,11 @@ package dev.acyclic.transport
 object RustTypedResponsesScala {
   def mapIterator[W,T](wire: java.util.Iterator[W], mapper: W => T): java.util.Iterator[T] = new java.util.Iterator[T] { def hasNext: Boolean = wire.hasNext; def next(): T = mapper(wire.next()) }
 
+  final class ObjectsGetObjectHeaderView private (private val value: acyclic.objects.v2.Objects.GetObjectHeader) { def toWire: acyclic.objects.v2.Objects.GetObjectHeader = value; def object: acyclic.objects.v2.Objects.ObjectInfo = value.getObject; def hasObject: Boolean = value.hasObject; def contentRange: acyclic.objects.v2.Objects.ContentRange = value.getContentRange; def hasContentRange: Boolean = value.hasContentRange }
+  object ObjectsGetObjectHeaderView { def fromWire(value: acyclic.objects.v2.Objects.GetObjectHeader): ObjectsGetObjectHeaderView = new ObjectsGetObjectHeaderView(value) }
+  final class ObjectsErrorDetailView private (private val value: acyclic.objects.v2.Objects.ErrorDetail) { def toWire: acyclic.objects.v2.Objects.ErrorDetail = value; def code: Int = value.getCodeValue; def requestId: String = value.getRequestId }
+  object ObjectsErrorDetailView { def fromWire(value: acyclic.objects.v2.Objects.ErrorDetail): ObjectsErrorDetailView = new ObjectsErrorDetailView(value) }
+
   final case class ActorsInvokeActorResponse(value: acyclic.actors.v1.Actors.InvokeActorResponse) { def toWire: acyclic.actors.v1.Actors.InvokeActorResponse = value;  }
   object ActorsInvokeActorResponse { def fromWire(value: acyclic.actors.v1.Actors.InvokeActorResponse): ActorsInvokeActorResponse = ActorsInvokeActorResponse(value) }
 
@@ -396,10 +401,10 @@ object RustTypedResponsesScala {
   def mutationIdentityIdempotencyKey(value: acyclic.objects.v2.Objects.MutationIdentity): RustSemanticTypesScala.IdempotencyKeyText = RustSemanticTypesScala.IdempotencyKeyText.from(value.getIdempotencyKey).toOption.get
   def evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpecDigest).toOption.get
   def fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesScala.ResourcePath = RustSemanticTypesScala.ResourcePath.from(value.getNormalizedPath).toOption.get
-  def preserveKnown(tag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Known(tag, payload)
-  def preserveUnknown(tag: Int, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Unknown(tag, payload)
+  def preserveKnown(tag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.KnownRaw(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)
+  def preserveUnknown(tag: Int, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Unknown(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)
   def preserveOneof(tag: Int, knownTag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)
 
-  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = RustTypedResponses.frameChoice(value) match { case known: RustSemanticTypes.Known => RustSemanticTypesScala.Known(known.tag(), known.payload().toByteArray); case unknown: RustSemanticTypes.Unknown => RustSemanticTypesScala.Unknown(unknown.tag(), unknown.payload().toByteArray) }
+  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = value.getFrameCase match { case acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER => RustSemanticTypesScala.KnownHeader(RustTypedResponsesScala.ObjectsGetObjectHeaderView.fromWire(value.getHeader)); case acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.BODY => RustSemanticTypesScala.KnownBody(RustSemanticTypesScala.WireBytes.from(value.getBody).toOption.get); case acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.ERROR => RustSemanticTypesScala.KnownError(RustTypedResponsesScala.ObjectsErrorDetailView.fromWire(value.getError)); case _ => RustTypedResponsesScala.preserveUnknown(value.getFrameCase.getNumber, value.toByteArray) }
 
 }

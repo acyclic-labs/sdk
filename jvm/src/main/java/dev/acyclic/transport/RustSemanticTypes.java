@@ -8,9 +8,13 @@ import java.util.Optional;
 public final class RustSemanticTypes {
   private RustSemanticTypes() {}
 
-  public sealed interface WireChoice permits Known, Unknown {}
-  public record Known(String tag, com.google.protobuf.ByteString payload) implements WireChoice {}
-  public record Unknown(int tag, com.google.protobuf.ByteString payload) implements WireChoice {}
+  public sealed interface WireChoice permits KnownHeader, KnownBody, KnownError, KnownRaw, Unknown {}
+  public record KnownHeader(RustTypedResponses.ObjectsGetObjectHeaderView payload) implements WireChoice {}
+  public record KnownBody(WireBytes payload) implements WireChoice {}
+  public record KnownError(RustTypedResponses.ObjectsErrorDetailView payload) implements WireChoice {}
+  public record KnownRaw(String tag, WireBytes payload) implements WireChoice {}
+  public record Unknown(int tag, WireBytes payload) implements WireChoice {}
+  public record WireBytes(com.google.protobuf.ByteString value) { public WireBytes { java.util.Objects.requireNonNull(value); } public static WireBytes of(com.google.protobuf.ByteString value) { return new WireBytes(value); } public com.google.protobuf.ByteString toWire() { return value; } }
   public static <T> Optional<T> present(T value, boolean isPresent) { return isPresent ? Optional.ofNullable(value) : Optional.empty(); }
 
   public record ActorId(String value) {

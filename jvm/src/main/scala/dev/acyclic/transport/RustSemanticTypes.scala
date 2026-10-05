@@ -5,8 +5,13 @@ package dev.acyclic.transport
 /** Rust-owned nominal values. Protobuf classes remain the wire boundary. */
 object RustSemanticTypesScala {
   sealed trait WireChoice
-  final case class Known(tag: String, payload: Array[Byte]) extends WireChoice
-  final case class Unknown(tag: Int, payload: Array[Byte]) extends WireChoice
+  final case class KnownHeader(payload: RustTypedResponsesScala.ObjectsGetObjectHeaderView) extends WireChoice
+  final case class KnownBody(payload: WireBytes) extends WireChoice
+  final case class KnownError(payload: RustTypedResponsesScala.ObjectsErrorDetailView) extends WireChoice
+  final case class KnownRaw(tag: String, payload: WireBytes) extends WireChoice
+  final case class Unknown(tag: Int, payload: WireBytes) extends WireChoice
+  final case class WireBytes private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }
+  object WireBytes { def from(value: com.google.protobuf.ByteString): Either[String, WireBytes] = Right(new WireBytes(value)) }
   def present[T](value: T, isPresent: Boolean): Option[T] = if (isPresent) Option(value) else None
 
   final case class ActorId private (value: String) { def toWire: String = value }

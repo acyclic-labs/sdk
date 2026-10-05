@@ -8,8 +8,11 @@ import java.util.Optional
 /** Rust-owned nominal values. Protobuf classes remain the wire boundary. */
 object RustSemanticTypesKotlin {
   sealed interface WireChoice
-  data class Known(val tag: String, val payload: ByteString) : WireChoice
-  data class Unknown(val tag: Int, val payload: ByteString) : WireChoice
+  data class KnownHeader(val payload: RustTypedResponsesKotlin.ObjectsGetObjectHeaderView) : WireChoice
+  data class KnownBody(val payload: WireBytes) : WireChoice
+  data class KnownError(val payload: RustTypedResponsesKotlin.ObjectsErrorDetailView) : WireChoice
+  data class KnownRaw(val tag: String, val payload: WireBytes) : WireChoice
+  data class Unknown(val tag: Int, val payload: WireBytes) : WireChoice
   fun <T: Any> present(value: T?, isPresent: Boolean): Optional<T> = if (isPresent && value != null) Optional.of(value) else Optional.empty()
 
   @JvmInline value class ActorId private constructor(val value: String) {
