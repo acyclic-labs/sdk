@@ -3,7 +3,7 @@
 package dev.acyclic.transport
 
 /** Rust-owned nominal values. Protobuf classes remain the wire boundary. */
-object RustSemanticTypes {
+object RustSemanticTypesScala {
   sealed trait WireChoice
   final case class Known(tag: String, payload: Array[Byte]) extends WireChoice
   final case class Unknown(tag: Int, payload: Array[Byte]) extends WireChoice

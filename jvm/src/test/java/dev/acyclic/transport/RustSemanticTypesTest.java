@@ -24,4 +24,11 @@ class RustSemanticTypesTest {
     RustSemanticTypes.WireChoice unknown = new RustSemanticTypes.Unknown(99, ByteString.EMPTY);
     assertEquals(99, ((RustSemanticTypes.Unknown) unknown).tag());
   }
+  @Test void publicRequestFactoriesConvertNominalValuesToWireFields() {
+    var invoke = RustTypedRequests.actorsInvokeActor(RustSemanticTypes.ActorId.of("actor-1"), RustSemanticTypes.MethodName.of("GET"));
+    assertEquals("actor-1", invoke.getActorId());
+    assertEquals("GET", invoke.getMethod());
+    var read = RustTypedRequests.streamRead(RustSemanticTypes.PageLimit.of(5));
+    assertEquals(5, read.getLimit());
+  }
 }

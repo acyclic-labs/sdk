@@ -17,7 +17,10 @@ mod python_go;
 #[path = "typed_facades.rs"]
 mod typed_facades;
 
-pub use typed_facades::{generate_jvm_semantic_types, JAVA_PATH, KOTLIN_PATH, SCALA_PATH};
+pub use typed_facades::{
+    generate_jvm_semantic_types, generate_jvm_typed_requests, JAVA_PATH, JAVA_REQUESTS_PATH,
+    KOTLIN_PATH, KOTLIN_REQUESTS_PATH, SCALA_PATH, SCALA_REQUESTS_PATH,
+};
 
 /// Cancellation semantics that a generated facade must preserve per RPC.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -222,6 +225,13 @@ fn render_java_semantic_type_test() -> String {
         + "    assertEquals(Optional.empty(), RustSemanticTypes.present(\"x\", false));\n"
         + "    RustSemanticTypes.WireChoice unknown = new RustSemanticTypes.Unknown(99, ByteString.EMPTY);\n"
         + "    assertEquals(99, ((RustSemanticTypes.Unknown) unknown).tag());\n"
+        + "  }\n"
+        + "  @Test void publicRequestFactoriesConvertNominalValuesToWireFields() {\n"
+        + "    var invoke = RustTypedRequests.actorsInvokeActor(RustSemanticTypes.ActorId.of(\"actor-1\"), RustSemanticTypes.MethodName.of(\"GET\"));\n"
+        + "    assertEquals(\"actor-1\", invoke.getActorId());\n"
+        + "    assertEquals(\"GET\", invoke.getMethod());\n"
+        + "    var read = RustTypedRequests.streamRead(RustSemanticTypes.PageLimit.of(5));\n"
+        + "    assertEquals(5, read.getLimit());\n"
         + "  }\n"
         + "}\n"
 }
@@ -973,7 +983,8 @@ fn render_dart_operations() -> String {
 mod tests {
     use super::{
         CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, all_facade_operations,
-        facade_operations, generate_remote_facade, generate_remote_facades,
+        facade_operations, generate_jvm_typed_requests, generate_remote_facade,
+        generate_remote_facades,
     };
     use crate::family_registry::FAMILY_VIEWS;
 
@@ -1007,6 +1018,22 @@ mod tests {
                     output.language.name(),
                     family.name
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn jvm_typed_requests_bind_every_rust_owned_request_field() {
+        let outputs = generate_jvm_typed_requests();
+        assert_eq!(outputs.len(), 3);
+        for (path, source) in outputs {
+            assert!(source.contains("RustTypedRequests"), "{path} missing facade");
+            for binding in crate::type_policy::PUBLIC_FIELD_BINDINGS {
+                if binding.direction == crate::type_policy::PublicFieldDirection::Request {
+                    assert!(source.contains(&binding.field.replace('_', "")) || source.contains(binding.field), "{path} missing {}", binding.field);
+                    let semantic = crate::type_policy::semantic_type(binding.semantic_type).expect("binding semantic type");
+                    assert!(source.contains(semantic.rust_name), "{path} missing semantic binding {}", semantic.rust_name);
+                }
             }
         }
     }

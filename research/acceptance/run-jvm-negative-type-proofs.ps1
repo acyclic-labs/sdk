@@ -69,7 +69,7 @@ try {
   if ($kotlinExit -eq 0) { throw 'mvn unexpectedly accepted an invalid Kotlin generated type probe' }
 } finally { Pop-Location }
 $kotlinDiagnostics = Get-Content -Raw -LiteralPath $kotlinLog
-foreach ($needle in @('ByteString','OriginCase')) {
+foreach ($needle in @('ByteString','OriginCase','ActorId','Sha256Digest','PageLimit')) {
   if ($kotlinDiagnostics -notmatch [regex]::Escape($needle)) { throw "Kotlin probe lacked diagnostic '$needle'" }
 }
 
@@ -79,7 +79,7 @@ $scalaLog = Join-Path $OutputRoot 'scala.stderr'
 New-Item -ItemType Directory -Force -Path $scalaClassesOut | Out-Null
 $scalaSource = Join-Path $SdkRoot 'research/acceptance/jvm-strong-typing/negative-scala/InvalidScalaRustTypes.scala'
 $scalaClasspath = "$ScalaClasses;$ScalaRuntimeClasspath;$ScalaLenses;$ScalaLibrary"
-$scalaExit = Run-ExpectedCompileFailure 'java' $scalaRoot @('-cp',"$ScalaCompiler;$ScalaLibrary;$ScalaReflect",'scala.tools.nsc.Main','-d',$scalaClassesOut,'-classpath',$scalaClasspath,$scalaSource) $scalaLog @('Option[com.google.protobuf.ByteString]','required: String')
+$scalaExit = Run-ExpectedCompileFailure 'java' $scalaRoot @('-cp',"$ScalaCompiler;$ScalaLibrary;$ScalaReflect",'scala.tools.nsc.Main','-d',$scalaClassesOut,'-classpath',$scalaClasspath,$scalaSource) $scalaLog @('Option[com.google.protobuf.ByteString]','required: String','ActorId','Sha256Digest','PageLimit')
 
 $receipt = [ordered]@{
   schema = 'acyclic.jvm.strong-typing-negative.v1'
@@ -90,3 +90,5 @@ $receipt = [ordered]@{
 }
 $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputRoot 'receipt.json') -Encoding utf8
 Write-Output (Join-Path $OutputRoot 'receipt.json')
+
+

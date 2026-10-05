@@ -10,7 +10,8 @@ use acyclic_sdk_contract_wire::{
     BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
     family_registry::family_view,
     filesystem::{filesystem_descriptor, filesystem_proto},
-    generate_embedded_facades, generate_jvm_semantic_types, generate_product_bindings,
+    generate_embedded_facades, generate_jvm_semantic_types, generate_jvm_typed_requests,
+    generate_product_bindings,
     generate_remote_facades,
     generate_type_policy_qualification_tests,
     harness::{harness_descriptor, harness_proto},
@@ -501,6 +502,9 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
         artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
     }
     for (path, source) in generate_jvm_semantic_types() {
+        artifacts.push((path.to_owned(), source.into_bytes()));
+    }
+    for (path, source) in generate_jvm_typed_requests() {
         artifacts.push((path.to_owned(), source.into_bytes()));
     }
     for facade in generate_embedded_facades() {

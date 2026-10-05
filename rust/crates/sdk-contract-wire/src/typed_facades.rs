@@ -5,13 +5,22 @@
 //! wire representation, while consumers receive validated nominal values and
 //! an open union that preserves values introduced by newer servers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::type_policy::{SemanticRule, SemanticType, WireValueKind, SEMANTIC_TYPES};
+use crate::type_policy::{
+    PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection, SEMANTIC_TYPES, SemanticRule,
+    SemanticType, WireValueKind, semantic_type,
+};
 
 pub const JAVA_PATH: &str = "jvm/src/main/java/dev/acyclic/transport/RustSemanticTypes.java";
 pub const KOTLIN_PATH: &str = "jvm/src/main/kotlin/dev/acyclic/transport/RustSemanticTypes.kt";
 pub const SCALA_PATH: &str = "jvm/src/main/scala/dev/acyclic/transport/RustSemanticTypes.scala";
+pub const JAVA_REQUESTS_PATH: &str =
+    "jvm/src/main/java/dev/acyclic/transport/RustTypedRequests.java";
+pub const KOTLIN_REQUESTS_PATH: &str =
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedRequests.kt";
+pub const SCALA_REQUESTS_PATH: &str =
+    "jvm/src/main/scala/dev/acyclic/transport/RustTypedRequests.scala";
 
 pub fn generate_jvm_semantic_types() -> Vec<(&'static str, String)> {
     vec![
@@ -21,9 +30,174 @@ pub fn generate_jvm_semantic_types() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Emit public request factories from the Rust-owned field bindings.  The
+/// factories are the actual SDK boundary: consumers pass nominal values and
+/// the generated adapter performs the wire conversion before invoking the
+/// protobuf builder.
+pub fn generate_jvm_typed_requests() -> Vec<(&'static str, String)> {
+    vec![
+        (JAVA_REQUESTS_PATH, render_java_requests()),
+        (KOTLIN_REQUESTS_PATH, render_kotlin_requests()),
+        (SCALA_REQUESTS_PATH, render_scala_requests()),
+    ]
+}
+
+fn request_groups() -> Vec<(&'static str, &'static str, Vec<&'static PublicFieldBinding>)> {
+    let mut groups: BTreeMap<(&'static str, &'static str), Vec<&'static PublicFieldBinding>> =
+        BTreeMap::new();
+    for binding in PUBLIC_FIELD_BINDINGS {
+        if binding.direction == PublicFieldDirection::Request {
+            groups
+                .entry((binding.module, binding.message))
+                .or_default()
+                .push(binding);
+        }
+    }
+    groups
+        .into_iter()
+        .map(|((module, message), fields)| (module, message, fields))
+        .collect()
+}
+
+fn java_proto_container(module: &str) -> &'static str {
+    match module {
+        "actors" => "acyclic.actors.v1.Actors",
+        "workers" => "acyclic.workers.v1.Workers",
+        "stream" => "acyclic.stream.v2.Stream",
+        "objects" => "acyclic.objects.v2.Objects",
+        "inference" => "inference.customer.v1.Inference",
+        "machines" => "acyclic.machines.v1.Machines",
+        "filesystem" => "acyclic.filesystem.v2.Filesystem",
+        "harness" => "acyclic.harness.v2.Harness",
+        _ => panic!("missing JVM protobuf container for Rust module {module}"),
+    }
+}
+
+fn upper_camel(value: &str) -> String {
+    value
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+fn request_method_name(module: &str, message: &str) -> String {
+    let base = message.strip_suffix("Request").unwrap_or(message);
+    format!("{}{}", module.replace('.', ""), base)
+}
+
+fn semantic_for(binding: &PublicFieldBinding) -> &'static SemanticType {
+    semantic_type(binding.semantic_type)
+        .expect("every public binding resolves to a Rust semantic type")
+}
+
+fn java_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
+    let ty = semantic_for(binding);
+    if binding.module == "machines"
+        && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")
+    {
+        let message_type = match binding.wire_field {
+            "machine" => "MachineId",
+            "checkpoint" => "CheckpointId",
+            "operation" => "OperationId",
+            _ => unreachable!(),
+        };
+        return format!(
+            "acyclic.machines.v1.Machines.{message_type}.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom({parameter}.toWire(), java.nio.charset.StandardCharsets.UTF_8)).build()"
+        );
+    }
+    match ty.wire_kind {
+        WireValueKind::Message => {
+            let container = java_proto_container(binding.module);
+            let message_type = match ty.rust_name {
+                "Image" => format!("{container}.Image"),
+                "IdempotencyKey" => format!("{container}.IdempotencyKey"),
+                _ => panic!("missing message wire projection for {}", ty.rust_name),
+            };
+            format!("({message_type}) {parameter}.toWire()")
+        }
+        WireValueKind::UnsignedInteger if ty.rust_name == "PageLimit" => {
+            format!("Math.toIntExact({parameter}.toWire())")
+        }
+        _ => format!("{parameter}.toWire()"),
+    }
+}
+
+fn kotlin_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
+    let ty = semantic_for(binding);
+    if binding.module == "machines"
+        && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")
+    {
+        let message_type = match binding.wire_field {
+            "machine" => "MachineId",
+            "checkpoint" => "CheckpointId",
+            "operation" => "OperationId",
+            _ => unreachable!(),
+        };
+        return format!(
+            "acyclic.machines.v1.Machines.{message_type}.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom({parameter}.toWire(), kotlin.text.Charsets.UTF_8)).build()"
+        );
+    }
+    match ty.wire_kind {
+        WireValueKind::Message => {
+            let container = java_proto_container(binding.module);
+            let message_type = match ty.rust_name {
+                "Image" => format!("{container}.Image"),
+                "IdempotencyKey" => format!("{container}.IdempotencyKey"),
+                _ => panic!("missing message wire projection for {}", ty.rust_name),
+            };
+            format!("({parameter}.toWire() as {message_type})")
+        }
+        WireValueKind::UnsignedInteger if ty.rust_name == "PageLimit" => {
+            format!("{parameter}.toWire().toInt()")
+        }
+        _ => format!("{parameter}.toWire()"),
+    }
+}
+
+fn scala_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
+    let ty = semantic_for(binding);
+    if binding.module == "machines"
+        && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")
+    {
+        let message_type = match binding.wire_field {
+            "machine" => "MachineId",
+            "checkpoint" => "CheckpointId",
+            "operation" => "OperationId",
+            _ => unreachable!(),
+        };
+        return format!(
+            "acyclic.machines.v1.Machines.{message_type}.newBuilder().setValue(com.google.protobuf.ByteString.copyFrom({parameter}.toWire.getBytes(java.nio.charset.StandardCharsets.UTF_8))).build()"
+        );
+    }
+    match ty.wire_kind {
+        WireValueKind::Message => {
+            let container = java_proto_container(binding.module);
+            let message_type = match ty.rust_name {
+                "Image" => format!("{container}.Image"),
+                "IdempotencyKey" => format!("{container}.IdempotencyKey"),
+                _ => panic!("missing message wire projection for {}", ty.rust_name),
+            };
+            format!("{parameter}.toWire.asInstanceOf[{message_type}]")
+        }
+        WireValueKind::UnsignedInteger if ty.rust_name == "PageLimit" => {
+            format!("{parameter}.toWire.toInt")
+        }
+        _ => format!("{parameter}.toWire"),
+    }
+}
+
 fn unique_types() -> impl Iterator<Item = &'static SemanticType> {
     let mut seen = BTreeSet::new();
-    SEMANTIC_TYPES.iter().filter(move |ty| seen.insert(ty.rust_name))
+    SEMANTIC_TYPES
+        .iter()
+        .filter(move |ty| seen.insert(ty.rust_name))
 }
 
 fn java_wire_type(ty: &SemanticType) -> &'static str {
@@ -91,18 +265,38 @@ fn kotlin_validation(ty: &SemanticType, value: &str) -> String {
     let mut lines = Vec::new();
     for rule in ty.rules {
         match rule {
-            SemanticRule::NonEmpty | SemanticRule::Utf8 if ty.wire_kind == WireValueKind::String => {
-                lines.push(format!("require({value}.isNotEmpty()) {{ \"{} must be non-empty\" }}", ty.rust_name));
+            SemanticRule::NonEmpty | SemanticRule::Utf8
+                if ty.wire_kind == WireValueKind::String =>
+            {
+                lines.push(format!(
+                    "require({value}.isNotEmpty()) {{ \"{} must be non-empty\" }}",
+                    ty.rust_name
+                ));
             }
             SemanticRule::NonEmpty if ty.wire_kind == WireValueKind::Bytes => {
-                lines.push(format!("require({value}.size() > 0) {{ \"{} must be non-empty\" }}", ty.rust_name));
+                lines.push(format!(
+                    "require({value}.size() > 0) {{ \"{} must be non-empty\" }}",
+                    ty.rust_name
+                ));
             }
             SemanticRule::FixedLength(n) if ty.wire_kind == WireValueKind::Bytes => {
-                lines.push(format!("require({value}.size() == {n}) {{ \"{} must contain exactly {n} bytes\" }}", ty.rust_name));
+                lines.push(format!(
+                    "require({value}.size() == {n}) {{ \"{} must contain exactly {n} bytes\" }}",
+                    ty.rust_name
+                ));
             }
-            SemanticRule::NonNegative => lines.push(format!("require({value} >= 0) {{ \"{} must be non-negative\" }}", ty.rust_name)),
-            SemanticRule::StrictlyPositive => lines.push(format!("require({value} > 0) {{ \"{} must be positive\" }}", ty.rust_name)),
-            SemanticRule::MaxItems(n) => lines.push(format!("require({value} <= {n}) {{ \"{} exceeds its maximum\" }}", ty.rust_name)),
+            SemanticRule::NonNegative => lines.push(format!(
+                "require({value} >= 0) {{ \"{} must be non-negative\" }}",
+                ty.rust_name
+            )),
+            SemanticRule::StrictlyPositive => lines.push(format!(
+                "require({value} > 0) {{ \"{} must be positive\" }}",
+                ty.rust_name
+            )),
+            SemanticRule::MaxItems(n) => lines.push(format!(
+                "require({value} <= {n}) {{ \"{} exceeds its maximum\" }}",
+                ty.rust_name
+            )),
             _ => {}
         }
     }
@@ -113,26 +307,172 @@ fn scala_validation(ty: &SemanticType, value: &str) -> String {
     let mut lines = Vec::new();
     for rule in ty.rules {
         match rule {
-            SemanticRule::NonEmpty | SemanticRule::Utf8 if ty.wire_kind == WireValueKind::String => {
-                lines.push(format!("require({value}.nonEmpty, \"{} must be non-empty\")", ty.rust_name));
+            SemanticRule::NonEmpty | SemanticRule::Utf8
+                if ty.wire_kind == WireValueKind::String =>
+            {
+                lines.push(format!(
+                    "require({value}.nonEmpty, \"{} must be non-empty\")",
+                    ty.rust_name
+                ));
             }
             SemanticRule::NonEmpty if ty.wire_kind == WireValueKind::Bytes => {
-                lines.push(format!("require({value}.nonEmpty, \"{} must be non-empty\")", ty.rust_name));
+                lines.push(format!(
+                    "require({value}.nonEmpty, \"{} must be non-empty\")",
+                    ty.rust_name
+                ));
             }
             SemanticRule::FixedLength(n) if ty.wire_kind == WireValueKind::Bytes => {
-                lines.push(format!("require({value}.length == {n}, \"{} must contain exactly {n} bytes\")", ty.rust_name));
+                lines.push(format!(
+                    "require({value}.length == {n}, \"{} must contain exactly {n} bytes\")",
+                    ty.rust_name
+                ));
             }
-            SemanticRule::NonNegative => lines.push(format!("require({value} >= 0, \"{} must be non-negative\")", ty.rust_name)),
-            SemanticRule::StrictlyPositive => lines.push(format!("require({value} > 0, \"{} must be positive\")", ty.rust_name)),
-            SemanticRule::MaxItems(n) => lines.push(format!("require({value} <= {n}, \"{} exceeds its maximum\")", ty.rust_name)),
+            SemanticRule::NonNegative => lines.push(format!(
+                "require({value} >= 0, \"{} must be non-negative\")",
+                ty.rust_name
+            )),
+            SemanticRule::StrictlyPositive => lines.push(format!(
+                "require({value} > 0, \"{} must be positive\")",
+                ty.rust_name
+            )),
+            SemanticRule::MaxItems(n) => lines.push(format!(
+                "require({value} <= {n}, \"{} exceeds its maximum\")",
+                ty.rust_name
+            )),
             _ => {}
         }
     }
     lines.join("; ")
 }
 
+fn render_java_requests() -> String {
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Request signatures and wire conversions originate in Rust type_policy.rs.\npackage dev.acyclic.transport;\n\n/** Public typed request factories generated from Rust-owned field bindings. */\npublic final class RustTypedRequests {\n  private RustTypedRequests() {}\n\n",
+    );
+    for (module, message, fields) in request_groups() {
+        let container = java_proto_container(module);
+        let method = request_method_name(module, message);
+        out.push_str("  public static ");
+        out.push_str(container);
+        out.push('.');
+        out.push_str(message);
+        out.push(' ');
+        out.push_str(&method);
+        out.push('(');
+        for (index, binding) in fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            let ty = semantic_for(binding);
+            out.push_str("RustSemanticTypes.");
+            out.push_str(ty.rust_name);
+            out.push(' ');
+            out.push_str(binding.field);
+        }
+        out.push_str(") {\n    var builder = ");
+        out.push_str(container);
+        out.push('.');
+        out.push_str(message);
+        out.push_str(".newBuilder();\n");
+        for binding in fields {
+            out.push_str("    builder.set");
+            out.push_str(&upper_camel(binding.wire_field));
+            out.push('(');
+            out.push_str(&java_value_expression(binding, binding.field));
+            out.push_str(");\n");
+        }
+        out.push_str("    return builder.build();\n  }\n\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_kotlin_requests() -> String {
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Request signatures and wire conversions originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\n/** Public typed request factories generated from Rust-owned field bindings. */\nobject RustTypedRequestsKotlin {\n\n",
+    );
+    for (module, message, fields) in request_groups() {
+        let container = java_proto_container(module);
+        let method = request_method_name(module, message);
+        out.push_str("  fun ");
+        out.push_str(&method);
+        out.push('(');
+        for (index, binding) in fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            let ty = semantic_for(binding);
+            out.push_str(binding.field);
+            out.push_str(": RustSemanticTypesKotlin.");
+            out.push_str(ty.rust_name);
+        }
+        out.push_str("): ");
+        out.push_str(container);
+        out.push('.');
+        out.push_str(message);
+        out.push_str(" = ");
+        out.push_str(container);
+        out.push('.');
+        out.push_str(message);
+        out.push_str(".newBuilder().apply {\n");
+        for binding in fields {
+            out.push_str("    set");
+            out.push_str(&upper_camel(binding.wire_field));
+            out.push('(');
+            out.push_str(&kotlin_value_expression(binding, binding.field));
+            out.push_str(")\n");
+        }
+        out.push_str("  }.build()\n\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_scala_requests() -> String {
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Request signatures and wire conversions originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\n/** Public typed request factories generated from Rust-owned field bindings. */\nobject RustTypedRequestsScala {\n\n",
+    );
+    for (module, message, fields) in request_groups() {
+        let container = java_proto_container(module);
+        let method = request_method_name(module, message);
+        out.push_str("  def ");
+        out.push_str(&method);
+        out.push('(');
+        for (index, binding) in fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            let ty = semantic_for(binding);
+            out.push_str(binding.field);
+            out.push_str(": RustSemanticTypesScala.");
+            out.push_str(ty.rust_name);
+        }
+        out.push_str("): ");
+        out.push_str(container);
+        out.push('.');
+        out.push_str(message);
+        out.push_str(" = { val builder = ");
+        out.push_str(container);
+        out.push('.');
+        out.push_str(message);
+        out.push_str(".newBuilder()");
+        for binding in fields {
+            out.push_str("; builder.set");
+            out.push_str(&upper_camel(binding.wire_field));
+            out.push('(');
+            out.push_str(&scala_value_expression(binding, binding.field));
+            out.push(')');
+        }
+        out.push_str("; builder.build() }\n\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
 fn render_java() -> String {
-    let mut out = String::from("// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in rust/crates/sdk-contract-wire/src/type_policy.rs.\npackage dev.acyclic.transport;\n\nimport java.util.Optional;\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\npublic final class RustSemanticTypes {\n  private RustSemanticTypes() {}\n\n  public sealed interface WireChoice permits Known, Unknown {}\n  public record Known(String tag, com.google.protobuf.ByteString payload) implements WireChoice {}\n  public record Unknown(int tag, com.google.protobuf.ByteString payload) implements WireChoice {}\n  public static <T> Optional<T> present(T value, boolean isPresent) { return isPresent ? Optional.ofNullable(value) : Optional.empty(); }\n\n");
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in rust/crates/sdk-contract-wire/src/type_policy.rs.\npackage dev.acyclic.transport;\n\nimport java.util.Optional;\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\npublic final class RustSemanticTypes {\n  private RustSemanticTypes() {}\n\n  public sealed interface WireChoice permits Known, Unknown {}\n  public record Known(String tag, com.google.protobuf.ByteString payload) implements WireChoice {}\n  public record Unknown(int tag, com.google.protobuf.ByteString payload) implements WireChoice {}\n  public static <T> Optional<T> present(T value, boolean isPresent) { return isPresent ? Optional.ofNullable(value) : Optional.empty(); }\n\n",
+    );
     for ty in unique_types() {
         let wire = java_wire_type(ty);
         let validation = java_validation(ty, "value");
@@ -161,7 +501,10 @@ fn render_java() -> String {
         out.push('(');
         out.push_str(wire);
         out.push_str(" value) { ");
-        if wire == "String" || wire == "com.google.protobuf.ByteString" || wire == "com.google.protobuf.Message" {
+        if wire == "String"
+            || wire == "com.google.protobuf.ByteString"
+            || wire == "com.google.protobuf.Message"
+        {
             out.push_str("java.util.Objects.requireNonNull(value); ");
         }
         out.push_str(&validation);
@@ -180,7 +523,9 @@ fn render_java() -> String {
 }
 
 fn render_kotlin() -> String {
-    let mut out = String::from("// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\nimport com.google.protobuf.ByteString\nimport java.util.Optional\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\nobject RustSemanticTypesKotlin {\n  sealed interface WireChoice\n  data class Known(val tag: String, val payload: ByteString) : WireChoice\n  data class Unknown(val tag: Int, val payload: ByteString) : WireChoice\n  fun <T: Any> present(value: T?, isPresent: Boolean): Optional<T> = if (isPresent && value != null) Optional.of(value) else Optional.empty()\n\n");
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\nimport com.google.protobuf.ByteString\nimport java.util.Optional\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\nobject RustSemanticTypesKotlin {\n  sealed interface WireChoice\n  data class Known(val tag: String, val payload: ByteString) : WireChoice\n  data class Unknown(val tag: Int, val payload: ByteString) : WireChoice\n  fun <T: Any> present(value: T?, isPresent: Boolean): Optional<T> = if (isPresent && value != null) Optional.of(value) else Optional.empty()\n\n",
+    );
     for ty in unique_types() {
         let wire = kotlin_wire_type(ty);
         let validation = kotlin_validation(ty, "value");
@@ -219,7 +564,9 @@ fn render_kotlin() -> String {
 }
 
 fn render_scala() -> String {
-    let mut out = String::from("// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\nobject RustSemanticTypesKotlin {\n  sealed trait WireChoice\n  final case class Known(tag: String, payload: Array[Byte]) extends WireChoice\n  final case class Unknown(tag: Int, payload: Array[Byte]) extends WireChoice\n  def present[T](value: T, isPresent: Boolean): Option[T] = if (isPresent) Option(value) else None\n\n");
+    let mut out = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\nobject RustSemanticTypesScala {\n  sealed trait WireChoice\n  final case class Known(tag: String, payload: Array[Byte]) extends WireChoice\n  final case class Unknown(tag: Int, payload: Array[Byte]) extends WireChoice\n  def present[T](value: T, isPresent: Boolean): Option[T] = if (isPresent) Option(value) else None\n\n",
+    );
     for ty in unique_types() {
         let wire = scala_wire_type(ty);
         let validation = scala_validation(ty, "value");
@@ -251,10 +598,15 @@ fn render_scala() -> String {
         out.push_str("): Either[String, ");
         out.push_str(ty.rust_name);
         out.push_str("] = try { ");
-        if !validation.is_empty() { out.push_str(&validation); out.push_str("; "); }
+        if !validation.is_empty() {
+            out.push_str(&validation);
+            out.push_str("; ");
+        }
         out.push_str("Right(new ");
         out.push_str(ty.rust_name);
-        out.push_str("(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }\n\n");
+        out.push_str(
+            "(value)) } catch { case e: IllegalArgumentException => Left(e.getMessage) } }\n\n",
+        );
     }
     out.push_str("}\n");
     out
