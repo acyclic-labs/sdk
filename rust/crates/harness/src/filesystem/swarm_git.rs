@@ -599,6 +599,18 @@ where
                             })?;
                         return route(operation_id, action.clone()).await;
                     }
+                    if !self
+                        .workspaces
+                        .read()
+                        .map_err(|_| {
+                            Error::Storage("local Git workspace registry was poisoned".into())
+                        })?
+                        .contains_key(source_workspace)
+                    {
+                        return Err(Error::Unauthorized(
+                            "Git join source workspace is not bound to this project".into(),
+                        ));
+                    }
                     let Some(source_tree) = source_tree else {
                         return Ok(GitFilesystemResult::Applied {
                             tree: Some(*target_tree),

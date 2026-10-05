@@ -453,6 +453,7 @@ struct RuntimeGitSwarmProvider {
     continue_root: AtomicBool,
     abort_root: AtomicBool,
     reject_root_merge: AtomicBool,
+    reject_child_sibling: AtomicBool,
     merge_child_sent: AtomicBool,
     merge_root_sent: AtomicBool,
     commit_root_sent: AtomicBool,
@@ -462,6 +463,7 @@ struct RuntimeGitSwarmProvider {
     continue_sent: AtomicBool,
     abort_sent: AtomicBool,
     reject_root_sent: AtomicBool,
+    reject_child_sibling_sent: AtomicBool,
 }
 
 impl RuntimeGitSwarmProvider {
@@ -479,6 +481,7 @@ impl RuntimeGitSwarmProvider {
             continue_root: AtomicBool::new(false),
             abort_root: AtomicBool::new(false),
             reject_root_merge: AtomicBool::new(false),
+            reject_child_sibling: AtomicBool::new(false),
             merge_child_sent: AtomicBool::new(false),
             merge_root_sent: AtomicBool::new(false),
             commit_root_sent: AtomicBool::new(false),
@@ -488,6 +491,7 @@ impl RuntimeGitSwarmProvider {
             continue_sent: AtomicBool::new(false),
             abort_sent: AtomicBool::new(false),
             reject_root_sent: AtomicBool::new(false),
+            reject_child_sibling_sent: AtomicBool::new(false),
         })
     }
 
@@ -537,6 +541,20 @@ impl ModelProvider for RuntimeGitSwarmProvider {
                         "task": "runtime-grandchild",
                         "prompt": "write the final runtime file"
                     }),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if task.as_deref() == Some("runtime-child")
+            && self.reject_child_sibling.load(Ordering::SeqCst)
+            && !self.reject_child_sibling_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-reject-child-sibling".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "sibling"]}),
                 }),
                 Ok(ModelEvent::Completed {
                     metadata: json!({}),
@@ -981,6 +999,9 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
     let grandchild_workspace_id = host
         .workspace_id(grandchild_project.storage_name()?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
+    let root_workspace_id = host
+        .workspace_id(root_project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     install_git_branch(
         directory.path(),
         child_workspace_id,
@@ -988,6 +1009,28 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
         grandchild_workspace_id,
     )
     .await?;
+    // A child must not be able to route a branch pointing at an unrelated
+    // sibling or ancestor workspace merely because its Git state names it.
+    // The model-visible argv path must reject this before any filesystem join.
+    install_git_branch(
+        directory.path(),
+        child_workspace_id,
+        "sibling",
+        root_workspace_id,
+    )
+    .await?;
+    provider.reject_child_sibling.store(true, Ordering::SeqCst);
+    assert!(
+        swarm
+            .run(
+                child_task,
+                OperationId::from_bytes([0xEC; 16]),
+                "attempt a forbidden child to sibling merge",
+            )
+            .await
+            .is_err()
+    );
+    provider.reject_child_sibling.store(false, Ordering::SeqCst);
     provider.merge_child.store(true, Ordering::SeqCst);
     swarm
         .run(
@@ -1012,9 +1055,6 @@ async fn default_runtime_git_merges_only_through_explicit_authenticated_commands
             .is_err()
     );
 
-    let root_workspace_id = host
-        .workspace_id(root_project.storage_name()?)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
     install_git_branch(
         directory.path(),
         root_workspace_id,
