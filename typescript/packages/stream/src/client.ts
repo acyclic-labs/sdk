@@ -8,7 +8,7 @@ import type {
   StreamProvider,
 } from "./types.js";
 import { StreamError } from "./types.js";
-import { isRustOwnedTransportUnavailable, selectRustOwnedTransport, STREAM_REMOTE_POLICY } from "./generated-client.js";
+import { STREAM_REMOTE_POLICY } from "./generated-client.js";
 import { ensureStreamWasm, normalizeWireCommit, projectChildrenPage, validateChildrenPageRequest, validatePathValue, validateReadRequest, validateSequenceValue, validateRecordBatch, validateWireAppend, validateWireRequest } from "./contract.js";
 
 export interface Codec<Value> {
@@ -156,18 +156,19 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
   const endpoint = environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT");
   const token = environment?.token ?? environmentValue("ACYCLIC_API_KEY");
   const runtime = isNativeRuntime() ? "native" : "browser";
-  let selected: "grpc" | "http";
-  try {
-    selected = selectRustOwnedTransport(STREAM_REMOTE_POLICY, runtime, environment?.transport) as "grpc" | "http";
-  } catch {
+  const options = STREAM_REMOTE_POLICY.transport[runtime];
+  const selected = environment?.transport === undefined
+    ? options[0]
+    : options.find(option => option.kind === environment.transport);
+  if (selected === undefined) {
     const requested = environment?.transport ?? "the default";
     throw new StreamError("unsupported", `Stream transport ${requested} is unavailable in the ${runtime} runtime`);
   }
-  if (selected === "http") {
+  if (selected.kind === "http") {
     if (typeof globalThis.fetch !== "function") throw new StreamError("unavailable", "Stream HTTP transport requires fetch in this runtime");
     return new StreamClient(new HttpStreamProvider({ endpoint, token }));
   }
-  if (selected === "grpc") {
+  if (selected.kind === "grpc") {
     if (runtime !== "native") throw new StreamError("unsupported", "Stream gRPC transport requires a native Node or Bun runtime");
     try {
       // Keep the native companion out of browser bundles. The Rust policy has
@@ -175,28 +176,33 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
       const nativeModule = "./native.js";
       const { NativeStreamProvider } = await import(nativeModule);
       try {
-        const caCertificate = environment?.caCertificate ?? environmentValueOptional("ACYCLIC_STREAM_CA_CERTIFICATE");
-        return new StreamClient(await NativeStreamProvider.connect({ endpoints: [endpoint], token, ...(caCertificate === undefined ? {} : { caCertificate }) }));
+        return new StreamClient(await NativeStreamProvider.connect({ endpoints: [endpoint], token }));
       } catch (error) {
         // Source checkouts may omit the optional platform companion. The
         // generated Node gRPC adapter is the same full transport contract and
         // remains the best available native implementation in that case.
-        if (!isRustOwnedTransportUnavailable(error)) throw error;
+        if (!isMissingNativeCompanion(error)) throw error;
         const { GrpcStreamProvider } = await import("./grpc.js");
-        const caCertificate = environment?.caCertificate ?? environmentValueOptional("ACYCLIC_STREAM_CA_CERTIFICATE");
-        return new StreamClient(new GrpcStreamProvider({ endpoint, token, ...(caCertificate === undefined ? {} : { caCertificate }) }));
+        return new StreamClient(new GrpcStreamProvider({ endpoint, token }));
       }
     } catch (error) {
       const reason = error instanceof Error ? `: ${error.message}` : "";
       throw new StreamError("unavailable", `Stream native transport is unavailable in this runtime${reason}`);
     }
   }
-  throw new StreamError("unsupported", `Stream transport ${selected} is unavailable in the ${runtime} runtime`);
+  throw new StreamError("unsupported", `Stream transport ${selected.kind} is unavailable in the ${runtime} runtime`);
 }
 
 function isNativeRuntime(): boolean {
   const runtime = globalThis as typeof globalThis & { process?: { versions?: { node?: string; bun?: string } } };
   return typeof runtime.process?.versions?.node === "string" || typeof runtime.process?.versions?.bun === "string";
+}
+
+function isMissingNativeCompanion(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { readonly code?: unknown }).code;
+  const message = (error as { readonly message?: unknown }).message;
+  return code === "ERR_MODULE_NOT_FOUND" || (typeof message === "string" && message.includes("has no native companion"));
 }
 
 function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
@@ -224,11 +230,6 @@ function environmentValue(name: string): string {
   const value = runtime.process?.env?.[name];
   if (!value?.trim()) throw new StreamError("configuration", `${name} is required`);
   return value;
-}
-function environmentValueOptional(name: string): string | undefined {
-  const runtime = globalThis as typeof globalThis & { process?: { env?: Readonly<{ [key: string]: string | undefined }> } };
-  const value = runtime.process?.env?.[name];
-  return value?.trim() === "" ? undefined : value;
 }
 function assertJson(value: unknown, seen = new Set<object>()): asserts value is JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return;

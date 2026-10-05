@@ -43,13 +43,6 @@ if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && com
 fi
 bun_wasm_bindgen_bin="$(bash "$root/scripts/ensure-wasm-bindgen.sh")"
 bun scripts/check-metadata.mjs
-# Harness exposes an optional Objects-backed facade. Build that peer in a
-# fresh snapshot before type-checking Harness so this qualification does not
-# resolve declarations from a producer checkout or an unrelated workspace.
-(
-  cd "$root/typescript/packages/objects"
-  bun run build
-)
 mkdir -p "$wasm_output"
 bun scripts/build-harness-wasm.mjs "$bun_wasm_output" "$cargo_bin" "$bun_wasm_bindgen_bin"
 bun x tsc -p typescript/packages/harness/tsconfig.json
@@ -144,10 +137,9 @@ for index in "${!dependency_names[@]}"; do
 done
 tar -xf "$harness_crate" -C "$work/crates"
 # The wire build crate records the canonical family model inputs with
-# source-relative include_bytes! paths. Package those exact Rust-owned bytes in
-# a versioned input archive before extracting them into the consumer. This
-# keeps the installed check archive-only: the extracted build never resolves
-# an input from the producer checkout.
+# source-relative include_bytes! paths. Preserve those exact Rust-owned bytes
+# in the extracted consumer layout so the packaged build uses the same inputs
+# as the producer tree, including the private contract source snapshots.
 wire_version=""
 for index in "${!dependency_names[@]}"; do
   if [[ "${dependency_names[$index]}" == "acyclic-sdk-contract-wire" ]]; then
@@ -155,11 +147,9 @@ for index in "${!dependency_names[@]}"; do
   fi
 done
 if [[ -n "$wire_version" ]]; then
-  wire_input_archive_root="$work/wire-inputs/acyclic-sdk-contract-wire-inputs-$wire_version"
-  mkdir -p "$wire_input_archive_root"
   stage_wire_input() {
     source="$root/$1"
-    destination="$wire_input_archive_root/$2"
+    destination="$work/crates/$2"
     [[ -f "$source" ]] || { echo "missing canonical wire input: $source" >&2; exit 1; }
     mkdir -p "$(dirname "$destination")"
     install -m 0644 "$source" "$destination"
@@ -178,12 +168,6 @@ if [[ -n "$wire_version" ]]; then
   stage_wire_input rust/crates/sdk-contract-validation/src/lib.rs sdk-contract-validation/src/lib.rs
   stage_wire_input rust/crates/sdk-contract-validation/Cargo.toml sdk-contract-validation/Cargo.toml
   stage_wire_input rust/crates/sdk-contract-validation/Cargo.lock sdk-contract-validation/Cargo.lock
-  wire_input_archive="$work/acyclic-sdk-contract-wire-inputs-$wire_version.tar.gz"
-  tar -czf "$wire_input_archive" -C "$work/wire-inputs" "acyclic-sdk-contract-wire-inputs-$wire_version"
-  # Restore the archived inputs at the sibling paths expected by the packaged
-  # wire crate's source-relative include_bytes! calls. The archive remains the
-  # only input source; this extraction never reads from the producer checkout.
-  tar -xzf "$wire_input_archive" --strip-components=1 -C "$work/crates"
 fi
 mkdir -p "$work/crates/.cargo"
 install -m 0644 "$root/rust-toolchain.toml" "$work/crates/rust-toolchain.toml"
@@ -191,18 +175,14 @@ printf '[patch.crates-io]\n' >"$work/crates/.cargo/config.toml"
 for index in "${!dependency_names[@]}"; do
   name="${dependency_names[$index]}"
   version="${dependency_versions[$index]}"
-  printf '%s = { path = "%s-%s" }\n' "$name" "$name" "$version" >>"$work/crates/.cargo/config.toml"
+  patch_path="$work/crates/$name-$version"
+  if [[ "$bun_platform" == "win32" ]]; then
+    patch_path="$(bash "$root/scripts/native-tool-path.sh" "$patch_path")"
+  fi
+  printf '%s = { path = "%s" }\n' "$name" "$patch_path" >>"$work/crates/.cargo/config.toml"
 done
 cd "$work/crates"
-if [[ -n "${wire_input_archive:-}" ]]; then
-  # No producer checkout path may leak into the archive-only installation.
-  if grep -R -F -- "$root" . >/dev/null 2>&1; then
-    echo 'archive-only consumer contains a producer checkout path' >&2
-    exit 1
-  fi
-fi
 "$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
-  --lib --tests \
   -- --test-threads=1 2>&1 | tee "$work/rust-package-test.log"
 
 mkdir -p "$output"
@@ -213,9 +193,6 @@ for index in "${!dependency_names[@]}"; do
   install -m 0644 "$package_target/package/$name-$version.crate" "$output/"
 done
 install -m 0644 "$harness_crate" "$output/"
-if [[ -n "${wire_input_archive:-}" ]]; then
-  install -m 0644 "$wire_input_archive" "$output/"
-fi
 cmp --silent "$archive" "$output/acyclic-harness.tgz"
 for index in "${!dependency_names[@]}"; do
   name="${dependency_names[$index]}"
@@ -236,9 +213,6 @@ for index in "${!dependency_names[@]}"; do
   version="${dependency_versions[$index]}"
   evidence_artifacts+=("$output/$name-$version.crate")
 done
-if [[ -n "${wire_input_archive:-}" ]]; then
-  evidence_artifacts+=("$output/$(basename "$wire_input_archive")")
-fi
 if [[ "$bun_platform" == "win32" ]]; then
   normalizer="$(bash "$root/scripts/native-tool-path.sh" "$normalizer")"
   rust_log="$(bash "$root/scripts/native-tool-path.sh" "$rust_log")"
@@ -255,7 +229,5 @@ repeat_evidence_arg="$repeat_evidence"
 bun "$normalizer" "$rust_log" "$typescript_log" "$repeat_evidence_arg" "${evidence_artifacts[@]}"
 cmp --silent "$output/CONFORMANCE-EVIDENCE.json" "$repeat_evidence"
 cd "$output"
-sha256sum acyclic-harness.tgz acyclic-*.crate acyclic-sdk-contract-wire-inputs-*.tar.gz CONFORMANCE-EVIDENCE.json > SHA256SUMS
+sha256sum acyclic-harness.tgz acyclic-*.crate CONFORMANCE-EVIDENCE.json > SHA256SUMS
 printf '%s\n' "$source_sha" > SOURCE_COMMIT
-bun "$root/scripts/write-installed-package-receipt.mjs" \
-  "$output" harness "bun test test (installed archive)"

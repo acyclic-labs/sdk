@@ -4,15 +4,20 @@ import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, Childr
 import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, wireAppendRequest, wireRequest } from "../src/contract.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
+import { STREAM_HANDSHAKE } from "../src/generated-client.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
+
+const handshakeResponse = (): Response => Response.json({ protocol: { version: STREAM_HANDSHAKE.version, descriptorDigest: STREAM_HANDSHAKE.descriptorDigest }, supported: {} });
+const handshakeFetcher = (application: typeof fetch): typeof fetch => async (input, init) =>
+  new URL(String(input)).pathname === STREAM_HANDSHAKE.route ? handshakeResponse() : application(input, init);
 
 test("absent retry observations project undefined through memory and HTTP", async () => {
   await ensureStreamWasm();
   expect(decodeHttpResponse("idempotency/inspect", "null")).toBeUndefined();
   expect(await new MemoryStreamProvider().inspectIdempotency(key("missing-receipt"))).toBeUndefined();
-  const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response("null") });
+  const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => new Response("null")) });
   expect(await provider.inspectIdempotency(key("missing-receipt"))).toBeUndefined();
 });
 
@@ -120,10 +125,10 @@ describe("website Stream contract", () => {
     await expect(customProvider.append("bad path", [new Uint8Array()], { ifTail: -1n })).rejects.toMatchObject({ code: "invalid_path" });
     await expect(customProvider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
     let hostedCalls = 0;
-    const hosted = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => {
+    const hosted = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => {
       hostedCalls += 1;
       return new Response("null");
-    } });
+    }) });
     await expect(hosted.append("bounded", [])).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(hostedCalls).toBe(0);
     await expect(stream.read({ from: 0n, limit: 1_025 }).next()).rejects.toThrow("limit");
@@ -159,10 +164,10 @@ describe("website Stream contract", () => {
     await expect(client.bytes("large/0").tail()).rejects.toMatchObject({ code: "stream_not_found" });
 
     let hostedCalls = 0;
-    const hosted = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => {
+    const hosted = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => {
       hostedCalls += 1;
       return new Response("null");
-    } });
+    }) });
     await expect(hosted.append("a".repeat(65_535), Array(16).fill(new Uint8Array(65_536)))).rejects.toThrow("command exceeds");
     const hostedMutations = conditions.map(condition => ({ append: { path: condition.path, values: [body] } }));
     await expect(hosted.commit({ conditions, mutations: hostedMutations }, { idempotencyKey: key("hosted-large") })).rejects.toThrow("command exceeds");
@@ -532,8 +537,8 @@ describe("website Stream contract", () => {
     expect(Object.hasOwn(local.tails, "__proto__")).toBe(true);
     expect(local.tails["__proto__"]).toBe(1n);
 
-    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
-      new Response(`{"ok":true,"commitId":"${encodedCommitId}","tails":{"__proto__":"1"},"forks":[]}`) });
+    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () =>
+      new Response(`{"ok":true,"commitId":"${encodedCommitId}","tails":{"__proto__":"1"},"forks":[]}`)) });
     const hosted = await remote.commit(request, { idempotencyKey: key("prototype-hosted") });
     if (!hosted.ok) throw new Error("hosted commit unexpectedly conflicted");
     expect(Object.hasOwn(hosted.tails, "__proto__")).toBe(true);
@@ -542,10 +547,10 @@ describe("website Stream contract", () => {
 
   test("hosted append sends the bytes and key validated at call time", async () => {
     let sent: { values: string[]; options: { idempotencyKey: string } } | undefined;
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_url, init) => {
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async (_url, init) => {
       sent = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({ ok: true, start: "0", end: "1", tail: "1", commitId: encodedCommitId }));
-    } });
+    }) });
     const value = new Uint8Array([1]);
     const retryKey = key("snap");
     const pending = provider.append("events", [value], { idempotencyKey: retryKey });
@@ -594,17 +599,17 @@ describe("website Stream contract", () => {
   });
 
   test("hosted children pages use the Rust response contract", async () => {
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async (_input, init) => {
       expect(JSON.parse(String(init?.body))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 2 });
       return new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/b" }));
-    } });
+    }) });
     const page = await provider.childrenPage({ parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 2 });
     expect(page).toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [{ path: "runs/b" }], nextAfter: "runs/b" });
 
-    const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: null })) });
+    const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: null }))) });
     await expect(nullContinuation.childrenPage({ parent: "runs", limit: 2 })).resolves.toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [] });
 
-    const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/a" })) });
+    const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/a" }))) });
     await expect(malformed.childrenPage({ parent: "runs", limit: 2 })).rejects.toMatchObject({ code: "invalid_response" });
   });
 
@@ -617,30 +622,30 @@ describe("website Stream contract", () => {
     expect(localReads).toBe(1);
 
     let hostedReads = 0;
-    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => new Response(new URL(String(input)).pathname.endsWith("/tail") ? '"0"' : "[]") });
+    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async input => new Response(new URL(String(input)).pathname.endsWith("/tail") ? '"0"' : "[]")) });
     const hostedOptions = { get from() { hostedReads += 1; return 0n; }, limit: 1 };
     for await (const _record of remote.read("events", hostedOptions)) { /* consume */ }
     expect(hostedReads).toBe(1);
   });
 
   test("managed transport validates responses and propagates follow cancellation", async () => {
-    const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true })) });
+    const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => new Response(JSON.stringify({ ok: true }))) });
     await expect(malformed.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
-    const impossible = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true, start: "3", end: "2", tail: "1", commitId: encodedCommitId })) });
+    const impossible = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => new Response(JSON.stringify({ ok: true, start: "3", end: "2", tail: "1", commitId: encodedCommitId }))) });
     await expect(impossible.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
-    const invalidPath = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ source: "bad//path", destination: "ok", forkedAt: "0", tail: "0", commitId: encodedCommitId })) });
+    const invalidPath = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => new Response(JSON.stringify({ source: "bad//path", destination: "ok", forkedAt: "0", tail: "0", commitId: encodedCommitId }))) });
     await expect(invalidPath.fork("events", "copy")).rejects.toMatchObject({ code: "invalid_response" });
-    const invalidUtf8 = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([255])) });
+    const invalidUtf8 = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => new Response(new Uint8Array([255]))) });
     await expect(invalidUtf8.tail("events")).rejects.toMatchObject({ code: "invalid_response" });
     const controller = new AbortController();
     let observedSignal: AbortSignal | null | undefined;
     let requestStarted!: () => void;
     const requested = new Promise<void>(resolve => { requestStarted = resolve; });
-    const hanging = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+    const hanging = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async (_input, init) => {
       observedSignal = init?.signal;
       requestStarted();
       return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true }));
-    } });
+    }) });
     const next = hanging.follow("events", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]().next();
     await requested; controller.abort(new Error("stop"));
     await expect(next).rejects.toThrow("stop");
@@ -650,7 +655,7 @@ describe("website Stream contract", () => {
     const add = polling.signal.addEventListener.bind(polling.signal); const remove = polling.signal.removeEventListener.bind(polling.signal);
     polling.signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => { added += 1; return add(...args); }) as AbortSignal["addEventListener"];
     polling.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => { removed += 1; return remove(...args); }) as AbortSignal["removeEventListener"];
-    const idle = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => { const route = new URL(String(input)).pathname.split("/").pop(); if (route === "tail") return new Response('"0"'); if (++requests === 3) polling.abort(); return new Response("[]"); } });
+    const idle = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async input => { const route = new URL(String(input)).pathname.split("/").pop(); if (route === "tail") return new Response('"0"'); if (++requests === 3) polling.abort(); return new Response("[]"); }) });
     expect(await idle.follow("events", { from: 0n, signal: polling.signal })[Symbol.asyncIterator]().next()).toEqual({ done: true, value: undefined });
     expect(added).toBe(removed);
   });
@@ -659,10 +664,10 @@ describe("website Stream contract", () => {
     const controller = new AbortController();
     controller.abort();
     let requests = 0;
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => {
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => {
       requests += 1;
       return new Response('"0"');
-    } });
+    }) });
 
     await expect(provider.follow("events", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]().next())
       .resolves.toEqual({ done: true, value: undefined });
@@ -675,37 +680,37 @@ describe("website Stream contract", () => {
       { wireCode: "access_denied", code: "access_denied", status: 403 },
       { wireCode: "stream_not_found", code: "stream_not_found", status: 404 },
     ]) {
-      const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
-        new Response(JSON.stringify({ code: failure.wireCode, message: "service detail" }), { status: failure.status }) });
+      const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () =>
+        new Response(JSON.stringify({ code: failure.wireCode, message: "service detail" }), { status: failure.status })) });
       await expect(provider.tail("events")).rejects.toMatchObject({ code: failure.code, message: "service detail", status: failure.status });
     }
 
-    const unknown = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
-      new Response(JSON.stringify({ code: "internal_failure", message: "service detail" }), { status: 500 }) });
+    const unknown = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () =>
+      new Response(JSON.stringify({ code: "internal_failure", message: "service detail" }), { status: 500 })) });
     await expect(unknown.tail("events")).rejects.toMatchObject({ code: "transport", message: JSON.stringify({ code: "internal_failure", message: "service detail" }), status: 500 });
   });
 
   test("hosted reads keep the canonical cursor contiguous", async () => {
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify([{
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => new Response(JSON.stringify([{
       sequence: "1", value: "AQ==", commitId: encodedCommitId,
-    }])) });
+    }]))) });
     await expect(provider.read("events", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_response" });
   });
 
   test("hosted reads reject an empty page beyond the canonical tail", async () => {
     const routes: string[] = [];
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => {
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async input => {
       const route = new URL(String(input)).pathname.split("/").pop();
       routes.push(route!);
       return route === "read" ? new Response("[]") : new Response('"1"');
-    } });
+    }) });
     await expect(provider.read("events", { from: 2n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
     expect(routes).toEqual(["tail"]);
   });
 
   test("HTTP provider rejects invalid paths and commit shapes before fetching", async () => {
     let calls = 0;
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => { calls += 1; return new Response("null"); } });
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => { calls += 1; return new Response("null"); }) });
     for (const operation of [
       () => provider.tail("bad path"),
       () => provider.tail(123 as never),
@@ -732,7 +737,7 @@ describe("website Stream contract", () => {
 
   test("HTTP token grants reject invalid paths before fetching", async () => {
     let calls = 0;
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => { calls += 1; return new Response("null"); } });
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async () => { calls += 1; return new Response("null"); }) });
     await expect(Promise.resolve().then(() => provider.createToken!({ expiresIn: "1h", allow: [{ path: "bad path", operations: ["read"] }] }))).rejects.toMatchObject({ code: "invalid_path" });
     await expect(Promise.resolve().then(() => provider.createToken!({ expiresIn: "1h", allow: [{ path: "runs//child", operations: ["read"] }] }))).rejects.toMatchObject({ code: "invalid_path" });
     await expect(Promise.resolve().then(() => provider.createToken!({ expiresIn: "1h", allow: [{ path: "runs", operations: ["unknown" as never] }] }))).rejects.toMatchObject({ code: "invalid_argument" });
@@ -755,10 +760,10 @@ describe("website Stream contract", () => {
         return { path: "bad path", operations: ["read"] };
       },
     };
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async (_input, init) => {
       requestBody = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({ token: "secret", expiresAt: "2030-01-02T03:04:05.000Z" }));
-    } });
+    }) });
 
     const token = await provider.createToken!({ expiresIn: "1h", allow: [grant] });
 
@@ -773,7 +778,7 @@ describe("website Stream contract", () => {
       start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); },
       cancel() { cancelled = true; throw new Error("cancel failed"); },
     });
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: 2, fetcher: async () => new Response(body) });
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: 2, fetcher: handshakeFetcher(async () => new Response(body)) });
     await expect(provider.tail("events")).rejects.toMatchObject({ code: "response_too_large" });
     expect(cancelled).toBeTrue();
   });
@@ -782,10 +787,10 @@ describe("website Stream contract", () => {
     const maximum = 0xffff_ffff_ffff_ffffn;
     const identity = idempotencyKey(new Uint8Array([0, 255, 128, 1]));
     let requestBody: unknown;
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: handshakeFetcher(async (_input, init) => {
       requestBody = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({ ok: true, start: maximum.toString(), end: maximum.toString(), tail: maximum.toString(), commitId: encodedCommitId }));
-    } });
+    }) });
     const result = await provider.append("events", [new Uint8Array([1])], { ifTail: maximum, idempotencyKey: identity });
     expect(requestBody).toMatchObject({ options: { ifTail: maximum.toString(), idempotencyKey: btoa(String.fromCharCode(...identity)) } });
     expect(result).toMatchObject({ ok: true, start: maximum, end: maximum, tail: maximum });

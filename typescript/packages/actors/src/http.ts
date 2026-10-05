@@ -21,7 +21,7 @@ import type {
   UpdateActorRequest, UpdateActorResponse,
   ErrorCode,
 } from "../generated/proto/actors/v1/actors_pb.js";
-import { ACTORS_HANDSHAKE, ACTORS_METHODS, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { ACTORS_METHODS, interpolateRustOwnedPath, type RustOwnedMethodMetadata } from "./generated-client.js";
 import { validateActorsContentLength, validateActorsCredential, validateActorsEndpoint, validateActorsInvoke, validateActorsResponseChunk, validateActorsResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpActorsOptions {
@@ -41,12 +41,10 @@ export class HttpActorsClient {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
-  #handshake: Promise<void> | undefined;
 
   constructor(options: HttpActorsOptions) {
     const endpoint = new URL(options.endpoint);
     validateActorsEndpoint(options.endpoint);
-    validateRustOwnedCredential(ACTORS_METHODS.createActor, options.token);
     validateActorsCredential(options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;
@@ -83,11 +81,9 @@ export class HttpActorsClient {
   }
 
   async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {
-    const headers = { authorization: `Bearer ${this.#token}`, "content-type": "application/json" };
-    await this.#ensureHandshake(headers, signal);
     const response = await this.#fetcher(new URL(interpolateRustOwnedPath(method, request), `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
-      headers,
+      headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
       body,
       signal,
     });
@@ -105,14 +101,6 @@ export class HttpActorsClient {
       }
     }
     return json;
-  }
-
-  async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
-    if (this.#handshake !== undefined) return this.#handshake;
-    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, ACTORS_HANDSHAKE, this.#maximum, signal)
-      .catch(error => { this.#handshake = undefined; throw error; });
-    this.#handshake = pending;
-    return pending;
   }
 }
 

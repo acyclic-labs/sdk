@@ -1,6 +1,6 @@
 //! Rust-owned credential admission policy projected into generated clients.
 
-/// Credential policy shared by native callers and every generated language facade.
+/// Credential policy shared by native callers and generated TypeScript facades.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CredentialPolicy {
     /// Stable policy identifier emitted into target metadata.

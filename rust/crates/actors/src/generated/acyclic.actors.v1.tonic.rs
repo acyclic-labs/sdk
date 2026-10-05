@@ -1,6 +1,5 @@
 // @generated
 /// Generated client implementations.
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actors_service_client {
     #![allow(
         unused_variables,
@@ -317,7 +316,6 @@ pub mod actors_service_client {
     }
 }
 /// Generated server implementations.
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actors_service_server {
     #![allow(
         unused_variables,

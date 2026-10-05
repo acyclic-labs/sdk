@@ -36,7 +36,7 @@
     "ajv-formats": "3.0.1",
     "typescript": "7.0.2"
   },
-  "description": "The Acyclic SDK is the open contract and composition layer for building recursive, fork-join agent systems. It contains the Rust harness, public service interfaces, customer-machine implementations, conformance suites, and language bindings.",
+  "description": "The Acyclic SDK is the open contract and composition layer for building recursive, fork-join agent systems. It contains the Rust harness, public service interfaces, customer-machine implementations, conformance suites, and TypeScript packages.",
   "main": "index.js",
   "directories": {
     "doc": "docs",
@@ -45,6 +45,6 @@
   },
   "keywords": [],
   "author": "",
-  "license": "Apache-2.0",
+  "license": "ISC",
   "type": "commonjs"
 }

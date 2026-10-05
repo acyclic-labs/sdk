@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.rust-source.completion-audit.v1",
-  "checked_at": "2026-10-05",
+  "checked_at": "2026-10-04",
   "status": "incomplete",
   "branch": "codex/rust-sdk-docs-source",
   "requirements": [
@@ -11,12 +11,12 @@
     },
     {
       "id": "rust-contract-authority",
-      "evidence": "Rust contract-wire model, transport policies, JVM/CSharp/Ruby/PHP/Dart emitters inspected. Full current artifact parity remains pending concurrent emitter changes. Coordinator commit56ccff87ce1db6acd153714726f87ecd25617889 builds Machines messages and SourceCodeInfo directly from the Rust contract model, replacing checked-in model descriptor/environment override authority. Archived runtime descriptor remains unchanged; native unit25/25 and wire fixture1/1 pass. Coordinator ea6c6fcd544cc0101eb1ac4b278e7d6cd9f09c39 adds a thin Machines Service<P> wire adapter delegating all19 RPCs to the Rust MachinesProvider, preserving actual state and replay semantics. All19 operations pass real loopback network qualification with distinct child identities, create replay/rebinding rejection and terminal state checks. Pending cancellation now persists in the canonical Rust simulator; cancel/inspect/watch agree over the network. Full Machines verification26unit+1wire+1doctest passed. Shared fixed-response Machines fixture replacement is assigned and remains outstanding. User reaffirmed all semantic rules and strongest public language typing must be authored in Rust source; companion metadata-only bundles do not satisfy production signature coverage.",
+      "evidence": "Rust contract-wire model, transport policies, JVM/CSharp/Ruby/PHP/Dart emitters inspected. Full current artifact parity remains pending concurrent emitter changes.",
       "state": "partial"
     },
     {
       "id": "wire-compatibility",
-      "evidence": "Retained receipt research/acceptance/wire-product-parity-20261004.json records product parity7/7, Inference7/7 and Objects8/8, including archived descriptor immutability and extension payload preservation. Coordinator inspected receipt and current checker commits; these scopes do not establish all language transport compatibility. Fresh integration is assigned after later changes. Coordinator current locked archive_identity suite passes3/3: exact eight archived family hashes, shared Protocol identity, and complete metadata for all106 operations across seven emitted facade languages. Independent transport control schema preserves archive bytes; six transport-control tests pass including maintained prost/tonic generation and mismatch rejection. End-to-end installed transport qualification remains outstanding.",
+      "evidence": "Retained receipt research/acceptance/wire-product-parity-20261004.json records product parity7/7, Inference7/7 and Objects8/8, including archived descriptor immutability and extension payload preservation. Coordinator inspected receipt and current checker commits; these scopes do not establish all language transport compatibility. Fresh integration is assigned after later changes.",
       "state": "partial"
     },
     {
@@ -26,17 +26,17 @@
     },
     {
       "id": "drift-detection",
-      "evidence": "Root actual CLI negatives passed 5 tests/28 assertions; retained reviewer 22875fe11 adds repeat drift and directory/file link negatives. Constructed authority-backed positive is synthetic. Real successful full generation, actual output/source tampering and clean reproducibility remain unverified. Current Rust wire CLI generates and checks independent transport control source/FDS, binds hashes and Rust source in authority manifest, and rejects an actually edited control source. Full single-entrypoint repeatability remains unverified.",
+      "evidence": "Root actual CLI negatives passed 5 tests/28 assertions; retained reviewer 22875fe11 adds repeat drift and directory/file link negatives. Constructed authority-backed positive is synthetic. Real successful full generation, actual output/source tampering and clean reproducibility remain unverified.",
       "state": "partial"
     },
     {
       "id": "language-packages",
-      "evidence": "Scoped owner checks: ten TypeScript packages install; installed TS Machines invokes19 modeled RPCs against matching RSA/mTLS fixture. Python/Go installed consumers and HTTP targets have scoped evidence. Current source-bound unified qualification remains incomplete: C++ dependency closure mismatch, Swift Linux toolchain/transport, PHP lifecycle, JVM/.NET current fixture verification and viable additional targets require work. Root independently read current hosted37243443818 jobs: eight individual native .NET RID successes, combined all-eight package failure111557382833 and skipped installed consumers. Separate Rust embedded/JVM/musl aggregation failures remain under repair. Individual build lanes do not prove complete installable packages.",
+      "evidence": "Scoped owner checks: ten TypeScript packages install; installed TS Machines invokes19 modeled RPCs against matching RSA/mTLS fixture. Python/Go installed consumers and HTTP targets have scoped evidence. Current source-bound unified qualification remains incomplete: C++ dependency closure mismatch, Swift Linux toolchain/transport, PHP lifecycle, JVM/.NET current fixture verification and viable additional targets require work.",
       "state": "partial"
     },
     {
       "id": "embedded-and-platform-defaults",
-      "evidence": "Root locked default wasm32 Actors and Workers checks passed at49d0b301, native tests Actors2/Workers5 passed. Root independently checked default Stream wasm32 exit0 on2026-10-04. Combined remaining6family wasm check failed native mio/getrandom dependencies in Objects/Machines/Inference; complete seamless remote and embedded platform qualification remains outstanding. Hosted39bac2d single Windows x64 release native build/upload succeeded; other7matrix jobs skipped build and cannot qualify their RIDs. Signed0e253465 adds Rust-owned bounded handshake response validation against exact archived identity and required capability versions; six focused control tests pass. Endpoint registration and seamless adapter selection still require implementation and runtime verification. Coordinator ec5a603545b602650333b3984bff4f585da3b015 adds Actors/Workers authenticated pre-operation control negotiation and generated runtime backend dispatch. Actual locked default native and wasm32 builds pass for both crates; three live HTTP tests verify selected HTTP, authenticated application dispatch, and terminal archive substitution rejection. Native/browser request deadlines compile. Authenticated gRPC fixture integration and all other family runtime defaults remain outstanding. Coordinator dccc9515596e85f51aff8c7e24458549a29854e7 and ddb37c8a9662f460bc2d56f9bc9a9fe541d0039f verify real connection-scoped-trust TLS gRPC: Actors chooses gRPC, receives an authenticated typed ActorObservation, propagates later application rejection without changing transport; Workers verifies the same control service; wrong archive and unauthenticated negotiation fail terminally. Three TLS runtime tests pass0.04s. Default Actors/Workers wasm32 builds pass after trust-seam changes13.39s. This does not qualify other families or full language/package runtime semantics. Coordinator Stream uniform HostedProvider facade now dispatches all canonical provider operations through Rust with verified independent control-plane selection. Default wasm32 build passes without consumer features. Actual HTTP tests pass2/2 for authenticated selection/application ordering and terminal archive identity mismatch. Actual TLS tests pass2/2 for preferred gRPC with real append/finite streaming read and terminal authentication/identity rejection. These tests do not establish all-family or all-language transport completion; Objects browser support and Inference control negotiation remain assigned. Machines native transport compilation is target-owned with compatibility grpc feature a no-op; default wasm checked types/messages compile. This does not prove browser remote transport, which still has no canonical implementation. Hosted37243443818 eight individual native .NET RID jobs succeeded, but combined package job111557382833 failed and installed consumer matrix skipped; aggregation/package proof remains incomplete.",
+      "evidence": "Commit f2058d3db adds Actors/Workers platform-default clients. Native checks pass in owner evidence. Stream WASM passes only existing feature profile; plain default WASM fails Tokio/mio and target dependency correction is assigned. Embedded prototype14 Rust tests and exact debug C/Python DLL consumers pass; release ABI and complete Linux/macOS/musl artifacts remain outstanding.",
       "state": "partial"
     },
     {
@@ -56,17 +56,17 @@
     },
     {
       "id": "website-presentation",
-      "evidence": "Root actual IAB tab2 desktop screenshot verified readable theme afterwebsiteca1ba1a. At390x844, responsive single-column cards and expanded/collapsed documentation navigation with version selector were observed; viewport restored. Current full API references, search, language switching, complete version archives and strict executable snippet bundle remain outstanding.",
-      "state": "partial"
+      "evidence": "Persistent local preview receipt Q:/sdk/work/website-preview-7878.receipt.json records server32012 and output logs. HTTP/source route checks and static version/isolation/Svelte checks pass in scoped evidence. Current strict bundle import, removal of obsolete authored SDK pages and fresh desktop/mobile rendered verification remain outstanding; HTTP200 is not visual proof.",
+      "state": "unverified"
     },
     {
       "id": "typescript-removal",
-      "evidence": "291811 Rust-owned TypeScript contract generation replaces ten JavaScript generators; thirteen artifacts and55tests pass, drift rejects modified output, two clean roots match. Full single-entrypoint run still blocked by eight downstream standalone lock closures; remaining shared behavior replacement awaits actual installed conformance.",
+      "evidence": "Public SDK commands delegate to Rust through thin launcher; live inventory and drift negative passed. Launcher frozen-source dispatch independently verified36 inventory entries from clean0ef84f162, not36 qualifications. Objects3f0ff4625 removes independent TypeScript frame limits with installed upload/download evidence. Remaining shared behavior and legacy generation wrappers require qualified replacements and removal.",
       "state": "partial"
     },
     {
       "id": "fast-ci",
-      "evidence": "Independent coordinator checks pass: planner16, platform4, source closure9. Signed81b4d99 fixes declared verifier binary/base64 and locked reflection dependencies; actual cargo check --locked succeeds50.28s. Hosted c20 jobs start after permission propagation; actual fast policy failure was reproduced and repaired. Full downstream remains manual/release gated.",
+      "evidence": "Root reran planner16/16 and metadata gate exit0. d44eae4d6 adds source-bound qualified-state gate for release C++/Swift jobs and4 pending/stale/package regressions; ordinary PRs retain tiny policy checks. Current pending platform recipes intentionally fail release qualification until actual packages/conformance pass. Remote runner execution remains unverified.",
       "state": "verified-scoped"
     },
     {
@@ -77,7 +77,7 @@
     {
       "id": "oss-research-selection",
       "state": "partial",
-      "evidence": "architecture-selection.md records selected Rust wire authoring/protobuf plugins/OpenAPI projection/C ABI cbindgen and WASM/rustdoc/Svelte composition with pinned working prototype evidence. Forge bounded resolver prototype is retained as comparison. Full installable delivery and all-target qualification remain required."
+      "evidence": "Pinned research reports and architecture-selection.md exist for Forge, OpenAPI/protobuf, Rust schema extraction and embedded bindings. Selection remains provisional in current source. Complete working prototype comparison and evidence-based promotion before broad migration remain to verify."
     },
     {
       "id": "generation-provenance-and-reproducibility",
@@ -93,128 +93,6 @@
       "id": "language-inventory-completion",
       "state": "partial",
       "evidence": "Canonical catalog c77499b95 preserves java/csharp IDs and jvm/dotnet package aliases; CLI alias normalization remains assigned. Prior inventory34 entries contained32 languages and2 tooling categories. Producer adapter recipes and all viable target remote/embedded/docs/snippet/install qualifications remain incomplete. Catalog rows or install smoke alone cannot qualify complete behavior."
-    },
-    {
-      "id": "strong-language-type-projections",
-      "state": "partial",
-      "evidence": "Explicit user requirement: expose the strongest practical type information in every target language, including type-system features beyond Rust. All semantic type intent, constraints, and language projection rules must be authored in Rust source; target type declarations are generated. Completion requires installed-package positive and negative compile/type-check evidence, precise presence and oneof/union typing, typed identifiers and applicable refinements, and preservation of unknown wire values and compatibility. User explicitly requires all semantic type intent and language projection rules in Rust source. Installed JVM audit found actor_id still String and package lacks Rust-derived nominal facade types; generated profile/negative probes alone do not satisfy public-signature coverage. JVM owner assigned Rust-authored nominal facade implementation and installed checker proof. Other language owners must prove actual public SDK signatures and lossless wire conversions, not unused standalone wrappers."
     }
-  ],
-  "latest_coordinator_iteration": {
-    "observed_at": "2026-10-04T21:19:54.5527728Z",
-    "status": "incomplete",
-    "pr": "https://github.com/acyclic-labs/sdk/pull/241",
-    "verified_coordinator_revision": "81b4d99daf31c625c9a83b27e594aec24d6c7875",
-    "signature": "GOOD repository RSA allowed signer",
-    "hosted_qualification_run": "https://github.com/acyclic-labs/sdk/actions/runs/37234125974",
-    "hosted_preflight_run": "https://github.com/acyclic-labs/sdk/actions/runs/37234111281",
-    "hosted_startup": "resolved: jobs execute",
-    "hosted_preflight": "fails unsigned historical commit range; verification retained",
-    "generator_locked_build": "passed50.28seconds",
-    "fast_policy_tests": "29passed",
-    "next_required": [
-      "Deterministic independent-process full106RPC fixtures and semantic language conformance",
-      "Actual installed language packages and all54snippet runtimes",
-      "Full8RID native package installation and execution",
-      "Allreleased scoped Rustdoc bundles and strict generated website scenario integration",
-      "Clean full generation reproducibility and Rust-source propagation",
-      "Complete viable-target qualification and sharedTypeScript removal",
-      "Safe signed reviewable branch history and green hosted qualification"
-    ],
-    "merge_performed": false,
-    "goal_completed": false
-  },
-  "latest_transport_control_iteration": {
-    "status": "incomplete",
-    "generation_commit": "38963ff106a9246f0de27451ad1f44373b9b9002",
-    "facade_test_commit": "0fee72009ab6f3d3d68d1d6991b181a1336be7e4",
-    "validator_commit": "0e253465339eb94fbe8d303144ca4daf27974fb0",
-    "wire_generate_and_check": "passed",
-    "edited_control_source": "rejected",
-    "archive_identity_tests": {
-      "passed": 3,
-      "failed": 0
-    },
-    "transport_control_tests": {
-      "passed": 6,
-      "failed": 0
-    },
-    "application_rpc_count": 106,
-    "remaining": "Authenticated endpoint registration, actual facade negotiation, full clean generation and downstream qualification."
-  },
-  "latest_transport_runtime_iteration": {
-    "status": "incomplete",
-    "commit": "ec5a603545b602650333b3984bff4f585da3b015",
-    "signature": "verified-good-ssh",
-    "native_default_builds": [
-      "actors",
-      "workers"
-    ],
-    "wasm32_default_builds": [
-      "actors",
-      "workers"
-    ],
-    "http_runtime_tests": {
-      "passed": 3,
-      "failed": 0
-    },
-    "source_of_control_bindings": "Rust control descriptor through maintained prost/tonic",
-    "remaining": [
-      "authenticated gRPC fixture and native selection runtime proof",
-      "remaining family seamless native/browser integration",
-      "full frozen generation and all language/package/snippet qualification"
-    ]
-  },
-  "latest_tls_transport_iteration": {
-    "status": "incomplete",
-    "implementation_commit": "dccc9515596e85f51aff8c7e24458549a29854e7",
-    "application_proof_commit": "ddb37c8a9662f460bc2d56f9bc9a9fe541d0039f",
-    "tls_runtime_tests": {
-      "passed": 3,
-      "failed": 0
-    },
-    "wasm32_default_build": "passed",
-    "collector_commit_signature": "212fd132c58b661f6d15551f46f36a08587bc439 verified-good-ssh",
-    "remaining": [
-      "all-family remote and embedded runtime qualification",
-      "matching19graph/54scenario documentation bundle",
-      "complete single-entrypoint frozen generation",
-      "language strongest typing at actual public API signatures"
-    ]
-  },
-  "latest_machines_source_iteration": {
-    "status": "incomplete",
-    "implementation_commit": "56ccff87ce1db6acd153714726f87ecd25617889",
-    "native_unit_tests": {
-      "passed": 25,
-      "failed": 0
-    },
-    "wire_fixture_tests": {
-      "passed": 1,
-      "failed": 0
-    },
-    "wasm32_default_checked_api_build": "passed",
-    "browser_remote_transport": "outstanding",
-    "filesystem_harness_receipt": "research/acceptance/filesystem-harness-rust-30-step-20261005.json",
-    "hosted_run": "37243443818",
-    "hosted_native_rid_jobs_succeeded": [
-      111556666711,
-      111556666743,
-      111556666745,
-      111556666762,
-      111556666774,
-      111556666807,
-      111556666817,
-      111556666861
-    ],
-    "hosted_eight_rid_package_job_failed": 111557382833,
-    "remaining": [
-      "all installed language and embedded package proofs",
-      "54 executed source-aligned snippets",
-      "2484 Rust public declaration summary gaps",
-      "full current frozen reproducible generation",
-      "real strongest-language public SDK signatures",
-      "remaining browser remote defaults"
-    ]
-  }
+  ]
 }

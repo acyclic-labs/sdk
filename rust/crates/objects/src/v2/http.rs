@@ -6,7 +6,6 @@ use super::{
 use bytes::Bytes;
 use futures::{StreamExt, stream};
 use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{
     Body, Client, Response, Url,
     header::{AUTHORIZATION, HeaderValue},
@@ -14,7 +13,7 @@ use reqwest::{
 
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
-/// Authenticated HTTP client for the logical Objects v2 gateway.
+/// Authenticated native HTTP client for the logical Objects v2 gateway.
 #[derive(Clone)]
 pub struct HttpObjects {
     transport: Client,
@@ -54,33 +53,15 @@ impl HttpObjects {
         )?;
         let result: wire::ObjectInfo = upload::run(
             async {
-                #[cfg(not(target_arch = "wasm32"))]
-                let request_body = Body::wrap_stream(
-                    stream::once(async { Ok::<_, Error>(header) })
-                        .chain(frames)
-                        .chain(stream::once(async { Ok::<_, Error>(complete) })),
-                );
-                #[cfg(target_arch = "wasm32")]
-                let request_body = {
-                    let frames = stream::once(async { Ok::<_, Error>(header) })
-                        .chain(frames)
-                        .chain(stream::once(async { Ok::<_, Error>(complete) }));
-                    futures::pin_mut!(frames);
-                    let mut bytes = Vec::new();
-                    while let Some(frame) = frames.next().await {
-                        let frame = frame?;
-                        if frame.len() > REQUEST_BYTES.saturating_sub(bytes.len()) {
-                            return Err(wire::ErrorCode::QuotaExceeded.into());
-                        }
-                        bytes.extend_from_slice(&frame);
-                    }
-                    Body::from(bytes)
-                };
                 let reply = self
                     .post(
                         "objects/put",
                         "application/x-ndjson",
-                        request_body,
+                        Body::wrap_stream(
+                            stream::once(async { Ok::<_, Error>(header) })
+                                .chain(frames)
+                                .chain(stream::once(async { Ok::<_, Error>(complete) })),
+                        ),
                     )
                     .await?;
                 self.decode("ObjectInfo", reply).await
@@ -127,33 +108,15 @@ impl HttpObjects {
         )?;
         let result: wire::UploadedPart = upload::run(
             async {
-                #[cfg(not(target_arch = "wasm32"))]
-                let request_body = Body::wrap_stream(
-                    stream::once(async { Ok::<_, Error>(header) })
-                        .chain(frames)
-                        .chain(stream::once(async { Ok::<_, Error>(complete) })),
-                );
-                #[cfg(target_arch = "wasm32")]
-                let request_body = {
-                    let frames = stream::once(async { Ok::<_, Error>(header) })
-                        .chain(frames)
-                        .chain(stream::once(async { Ok::<_, Error>(complete) }));
-                    futures::pin_mut!(frames);
-                    let mut bytes = Vec::new();
-                    while let Some(frame) = frames.next().await {
-                        let frame = frame?;
-                        if frame.len() > REQUEST_BYTES.saturating_sub(bytes.len()) {
-                            return Err(wire::ErrorCode::QuotaExceeded.into());
-                        }
-                        bytes.extend_from_slice(&frame);
-                    }
-                    Body::from(bytes)
-                };
                 let reply = self
                     .post(
                         "multipart/upload-part",
                         "application/x-ndjson",
-                        request_body,
+                        Body::wrap_stream(
+                            stream::once(async { Ok::<_, Error>(header) })
+                                .chain(frames)
+                                .chain(stream::once(async { Ok::<_, Error>(complete) })),
+                        ),
                     )
                     .await?;
                 self.decode("UploadedPart", reply).await
@@ -192,25 +155,15 @@ impl HttpObjects {
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?;
         authorization.set_sensitive(true);
-        let mut transport = Client::builder();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            transport = transport
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(std::time::Duration::from_secs(30));
-        }
+        let mut transport = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(30));
         if let Some(ca) = ca {
-            #[cfg(target_arch = "wasm32")]
-            let _ = ca;
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                if ca.is_empty() || ca.len() > 65536 {
-                    return Err(invalid());
-                }
-                transport = transport.add_root_certificate(
-                    reqwest::Certificate::from_pem(ca).map_err(|_| invalid())?,
-                );
+            if ca.is_empty() || ca.len() > 65536 {
+                return Err(invalid());
             }
+            transport = transport
+                .add_root_certificate(reqwest::Certificate::from_pem(ca).map_err(|_| invalid())?);
         }
         Ok(Self {
             transport: transport.build().map_err(|_| invalid())?,
@@ -218,60 +171,6 @@ impl HttpObjects {
             authorization,
             maximum: maximum_response_bytes,
         })
-    }
-
-    /// Verify the authenticated Rust-owned Objects identity using the HTTP control route.
-    pub async fn verify_handshake(&self) -> Result<bool, Error> {
-        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
-        let family = BindingFamily::Objects;
-        let version = control::control_protocol_version(family);
-        let route = control::handshake_http_route(family.name())
-            .ok_or_else(|| Error::from(wire::ErrorCode::InvalidArgument))?;
-        let url = self
-            .endpoint
-            .join(route.trim_start_matches('/'))
-            .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-        let response = self
-            .transport
-            .get(url.clone())
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("accept", "application/json")
-            .send()
-            .await
-            .map_err(|_| response::invalid())?;
-        if response.url() != &url {
-            return Err(response::invalid());
-        }
-        let status = response.status();
-        if matches!(status.as_u16(), 404 | 405) {
-            return Ok(false);
-        }
-        if !status.is_success() {
-            return Err(self.failure(response).await);
-        }
-        media_type(&response, "application/json")?;
-        let bytes = self.bytes(response).await?;
-        let pool = DescriptorPool::decode(control::control_descriptor().as_slice())
-            .map_err(|_| response::invalid())?;
-        let descriptor = pool
-            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
-            .ok_or_else(response::invalid)?;
-        let mut json = serde_json::Deserializer::from_slice(&bytes);
-        let decoded =
-            DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| response::invalid())?;
-        json.end().map_err(|_| response::invalid())?;
-        control::validate_handshake_response(
-            family,
-            version,
-            &[control::RequiredCapability {
-                name: family.name(),
-                version,
-            }],
-            &decoded.encode_to_vec(),
-            control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES.min(self.maximum),
-        )
-        .map_err(|_| response::invalid())?;
-        Ok(true)
     }
     async fn post(&self, route: &str, content_type: &str, body: Body) -> Result<Response, Error> {
         let url = self
@@ -300,16 +199,7 @@ impl HttpObjects {
             return Err(wire::ErrorCode::QuotaExceeded.into());
         }
         let mut bytes = Vec::new();
-        #[cfg(not(target_arch = "wasm32"))]
         while let Some(chunk) = response.chunk().await.map_err(|_| response::invalid())? {
-            if chunk.len() > self.maximum.saturating_sub(bytes.len()) {
-                return Err(wire::ErrorCode::QuotaExceeded.into());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let chunk = response.bytes().await.map_err(|_| response::invalid())?;
             if chunk.len() > self.maximum.saturating_sub(bytes.len()) {
                 return Err(wire::ErrorCode::QuotaExceeded.into());
             }
@@ -391,17 +281,12 @@ impl HttpObjects {
         {
             return Err(wire::ErrorCode::QuotaExceeded.into());
         }
-        #[cfg(target_arch = "wasm32")]
-        let buffered = Bytes::from(self.bytes(reply).await?);
         let mut reader = Frames {
-            #[cfg(not(target_arch = "wasm32"))]
             reply,
             chunk: Bytes::new(),
             pending: Vec::new(),
             total: 0,
             maximum: self.maximum,
-            #[cfg(target_arch = "wasm32")]
-            buffered: Some(buffered),
         };
         let first = reader.next().await?.ok_or_else(response::invalid)?;
         let header = match first.frame {
@@ -430,11 +315,8 @@ impl HttpObjects {
                 }
                 _ => Err(response::invalid()),
             }
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        let body = body.boxed();
-        #[cfg(target_arch = "wasm32")]
-        let body = body.boxed_local();
+        })
+        .boxed();
         Ok(Download { header, body })
     }
 }
@@ -459,29 +341,17 @@ fn line(name: &str, frame: &impl Message) -> Result<Bytes, Error> {
     Ok(bytes.into())
 }
 struct Frames {
-    #[cfg(not(target_arch = "wasm32"))]
     reply: Response,
     chunk: Bytes,
     pending: Vec<u8>,
     total: usize,
     maximum: usize,
-    #[cfg(target_arch = "wasm32")]
-    buffered: Option<Bytes>,
 }
 impl Frames {
     async fn next(&mut self) -> Result<Option<wire::GetObjectResponse>, Error> {
         loop {
             if self.chunk.is_empty() {
-                #[cfg(not(target_arch = "wasm32"))]
                 let Some(chunk) = self.reply.chunk().await.map_err(|_| response::invalid())? else {
-                    return if self.pending.is_empty() {
-                        Ok(None)
-                    } else {
-                        Err(response::invalid())
-                    };
-                };
-                #[cfg(target_arch = "wasm32")]
-                let Some(chunk) = self.buffered.take().filter(|chunk| !chunk.is_empty()) else {
                     return if self.pending.is_empty() {
                         Ok(None)
                     } else {
@@ -517,8 +387,7 @@ fn frame_error(code: i32) -> Error {
         .filter(|code| *code != wire::ErrorCode::Unspecified)
         .map_or_else(response::invalid, Error::from)
 }
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[async_trait::async_trait]
 impl ObjectsProvider for HttpObjects {
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
         request::create_bucket_digest(&query)?;

@@ -938,10 +938,7 @@ fn render_message(out: &mut String, message: &DescriptorProto, indent: usize) {
         }
     }
     for field in &message.field {
-        // Proto3 optional fields use synthetic oneofs in descriptors. They
-        // are ordinary fields in the rendered source and must not be
-        // omitted alongside user-authored oneof members.
-        if field.oneof_index.is_none() || field.proto3_optional.unwrap_or(false) {
+        if field.oneof_index.is_none() {
             if let Some(entry) = map_entry_for(message, field) {
                 render_map_field(out, field, entry, indent + 2);
             } else {

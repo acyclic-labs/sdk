@@ -322,8 +322,7 @@ struct Replay {
     result: IdempotencyOutcome,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[async_trait]
 impl StreamProvider for MemoryStream {
     async fn inspect_idempotency(
         &self,
@@ -679,63 +678,6 @@ impl StreamProvider for MemoryStream {
     }
 }
 
-/// Validate a paginated hierarchy request before it crosses a transport boundary.
-pub(crate) fn validate_children_page_request(
-    request: &ChildrenPageRequest,
-) -> Result<(), StreamError> {
-    validate_limit(request.limit)?;
-    if request.after.is_some() && request.hierarchy_version.is_none() {
-        return Err(StreamError::InvalidArgument);
-    }
-    if request.after.as_ref().is_some_and(|after| {
-        !request.parent.as_ref().map_or_else(
-            || !after.as_str().contains('/'),
-            |parent| is_direct_child(parent, after),
-        )
-    }) {
-        return Err(StreamError::InvalidArgument);
-    }
-    Ok(())
-}
-
-/// Validate response ordering and continuation against its request.
-pub(crate) fn validate_children_page_response(
-    request: &ChildrenPageRequest,
-    page: &ChildrenPage,
-) -> Result<(), StreamError> {
-    if request
-        .hierarchy_version
-        .is_some_and(|version| version != page.hierarchy_version)
-    {
-        return Err(StreamError::HierarchyChanged);
-    }
-    if page.children.len() > request.limit as usize {
-        return Err(StreamError::InvalidArgument);
-    }
-    let mut previous = request.after.as_ref();
-    for child in &page.children {
-        if previous.is_some_and(|previous| previous >= &child.path) {
-            return Err(StreamError::InvalidArgument);
-        }
-        if request.parent.as_ref().is_some_and(|parent| {
-            !is_direct_child(parent, &child.path)
-        }) || request.parent.is_none() && child.path.as_str().contains('/') {
-            return Err(StreamError::InvalidArgument);
-        }
-        previous = Some(&child.path);
-    }
-    if page.next_after.as_ref().is_some_and(|next_after| {
-        page.children
-            .last()
-            .is_none_or(|last| next_after != &last.path)
-    }) {
-        return Err(StreamError::InvalidArgument);
-    }
-    if page.next_after.is_some() && page.children.len() < request.limit as usize {
-        return Err(StreamError::InvalidArgument);
-    }
-    Ok(())
-}
 pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
     if limit == 0 || usize::try_from(limit).map_or(true, |limit| limit > MAX_ITEMS) {
         Err(StreamError::LimitExceeded)
@@ -2120,4 +2062,3 @@ mod tests {
         Ok(())
     }
 }
-

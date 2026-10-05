@@ -37,19 +37,3 @@ artifact rather than a project reference.
 The pack target normalizes NuGet's generated relationship identifiers and ZIP
 timestamps, so two clean packs from the same Rust authority root are
 byte-for-byte reproducible.
-
-## Native transport assets
-
-Mutual TLS uses the Rust-owned `sdk-dotnet-transport` boundary. The package
-producer stages one native library per .NET runtime identifier and NuGet
-selects the matching asset automatically:
-
-```text
-powershell -File scripts/build-dotnet-native-transport.ps1 -Output target/native/sdk-dotnet-transport -Target x86_64-pc-windows-msvc
-```
-
-The release recipe uses `-All` after provisioning the pinned Rust targets and
-linkers. The package includes `win-x64`, `win-arm64`, Linux GNU/musl, and macOS
-x64/ARM64 layouts when those builds are present. Consumers call the same
-`RemoteClientFactory` API on every RID; native library selection and TLS
-configuration remain package and Rust runtime details.

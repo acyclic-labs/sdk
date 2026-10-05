@@ -1,12 +1,7 @@
 use std::path::PathBuf;
 
 fn main() {
-    // Keep every Rust-owned ABI surface in the build dependency graph. The C
-    // header is emitted from lib.rs today, while the optional UniFFI surface
-    // is declared in uniffi_polling.rs; changing either must invalidate the
-    // generated binding package and its provenance receipt.
-    println!("cargo:rerun-if-changed=src");
-    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/lib.rs");
     let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set"))
         .join("acyclic_embedded_prototype.h");
     cbindgen::Builder::new()

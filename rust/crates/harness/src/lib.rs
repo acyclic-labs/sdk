@@ -37,13 +37,17 @@ pub mod fork;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 mod handles;
-pub mod integrations;
 pub mod interaction;
+pub mod integrations;
 pub mod live;
+pub mod managed_agent_runtime;
 #[cfg(feature = "machines")]
 pub mod machines;
-pub mod managed_agent_runtime;
-#[cfg(any(test, feature = "filesystem", target_arch = "wasm32"))]
+#[cfg(any(
+    test,
+    feature = "filesystem",
+    target_arch = "wasm32"
+))]
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
@@ -65,15 +69,6 @@ pub use wire_codec::encode_error;
 pub mod wire_validation;
 pub mod wire_values;
 pub mod workflow;
-
-/// Future ABI used by the harness traits. Native providers may cross worker
-/// threads; browser providers remain on the browser executor and therefore
-/// use local futures.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type BoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
-#[cfg(target_arch = "wasm32")]
-pub(crate) type BoxFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
-pub(crate) type SendBoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
 
 /// Generated Protobuf packages, nested as their package names are, so the
 /// harness messages resolve the shared protocol handshake they import.

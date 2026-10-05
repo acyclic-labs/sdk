@@ -3184,26 +3184,28 @@ fn ensure_generation_destination(
         let separator = command
             .iter()
             .position(|argument| argument == "--")
-            .ok_or_else(|| {
-                CliError::new(format!(
-                    "{tool} generation command is missing its Cargo argument separator"
-                ))
-            })?;
+            .ok_or_else(|| CliError::new(format!(
+                "{tool} generation command is missing its Cargo argument separator"
+            )))?;
         let contract_args = command.get(separator + 1..).unwrap_or_default();
         if contract_args.len() != 3 || contract_args[0] != "all-write" {
             return Err(CliError::new(format!(
                 "{tool} generation command must use all-write <source-root> <output-root>"
             )));
         }
-        let source_argument =
-            canonical_existing_directory(Path::new(&contract_args[1]), "generation source root")?;
+        let source_argument = canonical_existing_directory(
+            Path::new(&contract_args[1]),
+            "generation source root",
+        )?;
         if source_argument != root {
             return Err(CliError::new(format!(
                 "{tool} generation source root must resolve to the frozen source checkout"
             )));
         }
-        let destination =
-            canonical_existing_directory(Path::new(&contract_args[2]), "generation destination")?;
+        let destination = canonical_existing_directory(
+            Path::new(&contract_args[2]),
+            "generation destination",
+        )?;
         if destination != output {
             return Err(CliError::new(format!(
                 "{tool} generation command must target the isolated output tree"

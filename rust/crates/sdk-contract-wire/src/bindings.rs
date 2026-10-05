@@ -354,21 +354,8 @@ pub fn generate_product_bindings(
             .out_dir(out_dir)
             .build_client(config.client)
             .build_server(config.server)
-            .compile_fds_with_config(descriptors.clone(), prost)
+            .compile_fds_with_config(descriptors, prost)
             .map_err(BindingGenerationError::Io)?;
-    }
-    if matches!(family, BindingFamily::Actors | BindingFamily::Workers) {
-        crate::transport_control::generate_control_bindings(
-            out_dir,
-            BindingTransport::Tonic {
-                client: true,
-                server: true,
-            },
-        )?;
-        fs::write(
-            out_dir.join("platform-client-methods.rs"),
-            platform_client_methods(&descriptors),
-        )?;
     }
     Ok(BindingOutput {
         family,
@@ -376,49 +363,6 @@ pub fn generate_product_bindings(
         model_descriptor,
         archived_runtime_descriptor: family.archived_runtime_descriptor(),
     })
-}
-
-fn platform_client_methods(descriptors: &FileDescriptorSet) -> String {
-    let mut source =
-        String::from("// Generated from the Rust-owned descriptor. Do not edit.\nimpl Client {\n");
-    for file in &descriptors.file {
-        for service in &file.service {
-            for method in &service.method {
-                assert!(
-                    !method.client_streaming.unwrap_or(false)
-                        && !method.server_streaming.unwrap_or(false),
-                    "platform unary facade requires an explicit streaming implementation"
-                );
-                let name = method.name.as_deref().expect("model method name");
-                let mut rust_name = String::new();
-                for (index, character) in name.chars().enumerate() {
-                    if character.is_ascii_uppercase() && index != 0 {
-                        rust_name.push('_');
-                    }
-                    rust_name.push(character.to_ascii_lowercase());
-                }
-                let input = method
-                    .input_type
-                    .as_deref()
-                    .expect("model input")
-                    .rsplit('.')
-                    .next()
-                    .expect("input name");
-                let output = method
-                    .output_type
-                    .as_deref()
-                    .expect("model output")
-                    .rsplit('.')
-                    .next()
-                    .expect("output name");
-                source.push_str(&format!(
-                    "    /// Execute the canonical `{name}` operation using the platform default transport.\n    ///\n    /// # Errors\n    /// Returns a transport or canonical service error.\n    pub async fn {rust_name}(&self, request: &crate::wire::{input}) -> Result<crate::wire::{output}, Error> {{\n        match &self.inner {{\n            #[cfg(not(target_arch = \"wasm32\"))]\n            Backend::Grpc(client) => client.clone().{rust_name}(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),\n            Backend::Http(client) => client.{rust_name}(request).await.map_err(Error::from_http),\n        }}\n    }}\n"
-                ));
-            }
-        }
-    }
-    source.push_str("}\n");
-    source
 }
 
 fn generate_plugin_files(
@@ -464,7 +408,7 @@ fn generate_plugin_files(
     );
     let prost_files = protoc_gen_prost::execute(&request)
         .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, prost_files, family)?;
+    write_plugin_files(out_dir, prost_files, family == BindingFamily::Objects)?;
 
     let mut tonic_params = Vec::new();
     if !config.client {
@@ -480,19 +424,14 @@ fn generate_plugin_files(
         &tonic_params.join(","),
     ))
     .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, tonic_files, family)
+    write_plugin_files(out_dir, tonic_files, family == BindingFamily::Objects)
 }
 
 fn write_plugin_files(
     out_dir: &Path,
     files: Vec<prost_types::compiler::code_generator_response::File>,
-    family: BindingFamily,
+    guard_grpc: bool,
 ) -> Result<(), BindingGenerationError> {
-    let guard_cfg = match family {
-        BindingFamily::Actors | BindingFamily::Workers => Some("not(target_arch = \"wasm32\")"),
-        BindingFamily::Objects => Some("feature = \"grpc\""),
-        _ => None,
-    };
     for file in files {
         let name = file.name.ok_or_else(|| {
             BindingGenerationError::Plugin("generator returned unnamed file".into())
@@ -510,8 +449,8 @@ fn write_plugin_files(
                 ))
             })?;
             let insertion = file.content.as_deref().unwrap_or_default();
-            let insertion = if let Some(cfg) = guard_cfg {
-                guard_tonic_include_with_cfg(insertion, cfg)
+            let insertion = if guard_grpc {
+                guard_tonic_include(insertion)
             } else {
                 insertion.to_owned()
             };
@@ -519,12 +458,12 @@ fn write_plugin_files(
             fs::write(path, current)?;
         } else {
             let content = file.content.unwrap_or_default();
-            let content = match guard_cfg {
-                Some(cfg) if name.ends_with(".tonic.rs") => {
-                    guard_tonic_modules_with_cfg(&content, cfg)
-                }
-                Some(cfg) => guard_tonic_include_with_cfg(&content, cfg),
-                None => content,
+            let content = if guard_grpc && name.ends_with(".tonic.rs") {
+                guard_tonic_modules(&content)
+            } else if guard_grpc {
+                guard_tonic_include(&content)
+            } else {
+                content
             };
             fs::write(path, content)?;
         }
@@ -532,16 +471,11 @@ fn write_plugin_files(
     Ok(())
 }
 
-#[cfg(test)]
 fn guard_tonic_modules(source: &str) -> String {
-    guard_tonic_modules_with_cfg(source, "feature = \"grpc\"")
-}
-
-fn guard_tonic_modules_with_cfg(source: &str, cfg: &str) -> String {
     let mut guarded = String::with_capacity(source.len() + 128);
     for line in source.lines() {
         if line.starts_with("pub mod ") {
-            guarded.push_str(&format!("#[cfg({cfg})]\n"));
+            guarded.push_str("#[cfg(feature = \"grpc\")]\n");
         }
         guarded.push_str(line);
         guarded.push('\n');
@@ -552,17 +486,12 @@ fn guard_tonic_modules_with_cfg(source: &str, cfg: &str) -> String {
     guarded
 }
 
-#[cfg(test)]
 fn guard_tonic_include(source: &str) -> String {
-    guard_tonic_include_with_cfg(source, "feature = \"grpc\"")
-}
-
-fn guard_tonic_include_with_cfg(source: &str, cfg: &str) -> String {
     let mut guarded = String::with_capacity(source.len() + 64);
     for line in source.lines() {
         if line.trim_start().starts_with("include!(") && line.trim_end().ends_with(".tonic.rs\");")
         {
-            guarded.push_str(&format!("#[cfg({cfg})]\n"));
+            guarded.push_str("#[cfg(feature = \"grpc\")]\n");
         }
         guarded.push_str(line);
         guarded.push('\n');

@@ -15,10 +15,7 @@ import type {
   Record as WireRecord, TailConflict as WireTailConflict,
   CreateTokenRequest as WireCreateTokenRequest, TokenGrant as WireTokenGrant,
 } from "../generated/proto/stream/v2/stream_pb.js";
-// Keep direct imports of the public type helpers backed by the same initialized
-// Rust WASM contract used by every Stream transport.
-import "./contract.js";
-import { validate_commit_id as validateCommitIdRust, validateIdempotencyKey as validateIdempotencyKeyRust } from "../generated/wasm/acyclic_stream_wasm.js";
+import { validateIdempotencyKey as validateIdempotencyKeyRust } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { TokenOperation } from "./token-operations.js";
 export { TOKEN_OPERATIONS } from "./token-operations.js";
 export type { TokenOperation } from "./token-operations.js";
@@ -50,8 +47,7 @@ export type CommitId = Uint8Array & { readonly [streamIdentityBrand]: "CommitId"
 export type IdempotencyKey = Uint8Array & { readonly [streamIdentityBrand]: "IdempotencyKey" };
 
 export function commitId(value: Uint8Array): CommitId {
-  if (!(value instanceof Uint8Array)) throw new TypeError("commit ID must be bytes");
-  if (validateCommitIdRust(value) !== "") throw new RangeError("commit ID is outside the Rust Stream bounds");
+  if (!(value instanceof Uint8Array) || value.byteLength !== 32) throw new RangeError("commit ID must contain exactly 32 bytes");
   return value.slice() as CommitId;
 }
 export function idempotencyKey(value: Uint8Array): IdempotencyKey {
@@ -127,15 +123,7 @@ export interface StreamProvider {
   createToken?(request: CreateTokenRequest, signal?: AbortSignal): Promise<AccessToken>;
 }
 
-import type { STREAM_REMOTE_POLICY } from "./generated-client.js";
-
-export type StreamTransport = typeof STREAM_REMOTE_POLICY.transport.native[number]["kind"];
-export interface StreamEnvironment {
-  readonly endpoint: string;
-  readonly token: string;
-  readonly caCertificate?: string;
-  readonly transport?: StreamTransport;
-}
+export interface StreamEnvironment { readonly endpoint: string; readonly token: string }
 export class StreamError extends Error {
   constructor(readonly code: string, message: string, readonly status?: number) { super(message); }
 }

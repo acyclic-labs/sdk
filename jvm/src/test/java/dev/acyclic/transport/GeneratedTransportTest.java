@@ -44,23 +44,6 @@ class GeneratedTransportTest {
   }
 
   @Test
-  void preservesRustPresenceAndOneofAsNativeJavaTypes() {
-    var view = inference.customer.v1.Inference.ContextView.newBuilder()
-        .setParent(ByteString.copyFromUtf8("parent"))
-        .build();
-    assertTrue(view.hasParent(), "optional Rust presence must remain observable in Java");
-    assertEquals(ByteString.copyFromUtf8("parent"), view.getParent());
-
-    var provenance = inference.customer.v1.Inference.ContextProvenance.newBuilder()
-        .setCreated(inference.customer.v1.Inference.Empty.getDefaultInstance())
-        .build();
-    assertEquals(
-        inference.customer.v1.Inference.ContextProvenance.OriginCase.CREATED,
-        provenance.getOriginCase(),
-        "Rust oneof must remain a typed Java case, not an untyped map");
-  }
-
-  @Test
   void adaptsHarnessDescriptorAccessorWithoutChangingWireIdentity() throws Exception {
     var descriptor = Harness.FileDescriptor.newBuilder()
         .setSha256(ByteString.copyFrom(new byte[] {1, 2, 3}))

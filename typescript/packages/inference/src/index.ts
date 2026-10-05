@@ -45,7 +45,7 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
-import { INFERENCE_HANDSHAKE, INFERENCE_REMOTE_POLICY, negotiateRustOwnedEndpoint, selectRustOwnedTransport, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { INFERENCE_REMOTE_POLICY, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import {
   EvaluationsService,
   file_inference_v1_inference,
@@ -289,8 +289,6 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
 
 /** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
 export class HttpInferenceTransport implements InferenceTransport {
-  #handshake: Promise<void> | undefined;
-
   constructor(
     readonly endpoint: string,
     readonly authorization: AuthorizationHeaders,
@@ -431,12 +429,11 @@ export class HttpInferenceTransport implements InferenceTransport {
     const authorization = headers.get("authorization");
     const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
     try {
-      await validateRustOwnedCredentialPolicy(token);
+      validateRustOwnedCredentialPolicy(token);
     } catch {
       throw new InferenceTransportError(0, "invalid bearer credential");
     }
     headers.set("content-type", "application/json");
-    await this.#ensureHandshake(headers, signal);
     const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}/v1/inference/${path}`, {
       method: "POST",
       headers,
@@ -451,20 +448,6 @@ export class HttpInferenceTransport implements InferenceTransport {
     }
     return response;
   }
-
-  async #ensureHandshake(headers: Headers, signal?: AbortSignal): Promise<void> {
-    if (this.#handshake !== undefined) return this.#handshake;
-    const pending = negotiateRustOwnedEndpoint(this.fetcher, this.endpoint, headers, INFERENCE_HANDSHAKE, this.maximumMessageBytes, signal).catch(error => {
-      throw new InferenceTransportError(0, error instanceof Error ? error.message : String(error));
-    });
-    this.#handshake = pending;
-    try {
-      await pending;
-    } catch (error) {
-      if (this.#handshake === pending) this.#handshake = undefined;
-      throw error;
-    }
-  }
 }
 
 export class InferenceTransportError extends Error {
@@ -472,7 +455,7 @@ export class InferenceTransportError extends Error {
 }
 
 /** The transport kinds exposed by the Rust-qualified Inference policy. */
-export type InferenceTransportKind = typeof INFERENCE_REMOTE_POLICY.transport.native[number]["kind"];
+export type InferenceTransportKind = "grpc" | "http";
 
 /** Endpoint and credential settings for the generated remote facade. */
 export interface InferenceEnvironment {
@@ -491,10 +474,17 @@ export interface InferenceEnvironment {
  */
 export function fromEnv(environment: InferenceEnvironment): InferenceClient {
   const runtime = isNativeRuntime() ? "native" : "browser";
-  const selected = selectRustOwnedTransport(INFERENCE_REMOTE_POLICY, runtime, environment.transport);
-  if (selected !== "http") {
+  const options = INFERENCE_REMOTE_POLICY.transport[runtime];
+  const selected = environment.transport === undefined
+    ? options[0]
+    : options.find(option => option.kind === environment.transport);
+  if (selected === undefined) {
+    throw new TypeError(`Inference transport ${environment.transport ?? "default"} is unavailable in the ${runtime} runtime`);
+  }
+  if (selected.kind !== "http") {
     throw new TypeError("Inference gRPC transport is unavailable in the installed TypeScript facade");
   }
+  validateRustOwnedCredentialPolicy(environment.token);
   return new InferenceClient(new HttpInferenceTransport(
     environment.endpoint,
     () => ({ authorization: `Bearer ${environment.token}` }),

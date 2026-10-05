@@ -43,12 +43,6 @@ pub enum ConnectError {
     /// URI or TLS connection failed.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
-    /// The authenticated endpoint returned a terminal negotiation failure.
-    #[error(transparent)]
-    RemoteStatus(#[from] tonic::Status),
-    /// The endpoint identity or capabilities do not match the Rust contract.
-    #[error("invalid handshake: {0}")]
-    Negotiation(String),
 }
 
 /// Connect using standard TLS roots and account-bound bearer metadata.
@@ -63,11 +57,11 @@ pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError
 ///
 /// # Errors
 /// Returns an error for invalid configuration, CA bytes, or TLS connection.
-async fn authenticated_channel(
+pub async fn connect_with_ca_certificate(
     endpoint: &str,
     token: &str,
     ca: Option<&[u8]>,
-) -> Result<(Channel, BearerAuth), ConnectError> {
+) -> Result<Client, ConnectError> {
     let valid_endpoint = reqwest::Url::parse(endpoint).is_ok_and(|url| {
         url.scheme() == "https"
             && url.username().is_empty()
@@ -94,103 +88,16 @@ async fn authenticated_channel(
     }
     let channel = Endpoint::from_shared(endpoint.to_owned())?
         .tls_config(tls)?
-        .connect_timeout(std::time::Duration::from_secs(10))
         .connect()
         .await?;
-    Ok((channel, BearerAuth(authorization)))
-}
-
-/// Connect with an optional additional private CA scoped to this connection.
-///
-/// # Errors
-/// Returns a configuration or TLS connection error.
-pub async fn connect_with_ca_certificate(
-    endpoint: &str,
-    token: &str,
-    ca: Option<&[u8]>,
-) -> Result<Client, ConnectError> {
-    let (channel, auth) = authenticated_channel(endpoint, token, ca).await?;
     Ok(
-        wire::actors_service_client::ActorsServiceClient::with_interceptor(channel, auth)
-            .max_decoding_message_size(16 * 1024 * 1024)
-            .max_encoding_message_size(16 * 1024 * 1024),
+        wire::actors_service_client::ActorsServiceClient::with_interceptor(
+            channel,
+            BearerAuth(authorization),
+        )
+        .max_decoding_message_size(16 * 1024 * 1024)
+        .max_encoding_message_size(16 * 1024 * 1024),
     )
-}
-
-/// Verify the independent control handshake before choosing native gRPC.
-///
-/// # Errors
-/// Authentication and contract identity failures are terminal. An absent or
-/// unavailable control service returns `None` before any application call.
-pub async fn connect_verified(endpoint: &str, token: &str) -> Result<Option<Client>, ConnectError> {
-    connect_verified_with_ca_certificate(endpoint, token, None).await
-}
-
-/// Verify the control handshake with an optional connection-scoped private CA.
-///
-/// # Errors
-/// Returns authentication, TLS, or contract negotiation failures.
-pub async fn connect_verified_with_ca_certificate(
-    endpoint: &str,
-    token: &str,
-    ca: Option<&[u8]>,
-) -> Result<Option<Client>, ConnectError> {
-    use crate::control_wire::protocol::v1::{
-        Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity,
-    };
-    use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
-    let family = BindingFamily::Actors;
-    let version = control::control_protocol_version(family);
-    let (channel, auth) = authenticated_channel(endpoint, token, ca).await?;
-    let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::with_interceptor(channel.clone(), auth.clone())
-        .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
-    let mut request = Request::new(HandshakeRequest {
-        protocol: Some(ProtocolIdentity {
-            version: version.into(),
-            descriptor_digest: control::archived_descriptor_digest(family),
-        }),
-        required: Some(CapabilitySet {
-            capabilities: vec![Capability {
-                name: family.name().into(),
-                version: version.into(),
-            }],
-        }),
-    });
-    request.metadata_mut().insert(
-        control::FAMILY_METADATA_KEY,
-        MetadataValue::from_static(family.name()),
-    );
-    request.set_timeout(std::time::Duration::from_secs(10));
-    let response = match probe.handshake(request).await {
-        Ok(response) => response.into_inner(),
-        Err(status)
-            if matches!(
-                status.code(),
-                tonic::Code::Unimplemented
-                    | tonic::Code::Unavailable
-                    | tonic::Code::DeadlineExceeded
-            ) =>
-        {
-            return Ok(None);
-        }
-        Err(status) => return Err(ConnectError::RemoteStatus(status)),
-    };
-    control::validate_handshake_response(
-        family,
-        version,
-        &[control::RequiredCapability {
-            name: family.name(),
-            version,
-        }],
-        &response.encode_to_vec(),
-        control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES,
-    )
-    .map_err(|error| ConnectError::Negotiation(format!("{error:?}")))?;
-    Ok(Some(
-        wire::actors_service_client::ActorsServiceClient::with_interceptor(channel, auth)
-            .max_decoding_message_size(16 * 1024 * 1024)
-            .max_encoding_message_size(16 * 1024 * 1024),
-    ))
 }
 
 /// Decode the canonical semantic error carried in gRPC status details.

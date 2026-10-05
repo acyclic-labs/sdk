@@ -28,63 +28,6 @@ function sha256File(string $path): string
     return $digest;
 }
 
-function pascalIdentifier(string $value): string
-{
-    return implode('', array_map('ucfirst', preg_split('/[^a-zA-Z0-9]+/', $value, -1, PREG_SPLIT_NO_EMPTY)));
-}
-
-function phpValueType(string $wireKind): string
-{
-    return match ($wireKind) {
-        'string', 'bytes' => 'string',
-        'signed_integer', 'unsigned_integer', 'enum' => 'int',
-        default => 'mixed',
-    };
-}
-
-function phpValidationLines(array $item): array
-{
-    $id = (string) $item['id'];
-    $wireKind = (string) $item['wire_kind'];
-    $lines = [];
-    if (in_array($wireKind, ['string', 'bytes'], true)) {
-        $lines[] = "if (!is_string(\$value)) { throw new \\InvalidArgumentException('{$id}: expected string'); }";
-        foreach ($item['rules'] as $rule) {
-            if (($rule['kind'] ?? null) === 'non_empty') {
-                $lines[] = "if (\$value === '') { throw new \\InvalidArgumentException('{$id}: value must be non-empty'); }";
-            }
-            if (($rule['kind'] ?? null) === 'utf8') {
-                $lines[] = "if (preg_match('//u', \$value) !== 1) { throw new \\InvalidArgumentException('{$id}: value must be valid UTF-8'); }";
-            }
-            if (($rule['kind'] ?? null) === 'fixed_length') {
-                $lines[] = "if (strlen(\$value) !== {$rule['length']}) { throw new \\InvalidArgumentException('{$id}: invalid byte length'); }";
-            }
-        }
-    } elseif (in_array($wireKind, ['signed_integer', 'unsigned_integer', 'enum'], true)) {
-        $lines[] = "if (!is_int(\$value)) { throw new \\InvalidArgumentException('{$id}: expected int'); }";
-    }
-    foreach ($item['rules'] as $rule) {
-        switch ($rule['kind'] ?? null) {
-            case 'strictly_positive':
-                $lines[] = "if (\$value <= 0) { throw new \\InvalidArgumentException('{$id}: must be positive'); }";
-                break;
-            case 'non_negative':
-                $lines[] = "if (\$value < 0) { throw new \\InvalidArgumentException('{$id}: must be non-negative'); }";
-                break;
-            case 'max_items':
-                $lines[] = "if (\$value > {$rule['max']}) { throw new \\InvalidArgumentException('{$id}: exceeds maximum'); }";
-                break;
-            case 'bounded_integer':
-                $lines[] = "if (\$value < {$rule['min']} || \$value > {$rule['max']}) { throw new \\InvalidArgumentException('{$id}: outside bounds'); }";
-                break;
-            case 'exact_oneof':
-                $lines[] = "if (!is_array(\$value) || count(\$value) !== 1) { throw new \\InvalidArgumentException('{$id}: exactly one arm is required'); }";
-                break;
-        }
-    }
-    return $lines;
-}
-
 if (($lock['generator_version'] ?? null) !== '1.82.0') {
     throw new RuntimeException('generator.lock.json has an unexpected grpc_php_plugin version');
 }
@@ -118,9 +61,7 @@ foreach ($schemaRoots as $candidate) {
         }
     }
 }
-$schemaNames = $manifestPath === null
-    ? array_values(array_unique([...$schemaNames, ...$dependencyNames]))
-    : array_values(array_unique($schemaNames));
+$schemaNames = array_values(array_unique([...$schemaNames, ...$dependencyNames]));
 $expectedSchemaHashes = [];
 $expectedDescriptorHashes = [];
 foreach ($families as $family) {
@@ -169,159 +110,6 @@ foreach ($expectedDescriptorHashes as $relative => $expected) {
     }
 }
 
-$typePolicyMetadata = null;
-if ($manifestPath !== null) {
-    $typePolicySource = null;
-    foreach ($schemaRoots as $candidate) {
-        $path = $candidate . DIRECTORY_SEPARATOR . 'type-policy.json';
-        if (is_file($path)) {
-            $typePolicySource = $path;
-            break;
-        }
-    }
-    if ($typePolicySource === null) {
-        throw new RuntimeException('Rust-owned type policy missing from schema root');
-    }
-    $typePolicyBytes = file_get_contents($typePolicySource);
-    if ($typePolicyBytes === false) {
-        throw new RuntimeException('unable to read Rust-owned type policy: ' . $typePolicySource);
-    }
-    $typePolicy = json_decode($typePolicyBytes, true, 512, JSON_THROW_ON_ERROR);
-    if (($typePolicy['schema'] ?? null) !== 'acyclic.sdk.type-policy.v1') {
-        throw new RuntimeException('unexpected Rust type policy schema');
-    }
-    $profile = null;
-    foreach (($typePolicy['languages'] ?? []) as $entry) {
-        if (is_array($entry) && ($entry['language'] ?? null) === 'php') {
-            $profile = $entry;
-            break;
-        }
-    }
-    if (!is_array($profile) || !is_string($profile['nominal_types'] ?? null) || !is_string($profile['refinements'] ?? null) || !is_string($profile['unions'] ?? null)) {
-        throw new RuntimeException('Rust type policy has no PHP profile');
-    }
-    $typePolicyDestination = $root . '/type-policy.json';
-    if (file_put_contents($typePolicyDestination, $typePolicyBytes) === false) {
-        throw new RuntimeException('unable to write Rust-owned type policy');
-    }
-    $typePolicyMetadata = [
-        'path' => 'type-policy.json',
-        'sha256' => hash('sha256', $typePolicyBytes),
-        'schema' => $typePolicy['schema'],
-        'language' => 'php',
-        'profile' => $profile,
-    ];
-    $semanticTypes = $typePolicy['semantic_types'] ?? null;
-    if (!is_array($semanticTypes) || $semanticTypes === []) {
-        throw new RuntimeException('Rust type policy semantic_types must be non-empty');
-    }
-    $typePolicyClasses = [
-        '<?php',
-        'declare(strict_types=1);',
-        '',
-        '// Generated exclusively from rust/crates/sdk-contract-wire/src/type_policy.rs.',
-        'namespace Acyclic\\TypePolicy;',
-        '',
-    ];
-    foreach ($semanticTypes as $item) {
-        $className = pascalIdentifier((string) $item['id']);
-        $valueType = phpValueType((string) $item['wire_kind']);
-        $typePolicyClasses[] = "final readonly class {$className}";
-        $typePolicyClasses[] = '{';
-        $typePolicyClasses[] = "    private function __construct(public {$valueType} \$value)";
-        $typePolicyClasses[] = '    {';
-        foreach (phpValidationLines($item) as $line) {
-            $typePolicyClasses[] = '        ' . $line;
-        }
-        $typePolicyClasses[] = '    }';
-        $typePolicyClasses[] = '';
-        $typePolicyClasses[] = "    public static function from({$valueType} \$value): self";
-        $typePolicyClasses[] = '    {';
-        $typePolicyClasses[] = '        return new self($value);';
-        $typePolicyClasses[] = '    }';
-        $typePolicyClasses[] = '}';
-        $typePolicyClasses[] = '';
-    }
-    $typePolicyClasses[] = '';
-    $fieldTypes = [];
-    foreach (($typePolicy['field_mappings'] ?? []) as $mapping) {
-        if (is_array($mapping) && isset($mapping['family'], $mapping['field'], $mapping['semantic_type'])) {
-            $fieldTypes[$mapping['family'] . '.' . $mapping['field']] = pascalIdentifier((string) $mapping['semantic_type']);
-        }
-    }
-    $typePolicyWire = [
-        '<?php',
-        'declare(strict_types=1);',
-        '',
-        '// Generated exclusively from rust/crates/sdk-contract-wire/src/type_policy.rs.',
-        'namespace Acyclic\\TypePolicy;',
-        '',
-        'final class Wire',
-        '{',
-        '    /** @return array<string, class-string> */',
-        '    private static function fieldTypes(): array',
-        '    {',
-        '        return ' . var_export($fieldTypes, true) . ';',
-        '    }',
-        '',
-        '    public static function toWire(string $family, string $field, mixed $value): mixed',
-        '    {',
-        '        $className = self::fieldTypes()[strtolower($family) . "." . $field] ?? null;',
-        '        $class = $className === null ? null : __NAMESPACE__ . "\\\\" . $className;',
-        '        if ($class === null) { return $value; }',
-        '        return $value instanceof $class ? $value->value : $class::from($value)->value;',
-        '    }',
-        '',
-        '    public static function normalizeRequest(string $family, mixed $request): mixed',
-        '    {',
-        '        if (!is_array($request)) { return $request; }',
-        '        foreach (self::fieldTypes() as $key => $_class) {',
-        '            [$mappedFamily, $field] = explode(".", $key, 2);',
-        '            if ($mappedFamily === strtolower($family) && array_key_exists($field, $request) && $request[$field] !== null) {',
-        '                $request[$field] = self::toWire($mappedFamily, $field, $request[$field]);',
-        '            }',
-        '        }',
-        '        return $request;',
-        '    }',
-        '',
-        '    public static function typedField(string $family, string $field, mixed $value): mixed',
-        '    {',
-        '        $className = self::fieldTypes()[strtolower($family) . "." . $field] ?? null;',
-        '        $class = $className === null ? null : __NAMESPACE__ . "\\\\" . $className;',
-        '        return $class === null || $value instanceof $class ? $value : $class::from($value);',
-        '    }',
-        '}',
-        '',
-    ];
-    $typePolicyDirectory = $root . '/src/Acyclic/TypePolicy';
-    if (!is_dir($typePolicyDirectory) && !mkdir($typePolicyDirectory, 0777, true) && !is_dir($typePolicyDirectory)) {
-        throw new RuntimeException('unable to create Rust type policy directory');
-    }
-    // The protobuf output directory is cleaned immediately before protoc runs;
-    // emit the Rust-owned class after that cleanup below.
-    file_put_contents($root . '/type-policy.phpstan.neon', "parameters:\n    level: max\n    paths:\n        - src/Acyclic/TypePolicy/Types.php\n");
-    file_put_contents($root . '/type-policy.psalm.xml', "<?xml version=\"1.0\"?>\n<psalm errorLevel=\"1\"><projectFiles><directory name=\"src/Acyclic/TypePolicy\" /></projectFiles></psalm>\n");
-    $negativeCases = [];
-    foreach ($semanticTypes as $item) {
-        $ruleKinds = array_map(static fn (array $rule): string => (string) $rule['kind'], $item['rules']);
-        $value = in_array('non_empty', $ruleKinds, true) ? "''"
-            : (in_array('fixed_length', $ruleKinds, true) ? "'x'"
-                : (in_array('strictly_positive', $ruleKinds, true) ? '0'
-                    : (in_array('non_negative', $ruleKinds, true) ? '-1'
-                    : (in_array('exact_oneof', $ruleKinds, true) ? '[]' : null))));
-        if ($value !== null) {
-            $negativeCases[] = [pascalIdentifier((string) $item['id']), $value];
-        }
-    }
-    $negative = ["<?php", "declare(strict_types=1);", "require dirname(__DIR__) . '/src/Acyclic/TypePolicy/Types.php';", ''];
-    foreach ($negativeCases as [$className, $value]) {
-        $negative[] = "try { \\Acyclic\\TypePolicy\\{$className}::from({$value}); throw new RuntimeException('negative type policy case unexpectedly accepted: {$className}'); } catch (InvalidArgumentException) { }";
-    }
-    $negative[] = "echo 'Rust type policy negative checks passed', PHP_EOL;";
-    file_put_contents($root . '/tests/type_policy_negative.php', implode(PHP_EOL, $negative) . PHP_EOL);
-    $typePolicyMetadata['artifacts'] = ['src/Acyclic/TypePolicy/Types.php', 'src/Acyclic/TypePolicy/Wire.php', 'type-policy.phpstan.neon', 'type-policy.psalm.xml', 'tests/type_policy_negative.php'];
-}
-
 function executable(string $name): string
 {
     $override = getenv(strtoupper(str_replace('-', '_', $name)));
@@ -360,10 +148,6 @@ $preserved = [
     'acyclic/runtime/generatedremotepolicy.php',
     'acyclic/runtime/remotepolicy.php',
     'acyclic/runtime/remoteclient.php',
-    // The options descriptor is imported by generated files but is not
-    // emitted by protoc for every target invocation. Preserve the Rust-owned
-    // metadata class so clean package regeneration remains loadable.
-    'gpbmetadata/validation/v1/options.php',
 ];
 if (is_dir($output)) {
     $iterator = new RecursiveIteratorIterator(
@@ -390,51 +174,6 @@ $arguments = [
 chdir($root);
 runCommand($arguments);
 
-if ($typePolicyMetadata !== null) {
-    if (!is_dir($typePolicyDirectory) && !mkdir($typePolicyDirectory, 0777, true) && !is_dir($typePolicyDirectory)) {
-        throw new RuntimeException('unable to create Rust type policy directory after generation');
-    }
-    if (file_put_contents($typePolicyDirectory . '/Types.php', implode(PHP_EOL, $typePolicyClasses)) === false) {
-        throw new RuntimeException('unable to write generated Rust type policy classes');
-    }
-    if (file_put_contents($typePolicyDirectory . '/Wire.php', implode(PHP_EOL, $typePolicyWire)) === false) {
-        throw new RuntimeException('unable to write generated Rust type policy wire bridge');
-    }
-}
-
-$rustFamilyGoldens = null;
-if ($manifestPath !== null) {
-    $fixtureSource = $schemaRoots[0] . DIRECTORY_SEPARATOR . 'rust-family-goldens.json';
-    if (!is_file($fixtureSource)) {
-        throw new RuntimeException('Rust-owned fixture missing: ' . $fixtureSource);
-    }
-    $fixtureBytes = file_get_contents($fixtureSource);
-    if ($fixtureBytes === false) {
-        throw new RuntimeException('unable to read Rust-owned fixture: ' . $fixtureSource);
-    }
-    $fixture = json_decode($fixtureBytes, true, 512, JSON_THROW_ON_ERROR);
-    if (!is_array($fixture) || count($fixture) !== 9) {
-        throw new RuntimeException('Rust-owned fixture must contain nine family goldens');
-    }
-    $manifestHash = sha256File($manifestPath);
-    foreach ($fixture as $entry) {
-        if (!is_array($entry) || ($entry['authority_manifest_sha256'] ?? null) !== $manifestHash) {
-            throw new RuntimeException('Rust-owned fixture is bound to a different authority manifest');
-        }
-    }
-    $fixtureDestination = $root . '/tests/fixtures/rust-family-goldens.json';
-    if (!is_dir(dirname($fixtureDestination)) && !mkdir(dirname($fixtureDestination), 0777, true) && !is_dir(dirname($fixtureDestination))) {
-        throw new RuntimeException('unable to create fixture directory');
-    }
-    if (file_put_contents($fixtureDestination, $fixtureBytes) === false) {
-        throw new RuntimeException('unable to write generated Rust-owned fixture');
-    }
-    $rustFamilyGoldens = [
-        'path' => 'tests/fixtures/rust-family-goldens.json',
-        'sha256' => hash('sha256', $fixtureBytes),
-    ];
-}
-
 $generated = [];
 $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($output, FilesystemIterator::SKIP_DOTS));
 foreach ($iterator as $path) {
@@ -455,8 +194,6 @@ sort($generated);
 $provenance = [
     'generator' => $lock,
     'source_revision' => getenv('GIT_COMMIT') ?: 'unknown',
-    'source_git_sha' => getenv('GIT_COMMIT') ?: 'unknown',
-    'rust_model_digest' => getenv('ACYCLIC_RUST_MODEL_DIGEST') ?: 'unknown',
     'generator_lock_sha256' => sha256File($root . '/generator.lock.json'),
     'schema_inputs_sha256' => array_map('sha256File', $schemaFiles),
     'schema_root' => $schemaRootOption === null ? 'diagnostic repository proto roots' : str_replace('\\', '/', $schemaRoots[0]),
@@ -465,17 +202,6 @@ $provenance = [
     'authority_manifest_schema' => $authority['schema'] ?? null,
     'authority_source_revision' => $authority['source_revision'] ?? null,
     'authority_exporter' => $authority['exporter'] ?? null,
-    'rust_family_goldens' => $rustFamilyGoldens,
-    'type_policy' => $typePolicyMetadata,
     'generated_files' => $generated,
 ];
-if (!preg_match('/^[0-9a-f]{40}$/i', $provenance['source_git_sha'])) {
-    throw new RuntimeException('PHP provenance requires a 40-character Rust source Git SHA (GIT_COMMIT)');
-}
-if (!preg_match('/^[0-9a-f]{64}$/i', $provenance['rust_model_digest'])) {
-    throw new RuntimeException('PHP provenance requires the 64-character Rust model digest (ACYCLIC_RUST_MODEL_DIGEST)');
-}
-if (($authority['source_revision'] ?? null) !== null && $authority['source_revision'] !== $provenance['rust_model_digest']) {
-    throw new RuntimeException('PHP provenance model digest does not match the Rust authority manifest');
-}
 file_put_contents($output . '/provenance.json', json_encode($provenance, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . PHP_EOL);

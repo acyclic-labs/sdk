@@ -4,14 +4,15 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($Root)) { $Root = (Resolve-Path (Join-Path (Join-Path $scriptDir '..') '..')).Path }
 $version = '7.25.0'
+$jarSha256 = '41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE'
 $work = Join-Path $Root 'research/additional-languages/target/bash'
-$jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $scriptDir 'ensure-openapi-generator.ps1') '-SourceRoot' $Root)
+$jar = Join-Path $work "openapi-generator-cli-$version.jar"
 $families = @('actors','workers','stream','objects','inference')
 $packages = Join-Path $work 'packages'
 $zip = Join-Path $work 'acyclic-http-bash-0.1.0.zip'
 New-Item -ItemType Directory -Force $work | Out-Null
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
-$jarSha256 = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash.ToLowerInvariant()
+if (!(Test-Path $jar)) { throw "Missing pinned OpenAPI Generator jar: $jar" }
+if ((Get-FileHash $jar -Algorithm SHA256).Hash -ne $jarSha256) { throw 'OpenAPI Generator checksum mismatch' }
 Push-Location $Root
 try {
   foreach ($family in $families) {

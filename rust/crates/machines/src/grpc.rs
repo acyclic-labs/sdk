@@ -1,5 +1,3 @@
-#[path = "grpc_service.rs"]
-pub mod service;
 use super::*;
 use tonic::transport::{
     Certificate, Channel, ClientTlsConfig, Endpoint as TonicEndpoint, Identity,

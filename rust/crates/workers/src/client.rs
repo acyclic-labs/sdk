@@ -1,140 +1,67 @@
-//! Authenticated client with one API across native and browser platforms.
+//! Platform-default Workers client.
+//!
+//! Native targets use authenticated gRPC and browser targets use the bounded
+//! Protobuf-JSON client. Explicit [`crate::grpc`] and [`crate::http`] modules
+//! remain available when a caller needs to pin a transport.
 
-/// Maximum response size for the platform HTTP transport.
+/// The response bound used by the browser/default HTTP client.
 pub const DEFAULT_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
-/// Preferred transport before authenticated endpoint negotiation.
+
+/// The transport selected by [`connect`].
 #[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_TRANSPORT: &str = "grpc";
-/// Preferred transport before authenticated endpoint negotiation.
+/// The transport selected by [`connect`].
 #[cfg(target_arch = "wasm32")]
 pub const DEFAULT_TRANSPORT: &str = "http";
 
-/// Configuration, transport, or canonical service error on any platform.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Endpoint or credential configuration failed.
-    #[error("client configuration failed: {0}")]
-    Configuration(String),
-    /// Network transport failed.
-    #[error("transport failed: {0}")]
-    Transport(String),
-    /// The remote service rejected the operation.
-    #[error("remote service rejected the operation: {message}")]
-    Service {
-        /// Remote error message.
-        message: String,
-        /// gRPC status code when provided by the selected transport.
-        grpc_code: Option<i32>,
-        /// HTTP status code when provided by the selected transport.
-        http_status: Option<u16>,
-        /// Canonical service error detail.
-        detail: Option<crate::wire::Error>,
-    },
-    /// The request could not be encoded or routed.
-    #[error("invalid request")]
-    InvalidArgument,
-    /// The response exceeded the configured limit.
-    #[error("response exceeds configured bound")]
-    ResponseTooLarge,
-    /// The response was not valid canonical data.
-    #[error("malformed response")]
-    MalformedResponse,
-}
+/// The platform-default authenticated client.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Client = crate::grpc::Client;
+/// The platform-default authenticated client.
+#[cfg(target_arch = "wasm32")]
+pub type Client = crate::http::Client;
 
-impl Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn from_grpc(status: tonic::Status) -> Self {
-        Self::Service {
-            detail: crate::grpc::error_detail(&status),
-            message: status.message().to_owned(),
-            grpc_code: Some(status.code() as i32),
-            http_status: None,
-        }
-    }
+/// Error returned while creating the platform-default client.
+#[cfg(not(target_arch = "wasm32"))]
+pub type ConnectError = crate::grpc::ConnectError;
+/// Error returned while creating the platform-default client.
+#[cfg(target_arch = "wasm32")]
+pub type ConnectError = crate::http::Error;
 
-    fn from_http(error: crate::http::Error) -> Self {
-        match error {
-            crate::http::Error::InvalidArgument => Self::InvalidArgument,
-            crate::http::Error::Transport(error) => Self::Transport(error.to_string()),
-            crate::http::Error::ResponseTooLarge => Self::ResponseTooLarge,
-            crate::http::Error::MalformedResponse => Self::MalformedResponse,
-            crate::http::Error::Service { status, detail } => Self::Service {
-                message: format!("HTTP status {status}"),
-                grpc_code: None,
-                http_status: Some(status),
-                detail,
-            },
-        }
-    }
-}
-
-/// Configuration error returned by [`connect`].
-pub type ConnectError = Error;
-
-/// Authenticated client with identical operations and return types on all platforms.
-#[derive(Clone)]
-pub struct Client {
-    inner: Backend,
-}
-
-#[derive(Clone)]
-enum Backend {
-    #[cfg(not(target_arch = "wasm32"))]
-    Grpc(crate::grpc::Client),
-    Http(crate::http::Client),
-}
-
-impl Client {
-    /// The transport selected after a verified endpoint handshake.
-    pub const fn transport(&self) -> &'static str {
-        match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(_) => "grpc",
-            Backend::Http(_) => "http",
-        }
-    }
-}
-
-/// Connect using the best compatible transport before sending an application call.
+/// Connect to a Workers service using the platform's default transport.
 ///
-/// # Errors
-/// Rejects invalid credentials, endpoint identity, or unsupported capabilities.
+/// Native builds select authenticated gRPC. Browser builds select bounded
+/// Protobuf-JSON over HTTP and use [`DEFAULT_HTTP_RESPONSE_BYTES`]. Consumers
+/// do not need feature flags or platform checks.
 pub async fn connect(
     endpoint: impl AsRef<str>,
     token: impl AsRef<str>,
 ) -> Result<Client, ConnectError> {
-    connect_with_trust(endpoint.as_ref(), token.as_ref(), None).await
-}
-
-async fn connect_with_trust(
-    endpoint: &str,
-    token: &str,
-    ca: Option<&[u8]>,
-) -> Result<Client, ConnectError> {
-    #[cfg(target_arch = "wasm32")]
-    let _ = ca;
     #[cfg(not(target_arch = "wasm32"))]
-    if endpoint.starts_with("https://") {
-        match crate::grpc::connect_verified_with_ca_certificate(endpoint, token, ca).await {
-            Ok(Some(inner)) => {
-                return Ok(Client {
-                    inner: Backend::Grpc(inner),
-                });
-            }
-            Ok(None) | Err(crate::grpc::ConnectError::Transport(_)) => {}
-            Err(error) => return Err(Error::Configuration(error.to_string())),
-        }
+    {
+        crate::grpc::connect(endpoint.as_ref(), token.as_ref()).await
     }
-    let inner = crate::http::Client::new(endpoint, token, DEFAULT_HTTP_RESPONSE_BYTES)
-        .map_err(Error::from_http)?;
-    if !inner.verify_handshake().await.map_err(Error::from_http)? {
-        return Err(Error::Configuration(
-            "endpoint has no compatible workers transport".into(),
-        ));
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::http::Client::new(
+            endpoint.as_ref(),
+            token.as_ref(),
+            DEFAULT_HTTP_RESPONSE_BYTES,
+        )
     }
-    Ok(Client {
-        inner: Backend::Http(inner),
-    })
 }
 
-include!("generated/platform-client-methods.rs");
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT};
+
+    #[test]
+    fn default_transport_is_platform_owned() {
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(DEFAULT_TRANSPORT, "grpc");
+        #[cfg(target_arch = "wasm32")]
+        assert_eq!(DEFAULT_TRANSPORT, "http");
+        assert!(DEFAULT_HTTP_RESPONSE_BYTES > 0);
+    }
+}

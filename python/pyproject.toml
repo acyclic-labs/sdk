@@ -19,7 +19,7 @@ where = ["src"]
 include = ["acyclic_sdk*"]
 
 [tool.setuptools.package-data]
-acyclic_sdk = ["generated/generation.json", "py.typed"]
+acyclic_sdk = ["generated/generation.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -1,35 +1,20 @@
 import { HttpActorsClient, type HttpActorsOptions } from "./http.js";
-import { ensureActorsWasm } from "./wasm-runtime.js";
-import {
-  isRustOwnedTransportUnavailable,
-  selectRustOwnedTransport,
-  ACTORS_REMOTE_POLICY,
-  type RustOwnedRuntime,
-} from "./generated-client.js";
+import { ACTORS_REMOTE_POLICY } from "./generated-client.js";
 
-export type ActorsTransport = typeof ACTORS_REMOTE_POLICY.transport.native[number]["kind"];
+export type ActorsTransport = "grpc" | "http";
 export interface ActorsEnvironment extends Omit<HttpActorsOptions, "fetcher"> { readonly transport?: ActorsTransport }
 type ActorsGrpcClient = ReturnType<typeof import("./grpc.js")["createActorsGrpcClient"]>;
 export type ActorsClient = HttpActorsClient | ActorsGrpcClient;
 
 export async function fromEnv(environment: ActorsEnvironment): Promise<ActorsClient> {
-  const runtime: RustOwnedRuntime = isNativeRuntime() ? "native" : "browser";
-  let selected = selectRustOwnedTransport(ACTORS_REMOTE_POLICY, runtime, environment.transport);
-  if (selected === "http") {
-    await ensureActorsWasm();
-    return new HttpActorsClient(environment);
-  }
-  if (selected !== "grpc" || runtime !== "native") throw new TypeError("Actors gRPC transport requires a native Node or Bun runtime");
-  try {
-    const { createActorsGrpcClient } = await import("./grpc.js");
-    return createActorsGrpcClient({ endpoint: environment.endpoint, token: environment.token, ...(environment.maximumResponseBytes === undefined ? {} : { maximumMessageBytes: environment.maximumResponseBytes }) });
-  } catch (error) {
-    if (environment.transport !== undefined || !isRustOwnedTransportUnavailable(error)) throw error;
-    selected = selectRustOwnedTransport(ACTORS_REMOTE_POLICY, runtime, undefined, { grpc: false });
-    if (selected !== "http") throw error;
-    await ensureActorsWasm();
-    return new HttpActorsClient(environment);
-  }
+  const runtime = isNativeRuntime() ? "native" : "browser";
+  const options = ACTORS_REMOTE_POLICY.transport[runtime];
+  const selected = environment.transport === undefined ? options[0] : options.find(option => option.kind === environment.transport);
+  if (selected === undefined) throw new TypeError(`Actors transport ${environment.transport ?? "default"} is unavailable in the ${runtime} runtime`);
+  if (selected.kind === "http") return new HttpActorsClient(environment);
+  if (selected.kind !== "grpc" || runtime !== "native") throw new TypeError("Actors gRPC transport requires a native Node or Bun runtime");
+  const { createActorsGrpcClient } = await import("./grpc.js");
+  return createActorsGrpcClient({ endpoint: environment.endpoint, token: environment.token, ...(environment.maximumResponseBytes === undefined ? {} : { maximumMessageBytes: environment.maximumResponseBytes }) });
 }
 
 function isNativeRuntime(): boolean {

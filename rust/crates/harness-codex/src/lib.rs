@@ -10,12 +10,9 @@
 //! fixtures under `fixtures/codex-<version>` are the contract the parser is
 //! tested against. See `DESIGN.md` for the full plan and phase gates.
 
-// Codex runs inside Linux sandboxes; process control uses Unix process groups
-// at runtime. Keep the public API visible to rustdoc on every target so the
-// Rust-owned reference bundle can describe this crate even when the selected
-// documentation host is Windows. Non-Unix builds retain the same API and use
-// child-level termination in the private process helper.
-#![cfg(any(unix, doc))]
+// Codex runs inside Linux sandboxes; process control relies on unix process
+// groups, so the crate is empty elsewhere and the workspace still builds.
+#![cfg(unix)]
 #![cfg_attr(test, allow(clippy::panic, clippy::indexing_slicing))]
 
 pub mod config;

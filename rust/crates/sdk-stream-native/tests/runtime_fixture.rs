@@ -23,23 +23,12 @@ fn native_library_name() -> &'static str {
 }
 
 fn node_module_path() -> PathBuf {
-    if let Ok(path) = std::env::var("ACYCLIC_STREAM_NATIVE_MODULE_OVERRIDE") {
-        return PathBuf::from(path);
-    }
     let test_binary = std::env::current_exe().expect("test executable path");
-    let target_root = test_binary
+    test_binary
         .parent()
         .and_then(Path::parent)
-        .expect("Cargo target directory");
-    let library = native_library_name();
-    let direct = target_root.join(library);
-    if direct.exists() {
-        return direct;
-    }
-    // Cargo places cdylib outputs in `deps` for integration tests. Keep the
-    // lookup target-aware so the installed consumer test uses the exact module
-    // produced by the same Cargo invocation.
-    target_root.join("deps").join(library)
+        .expect("Cargo target directory")
+        .join(native_library_name())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -72,34 +61,20 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         module_source.exists(),
         "native N-API module must be built before runtime qualification"
     );
-    let consumer_root = std::env::temp_dir().join(format!(
-        "acyclic-stream-native-installed-consumer-{}",
+    let fixture_package = std::env::temp_dir().join(format!(
+        "acyclic-stream-native-package-{}",
         std::process::id()
     ));
-    let fixture_package = consumer_root.join("node_modules").join(
-        std::env::var("ACYCLIC_STREAM_NATIVE_PACKAGE")
-            .unwrap_or_else(|_| "@acyclic-labs/stream-win32-x64".to_owned()),
-    );
     std::fs::create_dir_all(&fixture_package)?;
-    let package_source = std::env::var("ACYCLIC_STREAM_NATIVE_PACKAGE_SOURCE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("npm/win32-x64"));
-    for file in ["package.json", "index.js", "BUILD.json"] {
-        let source = package_source.join(file);
-        if source.exists() {
-            std::fs::copy(source, fixture_package.join(file))?;
-        }
+    let package_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("npm/win32-x64");
+    for file in ["package.json", "index.js"] {
+        std::fs::copy(package_source.join(file), fixture_package.join(file))?;
     }
     std::fs::copy(
         &module_source,
         fixture_package.join("acyclic_stream_native.node"),
     )?;
-    // Run the fixture from the clean consumer root. The package is resolved by
-    // its installed companion name, so this covers package metadata, Node's
-    // module resolver, and the platform loader in one scenario.
-    let source_script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime_client.mjs");
-    let script = consumer_root.join("runtime_client.mjs");
-    std::fs::copy(source_script, &script)?;
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime_client.mjs");
     let commit_request = acyclic_stream::wire::CommitRequest {
         conditions: vec![acyclic_stream::wire::CommitCondition {
             condition: Some(acyclic_stream::wire::commit_condition::Condition::Absent(
@@ -121,15 +96,9 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
     };
     let mut commit_request_bytes = Vec::new();
     commit_request.encode(&mut commit_request_bytes)?;
-    let mut command = Command::new("node");
-    command
+    let output = Command::new("node")
         .arg(script)
-        .current_dir(&consumer_root)
-        .env(
-            "ACYCLIC_STREAM_NATIVE_MODULE",
-            std::env::var("ACYCLIC_STREAM_NATIVE_PACKAGE")
-                .unwrap_or_else(|_| "@acyclic-labs/stream-win32-x64".to_owned()),
-        )
+        .env("ACYCLIC_STREAM_NATIVE_MODULE", &fixture_package)
         .env("ACYCLIC_STREAM_FIXTURE_ENDPOINT", endpoint)
         .env(
             "ACYCLIC_STREAM_FIXTURE_CA",
@@ -138,33 +107,11 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         .env(
             "ACYCLIC_STREAM_FIXTURE_COMMIT_REQUEST",
             base64(&commit_request_bytes),
-        );
-    for (name, value) in [
-        (
-            "ACYCLIC_STREAM_SOURCE_REVISION",
-            std::env::var("SOURCE_REVISION").ok(),
-        ),
-        (
-            "ACYCLIC_STREAM_SCENARIO_DIR",
-            std::env::var("ACYCLIC_STREAM_SCENARIO_DIR").ok(),
-        ),
-        (
-            "ACYCLIC_STREAM_SCENARIO_PREFIX",
-            std::env::var("ACYCLIC_STREAM_SCENARIO_PREFIX").ok(),
-        ),
-        (
-            "ACYCLIC_STREAM_CONSUMER_OUTPUT",
-            std::env::var("ACYCLIC_STREAM_CONSUMER_OUTPUT").ok(),
-        ),
-    ] {
-        if let Some(value) = value {
-            command.env(name, value);
-        }
-    }
-    let output = command.output()?;
+        )
+        .output()?;
     let _ = shutdown_sender.send(());
     let _ = server.await?;
-    let _ = std::fs::remove_dir_all(&consumer_root);
+    let _ = std::fs::remove_dir_all(&fixture_package);
     if !output.status.success() {
         return Err(format!(
             "native runtime fixture failed: {}{}",

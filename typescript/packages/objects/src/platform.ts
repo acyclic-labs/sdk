@@ -1,9 +1,9 @@
 /** Runtime and packaged-artifact resolution for the cross-platform Objects client. */
 
-import { isRustOwnedTransportUnavailable, OBJECTS_REMOTE_POLICY, selectRustOwnedTransport, type RustOwnedTransportKind } from "./generated-client.js";
+import { OBJECTS_REMOTE_POLICY } from "./generated-client.js";
 
 export type ObjectsRuntime = "node" | "bun" | "browser" | "unknown";
-export type ObjectsResolvedTransport = Extract<RustOwnedTransportKind, "grpc" | "http">;
+export type ObjectsResolvedTransport = "grpc" | "http";
 
 export interface ObjectsPlatformResolution {
   readonly runtime: ObjectsRuntime;
@@ -44,7 +44,7 @@ export async function resolveObjectsPlatform(): Promise<ObjectsPlatformResolutio
   const policyOptions = OBJECTS_REMOTE_POLICY.transport[policyRuntime];
   let wasmAvailable = typeof WebAssembly === "object";
   const fallbacks: ("grpc-to-http" | "wasm-unavailable")[] = [];
-  let transport: ObjectsResolvedTransport = selectRustOwnedTransport(OBJECTS_REMOTE_POLICY, policyRuntime, undefined, { grpc: true, http: true }) as ObjectsResolvedTransport;
+  let transport: ObjectsResolvedTransport = policyOptions[0]?.kind === "grpc" ? "grpc" : "http";
 
   if (wasmAvailable) {
     try {
@@ -63,8 +63,7 @@ export async function resolveObjectsPlatform(): Promise<ObjectsPlatformResolutio
   if (transport === "grpc") {
     try {
       await import("./v2-grpc.js");
-    } catch (error) {
-      if (!isRustOwnedTransportUnavailable(error)) throw error;
+    } catch {
       fallbacks.push("grpc-to-http");
       transport = policyOptions.find(option => option.kind === "http") === undefined ? "grpc" : "http";
     }

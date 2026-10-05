@@ -1,6 +1,5 @@
 import { rootCertificates } from "node:tls";
-import { validate_objects_v2_http_endpoint } from "../generated/wasm/acyclic_objects_wasm.js";
-import { OBJECTS_REMOTE_POLICY, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import { createClient, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
@@ -25,14 +24,10 @@ function grpcError(error: unknown): ObjectsV2Error {
 
 /** Complete Node/Bun clients, including client-streaming PUT/parts and server-streaming GET. */
 export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
-  let endpoint: URL;
-  try {
-    validate_objects_v2_http_endpoint(options.endpoint);
-    endpoint = new URL(options.endpoint);
-  } catch {
-    throw new TypeError("invalid Objects gRPC endpoint");
-  }
+  const endpoint = new URL(options.endpoint);
+  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   validateRustOwnedCredentialPolicy(options.token);
+  if (new TextEncoder().encode(options.token).byteLength > 8192 || /\0/.test(options.token)) throw new TypeError("invalid bearer token");
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
@@ -43,7 +38,7 @@ export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   // Identity encoding preserves gRPC streaming in both supported runtimes.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum });
+  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: 30000, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum });
   return { buckets: createClient(BucketsService, transport), objects: createClient(ObjectsService, transport), multipart: createClient(MultipartService, transport), close: () => session.abort() };
 }
 

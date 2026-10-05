@@ -2,13 +2,12 @@
 
 The Acyclic SDK is the open contract and composition layer for building recursive,
 fork-join agent systems. It contains the Rust harness, public service interfaces,
-customer-machine implementations, conformance suites, and language bindings.
+customer-machine implementations, conformance suites, and TypeScript packages.
 
-Rust owns the public contracts, shared behavior, documentation, and executable
-examples. Protobuf, OpenAPI, language facades, and website documentation are
-derived artifacts.
+This repository contains a public release candidate. APIs remain pre-release
+until their family version is published and tagged.
 
-## SDK capabilities
+## What works in this release candidate
 
 - One `acyclic-harness` crate owning operation identities, authority, durable
   reducer semantics, typed interactions, effects, atomic fork manifests,
@@ -54,9 +53,10 @@ derived artifacts.
   with grouped native batches and private compaction. Native Filesystem
   compositions use v2. Existing v1 roots are rejected without conversion or
   overwrite; the published v1 wire history remains archived.
-- Actors v1 and Workers v1 public contracts with Rust validation,
+- Candidate Actors v1 and Workers v1 public contracts with Rust validation,
   generated TypeScript message types, and authenticated Rust and Node/Bun
-  TypeScript gRPC and HTTP clients.
+  TypeScript gRPC and HTTP clients. Their
+  Cloud service routes require separate qualification before hosted use.
 - An Inference v1 Rust client with immutable item-addressed Context revisions,
   independent forks, exact edit/compact/transfer, recoverable Runs, inclusive
   event replay, cancellation, four work meters, and admitted warm commitments.
@@ -71,7 +71,7 @@ derived artifacts.
   conformance runner that retains per-case evidence, an immutable source identity,
   and a deterministic qualification receipt with the exact release archives.
 - TypeScript contract facades for families whose public contract includes JavaScript.
-- Rust-owned wire identities with generated Protobuf package boundaries.
+- Protobuf package boundaries ready for audited service schemas.
 
 ## Open-source boundary
 

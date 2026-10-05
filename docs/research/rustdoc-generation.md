@@ -116,25 +116,18 @@ identity for its generated package metadata.
 
 The checked-in `docs/rustdoc-profiles.json` makes target and feature coverage
 explicit across four profiles: `host-default`, `native-bindings`,
-`host-capabilities`, and `wasm-bindings`. The `host-default` graph includes
-the public support crates `acyclic-conformance`, `acyclic-harness-codex`, and
-`acyclic-machines-daytona`; keeping those packages in the compiler matrix
-prevents their references from silently falling back to source scanning. The
-first three use the portable
+`host-capabilities`, and `wasm-bindings`. The first three use the portable
 `host` target token; the docs tool resolves that token with the pinned
 toolchain's `rustc -vV` result on the runner and records the resolved target in
 each artifact receipt. `wasm-bindings` remains explicitly pinned to
 `wasm32-unknown-unknown`. A profile is complete only when every listed package
 has a non-empty source-bound rustdoc public graph; strict mode fails for a
-missing package, source-fallback crate, empty graph, or public item without a
-resolved module path and semantic signature. The generator accepts
-`--compiler-cache-dir` (or `SDK_DOCS_RUSTDOC_CACHE_DIR`) to select an external
-Cargo target cache; absent an override it uses a sibling
-`.sdk-docs-rustdoc-cache` directory beside the output. Each profile uses a
-cache key containing the pinned toolchain and profile digest, while only JSON
-artifacts and receipts enter the output tree. This keeps compiler intermediates
-out of generated bundles and makes repeated qualification runs fast without
-changing the source and artifact bindings.
+missing package, source-fallback crate, or empty graph. The generator evaluates
+each profile in its own temporary Cargo target directory, copies the JSON and
+receipt into the shared output tree, and removes that disposable build
+directory before continuing. This keeps host compilation portable across the
+Linux, macOS, Windows, and Linux-arm64 qualification runners while preserving
+the target and feature identity needed to distinguish host-specific graphs.
 
 The CLI also emits a compact website projection with `--website-output`. Its
 `sdk-reference-bundle.v1` envelope carries the exact source revision, bundle

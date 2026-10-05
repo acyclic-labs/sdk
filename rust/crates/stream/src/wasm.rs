@@ -145,10 +145,6 @@ pub fn is_stream_error_code(value: &str) -> bool {
 /// Unknown values and a commit-only alias on another route return no value.
 #[wasm_bindgen(js_name = publicHttpErrorCode)]
 pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
-    let route = match route {
-        "read_commit" => "commits/read",
-        other => other,
-    };
     let code = match raw {
         "stream_not_found" => "stream_not_found",
         "destination_exists" => "destination_exists",
@@ -166,13 +162,7 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
                 }
             }
             StreamErrorCode::AlreadyExists => "destination_exists",
-            StreamErrorCode::PrefixNotRetained => {
-                if route == "commit" {
-                    "invalid_argument"
-                } else {
-                    "prefix_not_retained"
-                }
-            },
+            StreamErrorCode::PrefixNotRetained => "prefix_not_retained",
             StreamErrorCode::OutOfRange => "out_of_range",
             StreamErrorCode::IdempotencyMismatch => "idempotency_mismatch",
             StreamErrorCode::Capacity => "capacity_exhausted",
@@ -474,30 +464,6 @@ pub fn validate_idempotency_key(input: &[u8]) -> String {
         .map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
 }
 
-/// Validate the opaque commit identity used by Stream responses and requests.
-/// The empty string means success; malformed identities use the canonical
-/// invalid-argument boundary consumed by generated facades.
-#[wasm_bindgen]
-pub fn validate_commit_id(input: &[u8]) -> String {
-    if input.len() == 32 {
-        String::new()
-    } else {
-        error_code_str(&StreamError::InvalidArgument).to_owned()
-    }
-}
-
-/// Validates the bearer credential shared by the native and browser Stream
-/// clients. The empty string means success; failures use a stable Rust-owned
-/// invalid-argument boundary consumed by generated facades.
-#[wasm_bindgen(js_name = validateBearerToken)]
-pub fn validate_bearer_token(token: &str) -> String {
-    if token.trim().is_empty() || token.contains(['\r', '\n', '\0']) {
-        error_code_str(&StreamError::InvalidArgument).to_owned()
-    } else {
-        String::new()
-    }
-}
-
 /// Validate one canonical Stream path using the same parser used by every
 /// provider and wire decoder.
 ///
@@ -662,12 +628,12 @@ pub fn project_grpc_read_response(input: &[u8], expected: u64) -> Result<JsValue
             .ok_or(StreamError::Unavailable)
             .map_err(js_error)?,
     )
-    .and_then(|record| {
-        (record.sequence == expected)
-            .then_some(record)
-            .ok_or(StreamError::Unavailable)
-    })
-    .map_err(js_error)?;
+        .and_then(|record| {
+            (record.sequence == expected)
+                .then_some(record)
+                .ok_or(StreamError::Unavailable)
+        })
+        .map_err(js_error)?;
     let result = Object::new();
     Reflect::set(
         result.as_ref(),
@@ -1292,18 +1258,6 @@ mod tests {
         assert_eq!(
             public_http_error_code("stream_not_found", "read").as_deref(),
             Some("stream_not_found")
-        );
-        assert_eq!(
-            public_http_error_code("not_found", "read_commit").as_deref(),
-            Some("commit_not_found")
-        );
-        assert_eq!(
-            public_http_error_code("prefix_not_retained", "commit").as_deref(),
-            Some("invalid_argument")
-        );
-        assert_eq!(
-            public_http_error_code("prefix_not_retained", "append").as_deref(),
-            Some("prefix_not_retained")
         );
         assert_eq!(public_http_error_code("commit_not_found", "read"), None);
         assert_eq!(public_http_error_code("unknown", "read"), None);

@@ -14,7 +14,7 @@ import type {
   SelectDeploymentRequest, SelectDeploymentResponse, SubmitJobRequest, SubmitJobResponse,
   ErrorCode,
 } from "../generated/proto/workers/v1/workers_pb.js";
-import { WORKERS_HANDSHAKE, WORKERS_METHODS, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { WORKERS_METHODS, interpolateRustOwnedPath, type RustOwnedMethodMetadata } from "./generated-client.js";
 import { validateWorkersContentLength, validateWorkersCredential, validateWorkersEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersResponseChunk, validateWorkersResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpWorkersOptions {
@@ -34,12 +34,10 @@ export class HttpWorkersClient {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
-  #handshake: Promise<void> | undefined;
 
   constructor(options: HttpWorkersOptions) {
     const endpoint = new URL(options.endpoint);
     validateWorkersEndpoint(options.endpoint);
-    validateRustOwnedCredential(WORKERS_METHODS.invokeDeployment, options.token);
     validateWorkersCredential(options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;
@@ -75,11 +73,9 @@ export class HttpWorkersClient {
   }
 
   async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {
-    const headers = { authorization: `Bearer ${this.#token}`, "content-type": "application/json" };
-    await this.#ensureHandshake(headers, signal);
     const response = await this.#fetcher(new URL(interpolateRustOwnedPath(method, request), `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
-      headers,
+      headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
       body,
       signal,
     });
@@ -97,14 +93,6 @@ export class HttpWorkersClient {
       }
     }
     return json;
-  }
-
-  async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
-    if (this.#handshake !== undefined) return this.#handshake;
-    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, WORKERS_HANDSHAKE, this.#maximum, signal)
-      .catch(error => { this.#handshake = undefined; throw error; });
-    this.#handshake = pending;
-    return pending;
   }
 }
 

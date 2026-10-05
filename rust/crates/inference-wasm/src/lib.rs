@@ -60,16 +60,6 @@ pub fn validate_customer_wire(
         .map_err(JsValue::from_str)
 }
 
-/// Validate one remote bearer credential using the shared Rust policy.
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-pub fn validate_remote_web_credential(token: &str) -> Result<(), JsValue> {
-    use acyclic_sdk_contract_wire::{credential, BEARER_NO_CRLF};
-    credential::validate(BEARER_NO_CRLF, token)
-        .then_some(())
-        .ok_or_else(|| JsValue::from_str("invalid bearer credential"))
-}
-
 /// Decide from a validated Run view whether watching at this cursor is already complete.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]

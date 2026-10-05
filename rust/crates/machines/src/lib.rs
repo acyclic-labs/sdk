@@ -2,7 +2,7 @@
 #![doc = include_str!("../docs/guide.md")]
 #![allow(
     missing_docs,
-    reason = "field-level wire semantics and documentation are canonical in the Rust contract model"
+    reason = "field-level wire semantics are canonical in proto/machines/v1/machines.proto"
 )]
 
 use async_trait::async_trait;
@@ -20,10 +20,10 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "grpc")]
 mod grpc;
-#[cfg(not(target_arch = "wasm32"))]
-pub use grpc::{Tls, service::Service};
+#[cfg(feature = "grpc")]
+pub use grpc::Tls;
 
 /// Generated revision-one public transport. Service implementations consume this module;
 /// customer applications should use the checked types and handles in this crate.
@@ -31,15 +31,7 @@ pub use grpc::{Tls, service::Service};
 pub mod wire {
     #![allow(missing_docs, reason = "generated from the documented public schema")]
     #![allow(clippy::all, clippy::pedantic, reason = "generated protobuf bindings")]
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/wire/messages/acyclic.machines.v1.rs"
-    ));
-    #[cfg(not(target_arch = "wasm32"))]
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/wire/tonic/acyclic.machines.v1.rs"
-    ));
+    include!("generated/acyclic.machines.v1.rs");
 }
 
 /// Canonical public descriptor set.
@@ -1649,15 +1641,20 @@ impl MachinesProvider for SimulatedMachines {
             .ok_or_else(|| ProviderError::NotFound(operation.to_string()))
     }
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         let value = state
             .operations
-            .get_mut(&operation)
+            .get(&operation)
+            .copied()
             .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
         if value.phase == OperationPhase::Pending {
-            value.phase = OperationPhase::Cancelled;
+            Ok(OperationObservation {
+                id: operation,
+                phase: OperationPhase::Cancelled,
+            })
+        } else {
+            Ok(value)
         }
-        Ok(*value)
     }
     async fn watch_operation(
         &self,
@@ -2032,11 +2029,20 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "indexes a repo-local `compatibility/manifest.json` fixture bundled via include_str!; a missing key means the fixture itself is broken and the test should panic loudly"
+    )]
     fn public_descriptor_is_pinned() {
         let digest: [u8; 32] = Sha256::digest(FILE_DESCRIPTOR_SET).into();
-        assert_eq!(
-            "sha256:68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758",
-            format!("sha256:{}", hex::encode(digest))
-        );
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../compatibility/manifest.json"
+        )))
+        .unwrap_or_else(|_| unreachable!());
+        let expected = manifest["families"]["machines"]["descriptorDigest"]
+            .as_str()
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(expected, format!("sha256:{}", hex::encode(digest)));
     }
 }

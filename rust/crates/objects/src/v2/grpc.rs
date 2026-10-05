@@ -7,21 +7,10 @@ use bytes::Bytes;
 use futures::{FutureExt, StreamExt, stream};
 use prost::Message;
 use tonic::{
-    Request, Status,
+    Request,
     metadata::{Ascii, MetadataValue},
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
-
-#[derive(Clone)]
-struct BearerAuth(MetadataValue<Ascii>);
-impl tonic::service::Interceptor for BearerAuth {
-    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.0.clone());
-        Ok(request)
-    }
-}
 
 const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 fn put_frame(chunk: Result<Bytes, Error>) -> wire::PutObjectRequest {
@@ -48,12 +37,6 @@ pub enum ConnectError {
     /// Connection could not be established.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
-    /// The authenticated control service rejected the requested identity.
-    #[error(transparent)]
-    RemoteStatus(#[from] tonic::Status),
-    /// The endpoint returned a different Rust-owned identity or capability set.
-    #[error("invalid Objects handshake: {0}")]
-    Negotiation(String),
 }
 
 /// Logical Objects client. Every request carries a sensitive bearer credential.
@@ -176,76 +159,6 @@ impl GrpcObjects {
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
         Self::connect_tls(endpoint, token, ca, None).await
-    }
-
-    /// Connect after verifying the independent Rust-owned transport handshake.
-    pub async fn connect_verified(
-        endpoint: &str,
-        token: &str,
-    ) -> Result<Option<Self>, ConnectError> {
-        Self::connect_verified_with_ca_certificate(endpoint, token, None).await
-    }
-
-    /// Connect after verifying the control handshake with an optional private CA.
-    pub async fn connect_verified_with_ca_certificate(
-        endpoint: &str,
-        token: &str,
-        ca: Option<&[u8]>,
-    ) -> Result<Option<Self>, ConnectError> {
-        use crate::control_wire::protocol::v1::{
-            Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity,
-        };
-        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
-        let family = BindingFamily::Objects;
-        let version = control::control_protocol_version(family);
-        let client = Self::connect_tls(endpoint, token, ca, None).await?;
-        let channel = client.channel.clone();
-        let auth = client.authorization.clone();
-        let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::with_interceptor(channel.clone(), BearerAuth(auth.clone()))
-            .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
-        let mut request = Request::new(HandshakeRequest {
-            protocol: Some(ProtocolIdentity {
-                version: version.into(),
-                descriptor_digest: control::archived_descriptor_digest(family),
-            }),
-            required: Some(CapabilitySet {
-                capabilities: vec![Capability {
-                    name: family.name().into(),
-                    version: version.into(),
-                }],
-            }),
-        });
-        request.metadata_mut().insert(
-            control::FAMILY_METADATA_KEY,
-            MetadataValue::from_static(family.name()),
-        );
-        request.set_timeout(std::time::Duration::from_secs(10));
-        let response = match probe.handshake(request).await {
-            Ok(response) => response.into_inner(),
-            Err(status)
-                if matches!(
-                    status.code(),
-                    tonic::Code::Unimplemented
-                        | tonic::Code::Unavailable
-                        | tonic::Code::DeadlineExceeded
-                ) =>
-            {
-                return Ok(None);
-            }
-            Err(status) => return Err(ConnectError::RemoteStatus(status)),
-        };
-        control::validate_handshake_response(
-            family,
-            version,
-            &[control::RequiredCapability {
-                name: family.name(),
-                version,
-            }],
-            &response.encode_to_vec(),
-            control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES,
-        )
-        .map_err(|error| ConnectError::Negotiation(format!("{error:?}")))?;
-        Ok(Some(client))
     }
     /// Connects with a caller-supplied PEM client certificate chain and private key.
     ///

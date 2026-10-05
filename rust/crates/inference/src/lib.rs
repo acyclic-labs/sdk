@@ -11,36 +11,13 @@ pub mod wire {
 mod contract;
 #[cfg(feature = "http-codec")]
 pub mod http_codec;
-#[cfg(feature = "http-client")]
-pub mod http;
-#[cfg(feature = "http-client")]
-pub mod client;
 pub use contract::{
     MAXIMUM_EVALUATION_CANDIDATES, MAXIMUM_EVALUATION_CASES, MAXIMUM_EVALUATION_METRICS,
     MAXIMUM_EVALUATION_RESULTS, MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES, WatchRunState,
     validate_customer_wire, watch_run_start_state_wire, watch_run_start_wire,
 };
 
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+#[cfg(feature = "host")]
 mod host;
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+#[cfg(feature = "host")]
 pub use host::*;
-
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
-mod grpc;
-
-/// Generated independent negotiation bindings for native transport selection.
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
-pub mod control_wire {
-    #![allow(missing_docs, clippy::all, clippy::pedantic, reason = "generated control bindings")]
-    pub mod protocol {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
-        }
-    }
-    pub mod transport {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/acyclic.transport.v1.rs"));
-        }
-    }
-}

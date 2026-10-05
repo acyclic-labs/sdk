@@ -5,5 +5,4 @@
 library;
 
 export 'src/generated.dart';
-export 'src/type_policy.dart';
 export 'src/remote_policy.dart';

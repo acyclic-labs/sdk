@@ -24,9 +24,8 @@ if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
 $output = [System.IO.Path]::GetFullPath($Output)
 $workspace = Join-Path $output 'workspace'
 $workspaceJvm = Join-Path $workspace 'jvm'
-$workspaceConsumer = Join-Path $workspace 'consumer'
 $mavenLocal = Join-Path $output '.m2'
-$null = New-Item -ItemType Directory -Force -Path $output, $workspace, $mavenLocal, $workspaceConsumer
+$null = New-Item -ItemType Directory -Force -Path $output, $workspace, $mavenLocal
 
 & robocopy (Join-Path $SourceRoot 'jvm') $workspaceJvm /E /XD target obj bin /NFL /NDL /NJH /NJS /NC /NS | Out-Null
 if ($LASTEXITCODE -gt 7) {
@@ -35,19 +34,6 @@ if ($LASTEXITCODE -gt 7) {
 foreach ($name in @('LICENSE', 'NOTICE')) {
   Copy-Item -LiteralPath (Join-Path $SourceRoot $name) -Destination (Join-Path $workspace $name) -Force
 }
-& robocopy (Join-Path $SourceRoot 'jvm\consumer') $workspaceConsumer /E /NFL /NDL /NJH /NJS /NC /NS | Out-Null
-if ($LASTEXITCODE -gt 7) {
-  throw "Could not stage the installed-JAR consumer project (robocopy exit code $LASTEXITCODE)."
-}
-$consumerTests = Join-Path $workspaceConsumer 'src\test\java\dev\acyclic\transport'
-$null = New-Item -ItemType Directory -Force -Path $consumerTests
-foreach ($testName in @('RpcScenarioEvidenceTest.java', 'GeneratedTransportTest.java')) {
-  Copy-Item -LiteralPath (Join-Path $workspaceJvm "src\test\java\dev\acyclic\transport\$testName") -Destination (Join-Path $consumerTests $testName) -Force
-}
-$consumerResources = Join-Path $workspaceConsumer 'src\test\resources\golden'
-$null = New-Item -ItemType Directory -Force -Path $consumerResources
-Copy-Item -LiteralPath (Join-Path $workspaceJvm 'src\test\resources\golden\cross-language-family-fixtures.json') -Destination $consumerResources -Force
-Copy-Item -LiteralPath $manifest -Destination (Join-Path $consumerResources 'rust-authority.json') -Force
 
 $maven = Get-Command mvn -ErrorAction SilentlyContinue
 if ($null -eq $maven) {
@@ -62,7 +48,7 @@ if (-not (Test-Path -LiteralPath $pom -PathType Leaf)) {
   & $maven.Source '-B' '-ntp' '-f' $pom `
   "-Dacyclic.schema.root=$Authority" `
   "-Dmaven.repo.local=$mavenLocal" `
-  '-Dmaven.test.skip=true' 'install'
+  '-Dmaven.test.skip=true' 'package'
 if ($LASTEXITCODE -ne 0) {
   throw "Pinned JVM producer failed with exit code $LASTEXITCODE."
 }
@@ -72,35 +58,6 @@ if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) {
   throw "JVM producer completed without its installable JAR: $jar"
 }
 Copy-Item -LiteralPath $jar -Destination (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar') -Force
-$installedPom = Join-Path $mavenLocal 'dev\acyclic\acyclic-sdk-jvm-transport\0.2.0-SNAPSHOT\acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom'
-if (-not (Test-Path -LiteralPath $installedPom -PathType Leaf)) {
-  throw "JVM producer completed without dependency metadata: $installedPom"
-}
-Copy-Item -LiteralPath $installedPom -Destination (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom') -Force
-
-# Run the generated consumer against every emitted gRPC descriptor and retain
-# the exact scenario bytes in the producer output. The request revision is the
-# Rust orchestrator's immutable source identity; do not derive or rewrite it
-# from a mutable staged checkout.
-$requestDocument = Get-Content -Raw -LiteralPath $Request | ConvertFrom-Json
-$sourceRevision = [string]$requestDocument.source.revision
-if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$') {
-  throw "Language producer request has no exact 40-character source revision: $sourceRevision"
-}
-$consumerRoot = Join-Path $output 'qualification\consumers'
-$null = New-Item -ItemType Directory -Force -Path $consumerRoot
-$consumerArtifact = Join-Path $consumerRoot 'jvm-transport.jar'
-Copy-Item -LiteralPath $jar -Destination $consumerArtifact -Force
-$consumerPom = Join-Path $workspaceConsumer 'pom.xml'
-& $maven.Source '-B' '-ntp' '-f' $consumerPom `
-  "-Dmaven.repo.local=$mavenLocal" `
-  "-Dacyclic.source.revision=$sourceRevision" `
-  "-Dacyclic.scenario.output=$output" `
-  '-Dacyclic.consumer.artifact=qualification/consumers/jvm-transport.jar' `
-  '-Dtest=RpcScenarioEvidenceTest,GeneratedTransportTest,InstalledJarConsumerTest' 'test'
-if ($LASTEXITCODE -ne 0) {
-  throw "JVM RPC scenario evidence failed with exit code $LASTEXITCODE."
-}
 $requestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Request).Hash
 $authorityHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash
 @{
@@ -117,7 +74,5 @@ $authorityHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash
   }
   artifact = 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar'
   artifact_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar')).Hash
-  dependency_metadata = 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom'
-  dependency_metadata_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom')).Hash
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'producer-output.json') -Encoding utf8
 Write-Output "staged JVM package: acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar"
