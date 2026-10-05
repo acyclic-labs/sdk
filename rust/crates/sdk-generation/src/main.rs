@@ -5987,6 +5987,9 @@ struct ConsumerScenario {
 struct RuntimeScenarioEvidence {
     execution_step: usize,
     request_sha256: String,
+    response_sha256: Vec<String>,
+    terminal_status: String,
+    terminal_code: i64,
 }
 
 fn hex_bytes(value: &str, label: &str) -> Option<Vec<u8>> {
@@ -6026,12 +6029,116 @@ fn authority_rpc_order(output: &Path) -> Option<Vec<String>> {
     (!order.is_empty()).then_some(order)
 }
 
+fn artifact_binding_bytes(
+    output: &Path,
+    expected: &EvidenceExpectations,
+    binding: &Value,
+    label: &str,
+) -> Option<(String, Vec<u8>)> {
+    let binding = binding.as_object()?;
+    let path_text = binding.get("path").and_then(Value::as_str)?;
+    let digest = binding.get("sha256").and_then(Value::as_str)?;
+    if !is_portable_relative(path_text)
+        || !path_text.starts_with("qualification/consumers/")
+        || !is_sha256(digest)
+    {
+        return None;
+    }
+    let bytes = fs::read(output.join(path_text)).ok()?;
+    let artifact = expected.artifacts.iter().find(|artifact| artifact.path == path_text)?;
+    if artifact.sha256 != digest
+        || artifact.bytes != bytes.len() as u64
+        || hash_bytes(&bytes) != digest
+    {
+        return None;
+    }
+    let _ = label;
+    Some((path_text.to_owned(), bytes))
+}
+
+fn expected_semantic_order(expected_manifest: &Value) -> Option<Vec<String>> {
+    let root = expected_manifest.as_object()?;
+    let values = root
+        .get("execution_plan")
+        .and_then(Value::as_array)
+        .filter(|values| !values.is_empty())
+        .or_else(|| root.get("methods").and_then(Value::as_array))?;
+    let mut order = Vec::with_capacity(values.len());
+    for value in values {
+        let rpc = runtime_method_rpc(value)?.to_owned();
+        order.push(rpc);
+    }
+    (!order.is_empty()).then_some(order)
+}
+
+fn validate_semantic_verifier(
+    output: &Path,
+    consumer: &Value,
+    expected: &EvidenceExpectations,
+    receipt_path: &str,
+    receipt_digest: &str,
+    receipt_bytes: &[u8],
+) -> Option<Vec<String>> {
+    let binding = [
+        "semantic_verifier",
+        "semantic_verifier_receipt",
+        "rust_semantic_verifier",
+        "verifier_result",
+    ]
+    .iter()
+    .find_map(|key| consumer.get(*key))?;
+    let (_verifier_path, verifier_bytes) = artifact_binding_bytes(output, expected, binding, "semantic verifier")?;
+    let verifier: Value = serde_json::from_slice(&verifier_bytes).ok()?;
+    if verifier.get("schema").and_then(Value::as_str)
+        != Some("acyclic.sdk.rpd.rust-semantic-verifier.v1")
+        || verifier.get("status").and_then(Value::as_str) != Some("passed")
+        || verifier.get("qualification").and_then(Value::as_str) != Some("qualified")
+        || verifier.get("source_git_sha").and_then(Value::as_str)
+            != Some(expected.source_revision.as_str())
+        || verifier.get("verifier_sha256").and_then(Value::as_str).is_none_or(|digest| !is_sha256(digest))
+        || verifier.get("failures").and_then(Value::as_array).is_none_or(|failures| !failures.is_empty())
+        || verifier.get("semantic_comparisons").and_then(Value::as_u64).is_none_or(|count| count == 0)
+    {
+        return None;
+    }
+    let binding_object = binding.as_object()?;
+    let expected_binding = binding_object.get("expected_input")?;
+    let observed_binding = binding_object.get("observed_input")?;
+    let (_expected_path, expected_bytes) = artifact_binding_bytes(output, expected, expected_binding, "semantic expected input")?;
+    let (observed_path, observed_bytes) = artifact_binding_bytes(output, expected, observed_binding, "semantic observed input")?;
+    let expected_digest = expected_binding.get("sha256").and_then(Value::as_str)?;
+    let observed_digest = observed_binding.get("sha256").and_then(Value::as_str)?;
+    if verifier.get("expected_input_sha256").and_then(Value::as_str) != Some(expected_digest)
+        || verifier.get("observed_input_sha256").and_then(Value::as_str) != Some(observed_digest)
+        || verifier.get("method_count").and_then(Value::as_u64).is_none()
+    {
+        return None;
+    }
+    if observed_path != receipt_path || observed_digest != receipt_digest || observed_bytes != receipt_bytes {
+        return None;
+    }
+    let expected_manifest: Value = serde_json::from_slice(&expected_bytes).ok()?;
+    if expected_manifest.get("schema").and_then(Value::as_str)
+        != Some("acyclic.sdk.rpd.rust-authority-consumer-inventory.v1")
+        || expected_manifest.get("complete").and_then(Value::as_bool) != Some(true)
+        || expected_manifest.get("authority").and_then(|authority| authority.get("source_git_sha")).and_then(Value::as_str)
+            != Some(expected.source_revision.as_str())
+    {
+        return None;
+    }
+    let order = expected_semantic_order(&expected_manifest)?;
+    if verifier.get("method_count").and_then(Value::as_u64) != Some(order.len() as u64) {
+        return None;
+    }
+    Some(order)
+}
+
 fn validate_runtime_receipt(
     output: &Path,
     consumer: &Value,
     expected: &EvidenceExpectations,
     consumer_artifact_sha256: &str,
-) -> Option<BTreeMap<String, RuntimeScenarioEvidence>> {
+) -> Option<BTreeMap<usize, RuntimeScenarioEvidence>> {
     let binding = ["runtime_receipt", "rust_verifier", "verifier_receipt"]
         .iter()
         .find_map(|key| consumer.get(*key))?
@@ -6101,6 +6208,22 @@ fn validate_runtime_receipt(
     {
         return None;
     }
+    let semantic_order = validate_semantic_verifier(
+        output,
+        consumer,
+        expected,
+        receipt_path,
+        receipt_digest,
+        &receipt_bytes,
+    )?;
+    if methods.len() != semantic_order.len()
+        || methods
+            .iter()
+            .zip(&semantic_order)
+            .any(|(method, expected_rpc)| runtime_method_rpc(method) != Some(expected_rpc.as_str()))
+    {
+        return None;
+    }
     if let Some(expected_order) = authority_rpc_order(output) {
         if methods.len() != expected_order.len()
             || methods
@@ -6113,12 +6236,12 @@ fn validate_runtime_receipt(
     }
     let mut evidence = BTreeMap::new();
     for (index, method) in methods.iter().enumerate() {
-        let rpc = runtime_method_rpc(method)?.to_owned();
+        runtime_method_rpc(method)?;
         let execution_step = method
             .get("execution_step")
             .and_then(Value::as_u64)
             .map(|step| step as usize)?;
-        if execution_step != index || evidence.contains_key(&rpc) {
+        if execution_step != index || evidence.contains_key(&execution_step) {
             return None;
         }
         if method.get("status").and_then(Value::as_str) != Some("semantic_passed") {
@@ -6147,6 +6270,10 @@ fn validate_runtime_receipt(
             .iter()
             .map(|frame| hex_bytes(frame, "response_bytes_hex"))
             .collect::<Option<Vec<_>>>()?;
+        let response_digests = response_bytes
+            .iter()
+            .map(|bytes| hash_bytes(bytes))
+            .collect::<Vec<_>>();
         if let Some(digests) = method.get("response_frames_sha256") {
             let digests = digests.as_array()?;
             if digests.len() != response_bytes.len()
@@ -6159,11 +6286,23 @@ fn validate_runtime_receipt(
                 return None;
             }
         }
+        let terminal_status = method
+            .get("terminal_status")
+            .and_then(Value::as_str)
+            .unwrap_or("ok")
+            .to_owned();
+        let terminal_code = method
+            .get("terminal_code")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
         evidence.insert(
-            rpc,
+            execution_step,
             RuntimeScenarioEvidence {
                 execution_step,
                 request_sha256: request_digest.to_owned(),
+                response_sha256: response_digests,
+                terminal_status,
+                terminal_code,
             },
         );
     }
@@ -6229,7 +6368,7 @@ fn consumer_scenario_inventory(
     let runtime_evidence =
         validate_runtime_receipt(output, consumer, expected, declared_digest)?;
     let scenarios = consumer.get("scenarios")?.as_array()?;
-    let mut inventory = BTreeMap::new();
+    let mut inventory: BTreeMap<(String, String), ConsumerScenario> = BTreeMap::new();
     for (scenario_index, scenario) in scenarios.iter().enumerate() {
         let family = scenario.get("family")?.as_str()?.trim();
         let rpc = scenario.get("rpc")?.as_str()?.trim();
@@ -6303,8 +6442,26 @@ fn consumer_scenario_inventory(
         {
             return None;
         }
-        let runtime = runtime_evidence.get(rpc)?;
+        let runtime = runtime_evidence.get(&execution_step)?;
         if runtime.execution_step != execution_step || runtime.request_sha256 != request_digest {
+            return None;
+        }
+        let observed_response_digests = response_frames
+            .iter()
+            .map(|frame| Some(hash_bytes(&hex_bytes(frame, "response_bytes_hex")?)))
+            .collect::<Option<Vec<_>>>()?;
+        if runtime.response_sha256 != observed_response_digests {
+            return None;
+        }
+        let terminal_status = result
+            .get("terminal_status")
+            .and_then(Value::as_str)
+            .unwrap_or("ok");
+        let terminal_code = result
+            .get("terminal_code")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if runtime.terminal_status != terminal_status || runtime.terminal_code != terminal_code {
             return None;
         }
         let transport = result.get("transport").and_then(Value::as_str)?.trim();
@@ -6331,24 +6488,28 @@ fn consumer_scenario_inventory(
         if !check_set.contains("invocation") || !check_set.contains("transport") {
             return None;
         }
-        if inventory
-            .insert(
-                (family.to_owned(), rpc.to_owned()),
+        let key = (family.to_owned(), rpc.to_owned());
+        if let Some(existing) = inventory.get_mut(&key) {
+            if existing.shape != shape || existing.execution_mode != execution_mode {
+                return None;
+            }
+            existing.checks.extend(check_set);
+        } else {
+            inventory.insert(
+                key,
                 ConsumerScenario {
                     shape: shape.to_owned(),
                     execution_mode,
                     checks: check_set,
                 },
-            )
-            .is_some()
-        {
-            return None;
+            );
         }
     }
-    if inventory.len() != runtime_evidence.len()
+    if scenarios.len() != runtime_evidence.len()
+        || runtime_evidence.keys().any(|step| *step >= scenarios.len())
         || inventory
             .keys()
-            .any(|(family, rpc)| !runtime_evidence.contains_key(rpc) || family.is_empty())
+            .any(|(family, _rpc)| family.is_empty())
     {
         return None;
     }
@@ -7968,6 +8129,17 @@ mod tests {
         .into_bytes();
         fs::write(&runtime_receipt, &runtime_bytes).expect("write runtime receipt");
         let runtime_digest = hash_bytes(&runtime_bytes);
+        let semantic_expected = root.join("qualification/consumers/rust-expected.json");
+        let semantic_expected_bytes = br#"{"schema":"acyclic.sdk.rpd.rust-authority-consumer-inventory.v1","complete":true,"method_count":1,"authority":{"source_git_sha":"revision","source_file_hashes":{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},"methods":[{"rpc":"list"}],"execution_plan":[{"rpc":"list"}]}"#;
+        fs::write(&semantic_expected, semantic_expected_bytes).expect("write semantic expected input");
+        let semantic_expected_digest = hash_bytes(semantic_expected_bytes);
+        let semantic_verifier = root.join("qualification/consumers/rust-semantic-verifier.json");
+        let semantic_verifier_bytes = format!(
+            r#"{{"schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1","status":"passed","qualification":"qualified","source_git_sha":"revision","verifier_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","expected_input_sha256":"{}","observed_input_sha256":"{}","method_count":1,"semantic_comparisons":2,"failures":[]}}"#,
+            semantic_expected_digest, runtime_digest
+        ).into_bytes();
+        fs::write(&semantic_verifier, &semantic_verifier_bytes).expect("write semantic verifier result");
+        let semantic_verifier_digest = hash_bytes(&semantic_verifier_bytes);
         let expected = EvidenceExpectations {
             source_revision: "revision".into(),
             contract_digest:
@@ -7990,11 +8162,22 @@ mod tests {
                     sha256: runtime_digest.clone(),
                     bytes: runtime_bytes.len() as u64,
                 },
+                Artifact {
+                    path: "qualification/consumers/rust-expected.json".into(),
+                    sha256: semantic_expected_digest.clone(),
+                    bytes: semantic_expected_bytes.len() as u64,
+                },
+                Artifact {
+                    path: "qualification/consumers/rust-semantic-verifier.json".into(),
+                    sha256: semantic_verifier_digest.clone(),
+                    bytes: semantic_verifier_bytes.len() as u64,
+                },
             ],
         };
         let receipt_bytes = format!(
-            "{{\"schema\":\"acyclic.sdk.qualification.receipt.v1\",\"tool\":\"sdk-generation\",\"language\":\"rust\",\"capability\":\"remote\",\"source_revision\":\"revision\",\"contract_digest\":\"{}\",\"artifact_digest\":\"{}\",\"status\":\"passed\",\"exit_code\":0,\"suite\":\"smoke\",\"assertions\":1,\"consumer\":{{\"executed\":true,\"name\":\"fixture-consumer\",\"version\":\"1\",\"source_revision\":\"revision\",\"artifact_path\":\"qualification/consumers/remote.bin\",\"artifact_sha256\":\"{}\",\"runtime_receipt\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}},\"scenarios\":[{{\"family\":\"actors\",\"rpc\":\"list\",\"shape\":\"unary\",\"status\":\"passed\",\"output_path\":\"qualification/consumers/remote-scenario.json\",\"output_sha256\":\"{}\"}}]}},\"families\":[{{\"family\":\"actors\",\"methods\":[\"list\"],\"features\":[\"serialization\",\"transport\"],\"rpc_shapes\":[\"unary\"]}}]}}",
-            expected.contract_digest, expected.artifact_digest, consumer_digest, runtime_digest, scenario_digest
+            "{{\"schema\":\"acyclic.sdk.qualification.receipt.v1\",\"tool\":\"sdk-generation\",\"language\":\"rust\",\"capability\":\"remote\",\"source_revision\":\"revision\",\"contract_digest\":\"{}\",\"artifact_digest\":\"{}\",\"status\":\"passed\",\"exit_code\":0,\"suite\":\"smoke\",\"assertions\":1,\"consumer\":{{\"executed\":true,\"name\":\"fixture-consumer\",\"version\":\"1\",\"source_revision\":\"revision\",\"artifact_path\":\"qualification/consumers/remote.bin\",\"artifact_sha256\":\"{}\",\"runtime_receipt\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}},\"semantic_verifier\":{{\"path\":\"qualification/consumers/rust-semantic-verifier.json\",\"sha256\":\"{}\",\"expected_input\":{{\"path\":\"qualification/consumers/rust-expected.json\",\"sha256\":\"{}\"}},\"observed_input\":{{\"path\":\"qualification/consumers/runtime-receipt.json\",\"sha256\":\"{}\"}}}},\"scenarios\":[{{\"family\":\"actors\",\"rpc\":\"list\",\"shape\":\"unary\",\"status\":\"passed\",\"output_path\":\"qualification/consumers/remote-scenario.json\",\"output_sha256\":\"{}\"}}]}},\"families\":[{{\"family\":\"actors\",\"methods\":[\"list\"],\"features\":[\"serialization\",\"transport\"],\"rpc_shapes\":[\"unary\"]}}]}}",
+            expected.contract_digest, expected.artifact_digest, consumer_digest, runtime_digest,
+            semantic_verifier_digest, semantic_expected_digest, runtime_digest, scenario_digest
         );
         fs::write(&receipt, receipt_bytes.as_bytes()).expect("write receipt");
         let digest = hash_bytes(receipt_bytes.as_bytes());

@@ -45,11 +45,6 @@ fn args() -> (PathBuf, PathBuf, String, PathBuf, String, bool) {
     }
 }
 
-fn read_json(path: &PathBuf) -> Result<Value, String> {
-    let bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("decode {}: {e}", path.display()))
-}
-
 fn current_executable_sha256() -> Result<String, String> {
     let path = env::current_exe().map_err(|error| format!("resolve verifier executable: {error}"))?;
     let bytes = fs::read(&path).map_err(|error| format!("read verifier executable {}: {error}", path.display()))?;
@@ -339,8 +334,12 @@ fn main() -> Result<(), String> {
             "--verifier-sha256 does not match the running executable: declared {verifier_sha}, actual {actual_verifier_sha}"
         ));
     }
-    let expected = read_json(&expected_path)?;
-    let observed = read_json(&observed_path)?;
+    let expected_bytes = fs::read(&expected_path).map_err(|error| format!("read {}: {error}", expected_path.display()))?;
+    let observed_bytes = fs::read(&observed_path).map_err(|error| format!("read {}: {error}", observed_path.display()))?;
+    let expected_input_sha256 = format!("sha256:{:x}", Sha256::digest(&expected_bytes));
+    let observed_input_sha256 = format!("sha256:{:x}", Sha256::digest(&observed_bytes));
+    let expected = serde_json::from_slice(&expected_bytes).map_err(|error| format!("decode {}: {error}", expected_path.display()))?;
+    let observed = serde_json::from_slice(&observed_bytes).map_err(|error| format!("decode {}: {error}", observed_path.display()))?;
     let expected_root = object(&expected, "expected")?;
     let observed_root = object(&observed, "observed")?;
     if expected_root.get("schema").and_then(Value::as_str) != Some(EXPECTED_SCHEMA) {
@@ -517,7 +516,18 @@ fn main() -> Result<(), String> {
         "partial" => "unqualified",
         _ => "rejected",
     };
-    let result = json!({"schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1","status":status,"qualification":qualification,"source_git_sha":source_sha,"verifier_sha256":actual_verifier_sha,"method_count":expected_methods.len(),"semantic_comparisons":comparisons,"failures":failures});
+    let result = json!({
+        "schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1",
+        "status":status,
+        "qualification":qualification,
+        "source_git_sha":source_sha,
+        "verifier_sha256":actual_verifier_sha,
+        "expected_input_sha256":expected_input_sha256,
+        "observed_input_sha256":observed_input_sha256,
+        "method_count":expected_methods.len(),
+        "semantic_comparisons":comparisons,
+        "failures":failures
+    });
     if let Some(parent) = output_path.parent() { fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?; }
     fs::write(&output_path, serde_json::to_vec_pretty(&result).map_err(|e| format!("encode result: {e}"))?).map_err(|e| format!("write {}: {e}", output_path.display()))?;
     if status == "failed" { return Err("Rust semantic verifier rejected observations".to_owned()); }
