@@ -2835,7 +2835,7 @@ mod tests {
         .expect("go fixture");
         fs::write(
             root.join("jvm").join("RustTypedResponses.java"),
-            "public acyclic.protocol.v1.Protocol.HandshakeResponse protocol() { }\n",
+            "public acyclic.protocol.v1.Protocol.HandshakeResponse protocol() { }\npublic record RawJavaResponse(acyclic.protocol.v1.Protocol.HandshakeResponse value) { public acyclic.protocol.v1.Protocol.HandshakeResponse toWire() { return value; } }\n",
         )
         .expect("jvm fixture");
         fs::write(
