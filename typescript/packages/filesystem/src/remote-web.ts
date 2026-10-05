@@ -1,4 +1,8 @@
 type FilesystemWasm = typeof import("../generated/wasm/acyclic_fs_wasm.js");
+type RustRemoteWebPolicy = FilesystemWasm & {
+  validateRemoteWebEndpoint(endpoint: string): void;
+  validateRemoteWebGrpcEndpoint(endpoint: string): void;
+};
 
 let binding: Promise<FilesystemWasm> | undefined;
 
@@ -23,6 +27,26 @@ export async function validateFilesystemCredential(token: string): Promise<void>
   const module = await loadBinding();
   try {
     module.validate_remote_web_credential(token);
+  } catch (error) {
+    throw new TypeError(String(error));
+  }
+}
+
+/** Validate one hosted endpoint through the Rust remote-web policy. */
+export async function validateFilesystemEndpoint(endpoint: string): Promise<void> {
+  const module = await loadBinding() as RustRemoteWebPolicy;
+  try {
+    module.validateRemoteWebEndpoint(endpoint);
+  } catch (error) {
+    throw new TypeError(String(error));
+  }
+}
+
+/** Validate one hosted gRPC endpoint through the Rust remote-web policy. */
+export async function validateFilesystemGrpcEndpoint(endpoint: string): Promise<void> {
+  const module = await loadBinding() as RustRemoteWebPolicy;
+  try {
+    module.validateRemoteWebGrpcEndpoint(endpoint);
   } catch (error) {
     throw new TypeError(String(error));
   }
