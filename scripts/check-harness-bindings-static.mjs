@@ -340,6 +340,7 @@ const contractSources = [
   "rust/crates/harness/src/executor.rs",
   "rust/crates/harness/src/filesystem/git_facade.rs",
   "rust/crates/harness/src/bundle.rs",
+  "typescript/packages/harness/src/model.ts",
   "typescript/packages/harness/package.json",
   "proto/harness/v2/harness.proto",
   "conformance/vectors/harness/model-input-v3.json",
@@ -473,6 +474,7 @@ const publicContractAudit = [
   {
     contract: "SwarmBudgetLimits / SwarmDispatchContext",
     owner: "rust/crates/harness/src/swarm_budget.rs",
+    scope: "host-only",
     generatedExposure: "none",
     reason: "native host budget admission; transport provenance is out of band",
   },
@@ -486,18 +488,21 @@ const publicContractAudit = [
   {
     contract: "RootWritebackApproval / LocalApprovedRootWriteback",
     owner: "rust/crates/harness/src/filesystem/git_facade.rs",
+    scope: "host-only",
     generatedExposure: "none",
     reason: "approval-bound native filesystem publication; never model-visible",
   },
   {
     contract: "ExecutionOperatorAuthorizer",
     owner: "rust/crates/harness/src/host_execution.rs",
+    scope: "host-only",
     generatedExposure: "none",
     reason: "host-only signer; credentials and authority stay outside model input",
   },
   {
     contract: "InteractionOperatorAuthorizer / InteractionApprovalAuthorization",
     owner: "rust/crates/harness/src/filesystem/interaction_host.rs",
+    scope: "host-only",
     generatedExposure: "none",
     reason: "host-only approval signer; ticket identity, operation binding, and decision scope stay outside model input",
     qualification: "native-runtime-required",
@@ -505,8 +510,10 @@ const publicContractAudit = [
   {
     contract: "ForkToolV3 / SwarmResourceRequest",
     owner: "rust/crates/harness/src/filesystem/swarm_local.rs",
-    generatedExposure: "none",
-    reason: "native model-tool schema; requested child resources are validated and clamped against the parent budget before activation",
+    scope: "model-visible",
+    generatedExposure: "generic model-tool schema",
+    generatedOwners: ["typescript/packages/harness/src/model.ts", wasmDeclarationPath],
+    reason: "the model-visible fork input is represented by the generated WasmModelToolDefinitionWire and public ModelToolDefinition schema; host-only resource admission remains native and is never exposed as a capability binding",
     qualification: "native-runtime-required",
   },
   {
@@ -523,9 +530,16 @@ const publicContractAudit = [
     reason: "provider usage and dispatch provenance remain transport metadata outside model input",
     qualification: "deferred-contract-probe",
   },
-].map(value => ({ ...value, ownerPresent: existsSync(pathFor(value.owner)) }));
+].map(value => ({
+  ...value,
+  ownerPresent: existsSync(pathFor(value.owner)),
+  generatedOwnersPresent: (value.generatedOwners ?? []).map(path => ({ path, present: existsSync(pathFor(path)) })),
+}));
 for (const contract of publicContractAudit) {
   if (!contract.ownerPresent) fail(`public contract owner is missing: ${contract.owner}`);
+  for (const generated of contract.generatedOwnersPresent) {
+    if (!generated.present) fail(`generated public contract owner is missing for ${contract.contract}: ${generated.path}`);
+  }
 }
 const consumerChecks = [
   "scripts/fixtures/installed-harness/test/model-input-rejection.test.ts",
