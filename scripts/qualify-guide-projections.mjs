@@ -24,6 +24,7 @@ const binaries = {
   dart: process.env.SDK_DART_BIN ?? process.env.DART_BIN ?? "dart",
   php: process.env.SDK_PHP_BIN ?? process.env.PHP_BIN ?? "php",
   composer: process.env.SDK_COMPOSER_BIN ?? process.env.COMPOSER_BIN ?? "composer",
+  java: process.env.SDK_JAVA_BIN ?? process.env.JAVA_BIN ?? "java",
 };
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -152,7 +153,12 @@ function execute(language, file, cwd, environment = {}) {
     case "ruby": return command(binaries.ruby, [file], cwd, environment);
     case "dart": return command(binaries.dart, ["run", file], cwd, environment);
     case "php": return command(binaries.php, [file], cwd, environment);
-    case "java": return command(binaries.maven, ["--offline", "--batch-mode", "-q", "exec:java", "-Dexec.mainClass=GuideSnippet"], cwd, environment);
+    case "java": {
+      const classpathFile = join(cwd, "runtime-classpath.txt");
+      const classpath = existsSync(classpathFile) ? readFileSync(classpathFile, "utf8").trim() : "";
+      const targetClasses = join(cwd, "target", "classes");
+      return command(binaries.java, ["-cp", [targetClasses, classpath].filter(Boolean).join(";"), "GuideSnippet"], cwd, environment);
+    }
     case "csharp": return command(binaries.dotnet, ["run", "--project", join(cwd, "GuideSnippet.csproj"), "--no-build"], cwd, environment);
     default: return { command: "", exitCode: 125, stdout: "", stderr: `execution is release-only for ${language}` };
   }
@@ -164,11 +170,11 @@ function prepare(language, packageArtifact, directory) {
   if (language === "python" && packageArtifact.endsWith(".whl")) {
     const venv = join(directory, ".venv");
     const venvPython = join(venv, "Scripts", "python.exe");
-    const created = command(binaries.python, ["-m", "venv", venv], directory);
+    const created = command(binaries.python, ["-m", "venv", "--system-site-packages", venv], directory);
     if (created.exitCode !== 0) return { status: "install-failed", install: created, environment: {} };
     const site = join(directory, "site");
     mkdirSync(site, { recursive: true });
-    const install = command(venvPython, ["-m", "pip", "install", "--target", site, packageArtifact], directory);
+    const install = command(venvPython, ["-m", "pip", "install", "--no-deps", "--target", site, packageArtifact], directory);
     return {
       status: install.exitCode === 0 ? "installed" : "install-failed",
       install: { ...install, command: `${created.command} && ${install.command}` },
@@ -191,7 +197,9 @@ function prepare(language, packageArtifact, directory) {
     mkdirSync(join(directory, "src", "main", "java"), { recursive: true });
     cpSync(join(directory, "GuideSnippet.java"), join(directory, "src", "main", "java", "GuideSnippet.java"));
     const jar = packageArtifact.replaceAll("\\", "/");
-    writeFileSync(join(directory, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>guide</groupId><artifactId>guide-snippet</artifactId><version>0.0.0</version><properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties><dependencies><dependency><groupId>dev.acyclic</groupId><artifactId>acyclic-sdk-jvm-transport</artifactId><version>0.2.0</version><scope>system</scope><systemPath>${jar}</systemPath></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-stub</artifactId><version>1.75.0</version></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-protobuf</artifactId><version>1.75.0</version></dependency><dependency><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>4.31.1</version></dependency></dependencies><build><plugins><plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.5.0</version></plugin></plugins></build></project>`);
+    writeFileSync(join(directory, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>guide</groupId><artifactId>guide-snippet</artifactId><version>0.0.0</version><properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties><dependencies><dependency><groupId>dev.acyclic</groupId><artifactId>acyclic-sdk-jvm-transport</artifactId><version>0.2.0</version><scope>system</scope><systemPath>${jar}</systemPath></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-stub</artifactId><version>1.75.0</version></dependency><dependency><groupId>io.grpc</groupId><artifactId>grpc-protobuf</artifactId><version>1.75.0</version></dependency><dependency><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>4.31.1</version></dependency></dependencies><build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>3.7.0</version></plugin></plugins></build></project>`);
+    const classpath = command(binaries.maven, ["--offline", "--batch-mode", "-q", "org.apache.maven.plugins:maven-dependency-plugin:3.7.0:build-classpath", "-Dmdep.outputFile=runtime-classpath.txt"], directory);
+    if (classpath.exitCode !== 0) return { status: "install-failed", install: classpath, environment: {} };
     return { status: "installed", install: { command: "Maven consumer project", exitCode: 0, stdout: "", stderr: "" }, environment: {} };
   }
 
@@ -238,6 +246,8 @@ function prepare(language, packageArtifact, directory) {
     const packageRoot = resolve(packageArtifact, "..");
     writeFileSync(join(directory, "composer.json"), JSON.stringify({
       require: { "acyclic/sdk": "*" },
+      "minimum-stability": "dev",
+      "prefer-stable": true,
       repositories: [{ type: "path", url: packageRoot.replaceAll("\\", "/"), options: { symlink: false } }],
     }, null, 2));
     const composerArgs = process.env.SDK_COMPOSER_PHAR
@@ -253,11 +263,13 @@ function prepare(language, packageArtifact, directory) {
     const gemHome = join(directory, "vendor", "bundle");
     const built = command(binaries.gem, ["build", packageArtifact, "--output", gemPath], directory);
     if (built.exitCode !== 0) return { status: "install-failed", install: built, environment: {} };
-    const install = command(binaries.gem, ["install", "--local", gemPath, "--install-dir", gemHome, "--no-document"], directory, { GEM_HOME: gemHome });
+    const rubyGemPath = [process.env.SDK_RUBY_GEM_PATH, gemHome, process.env.GEM_PATH].filter(Boolean).join(";");
+    const rubyEnv = { GEM_HOME: gemHome, ...(rubyGemPath ? { GEM_PATH: rubyGemPath } : {}) };
+    const install = command(binaries.gem, ["install", "--local", gemPath, "--install-dir", gemHome, "--no-document"], directory, rubyEnv);
     return {
       status: install.exitCode === 0 ? "installed" : "install-failed",
       install: { ...install, command: `${built.command} && ${install.command}` },
-      environment: { GEM_HOME: gemHome, RUBYLIB: join(packageRoot, "lib") },
+      environment: { ...rubyEnv, RUBYLIB: join(packageRoot, "lib") },
     };
   }
 
