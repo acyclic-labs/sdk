@@ -364,6 +364,42 @@ fn path_parameters(path: &str) -> Vec<String> {
         .collect()
 }
 
+/// Return the exact identity advertised by the selected Rust runtime.
+///
+/// Filesystem and Harness retain immutable, deployed handshake identities in
+/// their family contract modules. The generic control-plane identity remains
+/// the fallback for the descriptor-backed families. The family constants use
+/// a `blake3:` display prefix while the wire field carries the bare digest.
+fn family_handshake_identity(
+    family: acyclic_sdk_contract_wire::BindingFamily,
+) -> (&'static str, String) {
+    let (version, digest) = match family {
+        acyclic_sdk_contract_wire::BindingFamily::Filesystem => (
+            acyclic_sdk_contract_wire::filesystem::HANDSHAKE_VERSION,
+            acyclic_sdk_contract_wire::filesystem::ARCHIVED_HANDSHAKE_DESCRIPTOR_DIGEST,
+        ),
+        acyclic_sdk_contract_wire::BindingFamily::Harness => (
+            acyclic_sdk_contract_wire::harness::HANDSHAKE_VERSION,
+            acyclic_sdk_contract_wire::harness::ARCHIVED_HANDSHAKE_DESCRIPTOR_DIGEST,
+        ),
+        other => (
+            acyclic_sdk_contract_wire::transport_control::control_protocol_version(other),
+            "",
+        ),
+    };
+    if digest.is_empty() {
+        (
+            version,
+            acyclic_sdk_contract_wire::transport_control::archived_descriptor_digest(family),
+        )
+    } else {
+        (
+            version,
+            digest.strip_prefix("blake3:").unwrap_or(digest).to_owned(),
+        )
+    }
+}
+
 fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
     let set = FileDescriptorSet::decode(spec.descriptor.as_slice())?;
     let (package, primary_service) = descriptor_service(&set)?;
@@ -382,10 +418,12 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
         .copied()
         .find(|family| family.name() == spec.family)
         .ok_or_else(|| Error::Missing(format!("unknown binding family {}", spec.family)))?;
-    let handshake_route = acyclic_sdk_contract_wire::transport_control::handshake_http_route(
-        spec.family,
-    )
-    .ok_or_else(|| Error::Missing(format!("missing handshake route for {}", spec.family)))?;
+    let handshake_route =
+        acyclic_sdk_contract_wire::transport_control::handshake_http_route(spec.family)
+            .ok_or_else(|| {
+                Error::Missing(format!("missing handshake route for {}", spec.family))
+            })?;
+    let (handshake_version, handshake_descriptor_digest) = family_handshake_identity(family);
     let methods = spec
         .routes
         .iter()
@@ -492,12 +530,8 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
         source_content_sha256: digest(&spec.source_content),
         source_model_sha256: digest(&spec.source_content),
         handshake_route,
-        handshake_version: acyclic_sdk_contract_wire::transport_control::control_protocol_version(
-            family,
-        )
-        .to_owned(),
-        handshake_descriptor_digest:
-            acyclic_sdk_contract_wire::transport_control::archived_descriptor_digest(family),
+        handshake_version: handshake_version.to_owned(),
+        handshake_descriptor_digest,
         modeled_operations,
         http_projection: !spec.routes.is_empty(),
         remote_policy: match spec.family {
@@ -836,7 +870,8 @@ fn package_typescript(service: &ServiceMetadata) -> Result<String, Error> {
 }
 
 fn typescript_semantic_name(id: &str) -> String {
-    let name = id.split('_')
+    let name = id
+        .split('_')
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
@@ -850,11 +885,11 @@ fn typescript_semantic_name(id: &str) -> String {
 }
 
 fn typescript_semantic_section(family: &str) -> String {
-    use acyclic_sdk_contract_wire::{
-        semantic_type, PublicFieldDirection, SemanticRule, WireValueKind,
-        PUBLIC_FIELD_BINDINGS, WIRE_UNION_VARIANTS,
-    };
     use acyclic_sdk_contract_wire::type_policy::PUBLIC_NESTED_ROUTES;
+    use acyclic_sdk_contract_wire::{
+        PUBLIC_FIELD_BINDINGS, PublicFieldDirection, SemanticRule, WIRE_UNION_VARIANTS,
+        WireValueKind, semantic_type,
+    };
     let bindings = PUBLIC_FIELD_BINDINGS
         .iter()
         .filter(|binding| binding.family == family)
@@ -873,15 +908,20 @@ fn typescript_semantic_section(family: &str) -> String {
     output.push_str("export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };\n\n");
     output.push_str("export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: \"request\" | \"response\" | \"nested_message\"; readonly rules: readonly string[]; }\n\n");
     for id in semantic_ids {
-        let item = semantic_type(id).expect("every public binding resolves to a Rust semantic type");
+        let item =
+            semantic_type(id).expect("every public binding resolves to a Rust semantic type");
         let name = typescript_semantic_name(item.id);
         let base = match item.wire_kind {
             WireValueKind::String => format!("RustOwnedSemanticString<{id:?}>"),
             WireValueKind::Bytes => format!("RustOwnedSemanticBytes<{id:?}>"),
-            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => format!("RustOwnedSemanticNumber<{id:?}>"),
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => {
+                format!("RustOwnedSemanticNumber<{id:?}>")
+            }
             WireValueKind::Boolean => "boolean".to_owned(),
             WireValueKind::Message => format!("RustOwnedSemanticMessage<{id:?}>"),
-            WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => "unknown".to_owned(),
+            WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => {
+                "unknown".to_owned()
+            }
         };
         output.push_str(&format!("export type {name} = {base};\n"));
         let mut checks = String::new();
@@ -891,13 +931,50 @@ fn typescript_semantic_section(family: &str) -> String {
                 // UUID or digest rule applies to their nested wire fields,
                 // never to the object itself.
                 (WireValueKind::Message, _) => String::new(),
-                (WireValueKind::String | WireValueKind::Bytes, SemanticRule::NonEmpty) => "if (value.length === 0) throw new TypeError(\"value must not be empty\");".to_owned(),
-                (WireValueKind::UnsignedInteger | WireValueKind::SignedInteger, SemanticRule::NonNegative) => "if (value < 0) throw new RangeError(\"value must be non-negative\");".to_owned(),
-                (WireValueKind::UnsignedInteger | WireValueKind::SignedInteger, SemanticRule::StrictlyPositive) => "if (value <= 0) throw new RangeError(\"value must be positive\");".to_owned(),
-                (WireValueKind::Bytes, SemanticRule::FixedLength(length)) => format!("if (value.byteLength !== {length}) throw new RangeError(\"value has the wrong length\");"),
-                (WireValueKind::Bytes, SemanticRule::MaxBytes(maximum)) => format!("if (value.byteLength > {maximum}) throw new RangeError(\"value exceeds its byte limit\");"),
-                (WireValueKind::UnsignedInteger | WireValueKind::SignedInteger, SemanticRule::MaxItems(maximum)) => format!("if (value > {maximum}) throw new RangeError(\"value exceeds its item limit\");"),
-                (_, SemanticRule::Utf8 | SemanticRule::Sha256Digest | SemanticRule::Immutable | SemanticRule::Monotonic | SemanticRule::CanonicalResourceName | SemanticRule::ExactOneof | SemanticRule::ExplicitPresence | SemanticRule::PreserveUnknownEnum | SemanticRule::PreserveUnknownOneof | SemanticRule::BoundedInteger { .. } | SemanticRule::NonEmpty | SemanticRule::NonNegative | SemanticRule::StrictlyPositive | SemanticRule::FixedLength(_) | SemanticRule::MaxBytes(_) | SemanticRule::MaxItems(_)) => String::new(),
+                (WireValueKind::String | WireValueKind::Bytes, SemanticRule::NonEmpty) => {
+                    "if (value.length === 0) throw new TypeError(\"value must not be empty\");"
+                        .to_owned()
+                }
+                (
+                    WireValueKind::UnsignedInteger | WireValueKind::SignedInteger,
+                    SemanticRule::NonNegative,
+                ) => "if (value < 0) throw new RangeError(\"value must be non-negative\");"
+                    .to_owned(),
+                (
+                    WireValueKind::UnsignedInteger | WireValueKind::SignedInteger,
+                    SemanticRule::StrictlyPositive,
+                ) => "if (value <= 0) throw new RangeError(\"value must be positive\");".to_owned(),
+                (WireValueKind::Bytes, SemanticRule::FixedLength(length)) => format!(
+                    "if (value.byteLength !== {length}) throw new RangeError(\"value has the wrong length\");"
+                ),
+                (WireValueKind::Bytes, SemanticRule::MaxBytes(maximum)) => format!(
+                    "if (value.byteLength > {maximum}) throw new RangeError(\"value exceeds its byte limit\");"
+                ),
+                (
+                    WireValueKind::UnsignedInteger | WireValueKind::SignedInteger,
+                    SemanticRule::MaxItems(maximum),
+                ) => format!(
+                    "if (value > {maximum}) throw new RangeError(\"value exceeds its item limit\");"
+                ),
+                (
+                    _,
+                    SemanticRule::Utf8
+                    | SemanticRule::Sha256Digest
+                    | SemanticRule::Immutable
+                    | SemanticRule::Monotonic
+                    | SemanticRule::CanonicalResourceName
+                    | SemanticRule::ExactOneof
+                    | SemanticRule::ExplicitPresence
+                    | SemanticRule::PreserveUnknownEnum
+                    | SemanticRule::PreserveUnknownOneof
+                    | SemanticRule::BoundedInteger { .. }
+                    | SemanticRule::NonEmpty
+                    | SemanticRule::NonNegative
+                    | SemanticRule::StrictlyPositive
+                    | SemanticRule::FixedLength(_)
+                    | SemanticRule::MaxBytes(_)
+                    | SemanticRule::MaxItems(_),
+                ) => String::new(),
             };
             checks.push_str(&check);
         }
@@ -911,7 +988,10 @@ fn typescript_semantic_section(family: &str) -> String {
         output.push_str(&format!("export function make{name}({parameter}): {name} {{ {checks} return value as {name}; }}\n"));
     }
     output.push('\n');
-    output.push_str(&format!("export const {}_PUBLIC_FIELD_BINDINGS = [\n", family.to_ascii_uppercase()));
+    output.push_str(&format!(
+        "export const {}_PUBLIC_FIELD_BINDINGS = [\n",
+        family.to_ascii_uppercase()
+    ));
     for binding in &bindings {
         let direction = match binding.direction {
             PublicFieldDirection::Request => "request",
@@ -928,15 +1008,28 @@ fn typescript_semantic_section(family: &str) -> String {
         output.push_str(&format!("  {{ family: {:?}, field: {:?}, semanticType: {:?}, module: {:?}, message: {:?}, wireField: {:?}, direction: {:?}, rules: [{}] }},\n", binding.family, binding.field, binding.semantic_type, binding.module, binding.message, binding.wire_field, direction, rules));
     }
     output.push_str("] as const satisfies readonly RustOwnedSemanticFieldMetadata[];\n\n");
-    output.push_str(&format!("export const {}_PUBLIC_NESTED_ROUTES = [\n", family.to_ascii_uppercase()));
-    for route in PUBLIC_NESTED_ROUTES.iter().filter(|route| route.family == family) {
-        let fields = route.fields.iter().map(|(field, kind)| {
-            let kind = match kind {
-                acyclic_sdk_contract_wire::type_policy::PublicNestedFieldKind::Text => "text",
-                acyclic_sdk_contract_wire::type_policy::PublicNestedFieldKind::Message(_) => "message",
-            };
-            format!("{{ field: {:?}, kind: {:?} }}", field, kind)
-        }).collect::<Vec<_>>().join(", ");
+    output.push_str(&format!(
+        "export const {}_PUBLIC_NESTED_ROUTES = [\n",
+        family.to_ascii_uppercase()
+    ));
+    for route in PUBLIC_NESTED_ROUTES
+        .iter()
+        .filter(|route| route.family == family)
+    {
+        let fields = route
+            .fields
+            .iter()
+            .map(|(field, kind)| {
+                let kind = match kind {
+                    acyclic_sdk_contract_wire::type_policy::PublicNestedFieldKind::Text => "text",
+                    acyclic_sdk_contract_wire::type_policy::PublicNestedFieldKind::Message(_) => {
+                        "message"
+                    }
+                };
+                format!("{{ field: {:?}, kind: {:?} }}", field, kind)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         output.push_str(&format!("  {{ operation: {:?}, requestMessage: {:?}, nestedMessage: {:?}, nestedField: {:?}, semanticField: {:?}, clientAttribute: {:?}, rpc: {:?}, response: {:?}, fields: [{}] }},\n", route.operation, route.request_message, route.nested_message, route.nested_field, route.semantic_field, route.client_attribute, route.rpc, route.response, fields));
     }
     output.push_str("] as const;\n\n");
@@ -950,10 +1043,18 @@ fn typescript_semantic_section(family: &str) -> String {
     };
     let union_variants = WIRE_UNION_VARIANTS
         .iter()
-        .map(|variant| format!("  {{ readonly kind: {:?}; readonly value: {} }}", variant.tag, wire_type(variant.payload_wire_kind)))
+        .map(|variant| {
+            format!(
+                "  {{ readonly kind: {:?}; readonly value: {} }}",
+                variant.tag,
+                wire_type(variant.payload_wire_kind)
+            )
+        })
         .collect::<Vec<_>>()
         .join(" |\n");
-    output.push_str(&format!("export type RustOwnedWireChoice =\n{union_variants};\n\n"));
+    output.push_str(&format!(
+        "export type RustOwnedWireChoice =\n{union_variants};\n\n"
+    ));
     output
 }
 
@@ -971,30 +1072,23 @@ fn typescript_with_paths(
     let mut output = String::from(
         "// Generated by sdk-typescript from Rust descriptors and HTTP_ROUTES. Do not edit.\n\n",
     );
-    output.push_str("import { create, fromJsonString, toJsonString } from \"@bufbuild/protobuf\";\n");
+    output
+        .push_str("import { create, fromJsonString, toJsonString } from \"@bufbuild/protobuf\";\n");
     output.push_str(&format!("import {{ CapabilitySchema, CapabilitySetSchema, HandshakeRequestSchema, HandshakeResponseSchema, ProtocolIdentitySchema }} from \"{protocol_path}\";\n\n"));
     // Credential admission is emitted against the Rust WASM boundary for
     // every bearer service.  Keeping this map in the Rust generator means a
     // checked-in facade cannot silently grow a JavaScript regex fallback.
     let package_credential_validator = match service.family.as_str() {
-        "actors" => Some(
-            "import { validateActorsCredential } from \"./wasm-runtime.js\";\n",
-        ),
-        "workers" => Some(
-            "import { validateWorkersCredential } from \"./wasm-runtime.js\";\n",
-        ),
+        "actors" => Some("import { validateActorsCredential } from \"./wasm-runtime.js\";\n"),
+        "workers" => Some("import { validateWorkersCredential } from \"./wasm-runtime.js\";\n"),
         "objects" => Some(
             "import { validate_objects_v2_bearer_token } from \"../generated/wasm/acyclic_objects_wasm.js\";\n",
         ),
         "stream" => Some(
             "import { validateBearerToken } from \"../generated/wasm/acyclic_stream_wasm.js\";\n",
         ),
-        "inference" => Some(
-            "import { validateInferenceCredential } from \"./contract.js\";\n",
-        ),
-        "filesystem" => Some(
-            "import { validateFilesystemCredential } from \"./remote-web.js\";\n",
-        ),
+        "inference" => Some("import { validateInferenceCredential } from \"./contract.js\";\n"),
+        "filesystem" => Some("import { validateFilesystemCredential } from \"./remote-web.js\";\n"),
         _ => None,
     };
     let package_runtime_import = match service.family.as_str() {
@@ -1738,7 +1832,9 @@ fn collect_relative_files(
         } else if path.is_file() {
             files.insert(
                 path.strip_prefix(root)
-                    .map_err(|_| Error::Missing(format!("compiled output escaped root: {}", path.display())))?
+                    .map_err(|_| {
+                        Error::Missing(format!("compiled output escaped root: {}", path.display()))
+                    })?
                     .to_path_buf(),
             );
         }
@@ -1904,12 +2000,13 @@ fn native_companion_dependencies(
             continue;
         }
         let manifest_path = entry.path().join("package.json");
-        let value: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| {
-            Error::Missing(format!(
-                "native companion package manifest is missing: {} ({error})",
-                manifest_path.display()
-            ))
-        })?)?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| {
+                Error::Missing(format!(
+                    "native companion package manifest is missing: {} ({error})",
+                    manifest_path.display()
+                ))
+            })?)?;
         let object = value.as_object().ok_or_else(|| {
             Error::Missing(format!(
                 "native companion package manifest is not an object: {}",
@@ -1920,13 +2017,26 @@ fn native_companion_dependencies(
             .get("name")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::Missing(format!("native companion name is missing: {}", manifest_path.display())))?;
+            .ok_or_else(|| {
+                Error::Missing(format!(
+                    "native companion name is missing: {}",
+                    manifest_path.display()
+                ))
+            })?;
         let version = object
             .get("version")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::Missing(format!("native companion version is missing: {}", manifest_path.display())))?;
-        dependencies.insert(name.to_owned(), serde_json::Value::String(version.to_owned()));
+            .ok_or_else(|| {
+                Error::Missing(format!(
+                    "native companion version is missing: {}",
+                    manifest_path.display()
+                ))
+            })?;
+        dependencies.insert(
+            name.to_owned(),
+            serde_json::Value::String(version.to_owned()),
+        );
     }
     Ok(dependencies)
 }
@@ -1964,7 +2074,10 @@ fn generated_package_manifest(
     // source-package `prepack` hook would try to rebuild from workspace-only
     // scripts that are deliberately outside the staged package, making
     // `npm pack` depend on the source checkout instead of the Rust output.
-    if let Some(scripts) = object.get_mut("scripts").and_then(serde_json::Value::as_object_mut) {
+    if let Some(scripts) = object
+        .get_mut("scripts")
+        .and_then(serde_json::Value::as_object_mut)
+    {
         scripts.remove("prepack");
     }
     let native_companions = native_companion_dependencies(source_root, &service.family)?;
@@ -2034,7 +2147,8 @@ fn generated_package_provenance(
     native_companions: &serde_json::Map<String, serde_json::Value>,
     source_revision: &str,
     source_git_sha: Option<&str>,
-    generated_client: &str,
+    generated_source_sha256: &str,
+    generated_artifact_sha256: &str,
 ) -> Result<String, Error> {
     Ok(format!(
         "{}\n",
@@ -2053,7 +2167,8 @@ fn generated_package_provenance(
             "sourceModelSha256": service.source_model_sha256,
             "nativeCompanions": native_companions,
             "defaultTransports": default_transport_kinds(service),
-            "generatedClientSha256": digest(generated_client.as_bytes())
+            "generatedSourceSha256": generated_source_sha256,
+            "generatedClientSha256": generated_artifact_sha256
         }))?
     ))
 }
@@ -2084,12 +2199,20 @@ fn write_or_check_generated_package_metadata(
         source_revision,
         source_git_sha,
     )?;
+    let generated_artifact = output_root.join("dist/generated-client.js");
+    let generated_artifact_sha256 = digest(&fs::read(&generated_artifact).map_err(|error| {
+        Error::Missing(format!(
+            "generated TypeScript client artifact is missing: {} ({error})",
+            generated_artifact.display()
+        ))
+    })?);
     let expected_provenance = generated_package_provenance(
         service,
         &native_companions,
         source_revision,
         source_git_sha,
-        generated_client,
+        &digest(generated_client.as_bytes()),
+        &generated_artifact_sha256,
     )?;
     if mode == "write" {
         fs::create_dir_all(provenance.parent().expect("provenance has parent"))?;
@@ -2120,12 +2243,13 @@ fn write_or_check_generated_package_metadata(
 
 fn read_wire_model_revision(wire_root: &Path) -> Result<String, Error> {
     let authority = wire_root.join("rust-authority.json");
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(&authority).map_err(|error| {
-        Error::Missing(format!(
-            "Rust wire authority manifest is missing: {} ({error})",
-            authority.display()
-        ))
-    })?)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&authority).map_err(|error| {
+            Error::Missing(format!(
+                "Rust wire authority manifest is missing: {} ({error})",
+                authority.display()
+            ))
+        })?)?;
     let revision = value
         .get("source_revision")
         .and_then(serde_json::Value::as_str)
@@ -2141,13 +2265,17 @@ fn read_wire_model_revision(wire_root: &Path) -> Result<String, Error> {
 
 fn read_wire_source_git_sha(wire_root: &Path) -> Result<Option<String>, Error> {
     let authority = wire_root.join("rust-authority.json");
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(&authority).map_err(|error| {
-        Error::Missing(format!(
-            "Rust wire authority manifest is missing: {} ({error})",
-            authority.display()
-        ))
-    })?)?;
-    let Some(value) = value.get("source_git_sha").and_then(serde_json::Value::as_str) else {
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&authority).map_err(|error| {
+            Error::Missing(format!(
+                "Rust wire authority manifest is missing: {} ({error})",
+                authority.display()
+            ))
+        })?)?;
+    let Some(value) = value
+        .get("source_git_sha")
+        .and_then(serde_json::Value::as_str)
+    else {
         return Ok(None);
     };
     if !matches!(value.len(), 40 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -2226,7 +2354,9 @@ fn write_or_check_packages(
             .find(|service| service.family == family)
             .ok_or_else(|| Error::Missing(format!("missing generated service {family}")))?;
         if source_root != output_root {
-            for (source, relative) in package_files(source_root, wire_root.map(|_| output_root), &family)? {
+            for (source, relative) in
+                package_files(source_root, wire_root.map(|_| output_root), &family)?
+            {
                 copy_or_check_package_file(mode, &source, &output_root.join(relative))?;
             }
             // TypeScript's NodeNext resolver needs the Rust-generated package
@@ -2234,6 +2364,7 @@ fn write_or_check_packages(
             // manifest is part of the generated artifact, so write/check it
             // before invoking the compiler and leave the same verification in
             // place for every package.
+            compile_package_dist(mode, source_root, output_root, &family)?;
             write_or_check_generated_package_metadata(
                 mode,
                 source_root,
@@ -2243,7 +2374,6 @@ fn write_or_check_packages(
                 source_git_sha.as_deref(),
                 &content,
             )?;
-            compile_package_dist(mode, source_root, output_root, &family)?;
         }
         if source_root == output_root && wire_root.is_none() {
             let shared_root = source_root.join("generated/typescript/protocol");
@@ -2496,5 +2626,24 @@ mod tests {
         assert!(source.contains("FAMILY_VIEWS"));
         assert!(source.contains("TransportKind::Grpc"));
         assert!(source.contains("ActorsService/CreateActor"));
+    }
+
+    #[test]
+    fn harness_metadata_uses_the_archived_rust_handshake_identity() {
+        let (version, digest) =
+            family_handshake_identity(acyclic_sdk_contract_wire::BindingFamily::Harness);
+        assert_eq!(version, "2");
+        assert_eq!(
+            digest,
+            "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf"
+        );
+        let harness = model()
+            .expect("Rust descriptors and routes are compatible")
+            .services
+            .into_iter()
+            .find(|service| service.family == "harness")
+            .expect("Harness metadata");
+        assert_eq!(harness.handshake_version, version);
+        assert_eq!(harness.handshake_descriptor_digest, digest);
     }
 }

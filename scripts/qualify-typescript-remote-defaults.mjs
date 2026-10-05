@@ -72,7 +72,7 @@ for (const family of families) {
   if (policy.native.length === 0) fail(`${family} has no native transport`);
   if (policy.credentialPolicy !== "bearer-no-crlf" && family !== "machines") fail(`${family} has an unexpected credential policy: ${policy.credentialPolicy}`);
   if (family === "filesystem" && policy.browser[0] !== "grpc-web") fail("filesystem browser transport must be Rust-qualified grpc-web");
-  if (family === "machines" && policy.browser.length !== 0) fail("machines claims an unsupported browser transport");
+  if (family === "machines" && policy.browser[0] !== "grpc-web") fail("machines browser transport must be Rust-qualified grpc-web");
   checks.push({ family, package: manifest.name, sourceGitSha, sourceModelRevision: recorded.sourceModelRevision, sourceContentSha256: recorded.sourceContentSha256, generatedClientSha256: generatedClientSha, defaultTransports: defaults, credentialPolicy: policy.credentialPolicy, generatedDeclarations: generatedTypesPath });
 }
 
@@ -86,7 +86,7 @@ const receipt = {
     "generated JavaScript and declarations are present",
     "generated JavaScript hash matches Rust provenance",
     "native and browser defaults match emitted Rust transport policy",
-    "filesystem browser policy is grpc-web and machines has no browser claim",
+    "filesystem and machines browser policies are Rust-qualified grpc-web",
     "credential metadata and validation entrypoints are Rust-owned",
   ],
 };
