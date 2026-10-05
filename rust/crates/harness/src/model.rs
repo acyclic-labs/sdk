@@ -280,6 +280,88 @@ impl ModelContent {
                 .collect(),
         }
     }
+
+    /// Extracts file references from the typed tool result envelopes used by
+    /// the harness. The walk follows only envelope fields, so arbitrary model
+    /// objects are never interpreted as hidden references.
+    pub fn embedded_file_refs(&self) -> Result<Vec<FileRef>> {
+        const MAX_NODES: usize = 4_096;
+        const MAX_DEPTH: usize = 64;
+        let mut pending = Vec::new();
+        match self {
+            Self::Part(ModelContentPart::ToolCall { arguments, .. })
+            | Self::Part(ModelContentPart::ToolResult { value: arguments, .. }) => {
+                pending.push((arguments.clone(), 0));
+            }
+            Self::Parts(parts) => {
+                for part in parts {
+                    match part {
+                        ModelContentPart::ToolCall { arguments, .. }
+                        | ModelContentPart::ToolResult { value: arguments, .. } => {
+                            pending.push((arguments.clone(), 0));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Self::Text(_) | Self::Part(_) => {}
+        }
+        let mut files = Vec::new();
+        let mut visited = 0;
+        while let Some((value, depth)) = pending.pop() {
+            visited += 1;
+            if visited > MAX_NODES {
+                return Err(Error::Invalid(
+                    "nested model references exceed the admission bound".into(),
+                ));
+            }
+            if depth > MAX_DEPTH {
+                return Err(Error::Invalid(
+                    "nested model reference depth exceeds the admission bound".into(),
+                ));
+            }
+            if Self::is_embedded_file_ref(&value) {
+                files.push(serde_json::from_value::<FileRef>(value).map_err(|error| {
+                    Error::Invalid(format!("embedded file reference is invalid: {error}"))
+                })?);
+                continue;
+            }
+            match value {
+                Value::Array(values) => {
+                    if pending.len().saturating_add(values.len()) > MAX_NODES {
+                        return Err(Error::Invalid(
+                            "nested model references exceed the admission bound".into(),
+                        ));
+                    }
+                    pending.extend(values.into_iter().map(|value| (value, depth + 1)));
+                }
+                Value::Object(fields) => {
+                    for key in ["file", "files", "result", "value", "data", "output"] {
+                        if let Some(value) = fields.get(key) {
+                            if pending.len() >= MAX_NODES {
+                                return Err(Error::Invalid(
+                                    "nested model references exceed the admission bound".into(),
+                                ));
+                            }
+                            pending.push((value.clone(), depth + 1));
+                        }
+                    }
+                }
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+            }
+        }
+        Ok(files)
+    }
+
+    fn is_embedded_file_ref(value: &Value) -> bool {
+        let Value::Object(fields) = value else {
+            return false;
+        };
+        fields.len() == 5
+            && ["volume", "path", "version", "descriptor", "display_name"]
+                .into_iter()
+                .all(|key| fields.contains_key(key))
+    }
 }
 
 /// One provider-neutral part requiring an explicit provider projection.

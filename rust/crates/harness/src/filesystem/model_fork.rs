@@ -77,6 +77,12 @@ where
                     files.push(file.clone());
                 }
             }
+            for file in message.content.embedded_file_refs()? {
+                if unique.insert(file.read_capability()?) {
+                    self.content_verifier.verify(&file).await?;
+                    files.push(file);
+                }
+            }
         }
         let mut references = crate::fork::ModelBoundaryReferences {
             publication: verified.publication.operation_id,
