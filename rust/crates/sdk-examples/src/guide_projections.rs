@@ -569,7 +569,7 @@ package main
 
 import (
     "context"
-    "crypto/sha256"
+{go_crypto_import}
     "fmt"
     "os"
     generated "github.com/acyclic-labs/sdk/go/gen/{module}/{version}"
@@ -593,6 +593,11 @@ func main() {{
                 module = module,
                 version = version,
                 service = service,
+                go_crypto_import = if family == "workers" {
+                    "    \"crypto/sha256\"\n"
+                } else {
+                    ""
+                },
                 go_protocol_import = if family == "harness" {
                     "    protocol \"github.com/acyclic-labs/sdk/go/gen/protocol/v1\""
                 } else {
