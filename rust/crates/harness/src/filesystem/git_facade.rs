@@ -34,6 +34,16 @@ use std::sync::Arc;
 /// Capability required to authorize an exact root writeback approval.
 pub const ROOT_WRITEBACK_CAPABILITY: &str = "project:writeback";
 
+/// Stable model-facing name for the typed Git compatibility surface.
+///
+/// Applications register this one tool with their `CodingToolHost`. The
+/// facade then delegates each command to the Filesystem compatibility
+/// repository under the caller's scope; it never shells out to bare Git.
+pub const GIT_FACADE_TOOL_NAME: &str = "acyclic.git";
+
+/// Revision of the model-facing Git facade contract.
+pub const GIT_FACADE_TOOL_REVISION: &str = "1";
+
 /// Parent-issued approval for applying an inspected project join to the root.
 ///
 /// The approval binds the operation and both immutable generations returned by

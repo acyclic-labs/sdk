@@ -52,7 +52,8 @@ mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod git_facade;
 pub use git_facade::{
-    FilesystemGitFacade, ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,
+    FilesystemGitFacade, GIT_FACADE_TOOL_NAME, GIT_FACADE_TOOL_REVISION,
+    ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,
 };
 mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;

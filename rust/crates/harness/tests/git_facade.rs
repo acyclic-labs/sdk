@@ -19,7 +19,9 @@ use acyclic_harness::{
         VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
-    filesystem::{FilesystemGitFacade, FilesystemHost},
+    filesystem::{
+        FilesystemGitFacade, FilesystemHost, GIT_FACADE_TOOL_NAME, GIT_FACADE_TOOL_REVISION,
+    },
     merge::{ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan},
     resources::ProviderRef,
 };
@@ -113,8 +115,8 @@ impl ToolProjection for ModelGitFacadeTool {
 
 fn model_git_definition() -> ToolDefinition {
     ToolDefinition {
-        name: "filesystem.git".into(),
-        revision: "1".into(),
+        name: GIT_FACADE_TOOL_NAME.into(),
+        revision: GIT_FACADE_TOOL_REVISION.into(),
         description: "Run one typed acyclic git command in the caller's workspace.".into(),
         input_schema: json!({
             "type": "object",
@@ -412,7 +414,7 @@ async fn model_facing_git_tool_routes_through_pinned_facade_and_provenance() -> 
     context.validate_invocation(&invocation)?;
     let registered = registry
         .get(&definition.name)
-        .ok_or_else(|| Error::NotFound("filesystem.git".into()))?;
+        .ok_or_else(|| Error::NotFound(GIT_FACADE_TOOL_NAME.into()))?;
     let result = registered
         .executor
         .execute_in_model_batch(context, invocation.clone())
