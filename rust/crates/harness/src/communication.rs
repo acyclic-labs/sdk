@@ -1383,6 +1383,7 @@ mod tests {
         runtime::{
             DurableTaskHost, TaskAdmissionRecord, TaskCommunicationScope, TaskRunLimits,
         },
+        swarm_budget::SwarmReservationState,
     };
     use serde_json::json;
     use std::{
@@ -1589,6 +1590,7 @@ mod tests {
     struct RecordingHost {
         admissions: BTreeMap<TaskId, TaskAdmissionRecord>,
         fenced: std::collections::BTreeSet<TaskId>,
+        reservation_states: BTreeMap<TaskId, SwarmReservationState>,
         replay: Mutex<Option<(TaskId, TaskId, OperationId, FileRef)>>,
         sent: Mutex<Vec<MessageRequest>>,
         timers: Mutex<Vec<OperationId>>,
@@ -1604,6 +1606,10 @@ mod tests {
             task_id: TaskId,
         ) -> futures::future::BoxFuture<'a, Result<TaskCommunicationScope>> {
             let fenced = self.fenced.contains(&task_id);
+            let budget_fenced = matches!(
+                self.reservation_states.get(&task_id),
+                Some(SwarmReservationState::Reserved | SwarmReservationState::Cancelled)
+            );
             Box::pin(async move {
                 let admission = self.observe_admission(task_id).await?;
                 Ok(TaskCommunicationScope {
@@ -1611,7 +1617,7 @@ mod tests {
                     grants: admission.grants,
                     limits: admission.limits,
                     run_limits: admission.run_limits,
-                    accepts_new_mutations: !fenced,
+                    accepts_new_mutations: !fenced && !budget_fenced,
                 })
             })
         }
@@ -1747,6 +1753,7 @@ mod tests {
         Ok(Arc::new(RecordingHost {
             admissions,
             fenced: Default::default(),
+            reservation_states: Default::default(),
             replay: Mutex::new(None),
             sent: Mutex::new(Vec::new()),
             timers: Mutex::new(Vec::new()),
@@ -2063,6 +2070,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_send_rejects_reserved_or_cancelled_recipient_before_host_effect() -> Result<()> {
+        for (state, message_id) in [
+            (SwarmReservationState::Reserved, operation(40)),
+            (SwarmReservationState::Cancelled, operation(41)),
+        ] {
+            let mut host = host(BTreeMap::new())?;
+            Arc::get_mut(&mut host)
+                .expect("test host has one owner")
+                .reservation_states
+                .insert(task(2), state);
+            let communication = DurableCommunication::new(host.clone());
+            assert!(matches!(
+                communication
+                    .send(MessageRequest {
+                        sender: task(1),
+                        recipient: task(2),
+                        message_id,
+                        target: MessageTarget::Child,
+                        payload: payload()?,
+                    })
+                    .await,
+                Err(Error::Conflict(message)) if message.contains("fenced")
+            ));
+            assert!(host.sent.lock().expect("test lock").is_empty());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn durable_send_replays_exact_commit_before_fence() -> Result<()> {
         let mut host = host(BTreeMap::new())?;
         let committed = payload()?;
@@ -2080,6 +2116,32 @@ mod tests {
             })
             .await?;
         assert!(host.sent.lock().expect("test lock").is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completed_fenced_exact_replay_survives_cold_host_reopen() -> Result<()> {
+        let committed = payload()?;
+        let request = MessageRequest {
+            sender: task(1),
+            recipient: task(2),
+            message_id: operation(42),
+            target: MessageTarget::Child,
+            payload: committed.clone(),
+        };
+        for _ in 0..2 {
+            let mut host = host(BTreeMap::new())?;
+            let owner = Arc::get_mut(&mut host).expect("test host has one owner");
+            owner.fenced.insert(task(1));
+            owner.replay = Mutex::new(Some((
+                request.sender,
+                request.recipient,
+                request.message_id,
+                committed.clone(),
+            )));
+            DurableCommunication::new(host.clone()).send(request.clone()).await?;
+            assert!(host.sent.lock().expect("test lock").is_empty());
+        }
         Ok(())
     }
 
