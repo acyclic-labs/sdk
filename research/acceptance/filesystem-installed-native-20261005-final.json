@@ -1,0 +1,27 @@
+{
+  "schema": "acyclic.filesystem.installed-native-qualification.v1",
+  "status": "passed",
+  "generated_at": "2026-10-05",
+  "source_worktree": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk",
+  "source_revision": "5303312526a880ea8ffe087ddc211017bfc66b45",
+  "source_files": {
+    "rust/crates/filesystem-napi/Cargo.toml": "sha256:9977ff0a0d80c3533eefb7d8c16e6c2bff08ec9c7ae49c7b3897114492d2fd13",
+    "rust/crates/filesystem-napi/src/lib.rs": "sha256:724afffaae8d2e199ab41af6dcbfd057fbd4465fd8060f64fbcd3b8a986a0e3a",
+    "rust/crates/filesystem/src/facade.rs": "sha256:4f1c9f441a256ef9d2bb6b9892ac6b9c24f39a39c728fe5217ef11db1a01a31f"
+  },
+  "build": {
+    "command": "cargo build --locked --manifest-path rust/crates/filesystem-napi/Cargo.toml -p acyclic-fs-napi",
+    "target_dir": "work/fs-stream-final-check-target",
+    "artifact": "work/fs-stream-final-check-target/debug/acyclic_fs_napi.dll"
+  },
+  "installed_package": {
+    "path": "C:/Users/varun/.codex/visualizations/2026/10/03/01a1012c-cbf9-71f3-9cb6-fb3047b2fa2b/fs-native-installed-final/acyclic-fs-0.2.0-win32-x64.node",
+    "sha256": "194dfaaf3620ae5421a5c7cc1d4f9c1ba53eef9409e79f66ebb5c764d8882cd8",
+    "platform": "win32-x64"
+  },
+  "qualification": {
+    "command": "CARGO_TARGET_DIR=work/fs-stream-final-check-target node scripts/check-filesystem-napi.mjs <installed-output>",
+    "result": "acyclic-fs N-API ABI passed on win32-x64",
+    "checks": ["native capability version", "workspace create", "write/read", "sync", "diff", "cancellation"]
+  }
+}
