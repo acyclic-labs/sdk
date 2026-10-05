@@ -1238,6 +1238,16 @@ impl StockExecutor {
             self.provider.model_option_policy(),
             &rejections,
         )?;
+        validate_completed_batch_exchange(
+            journal,
+            &records,
+            operation,
+            step,
+            &prepared.request,
+            &boundary,
+            self.limits,
+        )
+        .await?;
         let key = format!("model:{step}:completed-batch");
         let reference = stage_json(journal, operation, &key, &boundary).await?;
         journal
@@ -2262,6 +2272,307 @@ pub(crate) enum TerminalFailureState {
     Unresolved,
 }
 
+#[derive(Clone, Debug)]
+enum CompletedBatchToolOutcome {
+    Projection(Value),
+    InvalidArguments(ToolRejectionFeedback),
+}
+
+/// Checks the complete, model-visible exchange against the durable model and
+/// tool observations.  This is shared by the live executor and recovery so a
+/// completed boundary cannot be admitted under weaker replay rules.
+async fn validate_completed_batch_exchange(
+    journal: &dyn ExecutionJournal,
+    records: &[ExecutionRecord],
+    operation: OperationId,
+    step: u32,
+    prepared: &ModelRequest,
+    boundary: &crate::model_input::CompletedModelBoundary,
+    limits: Limits,
+) -> Result<()> {
+    boundary.verify(limits)?;
+    if boundary.request.model != prepared.model
+        || boundary.request.tools != prepared.tools
+        || boundary.request.messages.len() <= prepared.messages.len()
+        || boundary.request.messages.get(..prepared.messages.len())
+            != Some(prepared.messages.as_slice())
+    {
+        return Err(Error::Conflict(
+            "tool batch boundary is not bound to its prepared exchange".into(),
+        ));
+    }
+
+    let suffix = boundary
+        .request
+        .messages
+        .get(prepared.messages.len()..)
+        .ok_or_else(|| Error::Storage("tool batch boundary suffix is invalid".into()))?;
+    let mut content = String::new();
+    let mut calls = Vec::<(String, String, Value)>::new();
+    let mut completed = false;
+    for record in records {
+        if let ExecutionEvent::Model {
+            step: event_step,
+            event,
+        } = &record.event
+            && *event_step == step
+        {
+            match load_json::<ModelEvent>(journal, event).await? {
+                ModelEvent::Content { delta } => content.push_str(&delta),
+                ModelEvent::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
+                    if calls.iter().any(|(existing, _, _)| existing == &call_id) {
+                        return Err(Error::Storage(
+                            "model declared a tool call more than once in completed batch"
+                                .into(),
+                        ));
+                    }
+                    calls.push((call_id, name, arguments));
+                }
+                ModelEvent::Completed { .. } => {
+                    if completed {
+                        return Err(Error::Storage(
+                            "model completed more than once in completed batch".into(),
+                        ));
+                    }
+                    completed = true;
+                }
+                ModelEvent::Reasoning { .. } => {}
+            }
+        }
+    }
+    if !completed || calls.is_empty() {
+        return Err(Error::Storage(
+            "completed batch lacks a complete model tool exchange".into(),
+        ));
+    }
+
+    let mut started = BTreeSet::new();
+    let mut outcomes = BTreeMap::<String, CompletedBatchToolOutcome>::new();
+    for record in records {
+        match &record.event {
+            ExecutionEvent::ToolStarted {
+                step: event_step,
+                call_id,
+                invocation,
+            } if *event_step == step => {
+                let Some((name, arguments)) = calls
+                    .iter()
+                    .find(|(existing, _, _)| existing == call_id)
+                    .map(|(_, name, arguments)| (name, arguments))
+                else {
+                    return Err(Error::Storage(
+                        "tool admission has no matching model call in completed batch".into(),
+                    ));
+                };
+                let invocation = load_json::<ToolInvocation>(journal, invocation).await?;
+                let expected = ToolInvocation::for_model_call(
+                    operation,
+                    step,
+                    call_id.clone(),
+                    name.clone(),
+                    arguments.clone(),
+                );
+                if invocation != expected || !started.insert(call_id.clone()) {
+                    return Err(Error::Conflict(
+                        "tool admission changed the completed batch invocation".into(),
+                    ));
+                }
+            }
+            ExecutionEvent::ToolCompleted {
+                step: event_step,
+                call_id,
+                invocation_digest,
+                result,
+                projection,
+                ..
+            } if *event_step == step => {
+                let Some((name, arguments)) = calls
+                    .iter()
+                    .find(|(existing, _, _)| existing == call_id)
+                    .map(|(_, name, arguments)| (name, arguments))
+                else {
+                    return Err(Error::Storage(
+                        "tool completion has no matching model call in completed batch".into(),
+                    ));
+                };
+                let invocation = ToolInvocation::for_model_call(
+                    operation,
+                    step,
+                    call_id.clone(),
+                    name.clone(),
+                    arguments.clone(),
+                );
+                if !started.contains(call_id)
+                    || *invocation_digest != crate::contract::canonical_json_digest(&invocation)?
+                {
+                    return Err(Error::Conflict(
+                        "tool completion changed the completed batch invocation".into(),
+                    ));
+                }
+                let _: ToolResult = load_json(journal, result).await?;
+                let projection: Value = load_json(journal, projection).await?;
+                if outcomes
+                    .insert(call_id.clone(), CompletedBatchToolOutcome::Projection(projection))
+                    .is_some()
+                {
+                    return Err(Error::Storage(
+                        "tool completion is duplicated in completed batch".into(),
+                    ));
+                }
+            }
+            ExecutionEvent::ToolAdmissionRejected {
+                step: event_step,
+                invocation,
+                reason: ToolRejectionKind::InvalidArguments,
+                feedback: Some(feedback),
+            } if *event_step == step => {
+                let invocation = load_json::<ToolInvocation>(journal, invocation).await?;
+                let Some((name, arguments)) = calls
+                    .iter()
+                    .find(|(existing, _, _)| existing == &invocation.call_id)
+                    .map(|(_, name, arguments)| (name, arguments))
+                else {
+                    return Err(Error::Storage(
+                        "tool rejection has no matching model call in completed batch".into(),
+                    ));
+                };
+                let expected = ToolInvocation::for_model_call(
+                    operation,
+                    step,
+                    invocation.call_id.clone(),
+                    name.clone(),
+                    arguments.clone(),
+                );
+                if invocation != expected
+                    || started.contains(&invocation.call_id)
+                    || outcomes.contains_key(&invocation.call_id)
+                {
+                    return Err(Error::Conflict(
+                        "tool rejection changed the completed batch invocation".into(),
+                    ));
+                }
+                let feedback = load_json::<ToolRejectionFeedback>(journal, feedback).await?;
+                outcomes.insert(
+                    invocation.call_id,
+                    CompletedBatchToolOutcome::InvalidArguments(feedback),
+                );
+            }
+            ExecutionEvent::ToolAdmissionRejected {
+                step: event_step, ..
+            }
+            | ExecutionEvent::ToolFailed {
+                step: event_step, ..
+            } if *event_step == step => {
+                return Err(Error::Storage(
+                    "fatal tool outcome cannot produce a completed batch".into(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let mut actual_results = BTreeMap::<String, ModelMessage>::new();
+    for message in suffix {
+        if message.role != ModelRole::Tool {
+            continue;
+        }
+        let ModelContent::Part(ModelContentPart::ToolResult {
+            call_id, name, ..
+        }) = &message.content
+        else {
+            continue;
+        };
+        if actual_results.insert(call_id.clone(), message.clone()).is_some() {
+            return Err(Error::Conflict(
+                "tool result is duplicated in completed batch boundary".into(),
+            ));
+        }
+        if calls.iter().all(|(existing, _, _)| existing != call_id)
+            || calls
+                .iter()
+                .find(|(existing, _, _)| existing == call_id)
+                .is_some_and(|(_, expected_name, _)| expected_name != name)
+        {
+            return Err(Error::Conflict(
+                "tool result is bound to another model call".into(),
+            ));
+        }
+    }
+
+    let mut expected_suffix = Vec::with_capacity(
+        calls.len() * 2 + if content.is_empty() { 0 } else { 1 },
+    );
+    if !content.is_empty() {
+        expected_suffix.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Text(content),
+        });
+    }
+    for (call_id, name, arguments) in calls {
+        expected_suffix.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(ModelContentPart::ToolCall {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments,
+            }),
+        });
+        let outcome = outcomes.get(&call_id).ok_or_else(|| {
+            Error::Storage("model tool call lacks a durable terminal outcome".into())
+        })?;
+        let result = actual_results.get(&call_id).ok_or_else(|| {
+            Error::Storage("model tool call lacks a completed result message".into())
+        })?;
+        match outcome {
+            CompletedBatchToolOutcome::Projection(projection) => {
+                let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) = &result.content
+                else {
+                    return Err(Error::Conflict(
+                        "completed tool result has an invalid model projection".into(),
+                    ));
+                };
+                if value != projection {
+                    return Err(Error::Conflict(
+                        "completed tool projection differs from the pinned boundary".into(),
+                    ));
+                }
+                expected_suffix.push(ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id,
+                        name,
+                        value: projection.clone(),
+                    }),
+                });
+            }
+            CompletedBatchToolOutcome::InvalidArguments(feedback) => {
+                let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) = &result.content
+                else {
+                    return Err(Error::Conflict(
+                        "rejected tool result has an invalid model projection".into(),
+                    ));
+                };
+                if ToolRejectionFeedback::from_model_value(value)?.as_ref() != Some(feedback) {
+                    return Err(Error::Conflict(
+                        "rejection feedback differs from its pinned model result".into(),
+                    ));
+                }
+                expected_suffix.push(result.clone());
+            }
+        }
+    }
+    if suffix != expected_suffix {
+        return Err(Error::Conflict(
+            "completed batch boundary does not match its durable model exchange".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Classifies a failed turn from its durable observations. A terminal failure
 /// is proven only after the model response completed, every admitted tool has
 /// a completion or failure record, and no batch publication remains open.
@@ -2536,22 +2847,21 @@ pub(crate) async fn classify_terminal_failure(
                     journal, boundary,
                 )
                 .await?;
-                boundary.verify(limits)?;
                 let Some(prepared) = prepared_requests.get(step) else {
                     return Err(Error::Storage(
                         "tool batch completion has no prepared request while classifying terminal failure".into(),
                     ));
                 };
-                if boundary.request.model != prepared.model
-                    || boundary.request.tools != prepared.tools
-                    || boundary.request.messages.len() <= prepared.messages.len()
-                    || boundary.request.messages.get(..prepared.messages.len())
-                        != Some(prepared.messages.as_slice())
-                {
-                    return Err(Error::Conflict(
-                        "tool batch boundary is not bound to its prepared exchange".into(),
-                    ));
-                }
+                validate_completed_batch_exchange(
+                    journal,
+                    &records,
+                    operation,
+                    *step,
+                    prepared,
+                    &boundary,
+                    limits,
+                )
+                .await?;
             }
             ExecutionEvent::BatchPublicationStarted { step, publication } => {
                 if !completed_batches.contains(step) {
@@ -3678,7 +3988,7 @@ mod tests {
                 "model:0:claim".into(),
                 ExecutionEvent::ModelStarted {
                     step: 0,
-                    request_digest: [1; 32],
+                    request_digest: prepared.manifest().request_digest,
                 },
             )
             .await?;
