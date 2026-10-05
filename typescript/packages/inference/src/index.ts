@@ -1,5 +1,5 @@
-import { create, fromJson, getOption, hasOption, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { InferenceProtocolError, loadInferenceWasm, validateContract, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
   ContextViewSchema,
@@ -45,79 +45,11 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
-import { INFERENCE_REMOTE_POLICY, validateRustOwnedCredentialPolicy } from "./generated-client.js";
-import {
-  EvaluationsService,
-  file_inference_v1_inference,
-  ModelsService,
-  ContextsService,
-  RunsService,
-  WarmContextsService,
-} from "../generated/proto/inference/v1/inference_pb.js";
-import { http_path } from "../generated/proto/validation/v1/options_pb.js";
+import { INFERENCE_REMOTE_POLICY } from "./generated-client.js";
 import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
 export { InferenceProtocolError } from "./contract.js";
-
-/** One authenticated HTTP endpoint derived from a protobuf RPC descriptor. */
-export interface InferenceHttpRoute<Method extends DescMethod = DescMethod> {
-  readonly method: Method;
-  readonly path: string;
-  readonly input: Method["input"];
-  readonly output: Method["output"];
-  readonly methodKind: Method["methodKind"];
-}
-
-const inferenceServices = file_inference_v1_inference.services;
-
-/** Reject paths that could change the /v1/inference URL root or request target. */
-export function validateInferenceHttpPath(path: string): void {
-  const segments = path.split("/");
-  if (path.length === 0 || path !== path.trim() || path.startsWith("/") || path.endsWith("/") ||
-      segments.some(segment => segment.length === 0 || segment === "." || segment === ".." || !/^[A-Za-z0-9._~-]+$/.test(segment))) {
-    throw new Error("inference HTTP route path is invalid");
-  }
-}
-
-/**
- * Derive every public inference endpoint from the canonical service descriptors.
- * Missing, malformed, or duplicate options stop module initialization so a
- * handwritten route cannot silently diverge from the protobuf contract.
- */
-export function deriveInferenceHttpRoutes(): readonly InferenceHttpRoute[] {
-  const routes: InferenceHttpRoute[] = [];
-  const paths = new Map<string, string>();
-  for (const service of inferenceServices) {
-    for (const method of service.methods) {
-      if (!hasOption(method, http_path)) {
-        throw new Error(`inference RPC ${method.parent.typeName}.${method.name} has no http_path option`);
-      }
-      const path = getOption(method, http_path);
-      try {
-        validateInferenceHttpPath(path);
-      } catch {
-        throw new Error(`inference RPC ${method.parent.typeName}.${method.name} has an invalid http_path`);
-      }
-      const prior = paths.get(path);
-      if (prior !== undefined) {
-        throw new Error(`inference RPC route ${path} is declared by both ${prior} and ${method.parent.typeName}.${method.name}`);
-      }
-      paths.set(path, `${method.parent.typeName}.${method.name}`);
-      routes.push({ method, path, input: method.input, output: method.output, methodKind: method.methodKind });
-    }
-  }
-  if (routes.length === 0) throw new Error("inference protobuf declares no HTTP routes");
-  return Object.freeze(routes);
-}
-
-const inferenceHttpRoutes = deriveInferenceHttpRoutes();
-const routeFor = <Method extends DescMethod>(method: Method): InferenceHttpRoute<Method> => {
-  const route = inferenceHttpRoutes.find(candidate =>
-    candidate.method.parent.typeName === method.parent.typeName && candidate.method.name === method.name);
-  if (route === undefined) throw new Error(`inference RPC descriptor ${method.parent.typeName}.${method.name} has no derived route`);
-  return route as InferenceHttpRoute<Method>;
-};
 
 /** Complete transport-neutral customer lifecycle contract. */
 export interface InferenceTransport {
@@ -248,219 +180,151 @@ function requireFixed(value: Uint8Array, length: number, name: string): void {
 
 export type AuthorizationHeaders = () => HeadersInit | Promise<HeadersInit>;
 
-const utf8 = new TextEncoder();
+type RustInferenceClient = {
+  listModels(request: Uint8Array): Promise<Uint8Array>;
+  createContext(request: Uint8Array): Promise<Uint8Array>;
+  inspectContext(request: Uint8Array): Promise<Uint8Array>;
+  mutateContext(request: Uint8Array): Promise<Uint8Array>;
+  retainWarm(request: Uint8Array): Promise<Uint8Array>;
+  inspectWarm(request: Uint8Array): Promise<Uint8Array>;
+  renewWarm(request: Uint8Array): Promise<Uint8Array>;
+  releaseWarm(request: Uint8Array): Promise<Uint8Array>;
+  generateRun(request: Uint8Array): Promise<Uint8Array>;
+  inspectRun(request: Uint8Array): Promise<Uint8Array>;
+  watchRun(request: Uint8Array): Promise<ReadonlyArray<Uint8Array>>;
+  cancelRun(request: Uint8Array): Promise<Uint8Array>;
+  createEvaluation(request: Uint8Array): Promise<Uint8Array>;
+  inspectEvaluation(request: Uint8Array): Promise<Uint8Array>;
+  transport(): string;
+};
 
-function utf8Length(value: string): number {
-  return utf8.encode(value).byteLength;
-}
-
-async function readBoundedText(response: Response, maximumBytes: number, kind: string): Promise<string> {
-  if (response.body === null) return "";
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  const decode = (bytes: Uint8Array, stream: boolean): string => {
-    try {
-      return decoder.decode(bytes, { stream });
-    } catch {
-      throw new InferenceTransportError(response.status, `${kind} is not valid UTF-8`);
-    }
+type RustInferenceModule = Awaited<ReturnType<typeof loadInferenceWasm>> & {
+  BrowserInferenceClient: {
+    connect(endpoint: string, token: string): Promise<RustInferenceClient>;
+    connectWithLimit(endpoint: string, token: string, maximumResponseBytes: number): Promise<RustInferenceClient>;
   };
-  const chunks: string[] = [];
-  let observed = 0;
-  let completed = false;
-  try {
-    for (;;) {
-      const item = await reader.read();
-      if (item.done) break;
-      observed += item.value.byteLength;
-      if (observed > maximumBytes) {
-        throw new InferenceTransportError(response.status, `${kind} exceeds configured bound`);
-      }
-      chunks.push(decode(item.value, true));
-    }
-    chunks.push(decode(new Uint8Array(), false));
-    completed = true;
-    return chunks.join("");
-  } finally {
-    if (!completed) await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
-  }
+};
+
+/** A legacy authorization callback accepted by the compatibility constructor. */
+async function tokenFromAuthorization(value: string | AuthorizationHeaders): Promise<string> {
+  if (typeof value === "string") return value;
+  const headers = new Headers(await value());
+  const authorization = headers.get("authorization");
+  if (authorization?.startsWith("Bearer ")) return authorization.slice("Bearer ".length);
+  throw new InferenceTransportError(0, "invalid bearer credential");
 }
 
-/** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
-export class HttpInferenceTransport implements InferenceTransport {
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(new DOMException("The operation was aborted", "AbortError"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("The operation was aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+/** Rust-backed Inference transport. All route, handshake, encoding, limits, and streaming behavior execute in Rust. */
+export class RustInferenceTransport implements InferenceTransport {
+  readonly #client: Promise<RustInferenceClient>;
+
   constructor(
     readonly endpoint: string,
-    readonly authorization: AuthorizationHeaders,
-    readonly fetcher: typeof fetch = fetch,
-    /** Rust-derived HTTP JSON/NDJSON ceiling; protobuf wire validation remains 8 MiB. */
+    readonly authorization: string | AuthorizationHeaders,
+    _fetcher?: typeof fetch,
     readonly maximumEventBytes = MAXIMUM_HTTP_JSON_BYTES,
   ) {
     if (!Number.isSafeInteger(maximumEventBytes) || maximumEventBytes <= 0) {
       throw new RangeError("maximumEventBytes must be a positive safe integer byte ceiling");
     }
-    let parsed: URL;
-    try {
-      parsed = new URL(endpoint);
-    } catch {
-      throw new TypeError("endpoint must be an absolute HTTPS URL");
-    }
-    if (parsed.protocol !== "https:" || parsed.username.length > 0 || parsed.password.length > 0 || /[?#]/.test(endpoint)) {
-      throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
-    }
+    this.#client = this.#connect();
   }
 
-  /** Shared UTF-8 ceiling for requests, unary/error responses, and each stream event. */
   get maximumMessageBytes(): number { return this.maximumEventBytes; }
 
+  async #connect(): Promise<RustInferenceClient> {
+    const module = await loadInferenceWasm() as RustInferenceModule;
+    const token = await tokenFromAuthorization(this.authorization);
+    return this.maximumEventBytes === MAXIMUM_HTTP_JSON_BYTES
+      ? module.BrowserInferenceClient.connect(this.endpoint, token)
+      : module.BrowserInferenceClient.connectWithLimit(this.endpoint, token, this.maximumEventBytes);
+  }
+
+  async #unary<T>(
+    request: object,
+    schema: { typeName: string },
+    method: (client: RustInferenceClient, bytes: Uint8Array) => Promise<Uint8Array>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const client = await abortable(this.#client, signal);
+    const result = await abortable(method(client, toBinary(schema as never, request as never)), signal);
+    return fromBinary(schema as never, result) as T;
+  }
+
   listModels(): Promise<ListModelsResponse> {
-    return this.#unary(routeFor(ModelsService.method.list), create(ModelsService.method.list.input));
+    return this.#unary(create(ListModelsRequestSchema), ListModelsResponseSchema, (client, bytes) => client.listModels(bytes));
   }
   createContext(request: CreateContextRequest): Promise<MutationReceipt> {
-    return this.#unary(routeFor(ContextsService.method.create), request);
+    return this.#unary(request, MutationReceiptSchema, (client, bytes) => client.createContext(bytes));
   }
   inspectContext(request: InspectContextRequest): Promise<ContextView> {
-    return this.#unary(routeFor(ContextsService.method.inspect), request);
+    return this.#unary(request, ContextViewSchema, (client, bytes) => client.inspectContext(bytes));
   }
   mutateContext(request: MutateContextRequest): Promise<MutationReceipt> {
-    return this.#unary(routeFor(ContextsService.method.mutate), request);
+    return this.#unary(request, MutationReceiptSchema, (client, bytes) => client.mutateContext(bytes));
   }
-  async retainWarm(request: RetainWarmRequest): Promise<WarmView> {
-    await validateContract("retain_warm_request", RetainWarmRequestSchema, request);
-    return this.#unary(routeFor(WarmContextsService.method.retain), request);
+  retainWarm(request: RetainWarmRequest): Promise<WarmView> {
+    return this.#unary(request, WarmViewSchema, (client, bytes) => client.retainWarm(bytes));
   }
   inspectWarm(request: InspectWarmRequest): Promise<WarmView> {
-    return this.#unary(routeFor(WarmContextsService.method.inspect), request);
+    return this.#unary(request, WarmViewSchema, (client, bytes) => client.inspectWarm(bytes));
   }
-  async renewWarm(request: RenewWarmRequest): Promise<WarmView> {
-    await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
-    return this.#unary(routeFor(WarmContextsService.method.renew), request);
+  renewWarm(request: RenewWarmRequest): Promise<WarmView> {
+    return this.#unary(request, WarmViewSchema, (client, bytes) => client.renewWarm(bytes));
   }
   releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {
-    return this.#unary(routeFor(WarmContextsService.method.release), request);
+    return this.#unary(request, WarmViewSchema, (client, bytes) => client.releaseWarm(bytes));
   }
   generateRun(request: GenerateRunRequest): Promise<GenerateRunResponse> {
-    return this.#unary(routeFor(RunsService.method.generate), request);
+    return this.#unary(request, GenerateRunResponseSchema, (client, bytes) => client.generateRun(bytes));
   }
   inspectRun(request: InspectRunRequest, signal?: AbortSignal): Promise<RunView> {
-    return this.#unary(routeFor(RunsService.method.inspect), request, signal);
+    return this.#unary(request, RunViewSchema, (client, bytes) => client.inspectRun(bytes), signal);
+  }
+  async *watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent> {
+    const client = await abortable(this.#client, signal);
+    const events = await abortable(client.watchRun(toBinary(WatchRunRequestSchema, request)), signal);
+    for (const event of events) {
+      if (signal?.aborted) return;
+      yield fromBinary(RunEventSchema, event);
+    }
   }
   cancelRun(request: InspectRunRequest): Promise<RunView> {
-    return this.#unary(routeFor(RunsService.method.cancel), request);
+    return this.#unary(request, RunViewSchema, (client, bytes) => client.cancelRun(bytes));
   }
   createEvaluation(request: CreateEvaluationRequest): Promise<EvaluationView> {
-    return this.#unary(routeFor(EvaluationsService.method.create), request);
+    return this.#unary(request, EvaluationViewSchema, (client, bytes) => client.createEvaluation(bytes));
   }
   inspectEvaluation(request: InspectEvaluationRequest): Promise<EvaluationView> {
-    return this.#unary(routeFor(EvaluationsService.method.inspect), request);
-  }
-
-  async *watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent> {
-    const route = routeFor(RunsService.method.watch);
-    if (route.methodKind !== "server_streaming") throw new Error("inference watch route is not server streaming");
-    await validateRuntimeShape(route.input, request);
-    const response = await this.#request(route.path, toJsonString(route.input, request), signal);
-    if (response.body === null) throw new InferenceTransportError(response.status, "run watch has no body");
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8", { fatal: true });
-    const decodeLine = (bytes: Uint8Array): string => {
-      try {
-        return decoder.decode(bytes);
-      } catch {
-        throw new InferenceTransportError(response.status, "run event is not valid UTF-8");
-      }
-    };
-    let lineBuffer = new Uint8Array(Math.min(this.maximumMessageBytes, 1024));
-    let lineLength = 0;
-    let completed = false;
-    try {
-      for (;;) {
-        const item = await reader.read();
-        if (item.done) break;
-        for (const byte of item.value) {
-          if (byte === 0x0a) {
-            const rawLine = decodeLine(lineBuffer.subarray(0, lineLength));
-            lineLength = 0;
-            const line = rawLine.trim();
-            if (line.length > 0) yield fromJson(route.output, JSON.parse(line));
-            continue;
-          }
-          if (lineLength >= this.maximumMessageBytes) {
-            throw new InferenceTransportError(response.status, "run event exceeds configured bound");
-          }
-          if (lineLength === lineBuffer.length) {
-            const next = new Uint8Array(Math.min(this.maximumMessageBytes, lineBuffer.length * 2));
-            next.set(lineBuffer);
-            lineBuffer = next;
-          }
-          lineBuffer[lineLength++] = byte;
-        }
-      }
-      const final = decodeLine(lineBuffer.subarray(0, lineLength)).trim();
-      if (final.length > 0) yield fromJson(route.output, JSON.parse(final));
-      completed = true;
-    } finally {
-      if (!completed) await reader.cancel().catch(() => undefined);
-      reader.releaseLock();
-    }
-  }
-
-  async #unary<Method extends DescMethod>(
-    route: InferenceHttpRoute<Method>,
-    request: MessageShape<Method["input"]>,
-    signal?: AbortSignal,
-  ): Promise<MessageShape<Method["output"]>> {
-    if (route.methodKind !== "unary") throw new Error(`inference route ${route.path} is not unary`);
-    await validateRuntimeShape(route.input, request);
-    const response = await this.#request(route.path, toJsonString(route.input, request), signal);
-    return fromJson(route.output, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
-  }
-
-  async #request(path: string, body: string, signal?: AbortSignal): Promise<Response> {
-    if (utf8Length(body) > this.maximumMessageBytes) {
-      throw new InferenceTransportError(0, "request exceeds configured bound");
-    }
-    let headers: Headers;
-    try {
-      headers = new Headers(await this.authorization());
-    } catch {
-      throw new InferenceTransportError(0, "invalid authorization header");
-    }
-    const authorization = headers.get("authorization");
-    const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
-    try {
-      validateRustOwnedCredentialPolicy(token);
-    } catch {
-      throw new InferenceTransportError(0, "invalid bearer credential");
-    }
-    headers.set("content-type", "application/json");
-    const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}/v1/inference/${path}`, {
-      method: "POST",
-      headers,
-      body,
-      signal,
-    });
-    if (!response.ok) {
-      throw new InferenceTransportError(
-        response.status,
-        await readBoundedText(response, this.maximumMessageBytes, "error response"),
-      );
-    }
-    return response;
+    return this.#unary(request, EvaluationViewSchema, (client, bytes) => client.inspectEvaluation(bytes));
   }
 }
+
+/** Backwards-compatible name; implementation is entirely Rust-backed. */
+export class HttpInferenceTransport extends RustInferenceTransport {}
 
 export class InferenceTransportError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
 /** The transport kinds exposed by the Rust-qualified Inference policy. */
-export type InferenceTransportKind = "grpc" | "http";
+export type InferenceTransportKind = typeof INFERENCE_REMOTE_POLICY.transport.native[number]["kind"];
 
 /** Endpoint and credential settings for the generated remote facade. */
 export interface InferenceEnvironment {
   readonly endpoint: string;
   readonly token: string;
+  /** Deprecated compatibility field. Rust selects the best compatible transport. */
   readonly transport?: InferenceTransportKind;
   readonly fetcher?: typeof fetch;
   readonly maximumEventBytes?: number;
@@ -473,29 +337,14 @@ export interface InferenceEnvironment {
  * unavailable override fails before endpoint parsing or a request is sent.
  */
 export function fromEnv(environment: InferenceEnvironment): InferenceClient {
-  const runtime = isNativeRuntime() ? "native" : "browser";
-  const options = INFERENCE_REMOTE_POLICY.transport[runtime];
-  const selected = environment.transport === undefined
-    ? options[0]
-    : options.find(option => option.kind === environment.transport);
-  if (selected === undefined) {
-    throw new TypeError(`Inference transport ${environment.transport ?? "default"} is unavailable in the ${runtime} runtime`);
-  }
-  if (selected.kind !== "http") {
-    throw new TypeError("Inference gRPC transport is unavailable in the installed TypeScript facade");
-  }
-  validateRustOwnedCredentialPolicy(environment.token);
-  return new InferenceClient(new HttpInferenceTransport(
+  void environment.transport;
+  void INFERENCE_REMOTE_POLICY;
+  return new InferenceClient(new RustInferenceTransport(
     environment.endpoint,
-    () => ({ authorization: `Bearer ${environment.token}` }),
+    environment.token,
     environment.fetcher ?? globalThis.fetch.bind(globalThis),
     environment.maximumEventBytes,
   ));
-}
-
-function isNativeRuntime(): boolean {
-  const value = globalThis as typeof globalThis & { process?: { versions?: { node?: string; bun?: string } } };
-  return typeof value.process?.versions?.node === "string" || typeof value.process?.versions?.bun === "string";
 }
 
 export * from "./handles.js";
