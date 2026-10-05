@@ -1,0 +1,1918 @@
+{
+  "schema": "acyclic.sdk.ruby.installed-106-rpc.v2",
+  "status": "failed",
+  "endpoint": "127.0.0.1:52005",
+  "record_count": 106,
+  "passed": 81,
+  "response_mismatch": 11,
+  "failed": 14,
+  "results": [
+    {
+      "index": 0,
+      "rpc": "acyclic.actors.v1.ActorsService/CreateActor",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.actors.v1.CreateActorRequest",
+      "response_type": "acyclic.actors.v1.CreateActorResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:87e883929bd3c9a8dea13b9165109fed00cbb2402c2b8372565d0a5e0b4de147",
+          "bytes": 87
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:87e883929bd3c9a8dea13b9165109fed00cbb2402c2b8372565d0a5e0b4de147"
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "rpc": "acyclic.actors.v1.ActorsService/UpdateActor",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.actors.v1.UpdateActorRequest",
+      "response_type": "acyclic.actors.v1.UpdateActorResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:fb1d557f4a90d9601d0b3cf1fde1039ea7c238d25b00e124adafbee000425551",
+          "bytes": 87
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:fb1d557f4a90d9601d0b3cf1fde1039ea7c238d25b00e124adafbee000425551"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "rpc": "acyclic.actors.v1.ActorsService/InspectActor",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.actors.v1.InspectActorRequest",
+      "response_type": "acyclic.actors.v1.InspectActorResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:fb1d557f4a90d9601d0b3cf1fde1039ea7c238d25b00e124adafbee000425551",
+          "bytes": 87
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:fb1d557f4a90d9601d0b3cf1fde1039ea7c238d25b00e124adafbee000425551"
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "rpc": "acyclic.actors.v1.ActorsService/AddSubscription",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.actors.v1.AddSubscriptionRequest",
+      "response_type": "acyclic.actors.v1.AddSubscriptionResponse",
+      "expected_status": "rust-fixture-executed",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:AddSubscriptionRequest rejected: required field is absent or malformed. debug_error_string:{INVALID_ARGUMENT:AddSubscriptionRequest rejected: required field is absent or malformed}"
+    },
+    {
+      "index": 4,
+      "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.actors.v1.RemoveSubscriptionRequest",
+      "response_type": "acyclic.actors.v1.RemoveSubscriptionResponse",
+      "expected_status": "rust-fixture-executed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:subscription does not exist. debug_error_string:{NOT_FOUND:subscription does not exist}"
+    },
+    {
+      "index": 5,
+      "rpc": "acyclic.actors.v1.ActorsService/ResumeSubscription",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.actors.v1.ResumeSubscriptionRequest",
+      "response_type": "acyclic.actors.v1.ResumeSubscriptionResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:840a377c4c0ce2581d5e3ac042798b5feea795a53a0e24f042ac2844c2675a21",
+          "bytes": 87
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:f6ad4cbbf96cd0ee681de94ebe4ea0a1d071042f2a48ee301292f29355d60bf8"
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "rpc": "acyclic.actors.v1.ActorsService/CheckpointActor",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.actors.v1.CheckpointActorRequest",
+      "response_type": "acyclic.actors.v1.CheckpointActorResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:38d756dd96bf23ec1400679c7922031d6702af0d8d98860bab12e3eba67bb3b4",
+          "bytes": 96
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:7891af4fbc21265755f432c7e62cb3c2d85c0d6f02b9b473ae191cba17fb9385"
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "rpc": "acyclic.actors.v1.ActorsService/InvokeActor",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.actors.v1.InvokeActorRequest",
+      "response_type": "acyclic.actors.v1.InvokeActorResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:3393c373a602600552838fc809a5375e6eb104cf02021cf7acbb527f90098ba5",
+          "bytes": 12
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:50fdbd10ef0a00268b235b8d072b2f489d251b5af3b7ca074ad6b9609b3a3f26"
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.workers.v1.PublishVersionRequest",
+      "response_type": "acyclic.workers.v1.PublishVersionResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:d02e76e94a778a52065ce528c7cc1c0d1a86a7e9e5ca039470cce319ff399104",
+          "bytes": 38
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:d02e76e94a778a52065ce528c7cc1c0d1a86a7e9e5ca039470cce319ff399104"
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "rpc": "acyclic.workers.v1.WorkersService/SelectDeployment",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.workers.v1.SelectDeploymentRequest",
+      "response_type": "acyclic.workers.v1.SelectDeploymentResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:47228cc847c86a295388bbd05896221421a2f11e14282bd5e799be4e59026330",
+          "bytes": 54
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:47228cc847c86a295388bbd05896221421a2f11e14282bd5e799be4e59026330"
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.workers.v1.SubmitJobRequest",
+      "response_type": "acyclic.workers.v1.SubmitJobResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:e269d1c33426b1fffc8a1fcfff7ec3ff6508d9409aef36e61b4430cca55761fc",
+          "bytes": 132
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:8b6250c789420d5d0a853e991cb6665b6d8e03cc6b865e350136562abedf94e5"
+        }
+      ]
+    },
+    {
+      "index": 11,
+      "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.workers.v1.InspectJobRequest",
+      "response_type": "acyclic.workers.v1.InspectJobResponse",
+      "expected_status": "rust-fixture-executed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Workers job is unknown. debug_error_string:{NOT_FOUND:Workers job is unknown}"
+    },
+    {
+      "index": 12,
+      "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.workers.v1.CancelJobRequest",
+      "response_type": "acyclic.workers.v1.CancelJobResponse",
+      "expected_status": "rust-fixture-executed",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Workers job is unknown. debug_error_string:{NOT_FOUND:Workers job is unknown}"
+    },
+    {
+      "index": 13,
+      "rpc": "acyclic.workers.v1.WorkersService/InvokeVersion",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.workers.v1.InvokeVersionRequest",
+      "response_type": "acyclic.workers.v1.InvokeResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:559a5d4235f163cdcc21308c3c7be36c3ceca27a26f8bf305c477ce7641cf946",
+          "bytes": 93
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:559a5d4235f163cdcc21308c3c7be36c3ceca27a26f8bf305c477ce7641cf946"
+        }
+      ]
+    },
+    {
+      "index": 14,
+      "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.workers.v1.InvokeDeploymentRequest",
+      "response_type": "acyclic.workers.v1.InvokeResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:2f497eac7e849f27f01bfb622167b1a3a7f5654d6a6f88ecdd9d44d047929696",
+          "bytes": 81
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:c68cd2d159a5dbe22d64d7803d31588b548e3cf6a18c37d6040229c5bfc5ba9a"
+        }
+      ]
+    },
+    {
+      "index": 15,
+      "rpc": "acyclic.stream.v2.StreamService/InspectIdempotency",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.InspectIdempotencyRequest",
+      "response_type": "acyclic.stream.v2.InspectIdempotencyResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "index": 16,
+      "rpc": "acyclic.stream.v2.StreamService/Append",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.AppendRequest",
+      "response_type": "acyclic.stream.v2.AppendResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:5f8755f326b31d2c4e3dabafdb64d4caa96da50159081e06a9989c54a9c4343d",
+          "bytes": 40
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:5f8755f326b31d2c4e3dabafdb64d4caa96da50159081e06a9989c54a9c4343d"
+        }
+      ]
+    },
+    {
+      "index": 17,
+      "rpc": "acyclic.stream.v2.StreamService/Tail",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.TailRequest",
+      "response_type": "acyclic.stream.v2.TailResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:7a53cc5deb60512f3dacacc7695dd5072077c6f4984dbedbff76e27092393b1c",
+          "bytes": 2
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:7a53cc5deb60512f3dacacc7695dd5072077c6f4984dbedbff76e27092393b1c"
+        }
+      ]
+    },
+    {
+      "index": 18,
+      "rpc": "acyclic.stream.v2.StreamService/Fork",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.ForkRequest",
+      "response_type": "acyclic.stream.v2.ForkReceipt",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:2788877514b53f39c5a27b547c59414626acba42ba53bc64e4e2c1342c0c79b4",
+          "bytes": 71
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:2788877514b53f39c5a27b547c59414626acba42ba53bc64e4e2c1342c0c79b4"
+        }
+      ]
+    },
+    {
+      "index": 19,
+      "rpc": "acyclic.stream.v2.StreamService/Read",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.ReadRequest",
+      "response_type": "acyclic.stream.v2.ReadResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:5ca8869a0351771c39051f6b259f285f5d31b8077edfc0a8a76fdc645c0e51c9",
+          "bytes": 52
+        },
+        {
+          "sha256": "sha256:5f65beff6d4a98831b1caf1c21eb4c5caf0e2f7845d909eac63574dfa0e590e4",
+          "bytes": 53
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:5ca8869a0351771c39051f6b259f285f5d31b8077edfc0a8a76fdc645c0e51c9"
+        },
+        {
+          "sha256": "sha256:5f65beff6d4a98831b1caf1c21eb4c5caf0e2f7845d909eac63574dfa0e590e4"
+        }
+      ]
+    },
+    {
+      "index": 20,
+      "rpc": "acyclic.stream.v2.StreamService/Follow",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.FollowRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "Timeout::Error",
+      "error": "execution expired"
+    },
+    {
+      "index": 21,
+      "rpc": "acyclic.stream.v2.StreamService/Children",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.ChildrenRequest",
+      "response_type": "acyclic.stream.v2.ChildrenResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:9d928fa0058035bb08b016a65a09cca991dfe56cb59d42c38e656e5a719571e4",
+          "bytes": 9
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:9d928fa0058035bb08b016a65a09cca991dfe56cb59d42c38e656e5a719571e4"
+        }
+      ]
+    },
+    {
+      "index": 22,
+      "rpc": "acyclic.stream.v2.StreamService/ChildrenPage",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.ChildrenPageRequest",
+      "response_type": "acyclic.stream.v2.ChildrenPageResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:85e2db2ab2eab95d2dc253e21088de91295f792380455f1206f01058685e1e52",
+          "bytes": 43
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:85e2db2ab2eab95d2dc253e21088de91295f792380455f1206f01058685e1e52"
+        }
+      ]
+    },
+    {
+      "index": 23,
+      "rpc": "acyclic.stream.v2.StreamService/Commit",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.CommitRequest",
+      "response_type": "acyclic.stream.v2.CommitResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:061838dd68f8875fc4721827769cdfeca505ed402e951f627d9b18c0ee6db6bf",
+          "bytes": 111
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:061838dd68f8875fc4721827769cdfeca505ed402e951f627d9b18c0ee6db6bf"
+        }
+      ]
+    },
+    {
+      "index": 24,
+      "rpc": "acyclic.stream.v2.StreamService/ReadCommit",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.stream.v2.ReadCommitRequest",
+      "response_type": "acyclic.stream.v2.CommittedEnvelope",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:17cf9de2da4504bfab37a4420d4373d6d6007997c15ef6dd49e0a237c7cfdb04",
+          "bytes": 161
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:17cf9de2da4504bfab37a4420d4373d6d6007997c15ef6dd49e0a237c7cfdb04"
+        }
+      ]
+    },
+    {
+      "index": 25,
+      "rpc": "acyclic.objects.v2.BucketsService/CreateBucket",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.CreateBucketRequest",
+      "response_type": "acyclic.objects.v2.Bucket",
+      "expected_status": "observed-status",
+      "frames": [
+        {
+          "sha256": "sha256:ea65c300f77469506d6740f75949c50981b134adacd0dd8c83ea835e62fc0d30",
+          "bytes": 30
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:ea65c300f77469506d6740f75949c50981b134adacd0dd8c83ea835e62fc0d30"
+        }
+      ]
+    },
+    {
+      "index": 26,
+      "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.HeadBucketRequest",
+      "response_type": "acyclic.objects.v2.Bucket",
+      "expected_status": "observed-status",
+      "frames": [
+        {
+          "sha256": "sha256:ea65c300f77469506d6740f75949c50981b134adacd0dd8c83ea835e62fc0d30",
+          "bytes": 30
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:ea65c300f77469506d6740f75949c50981b134adacd0dd8c83ea835e62fc0d30"
+        }
+      ]
+    },
+    {
+      "index": 27,
+      "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.DeleteBucketRequest",
+      "response_type": "acyclic.objects.v2.DeleteBucketResponse",
+      "expected_status": "observed-status",
+      "frames": [
+        {
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:fb8da7eb5b1b399e7321179dac9e9f65773d7331e1e30554e3911e4325e1ef19"
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.PutObjectRequest",
+      "response_type": "acyclic.objects.v2.ObjectInfo",
+      "expected_status": "observed-status",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:PutObject stream ended before completion. debug_error_string:{INVALID_ARGUMENT:PutObject stream ended before completion}"
+    },
+    {
+      "index": 29,
+      "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.GetObjectRequest",
+      "response_type": "acyclic.objects.v2.GetObjectResponse",
+      "expected_status": "observed-status",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Objects operation failed (NotFound). debug_error_string:{NOT_FOUND:Objects operation failed (NotFound)}"
+    },
+    {
+      "index": 30,
+      "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.HeadObjectRequest",
+      "response_type": "acyclic.objects.v2.HeadObjectResponse",
+      "expected_status": "observed-status",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Objects operation failed (NotFound). debug_error_string:{NOT_FOUND:Objects operation failed (NotFound)}"
+    },
+    {
+      "index": 31,
+      "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.ListObjectsRequest",
+      "response_type": "acyclic.objects.v2.ListObjectsResponse",
+      "expected_status": "observed-status",
+      "frames": [
+        {
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:e0780b2fa40028e424acc645cb6b0dee915b0cb9baf9fcd317656bbf353576bd"
+        }
+      ]
+    },
+    {
+      "index": 32,
+      "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.DeleteObjectRequest",
+      "response_type": "acyclic.objects.v2.DeleteObjectResponse",
+      "expected_status": "observed-status",
+      "frames": [
+        {
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:fb8da7eb5b1b399e7321179dac9e9f65773d7331e1e30554e3911e4325e1ef19"
+        }
+      ]
+    },
+    {
+      "index": 33,
+      "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.CreateMultipartRequest",
+      "response_type": "acyclic.objects.v2.MultipartUpload",
+      "expected_status": "observed-status",
+      "frames": [
+        {
+          "sha256": "sha256:0af41453b74657609b7f60f4258abd123010aebbcc81528c71a1da75b61be19b",
+          "bytes": 68
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:2f361e977f709bf9687eefcd77684bd24a973a373fd7ba13d46139b05669d1f4"
+        }
+      ]
+    },
+    {
+      "index": 34,
+      "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.UploadPartRequest",
+      "response_type": "acyclic.objects.v2.UploadedPart",
+      "expected_status": "observed-status",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:UploadPart stream ended before completion. debug_error_string:{INVALID_ARGUMENT:UploadPart stream ended before completion}"
+    },
+    {
+      "index": 35,
+      "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.ListPartsRequest",
+      "response_type": "acyclic.objects.v2.ListPartsResponse",
+      "expected_status": "observed-status",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Objects operation failed (NotFound). debug_error_string:{NOT_FOUND:Objects operation failed (NotFound)}"
+    },
+    {
+      "index": 36,
+      "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.CompleteMultipartRequest",
+      "response_type": "acyclic.objects.v2.ObjectInfo",
+      "expected_status": "observed-status",
+      "error_class": "GRPC::NotFound",
+      "error": "5:Objects operation failed (NotFound). debug_error_string:{NOT_FOUND:Objects operation failed (NotFound)}"
+    },
+    {
+      "index": 37,
+      "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.objects.v2.AbortMultipartRequest",
+      "response_type": "acyclic.objects.v2.AbortMultipartResponse",
+      "expected_status": "observed-status",
+      "frames": [
+        {
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:fb8da7eb5b1b399e7321179dac9e9f65773d7331e1e30554e3911e4325e1ef19"
+        }
+      ]
+    },
+    {
+      "index": 38,
+      "rpc": "inference.customer.v1.ModelsService/List",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.ListModelsRequest",
+      "response_type": "inference.customer.v1.ListModelsResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:be3e30b29042e75f68e704d66bb5f1c57d5ba1ae08c619f867aad03ab7fd773e",
+          "bytes": 75
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:be3e30b29042e75f68e704d66bb5f1c57d5ba1ae08c619f867aad03ab7fd773e"
+        }
+      ]
+    },
+    {
+      "index": 39,
+      "rpc": "inference.customer.v1.ContextsService/Create",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.CreateContextRequest",
+      "response_type": "inference.customer.v1.MutationReceipt",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:d6e3183915e152ba6589007a23382aa8daf560e1c4f4b49dbdcf80841bc09696",
+          "bytes": 72
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:d6e3183915e152ba6589007a23382aa8daf560e1c4f4b49dbdcf80841bc09696"
+        }
+      ]
+    },
+    {
+      "index": 40,
+      "rpc": "inference.customer.v1.ContextsService/Inspect",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.InspectContextRequest",
+      "response_type": "inference.customer.v1.ContextView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:a0240925edd1681cfe51c94279301a213b33b418ed2ce91bcfda7053ed3fc394",
+          "bytes": 155
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:a0240925edd1681cfe51c94279301a213b33b418ed2ce91bcfda7053ed3fc394"
+        }
+      ]
+    },
+    {
+      "index": 41,
+      "rpc": "inference.customer.v1.ContextsService/Mutate",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.MutateContextRequest",
+      "response_type": "inference.customer.v1.MutationReceipt",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:c36110a4dc704a10b7cc550d32070ed164f8a886ab300c5e5aa127b60fdf6d8e",
+          "bytes": 70
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:c36110a4dc704a10b7cc550d32070ed164f8a886ab300c5e5aa127b60fdf6d8e"
+        }
+      ]
+    },
+    {
+      "index": 42,
+      "rpc": "inference.customer.v1.WarmContextsService/Retain",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.RetainWarmRequest",
+      "response_type": "inference.customer.v1.WarmView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:ff4fb41f00e1152f20f3633c61d491bd6081eb7c85ca9e8d684eb22dd7cbe610",
+          "bytes": 211
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:ff4fb41f00e1152f20f3633c61d491bd6081eb7c85ca9e8d684eb22dd7cbe610"
+        }
+      ]
+    },
+    {
+      "index": 43,
+      "rpc": "inference.customer.v1.WarmContextsService/Inspect",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.InspectWarmRequest",
+      "response_type": "inference.customer.v1.WarmView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:ff4fb41f00e1152f20f3633c61d491bd6081eb7c85ca9e8d684eb22dd7cbe610",
+          "bytes": 211
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:ff4fb41f00e1152f20f3633c61d491bd6081eb7c85ca9e8d684eb22dd7cbe610"
+        }
+      ]
+    },
+    {
+      "index": 44,
+      "rpc": "inference.customer.v1.WarmContextsService/Renew",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.RenewWarmRequest",
+      "response_type": "inference.customer.v1.WarmView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:ff4fb41f00e1152f20f3633c61d491bd6081eb7c85ca9e8d684eb22dd7cbe610",
+          "bytes": 211
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:ff4fb41f00e1152f20f3633c61d491bd6081eb7c85ca9e8d684eb22dd7cbe610"
+        }
+      ]
+    },
+    {
+      "index": 45,
+      "rpc": "inference.customer.v1.WarmContextsService/Release",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.ReleaseWarmRequest",
+      "response_type": "inference.customer.v1.WarmView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:e50806af7739329996159dd5bb09e91875d9d682782d7276bcdee684dbd4f4a7",
+          "bytes": 211
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:e50806af7739329996159dd5bb09e91875d9d682782d7276bcdee684dbd4f4a7"
+        }
+      ]
+    },
+    {
+      "index": 46,
+      "rpc": "inference.customer.v1.RunsService/Generate",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.GenerateRunRequest",
+      "response_type": "inference.customer.v1.GenerateRunResponse",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:809c80b1fc9ec8c695f4313746820e6bbae8839997eb3a491fe3e5f7161c86f5",
+          "bytes": 72
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:809c80b1fc9ec8c695f4313746820e6bbae8839997eb3a491fe3e5f7161c86f5"
+        }
+      ]
+    },
+    {
+      "index": 47,
+      "rpc": "inference.customer.v1.RunsService/Inspect",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.InspectRunRequest",
+      "response_type": "inference.customer.v1.RunView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:934e2a1408c2595e0a171328c0905f11689462ef5a26a0db250c687c6a4fa05a",
+          "bytes": 52
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:934e2a1408c2595e0a171328c0905f11689462ef5a26a0db250c687c6a4fa05a"
+        }
+      ]
+    },
+    {
+      "index": 48,
+      "rpc": "inference.customer.v1.RunsService/Watch",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.WatchRunRequest",
+      "response_type": "inference.customer.v1.RunEvent",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:0b2abf20f6f14bd65b4383faf407a31cbdf0d0a0e1246f61341eb3fe2084b149",
+          "bytes": 10
+        },
+        {
+          "sha256": "sha256:4f1fac5c671d5825f06e55145bff929b206fa93167a1ff36bd5227c76a8cbdc8",
+          "bytes": 4
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:0b2abf20f6f14bd65b4383faf407a31cbdf0d0a0e1246f61341eb3fe2084b149"
+        },
+        {
+          "sha256": "sha256:4f1fac5c671d5825f06e55145bff929b206fa93167a1ff36bd5227c76a8cbdc8"
+        }
+      ]
+    },
+    {
+      "index": 49,
+      "rpc": "inference.customer.v1.RunsService/Cancel",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.InspectRunRequest",
+      "response_type": "inference.customer.v1.RunView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:1d280c59c8aebcef787c2905bbfee4d6a41524f7dc9bd1b9578f28db98532d94",
+          "bytes": 60
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:1d280c59c8aebcef787c2905bbfee4d6a41524f7dc9bd1b9578f28db98532d94"
+        }
+      ]
+    },
+    {
+      "index": 50,
+      "rpc": "inference.customer.v1.EvaluationsService/Create",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.CreateEvaluationRequest",
+      "response_type": "inference.customer.v1.EvaluationView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:e5934e167c02365b7621c1e955081f721842b5660197c0173fde5d11823ed346",
+          "bytes": 22
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:e5934e167c02365b7621c1e955081f721842b5660197c0173fde5d11823ed346"
+        }
+      ]
+    },
+    {
+      "index": 51,
+      "rpc": "inference.customer.v1.EvaluationsService/Inspect",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "inference.customer.v1.InspectEvaluationRequest",
+      "response_type": "inference.customer.v1.EvaluationView",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:e5934e167c02365b7621c1e955081f721842b5660197c0173fde5d11823ed346",
+          "bytes": 22
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:e5934e167c02365b7621c1e955081f721842b5660197c0173fde5d11823ed346"
+        }
+      ]
+    },
+    {
+      "index": 52,
+      "rpc": "acyclic.machines.v1.MachinesService/QualifyImage",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.QualifyImageRequest",
+      "response_type": "acyclic.machines.v1.ImageQualification",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:b57b23e8542449a3449a946ead28f1808c491d2cf8907e5290471df88935ccf9",
+          "bytes": 81
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:b57b23e8542449a3449a946ead28f1808c491d2cf8907e5290471df88935ccf9"
+        }
+      ]
+    },
+    {
+      "index": 53,
+      "rpc": "acyclic.machines.v1.MachinesService/Create",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.CreateMachineRequest",
+      "response_type": "acyclic.machines.v1.MachineAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:d7d9fb7cdce5be21c57d110d1cb6aacbc742de083a5bb121dea8d048c2b3b121",
+          "bytes": 176
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:d7d9fb7cdce5be21c57d110d1cb6aacbc742de083a5bb121dea8d048c2b3b121"
+        }
+      ]
+    },
+    {
+      "index": 54,
+      "rpc": "acyclic.machines.v1.MachinesService/Checkpoint",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.CheckpointMachineRequest",
+      "response_type": "acyclic.machines.v1.CheckpointAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:eb8807f1715dbe147ec874c3859030a8ed6ad64ef2882079943d22a30cc84cf7",
+          "bytes": 196
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:eb8807f1715dbe147ec874c3859030a8ed6ad64ef2882079943d22a30cc84cf7"
+        }
+      ]
+    },
+    {
+      "index": 55,
+      "rpc": "acyclic.machines.v1.MachinesService/Fork",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.ForkCheckpointRequest",
+      "response_type": "acyclic.machines.v1.ForkAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:df2abb40ed9aa0a24c564729cca6830bc446982aa871d702652ce63f12e8282a",
+          "bytes": 201
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:df2abb40ed9aa0a24c564729cca6830bc446982aa871d702652ce63f12e8282a"
+        }
+      ]
+    },
+    {
+      "index": 56,
+      "rpc": "acyclic.machines.v1.MachinesService/ForkMachine",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.ForkMachineRequest",
+      "response_type": "acyclic.machines.v1.ForkMachineAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:a9af83e46960561325da032a8e9715ba09be1f233b7886dbc20f8a27f55a56c8",
+          "bytes": 218
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:a9af83e46960561325da032a8e9715ba09be1f233b7886dbc20f8a27f55a56c8"
+        }
+      ]
+    },
+    {
+      "index": 57,
+      "rpc": "acyclic.machines.v1.MachinesService/Suspend",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.MachineMutationRequest",
+      "response_type": "acyclic.machines.v1.MutationAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:eb0122381f8b80b38e3a001d8a4f66a7e2c4efb89351d17e5dbaccb43ab47460",
+          "bytes": 40
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:eb0122381f8b80b38e3a001d8a4f66a7e2c4efb89351d17e5dbaccb43ab47460"
+        }
+      ]
+    },
+    {
+      "index": 58,
+      "rpc": "acyclic.machines.v1.MachinesService/Wake",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.MachineMutationRequest",
+      "response_type": "acyclic.machines.v1.MutationAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:3a2c1f7661127475f451dff10bbc215d397090d409df4b43478a79fc488da743",
+          "bytes": 40
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:3a2c1f7661127475f451dff10bbc215d397090d409df4b43478a79fc488da743"
+        }
+      ]
+    },
+    {
+      "index": 59,
+      "rpc": "acyclic.machines.v1.MachinesService/SetSuspensionPolicy",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.SetSuspensionPolicyRequest",
+      "response_type": "acyclic.machines.v1.PolicyAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:0292afdf38f5badcd3f7dad59e854c546bbb1d1fa1268dcccae12a3488964ae1",
+          "bytes": 44
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:0292afdf38f5badcd3f7dad59e854c546bbb1d1fa1268dcccae12a3488964ae1"
+        }
+      ]
+    },
+    {
+      "index": 60,
+      "rpc": "acyclic.machines.v1.MachinesService/DestroyMachine",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.MachineMutationRequest",
+      "response_type": "acyclic.machines.v1.MutationAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:212d286feffe11fc76ab46510b468019b143c109dc72ce0c154dad30cf5adba9",
+          "bytes": 40
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:212d286feffe11fc76ab46510b468019b143c109dc72ce0c154dad30cf5adba9"
+        }
+      ]
+    },
+    {
+      "index": 61,
+      "rpc": "acyclic.machines.v1.MachinesService/DestroyCheckpoint",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.CheckpointMutationRequest",
+      "response_type": "acyclic.machines.v1.MutationAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:483156fd6c73570462a7be100c75f3293326a155111b9966578ef98179e3960e",
+          "bytes": 40
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:483156fd6c73570462a7be100c75f3293326a155111b9966578ef98179e3960e"
+        }
+      ]
+    },
+    {
+      "index": 62,
+      "rpc": "acyclic.machines.v1.MachinesService/Recover",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.RecoverRequest",
+      "response_type": "acyclic.machines.v1.RecoveredAdmission",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:7c383eb89b5c96997b859528ec3c60bc7639edc8dec63af7800c63e4e5160ea1",
+          "bytes": 199
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:7c383eb89b5c96997b859528ec3c60bc7639edc8dec63af7800c63e4e5160ea1"
+        }
+      ]
+    },
+    {
+      "index": 63,
+      "rpc": "acyclic.machines.v1.MachinesService/InspectMachine",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.InspectMachineRequest",
+      "response_type": "acyclic.machines.v1.MachineState",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:ed5d4e0d06d7709c20e7db1e72dadc9f4b9a00d0c52b7973963b219263152b4b",
+          "bytes": 239
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:ed5d4e0d06d7709c20e7db1e72dadc9f4b9a00d0c52b7973963b219263152b4b"
+        }
+      ]
+    },
+    {
+      "index": 64,
+      "rpc": "acyclic.machines.v1.MachinesService/InspectCheckpoint",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.InspectCheckpointRequest",
+      "response_type": "acyclic.machines.v1.CheckpointState",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:2fb8c317dc3925bc959ef50b110f5d8eae648baf199d5084475fcae661a48390",
+          "bytes": 178
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:2fb8c317dc3925bc959ef50b110f5d8eae648baf199d5084475fcae661a48390"
+        }
+      ]
+    },
+    {
+      "index": 65,
+      "rpc": "acyclic.machines.v1.MachinesService/ListMachines",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.ListMachinesRequest",
+      "response_type": "acyclic.machines.v1.MachinePage",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:c04fb05c552462cb0382b83a03f54aca12a6146db127ec44d07e99bdf813ded6",
+          "bytes": 1144
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:c04fb05c552462cb0382b83a03f54aca12a6146db127ec44d07e99bdf813ded6"
+        }
+      ]
+    },
+    {
+      "index": 66,
+      "rpc": "acyclic.machines.v1.MachinesService/Events",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.EventsRequest",
+      "response_type": "acyclic.machines.v1.EventPage",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:333353abb528ad48d5548de0af303b3777e937d6a4b18a1b70e343b0b0e28f57",
+          "bytes": 90
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:333353abb528ad48d5548de0af303b3777e937d6a4b18a1b70e343b0b0e28f57"
+        }
+      ]
+    },
+    {
+      "index": 67,
+      "rpc": "acyclic.machines.v1.MachinesService/Usage",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.UsageRequest",
+      "response_type": "acyclic.machines.v1.UsageReceipt",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:211e9333d7fab1f1b9d858d60c8d586d8dbac41e9a41aadd0e537d8c841eb29b",
+          "bytes": 56
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:211e9333d7fab1f1b9d858d60c8d586d8dbac41e9a41aadd0e537d8c841eb29b"
+        }
+      ]
+    },
+    {
+      "index": 68,
+      "rpc": "acyclic.machines.v1.MachinesService/Cancel",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.OperationRequest",
+      "response_type": "acyclic.machines.v1.OperationState",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:23c3e1556fd92899f6bda9fbc1ba36a47f43ea2807a49d0e84f3764df7ee03fa",
+          "bytes": 22
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:23c3e1556fd92899f6bda9fbc1ba36a47f43ea2807a49d0e84f3764df7ee03fa"
+        }
+      ]
+    },
+    {
+      "index": 69,
+      "rpc": "acyclic.machines.v1.MachinesService/InspectOperation",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.OperationRequest",
+      "response_type": "acyclic.machines.v1.OperationState",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:23c3e1556fd92899f6bda9fbc1ba36a47f43ea2807a49d0e84f3764df7ee03fa",
+          "bytes": 22
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:23c3e1556fd92899f6bda9fbc1ba36a47f43ea2807a49d0e84f3764df7ee03fa"
+        }
+      ]
+    },
+    {
+      "index": 70,
+      "rpc": "acyclic.machines.v1.MachinesService/WatchOperation",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.machines.v1.OperationRequest",
+      "response_type": "acyclic.machines.v1.OperationState",
+      "expected_status": "rust-fixture-executed",
+      "frames": [
+        {
+          "sha256": "sha256:23c3e1556fd92899f6bda9fbc1ba36a47f43ea2807a49d0e84f3764df7ee03fa",
+          "bytes": 22
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:23c3e1556fd92899f6bda9fbc1ba36a47f43ea2807a49d0e84f3764df7ee03fa"
+        }
+      ]
+    },
+    {
+      "index": 71,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Handshake",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.HandshakeRequest",
+      "response_type": "acyclic.filesystem.v2.HandshakeResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:bd8656f5594603c2c82ac514c5422b43576424522bd8e63ffa0d40d660f1512a",
+          "bytes": 119
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:bd8656f5594603c2c82ac514c5422b43576424522bd8e63ffa0d40d660f1512a"
+        }
+      ]
+    },
+    {
+      "index": 72,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/CreateWorkspace",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.CreateWorkspaceRequest",
+      "response_type": "acyclic.filesystem.v2.WorkspaceResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:0aea80d24206644139868c98f8ed8134b9a29ea6bff347f9ac53c992fb300f90",
+          "bytes": 112
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:0aea80d24206644139868c98f8ed8134b9a29ea6bff347f9ac53c992fb300f90"
+        }
+      ]
+    },
+    {
+      "index": 73,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/OpenWorkspace",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.OpenWorkspaceRequest",
+      "response_type": "acyclic.filesystem.v2.WorkspaceResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:bf034d471661e9f541bc45aebbb467d7731390bfd560a93b51e87a59f968b757",
+          "bytes": 109
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:bf034d471661e9f541bc45aebbb467d7731390bfd560a93b51e87a59f968b757"
+        }
+      ]
+    },
+    {
+      "index": 74,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetHead",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.GetHeadRequest",
+      "response_type": "acyclic.filesystem.v2.GenerationResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:53d096a82a9ca4e86afd970c7790356fab3f68f79a5ecfc838df4314d258c1b0",
+          "bytes": 130
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:53d096a82a9ca4e86afd970c7790356fab3f68f79a5ecfc838df4314d258c1b0"
+        }
+      ]
+    },
+    {
+      "index": 75,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetGeneration",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.GetGenerationRequest",
+      "response_type": "acyclic.filesystem.v2.GenerationResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:53d096a82a9ca4e86afd970c7790356fab3f68f79a5ecfc838df4314d258c1b0",
+          "bytes": 130
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:53d096a82a9ca4e86afd970c7790356fab3f68f79a5ecfc838df4314d258c1b0"
+        }
+      ]
+    },
+    {
+      "index": 76,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Read",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ReadRequest",
+      "response_type": "acyclic.filesystem.v2.ReadResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:4667993beaae9dc041fc6f4badfa50bcd32510a6a66cc7e23a4b96a2f8b434e7",
+          "bytes": 14
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:4667993beaae9dc041fc6f4badfa50bcd32510a6a66cc7e23a4b96a2f8b434e7"
+        }
+      ]
+    },
+    {
+      "index": 77,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Stat",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.StatRequest",
+      "response_type": "acyclic.filesystem.v2.StatResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:530e5eb7d9bca76ea0567b1786f2cf60dd42a5ac1540a539dc7b3cd7497e9725",
+          "bytes": 66
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:530e5eb7d9bca76ea0567b1786f2cf60dd42a5ac1540a539dc7b3cd7497e9725"
+        }
+      ]
+    },
+    {
+      "index": 78,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ListDirectory",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ListDirectoryRequest",
+      "response_type": "acyclic.filesystem.v2.ListDirectoryResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:4a5b2324becd27ff70ed276f3bfeedd6402b67b3f96c869cf6815e893d3aaddf",
+          "bytes": 160
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:4a5b2324becd27ff70ed276f3bfeedd6402b67b3f96c869cf6815e893d3aaddf"
+        }
+      ]
+    },
+    {
+      "index": 79,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ReadLink",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ReadLinkRequest",
+      "response_type": "acyclic.filesystem.v2.ReadResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:50ee8231ac5be6b674d35e806db2900dd4048450d29a8598559a9c0d088cc7e3",
+          "bytes": 7
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:50ee8231ac5be6b674d35e806db2900dd4048450d29a8598559a9c0d088cc7e3"
+        }
+      ]
+    },
+    {
+      "index": 80,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/PlanExtents",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.PlanExtentsRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:range is required. debug_error_string:{INVALID_ARGUMENT:range is required}"
+    },
+    {
+      "index": 81,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyTransaction",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ApplyTransactionRequest",
+      "response_type": "acyclic.filesystem.v2.MutationResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:4917d851f0e757b5fe9d976cfd91a37a8152625c614e67b297280c3228ad27e8",
+          "bytes": 67
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:4917d851f0e757b5fe9d976cfd91a37a8152625c614e67b297280c3228ad27e8"
+        }
+      ]
+    },
+    {
+      "index": 82,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/RebaseTransaction",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.RebaseTransactionRequest",
+      "response_type": "acyclic.filesystem.v2.RebaseTransactionResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:39f955c09c322eb173ab9a899c882d46533437e1ca95472f7d6a336616168bb5",
+          "bytes": 137
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:39f955c09c322eb173ab9a899c882d46533437e1ca95472f7d6a336616168bb5"
+        }
+      ]
+    },
+    {
+      "index": 83,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ForkWorkspace",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ForkWorkspaceRequest",
+      "response_type": "acyclic.filesystem.v2.WorkspaceResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:f700b70baf553bb1861f56bd458f1ee5e77510feb9d8286f91eec44d8ca0d2d7",
+          "bytes": 127
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:f700b70baf553bb1861f56bd458f1ee5e77510feb9d8286f91eec44d8ca0d2d7"
+        }
+      ]
+    },
+    {
+      "index": 84,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Diff",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.DiffRequest",
+      "response_type": "acyclic.filesystem.v2.DiffResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:c99e1425317e5fbb996d787de8a5eb376ec05996b9731cfee8c774ad4088abfa",
+          "bytes": 132
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:c99e1425317e5fbb996d787de8a5eb376ec05996b9731cfee8c774ad4088abfa"
+        }
+      ]
+    },
+    {
+      "index": 85,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Rebase",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.RebaseRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::FailedPrecondition",
+      "error": "9:workspace is not a fork. debug_error_string:{FAILED_PRECONDITION:workspace is not a fork}"
+    },
+    {
+      "index": 86,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/PlanJoin",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.PlanJoinRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::FailedPrecondition",
+      "error": "9:join endpoints must be current workspace heads. debug_error_string:{FAILED_PRECONDITION:join endpoints must be current workspace heads}"
+    },
+    {
+      "index": 87,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyJoin",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ApplyJoinRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:join plan is required. debug_error_string:{INVALID_ARGUMENT:join plan is required}"
+    },
+    {
+      "index": 88,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Checkpoint",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.RetainGenerationRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::FailedPrecondition",
+      "error": "9:checkpoint requires the current head. debug_error_string:{FAILED_PRECONDITION:checkpoint requires the current head}"
+    },
+    {
+      "index": 89,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Pin",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.RetainGenerationRequest",
+      "response_type": "acyclic.filesystem.v2.RetainGenerationResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:a42b0d46e392937e554430928350519e3c0ca496c705719016ee6541439b765b",
+          "bytes": 80
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:a42b0d46e392937e554430928350519e3c0ca496c705719016ee6541439b765b"
+        }
+      ]
+    },
+    {
+      "index": 90,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Export",
+      "status": "response_mismatch",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ExportRequest",
+      "response_type": null,
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:98ed3de12e569ee0c389edb2af46a768b2735a540dc4f5de543cb54613aa51ad",
+          "bytes": 418
+        }
+      ],
+      "expected_frames": [
+
+      ]
+    },
+    {
+      "index": 91,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Import",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ImportChunk",
+      "response_type": "acyclic.filesystem.v2.ImportResponse",
+      "expected_status": "observed-ok",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:import stream ended before its closure. debug_error_string:{INVALID_ARGUMENT:import stream ended before its closure}"
+    },
+    {
+      "index": 92,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/IssueMountCredential",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.CredentialRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::Unimplemented",
+      "error": "12:credential issuance is unavailable in this deployment. debug_error_string:{UNIMPLEMENTED:credential issuance is unavailable in this deployment}"
+    },
+    {
+      "index": 93,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/IssueS3Credential",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.CredentialRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "NoMethodError",
+      "error": "undefined method `issue_s3credential' for #<Acyclic::Filesystem::V2::FilesystemService::Stub:0x000001cbae50c3c0 @call_creds=nil, @channel_creds=:this_channel_is_insecure, @ch=#<GRPC::Core::Channel:0x000001cbaddedff8>, @host=\"127.0.0.1:52005\", @propagate_mask=nil, @timeout=1969-12-31 23:59:59 +0000, @interceptors=#<GRPC::InterceptorRegistry:0x000001cbaddedc38 @interceptors=[]>>"
+    },
+    {
+      "index": 94,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetSourceState",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.SourceStateRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::Unimplemented",
+      "error": "12:hosted source reconciliation is unavailable. debug_error_string:{UNIMPLEMENTED:hosted source reconciliation is unavailable}"
+    },
+    {
+      "index": 95,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ReconcileSource",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.SourceOperationRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::Unimplemented",
+      "error": "12:hosted source reconciliation is unavailable. debug_error_string:{UNIMPLEMENTED:hosted source reconciliation is unavailable}"
+    },
+    {
+      "index": 96,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/RescanSource",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.SourceOperationRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::Unimplemented",
+      "error": "12:hosted source reconciliation is unavailable. debug_error_string:{UNIMPLEMENTED:hosted source reconciliation is unavailable}"
+    },
+    {
+      "index": 97,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/SealSource",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.SourceOperationRequest",
+      "response_type": null,
+      "expected_status": "observed-status",
+      "error_class": "GRPC::Unimplemented",
+      "error": "12:hosted source reconciliation is unavailable. debug_error_string:{UNIMPLEMENTED:hosted source reconciliation is unavailable}"
+    },
+    {
+      "index": 98,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Observe",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.ObserveRequest",
+      "response_type": "acyclic.filesystem.v2.ObserveResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:698aa0e9380ac3024a2db2d410420965acdafb66f94ab30735f88a2911e5356b",
+          "bytes": 9
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:698aa0e9380ac3024a2db2d410420965acdafb66f94ab30735f88a2911e5356b"
+        }
+      ]
+    },
+    {
+      "index": 99,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Cancel",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.CancelRequest",
+      "response_type": "acyclic.filesystem.v2.CancelResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:1b562b062a8795c4a3b57c58d1f42ee8e244118b4df87a9ecc553605ac5afe1e",
+          "bytes": 11
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:1b562b062a8795c4a3b57c58d1f42ee8e244118b4df87a9ecc553605ac5afe1e"
+        }
+      ]
+    },
+    {
+      "index": 100,
+      "rpc": "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.filesystem.v2.DeleteWorkspaceRequest",
+      "response_type": "acyclic.filesystem.v2.MutationResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:fb8da7eb5b1b399e7321179dac9e9f65773d7331e1e30554e3911e4325e1ef19",
+          "bytes": 2
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:fb8da7eb5b1b399e7321179dac9e9f65773d7331e1e30554e3911e4325e1ef19"
+        }
+      ]
+    },
+    {
+      "index": 101,
+      "rpc": "acyclic.harness.v2.HarnessService/Handshake",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.protocol.v1.HandshakeRequest",
+      "response_type": "acyclic.protocol.v1.HandshakeResponse",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:60260ab4d77b214609a9ada4b68c42675dbcf2d8ab217cc7df8fc85c40d7d54f",
+          "bytes": 126
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:60260ab4d77b214609a9ada4b68c42675dbcf2d8ab217cc7df8fc85c40d7d54f"
+        }
+      ]
+    },
+    {
+      "index": 102,
+      "rpc": "acyclic.harness.v2.HarnessService/Submit",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.harness.v2.CommandEnvelope",
+      "response_type": "acyclic.harness.v2.Admission",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:6c53183b64b2813408edf1725d69d24283d22e3a7969e4de00ae76d93aa8d34c",
+          "bytes": 29
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:6c53183b64b2813408edf1725d69d24283d22e3a7969e4de00ae76d93aa8d34c"
+        }
+      ]
+    },
+    {
+      "index": 103,
+      "rpc": "acyclic.harness.v2.HarnessService/Replay",
+      "status": "passed",
+      "transport": "grpc",
+      "request_type": "acyclic.harness.v2.ResumeRequest",
+      "response_type": "acyclic.harness.v2.Delivery",
+      "expected_status": "observed-ok",
+      "frames": [
+        {
+          "sha256": "sha256:b6db4a5e6fa8c49acfac46aa97403880b966f089e957853dfdc05b9ec1e4e938",
+          "bytes": 257
+        }
+      ],
+      "expected_frames": [
+        {
+          "sha256": "sha256:b6db4a5e6fa8c49acfac46aa97403880b966f089e957853dfdc05b9ec1e4e938"
+        }
+      ]
+    },
+    {
+      "index": 104,
+      "rpc": "acyclic.harness.v2.HarnessService/Observe",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.harness.v2.ObserveRequest",
+      "response_type": "acyclic.harness.v2.OperationStatus",
+      "expected_status": "observed-ok",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:invalid character: found `i` at 1. debug_error_string:{INVALID_ARGUMENT:invalid character: found `i` at 1}"
+    },
+    {
+      "index": 105,
+      "rpc": "acyclic.harness.v2.HarnessService/Cancel",
+      "status": "failed",
+      "transport": "grpc",
+      "request_type": "acyclic.harness.v2.CancelRequest",
+      "response_type": "acyclic.harness.v2.CancelResponse",
+      "expected_status": "observed-ok",
+      "error_class": "GRPC::InvalidArgument",
+      "error": "3:invalid character: found `i` at 1. debug_error_string:{INVALID_ARGUMENT:invalid character: found `i` at 1}"
+    }
+  ]
+}

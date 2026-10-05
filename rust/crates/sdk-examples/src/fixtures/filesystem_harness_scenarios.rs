@@ -854,9 +854,9 @@ async fn export_harness() -> Result<Vec<Value>, acyclic_harness::Error> {
     output.push(evidence(
         "harness",
         "Handshake",
-        "acyclic.harness.v2.HandshakeRequest",
+        "acyclic.protocol.v1.HandshakeRequest",
         &handshake,
-        "acyclic.harness.v2.HandshakeResponse",
+        "acyclic.protocol.v1.HandshakeResponse",
         &response,
         &state,
     ));
