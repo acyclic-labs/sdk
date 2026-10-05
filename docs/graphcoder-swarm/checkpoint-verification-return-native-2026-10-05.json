@@ -1,0 +1,31 @@
+{
+  "source": "63645955c961ef5a3f9197a937ab488ae63f9940",
+  "exit_code": -1073741571,
+  "test": "default_local_composition_runs_recursive_models_and_reopens_without_dispatch",
+  "outcome": "STATUS_STACK_OVERFLOW",
+  "last_phase": "fork-boundary-after-result",
+  "exact_message_comparison_passed": true,
+  "artifacts": [
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\63645955c\\message-bytes\\exit-code.txt",
+      "bytes": 13,
+      "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\63645955c\\message-bytes\\local_model_swarm-d3511dedf296d78f.exe",
+      "bytes": 32299520,
+      "sha256": "16656bfe9a4dd201dc44148696e25307e2259059a23148dc41f2d856c9d53ebe"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\63645955c\\message-bytes\\source.zip",
+      "bytes": 7640101,
+      "sha256": "e17d79c18dd4e8d3d09105f3e01cb4bbd1e2c7318c41d3d2ad1ff837d424adeb"
+    },
+    {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\graphcoder-qualification\\evidence\\63645955c\\message-bytes\\swarm.log",
+      "bytes": 5887,
+      "sha256": "e5394e9205cb84a80589595c70d43cdf1a8f3bdf9bcf89e952573a68b11e8687"
+    }
+  ],
+  "qualification_complete": false
+}
