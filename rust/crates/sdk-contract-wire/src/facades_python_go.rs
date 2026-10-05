@@ -10,8 +10,9 @@ use crate::{
     family_registry::FAMILY_VIEWS,
     transport::TransportKind,
     type_policy::{
-        semantic_type, SemanticRule, FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES,
-        PublicFieldBinding, PublicFieldDirection, WIRE_UNION_VARIANTS, WireValueKind,
+        semantic_type, SemanticRule, FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS,
+        PUBLIC_NESTED_ROUTES, SEMANTIC_TYPES, PublicFieldBinding, PublicFieldDirection,
+        PublicNestedFieldKind, PublicNestedRoute, WIRE_UNION_VARIANTS, WireValueKind,
     },
 };
 
@@ -266,6 +267,9 @@ fn python_public_type_exports() -> String {
     for binding in PUBLIC_FIELD_BINDINGS {
         names.push(python_public_binding_name(binding));
     }
+    for route in PUBLIC_NESTED_ROUTES {
+        names.push(python_nested_route_name(route));
+    }
     names.push("ObjectsGetObjectResponse".to_owned());
     names.push("ObjectsGetObjectStream".to_owned());
     names.sort();
@@ -308,7 +312,47 @@ fn python_public_client_methods() -> String {
             rpc = rpc,
         ));
     }
+    output.push_str(&python_public_nested_client_methods());
     output
+}
+
+fn python_public_nested_client_methods() -> String {
+    let mut output = String::new();
+    for route in PUBLIC_NESTED_ROUTES {
+        let model = python_nested_route_name(route);
+        let client = python_client_expression(route.client_attribute);
+        output.push_str(&format!(
+            "    async def {operation}(\n        self,\n        request: {model},\n        timeout: float | None = None,\n    ):\n        wire_request = request.to_wire()\n        return await self.{client}.{rpc}(wire_request, timeout=timeout)\n\n",
+            operation = route.operation,
+            model = model,
+            client = client.trim_start_matches("self."),
+            rpc = route.rpc,
+        ));
+    }
+    output
+}
+
+fn python_nested_route_name(route: &PublicNestedRoute) -> String {
+    format!("{}{}", pascal_case(route.family), pascal_case(route.request_message))
+}
+
+fn python_client_expression(attribute: &str) -> &'static str {
+    match attribute {
+        "actors" => "self.actors",
+        "workers" => "self.workers",
+        "stream" => "self.stream",
+        "objects" => "self.objects",
+        "buckets" => "self.buckets",
+        "multipart" => "self.multipart",
+        "filesystem" => "self.filesystem",
+        "machines" => "self.machines",
+        "inference.models" => "self.inference.models",
+        "inference.contexts" => "self.inference.contexts",
+        "inference.warm_contexts" => "self.inference.warm_contexts",
+        "inference.runs" => "self.inference.runs",
+        "inference.evaluations" => "self.inference.evaluations",
+        _ => "self",
+    }
 }
 
 pub(super) fn render_go(binding: &str) -> String {
@@ -650,6 +694,7 @@ fn python_type_projection() -> String {
     }
     output.push_str("        return values\n\n\n");
     output.push_str(&python_public_field_models());
+    output.push_str(&python_public_nested_route_models());
     output.push_str(
         r#"@dataclass(frozen=True)
 class ObjectsGetObjectResponse:
@@ -795,6 +840,55 @@ def _require_integer(value: object, name: str, minimum: int | None = None, maxim
     output
 }
 
+fn python_public_nested_route_models() -> String {
+    let mut output = String::from("# Production request models with Rust-owned nested semantic fields.\n\n");
+    for route in PUBLIC_NESTED_ROUTES {
+        let model = python_nested_route_name(route);
+        let module = format!("{}_pb2", route.module);
+        let nested_binding = PUBLIC_FIELD_BINDINGS
+            .iter()
+            .find(|binding| {
+                binding.family == route.family
+                    && binding.message == route.nested_message
+                    && binding.field == route.semantic_field
+            })
+            .expect("nested production route must resolve to a Rust public binding");
+        let nested_item = semantic_type(nested_binding.semantic_type).expect("nested semantic type");
+        let nested_annotation = python_public_binding_annotation(nested_binding, nested_item);
+        let nested_function = snake_case(nested_item.id);
+        output.push_str("@dataclass(frozen=True)\n");
+        output.push_str(&format!("class {model}:\n", model = model));
+        for (field, kind) in route.fields {
+            let annotation = match kind {
+                PublicNestedFieldKind::Text => "str".to_owned(),
+                PublicNestedFieldKind::Message(message) => format!("{module}.{message}"),
+            };
+            output.push_str(&format!("    {field}: {annotation}\n", field = field, annotation = annotation));
+        }
+        output.push_str(&format!("    {field}: {nested_annotation}\n\n", field = route.semantic_field, nested_annotation = nested_annotation));
+        output.push_str("    def to_wire(self):\n");
+        if route.operation == "create_bucket" {
+            output.push_str(&format!(
+                "        if not self.name:\n            raise ValueError(\"name must not be empty\")\n        mutation = {module}.MutationIdentity(idempotency_key={function}(self.{semantic_field}))\n        return {module}.{message}(name=self.name, mutation=mutation)\n\n",
+                semantic_field = route.semantic_field,
+                module = module,
+                message = route.request_message,
+                function = nested_function,
+            ));
+        } else {
+            output.push_str(&format!(
+                "        if self.identity is None or self.spec is None:\n            raise ValueError(\"identity and spec must be present\")\n        spec = {module}.{nested}()\n        spec.CopyFrom(self.spec)\n        spec.spec_digest = {function}(self.{semantic_field})\n        return {module}.{message}(identity=self.identity, spec=spec)\n\n",
+                module = module,
+                nested = route.nested_message,
+                semantic_field = route.semantic_field,
+                message = route.request_message,
+                function = nested_function,
+            ));
+        }
+    }
+    output
+}
+
 /// Emit one concrete public model for each Rust-owned semantic field binding.
 /// These models deliberately construct or decode the real generated protobuf
 /// message; `SemanticFieldValues` remains only a compact inventory view.
@@ -922,6 +1016,8 @@ from acyclic_sdk.remote import (
     ObjectsObjectInfoEtag,
     ObjectsGetObjectRequestKey,
     ObjectsGetObjectResponse,
+    ObjectsCreateBucketRequest,
+    InferenceCreateEvaluationRequest,
     SemanticFieldValues,
     UnknownOneof,
     WorkersSelectDeploymentRequestAlias,
@@ -929,6 +1025,7 @@ from acyclic_sdk.remote import (
     decode_wire_choice,
     encode_wire_choice,
     idempotency_key_bytes,
+    idempotency_key_text,
     known_oneof,
     method,
     oneof_arm,
@@ -1030,6 +1127,45 @@ def test_rust_owned_production_client_routes_reject_invalid_requests():
             return
         raise AssertionError("production typed route accepted an invalid request")
     asyncio.run(run())
+
+
+def test_rust_owned_nested_fields_are_in_production_request_signatures():
+    bucket = ObjectsCreateBucketRequest(
+        name="bucket",
+        idempotency_key=idempotency_key_text("retry"),
+    )
+    bucket_wire = bucket.to_wire()
+    assert bucket_wire.mutation.idempotency_key == "retry"
+
+    evaluation = InferenceCreateEvaluationRequest(
+        identity=inference_pb2.RequestIdentity(client_instance=b"c" * 16, request_id=b"r" * 16),
+        spec=inference_pb2.EvaluationSpec(),
+        spec_digest=sha256_digest(b"d" * 32),
+    )
+    evaluation_wire = evaluation.to_wire()
+    assert evaluation_wire.spec.spec_digest == b"d" * 32
+
+    async def run():
+        client = object.__new__(Client)
+        class Buckets:
+            async def CreateBucket(self, request, timeout=None):
+                return request
+        class Evaluations:
+            async def Create(self, request, timeout=None):
+                return request
+        client.buckets = Buckets()
+        client.inference = type("Inference", (), {"evaluations": Evaluations()})()
+        assert (await client.create_bucket(bucket)).mutation.idempotency_key == "retry"
+        assert (await client.create_evaluation(evaluation)).spec.spec_digest == b"d" * 32
+        try:
+            await client.create_bucket(ObjectsCreateBucketRequest(
+                name="bucket",
+                idempotency_key=idempotency_key_text(""),
+            ))
+        except (TypeError, ValueError):
+            return
+        raise AssertionError("production nested route accepted an invalid idempotency key")
+    asyncio.run(run())
 "#
     .to_owned()
 }
@@ -1105,6 +1241,7 @@ fn go_type_projection() -> String {
     }
     output.push_str("\treturn result\n}\n\n");
     output.push_str(&go_public_field_models());
+    output.push_str(&go_public_nested_route_models());
     output.push_str(
         r#"type ObjectsGetObjectFrame string
 
@@ -1309,6 +1446,50 @@ fn go_public_field_models() -> String {
     output
 }
 
+fn go_public_nested_route_models() -> String {
+    let mut output = String::from("// Production request models with Rust-owned nested semantic fields.\n\n");
+    for route in PUBLIC_NESTED_ROUTES {
+        let model = go_nested_route_name(route);
+        let module = format!("{}v{}", route.module, if route.module == "inference" { "1" } else { "2" });
+        let nested_binding = PUBLIC_FIELD_BINDINGS
+            .iter()
+            .find(|binding| {
+                binding.family == route.family
+                    && binding.message == route.nested_message
+                    && binding.field == route.semantic_field
+            })
+            .expect("nested production route must resolve to a Rust public binding");
+        let nested_item = semantic_type(nested_binding.semantic_type).expect("nested semantic type");
+        let nested_type = go_type_name(nested_item.rust_name);
+        output.push_str(&format!("type {model} struct {{\n", model = model));
+        for (field, kind) in route.fields {
+            let annotation = match kind {
+                PublicNestedFieldKind::Text => "string".to_owned(),
+                PublicNestedFieldKind::Message(message) => format!("*{module}.{message}"),
+            };
+            output.push_str(&format!("\t{} {}\n", pascal_case(field), annotation));
+        }
+        output.push_str(&format!("\t{} {}\n}}\n\n", pascal_case(route.semantic_field), nested_type));
+        if route.operation == "create_bucket" {
+            output.push_str(&format!(
+                "func (request {model}) ToWire() (*{module}.{message}, error) {{\n\tif err := requireGoText(request.Name, \"name\"); err != nil {{ return nil, err }}\n\tkey, err := NewIdempotencyKeyText(string(request.{semantic_field}))\n\tif err != nil {{ return nil, err }}\n\tmutation := &{module}.MutationIdentity{{IdempotencyKey: string(key)}}\n\treturn &{module}.{message}{{Name: request.Name, Mutation: mutation}}, nil\n}}\n\n",
+                model = model,
+                module = module,
+                message = route.request_message,
+                semantic_field = pascal_case(route.semantic_field),
+            ));
+        } else {
+            output.push_str(&format!(
+                "func (request {model}) ToWire() (*{module}.{message}, error) {{\n\tif request.Identity == nil || request.Spec == nil {{ return nil, fmt.Errorf(\"identity and spec must be present\") }}\n\twireSpec := *request.Spec\n\twireSpec.SpecDigest = append([]byte(nil), request.SpecDigest[:]...)\n\treturn &{module}.{message}{{Identity: request.Identity, Spec: &wireSpec}}, nil\n}}\n\n",
+                model = model,
+                module = module,
+                message = route.request_message,
+            ));
+        }
+    }
+    output
+}
+
 fn go_public_wire_assignment(item: &crate::type_policy::SemanticType, value: &str, binding: &PublicFieldBinding) -> String {
     match item.wire_kind {
         WireValueKind::String => format!("string({value})"),
@@ -1365,6 +1546,7 @@ fn go_client_expression(attribute: &str) -> &'static str {
         "workers" => "client.Workers",
         "stream" => "client.Stream",
         "objects" => "client.Objects",
+        "buckets" => "client.Buckets",
         "multipart" => "client.Multipart",
         "filesystem" => "client.Filesystem",
         "machines" => "client.Machines",
@@ -1452,6 +1634,33 @@ fn go_public_client_methods() -> String {
         ));
         let _ = streaming;
     }
+    output.push_str(&go_public_nested_client_methods());
+    output
+}
+
+fn go_nested_route_name(route: &PublicNestedRoute) -> String {
+    format!("{}{}", pascal_case(route.family), pascal_case(route.request_message))
+}
+
+fn go_public_nested_client_methods() -> String {
+    let mut output = String::new();
+    for route in PUBLIC_NESTED_ROUTES {
+        let model = go_nested_route_name(route);
+        let client = go_client_expression(route.client_attribute);
+        let response = match (route.module, route.response) {
+            ("objects", "Bucket") => "*objectsv2.Bucket",
+            ("inference", "EvaluationView") => "*inferencev1.EvaluationView",
+            _ => "any",
+        };
+        output.push_str(&format!(
+            "func (client *Client) {operation}(ctx context.Context, request {model}, opts ...grpc.CallOption) ({response}, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\treturn {client}.{rpc}(ctx, wireRequest, opts...)\n}}\n\n",
+            operation = pascal_case(route.operation),
+            model = model,
+            response = response,
+            client = client,
+            rpc = route.rpc,
+        ));
+    }
     output
 }
 
@@ -1490,6 +1699,7 @@ import (
 
 import actorsv1 "github.com/acyclic-labs/sdk/go/gen/actors/v1"
 import harnessv2 "github.com/acyclic-labs/sdk/go/gen/harness/v2"
+import inferencev1 "github.com/acyclic-labs/sdk/go/gen/inference/v1"
 import objectsv2 "github.com/acyclic-labs/sdk/go/gen/objects/v2"
 
 func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
@@ -1561,6 +1771,26 @@ func TestRustOwnedProductionObjectFramesUseTypedResponses(t *testing.T) {
 	if err != nil || body.Frame != ObjectsGetObjectFrameBody || string(body.Body) != "payload" {
 		t.Fatalf("typed object body response failed: %v", err)
 	}
+}
+
+func TestRustOwnedNestedFieldsAreInProductionRequestSignatures(t *testing.T) {
+	bucket := ObjectsCreateBucketRequest{Name: "bucket", IdempotencyKey: IdempotencyKeyText("retry")}
+	bucketWire, err := bucket.ToWire()
+	if err != nil || bucketWire.GetMutation().GetIdempotencyKey() != "retry" { t.Fatalf("typed bucket mutation failed: %v", err) }
+
+	digest, err := NewSha256Digest(make([]byte, 32))
+	if err != nil { t.Fatal(err) }
+	evaluation := InferenceCreateEvaluationRequest{
+		Identity: &inferencev1.RequestIdentity{},
+		Spec: &inferencev1.EvaluationSpec{},
+		SpecDigest: digest,
+	}
+	evaluationWire, err := evaluation.ToWire()
+	if err != nil || len(evaluationWire.GetSpec().GetSpecDigest()) != 32 { t.Fatalf("typed evaluation spec failed: %v", err) }
+
+	if _, err := (&Client{}).CreateBucket(context.Background(), ObjectsCreateBucketRequest{
+		Name: "bucket", IdempotencyKey: IdempotencyKeyText(""),
+	}); err == nil { t.Fatal("production bucket route accepted an invalid nested idempotency key") }
 }
 "#
     .to_owned()

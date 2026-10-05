@@ -198,6 +198,30 @@ pub struct PublicFieldBinding {
     pub direction: PublicFieldDirection,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublicNestedFieldKind {
+    Text,
+    Message(&'static str),
+}
+
+/// Rust-owned descriptions of production requests whose nested message has a
+/// refined field.  These routes keep the nested semantic wrapper in the
+/// actual public client signature instead of leaving it as a detached helper.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicNestedRoute {
+    pub family: &'static str,
+    pub operation: &'static str,
+    pub module: &'static str,
+    pub request_message: &'static str,
+    pub nested_message: &'static str,
+    pub nested_field: &'static str,
+    pub semantic_field: &'static str,
+    pub client_attribute: &'static str,
+    pub rpc: &'static str,
+    pub response: &'static str,
+    pub fields: &'static [(&'static str, PublicNestedFieldKind)],
+}
+
 impl PublicFieldBinding {
     /// Service client attribute used by generated remote facades.
     pub fn client_attribute(self) -> Option<&'static str> {
@@ -386,6 +410,43 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
     PublicFieldBinding { family: "harness", field: "path", semantic_type: "path", module: "harness", message: "FileRef", wire_field: "normalized_path", direction: PublicFieldDirection::Response },
 ];
 
+const CREATE_BUCKET_FIELDS: &[(&str, PublicNestedFieldKind)] = &[
+    ("name", PublicNestedFieldKind::Text),
+];
+const CREATE_EVALUATION_FIELDS: &[(&str, PublicNestedFieldKind)] = &[
+    ("identity", PublicNestedFieldKind::Message("RequestIdentity")),
+    ("spec", PublicNestedFieldKind::Message("EvaluationSpec")),
+];
+
+pub const PUBLIC_NESTED_ROUTES: &[PublicNestedRoute] = &[
+    PublicNestedRoute {
+        family: "objects",
+        operation: "create_bucket",
+        module: "objects",
+        request_message: "CreateBucketRequest",
+        nested_message: "MutationIdentity",
+        nested_field: "mutation",
+        semantic_field: "idempotency_key",
+        client_attribute: "buckets",
+        rpc: "CreateBucket",
+        response: "Bucket",
+        fields: CREATE_BUCKET_FIELDS,
+    },
+    PublicNestedRoute {
+        family: "inference",
+        operation: "create_evaluation",
+        module: "inference",
+        request_message: "CreateEvaluationRequest",
+        nested_message: "EvaluationSpec",
+        nested_field: "spec",
+        semantic_field: "spec_digest",
+        client_attribute: "inference.evaluations",
+        rpc: "Create",
+        response: "EvaluationView",
+        fields: CREATE_EVALUATION_FIELDS,
+    },
+];
+
 /// Discriminants and payload kinds for every open union emitted by the type
 /// policy.  This is deliberately authored beside the Rust semantic model so
 /// target generators cannot silently collapse a oneof into `any`/`object`.
@@ -559,6 +620,22 @@ mod tests {
                 assert!(binding.client_attribute().is_some(), "missing service for {}.{}", binding.family, binding.field);
                 assert!(binding.rpc().is_some(), "missing rpc for {}.{}", binding.family, binding.field);
             }
+        }
+    }
+
+    #[test]
+    fn nested_bindings_have_production_route_metadata() {
+        assert_eq!(PUBLIC_NESTED_ROUTES.len(), 2);
+        for route in PUBLIC_NESTED_ROUTES {
+            assert!(!route.operation.is_empty());
+            assert!(!route.client_attribute.is_empty());
+            assert!(!route.rpc.is_empty());
+            assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
+                binding.family == route.family
+                    && binding.message == route.nested_message
+                    && binding.field == route.semantic_field
+                    && binding.direction == PublicFieldDirection::NestedMessage
+            }));
         }
     }
 
