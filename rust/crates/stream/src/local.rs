@@ -176,12 +176,43 @@ struct LocalInner {
     visibility: RwLock<()>,
     changed: watch::Sender<u64>,
     poisoned: AtomicBool,
-    active_mutations: AtomicUsize,
-    mutations_drained: Notify,
+    mutation_tracker: Arc<MutationTracker>,
+}
+
+struct MutationTracker {
+    active: AtomicUsize,
+    drained: Notify,
+}
+
+struct MutationTrackerGuard(Arc<MutationTracker>);
+
+impl MutationTracker {
+    fn acquire(self: &Arc<Self>) -> MutationTrackerGuard {
+        self.active.fetch_add(1, Ordering::AcqRel);
+        MutationTrackerGuard(Arc::clone(self))
+    }
+
+    async fn drain(&self) {
+        loop {
+            let notified = self.drained.notified();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Drop for MutationTrackerGuard {
+    fn drop(&mut self) {
+        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.drained.notify_waiters();
+        }
+    }
 }
 
 struct MutationGuard {
-    inner: Arc<LocalInner>,
+    _tracker: MutationTrackerGuard,
     stream: Option<LocalStream>,
 }
 
@@ -190,9 +221,6 @@ impl Drop for MutationGuard {
         // Release the provider clone before publishing the zero count. This
         // ordering also holds when the owned mutation task is aborted.
         self.stream.take();
-        if self.inner.active_mutations.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.inner.mutations_drained.notify_waiters();
-        }
     }
 }
 
@@ -471,8 +499,10 @@ impl LocalStream {
                 visibility: RwLock::new(()),
                 changed,
                 poisoned: AtomicBool::new(false),
-                active_mutations: AtomicUsize::new(0),
-                mutations_drained: Notify::new(),
+                mutation_tracker: Arc::new(MutationTracker {
+                    active: AtomicUsize::new(0),
+                    drained: Notify::new(),
+                }),
             }),
         })
     }
@@ -527,20 +557,17 @@ impl LocalStream {
 
     /// Waits for every deferred mutation spawned by a cancelled caller to
     /// finish. The provider retains these mutations to preserve durability;
-    /// owners must await this boundary before releasing the local root.
+    /// after the owner closes mutation admission, callers must await this
+    /// boundary before releasing the local root. A later mutation can make
+    /// the provider active again.
     pub async fn drain(&self) {
-        loop {
-            let notified = self.inner.mutations_drained.notified();
-            if self.inner.active_mutations.load(Ordering::Acquire) == 0 {
-                return;
-            }
-            notified.await;
-        }
+        self.inner.mutation_tracker.drain().await;
     }
 
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
         let flush = !deferred();
         let journal = self.inner.journal.clone();
+        let persist_guard = self.inner.mutation_tracker.acquire();
         #[cfg(test)]
         let journal_identity = Arc::as_ptr(&journal.journal) as usize;
         let persist = tokio::task::spawn_blocking(move || {
@@ -556,7 +583,10 @@ impl LocalStream {
                     let _ = release.recv();
                 }
             }
-            journal.append(&frame, flush)
+            let result = journal.append(&frame, flush);
+            drop(journal);
+            drop(persist_guard);
+            result
         });
         let result = persist
             .await
@@ -586,7 +616,13 @@ impl LocalStream {
         let state = self.inner.provider.encode_state().await;
         let store_time = self.inner.clock.now_unix_millis();
         let journal = self.inner.journal.clone();
-        tokio::task::spawn_blocking(move || journal.compact(&state, store_time))
+        let compact_guard = self.inner.mutation_tracker.acquire();
+        tokio::task::spawn_blocking(move || {
+            let result = journal.compact(&state, store_time);
+            drop(journal);
+            drop(compact_guard);
+            result
+        })
             .await
             .map_err(|_| LocalStreamError::Executor)
             .and_then(|result| result)
@@ -610,9 +646,9 @@ impl LocalStream {
         // The mutation runs on a task of its own, which takes its caller's
         // durability scope with it.
         let deferred = deferred();
-        self.inner.active_mutations.fetch_add(1, Ordering::AcqRel);
+        let tracker = Arc::clone(&self.inner.mutation_tracker);
         let mutation_guard = MutationGuard {
-            inner: Arc::clone(&self.inner),
+            _tracker: tracker.acquire(),
             stream: Some(stream),
         };
         tokio::spawn(DEFERRED.scope(deferred, async move {
