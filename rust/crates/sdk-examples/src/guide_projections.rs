@@ -895,6 +895,22 @@ $call->writesDone();
                     request = request,
                     method = method,
                 )
+            } else if family == "harness" {
+                format!(
+                    r#"$request = new \Acyclic\{package_type}\{version}\{request}([
+    'protocol' => new \Acyclic\Protocol\V1\ProtocolIdentity(['version' => {protocol_version:?}, 'descriptor_digest' => {protocol_digest:?}]),
+    'authority' => new \Acyclic\Harness\V2\Authority(['kind' => \Acyclic\Harness\V2\AggregateKind::AGGREGATE_KIND_TASK, 'id' => 'fixture']),
+    'operation' => new \Acyclic\Harness\V2\OperationIdentity(['operation_id' => 'fixture-op', 'idempotency_key' => 'guide-harness']),
+    'action_type' => 'guide.submit',
+]);
+[$response, $status] = $client->{method}($request)->wait();"#,
+                    package_type = package_type,
+                    version = version,
+                    request = request,
+                    protocol_version = harness_protocol_version,
+                    protocol_digest = harness_protocol_digest,
+                    method = method,
+                )
             } else {
                 format!(
                     r#"$request = new \Acyclic\{package_type}\{version}\{request}();
