@@ -1,0 +1,34 @@
+{
+  "platform": "Windows",
+  "tests_executed": 1,
+  "source_commit": "584ecaf75846df790e3e96b5ea5725d1a0fe3cee",
+  "artifacts": [
+    {
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95",
+      "path": "target/graphcoder-qualification/evidence/584ecaf75/recursive-default/exit.txt",
+      "bytes": 5
+    },
+    {
+      "sha256": "a2709b60b4318c1708d2fd7c0a8459fe3e4cb1069db8113c61f0748acbb6cfb1",
+      "path": "target/graphcoder-qualification/evidence/584ecaf75/recursive-default/local_model_swarm-65a433b31aa17630.exe",
+      "bytes": 36684288
+    },
+    {
+      "sha256": "39f5793023114864bf59719b6d79b1e0bc32f700fd40bd8824400dbfeb4ec248",
+      "path": "target/graphcoder-qualification/evidence/584ecaf75/recursive-default/source.zip",
+      "bytes": 7725324
+    },
+    {
+      "sha256": "434c92301b5eeea785c950a08e4a0de9070d4aaea562ed598faef2c5161b49a8",
+      "path": "target/graphcoder-qualification/evidence/584ecaf75/recursive-default/test.log",
+      "bytes": 13474
+    }
+  ],
+  "skipped": 0,
+  "qualification_complete": false,
+  "passed": 0,
+  "exit": 101,
+  "failed": 1,
+  "outcome": "Native recursive composition fails because first child consumes session execution-time allocation. Bounded allocation repair requires fresh execution.",
+  "suite": "recursive-default"
+}
