@@ -176,10 +176,98 @@ fn descriptor_message_type(family: &str, message: &str) -> String {
     } else if message.starts_with("acyclic.transport.v1.") {
         java_proto_container("transport")
     } else {
-        java_proto_container(family)
+        java_proto_container(if family.starts_with("inference") {
+            "inference"
+        } else {
+            family
+        })
     };
     let leaf = message.rsplit('.').next().unwrap_or(message);
     format!("{outer}.{leaf}")
+}
+
+/// Name of the Rust-owned semantic view for a descriptor message.  The view
+/// is deliberately distinct from the protobuf class: protobuf values stay
+/// private wire storage and every reachable message gets a generated typed
+/// projection.
+fn descriptor_nested_model_name(family: &str, message: &str) -> String {
+    if family.starts_with("inference") && message.ends_with(".Inference.Empty") {
+        return format!("{}EmptyView", upper_camel(family));
+    }
+    let mut parts = message
+        .trim_start_matches('.')
+        .split('.')
+        .filter(|part| !part.starts_with('v'))
+        .map(upper_camel)
+        .collect::<Vec<_>>();
+    if parts.first().map(String::as_str) == Some("Acyclic") {
+        parts.remove(0);
+    }
+    // The inference descriptor stores the empty top-level message under its
+    // generated Rust module name (`Inference.Empty`) while the other nested
+    // messages are already normalized. Avoid exposing that module segment in
+    // the public projection name.
+    if family.starts_with("inference") && parts.first().map(String::as_str) == Some("Inference") {
+        parts.remove(0);
+    }
+    if parts.first().map(String::as_str) == Some(family) {
+        parts.remove(0);
+    }
+    format!("{}{}View", upper_camel(family), parts.join(""))
+}
+
+fn descriptor_nested_messages() -> Vec<(String, String)> {
+    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let mut messages = BTreeSet::new();
+    for field in fields {
+        if let Some(type_name) = field.type_name.as_deref() {
+            let type_name = type_name.trim_start_matches('.');
+            // Empty messages have no own descriptor fields, so they can be
+            // absent from the response field walk even though they are
+            // reachable through a typed field. Keep a projection for the
+            // explicit inference Empty contract when it is referenced.
+            if type_name.ends_with(".Inference.Empty") {
+                messages.insert((field.family.clone(), type_name.to_owned()));
+            }
+            if !field.map_entry && !type_name.starts_with("google.protobuf.") {
+                messages.insert((field.family.clone(), type_name.trim_start_matches('.').to_owned()));
+            }
+        }
+    }
+    // `Inference.Empty` is intentionally empty and therefore has no own
+    // resolved field row. It is nevertheless returned by the provenance
+    // graph and must have the same typed projection as non-empty messages.
+    if messages.iter().any(|(family, _)| family.starts_with("inference")) {
+        messages.insert((
+            "inference_customer".to_owned(),
+            "inference.customer.v1.Inference.Empty".to_owned(),
+        ));
+    }
+    messages.into_iter().collect()
+}
+
+fn descriptor_nested_model_type(field: &ResolvedRequestField, language: &str) -> Option<String> {
+    if field.map_entry
+        || !matches!(field.wire_type, Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32)
+    {
+        return None;
+    }
+    let message = field.type_name.as_deref()?.trim_start_matches('.');
+    if message.starts_with("google.protobuf.") {
+        return None;
+    }
+    let name = descriptor_nested_model_name(&field.family, message);
+    Some(match language {
+        "java" => format!("RustTypedResponses.{name}"),
+        "kotlin" => format!("RustTypedResponsesKotlin.{name}"),
+        "scala" => format!("RustTypedResponsesScala.{name}"),
+        _ => unreachable!(),
+    })
+}
+
+fn descriptor_map_value_model_type(field: &ResolvedRequestField, language: &str) -> Option<String> {
+    descriptor_map_entry_field(field, "value")
+        .and_then(|value| descriptor_nested_model_type(&value, language))
 }
 
 fn descriptor_request_name(method: &crate::type_policy::ResolvedRpcMethod) -> String {
@@ -374,7 +462,7 @@ fn render_java_responses() -> String {
     out.push_str("  public static RustSemanticTypes.IdempotencyKeyText mutationIdentityIdempotencyKey(acyclic.objects.v2.Objects.MutationIdentity value) { return RustSemanticTypes.IdempotencyKeyText.of(value.getIdempotencyKey()); }\n");
     out.push_str("  public static RustSemanticTypes.Sha256Digest evaluationSpecDigest(inference.customer.v1.Inference.EvaluationSpec value) { return RustSemanticTypes.Sha256Digest.of(value.getSpecDigest()); }\n");
     out.push_str("  public static RustSemanticTypes.ResourcePath fileRefPath(acyclic.harness.v2.Harness.FileRef value) { return RustSemanticTypes.ResourcePath.of(value.getNormalizedPath()); }\n");
-    out.push_str("  public static RustSemanticTypes.WireChoice preserveKnown(String tag, com.google.protobuf.ByteString payload) { return new RustSemanticTypes.Known(tag, payload); }\n");
+    out.push_str("  public static RustSemanticTypes.WireChoice preserveKnown(String tag, com.google.protobuf.ByteString payload) { return new RustSemanticTypes.Known(tag, RustSemanticTypes.WireBytes.of(payload)); }\n");
     out.push_str("  public static RustSemanticTypes.WireChoice preserveUnknown(int tag, com.google.protobuf.ByteString payload) { return new RustSemanticTypes.Unknown(tag, payload); }\n");
     out.push_str("  public static RustSemanticTypes.WireChoice preserveOneof(int tag, String knownTag, com.google.protobuf.ByteString payload) { return tag == 0 ? preserveKnown(knownTag, payload) : preserveUnknown(tag, payload); }\n");
     out.push_str("  public static RustSemanticTypes.WireChoice frameChoice(acyclic.objects.v2.Objects.GetObjectResponse value) { switch (value.getFrameCase()) { case HEADER: return preserveKnown(\"header\", value.getHeader().toByteString()); case BODY: return preserveKnown(\"body\", value.getBody()); case ERROR: return preserveKnown(\"error\", value.getError().toByteString()); default: for (var entry : value.getUnknownFields().asMap().entrySet()) { var fields = entry.getValue(); if (!fields.getLengthDelimitedList().isEmpty()) return preserveUnknown(entry.getKey(), fields.getLengthDelimitedList().get(0)); if (!fields.getVarintList().isEmpty()) return preserveUnknown(entry.getKey(), com.google.protobuf.ByteString.copyFromUtf8(Long.toString(fields.getVarintList().get(0)))); } return preserveUnknown(0, com.google.protobuf.ByteString.EMPTY); } }\n\n");
@@ -425,7 +513,7 @@ fn render_kotlin_responses() -> String {
     out.push_str("  fun mutationIdentityIdempotencyKey(value: acyclic.objects.v2.Objects.MutationIdentity): RustSemanticTypesKotlin.IdempotencyKeyText = RustSemanticTypesKotlin.IdempotencyKeyText.of(value.idempotencyKey)\n");
     out.push_str("  fun evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesKotlin.Sha256Digest = RustSemanticTypesKotlin.Sha256Digest.of(value.specDigest)\n");
     out.push_str("  fun fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesKotlin.ResourcePath = RustSemanticTypesKotlin.ResourcePath.of(value.normalizedPath)\n");
-    out.push_str("  fun preserveKnown(tag: String, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = RustSemanticTypesKotlin.Known(tag, payload)\n");
+    out.push_str("  fun preserveKnown(tag: String, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = RustSemanticTypesKotlin.Known(tag, RustSemanticTypesKotlin.WireBytes.of(payload))\n");
     out.push_str("  fun preserveUnknown(tag: Int, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = RustSemanticTypesKotlin.Unknown(tag, payload)\n");
     out.push_str("  fun preserveOneof(tag: Int, knownTag: String, payload: com.google.protobuf.ByteString): RustSemanticTypesKotlin.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");
     out.push_str("  fun frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesKotlin.WireChoice = when (value.frameCase) { acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.HEADER -> preserveKnown(\"header\", value.header.toByteString()); acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.BODY -> preserveKnown(\"body\", value.body); acyclic.objects.v2.Objects.GetObjectResponse.FrameCase.ERROR -> preserveKnown(\"error\", value.error.toByteString()); else -> { val entry = value.getUnknownFields().asMap().entries.firstOrNull(); if (entry != null && entry.value.getLengthDelimitedList().isNotEmpty()) preserveUnknown(entry.key, entry.value.getLengthDelimitedList().first()) else if (entry != null && entry.value.getVarintList().isNotEmpty()) preserveUnknown(entry.key, com.google.protobuf.ByteString.copyFromUtf8(entry.value.getVarintList().first().toString())) else preserveUnknown(0, com.google.protobuf.ByteString.EMPTY) } }\n\n");
@@ -481,7 +569,7 @@ fn render_scala_responses() -> String {
     out.push_str("  def mutationIdentityIdempotencyKey(value: acyclic.objects.v2.Objects.MutationIdentity): RustSemanticTypesScala.IdempotencyKeyText = RustSemanticTypesScala.IdempotencyKeyText.from(value.getIdempotencyKey).toOption.get\n");
     out.push_str("  def evaluationSpecDigest(value: inference.customer.v1.Inference.EvaluationSpec): RustSemanticTypesScala.Sha256Digest = RustSemanticTypesScala.Sha256Digest.from(value.getSpecDigest).toOption.get\n");
     out.push_str("  def fileRefPath(value: acyclic.harness.v2.Harness.FileRef): RustSemanticTypesScala.ResourcePath = RustSemanticTypesScala.ResourcePath.from(value.getNormalizedPath).toOption.get\n");
-    out.push_str("  def preserveKnown(tag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Known(tag, payload)\n");
+    out.push_str("  def preserveKnown(tag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Known(tag, RustSemanticTypesScala.WireBytes.from(com.google.protobuf.ByteString.copyFrom(payload)).toOption.get)\n");
     out.push_str("  def preserveUnknown(tag: Int, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = RustSemanticTypesScala.Unknown(tag, payload)\n");
     out.push_str("  def preserveOneof(tag: Int, knownTag: String, payload: Array[Byte]): RustSemanticTypesScala.WireChoice = if (tag == 0) preserveKnown(knownTag, payload) else preserveUnknown(tag, payload)\n\n");
     out.push_str("  def frameChoice(value: acyclic.objects.v2.Objects.GetObjectResponse): RustSemanticTypesScala.WireChoice = RustTypedResponses.frameChoice(value) match { case known: RustSemanticTypes.Known => RustSemanticTypesScala.Known(known.tag(), known.payload().toByteArray); case unknown: RustSemanticTypes.Unknown => RustSemanticTypesScala.Unknown(unknown.tag(), unknown.payload().toByteArray) }\n\n");
@@ -702,7 +790,11 @@ fn descriptor_field_type(_family: &str, field: &ResolvedRequestField, language: 
             .map(|entry| descriptor_scalar_type(&entry, language))
             .unwrap_or_else(|| "String".to_owned());
         let value = descriptor_map_entry_field(field, "value")
-            .map(|entry| descriptor_scalar_type(&entry, language))
+            .map(|entry| {
+                descriptor_nested_model_type(&entry, language)
+                    .or_else(|| Some(descriptor_scalar_type(&entry, language)))
+                    .unwrap()
+            })
             .unwrap_or_else(|| "String".to_owned());
         return match language {
             "java" => format!("java.util.Map<{key}, {value}>"),
@@ -775,10 +867,13 @@ fn descriptor_field_type(_family: &str, field: &ResolvedRequestField, language: 
                 _ => "long",
             }
             .to_owned(),
-            Some(FieldType::Message | FieldType::Group) => field
-                .type_name
-                .as_deref()
-                .map(|message| descriptor_message_type(&field.family, message))
+            Some(FieldType::Message | FieldType::Group) => descriptor_nested_model_type(field, language)
+                .or_else(|| {
+                    field
+                        .type_name
+                        .as_deref()
+                        .map(|message| descriptor_message_type(&field.family, message))
+                })
                 .unwrap_or_else(|| match language {
                     "java" => "RustSemanticTypes.WireMessage".to_owned(),
                     "kotlin" => "RustSemanticTypesKotlin.WireMessage".to_owned(),
@@ -879,7 +974,9 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
         {
             Some(FieldType::Bytes) => format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> RustSemanticTypes.WireBytes.of(e.getValue())))"),
             Some(FieldType::Enum) => format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> RustSemanticTypes.WireEnum.of(e.getValue())))"),
-            Some(FieldType::Message | FieldType::Group) => expression,
+            Some(FieldType::Message | FieldType::Group) => descriptor_map_value_model_type(field, "java")
+                .map(|ty| format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> {ty}.fromWire(e.getValue())))"))
+                .unwrap_or(expression),
             _ => expression,
         }
     } else if field.label == Some(FieldLabel::Repeated as i32) {
@@ -888,17 +985,26 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.stream().map(RustSemanticTypes.WireEnum::of).collect(java.util.stream.Collectors.toList())")
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
-            expression
+            descriptor_nested_model_type(field, "java")
+                .map(|ty| format!("{expression}.stream().map({ty}::fromWire).collect(java.util.stream.Collectors.toList())"))
+                .unwrap_or(expression)
         } else {
             expression
         }
     } else if let Some(semantic) = descriptor_semantic_type(field) {
+        let expression = if semantic.rust_name == "IdempotencyKey" {
+            format!("{expression}.getValue()")
+        } else {
+            expression
+        };
         format!("RustSemanticTypes.{}.of({expression})", semantic.rust_name)
     } else {
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypes.WireBytes.of({expression})"),
             Some(FieldType::Enum) => format!("RustSemanticTypes.WireEnum.of({expression})"),
-            Some(FieldType::Message | FieldType::Group) => expression,
+            Some(FieldType::Message | FieldType::Group) => descriptor_nested_model_type(field, "java")
+                .map(|ty| format!("{ty}.fromWire({expression})"))
+                .unwrap_or(expression),
             _ => expression,
         }
     }
@@ -926,7 +1032,9 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
         {
             Some(FieldType::Bytes) => format!("{expression}.mapValues {{ (_, value) -> RustSemanticTypesKotlin.WireBytes.of(value) }}"),
             Some(FieldType::Enum) => format!("{expression}.mapValues {{ (_, value) -> RustSemanticTypesKotlin.WireEnum.of(value) }}"),
-            Some(FieldType::Message | FieldType::Group) => expression,
+            Some(FieldType::Message | FieldType::Group) => descriptor_map_value_model_type(field, "kotlin")
+                .map(|ty| format!("{expression}.mapValues {{ (_, value) -> {ty}.fromWire(value) }}"))
+                .unwrap_or(expression),
             _ => expression,
         }
     } else if field.label == Some(FieldLabel::Repeated as i32) {
@@ -935,17 +1043,26 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.map {{ RustSemanticTypesKotlin.WireEnum.of(it) }}")
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
-            expression
+            descriptor_nested_model_type(field, "kotlin")
+                .map(|ty| format!("{expression}.map {{ {ty}.fromWire(it) }}"))
+                .unwrap_or(expression)
         } else {
             expression
         }
     } else if let Some(semantic) = descriptor_semantic_type(field) {
+        let expression = if semantic.rust_name == "IdempotencyKey" {
+            format!("{expression}.value")
+        } else {
+            expression
+        };
         format!("RustSemanticTypesKotlin.{}.of({expression})", semantic.rust_name)
     } else {
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypesKotlin.WireBytes.of({expression})"),
             Some(FieldType::Enum) => format!("RustSemanticTypesKotlin.WireEnum.of({expression})"),
-            Some(FieldType::Message | FieldType::Group) => expression,
+            Some(FieldType::Message | FieldType::Group) => descriptor_nested_model_type(field, "kotlin")
+                .map(|ty| format!("{ty}.fromWire({expression})"))
+                .unwrap_or(expression),
             _ => expression,
         }
     }
@@ -959,7 +1076,9 @@ fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequest
         {
             Some(FieldType::Bytes) => format!("{expression}.asScala.map {{ case (key, value) => (key, RustSemanticTypesScala.WireBytes.from(value).toOption.get) }}.asJava"),
             Some(FieldType::Enum) => format!("{expression}.asScala.map {{ case (key, value) => (key, RustSemanticTypesScala.WireEnum.from(value).toOption.get) }}.asJava"),
-            Some(FieldType::Message | FieldType::Group) => expression,
+            Some(FieldType::Message | FieldType::Group) => descriptor_map_value_model_type(field, "scala")
+                .map(|ty| format!("{expression}.asScala.map {{ case (key, value) => (key, {ty}.fromWire(value)) }}.asJava"))
+                .unwrap_or(expression),
             _ => expression,
         }
     } else if field.label == Some(FieldLabel::Repeated as i32) {
@@ -968,19 +1087,184 @@ fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequest
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.asScala.map(RustSemanticTypesScala.WireEnum.from(_).toOption.get).asJava")
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
-            expression
+            descriptor_nested_model_type(field, "scala")
+                .map(|ty| format!("{expression}.asScala.map({ty}.fromWire).asJava"))
+                .unwrap_or(expression)
         } else {
             expression
         }
     } else if let Some(semantic) = descriptor_semantic_type(field) {
+        let expression = if semantic.rust_name == "IdempotencyKey" {
+            format!("{expression}.getValue")
+        } else {
+            expression
+        };
         format!("RustSemanticTypesScala.{}.from({expression}).toOption.get", semantic.rust_name)
     } else {
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypesScala.WireBytes.from({expression}).toOption.get"),
             Some(FieldType::Enum) => format!("RustSemanticTypesScala.WireEnum.from({expression}).toOption.get"),
-            Some(FieldType::Message | FieldType::Group) => expression,
+            Some(FieldType::Message | FieldType::Group) => descriptor_nested_model_type(field, "scala")
+                .map(|ty| format!("{ty}.fromWire({expression})"))
+                .unwrap_or(expression),
             _ => expression,
         }
+    }
+}
+
+fn descriptor_java_value_at(field: &ResolvedRequestField, receiver: &str) -> String {
+    descriptor_java_value(field, &[]).replacen("value", receiver, 1)
+}
+
+fn descriptor_kotlin_value_at(field: &ResolvedRequestField, receiver: &str) -> String {
+    descriptor_kotlin_value(field, &[]).replacen("value", receiver, 1)
+}
+
+fn descriptor_scala_value_at(field: &ResolvedRequestField, receiver: &str) -> String {
+    descriptor_scala_value(field, &[]).replacen("value", receiver, 1)
+}
+
+fn render_java_nested_models(out: &mut String) {
+    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    for (family, message) in descriptor_nested_messages() {
+        if !fields.iter().any(|field| field.family == family && field.message_path == message)
+            && !message.ends_with(".Inference.Empty")
+        {
+            continue;
+        }
+        let model = descriptor_nested_model_name(&family, &message);
+        let wire = descriptor_message_type(&family, &message);
+        out.push_str("  public static final class ");
+        out.push_str(&model);
+        out.push_str(" { private final ");
+        out.push_str(&wire);
+        out.push_str(" value; private ");
+        out.push_str(&model);
+        out.push('(');
+        out.push_str(&wire);
+        out.push_str(" value) { this.value = java.util.Objects.requireNonNull(value); } public static ");
+        out.push_str(&model);
+        out.push_str(" fromWire(");
+        out.push_str(&wire);
+        out.push_str(" value) { return new ");
+        out.push_str(&model);
+        out.push_str("(value); } public ");
+        out.push_str(&wire);
+        out.push_str(" toWire() { return value; }");
+        let mut seen = BTreeSet::new();
+        for field in fields.iter().filter(|field| field.family == family && field.message_path == message) {
+            if !seen.insert(field.field.clone()) { continue; }
+            let suffix = upper_camel(&field.field);
+            out.push_str(" public ");
+            out.push_str(&descriptor_field_type(&family, field, "java"));
+            out.push(' ');
+            out.push_str(&java_identifier(suffix[..1].to_lowercase() + &suffix[1..]));
+            out.push_str("() { return ");
+            out.push_str(&descriptor_java_value_at(field, "value"));
+            out.push_str("; }");
+            if let Some(has) = descriptor_field_has_expression(field, "value") {
+                out.push_str(" public boolean has");
+                out.push_str(&suffix);
+                out.push_str("() { return ");
+                out.push_str(&has);
+                out.push_str("; }");
+            }
+        }
+        out.push_str(" }\n\n");
+    }
+}
+
+fn render_kotlin_nested_models(out: &mut String) {
+    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    for (family, message) in descriptor_nested_messages() {
+        if !fields.iter().any(|field| field.family == family && field.message_path == message)
+            && !message.ends_with(".Inference.Empty")
+        {
+            continue;
+        }
+        let model = descriptor_nested_model_name(&family, &message);
+        let wire = descriptor_message_type(&family, &message);
+        out.push_str("  class ");
+        out.push_str(&model);
+        out.push_str(" private constructor(private val value: ");
+        out.push_str(&wire);
+        out.push_str(") { companion object { fun fromWire(value: ");
+        out.push_str(&wire);
+        out.push_str("): ");
+        out.push_str(&model);
+        out.push_str(" = ");
+        out.push_str(&model);
+        out.push_str("(value) } fun toWire(): ");
+        out.push_str(&wire);
+        out.push_str(" = value;");
+        let mut seen = BTreeSet::new();
+        for field in fields.iter().filter(|field| field.family == family && field.message_path == message) {
+            if !seen.insert(field.field.clone()) { continue; }
+            let suffix = upper_camel(&field.field);
+            out.push_str(" fun ");
+            out.push_str(&kotlin_identifier(suffix[..1].to_lowercase() + &suffix[1..]));
+            out.push_str("(): ");
+            out.push_str(&descriptor_field_type(&family, field, "kotlin"));
+            out.push_str(" = ");
+            out.push_str(&descriptor_kotlin_value_at(field, "value"));
+            out.push(';');
+            if let Some(has) = descriptor_field_has_expression(field, "value") {
+                out.push_str(" fun has");
+                out.push_str(&suffix);
+                out.push_str("(): Boolean = ");
+                out.push_str(&has);
+                out.push(';');
+            }
+        }
+        out.push_str(" }\n\n");
+    }
+}
+
+fn render_scala_nested_models(out: &mut String) {
+    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    for (family, message) in descriptor_nested_messages() {
+        if !fields.iter().any(|field| field.family == family && field.message_path == message)
+            && !message.ends_with(".Inference.Empty")
+        {
+            continue;
+        }
+        let model = descriptor_nested_model_name(&family, &message);
+        let wire = descriptor_message_type(&family, &message);
+        out.push_str("  final class ");
+        out.push_str(&model);
+        out.push_str(" private (private val value: ");
+        out.push_str(&wire);
+        out.push_str(") { def toWire: ");
+        out.push_str(&wire);
+        out.push_str(" = value;");
+        let mut seen = BTreeSet::new();
+        for field in fields.iter().filter(|field| field.family == family && field.message_path == message) {
+            if !seen.insert(field.field.clone()) { continue; }
+            let suffix = upper_camel(&field.field);
+            out.push_str(" def ");
+            out.push_str(&scala_identifier(suffix[..1].to_lowercase() + &suffix[1..]));
+            out.push_str(": ");
+            out.push_str(&descriptor_field_type(&family, field, "scala"));
+            out.push_str(" = ");
+            out.push_str(&descriptor_scala_value_at(field, "value"));
+            out.push(';');
+            if let Some(has) = descriptor_field_has_expression(field, "value") {
+                out.push_str(" def has");
+                out.push_str(&suffix);
+                out.push_str(": Boolean = ");
+                out.push_str(&has);
+                out.push(';');
+            }
+        }
+        out.push_str(" }\n  object ");
+        out.push_str(&model);
+        out.push_str(" { def fromWire(value: ");
+        out.push_str(&wire);
+        out.push_str("): ");
+        out.push_str(&model);
+        out.push_str(" = new ");
+        out.push_str(&model);
+        out.push_str("(value) }\n\n");
     }
 }
 
@@ -1136,6 +1420,7 @@ fn render_scala_descriptor_validation(
     }
 }
 fn render_java_descriptor_responses(out: &mut String) {
+    render_java_nested_models(out);
     let methods =
         resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
@@ -1166,6 +1451,7 @@ fn render_java_descriptor_responses(out: &mut String) {
 }
 
 fn render_kotlin_descriptor_responses(out: &mut String) {
+    render_kotlin_nested_models(out);
     let methods =
         resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
@@ -1191,6 +1477,7 @@ fn render_kotlin_descriptor_responses(out: &mut String) {
 }
 
 fn render_scala_descriptor_responses(out: &mut String) {
+    render_scala_nested_models(out);
     let methods =
         resolved_rpc_methods().expect("Rust RPC identities must resolve before JVM generation");
     for method in methods {
@@ -1578,6 +1865,9 @@ fn semantic_for(binding: &PublicFieldBinding) -> &'static SemanticType {
 
 fn java_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
     let ty = semantic_for(binding);
+    if ty.rust_name == "IdempotencyKey" {
+        return format!("{parameter}.toWire()");
+    }
     if binding.module == "machines"
         && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")
     {
@@ -1615,6 +1905,9 @@ fn java_value_expression(binding: &PublicFieldBinding, parameter: &str) -> Strin
 
 fn kotlin_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
     let ty = semantic_for(binding);
+    if ty.rust_name == "IdempotencyKey" {
+        return format!("{parameter}.toWire()");
+    }
     if binding.module == "machines"
         && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")
     {
@@ -1652,6 +1945,9 @@ fn kotlin_value_expression(binding: &PublicFieldBinding, parameter: &str) -> Str
 
 fn scala_value_expression(binding: &PublicFieldBinding, parameter: &str) -> String {
     let ty = semantic_for(binding);
+    if ty.rust_name == "IdempotencyKey" {
+        return format!("{parameter}.toWire");
+    }
     if binding.module == "machines"
         && matches!(binding.wire_field, "machine" | "checkpoint" | "operation")
     {
@@ -1705,6 +2001,7 @@ fn java_wire_type(ty: &SemanticType) -> &'static str {
         WireValueKind::Boolean => "boolean",
         WireValueKind::Timestamp => "java.time.Instant",
         WireValueKind::Enum => "int",
+        WireValueKind::Message if ty.rust_name == "IdempotencyKey" => "com.google.protobuf.ByteString",
         WireValueKind::Message => "com.google.protobuf.Message",
         WireValueKind::Oneof => "WireChoice",
     }
@@ -1718,6 +2015,7 @@ fn kotlin_wire_type(ty: &SemanticType) -> &'static str {
         WireValueKind::Boolean => "Boolean",
         WireValueKind::Timestamp => "java.time.Instant",
         WireValueKind::Enum => "Int",
+        WireValueKind::Message if ty.rust_name == "IdempotencyKey" => "com.google.protobuf.ByteString",
         WireValueKind::Message => "com.google.protobuf.Message",
         WireValueKind::Oneof => "WireChoice",
     }
@@ -1731,6 +2029,7 @@ fn scala_wire_type(ty: &SemanticType) -> &'static str {
         WireValueKind::Boolean => "Boolean",
         WireValueKind::Timestamp => "java.time.Instant",
         WireValueKind::Enum => "Int",
+        WireValueKind::Message if ty.rust_name == "IdempotencyKey" => "com.google.protobuf.ByteString",
         WireValueKind::Message => "com.google.protobuf.Message",
         WireValueKind::Oneof => "WireChoice",
     }
