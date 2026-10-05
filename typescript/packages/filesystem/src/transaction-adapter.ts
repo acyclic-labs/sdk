@@ -16,44 +16,24 @@ export function adaptTransaction(
     rename(source, destination) { return raw.rename(source, destination); },
     hardLink(source, destination) { return raw.hardLink(source, destination); },
     writeRange(path, offset, bytes) {
-      requireNonnegative(offset, "write offset");
       return raw.writeRange(path, offset, bytes);
     },
     resize(path, logicalBytes) {
-      requireNonnegative(logicalBytes, "logical bytes");
       return raw.resize(path, logicalBytes);
     },
     zeroRange(path, offset, length, allocated, extend) {
-      requireNonnegative(offset, "zero-range offset");
-      requireNonnegative(length, "zero-range length");
       return raw.zeroRange(path, offset, length, allocated, extend);
     },
     preallocate(path, offset, length, keepSize) {
-      requireNonnegative(offset, "preallocation offset");
-      requireNonnegative(length, "preallocation length");
       return raw.preallocate(path, offset, length, keepSize);
     },
     cloneRange(source, sourceOffset, destination, destinationOffset, length) {
-      requireNonnegative(sourceOffset, "clone source offset");
-      requireNonnegative(destinationOffset, "clone destination offset");
-      requireNonnegative(length, "clone length");
       return raw.cloneRange(source, sourceOffset, destination, destinationOffset, length);
     },
     async rebase(maximumConflicts) {
-      requirePositiveInteger(maximumConflicts, "maximum transaction conflicts");
       return decodeRebase(await raw.rebase(maximumConflicts));
     },
     async commit() { return parseWorkspaceCommit(await raw.commit()); },
     async close(): Promise<void> {},
   };
-}
-
-function requireNonnegative(value: bigint, label: string): void {
-  if (value < 0n) throw new RangeError(`${label} must be non-negative`);
-}
-
-function requirePositiveInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${label} must be a positive safe integer`);
-  }
 }
