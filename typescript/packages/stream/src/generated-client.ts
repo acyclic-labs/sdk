@@ -25,19 +25,19 @@ export type RustOwnedDestination = RustOwnedSemanticString<"destination">;
 export function makeRustOwnedDestination(value: string): RustOwnedDestination { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedDestination; }
 export type RustOwnedIdempotencyKeyBytes = RustOwnedSemanticBytes<"idempotency_key_bytes">;
 export function makeRustOwnedIdempotencyKeyBytes(value: Uint8Array): RustOwnedIdempotencyKeyBytes { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyBytes; }
-export type RustOwnedPageLimit = RustOwnedSemanticNumber<"page_limit">;
-export function makeRustOwnedPageLimit(value: number): RustOwnedPageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 1000) throw new RangeError("value exceeds its item limit"); return value as RustOwnedPageLimit; }
 export type RustOwnedPath = RustOwnedSemanticString<"path">;
 export function makeRustOwnedPath(value: string): RustOwnedPath { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
 export type RustOwnedSource = RustOwnedSemanticString<"source">;
 export function makeRustOwnedSource(value: string): RustOwnedSource { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedSource; }
+export type RustOwnedStreamPageLimit = RustOwnedSemanticNumber<"stream_page_limit">;
+export function makeRustOwnedStreamPageLimit(value: number): RustOwnedStreamPageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 1024) throw new RangeError("value exceeds its item limit"); return value as RustOwnedStreamPageLimit; }
 
 export const STREAM_PUBLIC_FIELD_BINDINGS = [
   { family: "stream", field: "idempotency_key", semanticType: "idempotency_key_bytes", module: "stream", message: "AppendRequest", wireField: "idempotency_key", direction: "request", rules: ["NonEmpty"] },
   { family: "stream", field: "path", semanticType: "path", module: "stream", message: "AppendRequest", wireField: "path", direction: "request", rules: ["NonEmpty", "Utf8"] },
   { family: "stream", field: "source", semanticType: "source", module: "stream", message: "ForkRequest", wireField: "source", direction: "request", rules: ["NonEmpty", "Utf8"] },
   { family: "stream", field: "destination", semanticType: "destination", module: "stream", message: "ForkRequest", wireField: "destination", direction: "request", rules: ["NonEmpty", "Utf8"] },
-  { family: "stream", field: "limit", semanticType: "page_limit", module: "stream", message: "ReadRequest", wireField: "limit", direction: "request", rules: ["StrictlyPositive", "MaxItems(1000)"] },
+  { family: "stream", field: "limit", semanticType: "stream_page_limit", module: "stream", message: "ReadRequest", wireField: "limit", direction: "request", rules: ["StrictlyPositive", "MaxItems(1024)"] },
   { family: "stream", field: "commit_id", semanticType: "commit_id", module: "stream", message: "ReadCommitRequest", wireField: "commit_id", direction: "request", rules: ["NonEmpty"] },
 ] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
 
@@ -114,7 +114,7 @@ export const STREAM_OPERATIONS = {
   "acyclic.stream.v2.StreamService/ReadCommit": { rpc: "acyclic.stream.v2.StreamService/ReadCommit", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["commit_id.non_empty_bytes"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const STREAM_SOURCE = { family: "stream", rustCrate: "acyclic-stream", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::stream::stream_descriptor", descriptorSha256: "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c", sourceContentSha256: "b6129072e2319ea600a59ed5af9529a636bc1710fe00801a3fd979cac27fd650", sourceModelSha256: "b6129072e2319ea600a59ed5af9529a636bc1710fe00801a3fd979cac27fd650", handshakeRoute: "/v1/sdk/stream/handshake", handshakeVersion: "acyclic.stream.v2", handshakeDescriptorDigest: "f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e", modeledOperations: 10, httpProjection: true } as const;
+export const STREAM_SOURCE = { family: "stream", rustCrate: "acyclic-stream", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::stream::stream_descriptor", descriptorSha256: "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c", sourceContentSha256: "091cf7f6fd13e0f3a50d2095c256549cc3b091cacf1391071985e1ef70b6d71f", sourceModelSha256: "091cf7f6fd13e0f3a50d2095c256549cc3b091cacf1391071985e1ef70b6d71f", handshakeRoute: "/v1/sdk/stream/handshake", handshakeVersion: "acyclic.stream.v2", handshakeDescriptorDigest: "f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e", modeledOperations: 10, httpProjection: true } as const;
 
 export const STREAM_HANDSHAKE = { route: "/v1/sdk/stream/handshake", version: "acyclic.stream.v2", descriptorDigest: "f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e" } as const;
 

@@ -15,26 +15,30 @@ export type RustOwnedSemanticMessage<Name extends string> = object & { readonly 
 
 export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
 
-export type RustOwnedCheckpointId = RustOwnedSemanticString<"checkpoint_id">;
-export function makeRustOwnedCheckpointId(value: string): RustOwnedCheckpointId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedCheckpointId; }
+export type RustOwnedCheckpointId = RustOwnedSemanticBytes<"checkpoint_id">;
+export function makeRustOwnedCheckpointId(value: Uint8Array): RustOwnedCheckpointId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedCheckpointId; }
 export type RustOwnedIdempotencyKeyMessage = RustOwnedSemanticMessage<"idempotency_key_message">;
 export function makeRustOwnedIdempotencyKeyMessage(value: object): RustOwnedIdempotencyKeyMessage {  return value as RustOwnedIdempotencyKeyMessage; }
 export type RustOwnedImmutableImage = RustOwnedSemanticMessage<"immutable_image">;
 export function makeRustOwnedImmutableImage(value: object): RustOwnedImmutableImage {  return value as RustOwnedImmutableImage; }
-export type RustOwnedMachineId = RustOwnedSemanticString<"machine_id">;
-export function makeRustOwnedMachineId(value: string): RustOwnedMachineId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedMachineId; }
-export type RustOwnedOperationId = RustOwnedSemanticString<"operation_id">;
-export function makeRustOwnedOperationId(value: string): RustOwnedOperationId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOperationId; }
-export type RustOwnedPageLimit = RustOwnedSemanticNumber<"page_limit">;
-export function makeRustOwnedPageLimit(value: number): RustOwnedPageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 1000) throw new RangeError("value exceeds its item limit"); return value as RustOwnedPageLimit; }
+export type RustOwnedMachineEventPageLimit = RustOwnedSemanticNumber<"machine_event_page_limit">;
+export function makeRustOwnedMachineEventPageLimit(value: number): RustOwnedMachineEventPageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 1024) throw new RangeError("value exceeds its item limit"); return value as RustOwnedMachineEventPageLimit; }
+export type RustOwnedMachineId = RustOwnedSemanticBytes<"machine_id">;
+export function makeRustOwnedMachineId(value: Uint8Array): RustOwnedMachineId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedMachineId; }
+export type RustOwnedMachinePageLimit = RustOwnedSemanticNumber<"machine_page_limit">;
+export function makeRustOwnedMachinePageLimit(value: number): RustOwnedMachinePageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 256) throw new RangeError("value exceeds its item limit"); return value as RustOwnedMachinePageLimit; }
+export type RustOwnedOperationId = RustOwnedSemanticBytes<"operation_id">;
+export function makeRustOwnedOperationId(value: Uint8Array): RustOwnedOperationId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedOperationId; }
 
 export const MACHINES_PUBLIC_FIELD_BINDINGS = [
   { family: "machines", field: "image", semanticType: "immutable_image", module: "machines", message: "CreateMachineRequest", wireField: "image", direction: "request", rules: ["Immutable"] },
-  { family: "machines", field: "idempotency_key", semanticType: "idempotency_key_message", module: "machines", message: "CreateMachineRequest", wireField: "idempotency_key", direction: "request", rules: [] },
-  { family: "machines", field: "machine_id", semanticType: "machine_id", module: "machines", message: "InspectMachineRequest", wireField: "machine", direction: "request", rules: ["NonEmpty", "Utf8"] },
-  { family: "machines", field: "checkpoint_id", semanticType: "checkpoint_id", module: "machines", message: "InspectCheckpointRequest", wireField: "checkpoint", direction: "request", rules: ["NonEmpty", "Utf8"] },
-  { family: "machines", field: "operation_id", semanticType: "operation_id", module: "machines", message: "OperationRequest", wireField: "operation", direction: "request", rules: ["NonEmpty", "Utf8"] },
-  { family: "machines", field: "page_limit", semanticType: "page_limit", module: "machines", message: "ListMachinesRequest", wireField: "limit", direction: "request", rules: ["StrictlyPositive", "MaxItems(1000)"] },
+  { family: "machines", field: "image", semanticType: "immutable_image", module: "machines", message: "QualifyImageRequest", wireField: "image", direction: "request", rules: ["Immutable"] },
+  { family: "machines", field: "idempotency_key", semanticType: "idempotency_key_message", module: "machines", message: "CreateMachineRequest", wireField: "idempotency_key", direction: "request", rules: ["NonEmpty", "FixedLength(16)"] },
+  { family: "machines", field: "machine_id", semanticType: "machine_id", module: "machines", message: "InspectMachineRequest", wireField: "machine", direction: "request", rules: ["NonEmpty", "FixedLength(16)"] },
+  { family: "machines", field: "checkpoint_id", semanticType: "checkpoint_id", module: "machines", message: "InspectCheckpointRequest", wireField: "checkpoint", direction: "request", rules: ["NonEmpty", "FixedLength(16)"] },
+  { family: "machines", field: "operation_id", semanticType: "operation_id", module: "machines", message: "OperationRequest", wireField: "operation", direction: "request", rules: ["NonEmpty", "FixedLength(16)"] },
+  { family: "machines", field: "page_limit", semanticType: "machine_page_limit", module: "machines", message: "ListMachinesRequest", wireField: "limit", direction: "request", rules: ["StrictlyPositive", "MaxItems(256)"] },
+  { family: "machines", field: "event_page_limit", semanticType: "machine_event_page_limit", module: "machines", message: "EventsRequest", wireField: "limit", direction: "request", rules: ["StrictlyPositive", "MaxItems(1024)"] },
 ] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
 
 export const MACHINES_PUBLIC_NESTED_ROUTES = [
@@ -119,7 +123,7 @@ export const MACHINES_OPERATIONS = {
   "acyclic.machines.v1.MachinesService/WatchOperation": { rpc: "acyclic.machines.v1.MachinesService/WatchOperation", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["operation_id.nonzero", "cursor.monotonic", "terminal.required"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "6d1c0c44ec37185ad7df1d802f7d14d8fe580b067201a13cb73220fd4e3b96dd", sourceModelSha256: "6d1c0c44ec37185ad7df1d802f7d14d8fe580b067201a13cb73220fd4e3b96dd", handshakeRoute: "/v1/sdk/machines/handshake", handshakeVersion: "acyclic.machines.v1", handshakeDescriptorDigest: "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758", modeledOperations: 19, httpProjection: false } as const;
+export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "082af530f57509a140e528e4a044215f5cdd619dead56c30e8ccf0d3f6a059e7", sourceModelSha256: "082af530f57509a140e528e4a044215f5cdd619dead56c30e8ccf0d3f6a059e7", handshakeRoute: "/v1/sdk/machines/handshake", handshakeVersion: "acyclic.machines.v1", handshakeDescriptorDigest: "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758", modeledOperations: 19, httpProjection: false } as const;
 
 export const MACHINES_HANDSHAKE = { route: "/v1/sdk/machines/handshake", version: "acyclic.machines.v1", descriptorDigest: "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758" } as const;
 
