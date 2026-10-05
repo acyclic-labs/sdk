@@ -229,6 +229,57 @@ impl ToolExecutor for EditExecutor {
     ) -> futures::future::BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Ok(None) })
     }
+
+    fn reconcile_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> futures::future::BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move {
+            require_project(context.scope(), &self.project, VolumeOperation::Write)?;
+            let input: EditInput = parse(&invocation)?;
+            validate_path(&input.path, false)?;
+            let expected = input.expected_generation.ok_or_else(|| {
+                Error::Invalid("workspace edit requires an expected generation".into())
+            })?;
+            let workspace = project_workspace(&self.project)?;
+            let Some(generation) = self
+                .host
+                .operation_generation(&workspace, &operation_key(&invocation)?)
+                .await?
+            else {
+                return Ok(None);
+            };
+            let bytes = self
+                .host
+                .read(
+                    &workspace,
+                    Some(&generation),
+                    &input.path,
+                    self.maximum_bytes,
+                )
+                .await?;
+            if bytes.as_ref() != input.content.as_bytes() {
+                return Err(Error::Conflict(
+                    "filesystem receipt content differs from the admitted edit".into(),
+                ));
+            }
+            if generation == expected {
+                Ok(Some(ToolResult {
+                    value: json!({
+                        "path": input.path,
+                        "generation": serde_json::to_value(generation)
+                            .map_err(|error| Error::Storage(error.to_string()))?,
+                        "operation_id": invocation.operation_id.to_string(),
+                    }),
+                }))
+            } else {
+                Err(Error::Conflict(
+                    "filesystem receipt generation differs from the admitted edit".into(),
+                ))
+            }
+        })
+    }
 }
 
 struct ReadExecutor {

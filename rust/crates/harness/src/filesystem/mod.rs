@@ -2320,6 +2320,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })
     }
 
+    /// Returns the immutable generation recorded for one filesystem
+    /// idempotency operation, if the provider has durably committed it.
+    ///
+    /// This is the recovery boundary for admitted Harness edits: callers can
+    /// reconstruct a result from the receipt without dispatching a second
+    /// transaction or retargeting a newer workspace head.
+    pub async fn operation_generation(
+        &self,
+        workspace: &WorkspaceRef,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<Option<GenerationRef>> {
+        let workspace = self.open(workspace).await?;
+        let generation = workspace
+            .operation_generation(filesystem_key(idempotency_key))
+            .await
+            .map_err(map_error)?;
+        generation.map(|generation| self.generation_ref(&generation)).transpose()
+    }
+
     /// Reads one bounded file from the current head or an exact generation.
     pub async fn read(
         &self,
