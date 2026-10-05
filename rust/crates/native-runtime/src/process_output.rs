@@ -105,11 +105,16 @@ where
     unix::spawn(reader, move |chunk| consume(chunk))
 }
 
-/// Starts an owned reader for a process pipe.
+/// Starts an owned reader for a native Windows process pipe.
+///
+/// Windows uses `PeekNamedPipe` before each native `ReadFile` call. This
+/// intentionally accepts only a native pipe handle: arbitrary `Read`
+/// implementations have no cancellation guarantee and therefore must not be
+/// admitted to this path.
 #[cfg(windows)]
 pub fn spawn_output_reader<R, F>(reader: R, mut consume: F) -> io::Result<OutputReader>
 where
-    R: Read + std::os::windows::io::AsRawHandle + Send + 'static,
+    R: std::os::windows::io::AsRawHandle + Send + 'static,
     F: FnMut(&[u8]) -> bool + Send + 'static,
 {
     windows::spawn(reader, move |chunk| consume(chunk))
@@ -274,118 +279,65 @@ mod unix {
 mod windows {
     use super::OutputReader;
     use std::{
-        io::{self, Read},
+        io,
         os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicU8, Ordering},
+            atomic::{AtomicBool, Ordering},
             mpsc,
         },
         thread,
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, HANDLE},
-        System::Threading::{
-            CancelSynchronousIo, GetCurrentThreadId, OpenThread, THREAD_TERMINATE, TerminateThread,
+        Foundation::HANDLE,
+        System::{
+            IO::ReadFile,
+            Pipes::PeekNamedPipe,
+            Threading::{CreateEventW, SetEvent, WaitForSingleObject},
         },
     };
 
-    const IDLE: u8 = 0;
-    const STARTING: u8 = 1;
-    const READING: u8 = 2;
-    const STOPPED: u8 = 3;
+    const WAIT_OBJECT_0: u32 = 0;
+    const WAIT_TIMEOUT: u32 = 258;
 
     pub(super) fn spawn<R, F>(reader: R, consume: F) -> io::Result<OutputReader>
     where
-        R: Read + AsRawHandle + Send + 'static,
+        R: AsRawHandle + Send + 'static,
         F: FnMut(&[u8]) -> bool + Send + 'static,
     {
-        let reader_handle: HANDLE = reader.as_raw_handle().cast();
         let cancelled = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(AtomicU8::new(IDLE));
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: CreateEventW returned an owned event handle transferred to
+        // this OwnedHandle exactly once.
+        // The worker and cancellation closure each retain the event until the
+        // worker has joined; cancellation cannot close a handle still in use.
+        let event = Arc::new(unsafe { OwnedHandle::from_raw_handle(event) });
+        let worker_event = Arc::clone(&event);
         let worker_cancelled = Arc::clone(&cancelled);
-        let worker_state = Arc::clone(&state);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let (sender, receiver) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("acyclic-output-reader".into())
             .spawn(move || {
-                let thread_handle =
-                    unsafe { OpenThread(THREAD_TERMINATE, 0, GetCurrentThreadId()) };
-                if thread_handle.is_null() {
-                    let _ = ready_sender.send(Err(io::Error::last_os_error()));
+                if ready_sender.send(()).is_err() {
                     return;
                 }
-                // SAFETY: OpenThread returned an owned handle that is closed
-                // by OwnedHandle after the cancellation closure consumes it.
-                let thread_handle = unsafe { OwnedHandle::from_raw_handle(thread_handle) };
-                if ready_sender.send(Ok(thread_handle)).is_err() {
-                    return;
-                }
-                let state_guard = StoppedState(Arc::clone(&worker_state));
-                let result =
-                    run_reader(reader, worker_cancelled, Arc::clone(&worker_state), consume);
-                drop(state_guard);
-                worker_state.store(STOPPED, Ordering::Release);
+                let result = run_reader(reader, worker_event, worker_cancelled, consume);
                 let _ = sender.send(result);
             })?;
-        let thread_handle = match ready_receiver.recv() {
-            Ok(Ok(handle)) => handle,
-            Ok(Err(error)) => {
-                let _ = handle.join();
-                return Err(error);
-            }
-            Err(_) => {
-                let _ = handle.join();
-                return Err(io::Error::other("process output reader failed to start"));
-            }
-        };
+        if ready_receiver.recv().is_err() {
+            let _ = handle.join();
+            return Err(io::Error::other("process output reader failed to start"));
+        }
         let cancel = Box::new(move || {
             cancelled.store(true, Ordering::Release);
-            loop {
-                match state.load(Ordering::Acquire) {
-                    STOPPED | IDLE => return Ok(()),
-                    STARTING => thread::yield_now(),
-                    READING => {
-                        // SAFETY: the handle is owned and names exactly the
-                        // reader thread. The state handshake guarantees that
-                        // a synchronous read is either already pending or the
-                        // worker will observe cancellation before starting it.
-                        if unsafe { CancelSynchronousIo(thread_handle.as_raw_handle().cast()) } == 0
-                        {
-                            let error = io::Error::last_os_error();
-                            if error.raw_os_error() == Some(1168) {
-                                thread::yield_now();
-                                continue;
-                            }
-                            // CancelSynchronousIo is expected to work for the
-                            // exact thread handle opened above. If the OS
-                            // rejects it, terminate only this owned reader
-                            // thread, close its raw pipe handle after the
-                            // thread is stopped, and surface cancellation as
-                            // uncertain rather than spinning forever.
-                            if unsafe { TerminateThread(thread_handle.as_raw_handle().cast(), 1) }
-                                == 0
-                            {
-                                // The reader owns a synchronous OS handle and
-                                // cannot be safely detached if both native
-                                // cancellation mechanisms are unavailable.
-                                // Fail-stop preserves the no-leak invariant;
-                                // callers never observe a false success.
-                                let _ = error;
-                                std::process::abort();
-                            }
-                            unsafe { CloseHandle(reader_handle) };
-                            state.store(STOPPED, Ordering::Release);
-                            return Err(io::Error::new(
-                                io::ErrorKind::Interrupted,
-                                "process output reader was forcibly cancelled",
-                            ));
-                        }
-                        thread::yield_now();
-                    }
-                }
+            if unsafe { SetEvent(event.as_raw_handle().cast()) } == 0 {
+                return Err(io::Error::last_os_error());
             }
+            Ok(())
         });
         Ok(OutputReader {
             receiver,
@@ -394,52 +346,116 @@ mod windows {
         })
     }
 
-    struct StoppedState(Arc<AtomicU8>);
-
-    impl Drop for StoppedState {
-        fn drop(&mut self) {
-            self.0.store(STOPPED, Ordering::Release);
-        }
-    }
-
     fn run_reader<R, F>(
-        mut reader: R,
+        reader: R,
+        event: Arc<OwnedHandle>,
         cancelled: Arc<AtomicBool>,
-        state: Arc<AtomicU8>,
         mut consume: F,
     ) -> io::Result<Vec<u8>>
     where
-        R: Read,
+        R: AsRawHandle,
         F: FnMut(&[u8]) -> bool,
     {
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 8192];
         loop {
-            state.store(STARTING, Ordering::Release);
             if cancelled.load(Ordering::Acquire) {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "process output reader cancelled",
                 ));
             }
-            state.store(READING, Ordering::Release);
-            let read = reader.read(&mut buffer);
-            state.store(IDLE, Ordering::Release);
-            let read = read?;
-            if read == 0 {
-                return Ok(bytes);
+            match peek_available(reader.as_raw_handle().cast(), &mut buffer)? {
+                None => return Ok(bytes),
+                Some(0) => {
+                    let wait = unsafe { WaitForSingleObject(event.as_raw_handle().cast(), 50) };
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "process output reader cancelled",
+                        ));
+                    }
+                    if wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT {
+                        return Err(if wait == u32::MAX {
+                            io::Error::last_os_error()
+                        } else {
+                            io::Error::other(format!("unexpected output reader wait status {wait}"))
+                        });
+                    }
+                }
+                Some(available) => {
+                    let Some(read) =
+                        read_available(reader.as_raw_handle().cast(), &mut buffer, available)?
+                    else {
+                        return Ok(bytes);
+                    };
+                    if read == 0 {
+                        return Ok(bytes);
+                    }
+                    let chunk = &buffer[..read];
+                    if !consume(chunk) {
+                        return Ok(bytes);
+                    }
+                    bytes.extend_from_slice(chunk);
+                }
             }
-            let chunk = buffer
-                .get(..read)
-                .ok_or_else(|| io::Error::other("process reader returned an invalid length"))?;
-            if !consume(chunk) {
-                return Ok(bytes);
-            }
-            bytes.extend_from_slice(chunk);
         }
     }
-}
 
+    fn peek_available(handle: HANDLE, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        let mut available = 0_u32;
+        let mut read = 0_u32;
+        let capacity = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
+        let success = unsafe {
+            PeekNamedPipe(
+                handle,
+                buffer.as_mut_ptr().cast(),
+                capacity,
+                &mut read,
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if success == 0 {
+            let error = io::Error::last_os_error();
+            if matches!(error.raw_os_error(), Some(109 | 232 | 233)) {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        Ok(Some(usize::try_from(read).unwrap_or(buffer.len())))
+    }
+
+    // PeekNamedPipe establishes an upper bound for this read. The native
+    // handle is an owned process-pipe read end, so no other reader can consume
+    // those bytes between the probe and ReadFile on the supported path.
+    fn read_available(
+        handle: HANDLE,
+        buffer: &mut [u8],
+        available: usize,
+    ) -> io::Result<Option<usize>> {
+        let requested = available.min(buffer.len());
+        let requested = u32::try_from(requested).unwrap_or(u32::MAX);
+        let mut read = 0_u32;
+        let success = unsafe {
+            ReadFile(
+                handle,
+                buffer.as_mut_ptr().cast(),
+                requested,
+                &mut read,
+                std::ptr::null_mut(),
+            )
+        };
+        if success == 0 {
+            let error = io::Error::last_os_error();
+            if matches!(error.raw_os_error(), Some(109 | 232 | 233)) {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        Ok(Some(usize::try_from(read).unwrap_or(buffer.len())))
+    }
+}
 #[cfg(all(test, any(target_os = "linux", target_vendor = "apple")))]
 mod tests {
     use super::spawn_output_reader;
@@ -506,5 +522,19 @@ mod windows_tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("first output chunk");
         assert_eq!(reader.cancel_and_join().expect("cancel and join"), None);
+    }
+
+    #[test]
+    fn native_pipe_read_consumes_peeked_bytes() {
+        let (reader_file, mut writer_file) = anonymous_pipe();
+        let mut reader = spawn_output_reader(reader_file, |_| true).expect("spawn reader");
+        writer_file.write_all(b"first").expect("write output");
+        drop(writer_file);
+        let output = reader
+            .receive(Duration::from_secs(5))
+            .expect("receive")
+            .expect("completed output");
+        assert_eq!(output, b"first");
+        reader.join().expect("join reader");
     }
 }
