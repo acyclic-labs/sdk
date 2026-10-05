@@ -1,0 +1,26 @@
+{
+  "source_commit": "f1fc7538f35287f23791ffe080b30a9c794e52f9",
+  "artifacts": [
+    {
+      "bytes": 5,
+      "path": "target/graphcoder-qualification/evidence/f1fc7538f/integrated-check/exit.txt",
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95"
+    },
+    {
+      "bytes": 7704644,
+      "path": "target/graphcoder-qualification/evidence/f1fc7538f/integrated-check/source.zip",
+      "sha256": "3361ef150ce80eff423cd64dca6577cf9497a07b8366f747d304fb7ec6296a41"
+    },
+    {
+      "bytes": 7710,
+      "path": "target/graphcoder-qualification/evidence/f1fc7538f/integrated-check/check.log",
+      "sha256": "90a01f9e2bd703e2040f0eae3959ae9c36d28fac054af0b50ead24fffe039393"
+    }
+  ],
+  "outcome": "Filesystem compile failure: GenerationId does not implement Display in HostCheckoutError",
+  "qualification_complete": false,
+  "exit": 101,
+  "tests_executed": 0,
+  "platform": "Windows Rust",
+  "suite": "integrated Harness test compilation"
+}

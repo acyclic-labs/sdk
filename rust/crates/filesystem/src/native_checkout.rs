@@ -35,7 +35,7 @@ pub enum HostCheckoutError {
     Workspace(#[from] WorkspaceError),
     /// The source generation changed since the caller recorded its approval
     /// precondition.
-    #[error("attached checkout generation is stale: expected {expected}, actual {actual}")]
+    #[error("attached checkout generation is stale: expected {expected:?}, actual {actual:?}")]
     StaleSource {
         /// Generation retained by the approval record.
         expected: GenerationId,

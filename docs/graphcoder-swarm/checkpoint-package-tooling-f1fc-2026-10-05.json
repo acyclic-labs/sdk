@@ -1,0 +1,29 @@
+{
+  "qualification_complete": false,
+  "outcome": "tooling tests pass; swarm qualification remains incomplete",
+  "failed": 0,
+  "platform": "Windows Node",
+  "skipped": 0,
+  "artifacts": [
+    {
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "path": "target/graphcoder-qualification/evidence/f1fc7538f/package-tooling/exit.txt",
+      "bytes": 3
+    },
+    {
+      "sha256": "3361ef150ce80eff423cd64dca6577cf9497a07b8366f747d304fb7ec6296a41",
+      "path": "target/graphcoder-qualification/evidence/f1fc7538f/package-tooling/source.zip",
+      "bytes": 7704644
+    },
+    {
+      "sha256": "aa853a31367e5e00da0aa0bb477f2a65e1605f6d541d5a6669998c74fb7ab6bc",
+      "path": "target/graphcoder-qualification/evidence/f1fc7538f/package-tooling/tests.log",
+      "bytes": 3184
+    }
+  ],
+  "tests": 33,
+  "exit": 0,
+  "suite": "five package receipt and provenance tooling test files",
+  "passed": 33,
+  "source_commit": "f1fc7538f35287f23791ffe080b30a9c794e52f9"
+}
