@@ -883,8 +883,8 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
     // model tool. The already admitted sibling remains the only child-B
     // request and the tool exchange is retained in child A's journal.
     assert!(provider.sibling_fork_sent.load(Ordering::SeqCst));
-    let sibling_tool_result = provider
-        .decoded_requests()
+    let sibling_requests = provider.decoded_requests();
+    let sibling_tool_result = sibling_requests
         .iter()
         .flat_map(|request| request.messages.iter())
         .find_map(|message| match &message.content {
