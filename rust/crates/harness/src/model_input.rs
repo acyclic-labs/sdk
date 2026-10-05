@@ -1425,6 +1425,26 @@ mod tests {
         .is_err());
         Ok(())
     }
+
+    #[test]
+    fn input_limits_measure_utf8_bytes_without_truncation() -> Result<()> {
+        let mut input = request()?;
+        input.messages = vec![text("😀")];
+        let limits = Limits {
+            file_bytes: 1_024,
+            render_bytes: 4,
+            ..Limits::default()
+        };
+        PreparedModelInput::prepare(input.clone(), limits)?;
+
+        input.messages[0] = text("😀a");
+        assert!(matches!(
+            PreparedModelInput::prepare(input, limits),
+            Err(Error::Invalid(message)) if message == "model text exceeds render limit"
+        ));
+        Ok(())
+    }
+
     #[test]
     fn manifest_binds_exact_dispatch_bytes() -> Result<()> {
         let prepared = PreparedModelInput::prepare(request()?, Limits::default())?;
@@ -2044,6 +2064,30 @@ mod tests {
                     crate::OperationId::new(),
                     missing,
                     Vec::new(),
+                    8,
+                )
+                .await
+                .is_err()
+        );
+
+        let missing_attachment = FileRef::new(
+            staged.volume().clone(),
+            "input/missing-attachment.txt",
+            staged.version(),
+            staged.descriptor().clone(),
+            "missing-attachment.txt",
+        )?;
+        assert!(
+            local
+                .storage()
+                .run_conversation(
+                    local.bundle(),
+                    crate::OperationId::new(),
+                    staged.clone(),
+                    vec![crate::conversation::Attachment {
+                        file: missing_attachment,
+                        label: Some("declared attachment".into()),
+                    }],
                     8,
                 )
                 .await
