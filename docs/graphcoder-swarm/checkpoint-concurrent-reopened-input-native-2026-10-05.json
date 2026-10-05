@@ -1,0 +1,48 @@
+{
+  "passed": 14,
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "protocol": "acyclic.graphcoder.native-checkpoint.v1",
+  "ignored": 0,
+  "limits": [
+    "Focused actual-provider serialization and storage validation; full swarm lifecycle/fault/package gates remain open.",
+    "Concurrent prefix fixture exercises the production prefix provider boundary; handshake-based live swarm scheduling qualification remains pending."
+  ],
+  "command": "cargo test -p acyclic-harness --features test-support,native-process-tree --test model_input_conformance_v3 --test model_input_rejection_conformance_v3 --test persistent_model_input_admission_v3",
+  "suites": {
+    "persistent_input": 7,
+    "frozen_input": 4,
+    "rejection_input": 3
+  },
+  "exit": 0,
+  "source_commit": "56e3a7733fdca4d9cbe3928a84193d33d0d798b3",
+  "platform": "Windows native",
+  "previous_failure": {
+    "source_commit": "f324fe0f1",
+    "exit": 101,
+    "reason": "Fixture closure returned Stream instead of Result<Stream>; corrected in56e3a7733.",
+    "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\f324fe0f1\\compile-failure"
+  },
+  "failed": 0,
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\56e3a7733\\concurrent-reopened-input\\model_input_conformance_v3-7bfbe7b944d2344a.exe",
+      "sha256": "ebd2cf80e240dea05d48db2850fda0f1514b5efc367cbc586e3da2efad78dc38"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\56e3a7733\\concurrent-reopened-input\\model_input_rejection_conformance_v3-e8b73bd7bf2435a4.exe",
+      "sha256": "f9b8269a39ce082a9659bd8142c2866679c4426303d9e1d134b30b71288491b0"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\56e3a7733\\concurrent-reopened-input\\native.log",
+      "sha256": "6d0300753d5a935952d007ea595b42d37dda53c1b886d61f3b91eaa330abeead"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\56e3a7733\\concurrent-reopened-input\\persistent_model_input_admission_v3-f60cb1ad465a4372.exe",
+      "sha256": "4c2c91afd6ee0bb872009710b1813170de82d445ee3ce9cd1a8c72cd363d0c98"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\56e3a7733\\concurrent-reopened-input\\source.zip",
+      "sha256": "ff1b302c33a7a77a979b38f02599d975659c3f93b2351faaf128d702963f2c60"
+    }
+  ]
+}
