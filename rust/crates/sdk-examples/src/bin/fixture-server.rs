@@ -2409,7 +2409,10 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn source_sha256() -> String {
-    format!("sha256:{:x}", Sha256::digest(include_bytes!("../lib.rs")))
+    // Advertise the same source-closure identity used by the Rust generator;
+    // hashing only lib.rs made hosted receipts appear bound to an older
+    // fixture even when the provider and manifest had changed together.
+    format!("sha256:{}", env!("SDK_EXAMPLES_SOURCE_SHA256"))
 }
 
 #[cfg(test)]
