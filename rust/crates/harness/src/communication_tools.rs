@@ -642,7 +642,7 @@ fn file_ref_schema() -> Value {
                         }},
                     "id":{"type":"string"}, "class":{"type":"string", "enum":["project","agent_private","session_shared"]},
                     "owner":{"type":"object", "additionalProperties":false, "required":["kind","id"],
-                        "properties":{"kind":{"type":"string","enum":["project","agent","session"]},"id":{}}}
+                        "properties":{"kind":{"type":"string","enum":["project","agent","session"]},"id":{"type":"string"}}}
                 }},
             "path":{"type":"string"}, "version":{"type":"string"}, "display_name":{"type":"string"},
             "descriptor":{"type":"object", "additionalProperties":false,
@@ -731,6 +731,28 @@ mod tests {
             jsonschema::validator_for(&wait.input_schema)
                 .unwrap()
                 .validate(&json!({"kind":"messages","after":0,"limit":1,"extra":true}))
+                .is_err()
+        );
+        let invalid_owner_id = json!({
+            "recipient": "00000000-0000-0000-0000-000000000001",
+            "target": "parent",
+            "payload": {
+                "volume": {
+                    "provider": {"namespace":"test", "family":"filesystem", "version":"2"},
+                    "id": "private",
+                    "class": "agent_private",
+                    "owner": {"kind":"agent", "id": {"bytes": [1, 2]}}
+                },
+                "path": "message.json",
+                "version": "v1",
+                "descriptor": {"sha256": vec![0; 32], "byte_length": 2, "media_type":"application/json"},
+                "display_name": "message.json"
+            }
+        });
+        assert!(
+            jsonschema::validator_for(&message.input_schema)
+                .unwrap()
+                .validate(&invalid_owner_id)
                 .is_err()
         );
         Ok(())
@@ -890,6 +912,37 @@ mod tests {
             Err(Error::Unsupported(message)) if message.contains("test host")
         ));
         assert_eq!(*host.0.lock().expect("recording host lock"), Some(task(7)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn model_batch_communication_rejects_forged_operation_scope() -> Result<()> {
+        let host = Arc::new(RecordingHost(Mutex::new(None)));
+        let executor = CommunicationExecutor {
+            host: host.clone(),
+            waits: None,
+            cancellation: None,
+            kind: CommunicationToolKind::Message,
+        };
+        let parent_operation = operation(13);
+        let mut invocation = ToolInvocation::for_model_call(
+            parent_operation,
+            4,
+            "message-call".into(),
+            MESSAGE_TOOL_NAME.into(),
+            json!({"recipient": task(2).to_string(), "target": "parent", "payload": "missing"}),
+        );
+        invocation.operation_id = operation(14);
+        let context = ModelToolContext {
+            parent_operation,
+            step: 4,
+            task_id: Some(task(7)),
+        };
+        assert!(matches!(
+            executor.execute_in_model_batch(context, invocation).await,
+            Err(Error::Conflict(message)) if message.contains("provenance")
+        ));
+        assert_eq!(*host.0.lock().expect("recording host lock"), None);
         Ok(())
     }
 }
