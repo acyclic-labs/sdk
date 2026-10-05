@@ -129,9 +129,17 @@ fn native_filesystem_key(label: impl AsRef<str>) -> acyclic_fs::IdempotencyKey {
 fn local_operator_issuer(root: &Path) -> Result<AuthorityIssuer> {
     let secret_path = root.join(".local-operator-issuer");
     let secret = match std::fs::read(&secret_path) {
-        Ok(bytes) => bytes
-            .try_into()
-            .map_err(|_| Error::Conflict("local operator issuer secret has invalid length".into()))?,
+        Ok(bytes) => {
+            let secret: [u8; 32] = bytes.try_into().map_err(|_| {
+                Error::Conflict("local operator issuer secret has invalid length".into())
+            })?;
+            if secret == [0; 32] {
+                return Err(Error::Conflict(
+                    "local operator issuer secret cannot be zero".into(),
+                ));
+            }
+            secret
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let nonce = OperationId::new().into_bytes();
             let mut hasher = blake3::Hasher::new();
@@ -154,9 +162,15 @@ fn local_operator_issuer(root: &Path) -> Result<AuthorityIssuer> {
                 Err(race) if race.kind() == std::io::ErrorKind::AlreadyExists => {
                     let bytes = std::fs::read(&secret_path)
                         .map_err(|read_error| Error::Storage(read_error.to_string()))?;
-                    bytes.try_into().map_err(|_| {
+                    let secret: [u8; 32] = bytes.try_into().map_err(|_| {
                         Error::Conflict("local operator issuer secret has invalid length".into())
-                    })?
+                    })?;
+                    if secret == [0; 32] {
+                        return Err(Error::Conflict(
+                            "local operator issuer secret cannot be zero".into(),
+                        ));
+                    }
+                    secret
                 }
                 Err(error) => return Err(Error::Storage(error.to_string())),
             }
@@ -7808,6 +7822,13 @@ mod tests {
             local_operator_issuer(root.path()),
             Err(Error::Conflict(message)) if message.contains("invalid length")
         ));
+
+        std::fs::write(&secret, [0_u8; 32])
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            local_operator_issuer(root.path()),
+            Err(Error::Conflict(message)) if message.contains("zero")
+        ));
         Ok(())
     }
 
@@ -9891,7 +9912,7 @@ mod tests {
 
         let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
             root.path(),
-            model,
+            model.clone(),
             provider.clone(),
             Limits::default(),
         )
@@ -9901,6 +9922,19 @@ mod tests {
         assert_eq!(reopened.open_session(task).await?.signing_key(), first_key);
         assert!(reopened.bindings.filesystem_fork_resolver.is_some());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        drop(reopened);
+        std::fs::write(root.path().join(".local-operator-issuer"), [9_u8; 32])
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let error = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            model,
+            provider,
+            Limits::default(),
+        )
+        .await
+        .err()
+        .ok_or_else(|| Error::Invalid("a changed host issuer reopened a pinned swarm".into()))?;
+        assert!(matches!(error, Error::Unauthorized(message) if message.contains("differs from pinned")));
         Ok(())
     }
 
