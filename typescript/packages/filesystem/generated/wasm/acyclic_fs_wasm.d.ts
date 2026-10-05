@@ -1,5 +1,12 @@
 /* tslint:disable */
 /* eslint-disable */
+/**
+ * The `ReadableStreamType` enum.
+ *
+ * *This API requires the following crate features to be activated: `ReadableStreamType`*
+ */
+
+type ReadableStreamType = "bytes";
 export interface BrowserAdmissionResult {
     status: "admitted" | "rejected";
     rejection: string | undefined;
@@ -426,6 +433,8 @@ export interface NameComponentResult {
 export type BrowserExtentPlanResult = { kind: "inline"; work: BrowserWorkCounters } | { kind: "sparse"; spans: BrowserExtentSpanResult[]; retainedAllocationBytes: bigint; work: BrowserWorkCounters };
 
 export type BrowserPathBatch = string[];
+
+export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_exceeded" | "not_found" | "already_exists" | "prefix_not_retained" | "out_of_range" | "idempotency_mismatch" | "capacity" | "access_denied" | "unavailable" | "hierarchy_changed" | "deadline_elapsed" | "unsupported";
 
 export type TransactionOperation = { kind: "create-file"; path: string; bytes: Uint8Array } | { kind: "create-directory"; path: string } | { kind: "create-symbolic-link"; path: string; target: Uint8Array } | { kind: "create-special"; path: string; fileKind: "fifo" | "socket" | "mount-boundary" } | { kind: "create-device"; path: string; fileKind: "character-device" | "block-device"; major: number; minor: number } | { kind: "create-reparse-point"; path: string; payload: Uint8Array } | { kind: "remove"; path: string; expectedFileId: Uint8Array | undefined } | { kind: "rename"; source: string; destination: string; replace: boolean } | { kind: "hard-link"; source: string; destination: string } | { kind: "write"; path: string; offset: bigint; bytes: Uint8Array } | { kind: "set-metadata"; path: string; canonicalBytes: Uint8Array } | { kind: "resize"; path: string; logicalBytes: bigint } | { kind: "zero-range"; path: string; offset: bigint; length: bigint; allocated: boolean; extend: boolean } | { kind: "preallocate"; path: string; offset: bigint; length: bigint; keepSize: boolean } | { kind: "clone-range"; source: string; sourceOffset: bigint; destination: string; destinationOffset: bigint; length: bigint };
 
@@ -958,6 +967,35 @@ export class BrowserCheckout {
 }
 
 /**
+ * Authenticated Rust-owned Filesystem grpc-web client for browser WASM.
+ *
+ * This client uses the generated FilesystemService contract directly. It
+ * retains negotiated bounds for every later request and exposes streamed
+ * exports through Rust futures; dropping a stream cancels its fetch.
+ */
+export class BrowserFilesystemClient {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Sends a typed cancellation request encoded by the Rust contract.
+     */
+    cancel(request: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Returns negotiated capability limits to JavaScript.
+     */
+    capabilities(): any;
+    /**
+     * Connects from JavaScript using the Rust-owned authenticated handshake.
+     */
+    static connect(endpoint: string, bearer_token: string, maximum_request_bytes: bigint, maximum_response_bytes: bigint): Promise<BrowserFilesystemClient>;
+    /**
+     * Collects a typed export stream into encoded chunks.
+     */
+    export(request: Uint8Array): Promise<Array<any>>;
+}
+
+/**
  * Browser-safe handle backed by the canonical Rust engine.
  */
 export class BrowserFs {
@@ -1155,6 +1193,50 @@ export class BrowserGitCompatRepository {
      * Creates process-local compatibility state for one SDK workspace.
      */
     constructor(workspace_id: Uint8Array);
+}
+
+/**
+ * Authenticated Rust-owned Harness gRPC-Web client for browser WASM.
+ *
+ * Harness has no HTTP/JSON projection. Browser consumers use the same
+ * generated protobuf service through gRPC-Web, with all protocol checks
+ * and operation-control semantics retained in Rust.
+ */
+export class BrowserHarnessClient {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Cancels an encoded Rust Harness operation request.
+     */
+    cancel(request: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Returns the negotiated Harness protocol identity.
+     */
+    capabilities(): any;
+    /**
+     * Connects from JavaScript using the Rust-owned authenticated
+     * handshake and gRPC-Web adapter with Rust-owned safe bounds.
+     */
+    static connect(endpoint: string, bearer_token: string): Promise<BrowserHarnessClient>;
+    /**
+     * Connects with explicit request and response bounds.
+     */
+    static connectWithLimits(endpoint: string, bearer_token: string, maximum_request_bytes: bigint, maximum_response_bytes: bigint): Promise<BrowserHarnessClient>;
+    /**
+     * Observes an encoded Rust Harness operation request.
+     */
+    observe(request: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Collects a bounded replay page into encoded deliveries. The Rust
+     * API remains streaming for callers that need a live follow stream.
+     */
+    replay(request: Uint8Array): Promise<Array<any>>;
+    /**
+     * Submits an encoded Rust Harness command and returns its encoded
+     * admission. The protobuf bytes preserve the generated wire types.
+     */
+    submit(request: Uint8Array): Promise<Uint8Array>;
 }
 
 /**
@@ -1535,6 +1617,125 @@ export class BrowserWorkspaceContextRegistry {
 }
 
 /**
+ * Rust-owned state machine for the polling form of hosted HTTP follow.
+ * The JavaScript boundary supplies only fetch and timer primitives.
+ */
+export class HttpFollowCursor {
+    free(): void;
+    [Symbol.dispose](): void;
+    acceptRead(response_json: string): void;
+    acceptTail(response_json: string): void;
+    close(): void;
+    isClosed(): boolean;
+    constructor(input: Uint8Array);
+    pollDelayMillis(): number;
+    readRequest(): Uint8Array;
+    shouldPoll(): boolean;
+    tailRequest(): Uint8Array;
+}
+
+declare class IntoUnderlyingByteSource {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    cancel(): void;
+    pull(controller: ReadableByteStreamController): Promise<any>;
+    start(controller: ReadableByteStreamController): void;
+    readonly autoAllocateChunkSize: number;
+    readonly type: ReadableStreamType;
+}
+export type { IntoUnderlyingByteSource };
+
+declare class IntoUnderlyingSink {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    abort(reason: any): Promise<any>;
+    close(): Promise<any>;
+    write(chunk: any): Promise<any>;
+}
+export type { IntoUnderlyingSink };
+
+declare class IntoUnderlyingSource {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    cancel(): void;
+    pull(controller: ReadableStreamDefaultController): Promise<any>;
+}
+export type { IntoUnderlyingSource };
+
+/**
+ * One Rust-backed live follow cursor.
+ *
+ * `next` releases the state lock before awaiting the stream, so `close` can
+ * always signal a pending call and promptly release its cursor.
+ */
+export class WasmFollow {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Cancels the cursor and wakes any pending `next` call.
+     */
+    close(): void;
+    /**
+     * Waits for one record. Returns `null` after close or stream termination.
+     */
+    next(): Promise<Uint8Array | null>;
+}
+
+/**
+ * Stateful browser provider backed by the canonical Rust memory provider.
+ *
+ * Unary operations use `dispatch(operation, request_bytes)` and return the
+ * corresponding protobuf response bytes. `read` and `children` return arrays
+ * of encoded stream response messages because protobuf streams have no single
+ * finite response envelope.
+ */
+export class WasmMemoryStream {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Lists one fixed-snapshot child page, returning encoded `ChildrenResponse` messages.
+     */
+    children(input: Uint8Array): Promise<Uint8Array[]>;
+    /**
+     * Executes one finite unary operation over canonical protobuf bytes.
+     */
+    dispatch(operation: string, input: Uint8Array): Promise<Uint8Array>;
+    constructor();
+    /**
+     * Opens a live follow cursor backed by the canonical provider.
+     */
+    open_follow(input: Uint8Array): Promise<WasmFollow>;
+    /**
+     * Reads one bounded page, returning encoded `ReadResponse` messages.
+     */
+    read(input: Uint8Array): Promise<Uint8Array[]>;
+}
+
+/**
+ * Type-only bridge for the complete Rust-owned Stream error-code contract.
+ */
+export function __streamErrorCodeContract(value: StreamErrorCode): StreamErrorCode;
+
+/**
+ * Advances the cumulative byte count for a hosted response. The caller may
+ * read chunks natively, but Rust owns overflow and configured-bound policy.
+ */
+export function consumeHttpResponseBytes(total: bigint, chunk: bigint, maximum: bigint): bigint;
+
+/**
+ * Validate and project one hosted HTTP JSON success response into the public
+ * JavaScript shape. Rust owns the scalar widths and tagged response schema:
+ * decimal uint64 strings become `bigint`, base64 bytes become `Uint8Array`,
+ * and token timestamps become `Date` values before the value crosses the
+ * browser boundary.
+ */
+export function decodeHttpResponse(route: string, response_json: string): unknown;
+
+/**
  * Decodes a versioned merge-candidate envelope to its canonical payload.
  */
 export function decodeMergeCandidateJson(value_json: string): string;
@@ -1558,6 +1759,21 @@ export function decodeMultiRootPlanJson(value_json: string): string;
  * Decodes a versioned publication envelope to its canonical payload.
  */
 export function decodePublicationJson(value_json: string): string;
+
+/**
+ * Returns the canonical default cumulative hosted response bound.
+ */
+export function defaultHttpResponseBytes(): bigint;
+
+/**
+ * Encode one protobuf request into the hosted Stream HTTP JSON shape.
+ *
+ * Protobuf remains the only request contract crossing from TypeScript into
+ * Rust.  Rust owns the conversion of uint64 values and opaque bytes to the
+ * decimal and base64 spellings required by the hosted API, keeping the HTTP
+ * adapter from maintaining a second scalar conversion table.
+ */
+export function encodeHttpRequest(route: string, input: Uint8Array): string;
 
 /**
  * Encodes a merge-candidate payload in the versioned compatibility envelope.
@@ -1585,6 +1801,27 @@ export function encodeMultiRootPlanJson(value_json: string): string;
 export function encodePublicationJson(value_json: string): string;
 
 /**
+ * Return whether a code can be emitted by this WASM adapter.
+ *
+ * Keeping this validator beside the Rust error mapping prevents the TypeScript adapter from
+ * maintaining a second, potentially stale list of base Stream error codes.
+ */
+export function is_stream_error_code(value: string): boolean;
+
+/**
+ * Validates one hosted read page and returns its canonical follow cursor.
+ */
+export function nextHttpFollowCursor(response_json: string, from: bigint): bigint;
+
+/**
+ * Normalize and encode canonical protobuf bytes for one commit request.
+ *
+ * The returned bytes use the same deterministic ordering as the in-memory
+ * provider. Validation failures are thrown as stable error codes.
+ */
+export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
+
+/**
  * Opens transactional browser storage with explicit `IndexedDB` or OPFS immutable objects.
  *
  * # Errors
@@ -1601,6 +1838,203 @@ export function openBrowserFs(options: any): Promise<BrowserFs>;
  * Returns a JavaScript error when the memory options are invalid.
  */
 export function openMemoryFs(options: any): BrowserFs;
+
+/**
+ * Validates and projects one gRPC read response. Rust owns protobuf decoding,
+ * record bounds, commit identity width, and request-relative contiguity.
+ */
+export function projectGrpcReadResponse(input: Uint8Array, expected: bigint): unknown;
+
+/**
+ * Decode one unary memory-provider response from canonical protobuf bytes
+ * into the public JavaScript result shape. Rust owns the response oneofs,
+ * scalar widths, copied byte buffers, and camelCase projection at this
+ * boundary; TypeScript keeps only request adaptation and cursor lifecycle.
+ */
+export function projectMemoryResponse(operation: string, input: Uint8Array): unknown;
+
+/**
+ * Project a hosted HTTP error code onto the public Stream error vocabulary.
+ *
+ * The hosted API may report either the Rust-owned wire code or a public alias.
+ * Unknown values and a commit-only alias on another route return no value.
+ */
+export function publicHttpErrorCode(raw: string, route: string): string | undefined;
+
+/**
+ * Validate canonical protobuf bytes for one append request.
+ *
+ * The empty string means that the request passed the same domain validators as
+ * the in-memory provider. Otherwise this returns one stable error code.
+ */
+export function validateAppendRequest(input: Uint8Array): string;
+
+/**
+ * Validates the bearer credential shared by the native and browser Stream
+ * clients. The empty string means success; failures use a stable Rust-owned
+ * invalid-argument boundary consumed by generated facades.
+ */
+export function validateBearerToken(token: string): string;
+
+/**
+ * Validates request-relative child-page semantics through the canonical Rust
+ * provider rules before a public page reaches a TypeScript caller.
+ */
+export function validateChildrenPageResponse(request: Uint8Array, response: Uint8Array): void;
+
+/**
+ * Validates request-relative gRPC identities through the canonical wire
+ * model. The adapter supplies only the expected identity bytes.
+ */
+export function validateGrpcResponseIdentity(operation: string, input: Uint8Array, expected: Uint8Array): void;
+
+export function validateHostedGenerationBounds(maximum_generations: number, maximum_changes: number, maximum_conflicts: number, maximum_page_items: number): void;
+
+export function validateHostedGenerationIdentity(generation_id: Uint8Array, owner_workspace_id: Uint8Array, expected_workspace_id: Uint8Array): void;
+
+export function validateHostedPageBound(value: number, maximum: number): void;
+
+export function validateHostedSourceState(state: number, reason: number, has_generation: boolean): void;
+
+export function validateHostedTransactionBounds(mutation_count: number, maximum_mutations: number, maximum_conflicts: number, maximum_page_items: number): void;
+
+/**
+ * Validates the endpoint policy shared by native and browser HTTP clients.
+ * HTTPS is required for hosted endpoints; HTTP is allowed only for loopback
+ * fixture servers. The return value is empty for a valid endpoint.
+ */
+export function validateHttpEndpoint(endpoint: string): string;
+
+/**
+ * Validate a hosted read page against the request cursor captured by the
+ * caller. Rust owns record shape and cursor contiguity; the HTTP adapter only
+ * supplies the response text and its request-relative starting position.
+ */
+export function validateHttpReadResponse(response_json: string, from: bigint): void;
+
+/**
+ * Validate one hosted HTTP JSON success response using the same path, width,
+ * identity, and tagged-union rules as the canonical Stream domain.
+ *
+ * The HTTP adapter keeps its intentionally simple JSON representation (u64
+ * values are decimal strings and opaque bytes are base64). This entry point
+ * validates that representation using the same Rust projection used by
+ * `decodeHttpResponse`, without crossing a second scalar schema boundary.
+ */
+export function validateHttpResponse(route: string, response_json: string): void;
+
+/**
+ * Validate one caller retry identity through the canonical Stream model.
+ */
+export function validateIdempotencyKey(input: Uint8Array): string;
+
+/**
+ * Validate one canonical Stream path using the same parser used by every
+ * provider and wire decoder.
+ *
+ * The empty string means success; failures use the stable Stream error code
+ * consumed by the TypeScript adapter.
+ */
+export function validatePath(path: string): string;
+
+/**
+ * Validate one remote endpoint using the shared Rust policy.
+ */
+export function validateRemoteWebEndpoint(endpoint: string): void;
+
+/**
+ * Validates an encoded Filesystem handshake response and returns the
+ * canonical negotiated capabilities. Keeping decoding and admission in
+ * this Rust boundary prevents hosted TypeScript clients from re-owning
+ * protocol identity or capability validation.
+ */
+export function validateRemoteWebFilesystemHandshake(response: Uint8Array): Uint8Array;
+
+/**
+ * Validate one remote gRPC endpoint using the shared Rust policy.
+ */
+export function validateRemoteWebGrpcEndpoint(endpoint: string): void;
+
+/**
+ * Validate one canonical protobuf request at the browser boundary.
+ *
+ * `kind` is deliberately a small closed set so callers cannot accidentally
+ * select a different validator after adding a new wire message. The empty
+ * string means success; failures use the same stable codes as the append and
+ * commit entry points.
+ */
+export function validateRequest(kind: string, input: Uint8Array): string;
+
+/**
+ * Validate one JavaScript representation of a canonical Stream sequence.
+ *
+ * JavaScript passes the decimal spelling of its `bigint`; Rust owns the
+ * unsigned 64-bit range accepted by every Stream wire field.
+ */
+export function validateSequence(value: string): string;
+
+/**
+ * Validates the Rust Actors invoke request admission rules.
+ */
+export function validate_actors_invoke(actor_id: string, method: string): void;
+
+/**
+ * Validate the opaque commit identity used by Stream responses and requests.
+ * The empty string means success; malformed identities use the canonical
+ * invalid-argument boundary consumed by generated facades.
+ */
+export function validate_commit_id(input: Uint8Array): string;
+
+/**
+ * Validates the optional native TLS CA certificate before it reaches the
+ * platform gRPC adapter.
+ */
+export function validate_remote_web_ca_certificate(certificate: string): void;
+
+/**
+ * Checks an HTTP content-length without first narrowing it through a JS number.
+ */
+export function validate_remote_web_content_length(content_length: string, maximum: bigint): void;
+
+/**
+ * Validate one remote bearer credential using the shared Rust policy.
+ */
+export function validate_remote_web_credential(token: string): void;
+
+/**
+ * Validates the HTTPS or loopback-HTTP endpoint shared by Actors and Workers.
+ */
+export function validate_remote_web_endpoint(endpoint: string): void;
+
+/**
+ * Validates the HTTPS endpoint required by native gRPC transports.
+ */
+export function validate_remote_web_grpc_endpoint(endpoint: string): void;
+
+/**
+ * Validates the configured native gRPC message bound.
+ */
+export function validate_remote_web_message_limit(maximum: bigint): void;
+
+/**
+ * Advances a cumulative response byte count under the caller's configured bound.
+ */
+export function validate_remote_web_response_chunk(observed: bigint, chunk: bigint, maximum: bigint): bigint;
+
+/**
+ * Validates the configured cumulative response bound.
+ */
+export function validate_remote_web_response_limit(maximum: bigint): void;
+
+/**
+ * Validates the Rust Workers invoke-deployment path and request admission rules.
+ */
+export function validate_workers_invoke_deployment(alias: string, method: string): void;
+
+/**
+ * Validates the Rust Workers invoke-version path and request admission rules.
+ */
+export function validate_workers_invoke_version(version_sha256: Uint8Array, method: string): void;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -1789,11 +2223,100 @@ export interface InitOutput {
     readonly encodePublicationJson: (a: number, b: number) => [number, number, number, number];
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly validateHostedGenerationBounds: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateHostedGenerationIdentity: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly validateHostedPageBound: (a: number, b: number) => [number, number];
+    readonly validateHostedSourceState: (a: number, b: number, c: number) => [number, number];
+    readonly validateHostedTransactionBounds: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateRemoteWebEndpoint: (a: number, b: number) => [number, number];
+    readonly validateRemoteWebGrpcEndpoint: (a: number, b: number) => [number, number];
+    readonly validate_remote_web_credential: (a: number, b: number) => [number, number];
+    readonly __wbg_browserfilesystemclient_free: (a: number, b: number) => void;
+    readonly __wbg_browserharnessclient_free: (a: number, b: number) => void;
+    readonly browserfilesystemclient_cancel: (a: number, b: number, c: number) => any;
+    readonly browserfilesystemclient_capabilities: (a: number) => [number, number, number];
+    readonly browserfilesystemclient_connect: (a: number, b: number, c: number, d: number, e: bigint, f: bigint) => any;
+    readonly browserfilesystemclient_export: (a: number, b: number, c: number) => any;
+    readonly browserharnessclient_cancel: (a: number, b: number, c: number) => any;
+    readonly browserharnessclient_capabilities: (a: number) => [number, number, number];
+    readonly browserharnessclient_connect: (a: number, b: number, c: number, d: number) => any;
+    readonly browserharnessclient_connectWithLimits: (a: number, b: number, c: number, d: number, e: bigint, f: bigint) => any;
+    readonly browserharnessclient_observe: (a: number, b: number, c: number) => any;
+    readonly browserharnessclient_replay: (a: number, b: number, c: number) => any;
+    readonly browserharnessclient_submit: (a: number, b: number, c: number) => any;
+    readonly validateRemoteWebFilesystemHandshake: (a: number, b: number) => [number, number, number, number];
+    readonly validate_actors_invoke: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validate_remote_web_ca_certificate: (a: number, b: number) => [number, number];
+    readonly validate_remote_web_content_length: (a: number, b: number, c: bigint) => [number, number];
+    readonly validate_remote_web_endpoint: (a: number, b: number) => [number, number];
+    readonly validate_remote_web_grpc_endpoint: (a: number, b: number) => [number, number];
+    readonly validate_remote_web_message_limit: (a: bigint) => [number, number];
+    readonly validate_remote_web_response_chunk: (a: bigint, b: bigint, c: bigint) => [bigint, number, number];
+    readonly validate_remote_web_response_limit: (a: bigint) => [number, number];
+    readonly validate_workers_invoke_deployment: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validate_workers_invoke_version: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly __wbg_intounderlyingbytesource_free: (a: number, b: number) => void;
+    readonly __wbg_intounderlyingsink_free: (a: number, b: number) => void;
+    readonly __wbg_intounderlyingsource_free: (a: number, b: number) => void;
+    readonly intounderlyingbytesource_autoAllocateChunkSize: (a: number) => number;
+    readonly intounderlyingbytesource_cancel: (a: number) => void;
+    readonly intounderlyingbytesource_pull: (a: number, b: any) => any;
+    readonly intounderlyingbytesource_start: (a: number, b: any) => void;
+    readonly intounderlyingbytesource_type: (a: number) => number;
+    readonly intounderlyingsink_abort: (a: number, b: any) => any;
+    readonly intounderlyingsink_close: (a: number) => any;
+    readonly intounderlyingsink_write: (a: number, b: any) => any;
+    readonly intounderlyingsource_cancel: (a: number) => void;
+    readonly intounderlyingsource_pull: (a: number, b: any) => any;
+    readonly __streamErrorCodeContract: (a: any) => any;
+    readonly __wbg_httpfollowcursor_free: (a: number, b: number) => void;
+    readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
+    readonly __wbg_wasmmemorystream_free: (a: number, b: number) => void;
+    readonly consumeHttpResponseBytes: (a: bigint, b: bigint, c: bigint) => [bigint, number, number];
+    readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly httpfollowcursor_acceptRead: (a: number, b: number, c: number) => [number, number];
+    readonly httpfollowcursor_acceptTail: (a: number, b: number, c: number) => [number, number];
+    readonly httpfollowcursor_close: (a: number) => void;
+    readonly httpfollowcursor_isClosed: (a: number) => number;
+    readonly httpfollowcursor_new: (a: number, b: number) => [number, number, number];
+    readonly httpfollowcursor_pollDelayMillis: (a: number) => number;
+    readonly httpfollowcursor_readRequest: (a: number) => [number, number, number, number];
+    readonly httpfollowcursor_shouldPoll: (a: number) => number;
+    readonly httpfollowcursor_tailRequest: (a: number) => [number, number, number, number];
+    readonly is_stream_error_code: (a: number, b: number) => number;
+    readonly nextHttpFollowCursor: (a: number, b: number, c: bigint) => [bigint, number, number];
+    readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
+    readonly projectGrpcReadResponse: (a: number, b: number, c: bigint) => [number, number, number];
+    readonly projectMemoryResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateAppendRequest: (a: number, b: number) => [number, number];
+    readonly validateBearerToken: (a: number, b: number) => [number, number];
+    readonly validateChildrenPageResponse: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateGrpcResponseIdentity: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly validateHttpEndpoint: (a: number, b: number) => [number, number];
+    readonly validateHttpReadResponse: (a: number, b: number, c: bigint) => [number, number];
+    readonly validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateIdempotencyKey: (a: number, b: number) => [number, number];
+    readonly validatePath: (a: number, b: number) => [number, number];
+    readonly validateRequest: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateSequence: (a: number, b: number) => [number, number];
+    readonly validate_commit_id: (a: number, b: number) => [number, number];
+    readonly wasmfollow_close: (a: number) => void;
+    readonly wasmfollow_next: (a: number) => any;
+    readonly wasmmemorystream_children: (a: number, b: number, c: number) => any;
+    readonly wasmmemorystream_dispatch: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly wasmmemorystream_new: () => number;
+    readonly wasmmemorystream_open_follow: (a: number, b: number, c: number) => any;
+    readonly wasmmemorystream_read: (a: number, b: number, c: number) => any;
+    readonly defaultHttpResponseBytes: () => bigint;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsValue___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___web_sys_cbfa82ad1bbe2c35___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true__1_: (a: number, b: number) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
