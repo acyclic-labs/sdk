@@ -226,6 +226,9 @@ jobs:
         with:
           dotnet-version: 8.0.425
 
+      - name: Install pinned Rust toolchain for source closure verification
+        uses: ./.github/actions/rust-toolchain
+
       - name: Download native assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -244,15 +247,14 @@ jobs:
           $assets = Get-ChildItem -LiteralPath $env:DOWNLOAD_ROOT -File -Recurse |
             Where-Object { $_.Name -in @('acyclic_sdk_embedded_prototype.dll', 'libacyclic_sdk_embedded_prototype.so', 'libacyclic_sdk_embedded_prototype.dylib') }
           if ($assets.Count -ne 8) { throw "Expected eight native assets, found $($assets.Count)" }
+          . (Join-Path $env:GITHUB_WORKSPACE 'scripts/verify-dotnet-embedded-native-manifest.ps1')
+          $sourceSnapshot = Get-EmbeddedRustSourceClosure -Repository $env:GITHUB_WORKSPACE
+          $sourceInputs = @($sourceSnapshot.Paths)
+          $sourceInputsSha256 = $sourceSnapshot.Digest
           $sourceRevision = (& git rev-parse HEAD).Trim()
-          if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$') { throw 'Package checkout does not have an exact source revision.' }
-          $sourceInputs = @(
-            'rust/crates/sdk-embedded-prototype/Cargo.toml',
-            'rust/crates/sdk-embedded-prototype/Cargo.lock',
-            'rust/crates/sdk-embedded-prototype/build.rs',
-            'rust/crates/sdk-embedded-prototype/src/lib.rs',
-            'rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs'
-          )
+          if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$' -or $sourceSnapshot.Revision -ne $sourceRevision) {
+            throw 'Package checkout does not have an exact source revision.'
+          }
           $lockfileHash = (Get-FileHash -Algorithm SHA256 -LiteralPath 'rust/crates/sdk-embedded-prototype/Cargo.lock').Hash.ToLowerInvariant()
           $cargoCommand = 'cargo build --locked --release --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --target <rust_target> --target-dir <target_dir>'
           $nativeManifests = @(Get-ChildItem -LiteralPath $env:DOWNLOAD_ROOT -File -Recurse -Filter 'native-manifest.json')
@@ -260,7 +262,7 @@ jobs:
           $seenRids = @{}
           foreach ($manifestFile in $nativeManifests) {
             $manifest = Get-Content -LiteralPath $manifestFile.FullName -Raw | ConvertFrom-Json
-            if ($manifest.schema -ne 'acyclic.sdk.dotnet.embedded.native-manifest.v1' -or $manifest.source_revision -ne $sourceRevision -or $manifest.cargo_lock_sha256 -ne $lockfileHash -or $manifest.cargo_command -ne $cargoCommand -or (@($manifest.source_inputs) -join '|') -ne ($sourceInputs -join '|')) {
+            if ($manifest.schema -ne 'acyclic.sdk.dotnet.embedded.native-manifest.v1' -or $manifest.source_revision -ne $sourceRevision -or $manifest.cargo_lock_sha256 -ne $lockfileHash -or $manifest.cargo_command -ne $cargoCommand -or $manifest.source_inputs_sha256 -ne $sourceInputsSha256 -or (@($manifest.source_inputs) -join '|') -ne ($sourceInputs -join '|')) {
               throw "Native provenance does not bind to package source revision: $($manifestFile.FullName)"
             }
             foreach ($record in @($manifest.assets)) {
@@ -287,6 +289,7 @@ jobs:
             cargo_manifest = 'rust/crates/sdk-embedded-prototype/Cargo.toml'
             cargo_lock = 'rust/crates/sdk-embedded-prototype/Cargo.lock'
             cargo_lock_sha256 = $lockfileHash
+            source_inputs_sha256 = $sourceInputsSha256
             cargo_command = $cargoCommand
             assets = @($nativeManifests | ForEach-Object {
               $manifest = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
