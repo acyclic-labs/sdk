@@ -67,6 +67,87 @@ fn current_executable_sha256() -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+fn file_sha256(path: &std::path::Path, label: &str) -> Result<String, String> {
+    let bytes = fs::read(path)
+        .map_err(|error| format!("{label} {} cannot be read: {error}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn package_artifact_digest(
+    package: &Map<String, Value>,
+    language: &str,
+    expected_digest: Option<&str>,
+    failures: &mut Vec<String>,
+) {
+    let provenance = package
+        .get("provenance")
+        .and_then(Value::as_object)
+        .unwrap_or(package);
+    let declared = package
+        .get("artifact_sha256")
+        .or_else(|| package.get("package_artifact_sha256"))
+        .or_else(|| provenance.get("artifact_sha256"))
+        .or_else(|| provenance.get("package_artifact_sha256"))
+        .and_then(Value::as_str);
+    let Some(expected_digest) = expected_digest else {
+        failures.push(format!(
+            "{language}: Rust inventory package archive digest is missing"
+        ));
+        return;
+    };
+    let Some(declared) = declared else {
+        failures.push(format!(
+            "{language}: executed package artifact_sha256 is missing"
+        ));
+        return;
+    };
+    let expected_digest = expected_digest
+        .strip_prefix("sha256:")
+        .unwrap_or(expected_digest)
+        .to_ascii_lowercase();
+    let declared_digest = declared
+        .strip_prefix("sha256:")
+        .unwrap_or(declared)
+        .to_ascii_lowercase();
+    if !valid_sha(&expected_digest, 32) || !valid_sha(&declared_digest, 32) {
+        failures.push(format!(
+            "{language}: package artifact digest is not a SHA-256 digest"
+        ));
+        return;
+    }
+    if expected_digest != declared_digest {
+        failures.push(format!(
+            "{language}: executed package artifact digest differs from the Rust inventory"
+        ));
+    }
+    let path = package
+        .get("artifact_path")
+        .or_else(|| package.get("package_artifact_path"))
+        .or_else(|| package.get("archive_path"))
+        .or_else(|| provenance.get("artifact_path"))
+        .or_else(|| provenance.get("package_artifact_path"))
+        .or_else(|| provenance.get("archive_path"))
+        .and_then(Value::as_str);
+    let Some(path) = path else {
+        failures.push(format!(
+            "{language}: executed package artifact_path is missing; declared provenance cannot prove installed bytes"
+        ));
+        return;
+    };
+    let actual = match file_sha256(std::path::Path::new(path), "executed package artifact") {
+        Ok(value) => value,
+        Err(error) => {
+            failures.push(format!("{language}: {error}"));
+            return;
+        }
+    };
+    if actual != declared_digest {
+        failures.push(format!(
+            "{language}: executed package artifact bytes do not match artifact_sha256"
+        ));
+    }
+}
+
 fn object<'a>(value: &'a Value, label: &str) -> Result<&'a Map<String, Value>, String> {
     value
         .as_object()
@@ -129,6 +210,11 @@ fn validate_producer_provenance(
         failures.push(format!("expected.packages.{language} is missing"));
         return;
     };
+    let expected_artifact_digest = expected_package
+        .get("sha256")
+        .or_else(|| expected_package.get("artifact_sha256"))
+        .or_else(|| expected_package.get("package_artifact_sha256"))
+        .and_then(Value::as_str);
     let Some(expected_provenance) = expected_package
         .get("provenance")
         .and_then(Value::as_object)
@@ -152,6 +238,12 @@ fn validate_producer_provenance(
         .get("provenance")
         .and_then(Value::as_object)
         .unwrap_or(observed_package);
+    package_artifact_digest(
+        observed_package,
+        language,
+        expected_artifact_digest,
+        failures,
+    );
     for (field, label) in [
         ("source_git_sha", "source Git revision"),
         ("rust_model_digest", "Rust model digest"),
@@ -939,4 +1031,42 @@ fn main() -> Result<(), String> {
     )
     .map_err(|error| format!("write {}: {error}", output_path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_package_digest_is_checked_against_artifact_bytes() {
+        let path = env::temp_dir().join(format!(
+            "acyclic-rpd-artifact-{}-{:x}.zip",
+            std::process::id(),
+            Sha256::digest(b"rpd-artifact-test")
+        ));
+        fs::write(&path, b"Rust-owned package bytes").expect("write package fixture");
+        let digest = format!("{:x}", Sha256::digest(b"Rust-owned package bytes"));
+        let package = json!({
+            "artifact_path": path.clone(),
+            "artifact_sha256": digest.clone(),
+        });
+        let package = package.as_object().expect("package object");
+        let mut failures = Vec::new();
+        package_artifact_digest(package, "ruby", Some(&digest), &mut failures);
+        assert!(
+            failures.is_empty(),
+            "untampered package rejected: {failures:?}"
+        );
+
+        fs::write(&path, b"tampered package bytes").expect("tamper package fixture");
+        failures.clear();
+        package_artifact_digest(package, "ruby", Some(&digest), &mut failures);
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("artifact bytes do not match")),
+            "tampered package was accepted: {failures:?}"
+        );
+        let _ = fs::remove_file(path);
+    }
 }
