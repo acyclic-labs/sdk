@@ -1,0 +1,100 @@
+{
+  "kind": "focused-native-checkpoint",
+  "source_commit": "48b025b912b97bec9f0c7aa2a08f73b43a0c6b34",
+  "platform": "Windows native",
+  "features": [
+    "filesystem-local",
+    "native-process-tree"
+  ],
+  "evidence_directory": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier",
+  "artifacts": [
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\acyclic_harness-a48e613a7a2d24de.exe",
+      "Hash": "61C885E92FFCF32029784EF600078ACC6754DF9330C0459514EF529857A66FAF"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\cancellation-exit-code.txt",
+      "Hash": "13BF7B3039C63BF5A50491FA3CFD8EB4E699D1BA1436315AEF9CBE5711530354"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\cancellation-native.log",
+      "Hash": "7594D859EF6353105F8397A87270BD49966E56DC6563B1B0D9B8BABF240A883D"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\executor-tests-invalid_argument_feedback_binds_the_full_call_and_schema.log",
+      "Hash": "893FEEF9A6B936805333819016733270EEB2CC466B136004FC801A00D636ED5D"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\executor-tests-provider_receives_narrow_projection_and_replay_rejects_stale_projection.log",
+      "Hash": "E7387A54B9783956598DAB8609C2BF66694EEF7270A94509BBA8CB41808A2193"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\executor-tests-terminal_failure_requires_complete_model_and_tool_journal.log",
+      "Hash": "D96BFC476353262B708B11553FF95285C60879755D37537A71711519863984CB"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\exit-code.txt",
+      "Hash": "13BF7B3039C63BF5A50491FA3CFD8EB4E699D1BA1436315AEF9CBE5711530354"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\focused-runs.json",
+      "Hash": "2F9ECCD9BF256EEBC6B9D540EE64C018548B1CFA7829F0F78447B71409CF18BF"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\local_swarm_faults-8739aa3e83b87068.exe",
+      "Hash": "737290E5587E4486FAAF36F19D7470A882403EE4FD05BCFD5E4ED9D643BAFA9F"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\model_input-tests-prefix_reconciliation_receives_original_prepared_bytes_manifest_and_policy.log",
+      "Hash": "B4A6F84EB88748FEBBF18870A0DE4840EB3B777C65170687F0782F1584D0BA49"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\native.log",
+      "Hash": "3FB0F0A5700F2B7757E005BF864D39B97D7312FE65A4024B491A93A151C7290A"
+    },
+    {
+      "Path": "D:\\graphcoder-builds\\root-qualification-artifacts\\48b025b91\\step-barrier\\source.zip",
+      "Hash": "1B157E86CD6FD1AF85EBD5E3388BEFE95E31CACAE886C17D727CDE9975245B37"
+    }
+  ],
+  "runs": [
+    {
+      "test": "executor::tests::prior_step_barrier_rejects_interleaved_late_tool_observations",
+      "log": "native.log",
+      "session": 29476,
+      "exit_code": 0
+    },
+    {
+      "test": "executor::tests::invalid_argument_feedback_binds_the_full_call_and_schema",
+      "log": "executor-tests-invalid_argument_feedback_binds_the_full_call_and_schema.log",
+      "exit_code": 0
+    },
+    {
+      "test": "executor::tests::provider_receives_narrow_projection_and_replay_rejects_stale_projection",
+      "log": "executor-tests-provider_receives_narrow_projection_and_replay_rejects_stale_projection.log",
+      "exit_code": 0
+    },
+    {
+      "test": "executor::tests::terminal_failure_requires_complete_model_and_tool_journal",
+      "log": "executor-tests-terminal_failure_requires_complete_model_and_tool_journal.log",
+      "exit_code": 0
+    },
+    {
+      "test": "model_input::tests::prefix_reconciliation_receives_original_prepared_bytes_manifest_and_policy",
+      "log": "model_input-tests-prefix_reconciliation_receives_original_prepared_bytes_manifest_and_policy.log",
+      "exit_code": 0
+    },
+    {
+      "test": "cancelled_child_after_publication_cannot_be_reactivated",
+      "log": "cancellation-native.log",
+      "session": 15197,
+      "exit_code": 0
+    }
+  ],
+  "qualification": "six focused cases passed; full qualification remains open",
+  "remaining_gates": [
+    "Default recursive composition and two recovery scenarios still stack overflow at24788; no fix claimed",
+    "Arbitrary post-claim errors require conservative shared classification",
+    "Full locked matrix, packaged native/PTY and generated/WASM gates remain incomplete"
+  ]
+}
