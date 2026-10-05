@@ -718,7 +718,7 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         .await
         .map_err(|e| format!("Stream Append: {e}"))?
         .into_inner();
-    let commit_id = match append_response.outcome.as_ref() {
+    let _append_commit_id = match append_response.outcome.as_ref() {
         Some(wire::append_response::Outcome::Committed(receipt)) => receipt.commit_id.clone(),
         _ => Bytes::new(),
     };
@@ -826,6 +826,10 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         .map_err(|e| format!("Stream Commit: {e}"))?
         .into_inner();
 
+    let commit_id = match commit_response.outcome.as_ref() {
+        Some(wire::commit_response::Outcome::Committed(envelope)) => envelope.commit_id.clone(),
+        _ => Bytes::new(),
+    };
     let read_commit = wire::ReadCommitRequest {
         commit_id: commit_id.clone(),
     };
