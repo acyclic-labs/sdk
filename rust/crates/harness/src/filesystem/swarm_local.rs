@@ -10,7 +10,6 @@ use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool,
     FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
     LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
-    ProjectWorkspaceTree,
     PersistentLocalHarness, workspace_ref, workspace_tools,
 };
 use crate::{
