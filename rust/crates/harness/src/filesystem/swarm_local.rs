@@ -67,6 +67,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
+    io::Write,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak},
@@ -120,6 +121,53 @@ fn native_filesystem_key(label: impl AsRef<str>) -> acyclic_fs::IdempotencyKey {
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
     acyclic_fs::IdempotencyKey::from_bytes(bytes)
+}
+
+/// Opens the local host operator issuer without asking an application to
+/// assemble credentials. The key is retained in a private runtime file and
+/// is never copied into model bindings or durable model-visible content.
+fn local_operator_issuer(root: &Path) -> Result<AuthorityIssuer> {
+    let secret_path = root.join(".local-operator-issuer");
+    let secret = match std::fs::read(&secret_path) {
+        Ok(bytes) => bytes
+            .try_into()
+            .map_err(|_| Error::Conflict("local operator issuer secret has invalid length".into()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let nonce = OperationId::new().into_bytes();
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"acyclic.local-operator-issuer.v1\0");
+            hasher.update(root.to_string_lossy().as_bytes());
+            hasher.update(&nonce);
+            let generated = *hasher.finalize().as_bytes();
+            let mut file = std::fs::OpenOptions::new();
+            file.write(true).create_new(true);
+            match file.open(&secret_path) {
+                Ok(mut output) => {
+                    output
+                        .write_all(&generated)
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    generated
+                }
+                Err(race) if race.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let bytes = std::fs::read(&secret_path)
+                        .map_err(|read_error| Error::Storage(read_error.to_string()))?;
+                    bytes.try_into().map_err(|_| {
+                        Error::Conflict("local operator issuer secret has invalid length".into())
+                    })?
+                }
+                Err(error) => return Err(Error::Storage(error.to_string())),
+            }
+        }
+        Err(error) => return Err(Error::Storage(error.to_string())),
+    };
+    Ok(AuthorityIssuer::new(
+        "local-swarm-operator",
+        secret,
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "local-operator".into(),
+        },
+    ))
 }
 
 /// A spawned child turn remains owned by its activation future. Dropping the
@@ -3746,6 +3794,14 @@ impl PersistentLocalSwarm {
             ));
         }
         host.create_volume(&project).await?;
+        if bindings.operator_issuer.is_none() && bindings.operator_authority.is_some() {
+            return Err(Error::Unauthorized(
+                "local operator authority requires its host issuer".into(),
+            ));
+        }
+        if bindings.operator_issuer.is_none() {
+            bindings = bindings.with_operator_issuer(local_operator_issuer(&root)?);
+        }
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         if let Some(checkout_path) = bindings.native_checkout_path.take() {
             let checkout = host
