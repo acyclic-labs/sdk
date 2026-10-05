@@ -1840,6 +1840,7 @@ from acyclic_sdk.remote import (
     ActorInvokeRequest,
     ActorInvokeResponse,
     Client,
+    ENUM_FIELDS,
     HarnessFileRefPath,
     InferenceEvaluationSpecSpecDigest,
     KnownOneof,
@@ -1849,6 +1850,7 @@ from acyclic_sdk.remote import (
     ObjectsGetObjectResponse,
     ObjectsCreateBucketRequest,
     InferenceCreateEvaluationRequest,
+    PRESENCE_FIELDS,
     SemanticFieldValues,
     UnknownOneof,
     WorkersSelectDeploymentRequestAlias,
@@ -1865,6 +1867,7 @@ from acyclic_sdk.remote import (
     revision_digest,
     sha256_digest,
     harness_pb2,
+    actors_pb2,
     inference_pb2,
     objects_pb2,
 )
@@ -1879,6 +1882,13 @@ def test_rust_owned_refinements_accept_valid_values():
     assert oneof_arm(known_oneof(known_oneof_payload_for_test())).tag == "known"
     assert oneof_arm(UnknownOneof(raw_payload=b"future")).tag == "unknown"
     assert decode_wire_choice(encode_wire_choice(UnknownOneof(raw_payload=b"future"))).raw_payload == b"future"
+    assert ENUM_FIELDS and all(item.preserves_unknown_numeric for item in ENUM_FIELDS.values())
+    unknown_enum = actors_pb2.ActorObservation(state=123)
+    round_tripped_enum = actors_pb2.ActorObservation.FromString(unknown_enum.SerializeToString())
+    assert round_tripped_enum.state == 123
+    present_oneof = actors_pb2.SubscriptionStart(cursor=7)
+    assert present_oneof.WhichOneof("start") == "cursor"
+    assert PRESENCE_FIELDS
     request = ActorInvokeRequest(actor_id=actor_id("actor"), method=method("run"))
     assert request.to_wire().actor_id == "actor"
     fields = SemanticFieldValues(
@@ -3213,6 +3223,8 @@ package acyclicsdk
 import (
 	"context"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 )
 
 import actorsv1 "github.com/acyclic-labs/sdk/go/gen/actors/v1"
@@ -3227,6 +3239,14 @@ func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
 	if _, err := NewRevisionDigest(make([]byte, 32)); err != nil { t.Fatal(err) }
 	if _, err := NewSha256Digest(make([]byte, 32)); err != nil { t.Fatal(err) }
 	if _, err := NewWireChoice(NewKnownOneof(newKnownOneofPayloadForTest())); err != nil { t.Fatal(err) }
+	if len(EnumFields) == 0 || len(PresenceFields) == 0 { t.Fatal("Rust enum and presence inventories are empty") }
+	for _, field := range EnumFields { if !field.PreservesUnknownNumeric { t.Fatal("enum unknown values are not preserved") } }
+	unknownEnum := &actorsv1.ActorObservation{State: actorsv1.ActorState(123)}
+	encodedEnum, err := proto.Marshal(unknownEnum); if err != nil { t.Fatal(err) }
+	decodedEnum := &actorsv1.ActorObservation{}; if err := proto.Unmarshal(encodedEnum, decodedEnum); err != nil { t.Fatal(err) }
+	if decodedEnum.GetState() != actorsv1.ActorState(123) { t.Fatalf("unknown enum changed: %v", decodedEnum.GetState()) }
+	presentOneof := &actorsv1.SubscriptionStart{Start: &actorsv1.SubscriptionStart_Cursor{Cursor: 7}}
+	if presentOneof.GetStart() == nil || presentOneof.GetCursor() != 7 { t.Fatal("oneof presence was not retained") }
 	if _, err := NewWireChoice(NewUnknownOneof([]byte("future"))); err != nil { t.Fatal(err) }
 	payload, err := EncodeWireChoiceJSON(NewUnknownOneof([]byte("future")))
 	if err != nil { t.Fatal(err) }
