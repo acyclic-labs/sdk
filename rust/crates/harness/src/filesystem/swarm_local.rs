@@ -4211,7 +4211,7 @@ impl PersistentLocalSwarm {
         // Subscribe before the durable check so cancellation cannot fall
         // between that check and live task registration.
         self.live.cancellation.register(child)?;
-        let mut cancelled = self.live.cancellation.receiver(child).ok_or_else(|| {
+        let cancelled = self.live.cancellation.receiver(child).ok_or_else(|| {
             Error::Storage("registered child cancellation scope disappeared".into())
         })?;
         self.refresh_registry_state().await?;
@@ -4288,7 +4288,6 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        // Schedule recursive child turns independently to bound the poll stack.
         let max_steps = u32::try_from(
             self.config
                 .run_limits
@@ -4297,25 +4296,9 @@ impl PersistentLocalSwarm {
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
-        let child_task = AbortOnDrop::new(tokio::spawn(Self::run_child_turn(
-            harness.clone(),
-            bundle.clone(),
-            request.clone(),
-            max_steps,
-        )));
-        tokio::pin!(child_task);
-        let child_result = tokio::select! {
-            result = &mut child_task => result
-                .map_err(|error| Error::Storage(format!("child turn task failed: {error}")))
-                .and_then(|result| result),
-            result = cancellation_requested(&mut cancelled) => {
-                // Await termination before reading the child's journal. An
-                // abort request alone could leave its writer racing recovery.
-                child_task.as_ref().get_ref().handle.abort();
-                let _ = (&mut child_task).await;
-                result.and_then(|()| Err(Error::Conflict("child activation was cancelled".into())))
-            },
-        };
+        let child_result = Self::run_owned_child_turn(
+            harness.clone(), bundle, request.clone(), max_steps, cancelled,
+        ).await;
         let output = match child_result {
             Ok(output) => output,
             Err(error) => {
@@ -4325,6 +4308,20 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
+        self.persist_child_completion(&stream, child, request.child_operation, &harness, output)
+            .await
+    }
+
+    /// A successful child turn must cross this durable terminal fence before
+    /// acknowledgement. The executor itself does not publish completion.
+    async fn persist_child_completion(
+        &self,
+        stream: &acyclic_stream::Stream<LocalStream>,
+        child: TaskId,
+        operation: OperationId,
+        harness: &PersistentLocalHarness,
+        output: TurnOutput,
+    ) -> Result<LocalForkOutcome> {
         let output_bytes = crate::contract::canonical_json_bytes(&output)?;
         let output_digest = crate::contract::canonical_json_digest(&output_bytes)?;
         let (inline_output, output_ref) = if output_bytes.len() <= MAX_INLINE_COMPLETION_BYTES {
@@ -4333,7 +4330,7 @@ impl PersistentLocalSwarm {
             let output_ref = harness
                 .storage()
                 .stage(
-                    request.child_operation,
+                    operation,
                     &format!("system/swarm/completions/{child}.json"),
                     &output_bytes,
                     "application/json",
@@ -4359,7 +4356,7 @@ impl PersistentLocalSwarm {
         }
         let completion = StoredEvent::ForkCompleted {
             child,
-            operation: request.child_operation,
+            operation,
             output: inline_output,
             output_ref,
             output_digest: Some(output_digest),
@@ -4382,7 +4379,7 @@ impl PersistentLocalSwarm {
                     "child operation was cancelled before completion acknowledgement".into(),
                 ));
             }
-            match append_record_at(&stream, completion.clone(), observed_tail).await {
+            match append_record_at(stream, completion.clone(), observed_tail).await {
                 Ok(()) => {
                     published = true;
                     break;
@@ -4392,12 +4389,12 @@ impl PersistentLocalSwarm {
             }
             self.refresh_registry_state().await?;
             if let Some(recovered) = self
-                .recover_completed_output(&stream, child, request.child_operation, &harness)
+                .recover_completed_output(stream, child, operation, harness)
                 .await?
             {
                 return Ok(LocalForkOutcome {
                     child,
-                    operation: request.child_operation,
+                    operation,
                     output: recovered,
                 });
             }
@@ -4414,14 +4411,14 @@ impl PersistentLocalSwarm {
             }
         }
         if !published {
-            return Err(Error::Indeterminate(request.child_operation));
+            return Err(Error::Indeterminate(operation));
         }
         self.refresh_registry_state().await?;
         let _refresh = self.registry_refresh.lock().await;
         self.outcomes.lock().await.insert(child, output.clone());
         Ok(LocalForkOutcome {
             child,
-            operation: request.child_operation,
+            operation,
             output,
         })
     }
@@ -4519,6 +4516,34 @@ impl PersistentLocalSwarm {
             }
         }
         Ok(recovered)
+    }
+
+    /// Own the recursive turn without retaining the swarm composition across
+    /// provider awaits. This keeps worker execution separate from its owner's
+    /// admission and completion callbacks, and bounds the recursive poll stack.
+    async fn run_owned_child_turn(
+        harness: Arc<PersistentLocalHarness>,
+        bundle: crate::Harness,
+        request: LocalForkRequest,
+        max_steps: u32,
+        mut cancelled: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<TurnOutput> {
+        let child_task = AbortOnDrop::new(tokio::spawn(Self::run_child_turn(
+            harness, bundle, request, max_steps,
+        )));
+        tokio::pin!(child_task);
+        tokio::select! {
+            result = &mut child_task => result
+                .map_err(|error| Error::Storage(format!("child turn task failed: {error}")))
+                .and_then(|result| result),
+            result = cancellation_requested(&mut cancelled) => {
+                // Join before the owner examines the journal: abort alone
+                // could leave the writer racing recovery.
+                child_task.as_ref().get_ref().handle.abort();
+                let _ = (&mut child_task).await;
+                result.and_then(|()| Err(Error::Conflict("child activation was cancelled".into())))
+            },
+        }
     }
 
     async fn run_child_turn(
