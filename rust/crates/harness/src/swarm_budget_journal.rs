@@ -422,17 +422,26 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         F: FnOnce(SwarmDispatchContext<S>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        self.dispatch_after_publication(
-            operation_id,
-            owner,
-            dispatch_id,
-            publication,
-            move |token| async move {
-                let context = token.usage_context(source)?;
-                dispatch(context).await
+        let token = self
+            .activate_verified_with_dispatch(
+                operation_id,
+                owner.clone(),
+                dispatch_id,
+                publication,
+            )
+            .await?;
+        // Rebind through the journal so a retry after restart resumes from the
+        // durable receipt cursor. Constructing directly from the token would
+        // reset the provider limiter and receipt sequence to zero.
+        let context = self.usage_context(&token, source)?;
+        match dispatch(context).await {
+            Ok(value) => Ok(value),
+            Err(error @ Error::Indeterminate(_)) | Err(error @ Error::Storage(_)) => Err(error),
+            Err(error) => match self.cancel(operation_id, &owner).await {
+                Ok(_) => Err(error),
+                Err(_) => Err(Error::Indeterminate(operation_id)),
             },
-        )
-        .await
+        }
     }
 
     /// Persists cumulative usage without refunding consumed resources.
@@ -1454,6 +1463,65 @@ mod tests {
             .await?;
         assert_eq!(retry.usage, SwarmUsage::default());
         assert_eq!(journal.usage()?.active_agents, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_dispatch_retry_rebinds_durable_receipt_cursor() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let mut journal =
+            SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits()).await?;
+        let child = OperationId::new();
+        let resources = SwarmResourceRequest {
+            model_steps: 4,
+            output_bytes: 64,
+            execution_time_ms: 100,
+        };
+        journal
+            .reserve_child(child_request(child, "cursor-retry-child", 1, resources))
+            .await?;
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: child,
+            parent_operation_id: None,
+            completed_boundary_digest: [41; 32],
+            workspace_generation_digest: [42; 32],
+        })?;
+        let dispatch_id = IdempotencyKey::new("cursor-retry-dispatch")?;
+        let token = journal
+            .activate_verified_with_dispatch(
+                child,
+                owner.clone(),
+                dispatch_id.clone(),
+                publication,
+            )
+            .await?;
+        let measured = SwarmUsage {
+            model_steps: 1,
+            output_bytes: 8,
+            execution_time_ms: 10,
+        };
+        journal
+            .report_usage_from_source(&token, FixedSource(measured))
+            .await?;
+
+        let resumed_sequence = journal
+            .dispatch_after_publication_with_usage(
+                child,
+                owner.clone(),
+                dispatch_id,
+                publication,
+                FixedSource(measured),
+                |context| async move { Ok(context.receipt_cursor().sequence) },
+            )
+            .await?;
+        assert_eq!(resumed_sequence, 1);
+        let completed = journal
+            .complete_from_source(&token, FixedSource(measured))
+            .await?;
+        assert_eq!(completed.state, SwarmReservationState::Completed);
+        assert_eq!(completed.usage_sequence, 2);
         Ok(())
     }
 
