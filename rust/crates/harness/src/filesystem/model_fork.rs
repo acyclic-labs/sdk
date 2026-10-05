@@ -71,10 +71,9 @@ where
         let mut unique = std::collections::BTreeSet::new();
         let mut files = Vec::new();
         for message in &verified.boundary.request.messages {
-            for file in crate::model_input::message_file_refs(
-                message,
-                &verified.boundary.request.tools,
-            )? {
+            for file in
+                crate::model_input::message_file_refs(message, &verified.boundary.request.tools)?
+            {
                 if unique.insert(file.read_capability()?) {
                     self.content_verifier.verify(&file).await?;
                     files.push(file);

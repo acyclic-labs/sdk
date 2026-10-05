@@ -435,7 +435,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             expected_revision: seed.parent_revision,
             scope,
             causal_parent: None,
-            action: Action::PublishFork { seed: Box::new(seed) },
+            action: Action::PublishFork {
+                seed: Box::new(seed),
+            },
         })
         .await
     }
@@ -502,7 +504,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         parent
             .publish_fork_report_with_rebind(report, parent_scope, proof)
             .await?;
-        self.bind_published_child(parent, &seed, child_scope).await?;
+        self.bind_published_child(parent, &seed, child_scope)
+            .await?;
         Ok(seed)
     }
 

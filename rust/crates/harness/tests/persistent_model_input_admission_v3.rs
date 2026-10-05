@@ -9,6 +9,7 @@
 //! by a test-only context builder.
 
 use acyclic_harness::{
+    Error, OperationId, Result,
     conversation::{FileDescriptor, FileRef, Limits},
     executor::ExecutionEvent,
     filesystem::PersistentLocalHarness,
@@ -19,16 +20,15 @@ use acyclic_harness::{
     model_input::{ModelInputManifest, PreparedModelInput},
     registry::ComponentIdentity,
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
-    Error, OperationId, Result,
 };
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 use tempfile::tempdir;
 
@@ -108,10 +108,12 @@ impl ModelProvider for CapturingProvider {
         // a production serialization or admission bug.
         if let Some(credential) = &self.provider_private_credential {
             assert!(!credential.is_empty());
-            assert!(!prepared
-                .bytes()
-                .windows(credential.len())
-                .any(|window| window == credential.as_bytes()));
+            assert!(
+                !prepared
+                    .bytes()
+                    .windows(credential.len())
+                    .any(|window| window == credential.as_bytes())
+            );
         }
         self.requests
             .lock()
@@ -170,14 +172,17 @@ impl ModelProvider for CapturingProvider {
             ],
             FixtureMode::WaitToolResult if call == 0 => vec![
                 Ok(ModelEvent::ToolCall {
-                    call_id: "wait-message".into(), name: "swarm.wait".into(),
+                    call_id: "wait-message".into(),
+                    name: "swarm.wait".into(),
                     arguments: json!({"kind":"messages", "after":0, "limit":1}),
                 }),
-                Ok(ModelEvent::Completed { metadata: Value::Null }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
             ],
-            FixtureMode::WaitToolResult => vec![
-                Ok(ModelEvent::Completed { metadata: Value::Null }),
-            ],
+            FixtureMode::WaitToolResult => vec![Ok(ModelEvent::Completed {
+                metadata: Value::Null,
+            })],
         };
         Box::pin(stream::iter(events))
     }
@@ -362,8 +367,8 @@ const EXPECTED_TOOL_DIGESTS: [[u8; 32]; 3] = [
         78, 187, 99, 150, 157, 159, 6, 75, 195, 230, 92, 18,
     ],
     [
-        93, 91, 47, 255, 173, 159, 13, 121, 7, 40, 132, 189, 227, 227, 42, 151, 47, 170, 244,
-        55, 209, 221, 160, 250, 253, 238, 8, 129, 119, 156, 28, 229,
+        93, 91, 47, 255, 173, 159, 13, 121, 7, 40, 132, 189, 227, 227, 42, 151, 47, 170, 244, 55,
+        209, 221, 160, 250, 253, 238, 8, 129, 119, 156, 28, 229,
     ],
 ];
 
@@ -413,8 +418,8 @@ const EXPECTED_TOOL_SCHEMA_DIGESTS: [[[u8; 32]; 3]; 3] = [
 ];
 
 const EXPECTED_BINDING_DIGEST: [u8; 32] = [
-    61, 248, 215, 37, 140, 208, 252, 226, 125, 189, 207, 103, 91, 156, 34, 112, 186, 195, 151,
-    4, 160, 159, 196, 104, 0, 203, 105, 16, 242, 138, 125, 232,
+    61, 248, 215, 37, 140, 208, 252, 226, 125, 189, 207, 103, 91, 156, 34, 112, 186, 195, 151, 4,
+    160, 159, 196, 104, 0, 203, 105, 16, 242, 138, 125, 232,
 ];
 
 fn assert_request_allowlist(request: &ModelRequest) -> Result<()> {
@@ -492,9 +497,11 @@ fn assert_request_allowlist(request: &ModelRequest) -> Result<()> {
         "sibling-history",
         "ui_state",
     ] {
-        assert!(!serialized
-            .windows(forbidden.len())
-            .any(|w| w == forbidden.as_bytes()));
+        assert!(
+            !serialized
+                .windows(forbidden.len())
+                .any(|w| w == forbidden.as_bytes())
+        );
     }
     Ok(())
 }
@@ -515,7 +522,12 @@ fn assert_manifest_matches_request(
         assert_eq!(entry.position, position);
         assert_eq!(entry.role, message.role);
         assert_eq!(entry.digest, prepared.manifest().messages[position].digest);
-        let mut expected_files = message.content.file_refs().into_iter().cloned().collect::<Vec<_>>();
+        let mut expected_files = message
+            .content
+            .file_refs()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
         let parts = match &message.content {
             ModelContent::Text(_) => &[][..],
             ModelContent::Part(part) => std::slice::from_ref(part),
@@ -528,8 +540,10 @@ fn assert_manifest_matches_request(
                 && name == "acyclic.stage_file"
                 && let Some(file) = value.get("file")
             {
-                expected_files.push(serde_json::from_value(file.clone())
-                    .expect("stage_file v2 output must carry a valid immutable FileRef"));
+                expected_files.push(
+                    serde_json::from_value(file.clone())
+                        .expect("stage_file v2 output must carry a valid immutable FileRef"),
+                );
             }
         }
         assert_eq!(entry.files, expected_files);
@@ -538,13 +552,18 @@ fn assert_manifest_matches_request(
 }
 
 #[tokio::test]
-async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provider_request() -> Result<()> {
+async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provider_request()
+-> Result<()> {
     // This fixture qualifies projection/admission, not mailbox delivery. The
     // payload itself is staged and verified through production local storage.
     struct MessageResult(Value);
     impl ToolExecutor for MessageResult {
         fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-            Box::pin(async { Ok(ToolResult { value: self.0.clone() }) })
+            Box::pin(async {
+                Ok(ToolResult {
+                    value: self.0.clone(),
+                })
+            })
         }
         fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             Box::pin(async { Ok(None) })
@@ -558,14 +577,33 @@ async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provi
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let limits = Limits::default();
     let (provider, requests) = CapturingProvider::new(FixtureMode::WaitToolResult, None, None);
-    let harness = PersistentLocalHarness::open(root.path(), model(json!({}))?, provider.clone(), limits).await?;
+    let harness =
+        PersistentLocalHarness::open(root.path(), model(json!({}))?, provider.clone(), limits)
+            .await?;
     let storage = harness.storage();
-    let payload = storage.stage(operation(0xC1), "inbox/message.txt",
-        "original λ🦀\n  message".as_bytes(), "text/plain", "message.txt").await?;
-    let current = storage.stage(operation(0xC2), "inbox/message.txt",
-        b"later mutable path content", "text/plain", "message.txt").await?;
+    let payload = storage
+        .stage(
+            operation(0xC1),
+            "inbox/message.txt",
+            "original λ🦀\n  message".as_bytes(),
+            "text/plain",
+            "message.txt",
+        )
+        .await?;
+    let current = storage
+        .stage(
+            operation(0xC2),
+            "inbox/message.txt",
+            b"later mutable path content",
+            "text/plain",
+            "message.txt",
+        )
+        .await?;
     assert_ne!(payload.version(), current.version());
-    assert_eq!(storage.read(&payload).await?, "original λ🦀\n  message".as_bytes());
+    assert_eq!(
+        storage.read(&payload).await?,
+        "original λ🦀\n  message".as_bytes()
+    );
     let result = json!({"kind":"messages", "items":[{
         "sequence":1, "message_id":"explicit-message-1", "sender":"explicit-sender",
         "delivered_at_epoch_ms":1, "payload":payload
@@ -574,28 +612,51 @@ async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provi
     assert_eq!(definition.revision, "3");
     let result_adapter = Arc::new(MessageResult(result.clone()));
     let mut tools = storage.default_tools(limits)?;
-    tools.register(Tool { definition: definition.clone(),
-        executor: result_adapter.clone(), projection: result_adapter })?;
-    let bundle = storage.builder().model(model(json!({}))?, provider.clone())
-        .tools(tools).grant("model:generate").grant("tool:call:swarm.wait")
-        .limits(limits).build()?;
+    tools.register(Tool {
+        definition: definition.clone(),
+        executor: result_adapter.clone(),
+        projection: result_adapter,
+    })?;
+    let bundle = storage
+        .builder()
+        .model(model(json!({}))?, provider.clone())
+        .tools(tools)
+        .grant("model:generate")
+        .grant("tool:call:swarm.wait")
+        .limits(limits)
+        .build()?;
     let turn = operation(0xC4);
-    let prompt = storage.stage(operation(0xC3), "prompts/wait.txt",
-        b"observe the explicitly returned message reference", "text/plain", "wait.txt").await?;
-    storage.run_conversation(&bundle, turn, prompt, Vec::new(), 4).await?;
+    let prompt = storage
+        .stage(
+            operation(0xC3),
+            "prompts/wait.txt",
+            b"observe the explicitly returned message reference",
+            "text/plain",
+            "wait.txt",
+        )
+        .await?;
+    storage
+        .run_conversation(&bundle, turn, prompt, Vec::new(), 4)
+        .await?;
     let bytes = captured(&requests);
     assert_eq!(bytes.len(), 2);
-    let request: ModelRequest = serde_json::from_slice(&bytes[1])
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let request: ModelRequest =
+        serde_json::from_slice(&bytes[1]).map_err(|error| Error::Invalid(error.to_string()))?;
     let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
     assert_eq!(prepared.bytes(), bytes[1]);
     let journal = storage.journal();
     let records = journal.replay(turn).await?;
-    let (manifest_ref, request_ref) = records.iter().find_map(|record| match &record.event {
-        ExecutionEvent::ModelInputPrepared { step: 1, manifest, request } =>
-            Some((manifest.clone(), request.clone())),
-        _ => None,
-    }).ok_or_else(|| Error::Storage("wait-result request evidence is missing".into()))?;
+    let (manifest_ref, request_ref) = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ModelInputPrepared {
+                step: 1,
+                manifest,
+                request,
+            } => Some((manifest.clone(), request.clone())),
+            _ => None,
+        })
+        .ok_or_else(|| Error::Storage("wait-result request evidence is missing".into()))?;
     assert_eq!(journal.load(&request_ref).await?, bytes[1]);
     let manifest: ModelInputManifest = serde_json::from_slice(&journal.load(&manifest_ref).await?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -610,7 +671,11 @@ async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provi
             ModelContent::Parts(parts) => parts.as_slice(),
         };
         for part in parts {
-            if let ModelContentPart::ToolResult { call_id, name, value } = part
+            if let ModelContentPart::ToolResult {
+                call_id,
+                name,
+                value,
+            } = part
                 && name == "swarm.wait"
             {
                 assert_eq!(call_id, "wait-message");
@@ -626,8 +691,8 @@ async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provi
 }
 
 #[tokio::test]
-async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_replays_without_dispatch(
-) -> Result<()> {
+async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_replays_without_dispatch()
+-> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let provider_secret = "provider-private-credential::synthetic";
     let (provider, requests) = CapturingProvider::complete_with_private_credential(provider_secret);
@@ -679,13 +744,17 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
     let request_json =
         serde_json::to_vec(&first_request).map_err(|error| Error::Invalid(error.to_string()))?;
     for excluded_path in ["sibling/transcript.json", "ui/state.json"] {
-        assert!(!request_json
-            .windows(excluded_path.len())
-            .any(|window| { window == excluded_path.as_bytes() }));
+        assert!(
+            !request_json
+                .windows(excluded_path.len())
+                .any(|window| { window == excluded_path.as_bytes() })
+        );
     }
-    assert!(!first_bytes[0]
-        .windows(provider_secret.len())
-        .any(|window| window == provider_secret.as_bytes()));
+    assert!(
+        !first_bytes[0]
+            .windows(provider_secret.len())
+            .any(|window| window == provider_secret.as_bytes())
+    );
     let prompt_file = first_request
         .messages
         .iter()
@@ -707,12 +776,16 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
     let first_json =
         serde_json::to_value(&first_request).map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(first_json.get("transport_metadata").is_none());
-    assert!(!first_bytes[0]
-        .windows(b"ui_state".len())
-        .any(|w| w == b"ui_state"));
-    assert!(!first_bytes[0]
-        .windows(b"sibling-history".len())
-        .any(|w| w == b"sibling-history"));
+    assert!(
+        !first_bytes[0]
+            .windows(b"ui_state".len())
+            .any(|w| w == b"ui_state")
+    );
+    assert!(
+        !first_bytes[0]
+            .windows(b"sibling-history".len())
+            .any(|w| w == b"sibling-history")
+    );
     let records = session.storage().journal().replay(operation).await?;
     let (manifest_ref, request_ref) = records
         .iter()
@@ -741,9 +814,11 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
     for record in records {
         let event_bytes =
             serde_json::to_vec(&record.event).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert!(!event_bytes
-            .windows(provider_secret.len())
-            .any(|window| window == provider_secret.as_bytes()));
+        assert!(
+            !event_bytes
+                .windows(provider_secret.len())
+                .any(|window| window == provider_secret.as_bytes())
+        );
         let references = match record.event {
             ExecutionEvent::ModelInputPrepared {
                 manifest, request, ..
@@ -775,9 +850,11 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
         };
         for reference in references {
             let bytes = session.storage().journal().load(&reference).await?;
-            assert!(!bytes
-                .windows(provider_secret.len())
-                .any(|window| window == provider_secret.as_bytes()));
+            assert!(
+                !bytes
+                    .windows(provider_secret.len())
+                    .any(|window| window == provider_secret.as_bytes())
+            );
         }
     }
     drop(session);
@@ -837,8 +914,8 @@ async fn persistent_admission_rejects_malformed_tool_schema_before_filesystem_ef
 }
 
 #[tokio::test]
-async fn persistent_tool_exchange_preserves_call_identity_result_pairing_and_journal_effect(
-) -> Result<()> {
+async fn persistent_tool_exchange_preserves_call_identity_result_pairing_and_journal_effect()
+-> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (provider, requests) = CapturingProvider::valid_tool_sequence();
     let session =
@@ -936,12 +1013,16 @@ async fn persistent_output_overflow_is_typed_and_remains_durable_uncertainty() -
     );
     assert_eq!(captured(&requests).len(), 1);
     let records = session.storage().journal().replay(operation).await?;
-    assert!(records
-        .iter()
-        .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { step: 0, .. })));
-    assert!(!records
-        .iter()
-        .any(|record| matches!(record.event, ExecutionEvent::Model { step: 0, .. })));
+    assert!(
+        records
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { step: 0, .. }))
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::Model { step: 0, .. }))
+    );
     drop(session);
     let reopened = PersistentLocalHarness::open(root.path(), model, provider, limits).await?;
     assert!(matches!(
@@ -957,8 +1038,8 @@ async fn persistent_output_overflow_is_typed_and_remains_durable_uncertainty() -
 }
 
 #[tokio::test]
-async fn persistent_admission_rejects_oversized_context_and_undeclared_options_before_generate(
-) -> Result<()> {
+async fn persistent_admission_rejects_oversized_context_and_undeclared_options_before_generate()
+-> Result<()> {
     let mut limits = Limits::default();
     limits.file_bytes = 1024;
     limits.render_bytes = 8;
@@ -1028,8 +1109,8 @@ async fn persistent_admission_rejects_oversized_context_and_undeclared_options_b
 }
 
 #[tokio::test]
-async fn persistent_generation_refs_remain_pinned_across_restart_replacement_and_corruption(
-) -> Result<()> {
+async fn persistent_generation_refs_remain_pinned_across_restart_replacement_and_corruption()
+-> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (provider, requests) = CapturingProvider::complete();
     let model = model(json!({}))?;
@@ -1123,17 +1204,19 @@ async fn persistent_generation_refs_remain_pinned_across_restart_replacement_and
         "missing.txt",
     )?;
     let before_missing = captured(&requests).len();
-    assert!(reopened
-        .storage()
-        .run_conversation(
-            reopened.bundle(),
-            operation(0x47),
-            missing.clone(),
-            vec![],
-            1
-        )
-        .await
-        .is_err());
+    assert!(
+        reopened
+            .storage()
+            .run_conversation(
+                reopened.bundle(),
+                operation(0x47),
+                missing.clone(),
+                vec![],
+                1
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(captured(&requests).len(), before_missing);
     let corrupt = FileRef::new(
         original.volume().clone(),
@@ -1143,17 +1226,19 @@ async fn persistent_generation_refs_remain_pinned_across_restart_replacement_and
         original.display_name(),
     )?;
     let before_corrupt = captured(&requests).len();
-    assert!(reopened
-        .storage()
-        .run_conversation(
-            reopened.bundle(),
-            operation(0x48),
-            corrupt.clone(),
-            vec![],
-            1
-        )
-        .await
-        .is_err());
+    assert!(
+        reopened
+            .storage()
+            .run_conversation(
+                reopened.bundle(),
+                operation(0x48),
+                corrupt.clone(),
+                vec![],
+                1
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(captured(&requests).len(), before_corrupt);
     Ok(())
 }

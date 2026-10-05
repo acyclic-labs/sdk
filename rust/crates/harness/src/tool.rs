@@ -1,11 +1,11 @@
 //! Independently replaceable tool definitions, executors, and projections.
 
+use crate::conversation::FileRef;
 use crate::{
     Error, InteractionId, OperationId, Result,
     core::{AuthorityVerifier, Scope},
     registry::validate_component_label,
 };
-use crate::conversation::FileRef;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -192,7 +192,9 @@ impl ToolDefinition {
         let validator = jsonschema::validator_for(&self.model_output_schema)
             .map_err(|error| Error::Invalid(format!("invalid model output schema: {error}")))?;
         if let Err(error) = validator.validate(value) {
-            return Err(Error::Invalid(format!("tool projection does not match schema: {error}")));
+            return Err(Error::Invalid(format!(
+                "tool projection does not match schema: {error}"
+            )));
         }
         let mut refs = Vec::new();
         collect_declared_file_refs(&self.model_output_schema, value, &mut refs, 0)?;
@@ -230,13 +232,17 @@ const UNSUPPORTED_REFERENCE_SCHEMA_KEYWORDS: &[&str] = &[
 /// Reference-bearing unions must have closed, disjoint `kind` tags. Selecting
 /// the validated branch must never discover references in an inactive branch.
 fn reference_union_branches(schema: &Value, depth: usize) -> Result<Option<&[Value]>> {
-    let Some(union) = schema.get("oneOf") else { return Ok(None); };
+    let Some(union) = schema.get("oneOf") else {
+        return Ok(None);
+    };
     if !schema_contains_file_ref_annotation(union, depth + 1)? {
         return Ok(None);
     }
-    let invalid = || Error::Invalid(
+    let invalid = || {
+        Error::Invalid(
         "reference-bearing oneOf requires bounded closed branches with distinct required kind constants".into(),
-    );
+    )
+    };
     let branches = union.as_array().ok_or_else(invalid)?;
     if branches.is_empty() || branches.len() > MAX_REFERENCE_UNION_BRANCHES {
         return Err(invalid());
@@ -245,13 +251,18 @@ fn reference_union_branches(schema: &Value, depth: usize) -> Result<Option<&[Val
     for branch in branches {
         if branch.get("type").and_then(Value::as_str) != Some("object")
             || branch.get("additionalProperties") != Some(&Value::Bool(false))
-            || !branch.get("required").and_then(Value::as_array)
+            || !branch
+                .get("required")
+                .and_then(Value::as_array)
                 .is_some_and(|required| required.iter().any(|name| name.as_str() == Some("kind")))
         {
             return Err(invalid());
         }
-        let tag = branch.get("properties").and_then(|properties| properties.get("kind"))
-            .and_then(|kind| kind.get("const")).and_then(Value::as_str)
+        let tag = branch
+            .get("properties")
+            .and_then(|properties| properties.get("kind"))
+            .and_then(|kind| kind.get("const"))
+            .and_then(Value::as_str)
             .ok_or_else(invalid)?;
         if tags.insert(tag, ()).is_some() {
             return Err(invalid());
@@ -268,11 +279,7 @@ fn schema_contains_file_ref_annotation(schema: &Value, depth: usize) -> Result<b
     }
     match schema {
         Value::Object(object) => {
-            if object
-                .get("x-acyclic-file-ref")
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
+            if object.get("x-acyclic-file-ref").and_then(Value::as_bool) == Some(true) {
                 return Ok(true);
             }
             let mut children = Vec::new();
@@ -335,12 +342,11 @@ fn validate_model_output_reference_schema(schema: &Value, depth: usize) -> Resul
             "x-acyclic-file-ref must be true when present".into(),
         ));
     }
-    let local_annotation = object
-        .get("x-acyclic-file-ref")
-        .and_then(Value::as_bool)
-        == Some(true);
+    let local_annotation = object.get("x-acyclic-file-ref").and_then(Value::as_bool) == Some(true);
     for keyword in UNSUPPORTED_REFERENCE_SCHEMA_KEYWORDS {
-        let Some(value) = object.get(*keyword) else { continue; };
+        let Some(value) = object.get(*keyword) else {
+            continue;
+        };
         let contains_annotation = if matches!(
             *keyword,
             "patternProperties" | "$defs" | "definitions" | "dependentSchemas"
@@ -349,8 +355,9 @@ fn validate_model_output_reference_schema(schema: &Value, depth: usize) -> Resul
                 .as_object()
                 .map(|values| {
                     values.values().try_fold(false, |found, child| {
-                        Ok::<bool, Error>(found
-                            || schema_contains_file_ref_annotation(child, depth + 1)?)
+                        Ok::<bool, Error>(
+                            found || schema_contains_file_ref_annotation(child, depth + 1)?,
+                        )
                     })
                 })
                 .transpose()?
@@ -360,8 +367,9 @@ fn validate_model_output_reference_schema(schema: &Value, depth: usize) -> Resul
         };
         if local_annotation || contains_annotation {
             if *keyword == "oneOf" && !local_annotation {
-                let branches = reference_union_branches(schema, depth)?
-                    .ok_or_else(|| Error::Invalid("missing reference-bearing oneOf branches".into()))?;
+                let branches = reference_union_branches(schema, depth)?.ok_or_else(|| {
+                    Error::Invalid("missing reference-bearing oneOf branches".into())
+                })?;
                 for branch in branches {
                     validate_model_output_reference_schema(branch, depth + 1)?;
                 }
@@ -404,29 +412,50 @@ fn collect_declared_file_refs(
     depth: usize,
 ) -> Result<()> {
     if depth > MAX_DECLARED_FILE_REF_DEPTH {
-        return Err(Error::Invalid("tool output reference schema exceeds depth limit".into()));
+        return Err(Error::Invalid(
+            "tool output reference schema exceeds depth limit".into(),
+        ));
     }
-    let Some(schema_object) = schema.as_object() else { return Ok(()); };
+    let Some(schema_object) = schema.as_object() else {
+        return Ok(());
+    };
     if !schema_contains_file_ref_annotation(schema, 0)? {
         return Ok(());
     }
-    if schema_object.get("x-acyclic-file-ref").and_then(Value::as_bool) == Some(true) {
-        let reference: FileRef = serde_json::from_value(value.clone())
-            .map_err(|error| Error::Invalid(format!("declared tool output FileRef is invalid: {error}")))?;
+    if schema_object
+        .get("x-acyclic-file-ref")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        let reference: FileRef = serde_json::from_value(value.clone()).map_err(|error| {
+            Error::Invalid(format!("declared tool output FileRef is invalid: {error}"))
+        })?;
         reference.validate()?;
         if refs.len() >= MAX_DECLARED_FILE_REFS {
-            return Err(Error::Invalid("tool output declares too many file references".into()));
+            return Err(Error::Invalid(
+                "tool output declares too many file references".into(),
+            ));
         }
         refs.push(reference);
         return Ok(());
     }
     if let Some(branches) = reference_union_branches(schema, depth)? {
-        let kind = value.get("kind").and_then(Value::as_str)
-            .ok_or_else(|| Error::Invalid("reference-bearing oneOf result is missing kind".into()))?;
-        let branch = branches.iter().find(|branch| {
-            branch.get("properties").and_then(|properties| properties.get("kind"))
-                .and_then(|tag| tag.get("const")).and_then(Value::as_str) == Some(kind)
-        }).ok_or_else(|| Error::Invalid("reference-bearing oneOf result has an unknown kind".into()))?;
+        let kind = value.get("kind").and_then(Value::as_str).ok_or_else(|| {
+            Error::Invalid("reference-bearing oneOf result is missing kind".into())
+        })?;
+        let branch = branches
+            .iter()
+            .find(|branch| {
+                branch
+                    .get("properties")
+                    .and_then(|properties| properties.get("kind"))
+                    .and_then(|tag| tag.get("const"))
+                    .and_then(Value::as_str)
+                    == Some(kind)
+            })
+            .ok_or_else(|| {
+                Error::Invalid("reference-bearing oneOf result has an unknown kind".into())
+            })?;
         collect_declared_file_refs(branch, value, refs, depth + 1)?;
     }
     if let Some(properties) = schema_object.get("properties").and_then(Value::as_object) {
@@ -439,10 +468,16 @@ fn collect_declared_file_refs(
         }
     }
     if let Some(items) = schema_object.get("items") {
-        let Some(array) = value.as_array() else { return Ok(()); };
-        if items.is_boolean() { return Ok(()); }
+        let Some(array) = value.as_array() else {
+            return Ok(());
+        };
+        if items.is_boolean() {
+            return Ok(());
+        }
         if array.len() > MAX_DECLARED_FILE_REFS {
-            return Err(Error::Invalid("tool output reference array exceeds limit".into()));
+            return Err(Error::Invalid(
+                "tool output reference array exceeds limit".into(),
+            ));
         }
         for child in array {
             collect_declared_file_refs(items, child, refs, depth + 1)?;
@@ -841,10 +876,12 @@ mod tests {
         let reference = FileRef::new(
             crate::conversation::VolumeRef::new(
                 crate::resources::ProviderRef::new("test", "filesystem", "2")?,
-                "inbox", crate::conversation::VolumeClass::Project,
+                "inbox",
+                crate::conversation::VolumeClass::Project,
                 crate::conversation::VolumeOwner::Project("test".into()),
             )?,
-            "message.txt", "generation-1",
+            "message.txt",
+            "generation-1",
             crate::conversation::FileDescriptor::from_bytes(b"explicit message", "text/plain")?,
             "message.txt",
         )?;
@@ -862,26 +899,33 @@ mod tests {
             "properties":{"kind":{"const":"literal"}, "payload":{}}
         });
         let definition = reference_definition(json!({"oneOf":[messages, literal]}));
-        let encoded = serde_json::to_value(&reference)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(definition.model_output_file_refs(
-            &json!({"kind":"messages", "payload":encoded}),
-        )?, vec![reference]);
+        let encoded =
+            serde_json::to_value(&reference).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            definition.model_output_file_refs(&json!({"kind":"messages", "payload":encoded}),)?,
+            vec![reference]
+        );
         // A reference-shaped literal in an inactive declaration is not content
         // authorization. Only the selected branch declares the reference.
-        assert!(definition.model_output_file_refs(
-            &json!({"kind":"literal", "payload":encoded}),
-        )?.is_empty());
+        assert!(
+            definition
+                .model_output_file_refs(&json!({"kind":"literal", "payload":encoded}),)?
+                .is_empty()
+        );
         for invalid in [
             json!({"kind":"messages"}),
             json!({"kind":"messages", "payload":{"path":"forged"}}),
             json!({"kind":"unknown", "payload":encoded}),
             json!({"kind":"messages", "payload":encoded, "hidden":true}),
         ] {
-            assert!(matches!(definition.model_output_file_refs(&invalid), Err(Error::Invalid(_))));
+            assert!(matches!(
+                definition.model_output_file_refs(&invalid),
+                Err(Error::Invalid(_))
+            ));
         }
         let mut duplicate = definition.clone();
-        duplicate.model_output_schema["oneOf"][1]["properties"]["kind"]["const"] = json!("messages");
+        duplicate.model_output_schema["oneOf"][1]["properties"]["kind"]["const"] =
+            json!("messages");
         assert!(duplicate.validate().is_err());
         let mut open = definition.clone();
         open.model_output_schema["oneOf"][0]["additionalProperties"] = json!(true);
@@ -891,11 +935,13 @@ mod tests {
         assert!(optional_tag.validate().is_err());
         let mut too_many = definition.clone();
         too_many.model_output_schema["oneOf"] = Value::Array(
-            (0..=MAX_REFERENCE_UNION_BRANCHES).map(|index| {
-                let mut branch = messages.clone();
-                branch["properties"]["kind"]["const"] = json!(format!("kind-{index}"));
-                branch
-            }).collect(),
+            (0..=MAX_REFERENCE_UNION_BRANCHES)
+                .map(|index| {
+                    let mut branch = messages.clone();
+                    branch["properties"]["kind"]["const"] = json!(format!("kind-{index}"));
+                    branch
+                })
+                .collect(),
         );
         assert!(too_many.validate().is_err());
         Ok(())
@@ -909,7 +955,12 @@ mod tests {
             "type": "null",
             "properties": {"ignored": {"type": "object"}}
         }));
-        assert!(valid_complex.model_output_file_refs(&Value::Null).unwrap().is_empty());
+        assert!(
+            valid_complex
+                .model_output_file_refs(&Value::Null)
+                .unwrap()
+                .is_empty()
+        );
 
         let forged = reference_definition(json!({
             "type": "object",
@@ -935,7 +986,10 @@ mod tests {
         ] {
             let definition = reference_definition(schema);
             let result = definition.model_output_file_refs(&Value::Null);
-            assert!(matches!(result, Err(Error::Invalid(ref error)) if error.contains(keyword)), "{keyword}: {result:?}");
+            assert!(
+                matches!(result, Err(Error::Invalid(ref error)) if error.contains(keyword)),
+                "{keyword}: {result:?}"
+            );
         }
         let annotated_defs = reference_definition(json!({
             "$ref": "#/$defs/file",
@@ -958,15 +1012,21 @@ mod tests {
             "items": {"type": "integer"}
         }));
         let ordinary_values = Value::Array((0..257).map(|value| json!(value)).collect());
-        assert!(ordinary.model_output_file_refs(&ordinary_values)?.is_empty());
+        assert!(
+            ordinary
+                .model_output_file_refs(&ordinary_values)?
+                .is_empty()
+        );
 
         let const_object = reference_definition(json!({
             "const": {"x-acyclic-file-ref": true},
             "type": "object"
         }));
-        assert!(const_object
-            .model_output_file_refs(&json!({"x-acyclic-file-ref": true}))?
-            .is_empty());
+        assert!(
+            const_object
+                .model_output_file_refs(&json!({"x-acyclic-file-ref": true}))?
+                .is_empty()
+        );
 
         let reference = FileRef::new(
             crate::conversation::VolumeRef::new(
@@ -984,13 +1044,15 @@ mod tests {
             "type": "array",
             "items": {"type": "object", "x-acyclic-file-ref": true}
         }));
-        let encoded = serde_json::to_value(&reference)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let values = Value::Array(
-            std::iter::repeat_n(encoded, MAX_DECLARED_FILE_REFS + 1).collect(),
-        );
+        let encoded =
+            serde_json::to_value(&reference).map_err(|error| Error::Invalid(error.to_string()))?;
+        let values =
+            Value::Array(std::iter::repeat_n(encoded, MAX_DECLARED_FILE_REFS + 1).collect());
         let result = annotated.model_output_file_refs(&values);
-        assert!(matches!(result, Err(Error::Invalid(ref error)) if error.contains("exceeds limit")), "{result:?}");
+        assert!(
+            matches!(result, Err(Error::Invalid(ref error)) if error.contains("exceeds limit")),
+            "{result:?}"
+        );
         Ok(())
     }
 

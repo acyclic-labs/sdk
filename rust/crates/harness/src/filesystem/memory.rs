@@ -101,8 +101,7 @@ pub struct HarnessStorage<P, A, O> {
     issuer: AuthorityIssuer,
     stream: StreamClient<P>,
     conversation: Authority,
-    inherited_prefix:
-        Option<crate::filesystem::execution_journal::AuthenticatedInheritedPrefix>,
+    inherited_prefix: Option<crate::filesystem::execution_journal::AuthenticatedInheritedPrefix>,
     session_id: SessionId,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
@@ -608,7 +607,10 @@ where
             self.volume.clone(),
             self.maximum_file_bytes,
         )?);
-        Ok(InteractionOperatorAuthorizer::new(host, self.issuer.clone()))
+        Ok(InteractionOperatorAuthorizer::new(
+            host,
+            self.issuer.clone(),
+        ))
     }
 
     /// Returns host-managed signing material to crate-owned durable
@@ -854,7 +856,8 @@ where
                 host.verify_fork_allocation(seed, project).await?;
             }
         }
-        let mut inherited_reads = seed.reference_capabilities(seed.child_agent)?
+        let mut inherited_reads = seed
+            .reference_capabilities(seed.child_agent)?
             .iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
@@ -880,7 +883,10 @@ where
         .await?;
         child.bind_published_child(parent, seed, scope).await?;
         let inherited_prefix =
-            crate::filesystem::execution_journal::authenticated_inherited_prefix(seed, parent_agent)?;
+            crate::filesystem::execution_journal::authenticated_inherited_prefix(
+                seed,
+                parent_agent,
+            )?;
         Self::from_providers_with_session_and_reads_and_prefix(
             seed.child_agent,
             maximum_file_bytes,
@@ -906,7 +912,10 @@ where
     /// alongside the agent-private volume. The caller must provide the exact
     /// typed capabilities for that project; this method does not derive or
     /// widen them from model content.
-    #[allow(clippy::too_many_arguments, reason = "provider and authority boundaries remain explicit")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
     pub(crate) async fn from_providers_with_reads(
         agent: AgentId,
         maximum_file_bytes: u64,
@@ -1001,7 +1010,9 @@ where
         issuer: AuthorityIssuer,
         inherited_reads: Capabilities,
         session_id: SessionId,
-        inherited_prefix: Option<crate::filesystem::execution_journal::AuthenticatedInheritedPrefix>,
+        inherited_prefix: Option<
+            crate::filesystem::execution_journal::AuthenticatedInheritedPrefix,
+        >,
     ) -> Result<Self> {
         validate_storage_owner(agent, maximum_file_bytes, &volume)?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
@@ -1093,15 +1104,15 @@ where
             maximum_file_bytes,
         )?);
         let mut journal = FilesystemExecutionJournal::new(
-                stream.clone(),
-                Arc::clone(&host),
-                volume.clone(),
-                issuer.verifier(),
-                scope.clone(),
-                maximum_file_bytes,
-            )?
-            .with_session_id(session_id)?
-            .with_input_verifier(input.clone());
+            stream.clone(),
+            Arc::clone(&host),
+            volume.clone(),
+            issuer.verifier(),
+            scope.clone(),
+            maximum_file_bytes,
+        )?
+        .with_session_id(session_id)?
+        .with_input_verifier(input.clone());
         journal = journal.with_authenticated_inherited_prefix(inherited_prefix.clone());
         let journal = Arc::new(journal);
         let publisher = Arc::new(FilesystemContentPublisher {
@@ -1848,7 +1859,9 @@ where
             .reducer()
             .conversation()
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        let start = conversation.messages.partition_point(|message| message.sequence <= after_sequence);
+        let start = conversation
+            .messages
+            .partition_point(|message| message.sequence <= after_sequence);
         let end = start.saturating_add(limit).min(conversation.messages.len());
         Ok(conversation.messages[start..end].to_vec())
     }
@@ -1859,7 +1872,10 @@ where
     ) -> Result<tokio::sync::MutexGuard<'_, Option<(Limits, StreamAggregate<P>)>>> {
         limits.validate()?;
         let mut cached = self.conversation_projection.lock().await;
-        if cached.as_ref().is_none_or(|(configured, _)| *configured != limits) {
+        if cached
+            .as_ref()
+            .is_none_or(|(configured, _)| *configured != limits)
+        {
             *cached = Some((limits, self.open_conversation(limits).await?));
         }
         Ok(cached)
@@ -1960,10 +1976,10 @@ fn derived_operation_id(turn: OperationId, domain: &[u8]) -> OperationId {
 mod tests {
     use super::*;
     use crate::{
+        Outcome,
         filesystem::execution_journal::REJECTION_JOURNAL_BINDING,
         fork::InheritedConversationPrefix,
         interaction::Interaction,
-        Outcome,
         model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
         runtime::{TaskDefinition, TaskRegistry},
     };
@@ -1980,7 +1996,10 @@ mod tests {
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     impl ModelProvider for TextModel {
-        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             self.0
                 .lock()
@@ -2073,7 +2092,10 @@ mod tests {
         .await?;
         local.run("first operation").await?;
         local.run("second operation").await?;
-        let state = local.storage().conversation_state(Limits::default()).await?;
+        let state = local
+            .storage()
+            .conversation_state(Limits::default())
+            .await?;
         let selection = crate::conversation::ModelContextSelection {
             conversation_revision: state.messages.len() as u64,
             message_ids: state.messages.iter().map(|message| message.id).collect(),
@@ -2084,7 +2106,10 @@ mod tests {
             .await?;
         assert_eq!(evidence.len(), 2);
         assert_eq!(
-            evidence.iter().map(|item| item.call_id.as_str()).collect::<Vec<_>>(),
+            evidence
+                .iter()
+                .map(|item| item.call_id.as_str())
+                .collect::<Vec<_>>(),
             ["history-invalid-1", "history-invalid-2"]
         );
 
@@ -2109,7 +2134,11 @@ mod tests {
         let binding: Value = serde_json::from_slice(&local.storage().read(&binding_ref).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
         for (suffix, operation_id, call_id) in [
-            ("missing", OperationId::from_bytes([240; 16]), "history-invalid-1"),
+            (
+                "missing",
+                OperationId::from_bytes([240; 16]),
+                "history-invalid-1",
+            ),
             (
                 "changed",
                 serde_json::from_value(
@@ -2123,8 +2152,8 @@ mod tests {
             ),
         ] {
             let mut forged = binding.clone();
-            forged["operation_id"] =
-                serde_json::to_value(operation_id).map_err(|error| Error::Storage(error.to_string()))?;
+            forged["operation_id"] = serde_json::to_value(operation_id)
+                .map_err(|error| Error::Storage(error.to_string()))?;
             forged["call_id"] = Value::String(call_id.into());
             let forged_path = format!("tests/rejection-{suffix}.json");
             let forged_ref = local
@@ -2141,12 +2170,15 @@ mod tests {
             let result = forged_state
                 .messages
                 .iter_mut()
-                .find(|message| message.extensions.contains_key("acyclic.model.rejection-journal"))
+                .find(|message| {
+                    message
+                        .extensions
+                        .contains_key("acyclic.model.rejection-journal")
+                })
                 .ok_or_else(|| Error::Storage("rejection result message missing".into()))?;
-            result.extensions.insert(
-                "acyclic.model.rejection-journal".into(),
-                forged_ref,
-            );
+            result
+                .extensions
+                .insert("acyclic.model.rejection-journal".into(), forged_ref);
             assert!(matches!(
                 local
                     .storage()
@@ -2167,7 +2199,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
         if rejection_indices.len() != 2 {
-            return Err(Error::Storage("expected two rejection result messages".into()));
+            return Err(Error::Storage(
+                "expected two rejection result messages".into(),
+            ));
         }
         let second_binding = state.messages[rejection_indices[1]]
             .extensions
@@ -2177,7 +2211,10 @@ mod tests {
         let mut swapped_state = state.clone();
         swapped_state.messages[rejection_indices[0]]
             .extensions
-            .insert("acyclic.model.rejection-journal".into(), second_binding.clone());
+            .insert(
+                "acyclic.model.rejection-journal".into(),
+                second_binding.clone(),
+            );
         assert!(matches!(
             local
                 .storage()
@@ -2210,8 +2247,7 @@ mod tests {
             serde_json::from_slice(&local.storage().read(&second_binding).await?)
                 .map_err(|error| Error::Storage(error.to_string()))?;
         assert_ne!(
-            first_binding_value["operation_id"],
-            second_binding_value["operation_id"],
+            first_binding_value["operation_id"], second_binding_value["operation_id"],
             "cross-operation fixture must use distinct authoritative operations"
         );
         let mut cross_binding = second_binding_value;
@@ -2248,7 +2284,9 @@ mod tests {
             state.messages[first_result].reply_to;
         cross_operation_state.messages[first_result].tool_call_id =
             state.messages[second_result].tool_call_id.clone();
-        cross_operation_state.messages[first_result].extensions.clear();
+        cross_operation_state.messages[first_result]
+            .extensions
+            .clear();
         cross_operation_state.messages[first_result]
             .extensions
             .insert(REJECTION_JOURNAL_BINDING.into(), cross_binding_ref);
@@ -2258,11 +2296,7 @@ mod tests {
             state.messages[second_call].tool_call_id.clone();
         let cross_error = local
             .storage()
-            .selected_rejection_evidence(
-                &cross_operation_state,
-                &selection,
-                Limits::default(),
-            )
+            .selected_rejection_evidence(&cross_operation_state, &selection, Limits::default())
             .await
             .expect_err("cross-operation rejection exchange was accepted");
         assert!(matches!(
@@ -2332,7 +2366,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inherited_prefix_may_omit_unselected_messages_but_selected_ids_are_required() -> Result<()> {
+    async fn inherited_prefix_may_omit_unselected_messages_but_selected_ids_are_required()
+    -> Result<()> {
         let storage = MemoryHarnessStorage::new(AgentId::from_bytes([252; 16]), 4_096).await?;
         let body = storage
             .stage(
@@ -2373,21 +2408,27 @@ mod tests {
             storage.volume.provider().clone(),
             &storage.volume.storage_name()?,
         )?;
-        let generation = storage.host.apply(
-            &workspace,
-            None,
-            &[
-                super::super::WorkspaceMutation::CreateDirectory {
-                    path: "/.system/inherited-conversation".into(),
-                },
-                super::super::WorkspaceMutation::PutFile {
-                    path: "/.system/inherited-conversation/prefix.json".into(),
-                    bytes: prefix_bytes.clone(),
-                },
-            ],
-            &IdempotencyKey::new("selected-prefix-fixture")?,
-        ).await?;
-        storage.host.retain_generation(&workspace, &generation).await?;
+        let generation = storage
+            .host
+            .apply(
+                &workspace,
+                None,
+                &[
+                    super::super::WorkspaceMutation::CreateDirectory {
+                        path: "/.system/inherited-conversation".into(),
+                    },
+                    super::super::WorkspaceMutation::PutFile {
+                        path: "/.system/inherited-conversation/prefix.json".into(),
+                        bytes: prefix_bytes.clone(),
+                    },
+                ],
+                &IdempotencyKey::new("selected-prefix-fixture")?,
+            )
+            .await?;
+        storage
+            .host
+            .retain_generation(&workspace, &generation)
+            .await?;
         let prefix_file = FileRef::new(
             storage.volume.clone(),
             ".system/inherited-conversation/prefix.json",
@@ -2411,15 +2452,17 @@ mod tests {
             conversation_revision: 0,
             message_ids: Vec::new(),
         };
-        assert!(crate::filesystem::execution_journal::selected_rejection_evidence_from_journal(
-            storage.journal.as_ref(),
-            &historical,
-            &unselected,
-            Limits::default(),
-            Some(&authenticated),
-        )
-        .await
-        .is_ok());
+        assert!(
+            crate::filesystem::execution_journal::selected_rejection_evidence_from_journal(
+                storage.journal.as_ref(),
+                &historical,
+                &unselected,
+                Limits::default(),
+                Some(&authenticated),
+            )
+            .await
+            .is_ok()
+        );
         let selected = crate::conversation::ModelContextSelection {
             conversation_revision: 1,
             message_ids: vec![inherited.id],
@@ -2480,27 +2523,13 @@ mod tests {
             storage.maximum_file_bytes,
         )?;
         assert!(matches!(
-            host.resolve_approval(
-                operation_id,
-                declined,
-                interaction_id,
-                1,
-                true,
-                None,
-            )
-            .await,
+            host.resolve_approval(operation_id, declined, interaction_id, 1, true, None,)
+                .await,
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
-            host.resolve_approval(
-                operation_id,
-                approved,
-                interaction_id,
-                1,
-                false,
-                None,
-            )
-            .await,
+            host.resolve_approval(operation_id, approved, interaction_id, 1, false, None,)
+                .await,
             Err(Error::Unauthorized(_))
         ));
         host.resolve_approval(
@@ -2558,7 +2587,13 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         let another = owner
-            .stage(OperationId::new(), "notes/two.txt", b"other", "text/plain", "two.txt")
+            .stage(
+                OperationId::new(),
+                "notes/two.txt",
+                b"other",
+                "text/plain",
+                "two.txt",
+            )
             .await?;
         let mut unauthorized = invocation.clone();
         unauthorized.arguments = json!({"file": another});
@@ -2604,41 +2639,76 @@ mod tests {
     async fn conversation_pages_refresh_external_writes_and_validate_every_call() -> Result<()> {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
         let limits = Limits::default();
-        let invalid = Limits { model_steps: 0, ..limits };
-        assert!(matches!(storage.conversation_events(0, 1, invalid).await, Err(Error::Invalid(_))));
-        assert!(matches!(storage.conversation_messages(0, 1, invalid).await, Err(Error::Invalid(_))));
+        let invalid = Limits {
+            model_steps: 0,
+            ..limits
+        };
+        assert!(matches!(
+            storage.conversation_events(0, 1, invalid).await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            storage.conversation_messages(0, 1, invalid).await,
+            Err(Error::Invalid(_))
+        ));
         assert_eq!(storage.conversation_events(0, 1, limits).await?.len(), 1);
 
-        let content = storage.stage(OperationId::new(), "page.txt", b"new message", "text/plain", "page.txt").await?;
+        let content = storage
+            .stage(
+                OperationId::new(),
+                "page.txt",
+                b"new message",
+                "text/plain",
+                "page.txt",
+            )
+            .await?;
         let mut writer = storage.conversation_aggregate(limits).await?;
-        storage.append_conversation(
-            &mut writer,
-            OperationId::new(),
-            "page-message",
-            Action::AppendConversationMessage {
-                message: Box::new(ConversationMessage {
-                    id: Uuid::new_v4(),
-                    sequence: 1,
-                    kind: MessageKind::User,
-                    content,
-                    attachments: Vec::new().into(),
-                    reply_to: None,
-                    tool_call_id: None,
-                    extensions: BTreeMap::new(),
-                }),
-            },
-        ).await?;
+        storage
+            .append_conversation(
+                &mut writer,
+                OperationId::new(),
+                "page-message",
+                Action::AppendConversationMessage {
+                    message: Box::new(ConversationMessage {
+                        id: Uuid::new_v4(),
+                        sequence: 1,
+                        kind: MessageKind::User,
+                        content,
+                        attachments: Vec::new().into(),
+                        reply_to: None,
+                        tool_call_id: None,
+                        extensions: BTreeMap::new(),
+                    }),
+                },
+            )
+            .await?;
         let message_page = storage.conversation_messages(0, 1, limits).await?;
         assert_eq!(message_page.len(), 1);
         assert_eq!(message_page[0].sequence, 1);
-        assert!(storage.conversation_messages(1, 1, limits).await?.is_empty());
+        assert!(
+            storage
+                .conversation_messages(1, 1, limits)
+                .await?
+                .is_empty()
+        );
         let page = storage.conversation_events(1, 1, limits).await?;
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].revision, 2);
-        assert!(matches!(storage.conversation_events(0, 1, invalid).await, Err(Error::Invalid(_))));
-        let narrowed = Limits { model_steps: 1, ..limits };
+        assert!(matches!(
+            storage.conversation_events(0, 1, invalid).await,
+            Err(Error::Invalid(_))
+        ));
+        let narrowed = Limits {
+            model_steps: 1,
+            ..limits
+        };
         assert_eq!(storage.conversation_events(1, 1, narrowed).await?.len(), 1);
-        assert!(storage.conversation_events(2, 1, narrowed).await?.is_empty());
+        assert!(
+            storage
+                .conversation_events(2, 1, narrowed)
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -2846,7 +2916,10 @@ mod tests {
     }
 
     impl ModelProvider for ReadFileModel {
-        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 let Some(file) = self

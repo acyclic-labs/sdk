@@ -26,7 +26,10 @@ use acyclic_stream::{
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// Persistent providers own durability; storage semantics are shared with memory.
 pub type DurableHarnessStorage =
@@ -547,11 +550,13 @@ where
                     .collect();
                 for candidate in fenced_keys {
                     if let Some(record) = self.terminal_for(&events, &candidate).await? {
-                        return Ok(if matches!(record.receipt, ExecutionReceipt::Unknown { .. }) {
-                            ExecutionClaim::Completed(record)
-                        } else {
-                            ExecutionClaim::Pending
-                        });
+                        return Ok(
+                            if matches!(record.receipt, ExecutionReceipt::Unknown { .. }) {
+                                ExecutionClaim::Completed(record)
+                            } else {
+                                ExecutionClaim::Pending
+                            },
+                        );
                     }
                     if events.iter().any(|event| {
                         matches!(
@@ -1522,7 +1527,8 @@ impl PersistentLocalHarness {
         prompt: &str,
         max_steps: u32,
     ) -> Result<TurnOutput> {
-        self.run_with_bundle(&self.bundle, operation, prompt, max_steps).await
+        self.run_with_bundle(&self.bundle, operation, prompt, max_steps)
+            .await
     }
 
     pub(crate) async fn run_with_bundle(
@@ -1837,10 +1843,16 @@ mod tests {
     use crate::registry::ComponentIdentity;
     use crate::{EffectAttemptId, EffectId, core::EffectGuarantee};
     use futures::{future::BoxFuture, stream::BoxStream};
-    use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     struct Mock(AtomicUsize);
     impl ModelProvider for Mock {
-        fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content {
@@ -1911,8 +1923,7 @@ mod tests {
                 serde_json::json!({"type": "object", "additionalProperties": false}),
             )?,
         });
-        let providers: [Arc<dyn ModelProvider>; 2] =
-            [unregistered.clone(), registered.clone()];
+        let providers: [Arc<dyn ModelProvider>; 2] = [unregistered.clone(), registered.clone()];
         for (index, provider) in providers.into_iter().enumerate() {
             let session_root = root.path().join(format!("denied-{index}"));
             let model = Model::new(
@@ -1922,16 +1933,14 @@ mod tests {
                 serde_json::json!({"api_key": "private-provider-state"}),
             )?;
             assert!(matches!(
-                PersistentLocalHarness::open(
-                    &session_root,
-                    model,
-                    provider,
-                    Limits::default(),
-                )
-                .await,
+                PersistentLocalHarness::open(&session_root, model, provider, Limits::default(),)
+                    .await,
                 Err(Error::Invalid(_))
             ));
-            assert!(!session_root.exists(), "denied model created durable storage");
+            assert!(
+                !session_root.exists(),
+                "denied model created durable storage"
+            );
         }
         assert_eq!(unregistered.0.load(Ordering::SeqCst), 0);
         assert_eq!(registered.calls.load(Ordering::SeqCst), 0);
@@ -2048,7 +2057,9 @@ mod tests {
                 .into_iter()
                 .find_map(|record| match record.event {
                     crate::executor::ExecutionEvent::ModelInputPrepared {
-                        manifest, request, ..
+                        manifest,
+                        request,
+                        ..
                     } => Some((manifest, request)),
                     _ => None,
                 })

@@ -120,10 +120,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     /// Binds the host-owned interaction ledger to its operator issuer.
-    pub fn new(
-        host: Arc<FilesystemInteractionHost<P, A, O>>,
-        issuer: AuthorityIssuer,
-    ) -> Self {
+    pub fn new(host: Arc<FilesystemInteractionHost<P, A, O>>, issuer: AuthorityIssuer) -> Self {
         Self { host, issuer }
     }
 
@@ -133,16 +130,16 @@ where
         authorization: &InteractionApprovalAuthorization,
     ) -> Result<Scope> {
         authorization.validate()?;
-        let Some((ticket, resolution)) = self.host.read(authorization.interaction_id).await?
-        else {
+        let Some((ticket, resolution)) = self.host.read(authorization.interaction_id).await? else {
             return Err(Error::NotFound(format!(
                 "interaction {}",
                 authorization.interaction_id
             )));
         };
-        let binding = ticket.approval.as_ref().ok_or_else(|| {
-            Error::Invalid("interaction is not an approval ticket".into())
-        })?;
+        let binding = ticket
+            .approval
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("interaction is not an approval ticket".into()))?;
         if binding.operation_id != authorization.operation_id
             || binding.action_digest != authorization.action_digest
         {

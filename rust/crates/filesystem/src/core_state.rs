@@ -1444,7 +1444,10 @@ fn crash_point(label: &str, flushed: u64) {
             // `abort` can launch Windows Error Reporting and leave the parent
             // waiting in `Child::status`. Terminate the intentional crash child
             // directly, without running Rust or CRT destructors.
-            #[allow(unsafe_code, reason = "test-only termination uses the current process pseudo-handle")]
+            #[allow(
+                unsafe_code,
+                reason = "test-only termination uses the current process pseudo-handle"
+            )]
             let terminated = unsafe { TerminateProcess(GetCurrentProcess(), 86) }.is_ok();
             if !terminated {
                 std::process::abort();

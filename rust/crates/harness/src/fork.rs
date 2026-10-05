@@ -306,7 +306,11 @@ impl CompositeForkVerifier {
             .inherited_context
             .iter()
             .chain(seed.reference_grants.iter().map(|grant| &grant.file))
-            .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
+            .chain(
+                seed.model_boundary
+                    .iter()
+                    .flat_map(|boundary| boundary.files.iter()),
+            )
         {
             if !verified_files.insert(file.read_capability()?) {
                 continue;
@@ -573,7 +577,11 @@ impl ForkSeedVerifier for ContentForkVerifier {
                 .inherited_context
                 .iter()
                 .chain(seed.reference_grants.iter().map(|grant| &grant.file))
-            .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
+                .chain(
+                    seed.model_boundary
+                        .iter()
+                        .flat_map(|boundary| boundary.files.iter()),
+                )
                 .chain(seed.attachment_manifests.iter())
             {
                 if file.volume().provider() == &self.provider
@@ -1341,7 +1349,9 @@ impl ForkRebindProof {
                 .original_request_digest
                 .is_some_and(|digest| digest != self.original_request_digest)
         {
-            return Err(Error::Conflict("fork rebound proof does not match the prepared report".into()));
+            return Err(Error::Conflict(
+                "fork rebound proof does not match the prepared report".into(),
+            ));
         }
         let captured = report.captured_history_revision()?;
         let mut original = report.request.clone();
@@ -1353,7 +1363,9 @@ impl ForkRebindProof {
         if normalized_request_digest != self.original_request_digest
             || preparation_digest != self.preparation_digest
         {
-            return Err(Error::Conflict("fork rebound proof original request changed".into()));
+            return Err(Error::Conflict(
+                "fork rebound proof original request changed".into(),
+            ));
         }
         if self.prepared_report_digest == [0; 32] {
             return Err(Error::Invalid("fork preparation proof is empty".into()));
@@ -1366,7 +1378,9 @@ impl ForkRebindProof {
         normalized.request.parent_revision = captured;
         normalized.original_request_digest = None;
         if crate::contract::canonical_json_digest(&normalized)? != self.prepared_report_digest {
-            return Err(Error::Conflict("fork rebound report differs from preparation".into()));
+            return Err(Error::Conflict(
+                "fork rebound report differs from preparation".into(),
+            ));
         }
         Ok(())
     }
@@ -1516,10 +1530,7 @@ impl ForkReport {
         self.into_seed_after_validation()
     }
 
-    pub(crate) fn into_seed_with_rebind_proof(
-        self,
-        proof: &ForkRebindProof,
-    ) -> Result<ForkSeed> {
+    pub(crate) fn into_seed_with_rebind_proof(self, proof: &ForkRebindProof) -> Result<ForkSeed> {
         self.validate_with_rebind_proof(proof)?;
         self.into_seed_after_validation()
     }
@@ -2127,18 +2138,20 @@ mod tests {
 
     #[test]
     fn rebound_report_requires_the_prepared_report_and_preserves_original_digest() -> Result<()> {
-        let request: ForkRequest = serde_json::from_str(include_str!(
-            "../fixtures/v2/fork-request.json"
-        ))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        let seed: ForkSeed = serde_json::from_str(include_str!(
-            "../fixtures/v2/fork-seed.json"
-        ))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        let request: ForkRequest =
+            serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        let seed: ForkSeed = serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         let report = ForkReport {
             request: request.clone(),
             original_request_digest: None,
-            captures: seed.resources.iter().cloned().map(Capture::Captured).collect(),
+            captures: seed
+                .resources
+                .iter()
+                .cloned()
+                .map(Capture::Captured)
+                .collect(),
             child_private_volume: seed.child_private_volume.clone(),
             child_private_generation: seed.child_private_generation.clone(),
             inherited_context: seed.inherited_context.clone(),

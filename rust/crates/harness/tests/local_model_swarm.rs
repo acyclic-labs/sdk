@@ -408,7 +408,8 @@ impl ModelProvider for DeterministicProvider {
                     metadata: Value::Null,
                 },
             ]
-        } else if root && self.communication_enabled.load(Ordering::SeqCst)
+        } else if root
+            && self.communication_enabled.load(Ordering::SeqCst)
             && !self.communication_sent.swap(true, Ordering::SeqCst)
         {
             let file = staged_file(&request).expect("root staged payload is present");
@@ -427,7 +428,9 @@ impl ModelProvider for DeterministicProvider {
                         "kind": "tasks", "task_ids": [self.child_a.to_string(), self.child_b.to_string()],
                     }),
                 },
-                ModelEvent::Completed { metadata: Value::Null },
+                ModelEvent::Completed {
+                    metadata: Value::Null,
+                },
             ]
         } else {
             Self::ordinary()
@@ -584,12 +587,17 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
     // A completed child cannot select its sibling as a new child. The
     // authenticated parent binding and durable operation index reject the
     // forged sibling fork before another child is admitted.
-    provider.sibling_fork_requested.store(true, Ordering::SeqCst);
+    provider
+        .sibling_fork_requested
+        .store(true, Ordering::SeqCst);
     let sibling_error = swarm
         .run(child_a_task, id(0xA2), "attempt sibling fork")
         .await;
     assert!(sibling_error.is_err());
-    assert!(provider.sibling_fork_sent.load(Ordering::SeqCst), "sibling attempt failed before model dispatch: {sibling_error:?}");
+    assert!(
+        provider.sibling_fork_sent.load(Ordering::SeqCst),
+        "sibling attempt failed before model dispatch: {sibling_error:?}"
+    );
 
     let dispatches_before_restart = provider.dispatches.load(Ordering::SeqCst);
     let requests_before_restart = provider.serialized_requests();
@@ -698,22 +706,31 @@ async fn model_selected_child_rejects_grandchild_at_configured_depth() -> Result
             .phase,
         LocalSessionPhase::Activating | LocalSessionPhase::Completed
     ));
-    assert!(swarm
-        .session(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
-        .await
-        .is_err());
+    assert!(
+        swarm
+            .session(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
+            .await
+            .is_err()
+    );
     let requests = provider.decoded_requests();
-    assert_eq!(requests.iter().filter(|request|
-        latest_declared_child_task(request) == Some("child-a")).count(), 1);
-    assert!(!requests.iter().any(|request|
-        latest_declared_child_task(request) == Some("grandchild")),
-        "depth denial dispatched a grandchild model request");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| latest_declared_child_task(request) == Some("child-a"))
+            .count(),
+        1
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| latest_declared_child_task(request) == Some("grandchild")),
+        "depth denial dispatched a grandchild model request"
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
--> Result<()> {
+async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (host, stream, project) = local_project(directory.path()).await?;
     let provider = CancellationProvider::new();
@@ -767,9 +784,11 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
         // dispatch counters in the failure instead of leaking the run.
         running.abort();
         let _ = running.await;
-        panic!("child dispatch notification timed out: total={}, child={}",
+        panic!(
+            "child dispatch notification timed out: total={}, child={}",
             provider.dispatches.load(Ordering::SeqCst),
-            provider.child_dispatches.load(Ordering::SeqCst));
+            provider.child_dispatches.load(Ordering::SeqCst)
+        );
     }
     assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
     assert!(!provider.child_stream_dropped.load(Ordering::SeqCst));
@@ -777,13 +796,19 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
     running.abort();
     let join = running.await;
     assert!(join.is_err(), "cancelled swarm run unexpectedly completed");
-    tokio::time::timeout(std::time::Duration::from_secs(5), provider.child_stopped.notified())
-        .await
-        .expect("aborting the parent left the child provider stream running");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.child_stopped.notified(),
+    )
+    .await
+    .expect("aborting the parent left the child provider stream running");
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
 
     let child_task = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
-    assert_eq!(swarm.session(child_task).await?.phase, LocalSessionPhase::Activating);
+    assert_eq!(
+        swarm.session(child_task).await?.phase,
+        LocalSessionPhase::Activating
+    );
     // Dropping the running stream does not publish successful completion or
     // redispatch. Cold recovery of its admitted model attempt is a separate gate.
     assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
@@ -793,18 +818,25 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
 }
 
 #[tokio::test]
-async fn default_local_composition_runs_recursive_models_and_reopens_without_dispatch() -> Result<()> {
+async fn default_local_composition_runs_recursive_models_and_reopens_without_dispatch() -> Result<()>
+{
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let provider = DeterministicProvider::new(id(0xF1), id(0xF2), id(0xF3));
     provider.communication_enabled.store(true, Ordering::SeqCst);
     let model = Model::new("mock", "default-local-composition", "1", json!({}))?;
     let limits = Limits::default();
     let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-        directory.path(), model.clone(), provider.clone(), limits,
-    ).await?;
+        directory.path(),
+        model.clone(),
+        provider.clone(),
+        limits,
+    )
+    .await?;
     provider.bind_swarm(&swarm);
     let operation = id(0xF0);
-    let output = swarm.run_root(operation, "run default recursive composition").await?;
+    let output = swarm
+        .run_root(operation, "run default recursive composition")
+        .await?;
     assert_eq!(output.text, "ordinary completion");
     assert_eq!(swarm.sessions().await?.len(), 4);
     assert!(provider.child_read_verified.load(Ordering::SeqCst));
@@ -812,24 +844,43 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
     let root = swarm.root_task().await?;
     let child_a = acyclic_harness::TaskId::from_bytes(id(0xF1).into_bytes());
     let child_b = acyclic_harness::TaskId::from_bytes(id(0xF2).into_bytes());
-    let inbox = swarm.read_inbox(child_a, 0, 8).await
+    let inbox = swarm
+        .read_inbox(child_a, 0, 8)
+        .await
         .map_err(|error| Error::Storage(format!("live child inbox: {error}")))?;
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].sender, root);
-    assert_eq!(swarm.read_file(child_a, inbox[0].payload.path(), None).await?.1, ROOT_FILE.as_bytes());
+    assert_eq!(
+        swarm
+            .read_file(child_a, inbox[0].payload.path(), None)
+            .await?
+            .1,
+        ROOT_FILE.as_bytes()
+    );
     assert_eq!(inbox[0].payload.descriptor().media_type(), "text/plain");
     let decoded = provider.decoded_requests();
     let last = decoded.last().expect("completed root request");
-    let results: Vec<_> = last.messages.iter().filter_map(|message| match &message.content {
-        ModelContent::Part(ModelContentPart::ToolResult { call_id, name, value }) =>
-            Some((call_id.as_str(), name.as_str(), value)),
-        _ => None,
-    }).collect();
-    let message_result = results.iter().find(|(call, name, _)|
-        *call == "default-message-child" && *name == "swarm.message").expect("message result paired");
+    let results: Vec<_> = last
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            ModelContent::Part(ModelContentPart::ToolResult {
+                call_id,
+                name,
+                value,
+            }) => Some((call_id.as_str(), name.as_str(), value)),
+            _ => None,
+        })
+        .collect();
+    let message_result = results
+        .iter()
+        .find(|(call, name, _)| *call == "default-message-child" && *name == "swarm.message")
+        .expect("message result paired");
     assert_eq!(message_result.2["delivered"], true);
-    let wait_result = results.iter().find(|(call, name, _)|
-        *call == "default-wait-children" && *name == "swarm.wait").expect("wait result paired");
+    let wait_result = results
+        .iter()
+        .find(|(call, name, _)| *call == "default-wait-children" && *name == "swarm.wait")
+        .expect("wait result paired");
     assert_eq!(wait_result.2["kind"], "tasks");
     let tasks = wait_result.2["outcomes"].as_array().expect("task results");
     assert_eq!(tasks.len(), 2);
@@ -838,36 +889,79 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
         assert_eq!(tasks[index]["status"], "succeeded");
         assert_eq!(tasks[index]["value"]["text"], "ordinary completion");
     }
-    assert!(matches!(swarm.send_message(child_a, child_b, id(0xE0), b"sibling").await,
-        Err(Error::Unauthorized(_))));
-    let receipt = swarm.send_message(child_a, root, id(0xE1), "explicit λ🦀\n  reply".as_bytes()).await?;
-    assert_eq!(swarm.send_message(child_a, root, id(0xE1), "explicit λ🦀\n  reply".as_bytes()).await?, receipt);
+    assert!(matches!(
+        swarm
+            .send_message(child_a, child_b, id(0xE0), b"sibling")
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    let receipt = swarm
+        .send_message(child_a, root, id(0xE1), "explicit λ🦀\n  reply".as_bytes())
+        .await?;
+    assert_eq!(
+        swarm
+            .send_message(child_a, root, id(0xE1), "explicit λ🦀\n  reply".as_bytes())
+            .await?,
+        receipt
+    );
     let root_inbox = swarm.read_inbox(root, 0, 8).await?;
     assert_eq!(root_inbox.len(), 1);
-    assert_eq!(swarm.read_file(root, root_inbox[0].payload.path(), None).await?.1,
-        "explicit λ🦀\n  reply".as_bytes());
-    assert!(matches!(swarm.send_message(child_a, root, id(0), b"invalid identity").await,
-        Err(Error::Invalid(_))));
+    assert_eq!(
+        swarm
+            .read_file(root, root_inbox[0].payload.path(), None)
+            .await?
+            .1,
+        "explicit λ🦀\n  reply".as_bytes()
+    );
+    assert!(matches!(
+        swarm
+            .send_message(child_a, root, id(0), b"invalid identity")
+            .await,
+        Err(Error::Invalid(_))
+    ));
     assert_eq!(swarm.read_inbox(root, 0, 8).await?, root_inbox);
     let wait = acyclic_harness::communication::WaitRequest {
-        operation_id: id(0xE8), waiter: root,
-        target: acyclic_harness::communication::WaitTarget::Tasks { task_ids: vec![child_a, child_b] },
-        timeout_epoch_ms: None, cancellation_id: None,
+        operation_id: id(0xE8),
+        waiter: root,
+        target: acyclic_harness::communication::WaitTarget::Tasks {
+            task_ids: vec![child_a, child_b],
+        },
+        timeout_epoch_ms: None,
+        cancellation_id: None,
     };
     let completion = swarm.wait(wait.clone()).await?;
     let requests = provider.serialized_requests();
     drop(swarm);
     let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-        directory.path(), model, provider.clone(), limits,
-    ).await?;
+        directory.path(),
+        model,
+        provider.clone(),
+        limits,
+    )
+    .await?;
     provider.bind_swarm(&reopened);
-    assert_eq!(reopened.read_inbox(child_a, 0, 8).await
-        .map_err(|error| Error::Storage(format!("reopened child inbox: {error}")))?, inbox);
+    assert_eq!(
+        reopened
+            .read_inbox(child_a, 0, 8)
+            .await
+            .map_err(|error| Error::Storage(format!("reopened child inbox: {error}")))?,
+        inbox
+    );
     assert_eq!(reopened.read_inbox(root, 0, 8).await?, root_inbox);
     assert_eq!(reopened.wait(wait).await?, completion);
-    assert_eq!(reopened.read_file(root, root_inbox[0].payload.path(), None).await?.1,
-        "explicit λ🦀\n  reply".as_bytes());
-    assert_eq!(reopened.run_root(operation, "run default recursive composition").await?, output);
+    assert_eq!(
+        reopened
+            .read_file(root, root_inbox[0].payload.path(), None)
+            .await?
+            .1,
+        "explicit λ🦀\n  reply".as_bytes()
+    );
+    assert_eq!(
+        reopened
+            .run_root(operation, "run default recursive composition")
+            .await?,
+        output
+    );
     assert_eq!(provider.serialized_requests(), requests);
     Ok(())
 }

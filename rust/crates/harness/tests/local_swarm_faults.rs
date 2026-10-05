@@ -16,7 +16,8 @@ use acyclic_harness::{
     core::AuthorityIssuer,
     filesystem::{
         FilesystemHost, LocalFilesystemForkResolver, LocalHarnessTools, LocalSessionPhase,
-        LocalSwarmBindings, PersistentLocalHarness, PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
+        LocalSwarmBindings, PersistentLocalHarness, PersistentLocalSwarm, WorkspaceMutation,
+        workspace_ref,
     },
     fork::ForkSeed,
     model::{
@@ -833,8 +834,10 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
     second.cancel(task(child_a)).await?;
     let result = finish_owned_run(&mut running, Duration::from_secs(2)).await;
     assert!(result.is_err());
-    assert!(provider.child_stream_dropped.load(Ordering::SeqCst),
-        "cancellation returned while the child model stream was still live");
+    assert!(
+        provider.child_stream_dropped.load(Ordering::SeqCst),
+        "cancellation returned while the child model stream was still live"
+    );
     drop(second);
 
     drop(host);

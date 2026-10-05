@@ -2304,8 +2304,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     );
     let root_after_swapped_plan = host.resolve(&root_head.workspace).await?;
     assert_eq!(
-        root_after_swapped_plan.generation,
-        root_before_swapped_plan.generation,
+        root_after_swapped_plan.generation, root_before_swapped_plan.generation,
         "rejecting a swapped plan must precede target mutation"
     );
     assert!(

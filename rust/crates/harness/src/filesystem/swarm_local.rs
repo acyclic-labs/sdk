@@ -7,9 +7,9 @@
 //! files are still owned by [`PersistentLocalHarness`].
 
 use super::{
-    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool, FilesystemHost,
-    LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
-    InteractionApprovalAuthorization, InteractionOperatorAuthorizer, LocalHarnessTools,
+    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool,
+    FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
+    LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
     PersistentLocalHarness, workspace_ref,
 };
 use crate::{
@@ -39,7 +39,10 @@ use crate::{
         ToolRegistry, ToolResult,
     },
 };
-use acyclic_fs::{GitFilesystemAction, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions};
+use acyclic_fs::{
+    GitFilesystemAction, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
+    LocalOptions,
+};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
@@ -55,10 +58,10 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-#[path = "swarm_read_projection.rs"]
-mod read_projection;
 #[path = "swarm_communication.rs"]
 mod communication_host;
+#[path = "swarm_read_projection.rs"]
+mod read_projection;
 pub use read_projection::{LocalSwarmAgent, LocalSwarmPage};
 use read_projection::{
     page_by_cursor, page_from_sorted, recursive_agent_tree as project_recursive_agent_tree,
@@ -149,16 +152,16 @@ impl WaitCancellationSource for LocalSwarmLiveState {
 
 async fn cancellation_requested(receiver: &mut tokio::sync::watch::Receiver<bool>) -> Result<()> {
     while !*receiver.borrow_and_update() {
-        receiver.changed().await.map_err(|_| {
-            Error::Storage("task cancellation source closed".into())
-        })?;
+        receiver
+            .changed()
+            .await
+            .map_err(|_| Error::Storage("task cancellation source closed".into()))?;
     }
     Ok(())
 }
 
-static LOCAL_LIVE_CACHE: OnceLock<
-    StdMutex<BTreeMap<PathBuf, Weak<LocalSwarmLiveState>>>,
-> = OnceLock::new();
+static LOCAL_LIVE_CACHE: OnceLock<StdMutex<BTreeMap<PathBuf, Weak<LocalSwarmLiveState>>>> =
+    OnceLock::new();
 
 fn shared_local_live_state(root: &Path) -> Result<Arc<LocalSwarmLiveState>> {
     let mut cache = LOCAL_LIVE_CACHE
@@ -2291,8 +2294,8 @@ pub struct PersistentLocalSwarm {
     records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
     requests: Mutex<BTreeMap<TaskId, LocalForkRequest>>,
     seeds: Mutex<BTreeMap<TaskId, ForkSeed>>,
-    /// Direct child project bindings shared by already-open Git tools.
-    /// Entries are added only after the durable seed publication barrier.
+    /// Direct child project bindings shared by already-open Git tools. Entries
+    /// are added only after the durable seed publication barrier.
     project_children: LocalProjectChildren,
     reports: Mutex<BTreeMap<TaskId, ForkReport>>,
     publications: Mutex<BTreeMap<TaskId, ModelBatchPublication>>,
@@ -2424,7 +2427,9 @@ impl PersistentLocalSwarm {
         let tool = FilesystemGitTool::new(facade, workspace, format!("local-task-{task}"), || {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+                })
         })?;
         Ok(Some(Arc::new(tool).into_tool()))
     }
@@ -2440,10 +2445,13 @@ impl PersistentLocalSwarm {
             .get(&task)
             .cloned()
             .ok_or_else(|| Error::NotFound(format!("local swarm seed {task}")))?;
-        Ok(seed.resources.into_iter().find_map(|resource| match resource.revision {
-            ResourceRevision::Project { volume, .. } => Some(volume),
-            _ => None,
-        }))
+        Ok(seed
+            .resources
+            .into_iter()
+            .find_map(|resource| match resource.revision {
+                ResourceRevision::Project { volume, .. } => Some(volume),
+                _ => None,
+            }))
     }
 
     async fn register_project_child(
@@ -2451,10 +2459,14 @@ impl PersistentLocalSwarm {
         seed: &ForkSeed,
         parent: &crate::core::Reducer,
     ) -> Result<()> {
-        let Some(project) = seed.resources.iter().find_map(|resource| match &resource.revision {
-            ResourceRevision::Project { volume, .. } => Some(volume.clone()),
-            _ => None,
-        }) else {
+        let Some(project) = seed
+            .resources
+            .iter()
+            .find_map(|resource| match &resource.revision {
+                ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                _ => None,
+            })
+        else {
             return Ok(());
         };
         let workspace_id = self
@@ -2476,9 +2488,21 @@ impl PersistentLocalSwarm {
     }
 
     async fn rebuild_project_children(&self) -> Result<()> {
-        let seeds = self.seeds.lock().await.values().cloned().collect::<Vec<_>>();
+        let seeds = self
+            .seeds
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         for seed in seeds {
-            let tasks = self.records.lock().await.keys().copied().collect::<Vec<_>>();
+            let tasks = self
+                .records
+                .lock()
+                .await
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
             let mut parent_task = None;
             for task in tasks {
                 if self.conversation_authority(task).await == Some(seed.parent.clone()) {
@@ -2490,7 +2514,8 @@ impl PersistentLocalSwarm {
                 continue;
             };
             let parent = self.open_session(parent_task).await?;
-            self.register_project_child(&seed, parent.storage().reducer()).await?;
+            self.register_project_child(&seed, parent.storage().reducer())
+                .await?;
         }
         Ok(())
     }
@@ -2851,8 +2876,10 @@ impl PersistentLocalSwarm {
         ));
         swarm.rebuild_project_children().await?;
         let root_task = swarm.root_task().await?;
-        let root_harness = swarm.sessions.get_mut().remove(&root_task)
-            .ok_or_else(|| Error::Storage("new local composition has no root harness".into()))?;
+        let root_harness =
+            swarm.sessions.get_mut().remove(&root_task).ok_or_else(|| {
+                Error::Storage("new local composition has no root harness".into())
+            })?;
         let root_harness = Arc::try_unwrap(root_harness).map_err(|_| {
             Error::Conflict("new local composition root was exposed before binding".into())
         })?;
@@ -2864,14 +2891,18 @@ impl PersistentLocalSwarm {
         let plans = Arc::new(LocalModelForkPlans::new().with_resolver(resolver.clone()));
         plans.bind_journal(swarm.registry.clone()).await?;
         let publisher = Arc::new(LocalModelForkPublisher::new(plans.clone()));
-        let communication = Arc::new(communication_host::SwarmCommunicationHost::new(stream.clone()));
+        let communication = Arc::new(communication_host::SwarmCommunicationHost::new(
+            stream.clone(),
+        ));
         let waits = Arc::new(crate::communication::StreamWaitStore::new(stream.clone()));
         swarm.bindings = LocalSwarmBindings::communication(
-            communication.clone(), Some(waits), Some(swarm.live.clone()),
+            communication.clone(),
+            Some(waits),
+            Some(swarm.live.clone()),
         )
-            .with_filesystem_fork_resolver(resolver)
-            .with_model_fork_plans(plans.clone())
-            .with_model_batch_publisher(publisher.clone());
+        .with_filesystem_fork_resolver(resolver)
+        .with_model_fork_plans(plans.clone())
+        .with_model_batch_publisher(publisher.clone());
         let mut root_tools = swarm.bindings.tools_for(root_task)?;
         if let Some(project) = swarm.config.project.clone()
             && let Some(tool) = swarm.git_tool_for(root_task, &root_harness, &project)?
@@ -2879,7 +2910,10 @@ impl PersistentLocalSwarm {
             root_tools = root_tools.with_tool(tool)?;
         }
         let root_harness = root_harness.with_local_tools(model, provider, limits, root_tools)?;
-        swarm.sessions.get_mut().insert(root_task, Arc::new(root_harness));
+        swarm
+            .sessions
+            .get_mut()
+            .insert(root_task, Arc::new(root_harness));
         swarm.model_fork_publisher = Some(publisher.clone());
         let swarm = Arc::new(swarm);
         plans.bind_swarm(Arc::downgrade(&swarm))?;
@@ -3128,10 +3162,7 @@ impl PersistentLocalSwarm {
             .collect::<Vec<_>>();
         let snapshot = self.snapshot_from_sessions(task, &sessions).await?;
         let agents = project_recursive_agent_tree(sessions, task)?;
-        Ok((
-            snapshot,
-            agents,
-        ))
+        Ok((snapshot, agents))
     }
 
     /// Finds an already-authenticated descriptor for metadata projection. A
@@ -3406,7 +3437,8 @@ impl PersistentLocalSwarm {
         // sender read authority and transfers it into recipient-private storage
         // before publishing the inbox record.
         let harness = self.open_session(sender).await?;
-        let transfer = crate::communication::message_endpoint_operation(sender, recipient, message_id);
+        let transfer =
+            crate::communication::message_endpoint_operation(sender, recipient, message_id);
         let payload = harness
             .storage()
             .stage(
@@ -3453,17 +3485,29 @@ impl PersistentLocalSwarm {
 
     /// Observes an explicit target through the same durable wait path as the
     /// model tool. The request identity and terminal result survive reopening.
-    pub async fn wait(&self, request: crate::communication::WaitRequest)
-        -> Result<crate::communication::WaitCompletion> {
-        let host = self.bindings.communication_host.clone()
-            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
-        let store = self.bindings.wait_store.clone()
+    pub async fn wait(
+        &self,
+        request: crate::communication::WaitRequest,
+    ) -> Result<crate::communication::WaitCompletion> {
+        let host =
+            self.bindings.communication_host.clone().ok_or_else(|| {
+                Error::Unsupported("durable communication host is not bound".into())
+            })?;
+        let store = self
+            .bindings
+            .wait_store
+            .clone()
             .ok_or_else(|| Error::Unsupported("durable wait store is not bound".into()))?;
         let cancellation = request.cancellation_id.and_then(|_| {
-            self.bindings.cancellation.as_ref()
+            self.bindings
+                .cancellation
+                .as_ref()
                 .and_then(|source| source.receiver(request.waiter))
         });
-        DurableCommunication::new(host).with_wait_store(store).wait(request, cancellation).await
+        DurableCommunication::new(host)
+            .with_wait_store(store)
+            .wait(request, cancellation)
+            .await
     }
 
     /// Durably cancels one task and propagates the owner cancellation signal
@@ -3656,10 +3700,16 @@ impl PersistentLocalSwarm {
         let declaration = self.declarations.lock().await.get(&task).cloned();
         let run = async {
             if let Some(declaration) = declaration {
-                let bundle = self.inherited_task_bundle(task, &harness, &declaration).await?;
-                harness.run_with_bundle(&bundle, operation, prompt, max_steps).await
+                let bundle = self
+                    .inherited_task_bundle(task, &harness, &declaration)
+                    .await?;
+                harness
+                    .run_with_bundle(&bundle, operation, prompt, max_steps)
+                    .await
             } else {
-                harness.run_with_max_steps(operation, prompt, max_steps).await
+                harness
+                    .run_with_max_steps(operation, prompt, max_steps)
+                    .await
             }
         };
         let output = tokio::select! {
@@ -3722,9 +3772,9 @@ impl PersistentLocalSwarm {
         seed: &ForkSeed,
     ) -> Result<LocalForkOutcome> {
         // Keep the large preparation future off recursive caller frames.
-        let activation = Box::pin(self.prepare_published_child(
-            request, host, stream, issuer, parent, seed,
-        )).await?;
+        let activation =
+            Box::pin(self.prepare_published_child(request, host, stream, issuer, parent, seed))
+                .await?;
         match activation {
             LocalChildActivation::Completed(outcome) => Ok(outcome),
             LocalChildActivation::Ready(turn) => self.execute_child_turn(turn).await,
@@ -3850,15 +3900,19 @@ impl PersistentLocalSwarm {
             _ => {
                 self.update_session(child, |session| {
                     session.phase = LocalSessionPhase::Activating;
-                }).await?;
+                })
+                .await?;
             }
         }
-        let registry = self.registry.stream(REGISTRY_STREAM)
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         // The durable claim permits cold recovery, but a live writer still
         // owns the child journal. All handles share this per-child fence.
         let activation_gate = self.task_gate(child)?;
-        let activation_guard = activation_gate.try_lock_owned()
+        let activation_guard = activation_gate
+            .try_lock_owned()
             .map_err(|_| Error::Indeterminate(request.child_operation))?;
         let harness =
             match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
@@ -3878,8 +3932,12 @@ impl PersistentLocalSwarm {
                 Ok(harness) => Arc::new(harness),
                 Err(error) => {
                     self.mark_activation_failed_if_safe(
-                        child, request.child_operation, None, &error,
-                    ).await?;
+                        child,
+                        request.child_operation,
+                        None,
+                        &error,
+                    )
+                    .await?;
                     return Err(error);
                 }
             };
@@ -4365,12 +4423,19 @@ impl PersistentLocalSwarm {
             }]
         });
         let declaration = LocalInheritedModelDeclaration { boundary, suffix };
-        let bundle = match self.inherited_task_bundle(child, &harness, &declaration).await {
+        let bundle = match self
+            .inherited_task_bundle(child, &harness, &declaration)
+            .await
+        {
             Ok(bundle) => bundle,
             Err(error) => {
                 self.mark_activation_failed_if_safe(
-                    child, request.child_operation, Some(&harness), &error,
-                ).await?;
+                    child,
+                    request.child_operation,
+                    Some(&harness),
+                    &error,
+                )
+                .await?;
                 return Err(error);
             }
         };
@@ -4382,26 +4447,46 @@ impl PersistentLocalSwarm {
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
         Ok(LocalChildActivation::Ready(Box::new(LocalChildTurn {
-            request, stream, harness, bundle, max_steps, cancelled,
+            request,
+            stream,
+            harness,
+            bundle,
+            max_steps,
+            cancelled,
             _activation_guard: activation_guard,
         })))
     }
 
     async fn execute_child_turn(&self, turn: Box<LocalChildTurn>) -> Result<LocalForkOutcome> {
         let LocalChildTurn {
-            request, stream, harness, bundle, max_steps, cancelled, _activation_guard,
+            request,
+            stream,
+            harness,
+            bundle,
+            max_steps,
+            cancelled,
+            _activation_guard,
         } = *turn;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
         let child_result = Self::run_owned_child_turn(
-            harness.clone(), bundle, request.clone(), max_steps, cancelled,
-        ).await;
+            harness.clone(),
+            bundle,
+            request.clone(),
+            max_steps,
+            cancelled,
+        )
+        .await;
         let output = match child_result {
             Ok(output) => output,
             Err(error) => {
                 self.mark_activation_failed_if_safe(
-                    child, request.child_operation, Some(&harness), &error,
-                ).await?;
+                    child,
+                    request.child_operation,
+                    Some(&harness),
+                    &error,
+                )
+                .await?;
                 return Err(error);
             }
         };
@@ -4660,9 +4745,14 @@ impl PersistentLocalSwarm {
         harness: &PersistentLocalHarness,
         declaration: &LocalInheritedModelDeclaration,
     ) -> Result<crate::Harness> {
-        let builder = harness.storage()
-            .inherited_builder(declaration.boundary.clone(), declaration.suffix.clone(),
-                self.provider.clone(), self.config.limits)?
+        let builder = harness
+            .storage()
+            .inherited_builder(
+                declaration.boundary.clone(),
+                declaration.suffix.clone(),
+                self.provider.clone(),
+                self.config.limits,
+            )?
             .tools(harness.storage().default_tools(self.config.limits)?)
             .grant("tool:call:acyclic.read_file")
             .grant("tool:call:acyclic.stage_file")
@@ -4799,12 +4889,18 @@ impl PersistentLocalSwarm {
         let published_seed = self.seeds.lock().await.get(&task).cloned();
         if let Some(seed) = published_seed {
             let session = self.session(task).await?;
-            let parent = session.parent.ok_or_else(|| {
-                Error::Conflict("published child has no parent session".into())
-            })?;
-            let resolver = self.bindings.filesystem_fork_resolver.as_ref().ok_or_else(|| {
-                Error::Unsupported("reopening a published child requires its filesystem resolver".into())
-            })?;
+            let parent = session
+                .parent
+                .ok_or_else(|| Error::Conflict("published child has no parent session".into()))?;
+            let resolver = self
+                .bindings
+                .filesystem_fork_resolver
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::Unsupported(
+                        "reopening a published child requires its filesystem resolver".into(),
+                    )
+                })?;
             let secret = resolver.issuer_secret.ok_or_else(|| {
                 Error::Unauthorized("local fork resolver has no durable host secret".into())
             })?;
@@ -4812,15 +4908,23 @@ impl PersistentLocalSwarm {
                 Error::Conflict("published child has no operation identity".into())
             })?;
             let parent_harness = Box::pin(self.open_session(parent)).await?;
-            let parent_aggregate = parent_harness.conversation_aggregate(self.config.limits).await?;
+            let parent_aggregate = parent_harness
+                .conversation_aggregate(self.config.limits)
+                .await?;
             let harness = Arc::new(
                 PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
-                    self.config.model.clone(), self.provider.clone(), self.config.limits,
-                    resolver.host.clone(), resolver.stream.clone(),
+                    self.config.model.clone(),
+                    self.provider.clone(),
+                    self.config.limits,
+                    resolver.host.clone(),
+                    resolver.stream.clone(),
                     LocalFilesystemForkResolver::child_issuer(&seed.child, operation, secret),
-                    &parent_aggregate, &seed, self.bindings.tools_for(task)?,
+                    &parent_aggregate,
+                    &seed,
+                    self.bindings.tools_for(task)?,
                     self.stream_provider.clone(),
-                ).await?,
+                )
+                .await?,
             );
             self.sessions.lock().await.insert(task, harness.clone());
             self.observe(LocalSwarmObservation::HarnessOpened { task });
@@ -4933,7 +5037,10 @@ impl PersistentLocalSwarm {
     }
 
     fn task_gate(&self, task: TaskId) -> Result<Arc<Mutex<()>>> {
-        let mut gates = self.live.task_gates.lock()
+        let mut gates = self
+            .live
+            .task_gates
+            .lock()
             .map_err(|_| Error::Storage("local task gates lock poisoned".into()))?;
         if let Some(gate) = gates.get(&task).and_then(Weak::upgrade) {
             return Ok(gate);
@@ -5825,31 +5932,54 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let swarm = PersistentLocalSwarm::open_with_model(
-            root.path(), model.clone(), provider.clone(), Limits::default(),
-        ).await?;
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
         let task = swarm.root_task().await?;
         let harness = swarm.open_session(task).await?;
-        let registry = swarm.registry.stream(REGISTRY_STREAM)
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let operation = OperationId::from_bytes([0xD2; 16]);
-        assert!(swarm.claim_child_activation(&registry, task, operation).await?);
+        assert!(
+            swarm
+                .claim_child_activation(&registry, task, operation)
+                .await?
+        );
         let failure = Error::Storage("child storage unavailable".into());
 
         // Unknown storage and an explicitly uncertain effect must not append
         // ForkFailed, even when the available journal is still empty.
-        swarm.mark_activation_failed_if_safe(task, operation, None, &failure).await?;
-        swarm.mark_activation_failed_if_safe(
-            task, operation, Some(&harness), &Error::Indeterminate(operation),
-        ).await?;
-        assert!(!swarm.claim_child_activation(&registry, task, operation).await?);
+        swarm
+            .mark_activation_failed_if_safe(task, operation, None, &failure)
+            .await?;
+        swarm
+            .mark_activation_failed_if_safe(
+                task,
+                operation,
+                Some(&harness),
+                &Error::Indeterminate(operation),
+            )
+            .await?;
+        assert!(
+            !swarm
+                .claim_child_activation(&registry, task, operation)
+                .await?
+        );
 
         // Execute through the real local journal, then inject a setup failure.
         // Its durable ModelStarted must retain the original activation claim.
-        harness.run(operation, "retain the admitted activation").await?;
+        harness
+            .run(operation, "retain the admitted activation")
+            .await?;
         assert!(swarm.child_model_started(&harness, operation).await?);
-        swarm.mark_activation_failed_if_safe(
-            task, operation, Some(&harness), &failure,
-        ).await?;
+        swarm
+            .mark_activation_failed_if_safe(task, operation, Some(&harness), &failure)
+            .await?;
         let records = load_records(&registry).await?;
         assert!(!records.iter().any(|record| matches!(
             record.event, StoredEvent::ForkFailed { child, .. } if child == task
@@ -5860,11 +5990,21 @@ mod tests {
         drop(swarm);
 
         let reopened = PersistentLocalSwarm::open_with_model(
-            root.path(), model, provider.clone(), Limits::default(),
-        ).await?;
-        let registry = reopened.registry.stream(REGISTRY_STREAM)
+            root.path(),
+            model,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let registry = reopened
+            .registry
+            .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert!(!reopened.claim_child_activation(&registry, task, operation).await?);
+        assert!(
+            !reopened
+                .claim_child_activation(&registry, task, operation)
+                .await?
+        );
         assert_eq!(provider.calls.load(Ordering::SeqCst), dispatches);
 
         // A distinct operation with an available empty journal can release its
@@ -5877,20 +6017,35 @@ mod tests {
         drop(harness);
         let fresh_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let fresh = PersistentLocalSwarm::open_with_model(
-            fresh_root.path(), Model::new("mock", "activation-failure", "1", json!({}))?,
-            provider, Limits::default(),
-        ).await?;
+            fresh_root.path(),
+            Model::new("mock", "activation-failure", "1", json!({}))?,
+            provider,
+            Limits::default(),
+        )
+        .await?;
         let fresh_task = fresh.root_task().await?;
         let harness = fresh.open_session(fresh_task).await?;
-        let registry = fresh.registry.stream(REGISTRY_STREAM)
+        let registry = fresh
+            .registry
+            .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert!(fresh.claim_child_activation(&registry, fresh_task, unstarted).await?);
-        fresh.mark_activation_failed_if_safe(
-            fresh_task, unstarted, Some(&harness), &failure,
-        ).await?;
-        assert_eq!(fresh.session(fresh_task).await?.phase,
-            LocalSessionPhase::Failed(failure.to_string()));
-        assert!(fresh.claim_child_activation(&registry, fresh_task, unstarted).await?);
+        assert!(
+            fresh
+                .claim_child_activation(&registry, fresh_task, unstarted)
+                .await?
+        );
+        fresh
+            .mark_activation_failed_if_safe(fresh_task, unstarted, Some(&harness), &failure)
+            .await?;
+        assert_eq!(
+            fresh.session(fresh_task).await?.phase,
+            LocalSessionPhase::Failed(failure.to_string())
+        );
+        assert!(
+            fresh
+                .claim_child_activation(&registry, fresh_task, unstarted)
+                .await?
+        );
         Ok(())
     }
 
@@ -6666,8 +6821,10 @@ mod tests {
             dropped: Arc<std::sync::atomic::AtomicBool>,
         }
         impl ModelProvider for PendingProvider {
-            fn generate<'a>(&'a self, _input: crate::model_input::PreparedModelInput)
-                -> BoxStream<'a, Result<ModelEvent>> {
+            fn generate<'a>(
+                &'a self,
+                _input: crate::model_input::PreparedModelInput,
+            ) -> BoxStream<'a, Result<ModelEvent>> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 let guard = StreamGuard(self.dropped.clone());
                 self.started.notify_one();
@@ -6676,62 +6833,96 @@ mod tests {
                     std::future::pending::<Result<ModelEvent>>().await
                 }))
             }
-            fn reconcile<'a>(&'a self, _attempt: ModelAttempt)
-                -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            fn reconcile<'a>(
+                &'a self,
+                _attempt: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
                 panic!("a cancelled root must not reconcile or redispatch its provider");
             }
         }
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let provider = Arc::new(PendingProvider {
-            calls: AtomicUsize::new(0), started: tokio::sync::Notify::new(),
+            calls: AtomicUsize::new(0),
+            started: tokio::sync::Notify::new(),
             dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         let model = Model::new("mock", "default-cancellation", "1", json!({}))?;
         let first = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            root.path(), model.clone(), provider.clone(), Limits::default(),
-        ).await?;
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
         let task = first.root_task().await?;
         let operation = OperationId::from_bytes([0xC4; 16]);
         let mut running = AbortOnDrop::new(tokio::spawn({
             let first = first.clone();
-            async move { first.run_root(operation, "remain pending until cancelled").await }
+            async move {
+                first
+                    .run_root(operation, "remain pending until cancelled")
+                    .await
+            }
         }));
-        if tokio::time::timeout(std::time::Duration::from_secs(120), provider.started.notified())
-            .await.is_err() {
+        if tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            provider.started.notified(),
+        )
+        .await
+        .is_err()
+        {
             running.handle.abort();
             let _ = (&mut running).await;
             panic!("root provider did not start; owned run was stopped");
         }
         let second = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            root.path(), model.clone(), provider.clone(), Limits::default(),
-        ).await?;
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
         second.cancel(task).await?;
-        let stopped = match tokio::time::timeout(std::time::Duration::from_secs(5), &mut running).await {
-            Ok(result) => result.expect("owned root run panicked"),
-            Err(error) => {
-                running.handle.abort();
-                let _ = (&mut running).await;
-                panic!("cancelled root did not stop: {error}");
-            }
-        };
+        let stopped =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), &mut running).await {
+                Ok(result) => result.expect("owned root run panicked"),
+                Err(error) => {
+                    running.handle.abort();
+                    let _ = (&mut running).await;
+                    panic!("cancelled root did not stop: {error}");
+                }
+            };
         assert!(matches!(stopped, Err(Error::Conflict(_))));
         assert!(provider.dropped.load(Ordering::SeqCst));
-        assert_eq!(first.session(task).await?.phase, LocalSessionPhase::Cancelled);
+        assert_eq!(
+            first.session(task).await?.phase,
+            LocalSessionPhase::Cancelled
+        );
         drop(running);
         drop(first);
         drop(second);
         let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            root.path(), model, provider.clone(), Limits::default(),
-        ).await?;
-        assert!(matches!(reopened.run_root(operation, "remain pending until cancelled").await,
-            Err(Error::Conflict(_))));
+            root.path(),
+            model,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        assert!(matches!(
+            reopened
+                .run_root(operation, "remain pending until cancelled")
+                .await,
+            Err(Error::Conflict(_))
+        ));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
     async fn await_timer_admissions(swarm: &PersistentLocalSwarm, expected: u64) -> Result<()> {
         let task = swarm.root_task().await?;
-        let timer = swarm.conversation_stream.stream(format!("harness/v2/swarm-timers/{task}"))
+        let timer = swarm
+            .conversation_stream
+            .stream(format!("harness/v2/swarm-timers/{task}"))
             .map_err(|error| Error::Storage(error.to_string()))?;
         tokio::time::timeout(std::time::Duration::from_secs(120), async {
             loop {
@@ -6741,36 +6932,58 @@ mod tests {
                     Err(error) => return Err(Error::Storage(error.to_string())),
                 }
             }
-        }).await.map_err(|error| Error::Storage(format!("wait observation did not start: {error}")))?
+        })
+        .await
+        .map_err(|error| Error::Storage(format!("wait observation did not start: {error}")))?
     }
 
     #[tokio::test]
-    async fn default_cancellation_retains_live_and_interrupted_waits_after_cold_reopen() -> Result<()> {
+    async fn default_cancellation_retains_live_and_interrupted_waits_after_cold_reopen()
+    -> Result<()> {
         use crate::communication::{WaitCompletion, WaitRequest, WaitTarget};
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        let provider = Arc::new(MockModel { calls: AtomicUsize::new(0), requests: Mutex::new(Vec::new()) });
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
         let model = Model::new("mock", "default-cancelled-wait", "1", json!({}))?;
         let first = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            root.path(), model.clone(), provider.clone(), Limits::default(),
-        ).await?;
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
         let task = first.root_task().await?;
-        let now = first.bindings.communication_host.as_ref().expect("default communication").now_unix_millis();
+        let now = first
+            .bindings
+            .communication_host
+            .as_ref()
+            .expect("default communication")
+            .now_unix_millis();
         let request = WaitRequest {
-            operation_id: OperationId::from_bytes([0xC5; 16]), waiter: task,
-            target: WaitTarget::Deadline { deadline_epoch_ms: now + 3_600_000 },
-            timeout_epoch_ms: None, cancellation_id: Some(OperationId::from_bytes([0xC6; 16])),
+            operation_id: OperationId::from_bytes([0xC5; 16]),
+            waiter: task,
+            target: WaitTarget::Deadline {
+                deadline_epoch_ms: now + 3_600_000,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(OperationId::from_bytes([0xC6; 16])),
         };
         let mut live_wait = AbortOnDrop::new(tokio::spawn({
-            let first = first.clone(); let request = request.clone();
+            let first = first.clone();
+            let request = request.clone();
             async move { first.wait(request).await }
         }));
         await_timer_admissions(&first, 1).await?;
         let interrupted = WaitRequest {
             operation_id: OperationId::from_bytes([0xC7; 16]),
-            cancellation_id: Some(OperationId::from_bytes([0xC8; 16])), ..request.clone()
+            cancellation_id: Some(OperationId::from_bytes([0xC8; 16])),
+            ..request.clone()
         };
         let mut interrupted_wait = AbortOnDrop::new(tokio::spawn({
-            let first = first.clone(); let request = interrupted.clone();
+            let first = first.clone();
+            let request = interrupted.clone();
             async move { first.wait(request).await }
         }));
         await_timer_admissions(&first, 2).await?;
@@ -6778,21 +6991,30 @@ mod tests {
         assert!((&mut interrupted_wait).await.is_err());
         drop(interrupted_wait);
         first.cancel(task).await?;
-        let result = match tokio::time::timeout(std::time::Duration::from_secs(5), &mut live_wait).await {
-            Ok(result) => result.expect("live wait task panicked")?,
-            Err(error) => {
-                live_wait.handle.abort(); let _ = (&mut live_wait).await;
-                panic!("live wait did not stop after cancellation: {error}");
-            }
-        };
+        let result =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), &mut live_wait).await {
+                Ok(result) => result.expect("live wait task panicked")?,
+                Err(error) => {
+                    live_wait.handle.abort();
+                    let _ = (&mut live_wait).await;
+                    panic!("live wait did not stop after cancellation: {error}");
+                }
+            };
         assert_eq!(result, WaitCompletion::Cancelled);
         drop(live_wait);
         drop(first);
         let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            root.path(), model, provider.clone(), Limits::default(),
-        ).await?;
+            root.path(),
+            model,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
         assert_eq!(reopened.wait(request).await?, WaitCompletion::Cancelled);
-        assert_eq!(reopened.wait(interrupted.clone()).await?, WaitCompletion::Cancelled);
+        assert_eq!(
+            reopened.wait(interrupted.clone()).await?,
+            WaitCompletion::Cancelled
+        );
         assert_eq!(reopened.wait(interrupted).await?, WaitCompletion::Cancelled);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         Ok(())

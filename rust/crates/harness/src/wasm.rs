@@ -2281,10 +2281,9 @@ fn decode_model_option_policy(
     let policy: Option<WasmModelOptionPolicyWire> = from_js(value)?;
     policy
         .map(|wire| {
-            let digest: [u8; 32] = wire
-                .digest
-                .try_into()
-                .map_err(|_| JsValue::from_str("model option policy digest must contain 32 bytes"))?;
+            let digest: [u8; 32] = wire.digest.try_into().map_err(|_| {
+                JsValue::from_str("model option policy digest must contain 32 bytes")
+            })?;
             crate::model::ModelOptionPolicy::new(
                 crate::registry::ComponentIdentity {
                     name: wire.name,

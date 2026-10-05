@@ -52,8 +52,8 @@ mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod git_facade;
 pub use git_facade::{
-    FilesystemGitFacade, GIT_FACADE_TOOL_NAME, GIT_FACADE_TOOL_REVISION,
-    ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,
+    FilesystemGitFacade, GIT_FACADE_TOOL_NAME, GIT_FACADE_TOOL_REVISION, ROOT_WRITEBACK_CAPABILITY,
+    RootWritebackApproval, RootWritebackRequest,
 };
 mod swarm_git;
 pub use swarm_git::{
@@ -64,8 +64,7 @@ mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
 pub use interaction_host::{
-    FilesystemInteractionHost, InteractionApprovalAuthorization,
-    InteractionOperatorAuthorizer,
+    FilesystemInteractionHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
 };
 mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
@@ -87,11 +86,11 @@ pub use local::{
 mod swarm_local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use swarm_local::{
-    LocalForkIntent, LocalForkOutcome, LocalForkRequest, LocalInheritedModelDeclaration,
-    LocalFilesystemForkResolver, LocalModelForkPlan, LocalModelForkPlans, LocalModelForkPublisher,
-    LocalModelForkResolver,
-    LocalSessionPhase, LocalSwarmAgent, LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig,
-    LocalSwarmMessage, LocalSwarmPage, LocalSwarmSession, LocalSwarmSnapshot, PersistentLocalSwarm,
+    LocalFilesystemForkResolver, LocalForkIntent, LocalForkOutcome, LocalForkRequest,
+    LocalInheritedModelDeclaration, LocalModelForkPlan, LocalModelForkPlans,
+    LocalModelForkPublisher, LocalModelForkResolver, LocalSessionPhase, LocalSwarmAgent,
+    LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig, LocalSwarmMessage, LocalSwarmPage,
+    LocalSwarmSession, LocalSwarmSnapshot, PersistentLocalSwarm,
 };
 
 mod memory;
@@ -1715,7 +1714,10 @@ impl<A, O> FilesystemHost<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Opens one provider-authenticated workspace for a typed resource.
-    pub async fn open_workspace(&self, reference: &WorkspaceRef) -> Result<acyclic_fs::Workspace<A, O>> {
+    pub async fn open_workspace(
+        &self,
+        reference: &WorkspaceRef,
+    ) -> Result<acyclic_fs::Workspace<A, O>> {
         self.open(reference).await
     }
 

@@ -12,9 +12,9 @@ use crate::{
     },
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     fork::{
-        Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkRebindProof, ForkReport, ForkRequest,
-        ForkSeed, ForkSelection, InheritedConversationPrefix, ReferenceGrant, ResourceRevision,
-        SharedGrant,
+        Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkRebindProof, ForkReport,
+        ForkRequest, ForkSeed, ForkSelection, InheritedConversationPrefix, ReferenceGrant,
+        ResourceRevision, SharedGrant,
     },
     resources::{ProviderRef, WorkspaceRef},
 };
@@ -293,7 +293,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         .await?
         .ok_or_else(|| Error::Conflict("fork preparation request is missing".into()))?;
         if stored_request != *request {
-            return Err(Error::Conflict("fork preparation request changed before rebind".into()));
+            return Err(Error::Conflict(
+                "fork preparation request changed before rebind".into(),
+            ));
         }
         let report = self
             .read_report(&journal, request)
@@ -308,14 +310,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             &request.preparation.child_project_volume,
         ] {
             let allocation = allocation_ref(self.host.provider.clone(), volume)?;
-            let claim = read_record::<A, O, AllocationClaim>(
-                &self.host,
-                &allocation,
-                "/claim.json",
-                4_096,
-            )
-            .await?
-            .ok_or_else(|| Error::Conflict("fork allocation claim is missing".into()))?;
+            let claim =
+                read_record::<A, O, AllocationClaim>(&self.host, &allocation, "/claim.json", 4_096)
+                    .await?
+                    .ok_or_else(|| Error::Conflict("fork allocation claim is missing".into()))?;
             if claim.operation_id != request.operation_id
                 || claim.parent != request.parent
                 || claim.child != request.child
@@ -1288,8 +1286,11 @@ fn resource_revision_rebind_equal(old: &ResourceRevision, new: &ResourceRevision
 #[cfg(test)]
 mod rebind_shape_tests {
     use super::*;
+    use crate::{
+        core::AggregateKind,
+        resources::{GenerationRef, StreamRef},
+    };
     use acyclic_fs::Fs;
-    use crate::{core::AggregateKind, resources::{GenerationRef, StreamRef}};
 
     #[test]
     fn only_history_version_may_advance_during_rebind() -> Result<()> {
@@ -1357,7 +1358,10 @@ mod rebind_shape_tests {
         if let ResourceRevision::Project { generation, .. } = &mut changed_revision.revision {
             *generation = GenerationRef::new(fs_provider, [8; 32], None)?;
         }
-        assert!(!captured_resource_rebind_shape_equal(&old, &changed_revision));
+        assert!(!captured_resource_rebind_shape_equal(
+            &old,
+            &changed_revision
+        ));
         Ok(())
     }
 
@@ -1447,9 +1451,10 @@ mod rebind_shape_tests {
         for volume in seed_allocation_volumes(&first)? {
             let journal = allocation_ref(provider.clone(), &volume)?;
             host.filesystem
-                .create_workspace(std::str::from_utf8(journal.as_resource().key()).map_err(
-                    |error| Error::Invalid(error.to_string()),
-                )?)
+                .create_workspace(
+                    std::str::from_utf8(journal.as_resource().key())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                )
                 .await
                 .map_err(map_error)?;
             let claim = AllocationClaim {
@@ -1462,14 +1467,20 @@ mod rebind_shape_tests {
             host.apply(
                 &journal,
                 None,
-                &[WorkspaceMutation::PutFile {
-                    path: "/claim.json".into(),
-                    bytes: encode_record(&claim, 4_096)?,
-                }, WorkspaceMutation::PutFile {
-                    path: "/seed.json".into(),
-                    bytes: encode_record(&old_binding, 4_096)?,
-                }],
-                &IdempotencyKey::new(format!("rebind-test-claim-{}", claim.volume.storage_name()?))?,
+                &[
+                    WorkspaceMutation::PutFile {
+                        path: "/claim.json".into(),
+                        bytes: encode_record(&claim, 4_096)?,
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: "/seed.json".into(),
+                        bytes: encode_record(&old_binding, 4_096)?,
+                    },
+                ],
+                &IdempotencyKey::new(format!(
+                    "rebind-test-claim-{}",
+                    claim.volume.storage_name()?
+                ))?,
             )
             .await?;
         }
