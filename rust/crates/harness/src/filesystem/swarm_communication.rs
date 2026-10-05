@@ -51,6 +51,10 @@ impl DurableTaskHost for SwarmCommunicationHost {
     ) -> BoxFuture<'a, Result<TaskCommunicationScope>> {
         Box::pin(async move {
             let swarm = self.swarm()?;
+            // Communication authority comes from the immutable TaskAdmitted
+            // record. Do not rebuild grants from the mutable harness bundle
+            // or current swarm configuration; those values are only useful
+            // after the admission has been authenticated.
             let admission = swarm.authenticated_admission(task).await?;
             let session = swarm.session(task).await?;
             // A completed task may be explicitly resumed for a new user
