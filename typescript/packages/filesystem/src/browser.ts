@@ -11,6 +11,7 @@ import {
 } from "./wasm-adapter.js";
 
 export type * from "./public-types.js";
+export * from "./generated-client.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
 export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";

@@ -178,3 +178,4 @@ export { SimulatedMachines } from "./simulator.js";
 
 export * from "./client.js";
 export * from "./http.js";
+export * from "./generated-client.js";

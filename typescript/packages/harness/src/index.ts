@@ -25,6 +25,7 @@ import type { AggregateKind, AuthorityLevel } from "./enums.js";
 import { HARNESS_CONVERSATION_PAGE_MAXIMUM } from "./conversation-page-contract.js";
 
 export * from "./cache.js";
+export * from "./generated-client.js";
 export * from "./enums.js";
 export * from "./conversation.js";
 export * from "./native-contracts.js";
