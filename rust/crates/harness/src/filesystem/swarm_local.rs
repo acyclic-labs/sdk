@@ -3144,16 +3144,29 @@ impl PersistentLocalSwarm {
     }
 
     fn local_execution_contract(
+        &self,
         harness: &PersistentLocalHarness,
-    ) -> Result<(Value, BTreeSet<String>)> {
+    ) -> Result<(Value, BTreeSet<String>, [u8; 32])> {
         let contract = harness
             .bundle()
             .execution_contract()
             .cloned()
             .ok_or_else(|| Error::Conflict("local stock executor contract is missing".into()))?;
+        let digest = crate::contract::canonical_json_digest(&json!({
+            "model": self.config.model,
+            "limits": harness.bundle().limits(),
+            "run_limits": self.config.run_limits,
+            "tools": contract,
+            "swarm_policy": {
+                "maximum_depth": self.config.maximum_depth,
+                "maximum_children": self.config.maximum_children,
+                "budget": self.config.budget,
+            },
+        }))?;
         Ok((
             contract,
             harness.bundle().execution_requirements().clone(),
+            digest,
         ))
     }
 
@@ -3205,13 +3218,7 @@ impl PersistentLocalSwarm {
         }
         let session = self.session(task).await?;
         let harness = self.open_session(task).await?;
-        let (tool_contract, requirements) = Self::local_execution_contract(&harness)?;
-        let machine_digest = crate::contract::canonical_json_digest(&json!({
-            "model": self.config.model.clone(),
-            "limits": harness.bundle().limits(),
-            "run_limits": self.config.run_limits,
-            "tools": tool_contract,
-        }))?;
+        let (_, requirements, machine_digest) = self.local_execution_contract(&harness)?;
         let admission = crate::runtime::TaskAdmissionRecord::from_parts(
             operation,
             "acyclic.local-swarm.turn",
@@ -3264,13 +3271,8 @@ impl PersistentLocalSwarm {
                 ));
             }
         }
-        let (tool_contract, requirements) = Self::local_execution_contract(parent_harness)?;
-        let machine_digest = crate::contract::canonical_json_digest(&json!({
-            "model": self.config.model.clone(),
-            "limits": parent_harness.bundle().limits(),
-            "run_limits": self.config.run_limits,
-            "tools": tool_contract,
-        }))?;
+        let (tool_contract, requirements, machine_digest) =
+            self.local_execution_contract(parent_harness)?;
         let admission = crate::runtime::TaskAdmissionRecord::from_parts(
             operation,
             "acyclic.local-swarm.turn",
@@ -5275,13 +5277,7 @@ impl PersistentLocalSwarm {
                 "local swarm task admission no longer matches its pinned owner binding".into(),
             ));
         }
-        let (tool_contract, requirements) = Self::local_execution_contract(harness)?;
-        let machine_digest = crate::contract::canonical_json_digest(&json!({
-            "model": self.config.model.clone(),
-            "limits": harness.bundle().limits(),
-            "run_limits": self.config.run_limits,
-            "tools": tool_contract,
-        }))?;
+        let (_, requirements, machine_digest) = self.local_execution_contract(harness)?;
         let expected = crate::runtime::TaskAdmissionRecord::from_parts(
             admission.operation_id,
             "acyclic.local-swarm.turn",
