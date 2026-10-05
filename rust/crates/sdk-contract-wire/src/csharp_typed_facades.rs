@@ -90,6 +90,7 @@ fn render() -> String {
     render_object_stream(&mut out);
     render_object_info_response(&mut out);
     render_response_models(&mut out);
+    render_stream_models(&mut out);
     render_operation_validation(&mut out);
     render_operation_validation_policy(&mut out);
     render_clients(&mut out);
@@ -407,7 +408,7 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
 }
 
 fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> String {
-    let property = upper(&field.field);
+    let property = response_field_property(field);
     if let Some(binding) = PUBLIC_FIELD_BINDINGS.iter().find(|binding| {
         binding.family == family
             && binding.message == field.root_message.rsplit('.').next().unwrap_or_default()
@@ -582,22 +583,82 @@ fn render_object_info_response(out: &mut String) {
 
 fn response_model_name(family: &str, output_message: &str) -> Option<String> {
     let short = output_message.rsplit('.').next().unwrap_or(output_message);
-    if (family == "objects" && matches!(short, "GetObjectResponse" | "ObjectInfo")) {
+    if family == "objects" && matches!(short, "GetObjectResponse" | "ObjectInfo") {
         return None;
     }
     Some(format!("Rust{}{}Response", upper(family), short))
 }
 
+fn response_wire_field_type(field: &ResolvedRequestField, family: &str) -> String {
+    let mut base = match field.wire_type {
+        Some(kind) if kind == FieldType::String as i32 => "string".to_owned(),
+        Some(kind) if kind == FieldType::Bytes as i32 => "ByteString".to_owned(),
+        Some(kind) if kind == FieldType::Bool as i32 => "bool".to_owned(),
+        Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 => "uint".to_owned(),
+        Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 => "ulong".to_owned(),
+        Some(kind) if kind == FieldType::Int32 as i32 || kind == FieldType::Sint32 as i32 || kind == FieldType::Sfixed32 as i32 => "int".to_owned(),
+        Some(kind) if kind == FieldType::Int64 as i32 || kind == FieldType::Sint64 as i32 || kind == FieldType::Sfixed64 as i32 => "long".to_owned(),
+        Some(kind) if kind == FieldType::Float as i32 => "float".to_owned(),
+        Some(kind) if kind == FieldType::Double as i32 => "double".to_owned(),
+        Some(kind) if kind == FieldType::Enum as i32 => qualified_fq_message(field.type_name.as_deref().unwrap_or(""), family),
+        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => qualified_fq_message(field.type_name.as_deref().unwrap_or("google.protobuf.Message"), family),
+        _ => "IMessage".to_owned(),
+    };
+    if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
+        base = format!("IReadOnlyList<{base}>");
+    } else if field.proto3_optional && !field.oneof_index.is_some() && matches!(field.wire_type, Some(kind) if kind != FieldType::Message as i32 && kind != FieldType::Group as i32 && kind != FieldType::String as i32 && kind != FieldType::Bytes as i32) {
+        base.push('?');
+    }
+    base
+}
+
 fn response_field_type(field: &ResolvedRequestField, family: &str) -> String {
+    if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
+        return response_wire_field_type(field, family);
+    }
+    if field.semantic_type.as_deref() == Some("immutable_image") {
+        return response_wire_field_type(field, family);
+    }
     full_csharp_field_type(field, family)
 }
 
-fn response_field_accessor(field: &ResolvedRequestField) -> String {
-    let property = upper(&field.field);
-    if field.wire_type == Some(FieldType::Enum as i32) {
-        format!("(int)Wire.{property}")
+fn response_field_property(field: &ResolvedRequestField) -> String {
+    // Google.Protobuf appends `_` when a field has the same C# name as its
+    // enclosing message (for example objects.v2.Bucket.bucket).
+    if field.field == "bucket" && field.root_message.ends_with(".Bucket") {
+        "Bucket_".to_owned()
     } else {
-        format!("Wire.{property}")
+        upper(&field.field)
+    }
+}
+
+fn response_field_accessor(field: &ResolvedRequestField) -> String {
+    let property = response_field_property(field);
+    if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
+        return format!("Wire.{property}");
+    }
+    let Some(semantic_id) = field.semantic_type.as_deref() else {
+        if field.wire_type == Some(FieldType::Enum as i32) {
+            return format!("(int)Wire.{property}");
+        }
+        return format!("Wire.{property}");
+    };
+    if semantic_id == "immutable_image" {
+        return format!("Wire.{property}");
+    }
+    let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
+    let rust_name = semantic.rust_name;
+    match semantic.wire_kind {
+        WireValueKind::String => format!("new {rust_name}(Wire.{property})"),
+        WireValueKind::Bytes => {
+            if field.wire_type == Some(FieldType::Message as i32) || field.wire_type == Some(FieldType::Group as i32) {
+                format!("new {rust_name}(Wire.{property}.Value.ToByteArray())")
+            } else {
+                format!("new {rust_name}(Wire.{property}.ToByteArray())")
+            }
+        }
+        WireValueKind::UnsignedInteger | WireValueKind::SignedInteger | WireValueKind::Boolean => format!("new {rust_name}(Wire.{property})"),
+        _ => format!("Wire.{property}"),
     }
 }
 
@@ -618,26 +679,31 @@ fn render_response_models(out: &mut String) {
         let Some(model) = response_model_name(&family, &root) else { continue };
         let wire = qualified_fq_message(&root, &family);
         out.push_str(&format!("public sealed record {model}({wire} Wire)\n{{\n"));
-        let direct = fields
-            .iter()
-            .filter(|field| {
-                field.family == family
-                    && field.root_message == root
-                    && field.message_path == root
-            })
-            .collect::<Vec<_>>();
-        for field in direct {
-            let property = upper(&field.field);
+        // A response descriptor may be contributed by several Rust-owned
+        // evidence paths with distinct source numbers but the same canonical
+        // field name. C# cannot emit duplicate properties, so deduplicate on
+        // the public field identity while preserving the first descriptor's
+        // type and accessor.
+        let mut seen = BTreeSet::<String>::new();
+        for field in fields.iter().filter(|field| {
+            field.family == family
+                && field.root_message == root
+                && field.message_path == root
+        }) {
+            if !seen.insert(field.field.clone()) {
+                continue;
+            }
+            let property = response_field_property(field);
             out.push_str(&format!(
                 "    public {} {} => {};\n",
                 response_field_type(field, &family),
                 property,
                 response_field_accessor(field)
             ));
-            if field.proto3_optional {
+            if field.proto3_optional && field.oneof_index.is_none() {
                 out.push_str(&format!("    public bool Has{property} => Wire.Has{property};\n"));
             }
-            if field.wire_type == Some(FieldType::Enum as i32) {
+            if field.wire_type == Some(FieldType::Enum as i32) && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
                 out.push_str(&format!("    public int {property}Number => (int)Wire.{property};\n"));
             }
             if field.oneof_index.is_some() {
@@ -646,6 +712,30 @@ fn render_response_models(out: &mut String) {
             }
         }
         out.push_str(&format!("    internal static {model} FromWire({wire} message) => new(message);\n}}\n\n"));
+    }
+}
+fn stream_model_name(family: &str, method: &str) -> String {
+    format!("Rust{}{}Stream", upper(family), method)
+}
+
+/// Generate lifecycle-preserving typed adapters for every streaming RPC. The
+/// only public response values are Rust-owned response facades; the raw gRPC
+/// call remains private inside the generated adapter.
+fn render_stream_models(out: &mut String) {
+    let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve");
+    for method in methods.iter().filter(|method| method.client_streaming || method.server_streaming) {
+        let Some(response_model) = response_model_name(&method.family, &method.output_message) else { continue };
+        let name = stream_model_name(&method.family, &method.method);
+        let input = qualified_fq_message(&method.input_message, &method.family);
+        let output = qualified_fq_message(&method.output_message, &method.family);
+        out.push_str(&format!("public sealed class {name} : IDisposable\n{{\n"));
+        if method.client_streaming && method.server_streaming {
+            out.push_str(&format!("    private readonly AsyncDuplexStreamingCall<{input}, {output}> _inner;\n    internal {name}(AsyncDuplexStreamingCall<{input}, {output}> inner) => _inner = inner;\n    public IClientStreamWriter<{input}> RequestStream => _inner.RequestStream;\n    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;\n    public Status GetStatus() => _inner.GetStatus();\n    public Metadata GetTrailers() => _inner.GetTrailers();\n    public async IAsyncEnumerable<{response_model}> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)\n    {{\n        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return {response_model}.FromWire(_inner.ResponseStream.Current);\n    }}\n    public void Dispose() => _inner.Dispose();\n}}\n\n"));
+        } else if method.client_streaming {
+            out.push_str(&format!("    private readonly AsyncClientStreamingCall<{input}, {output}> _inner;\n    internal {name}(AsyncClientStreamingCall<{input}, {output}> inner) => _inner = inner;\n    public IClientStreamWriter<{input}> RequestStream => _inner.RequestStream;\n    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;\n    public Task<{response_model}> ResponseAsync => MapResponseAsync(_inner.ResponseAsync);\n    public Status GetStatus() => _inner.GetStatus();\n    public Metadata GetTrailers() => _inner.GetTrailers();\n    public void Dispose() => _inner.Dispose();\n    private static async Task<{response_model}> MapResponseAsync(Task<{output}> response) => {response_model}.FromWire(await response.ConfigureAwait(false));\n}}\n\n"));
+        } else {
+            out.push_str(&format!("    private readonly AsyncServerStreamingCall<{output}> _inner;\n    internal {name}(AsyncServerStreamingCall<{output}> inner) => _inner = inner;\n    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;\n    public Status GetStatus() => _inner.GetStatus();\n    public Metadata GetTrailers() => _inner.GetTrailers();\n    public async IAsyncEnumerable<{response_model}> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)\n    {{\n        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return {response_model}.FromWire(_inner.ResponseStream.Current);\n    }}\n    public void Dispose() => _inner.Dispose();\n}}\n\n"));
+        }
     }
 }
 fn render_operation_validation(out: &mut String) {
@@ -780,6 +870,28 @@ fn render_operation_validation_policy(out: &mut String) {
         }
     }
 
+    private static void RequireOrderedParts(string validation, object? value)
+    {
+        if (value is not System.Collections.IEnumerable sequence)
+            throw new ArgumentException($"{validation} requires uploaded part receipts", nameof(value));
+
+        var count = 0;
+        uint previous = 0;
+        foreach (var item in sequence)
+        {
+            if (item is not Acyclic.Objects.V2.UploadedPart part)
+                throw new ArgumentException($"{validation} requires uploaded part receipts", nameof(value));
+
+            var number = part.PartNumber;
+            if (++count > RustOperationValidation.MaxMultipartParts
+                || number == 0
+                || number > RustOperationValidation.MaxMultipartParts
+                || (count > 1 && number <= previous))
+                throw new ArgumentOutOfRangeException(nameof(value), validation);
+            previous = number;
+        }
+    }
+
     internal static void ValidateClientPolicy(string validation, object? value)
     {
         switch (validation)
@@ -831,6 +943,9 @@ fn render_operation_validation_policy(out: &mut String) {
                 break;
             case "preconditions.atomic":
                 RequirePreconditions(value);
+                break;
+            case "parts.ordered_exact":
+                RequireOrderedParts(validation, value);
                 break;
             case "expected_configuration_revision.non_negative":
                 if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
@@ -941,6 +1056,12 @@ fn render_family_client(
         let service_field = lower_camel(method.service.trim_end_matches("Service"));
         let input = qualified_fq_message(&method.input_message, family);
         let output = qualified_fq_message(&method.output_message, family);
+        let response_model = response_model_name(family, &method.output_message);
+        let public_output = response_model.as_deref().unwrap_or(&output);
+        let wrap_response = |expression: String| match response_model.as_deref() {
+            Some(model) => format!("{model}.FromWire({expression})"),
+            None => expression,
+        };
         let semantic_model = resolved_request_fields().ok().and_then(|fields| {
             let short = method.input_message.rsplit('.').next().unwrap_or_default();
             fields
@@ -966,52 +1087,93 @@ fn render_family_client(
         };
         let args = "Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default";
         match (family, method.method.as_str()) {
-            ("objects", "CreateBucket") => out.push_str(&format!(
-                "    public {output} CreateBucket(ObjectsCreateBucketRequest request, {args}) => _{service_field}.CreateBucket(request.ToWire(), headers, deadline, cancellationToken);\n"
-            )),
+            ("objects", "CreateBucket") => {
+                let call = format!("_{service_field}.CreateBucket(request.ToWire(), headers, deadline, cancellationToken)");
+                out.push_str(&format!(
+                    "    public {public_output} CreateBucket(ObjectsCreateBucketRequest request, {args}) => {};\n",
+                    wrap_response(call)
+                ));
+            },
             ("objects", "GetObject") => out.push_str(&format!(
                 "    public ObjectsGetObjectStream GetObject({public_input} request, {args}) => new(_{service_field}.GetObject({request_expr}, headers, deadline, cancellationToken));\n"
             )),
             ("objects", "CompleteMultipart") => out.push_str(&format!(
                 "    public ObjectsObjectInfo CompleteMultipart({public_input} request, {args}) {{ RustOperationValidation.ValidateOrderedPartNumbers(System.Linq.Enumerable.Select(request.Parts, part => part.PartNumber)); return ObjectsObjectInfo.FromWire(_{service_field}.CompleteMultipart({request_expr}, headers, deadline, cancellationToken)); }}\n"
             )),
-            ("stream", "Append") => out.push_str(&format!(
-                "    public {output} Append({public_input} request, {args}) {{ RustOperationValidation.ValidateRecordBytes(request.Records); return _{service_field}.Append({request_expr}, headers, deadline, cancellationToken); }}\n"
-            )),
-            ("stream", "Commit") => out.push_str(&format!(
-                "    public {output} Commit({public_input} request, {args}) {{ RustOperationValidation.ValidateCommandSize({validation_request_expr}); return _{service_field}.Commit({request_expr}, headers, deadline, cancellationToken); }}\n"
-            )),
-            ("inference", "Create") if method.service == "ContextsService" => out.push_str(&format!(
-                "    public {output} CreateContext(Inference.Customer.V1.CreateContextRequest request, {args}) => _{service_field}.Create(request, headers, deadline, cancellationToken);\n"
-            )),
-            ("inference", "Create") => out.push_str(&format!(
-                "    public {output} CreateEvaluation(InferenceCreateEvaluationRequest request, {args}) => _{service_field}.Create(request.ToWire(), headers, deadline, cancellationToken);\n"
-            )),
-            ("machines", "QualifyImage") => out.push_str(&format!(
-                "    public {output} QualifyImage({public_input} request, {args}) => _{service_field}.QualifyImage({request_expr}, headers, deadline, cancellationToken);\n"
-            )),
-            ("machines", "Create") => out.push_str(&format!(
-                "    public {output} Create({public_input} request, {args}) => _{service_field}.Create({request_expr}, headers, deadline, cancellationToken);\n"
-            )),
+            ("stream", "Append") => {
+                let call = format!("_{service_field}.Append({request_expr}, headers, deadline, cancellationToken)");
+                out.push_str(&format!(
+                    "    public {public_output} Append({public_input} request, {args}) {{ RustOperationValidation.ValidateRecordBytes(request.Records); return {}; }}\n",
+                    wrap_response(call)
+                ));
+            },
+            ("stream", "Commit") => {
+                let call = format!("_{service_field}.Commit({request_expr}, headers, deadline, cancellationToken)");
+                out.push_str(&format!(
+                    "    public {public_output} Commit({public_input} request, {args}) {{ RustOperationValidation.ValidateCommandSize({validation_request_expr}); return {}; }}\n",
+                    wrap_response(call)
+                ));
+            },
+            ("inference", "Create") if method.service == "ContextsService" => {
+                let call = format!("_{service_field}.Create(request, headers, deadline, cancellationToken)");
+                out.push_str(&format!(
+                    "    public {public_output} CreateContext(Inference.Customer.V1.CreateContextRequest request, {args}) => {};\n",
+                    wrap_response(call)
+                ));
+            },
+            ("inference", "Create") => {
+                let call = format!("_{service_field}.Create(request.ToWire(), headers, deadline, cancellationToken)");
+                out.push_str(&format!(
+                    "    public {public_output} CreateEvaluation(InferenceCreateEvaluationRequest request, {args}) => {};\n",
+                    wrap_response(call)
+                ));
+            },
+            ("machines", "QualifyImage") => {
+                let call = format!("_{service_field}.QualifyImage({request_expr}, headers, deadline, cancellationToken)");
+                out.push_str(&format!(
+                    "    public {public_output} QualifyImage({public_input} request, {args}) => {};\n",
+                    wrap_response(call)
+                ));
+            },
+            ("machines", "Create") => {
+                let call = format!("_{service_field}.Create({request_expr}, headers, deadline, cancellationToken)");
+                out.push_str(&format!(
+                    "    public {public_output} Create({public_input} request, {args}) => {};\n",
+                    wrap_response(call)
+                ));
+            },
             ("objects", "PutObject") => out.push_str(&format!(
                 "    public ObjectsPutObjectStream PutObject({args}) => new(_{service_field}.PutObject(headers, deadline, cancellationToken));\n"
             )),
-            _ if method.client_streaming && method.server_streaming => out.push_str(&format!(
-                "    public AsyncDuplexStreamingCall<{input}, {output}> {}({args}) => _{service_field}.{}(headers, deadline, cancellationToken);\n",
-                method.method, method.method
-            )),
-            _ if method.client_streaming => out.push_str(&format!(
-                "    public AsyncClientStreamingCall<{input}, {output}> {}({args}) => _{service_field}.{}(headers, deadline, cancellationToken);\n",
-                method.method, method.method
-            )),
-            _ if method.server_streaming => out.push_str(&format!(
-                "    public AsyncServerStreamingCall<{output}> {}({public_input} request, {args}) => _{service_field}.{}({request_expr}, headers, deadline, cancellationToken);\n",
-                method.method, method.method
-            )),
-            _ => out.push_str(&format!(
-                "    public {output} {}({public_input} request, {args}) => _{service_field}.{}({request_expr}, headers, deadline, cancellationToken);\n",
-                method.method, method.method,
-            )),
+            _ if method.client_streaming && method.server_streaming => {
+                let stream = stream_model_name(family, &method.method);
+                out.push_str(&format!(
+                    "    public {stream} {}({args}) => new(_{service_field}.{}(headers, deadline, cancellationToken));\n",
+                    method.method, method.method
+                ));
+            },
+            _ if method.client_streaming => {
+                let stream = stream_model_name(family, &method.method);
+                out.push_str(&format!(
+                    "    public {stream} {}({args}) => new(_{service_field}.{}(headers, deadline, cancellationToken));\n",
+                    method.method, method.method
+                ));
+            },
+            _ if method.server_streaming => {
+                let stream = stream_model_name(family, &method.method);
+                out.push_str(&format!(
+                    "    public {stream} {}({public_input} request, {args}) => new(_{service_field}.{}({request_expr}, headers, deadline, cancellationToken));\n",
+                    method.method, method.method
+                ));
+            },
+            _ => {
+                let call = format!("_{service_field}.{}({request_expr}, headers, deadline, cancellationToken)", method.method);
+                out.push_str(&format!(
+                    "    public {public_output} {}({public_input} request, {args}) => {};\n",
+                    method.method,
+                    wrap_response(call)
+                ));
+            },
         }
     }
     out.push_str("}\n\n");
@@ -1119,6 +1281,18 @@ fn qualified_namespace(module: &str) -> &'static str {
 
 fn qualified_fq_message(name: &str, fallback_module: &str) -> String {
     let trimmed = name.trim_start_matches('.');
+    if trimmed == "google.protobuf.Timestamp" {
+        return "Google.Protobuf.WellKnownTypes.Timestamp".to_owned();
+    }
+    if trimmed == "google.protobuf.Duration" {
+        return "Google.Protobuf.WellKnownTypes.Duration".to_owned();
+    }
+    if trimmed == "google.protobuf.Any" {
+        return "Google.Protobuf.WellKnownTypes.Any".to_owned();
+    }
+    if trimmed == "google.protobuf.Empty" {
+        return "Google.Protobuf.WellKnownTypes.Empty".to_owned();
+    }
     let module = if trimmed.starts_with("acyclic.actors.v1.") {
         "actors"
     } else if trimmed.starts_with("acyclic.workers.v1.") {
@@ -1169,6 +1343,8 @@ fn upper(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{generate_csharp_type_policy_tests, generate_csharp_typed_facade};
     use crate::type_policy::{
         PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldDirection, SEMANTIC_TYPES,
@@ -1275,6 +1451,40 @@ mod tests {
         assert!(source.contains("wire.IfTail = IfTail ?? 0;"));
         assert!(source.contains("wire.AtTail = AtTail ?? 0;"));
         assert!(source.contains("wire.ExpectedRevision = ExpectedRevision ?? 0;"));
+    }
+
+    #[test]
+    fn csharp_response_models_have_unique_public_properties() {
+        let (_, source) = generate_csharp_typed_facade();
+        let mut model: Option<&str> = None;
+        let mut properties = BTreeSet::new();
+        for line in source.lines() {
+            if let Some(rest) = line.strip_prefix("public sealed record ") {
+                model = rest.split('(').next();
+                properties.clear();
+            }
+            let Some(current) = model else { continue };
+            if line.contains("internal static") {
+                model = None;
+                properties.clear();
+                continue;
+            }
+            let trimmed = line.trim_start();
+            if !current.contains("Response") || !trimmed.starts_with("public ") || !trimmed.contains("=>") {
+                continue;
+            }
+            let Some(property) = trimmed
+                .split("=>")
+                .next()
+                .and_then(|value| value.split_whitespace().last())
+            else {
+                continue;
+            };
+            assert!(
+                properties.insert(property),
+                "duplicate generated C# response property {current}.{property}"
+            );
+        }
     }
 
     #[test]
