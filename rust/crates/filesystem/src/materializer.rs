@@ -617,6 +617,8 @@ fn validate_native_relative_path(
         let std::path::Component::Normal(name) = component else {
             return Err(NativeTreeMaterializationError::InvalidPath(path.to_owned()));
         };
+        #[cfg(windows)]
+        validate_windows_native_component(name, path)?;
         cursor.push(name);
         if index.saturating_add(1) == components.len() {
             break;
@@ -633,6 +635,112 @@ fn validate_native_relative_path(
             Err(error) => return Err(NativeTreeMaterializationError::Io(error)),
         }
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_native_component(
+    name: &std::ffi::OsStr,
+    path: &str,
+) -> Result<(), NativeTreeMaterializationError> {
+    let name = name
+        .to_str()
+        .ok_or_else(|| NativeTreeMaterializationError::InvalidPath(path.to_owned()))?;
+    // Win32 normalizes trailing spaces and periods and treats ':' as an
+    // alternate data stream separator. Neither spelling addresses an exact
+    // logical workspace object, so reject it before any host lookup.
+    if name.is_empty()
+        || name.ends_with('.')
+        || name.ends_with(' ')
+        || name.contains(':')
+        || name.chars().any(|character| {
+            character <= '\u{001f}' || matches!(character, '<' | '>' | '"' | '|' | '?' | '*')
+        })
+    {
+        return Err(NativeTreeMaterializationError::AliasedPath(path.to_owned()));
+    }
+
+    let stem = name
+        .trim_end_matches(['.', ' '])
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        return Err(NativeTreeMaterializationError::AliasedPath(path.to_owned()));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_native_plan_aliases(
+    plan: &MaterializationPlan,
+) -> Result<(), NativeTreeMaterializationError> {
+    #[cfg(windows)]
+    {
+        let mut paths = Vec::with_capacity(plan.edits.len().saturating_mul(2));
+        for edit in &plan.edits {
+            match edit {
+                MaterializationEdit::Install { path, .. }
+                | MaterializationEdit::Remove { path }
+                | MaterializationEdit::SetMetadata { path, .. } => paths.push(path),
+                MaterializationEdit::Rename { from, to } => {
+                    paths.push(from);
+                    paths.push(to);
+                }
+            }
+        }
+        let mut folded = paths
+            .into_iter()
+            .map(|path| {
+                (
+                    path.chars()
+                        .flat_map(char::to_lowercase)
+                        .collect::<String>(),
+                    path,
+                )
+            })
+            .collect::<Vec<_>>();
+        folded.sort_by(|left, right| left.0.cmp(&right.0));
+        for pair in folded.windows(2) {
+            let [left, right] = pair else { continue };
+            if left.0 == right.0
+                || right
+                    .0
+                    .strip_prefix(&left.0)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            {
+                return Err(NativeTreeMaterializationError::AliasedPath(
+                    right.1.to_owned(),
+                ));
+            }
+        }
+    }
+    let _ = plan;
     Ok(())
 }
 
@@ -726,6 +834,7 @@ impl NativeTreeMaterializationBackend {
             edits,
         };
         validate_plan(&plan).map_err(|()| NativeTreeMaterializationError::OverlappingPaths)?;
+        validate_native_plan_aliases(&plan)?;
         Ok(plan)
     }
 
@@ -1845,6 +1954,7 @@ where
     })
     .await??;
     plan.edits.extend(metadata_edits);
+    validate_native_plan_aliases(&plan)?;
     JournaledMaterializer::new(state.clone(), backend)
         .apply(plan)
         .await
@@ -3065,6 +3175,51 @@ mod tests {
                 if path == "alias/escape.txt"
         ));
         assert!(!outside.join("escape.txt").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_tree_backend_rejects_windows_namespace_aliases() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(operation.join("target")).expect("target");
+        let backend =
+            NativeTreeMaterializationBackend::new(&root, &operation).expect("native backend");
+
+        for path in [
+            "stream:payload.txt",
+            "trailing. ",
+            "CON.txt",
+            "NUL",
+            "bad?name",
+        ] {
+            assert!(
+                matches!(
+                    backend.plan_paths(
+                        OperationId::new(),
+                        GenerationId::new(Digest::from_bytes([1; 32])),
+                        GenerationId::new(Digest::from_bytes([2; 32])),
+                        [path.to_owned()],
+                    ),
+                    Err(NativeTreeMaterializationError::AliasedPath(actual))
+                        if actual == path
+                ),
+                "path should be rejected as a Windows namespace alias: {path}"
+            );
+        }
+
+        assert!(matches!(
+            backend.plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["Case.txt".to_owned(), "case.txt".to_owned()],
+            ),
+            Err(NativeTreeMaterializationError::AliasedPath(path))
+                if path == "case.txt"
+        ));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
