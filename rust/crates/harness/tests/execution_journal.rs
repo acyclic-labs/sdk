@@ -95,6 +95,30 @@ impl ToolExecutor for CountingNoopTool {
     }
 }
 
+/// Models an executor that performed an external effect before losing its
+/// result. Recovery must reconcile the durable claim rather than classify the
+/// conflict as a terminal tool failure or invoke the effect a second time.
+struct EffectThenConflictTool {
+    effects: Arc<AtomicUsize>,
+    reconciliations: Arc<AtomicUsize>,
+}
+
+impl ToolExecutor for EffectThenConflictTool {
+    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Err(Error::Conflict(
+                "effect completed before reply was lost".into(),
+            ))
+        })
+    }
+
+    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        self.reconciliations.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(Some(ToolResult { value: Value::Null })) })
+    }
+}
+
 /// Simulates a terminal race: the committed winner is observable, but this
 /// caller receives the losing CAS outcome and must replay without redispatch.
 struct TerminalCasLoser {
@@ -507,6 +531,117 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             .last()
             .map(|record| &record.event),
         Some(ExecutionEvent::ToolFailed { .. })
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_claim_conflict_stays_indeterminate_until_reconciliation() -> Result<()> {
+    let provider = ProviderRef::new("tool-recovery-e2e", "filesystem", "2")?;
+    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let agent = AgentId::from_bytes([68; 16]);
+    let private = VolumeRef::new(
+        provider,
+        "scratch",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+    )?;
+    host.create_volume(&private).await?;
+    let issuer = AuthorityIssuer::new(
+        "tool-recovery-e2e",
+        [68; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "tool-recovery-owner".into(),
+        },
+    );
+    let scope = issuer.root_for_agent(
+        agent,
+        "agent",
+        Capabilities::new([
+            private.capability(VolumeOperation::Read)?,
+            private.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let journal = Arc::new(FilesystemExecutionJournal::new(
+        StreamClient::new(Arc::new(MemoryStream::default())),
+        host,
+        private,
+        issuer.verifier(),
+        scope,
+        4_096,
+    )?);
+    let definition = ToolDefinition {
+        name: "example.effect-then-conflict".into(),
+        revision: "1".into(),
+        description: "Effect then lost result".into(),
+        input_schema: json!({"type":"object"}),
+        output_schema: json!({}),
+        model_output_schema: json!({}),
+    };
+    let effects = Arc::new(AtomicUsize::new(0));
+    let reconciliations = Arc::new(AtomicUsize::new(0));
+    let executor = Arc::new(EffectThenConflictTool {
+        effects: effects.clone(),
+        reconciliations: reconciliations.clone(),
+    });
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        definition: definition.clone(),
+        executor,
+        projection: Arc::new(NoopTool),
+    })?;
+    let runner = DurableToolRunner::new(registry, journal.clone());
+    let task = TaskId::from_bytes([69; 16]);
+    let operation = OperationId::from_bytes([70; 16]);
+    let task_scope = RuntimeScope::new(
+        Capabilities::new(["tool:call:example.effect-then-conflict"]),
+        Limits::default(),
+    )?;
+    let mut bindings = Bindings::local();
+    bindings.scope = task_scope.clone();
+    bindings.state = Some(Arc::new(TestTaskState(task_scope)));
+    let runtime = bindings.build()?;
+    let durable = runtime
+        .durable_context(task, OperationId::from_bytes([71; 16]))
+        .await?;
+    let context = ToolContext::new(durable, operation, operation.to_string())?;
+
+    assert!(matches!(
+        runner
+            .run_with_context(
+                task,
+                operation,
+                definition.clone(),
+                json!({}),
+                context.clone(),
+            )
+            .await?,
+        Outcome::Indeterminate { operation_id } if operation_id == operation
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+    assert!(!journal
+        .replay(operation)
+        .await?
+        .iter()
+        .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. })));
+
+    assert!(matches!(
+        runner
+            .run_with_context(task, operation, definition, json!({}), context)
+            .await?,
+        Outcome::Succeeded(Value::Null)
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        journal
+            .replay(operation)
+            .await?
+            .last()
+            .map(|record| &record.event),
+        Some(ExecutionEvent::ToolCompleted { .. })
     ));
     Ok(())
 }

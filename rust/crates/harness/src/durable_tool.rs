@@ -5,7 +5,10 @@ use crate::{
     conversation::Limits,
     executor::{ExecutionEvent, ExecutionJournal, ToolFailureKind, load_json, stage_json},
     runtime::ToolContext,
-    tool::{ToolDefinition, ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    tool::{
+        PostClaimFailureDisposition, ToolDefinition, ToolInvocation, ToolRegistry, ToolResult,
+        validate_value,
+    },
     workflow::{
         DurableWorkflowHost, MachineCheckpoint, MachineRegistry, MachineStatus, MachineTransition,
         ResumableMachine, WorkflowAdmission, WorkflowJournal,
@@ -489,18 +492,23 @@ impl DurableToolRunner {
                 Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                     return Ok(Outcome::Indeterminate { operation_id });
                 }
-                Err(_) => {
-                    return self
-                        .fail(
-                            task_id,
-                            operation_id,
-                            &definition,
-                            &invocation,
-                            replay_context,
-                            ToolFailureKind::ExecutorRejected,
-                        )
-                        .await;
-                }
+                Err(error) => match tool.executor.classify_post_claim_error(&error) {
+                    PostClaimFailureDisposition::KnownRejection => {
+                        return self
+                            .fail(
+                                task_id,
+                                operation_id,
+                                &definition,
+                                &invocation,
+                                replay_context,
+                                ToolFailureKind::ExecutorRejected,
+                            )
+                            .await;
+                    }
+                    PostClaimFailureDisposition::Indeterminate => {
+                        return Ok(Outcome::Indeterminate { operation_id });
+                    }
+                },
             }
         } else {
             let observed = tool

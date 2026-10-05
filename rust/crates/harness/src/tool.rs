@@ -600,6 +600,21 @@ pub struct ToolResult {
     pub value: Value,
 }
 
+/// Disposition of an executor error observed after the durable dispatch
+/// record has been committed.
+///
+/// Once `ToolStarted` is durable, an ordinary error does not prove that the
+/// executor failed before producing an external effect. Adapters may opt into
+/// `KnownRejection` only when they have that proof; all other errors remain
+/// indeterminate and must be reconciled without redispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PostClaimFailureDisposition {
+    /// The adapter proved that no external effect was dispatched.
+    KnownRejection,
+    /// The effect or its outcome may be unknown.
+    Indeterminate,
+}
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: Send + Sync {
     /// Checks invocation-specific resource grants before a result is replayed,
@@ -650,6 +665,16 @@ pub trait ToolExecutor: Send + Sync {
         invocation: ToolInvocation,
     ) -> BoxFuture<'a, Result<ToolResult>> {
         self.execute(invocation)
+    }
+
+    /// Classifies an error returned after the durable dispatch boundary.
+    ///
+    /// The conservative default preserves uncertainty. An implementation may
+    /// return `KnownRejection` only when its own protocol guarantees that the
+    /// effect was rejected before dispatch; typed authorization and policy
+    /// denials that run before `ToolStarted` remain ordinary admission errors.
+    fn classify_post_claim_error(&self, _error: &Error) -> PostClaimFailureDisposition {
+        PostClaimFailureDisposition::Indeterminate
     }
 
     /// Reconciles a previously started invocation without executing it again.
