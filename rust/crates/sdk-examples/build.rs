@@ -1,6 +1,7 @@
 #[path = "src/source_closure.rs"]
 mod source_closure;
 
+use acyclic_sdk_contract_wire::{BindingTransport, transport_control};
 use std::{env, path::PathBuf};
 
 fn main() {
@@ -21,4 +22,13 @@ fn main() {
     if let Some(target) = target {
         println!("cargo:rustc-env=SDK_EXAMPLES_BUILD_TARGET={target}");
     }
+    let control_output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("control");
+    transport_control::generate_control_bindings(
+        &control_output,
+        BindingTransport::Tonic {
+            client: true,
+            server: true,
+        },
+    )
+    .unwrap_or_else(|error| panic!("generate Rust transport control bindings: {error}"));
 }
