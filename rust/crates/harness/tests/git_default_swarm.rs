@@ -2,10 +2,10 @@
 #![cfg(feature = "filesystem-local")]
 
 use acyclic_fs::{
-    ConflictSide, Digest, Fs, GenerationId, GitCommand, GitFilesystemAction, GitFilesystemExecutor,
-    GitFilesystemResult, GitObjectName, GitResetMode, GitTreeRef, LocalAuthorityBackend,
-    LocalObjectBackend, LocalOptions, MemoryGitCompatStore, MergeConflict,
-    OperationId as FsOperationId, WorkspaceId,
+    ConflictSide, Digest, Fs, GenerationId, GitBranch, GitCommand, GitCompatState, GitCompatStore,
+    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitObjectName, GitResetMode,
+    GitTreeRef, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend, LocalOptions,
+    MemoryGitCompatStore, MergeConflict, OperationId as FsOperationId, WorkspaceId,
 };
 use acyclic_harness::conversation::{
     ContentGrant, MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner,
@@ -19,7 +19,9 @@ use acyclic_harness::filesystem::{
     FilesystemGitFacade, FilesystemHost, WorkspaceMutation, workspace_ref,
 };
 use acyclic_harness::fork::{CapturedResource, ForkSeed, ResourceRevision};
-use acyclic_harness::model::{Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider};
+use acyclic_harness::model::{
+    Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest,
+};
 use acyclic_harness::resources::{GenerationRef, ProviderRef, StreamRef};
 use acyclic_harness::tool::{ToolExecutor, ToolInvocation};
 use acyclic_harness::{Error, Limits, OperationId, Result};
@@ -438,6 +440,188 @@ impl ModelProvider for GitStatusProvider {
     }
 }
 
+struct RuntimeGitSwarmProvider {
+    child_operation: OperationId,
+    grandchild_operation: OperationId,
+    root_fork_sent: AtomicBool,
+    child_fork_sent: AtomicBool,
+    merge_child: AtomicBool,
+    merge_root: AtomicBool,
+    reject_root_merge: AtomicBool,
+    merge_child_sent: AtomicBool,
+    merge_root_sent: AtomicBool,
+    reject_root_sent: AtomicBool,
+}
+
+impl RuntimeGitSwarmProvider {
+    fn new(child_operation: OperationId, grandchild_operation: OperationId) -> Arc<Self> {
+        Arc::new(Self {
+            child_operation,
+            grandchild_operation,
+            root_fork_sent: AtomicBool::new(false),
+            child_fork_sent: AtomicBool::new(false),
+            merge_child: AtomicBool::new(false),
+            merge_root: AtomicBool::new(false),
+            reject_root_merge: AtomicBool::new(false),
+            merge_child_sent: AtomicBool::new(false),
+            merge_root_sent: AtomicBool::new(false),
+            reject_root_sent: AtomicBool::new(false),
+        })
+    }
+
+    fn task(request: &ModelRequest) -> Option<String> {
+        request.messages.iter().find_map(|message| {
+            let ModelContent::Text(text) = &message.content else {
+                return None;
+            };
+            let suffix = text.strip_prefix("child task: ")?;
+            Some(suffix.split(';').next()?.to_owned())
+        })
+    }
+}
+
+impl ModelProvider for RuntimeGitSwarmProvider {
+    fn generate<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
+        let request = prepared.request();
+        let task = Self::task(request);
+        let root = task.is_none();
+        let events = if root && !self.root_fork_sent.swap(true, Ordering::SeqCst) {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-fork-child".into(),
+                    name: "acyclic.fork_child".into(),
+                    arguments: json!({
+                        "child_operation": self.child_operation.to_string(),
+                        "task": "runtime-child",
+                        "prompt": "integrate the runtime grandchild"
+                    }),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if task.as_deref() == Some("runtime-child")
+            && !self.child_fork_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-fork-grandchild".into(),
+                    name: "acyclic.fork_child".into(),
+                    arguments: json!({
+                        "child_operation": self.grandchild_operation.to_string(),
+                        "task": "runtime-grandchild",
+                        "prompt": "write the final runtime file"
+                    }),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if task.as_deref() == Some("runtime-child")
+            && self.merge_child.load(Ordering::SeqCst)
+            && !self.merge_child_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-merge-grandchild".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "grandchild"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if root
+            && self.merge_root.load(Ordering::SeqCst)
+            && !self.merge_root_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-merge-child".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "child"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else if root
+            && self.reject_root_merge.load(Ordering::SeqCst)
+            && !self.reject_root_sent.swap(true, Ordering::SeqCst)
+        {
+            vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "runtime-reject-grandchild".into(),
+                    name: "acyclic.git".into(),
+                    arguments: json!({"argv": ["merge", "grandchild"]}),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        } else {
+            vec![
+                Ok(ModelEvent::Content {
+                    delta: "runtime-ready".into(),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]
+        };
+        Box::pin(stream::iter(events))
+    }
+}
+
+fn project_from_seed(seed: &ForkSeed) -> Result<VolumeRef> {
+    seed.resources
+        .iter()
+        .find_map(|resource| match &resource.revision {
+            ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| Error::Invalid("runtime fork seed has no project revision".into()))
+}
+
+async fn install_git_branch(
+    root: &std::path::Path,
+    parent: WorkspaceId,
+    name: &str,
+    source: WorkspaceId,
+) -> Result<()> {
+    let store = LocalCoreStateStore::new(root.join("git"));
+    let current = store
+        .load(parent)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let (expected, mut state) = current
+        .map(|state| (state.revision, state))
+        .unwrap_or_else(|| (0, GitCompatState::new("main", parent)));
+    state.branches.insert(
+        name.to_owned(),
+        GitBranch {
+            name: name.to_owned(),
+            workspace_id: source,
+            head: None,
+            tracked_paths: Default::default(),
+        },
+    );
+    if expected != 0 {
+        state.revision = expected + 1;
+    }
+    let replaced = store
+        .compare_and_swap(parent, expected, state)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    if !replaced {
+        return Err(Error::Conflict("runtime Git branch state raced".into()));
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn default_local_swarm_opens_with_the_git_facade_bound() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -499,6 +683,148 @@ async fn default_local_swarm_executes_git_status_and_reopens() -> Result<()> {
         .await?;
     assert_eq!(output.text, "git-ready");
     assert!(reopened_provider.result_seen.load(Ordering::SeqCst));
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_runtime_git_merges_only_through_explicit_authenticated_commands() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let child_operation = OperationId::from_bytes([0xE1; 16]);
+    let grandchild_operation = OperationId::from_bytes([0xE2; 16]);
+    let provider = RuntimeGitSwarmProvider::new(child_operation, grandchild_operation);
+    let model = Model::new("mock", "git-default-runtime", "1", json!({}))?;
+    let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+        directory.path(),
+        model,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    let root_output = swarm
+        .run_root(
+            OperationId::from_bytes([0xE0; 16]),
+            "prepare a recursive project change",
+        )
+        .await?;
+    assert_eq!(root_output.text, "runtime-ready");
+    let child_task = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
+    let grandchild_task = acyclic_harness::TaskId::from_bytes(grandchild_operation.into_bytes());
+    assert_eq!(swarm.sessions().await?.len(), 3);
+    assert_eq!(swarm.outcome(child_task).await?.text, "runtime-ready");
+    assert_eq!(swarm.outcome(grandchild_task).await?.text, "runtime-ready");
+
+    let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
+    let host = Arc::new(FilesystemHost::new(
+        Fs::local(LocalOptions::new(directory.path().join("filesystem")))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        filesystem_provider,
+    )?);
+    let child_project = project_from_seed(&swarm.published_seed(child_task).await?)?;
+    let grandchild_project = project_from_seed(&swarm.published_seed(grandchild_task).await?)?;
+    let root_project = VolumeRef::new(
+        host.provider().clone(),
+        "local-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("local-swarm".into()),
+    )?;
+    let grandchild_workspace =
+        workspace_ref(host.provider().clone(), &grandchild_project.storage_name()?)?;
+    let grandchild_head = host.resolve(&grandchild_workspace).await?;
+    host.apply(
+        &grandchild_workspace,
+        Some(&grandchild_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/runtime-final.txt".into(),
+            bytes: b"grandchild authored this exact file".to_vec(),
+        }],
+        &acyclic_harness::IdempotencyKey::new("runtime-grandchild-edit")?,
+    )
+    .await?;
+    let root_workspace = workspace_ref(host.provider().clone(), &root_project.storage_name()?)?;
+    assert!(
+        host.read(&root_workspace, None, "/runtime-final.txt", 1_024)
+            .await
+            .is_err()
+    );
+
+    let child_workspace_id = host
+        .workspace_id(child_project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let grandchild_workspace_id = host
+        .workspace_id(grandchild_project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    install_git_branch(
+        directory.path(),
+        child_workspace_id,
+        "grandchild",
+        grandchild_workspace_id,
+    )
+    .await?;
+    provider.merge_child.store(true, Ordering::SeqCst);
+    swarm
+        .run(
+            child_task,
+            OperationId::from_bytes([0xE3; 16]),
+            "merge the completed grandchild project",
+        )
+        .await?;
+    assert_eq!(
+        host.read(
+            &workspace_ref(host.provider().clone(), &child_project.storage_name()?)?,
+            None,
+            "/runtime-final.txt",
+            1_024,
+        )
+        .await?,
+        b"grandchild authored this exact file"[..]
+    );
+    assert!(
+        host.read(&root_workspace, None, "/runtime-final.txt", 1_024)
+            .await
+            .is_err()
+    );
+
+    let root_workspace_id = host
+        .workspace_id(root_project.storage_name()?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    install_git_branch(
+        directory.path(),
+        root_workspace_id,
+        "child",
+        child_workspace_id,
+    )
+    .await?;
+    provider.merge_root.store(true, Ordering::SeqCst);
+    swarm
+        .run_root(
+            OperationId::from_bytes([0xE4; 16]),
+            "merge the completed child project",
+        )
+        .await?;
+    assert_eq!(
+        host.read(&root_workspace, None, "/runtime-final.txt", 1_024)
+            .await?,
+        b"grandchild authored this exact file"[..]
+    );
+
+    install_git_branch(
+        directory.path(),
+        root_workspace_id,
+        "grandchild",
+        grandchild_workspace_id,
+    )
+    .await?;
+    provider.reject_root_merge.store(true, Ordering::SeqCst);
+    assert!(
+        swarm
+            .run_root(
+                OperationId::from_bytes([0xE5; 16]),
+                "attempt a forbidden grandchild to root merge",
+            )
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
