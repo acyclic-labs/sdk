@@ -52,7 +52,7 @@
         "package_artifact_sha256": { "$ref": "#/$defs/sha256" },
         "provenance": {
           "type": "object",
-          "required": ["source_file_hashes"],
+          "required": ["source_file_hashes", "platform"],
           "properties": {
             "source_file_hashes": {
               "type": "object",
@@ -62,7 +62,8 @@
             "artifact_path": { "type": "string", "minLength": 1 },
             "artifact_sha256": { "$ref": "#/$defs/sha256" },
             "package_artifact_path": { "type": "string", "minLength": 1 },
-            "package_artifact_sha256": { "$ref": "#/$defs/sha256" }
+            "package_artifact_sha256": { "$ref": "#/$defs/sha256" },
+            "platform": { "$ref": "#/$defs/platform" }
           }
         }
       },
@@ -86,6 +87,23 @@
           ]
         }
       ]
+    }
+    ,"platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_scope", "target_triple", "build_host_triple",
+        "runtime_triple", "runtime_os", "runtime_arch", "observed"
+      ],
+      "properties": {
+        "execution_scope": { "enum": ["native", "portable"] },
+        "target_triple": { "type": "string", "minLength": 1 },
+        "build_host_triple": { "type": "string", "minLength": 1 },
+        "runtime_triple": { "type": "string", "minLength": 1 },
+        "runtime_os": { "type": "string", "minLength": 1 },
+        "runtime_arch": { "type": "string", "minLength": 1 },
+        "observed": { "const": true }
+      }
     }
   }
 }

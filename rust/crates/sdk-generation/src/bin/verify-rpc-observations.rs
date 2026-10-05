@@ -187,6 +187,85 @@ fn contract_family<'a>(entry: &'a Map<String, Value>, label: &str) -> Result<&'a
     }
 }
 
+fn platform_object<'a>(package: &'a Map<String, Value>) -> Option<&'a Map<String, Value>> {
+    package
+        .get("platform")
+        .and_then(Value::as_object)
+        .or_else(|| {
+            package
+                .get("provenance")
+                .and_then(Value::as_object)
+                .and_then(|provenance| provenance.get("platform"))
+                .and_then(Value::as_object)
+        })
+}
+
+fn validate_platform_provenance(
+    expected_package: &Map<String, Value>,
+    observed_package: &Map<String, Value>,
+    language: &str,
+    failures: &mut Vec<String>,
+) {
+    let Some(expected_platform) = platform_object(expected_package) else {
+        failures.push(format!(
+            "{language}: Rust package platform provenance is missing"
+        ));
+        return;
+    };
+    let Some(observed_platform) = platform_object(observed_package) else {
+        failures.push(format!(
+            "{language}: executed package platform provenance is missing"
+        ));
+        return;
+    };
+    for field in [
+        "execution_scope",
+        "target_triple",
+        "build_host_triple",
+        "runtime_triple",
+        "runtime_os",
+        "runtime_arch",
+    ] {
+        let expected_value = expected_platform.get(field).and_then(Value::as_str);
+        let observed_value = observed_platform.get(field).and_then(Value::as_str);
+        if expected_value.is_none() || observed_value.is_none() {
+            failures.push(format!(
+                "{language}: platform provenance field {field} is missing"
+            ));
+        } else if expected_value != observed_value {
+            failures.push(format!(
+                "{language}: executed package platform field {field} differs from the Rust producer"
+            ));
+        }
+    }
+    if expected_platform.get("observed").and_then(Value::as_bool) != Some(true)
+        || observed_platform.get("observed").and_then(Value::as_bool) != Some(true)
+    {
+        failures.push(format!(
+            "{language}: platform provenance is not backed by an observed runtime probe"
+        ));
+    }
+    let scope = observed_platform
+        .get("execution_scope")
+        .and_then(Value::as_str);
+    let target = observed_platform
+        .get("target_triple")
+        .and_then(Value::as_str);
+    let runtime = observed_platform
+        .get("runtime_triple")
+        .and_then(Value::as_str);
+    if scope == Some("native") && target.is_some() && runtime.is_some() && target != runtime {
+        failures.push(format!(
+            "{language}: native package target triple differs from the runtime triple"
+        ));
+    }
+    if !matches!(scope, Some("native") | Some("portable")) {
+        failures.push(format!(
+            "{language}: platform execution_scope must be native or portable"
+        ));
+    }
+}
+
 fn validate_producer_provenance(
     expected_root: &Map<String, Value>,
     observed_root: &Map<String, Value>,
@@ -244,6 +323,7 @@ fn validate_producer_provenance(
         expected_artifact_digest,
         failures,
     );
+    validate_platform_provenance(expected_package, observed_package, language, failures);
     for (field, label) in [
         ("source_git_sha", "source Git revision"),
         ("rust_model_digest", "Rust model digest"),
@@ -1068,5 +1148,45 @@ mod tests {
             "tampered package was accepted: {failures:?}"
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_package_cannot_claim_a_different_runtime_triple() {
+        let expected = json!({
+            "provenance": {
+                "platform": {
+                    "execution_scope": "native",
+                    "target_triple": "aarch64-unknown-linux-gnu",
+                    "build_host_triple": "x86_64-pc-windows-msvc",
+                    "runtime_triple": "aarch64-unknown-linux-gnu",
+                    "runtime_os": "linux",
+                    "runtime_arch": "aarch64",
+                    "observed": true
+                }
+            }
+        });
+        let observed = json!({
+            "provenance": {
+                "platform": {
+                    "execution_scope": "native",
+                    "target_triple": "aarch64-unknown-linux-gnu",
+                    "build_host_triple": "x86_64-pc-windows-msvc",
+                    "runtime_triple": "x86_64-pc-windows-msvc",
+                    "runtime_os": "windows",
+                    "runtime_arch": "x86_64",
+                    "observed": true
+                }
+            }
+        });
+        let expected = expected.as_object().expect("expected package");
+        let observed = observed.as_object().expect("observed package");
+        let mut failures = Vec::new();
+        validate_platform_provenance(expected, observed, "native-test", &mut failures);
+        assert!(
+            failures
+                .iter()
+                .any(|failure| { failure.contains("platform field runtime_triple differs") }),
+            "cross-platform native execution was accepted: {failures:?}"
+        );
     }
 }
