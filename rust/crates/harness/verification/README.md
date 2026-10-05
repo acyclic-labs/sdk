@@ -171,11 +171,13 @@ eventual completion, deadlock freedom, storage correctness, or Rust refinement.
 
 ### Qualified property inventory
 
-The source-bound receipt is
-`checkpoint-formal-swarm-2026-10-05.json`. Its TLC logs are under
-`D:/graphcoder-builds/formal-evidence/formal-integration-revised4-20261005`
-and use the pinned `tla2tools-1.7.4.jar`, one worker, fingerprint index `0`,
-seed `1`, and a 512 MB heap. The qualified finite cases are:
+The current source-bound run was executed at commit `e916167b7` in the
+isolated qualification worktree. Its TLC logs are under
+`target/formal-rebase-evidence/e916167b7` and use the pinned
+`tla2tools-1.7.4.jar`, one worker, fingerprint index `0`, seed `1`, and a
+512 MB heap. The run contains 25 cases across the seven model families below;
+the evidence directory is generated output and must be retained with the
+source checkout that produced it. The qualified finite cases are:
 
 | Property family | Finite bound | Safe evidence | Required negative controls |
 | --- | --- | --- | --- |
