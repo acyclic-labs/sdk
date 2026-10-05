@@ -101,8 +101,9 @@ Extend finite models with explicit counterexample controls for these properties:
 
 For each model action, document the corresponding production transition and
 exercise it through real journals with concurrent callers and injected crashes.
-Add trace-conformance checks against the transition relation; these are planned,
-not current evidence. Exact inherited prefix bytes and provider request bytes
+The lightweight trace adapter now checks the event-level transition relation;
+its fixture run is adapter evidence, not implementation conformance. Exact
+inherited prefix bytes and provider request bytes
 remain assertions at the actual serialization boundary: abstract revision
 identity alone cannot establish byte equality or absence of hidden input.
 
@@ -116,3 +117,49 @@ open implementation gap; the models must not assume it has already been fixed.
 Bounded model checking does not establish an unbounded recursive theorem, a Rust
 refinement proof, filesystem/process correctness, or model coding quality. Keep
 those distinctions in qualification evidence and retain the full E2E matrix.
+
+## Finite scheduler, authority, budget, publication and message models
+
+The checker also runs four deliberately small finite models. They use numeric
+identities and fixed operators inside the TLA modules, so the configuration
+files do not depend on symbolic function expressions:
+
+* `SwarmAuthority.tla` has four agents, three message identities and three wait
+  identities. It checks that message and wait admission is restricted to direct
+  parent/child pairs. `SwarmAuthorityUnsafe.cfg` enables one sibling admission
+  path and must violate `DirectMessageAuthority`.
+* `SwarmBudget.tla` has six finite agent identities, a depth bound of two, a
+  session allocation budget of four, and a two-step per-agent budget. It
+  separately checks aggregate allocation, per-agent steps, and recursive depth.
+  The three unsafe configurations enable exactly one over-allocation, over-step,
+  or over-depth transition and must violate the corresponding invariant.
+* `SwarmPublication.tla` has one child and parent generations `0..1`. It
+  captures the parent's generation at fork and checks that publication uses
+  that captured generation. `SwarmPublicationUnsafeStale.cfg` enables a stale
+  publication and must violate `PublicationAtCapturedGeneration`.
+* `SwarmMessage.tla` has one durable message identity and delivery count `0..2`.
+  It checks admission before delivery and at-most-once delivery. Duplicate and
+  orphan-delivery configurations each have their own expected counterexample.
+
+Run an individual family through the same pinned runner, for example:
+
+```powershell
+./check-models.ps1 -Model SwarmBudget -ToolsJar C:/tools/tla2tools.jar -EvidenceDirectory C:/evidence/swarm-budget
+```
+
+The negative cases are part of qualification: a green safe case without its
+reachable expected counterexample is incomplete evidence. All four models are
+bounded safety models. They do not establish unbounded recursion, fairness,
+eventual completion, deadlock freedom, storage correctness, or Rust refinement.
+
+## Trace conformance adapter
+
+`check-trace.ps1` is a lightweight adapter for actual Harness event traces. It
+checks the event-level obligations that the TLA models abstract: unique fork
+admission and model start, durable completion before publication, direct-parent
+message and wait authority, at-most-once message delivery, and matching
+captured/current workspace generations. `check-trace-fixtures.ps1` accepts the
+valid seven-event fixture and rejects the stale-publication fixture. The
+fixtures prove the adapter's own behavior; they are not runtime qualification.
+To claim implementation conformance, a production test must export the same
+event fields from the real journal and run this adapter against that trace.

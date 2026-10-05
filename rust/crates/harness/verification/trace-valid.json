@@ -1,0 +1,9 @@
+[
+  {"kind":"fork_admitted","operation_id":"child-op","parent":1,"child":2,"depth":1,"captured_generation":0},
+  {"kind":"model_started","operation_id":"child-op"},
+  {"kind":"message_admitted","message_id":"child-msg","sender":2,"recipient":1},
+  {"kind":"message_delivered","message_id":"child-msg","delivery_index":1},
+  {"kind":"agent_completed","operation_id":"child-op","outcome_durable":true},
+  {"kind":"wait_observed","wait_id":"root-wait","waiter":1,"target":2,"target_completed":true},
+  {"kind":"workspace_published","operation_id":"child-op","parent":1,"child":2,"captured_generation":0,"current_generation":0}
+]
