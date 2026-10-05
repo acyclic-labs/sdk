@@ -11,8 +11,8 @@ use crate::{
     scheduler::InboxItem,
 };
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
-    SystemUnixMillisClock, UnixMillisClock,
+    AppendOutcome, IdempotencyKey as StreamKey, IdempotencyOutcome, StreamClient, StreamError,
+    StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -769,19 +769,75 @@ impl<P: StreamProvider> StreamWaitStore<P> {
     ) -> Result<()> {
         let bytes = event.canonical_bytes()?;
         let key = Self::event_key(kind, request)?;
-        match stream
-            .append_batch(vec![Bytes::from(bytes)], None, Some(key))
-            .await
-        {
-            Ok(AppendOutcome::Committed(_)) => Ok(()),
-            Ok(AppendOutcome::TailConflict { .. }) => Err(Error::Storage(
-                "wait journal append unexpectedly conflicted on tail".into(),
-            )),
+        let append = stream
+            .append_batch(
+                vec![Bytes::copy_from_slice(&bytes)],
+                None,
+                Some(key.clone()),
+            )
+            .await;
+        match append {
+            Ok(outcome) => self
+                .verify_append(stream, &bytes, outcome)
+                .await,
+            Err(StreamError::Unavailable) => {
+                // The provider may have committed before the transport failed.
+                // Reconcile by the exact stable key before exposing uncertainty;
+                // never issue a second append for a lost response.
+                match self.stream.inspect_idempotency(key).await {
+                    Ok(Some(observation)) => match observation.outcome {
+                        IdempotencyOutcome::Append(outcome) => {
+                            self.verify_append(stream, &bytes, outcome).await
+                        }
+                        _ => Err(Error::Conflict(
+                            "wait journal identity belongs to another operation kind".into(),
+                        )),
+                    },
+                    Ok(None) | Err(_) => Err(Error::Indeterminate(request.operation_id)),
+                }
+            }
             Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
                 "wait journal operation identity was reused".into(),
             )),
             Err(error) => Err(Error::Storage(error.to_string())),
         }
+    }
+
+    async fn verify_append(
+        &self,
+        stream: &acyclic_stream::Stream<P>,
+        bytes: &[u8],
+        outcome: AppendOutcome,
+    ) -> Result<()> {
+        let AppendOutcome::Committed(receipt) = outcome else {
+            return Err(Error::Conflict(
+                "wait journal append unexpectedly conflicted on tail".into(),
+            ));
+        };
+        if receipt.end != receipt.start.saturating_add(1) {
+            return Err(Error::Storage("invalid wait journal append receipt".into()));
+        }
+        let records = stream
+            .read(receipt.start, 1)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let [record] = records.as_slice() else {
+            return Err(Error::Conflict(
+                "wait journal append differs from its committed record".into(),
+            ));
+        };
+        if record.sequence != receipt.start
+            || record.commit_id != receipt.commit_id
+            || record.value.as_ref() != bytes
+        {
+            return Err(Error::Conflict(
+                "wait journal append differs from its committed record".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
