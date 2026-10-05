@@ -47,7 +47,8 @@ mkdir -p "$wasm_output"
 bun scripts/build-harness-wasm.mjs "$bun_wasm_output" "$cargo_bin" "$bun_wasm_bindgen_bin"
 bun x tsc -p typescript/packages/harness/tsconfig.json
 for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
-  acyclic_harness_wasm_bg.wasm acyclic_harness_wasm_bg.wasm.d.ts; do
+  acyclic_harness_wasm_bg.wasm acyclic_harness_wasm_bg.wasm.d.ts \
+  acyclic_harness_wasm.manifest.json; do
   [[ -s "$wasm_output/$generated" ]] || { echo "missing generated Harness artifact: $generated" >&2; exit 1; }
 done
 npm_stage="$work/npm-package"
@@ -68,6 +69,11 @@ cd "$work/consumer"
 bun install --ignore-scripts
 mkdir -p test
 install -m 0644 "$root/scripts/fixtures/installed-harness/test/"*.test.ts test/
+install -m 0644 \
+  "$root/conformance/vectors/harness/model-input-v3.json" \
+  "$root/conformance/vectors/harness/model-input-rejection-v1.json" \
+  "$root/conformance/vectors/harness/provider-consumption-v1.json" \
+  .
 # The workspace runs the full source suite separately. Reuse the client and
 # transport conformance cases here against the installed public exports.
 for source_test in client wire-transport; do

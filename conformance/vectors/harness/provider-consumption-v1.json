@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "request_matrix": "model-input-rejection-v1.json",
+  "request_capture": {
+    "model_vector": "model-input-v3.json",
+    "case": "root",
+    "boundary": "prepareModelRequest",
+    "provider_adapter": "not-exposed",
+    "replay": "byte-equal",
+    "forbidden_model_fields": [
+      "operation_id",
+      "dispatch_id",
+      "provider_dispatch_context",
+      "transport_metadata"
+    ]
+  },
+  "responses": [
+    {
+      "name": "content",
+      "prefix": [],
+      "event": { "kind": "content", "delta": "résultat\r\n" },
+      "canonical_json": "{\"delta\":\"résultat\\r\\n\",\"kind\":\"content\"}",
+      "expected": "accept"
+    },
+    {
+      "name": "reasoning",
+      "prefix": [],
+      "event": { "kind": "reasoning", "delta": "reasoning λ" },
+      "canonical_json": "{\"delta\":\"reasoning λ\",\"kind\":\"reasoning\"}",
+      "expected": "accept"
+    },
+    {
+      "name": "tool_call",
+      "prefix": [],
+      "event": {
+        "kind": "tool_call",
+        "call_id": "call-π",
+        "name": "read_file",
+        "arguments": { "path": "src/π-input.txt" }
+      },
+      "canonical_json": "{\"arguments\":{\"path\":\"src/π-input.txt\"},\"call_id\":\"call-π\",\"kind\":\"tool_call\",\"name\":\"read_file\"}",
+      "public_canonical_json": "{\"arguments\":{\"path\":\"src/π-input.txt\"},\"callId\":\"call-π\",\"kind\":\"tool_call\",\"name\":\"read_file\"}",
+      "expected": "accept"
+    },
+    {
+      "name": "invalid_tool_call_identity",
+      "prefix": [],
+      "event": {
+        "kind": "tool_call",
+        "call_id": "../bad",
+        "name": "read_file",
+        "arguments": {}
+      },
+      "canonical_json": "{\"arguments\":{},\"call_id\":\"../bad\",\"kind\":\"tool_call\",\"name\":\"read_file\"}",
+      "public_canonical_json": "{\"arguments\":{},\"callId\":\"../bad\",\"kind\":\"tool_call\",\"name\":\"read_file\"}",
+      "expected": "reject"
+    },
+    {
+      "name": "event_after_completion",
+      "prefix": [{ "kind": "completed", "metadata": { "finish": "stop" } }],
+      "event": { "kind": "content", "delta": "late" },
+      "canonical_json": "{\"delta\":\"late\",\"kind\":\"content\"}",
+      "expected": "reject"
+    },
+    {
+      "name": "duplicate_tool_call_identity",
+      "prefix": [{
+        "kind": "tool_call",
+        "call_id": "call-π",
+        "name": "read_file",
+        "arguments": { "path": "src/π-input.txt" }
+      }],
+      "event": {
+        "kind": "tool_call",
+        "call_id": "call-π",
+        "name": "read_file",
+        "arguments": { "path": "src/π-input.txt" }
+      },
+      "canonical_json": "{\"arguments\":{\"path\":\"src/π-input.txt\"},\"call_id\":\"call-π\",\"kind\":\"tool_call\",\"name\":\"read_file\"}",
+      "public_canonical_json": "{\"arguments\":{\"path\":\"src/π-input.txt\"},\"callId\":\"call-π\",\"kind\":\"tool_call\",\"name\":\"read_file\"}",
+      "expected": "reject"
+    },
+    {
+      "name": "event_count_overflow",
+      "prefix": [
+        { "kind": "content", "delta": "one" },
+        { "kind": "reasoning", "delta": "two" }
+      ],
+      "event": { "kind": "content", "delta": "three" },
+      "canonical_json": "{\"delta\":\"three\",\"kind\":\"content\"}",
+      "model_events_per_step": 2,
+      "expected": "reject"
+    }
+  ]
+}

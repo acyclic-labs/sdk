@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "base_vector": "model-input-v3.json",
+  "cases": [
+    {
+      "name": "valid_root",
+      "operation": "identity",
+      "expected": "accept"
+    },
+    {
+      "name": "invalid_tool_arguments",
+      "operation": "replace",
+      "path": "/messages/2/content/arguments/path",
+      "value": 42,
+      "expected": "reject"
+    },
+    {
+      "name": "invalid_tool_result",
+      "operation": "replace",
+      "path": "/messages/3/content/value/bytes",
+      "value": "17",
+      "expected": "reject"
+    },
+    {
+      "name": "mismatched_tool_result",
+      "operation": "replace",
+      "path": "/messages/3/content/call_id",
+      "value": "orphan-call",
+      "expected": "reject"
+    },
+    {
+      "name": "unfinished_tool_call",
+      "operation": "remove",
+      "path": "/messages/3",
+      "expected": "reject"
+    },
+    {
+      "name": "zero_output_tokens",
+      "operation": "replace",
+      "path": "/max_output_tokens",
+      "value": 0,
+      "expected": "reject"
+    },
+    {
+      "name": "context_limit_overflow",
+      "operation": "identity",
+      "context_messages": 3,
+      "expected": "reject"
+    }
+  ]
+}
