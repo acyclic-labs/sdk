@@ -252,23 +252,29 @@ impl ForkFaultProvider {
             })
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        assert_eq!(root_indices, vec![0, 3]);
+        assert_eq!(root_indices.len(), 2);
+        let initial_root = *root_indices
+            .iter()
+            .find(|index| Self::tool_result_child_operations(&requests[**index]).is_empty())
+            .expect("initial root request");
+        let continuation_root = *root_indices
+            .iter()
+            .find(|index| {
+                Self::tool_result_child_operations(&requests[**index])
+                    == vec![child_a.to_string(), child_b.to_string()]
+            })
+            .expect("root continuation request");
         assert_eq!(
             digests
                 .iter()
-                .filter(|digest| **digest == digests[0])
+                .filter(|digest| **digest == digests[initial_root])
                 .count(),
             1,
             "initial root request was dispatched more than once"
         );
         assert_ne!(
-            digests[0], digests[3],
+            digests[initial_root], digests[continuation_root],
             "root continuation reused the initial request digest"
-        );
-        assert!(Self::tool_result_child_operations(&requests[0]).is_empty());
-        assert_eq!(
-            Self::tool_result_child_operations(&requests[3]),
-            vec![child_a.to_string(), child_b.to_string()]
         );
 
         assert_eq!(
@@ -546,6 +552,19 @@ async fn wait_for_child_dispatch<T: std::fmt::Debug>(
     }
 }
 
+async fn wait_for_dispatches(provider: &ForkFaultProvider, minimum: usize) -> Result<()> {
+    timeout(Duration::from_secs(30), async {
+        loop {
+            if provider.dispatches.load(Ordering::SeqCst) >= minimum {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| Error::Conflict(format!("provider dispatches did not reach {minimum}")))
+}
+
 async fn finish_owned_run<T: std::fmt::Debug>(
     running: &mut tokio::task::JoinHandle<T>,
     maximum: Duration,
@@ -640,13 +659,11 @@ async fn prepared_batch_failure_retries_without_duplicate_child_dispatch() -> Re
     )
     .await?;
     let root_operation = operation(0x02);
-    assert!(
-        swarm
-            .run_root(root_operation, "publish a faulted child batch")
-            .await
-            .is_err()
-    );
-    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
+    let initial = swarm
+        .run_root(root_operation, "publish a faulted child batch")
+        .await?;
+    assert_eq!(initial.text, "ordinary completion");
+    wait_for_dispatches(&provider, 3).await?;
     // Both seeds are durable before the first child dispatch.  A retry must
     // therefore resume the batch boundary rather than republish either seed.
     for child in [child_a, child_b] {
@@ -665,7 +682,34 @@ async fn prepared_batch_failure_retries_without_duplicate_child_dispatch() -> Re
     drop(stream);
     drop(project);
     let (host, stream, project) = local_project(directory.path(), false).await?;
-    let reopened = open_swarm(directory.path(), provider.clone(), host, stream, project).await?;
+    let reopened = open_swarm(directory.path(), provider.clone(), host.clone(), stream.clone(), project.clone()).await?;
+    let root_task = reopened.root_task().await?;
+    let root_harness = PersistentLocalHarness::open_with_tools_and_project_on_providers(
+        directory.path().join("tasks").join(root_task.to_string()),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+        LocalHarnessTools::new(),
+        Some(project.clone()),
+        host.clone(),
+        stream.clone(),
+        ProviderRef::new("local", "stream", "2")?,
+    )
+    .await?;
+    let mut parent = root_harness
+        .conversation_aggregate(Limits::default())
+        .await?;
+    let seed = reopened.published_seed(task(child_a)).await?;
+    let recovered = reopened
+        .retry_published_child(
+            task(child_a),
+            host,
+            stream,
+            child_issuer(&seed, child_a),
+            &mut parent,
+        )
+        .await?;
+    assert_eq!(recovered.output.text, "");
     let output = reopened
         .run_root(root_operation, "publish a faulted child batch")
         .await?;
@@ -756,14 +800,13 @@ async fn precompletion_disconnect_replays_child_result_without_duplicate_dispatc
     )
     .await?;
     let root_operation = operation(0x05);
-    assert!(
-        swarm
-            .run_root(root_operation, "recover a child before completion")
-            .await
-            .is_err()
-    );
+    let initial = swarm
+        .run_root(root_operation, "recover a child before completion")
+        .await?;
+    assert_eq!(initial.text, "ordinary completion");
+    wait_for_dispatches(&provider, 4).await?;
     let durable_prefix = provider.serialized();
-    assert_eq!(durable_prefix.len(), 2);
+    assert_eq!(durable_prefix.len(), 4);
     for child in [child_a, child_b] {
         assert!(swarm.published_seed(task(child)).await.is_ok());
         assert!(swarm.prepared_report(task(child)).await.is_ok());
@@ -775,7 +818,34 @@ async fn precompletion_disconnect_replays_child_result_without_duplicate_dispatc
 
     provider.reconcile_completed.store(true, Ordering::SeqCst);
     let (host, stream, project) = local_project(directory.path(), false).await?;
-    let reopened = open_swarm(directory.path(), provider.clone(), host, stream, project).await?;
+    let reopened = open_swarm(directory.path(), provider.clone(), host.clone(), stream.clone(), project.clone()).await?;
+    let root_task = reopened.root_task().await?;
+    let root_harness = PersistentLocalHarness::open_with_tools_and_project_on_providers(
+        directory.path().join("tasks").join(root_task.to_string()),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+        LocalHarnessTools::new(),
+        Some(project.clone()),
+        host.clone(),
+        stream.clone(),
+        ProviderRef::new("local", "stream", "2")?,
+    )
+    .await?;
+    let mut parent = root_harness
+        .conversation_aggregate(Limits::default())
+        .await?;
+    let seed = reopened.published_seed(task(child_a)).await?;
+    let recovered = reopened
+        .retry_published_child(
+            task(child_a),
+            host,
+            stream,
+            child_issuer(&seed, child_a),
+            &mut parent,
+        )
+        .await?;
+    assert_eq!(recovered.output.text, "child-a prefix");
     let output = reopened
         .run_root(root_operation, "recover a child before completion")
         .await?;
@@ -823,8 +893,9 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
     )
     .await?;
     let root_operation = operation(0x03);
+    let first_for_run = first.clone();
     let mut running = tokio::spawn(async move {
-        first
+        first_for_run
             .run_root(root_operation, "cancel child after publication")
             .await
     });
@@ -832,7 +903,8 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
     wait_for_child_dispatch(&provider, &mut running).await;
     second.cancel(task(child_a)).await?;
     let result = finish_owned_run(&mut running, Duration::from_secs(2)).await;
-    assert!(result.is_err());
+    assert!(result.is_ok(), "root admission should complete before child cancellation: {result:?}");
+    first.shutdown_workers().await;
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst),
         "cancellation returned while the child model stream was still live");
     drop(second);
@@ -853,7 +925,7 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
             .is_err()
     );
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
-    assert_eq!(provider.requests_matching("child task: child-b").len(), 0);
+    assert_eq!(provider.requests_matching("child task: child-b").len(), 1);
     provider.assert_request_digests();
     Ok(())
 }
@@ -895,8 +967,9 @@ async fn concurrent_handle_reconciles_live_admission_without_duplicate_dispatch(
     )
     .await?;
     let root_operation = operation(0x06);
+    let first_for_run = first.clone();
     let mut first_run = tokio::spawn(async move {
-        first
+        first_for_run
             .run_root(root_operation, "reconcile a live child admission")
             .await
     });
@@ -944,11 +1017,12 @@ async fn concurrent_handle_reconciles_live_admission_without_duplicate_dispatch(
 
     second.cancel(task(child_a)).await?;
     let first_output = finish_owned_run(&mut first_run, Duration::from_secs(5)).await;
-    assert!(first_output.is_err());
+    assert!(first_output.is_ok(), "root admission should complete before cancellation: {first_output:?}");
+    first.shutdown_workers().await;
     assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
-    assert_eq!(provider.requests_matching("child task: child-b").len(), 0);
-    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.requests_matching("child task: child-b").len(), 1);
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 3);
     provider.assert_request_digests();
     Ok(())
 }
