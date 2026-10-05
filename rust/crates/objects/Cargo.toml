@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = true
+build = "build.rs"
 description = "Logical Objects contract with gRPC, HTTP, and memory clients"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-objects"
@@ -13,13 +14,14 @@ keywords = ["objects", "storage", "grpc"]
 categories = ["api-bindings", "filesystem"]
 
 [features]
-default = ["grpc"]
+default = ["grpc", "http"]
 grpc = ["dep:tonic", "dep:tonic-prost"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
 local = ["dep:fs2", "dep:libc"]
 
 [dependencies]
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 async-trait.workspace = true
 blake3 = "1.8.2"
 bytes.workspace = true
@@ -33,8 +35,6 @@ prost-types = "0.14.4"
 thiserror.workspace = true
 url = { version = "2.5.8", default-features = false }
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
-tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optional = true }
-tonic-prost = { workspace = true, optional = true }
 imbl = { version = "=7.0.2", default-features = false }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
@@ -42,12 +42,18 @@ libc = { version = "0.2.175", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fs2 = { workspace = true, optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["rt-multi-thread"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
+tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optional = true }
+tonic-prost = { workspace = true, optional = true }
+
+[build-dependencies]
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 
 [lints]
 workspace = true
