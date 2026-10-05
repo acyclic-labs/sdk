@@ -5,7 +5,7 @@
 //! [`FilesystemHost`] for every provider operation; no host filesystem API is
 //! exposed to model code.
 
-use super::{FilesystemHost, WorkspaceMutation, is_host_owned_internal_path, workspace_ref};
+use super::{is_host_owned_internal_path, workspace_ref, FilesystemHost, WorkspaceMutation};
 use crate::conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
 use crate::runtime::{RuntimeScope, ToolContext};
 use crate::tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
@@ -13,7 +13,7 @@ use crate::{Error, IdempotencyKey, Result, TaskId};
 use acyclic_fs::kernel::FileKind;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const WORKSPACE_EDIT: &str = "acyclic.edit";
@@ -264,20 +264,19 @@ impl ToolExecutor for EditExecutor {
                     "filesystem receipt content differs from the admitted edit".into(),
                 ));
             }
-            if generation == expected {
-                Ok(Some(ToolResult {
-                    value: json!({
-                        "path": input.path,
-                        "generation": serde_json::to_value(generation)
-                            .map_err(|error| Error::Storage(error.to_string()))?,
-                        "operation_id": invocation.operation_id.to_string(),
-                    }),
-                }))
-            } else {
-                Err(Error::Conflict(
-                    "filesystem receipt generation differs from the admitted edit".into(),
-                ))
-            }
+            // Validate the original CAS parent independently.  A successful
+            // transaction necessarily records a new generation, so comparing
+            // the receipt generation directly with the expected parent would
+            // reject every legitimate edit.
+            self.host.stat(&workspace, Some(&expected), "/").await?;
+            Ok(Some(ToolResult {
+                value: json!({
+                    "path": input.path,
+                    "generation": serde_json::to_value(generation)
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                    "operation_id": invocation.operation_id.to_string(),
+                }),
+            }))
         })
     }
 }
