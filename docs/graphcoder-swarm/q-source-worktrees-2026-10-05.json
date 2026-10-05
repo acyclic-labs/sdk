@@ -1,0 +1,130 @@
+[
+  {
+    "lane": "bindings",
+    "head": "04179ea686ec40f41fb0dd28324bae4f7af9552b",
+    "branch": "codex/graphcoder-q/bindings",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-bindings"
+  },
+  {
+    "lane": "budget",
+    "head": "d74ed4be4f3798f219627a4c2d4b55e6935e3052",
+    "branch": "codex/graphcoder-q/budget",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-budget"
+  },
+  {
+    "lane": "communication",
+    "head": "40ee3a8ff3fbdc32fc891e7e27d87a855b15bce0",
+    "branch": "codex/graphcoder-q/communication",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-communication"
+  },
+  {
+    "lane": "effects",
+    "head": "87b3a90da34147735e798f3e216990e940b9e00e",
+    "branch": "codex/graphcoder-q/effects",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-effects"
+  },
+  {
+    "lane": "execution",
+    "head": "f226c40f51c001ed011e49e49b8f14d588e16fa6",
+    "branch": "codex/graphcoder-q/execution",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-execution"
+  },
+  {
+    "lane": "fork",
+    "head": "ed6b08a6a577e57053f4092b80b6b757017a9c27",
+    "branch": "codex/graphcoder-q/fork",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-fork"
+  },
+  {
+    "lane": "formal",
+    "head": "24ed1706bc733767edc51c5b5a4c54b04c07ee53",
+    "branch": "codex/graphcoder-q/formal",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-formal"
+  },
+  {
+    "lane": "git",
+    "head": "19ff9481a49c36314ff68ca029f40085ba894a49",
+    "branch": "codex/graphcoder-q/git",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-git"
+  },
+  {
+    "lane": "inputs",
+    "head": "cf2993c421c8a7dfe0dd6564f17f2eaace3ebd01",
+    "branch": "codex/graphcoder-q/inputs",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-inputs"
+  },
+  {
+    "lane": "operator",
+    "head": "ebdb0d204faede74aae37a790daa753c79bc653a",
+    "branch": "codex/graphcoder-q/operator",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-operator"
+  },
+  {
+    "lane": "packaging",
+    "head": "9788e31591521e48704a001b125e81b8bdbb4e3a",
+    "branch": "codex/graphcoder-q/packaging",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-packaging"
+  },
+  {
+    "lane": "process",
+    "head": "374a5751eec74085dc74736553f00705d97ae61f",
+    "branch": "codex/graphcoder-q/process",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-process"
+  },
+  {
+    "lane": "simplicity",
+    "head": "22d2050ed12758083612ccf03cc4770368b8bd5c",
+    "branch": "codex/graphcoder-q/simplicity",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-simplicity"
+  },
+  {
+    "lane": "swarm-e2e",
+    "head": "e6bb3968c9c007a267ed303df5f8a4fad5486346",
+    "branch": "codex/graphcoder-q/swarm-e2e",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-swarm-e2e"
+  },
+  {
+    "lane": "terminal",
+    "head": "c65704547e731dbd98ebd67e6103c7c5f0bbc52b",
+    "branch": "codex/graphcoder-q/terminal",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-terminal"
+  },
+  {
+    "lane": "filesystem",
+    "head": "2f0f8bf2da88cf302cbce08494a287861d8c3e24",
+    "branch": "codex/graphcoder-q/filesystem",
+    "common_dir": "Q:/sdk/.git",
+    "objects": "Q:/sdk/.git/objects",
+    "path": "Q:/worktrees/graphcoder-swarm-filesystem"
+  }
+]
