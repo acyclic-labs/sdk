@@ -1976,7 +1976,7 @@ fn bind_local_fork_input(
     invocation: &ToolInvocation,
 ) -> Result<(LocalForkToolInput, OperationId, OperationId)> {
     context.validate_invocation(invocation)?;
-    let input: LocalForkToolInput = serde_json::from_value(invocation.arguments.clone())
+    let mut input: LocalForkToolInput = serde_json::from_value(invocation.arguments.clone())
         .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
     let publication_operation = context.publication_operation();
     let fork_operation = child_fork_operation(publication_operation, input.child_operation);
@@ -2164,7 +2164,7 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
     Tool {
         definition: ToolDefinition {
             name: "acyclic.fork_child".into(),
-            revision: "1".into(),
+            revision: "2".into(),
             description:
                 "Request an owner-prepared recursive child after this model batch completes".into(),
             input_schema: json!({
