@@ -1340,11 +1340,13 @@
   "rejections": [
     {
       "name": "unknown-tool-result",
-      "error_contains": "tool result names unknown tool missing-tool"
+      "error_kind": "conflict",
+      "error_message": "tool result changed tool"
     },
     {
       "name": "schema-invalid-tool-result",
-      "error_contains": "tool projection failed validation:"
+      "error_kind": "invalid",
+      "error_message": "tool projection failed validation: \"yes\" is not of type \"boolean\""
     }
   ]
 }

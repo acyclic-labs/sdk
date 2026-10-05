@@ -36,7 +36,8 @@ interface Expected {
 
 interface RejectionCase {
   name: string;
-  error_contains: string;
+  error_kind: "conflict" | "invalid";
+  error_message: string;
 }
 
 const bytesEqual = (left: readonly number[] | Uint8Array, right: readonly number[] | Uint8Array): boolean =>
@@ -134,11 +135,20 @@ test("TypeScript consumes the native frozen model-input vector exactly", async (
     }
     throw new Error(`unknown model-input rejection fixture ${name}`);
   };
+  const thrownMessage = (invoke: () => unknown): string => {
+    try {
+      invoke();
+    } catch (error) {
+      if (error instanceof Error) return error.message;
+      throw error;
+    }
+    throw new Error("model-input rejection fixture unexpectedly admitted");
+  };
   for (const rejection of vector.rejections) {
     const request = rejectionRequest(rejection.name);
-    expect(() => prepareModelRequest(request, wasmLimits, policy))
-      .toThrow(rejection.error_contains);
-    expect(() => contracts.prepareModelRequest(request, limits, policy))
-      .toThrow(rejection.error_contains);
+    expect(thrownMessage(() => prepareModelRequest(request, wasmLimits, policy)))
+      .toBe(rejection.error_message);
+    expect(thrownMessage(() => contracts.prepareModelRequest(request, limits, policy)))
+      .toBe(rejection.error_message);
   }
 });
