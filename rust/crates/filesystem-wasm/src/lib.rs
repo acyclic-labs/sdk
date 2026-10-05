@@ -86,15 +86,6 @@ mod bindings {
         acyclic_sdk_remote_web::validate_remote_web_grpc_endpoint(endpoint)
     }
 
-    /// Validate an encoded Filesystem handshake through the shared Rust
-    /// protocol and capability policy.
-    #[wasm_bindgen(js_name = validateRemoteWebFilesystemHandshake)]
-    pub fn validate_remote_web_filesystem_handshake(
-        response: &[u8],
-    ) -> Result<Vec<u8>, JsValue> {
-        acyclic_sdk_remote_web::validate_remote_web_filesystem_handshake(response)
-    }
-
     /// Validate one remote bearer credential using the shared Rust policy.
     #[wasm_bindgen]
     pub fn validate_remote_web_credential(token: &str) -> Result<(), JsValue> {
@@ -7952,6 +7943,9 @@ mod bindings {
         }
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub use acyclic_sdk_remote_web::validate_remote_web_filesystem_handshake;
 
 #[cfg(target_arch = "wasm32")]
 pub use bindings::{
