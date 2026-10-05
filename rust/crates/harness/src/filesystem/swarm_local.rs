@@ -3021,7 +3021,7 @@ impl PersistentLocalSwarm {
         let Some(store) = self.git_store.clone() else {
             return Ok(None);
         };
-        self.ensure_project_child_binding(task).await?;
+        self.ensure_project_child_bindings(task, project).await?;
         let workspace = Arc::new(
             LocalProjectWorkspaceTree::new(
                 self.filesystem_host.clone(),
@@ -3191,33 +3191,54 @@ impl PersistentLocalSwarm {
         Ok(())
     }
 
-    /// Rehydrates one direct-child binding only when that child's model-facing
+    /// Rehydrates direct-child bindings only when the parent's model-facing
     /// Git tool is requested. Session listing and cold startup retain the
     /// durable seed index without opening parent conversation aggregates.
-    async fn ensure_project_child_binding(&self, task: TaskId) -> Result<()> {
-        let Some(seed) = self.seeds.lock().await.get(&task).cloned() else {
+    async fn ensure_project_child_bindings(
+        &self,
+        parent_task: TaskId,
+        parent_project: &VolumeRef,
+    ) -> Result<()> {
+        let parent_authority = self
+            .conversation_authority(parent_task)
+            .await
+            .ok_or_else(|| Error::NotFound(format!("local swarm parent task {parent_task}")))?;
+        let seeds = self
+            .seeds
+            .lock()
+            .await
+            .values()
+            .filter(|seed| {
+                seed.parent == parent_authority
+                    && seed.resources.iter().any(|resource| {
+                        matches!(
+                            (&resource.source, &resource.revision),
+                            (
+                                ResourceRevision::Project { volume: source, .. },
+                                ResourceRevision::Project { .. }
+                            ) if source == parent_project
+                        )
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if seeds.is_empty() {
             return Ok(());
-        };
-        let session = self.session(task).await?;
-        let parent_task = session
-            .parent
-            .ok_or_else(|| Error::Conflict("published child has no parent session".into()))?;
-        if self.conversation_authority(parent_task).await != Some(seed.parent.clone()) {
-            return Err(Error::Conflict(
-                "published child parent authority changed during Git binding".into(),
-            ));
         }
         let parent = self
             .open_session(parent_task)
             .await?
             .conversation_aggregate(self.config.limits)
             .await?;
-        if parent.reducer().authority() != &seed.parent {
+        if parent.reducer().authority() != &parent_authority {
             return Err(Error::Conflict(
-                "published child parent aggregate authority changed during Git binding".into(),
+                "parent aggregate authority changed during Git binding".into(),
             ));
         }
-        self.register_project_child(&seed, parent.reducer()).await
+        for seed in seeds {
+            self.register_project_child(&seed, parent.reducer()).await?;
+        }
+        Ok(())
     }
 
     /// Opens or recovers a local swarm. Child sessions remain lazy until a
