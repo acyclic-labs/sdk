@@ -34,7 +34,7 @@ foreach ($targetName in $targets) {
       # producer does.
       # Ubuntu's musl wrapper exposes libgcc_s only through its private specs;
       # link compiler support statically while keeping musl itself dynamic.
-      $gccArchive = (& gcc -print-file-name=libgcc.a 2>$null).Trim()
+      $gccArchive = (& musl-gcc -print-file-name=libgcc.a 2>$null).Trim()
       if (-not $gccArchive -or -not (Test-Path -LiteralPath $gccArchive -PathType Leaf)) {
         throw "The runner GCC installation did not expose libgcc.a for $targetName"
       }
