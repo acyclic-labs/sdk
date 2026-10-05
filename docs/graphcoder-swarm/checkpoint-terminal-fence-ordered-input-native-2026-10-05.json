@@ -101,6 +101,10 @@
     {
       "sha256": "b32d129a140dc0291a1cdad89da6138bdb94232736a4c1a796827775b715b108",
       "path": "rust/crates/harness/tests/persistent_model_input_admission_v3.rs"
+    },
+    {
+      "sha256": "945f5c9728338f675f8e6ecf322d433120eef060207d57ad1ba9426d1ebce326",
+      "path": "rust/crates/harness/src/filesystem/git_facade.rs"
     }
   ],
   "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef"
