@@ -119,7 +119,7 @@ struct LocalChildTurn {
 
 enum LocalChildActivation {
     Completed(LocalForkOutcome),
-    Ready(LocalChildTurn),
+    Ready(Box<LocalChildTurn>),
 }
 
 /// LocalStream journals are process-exclusive. Keep one authenticated provider
@@ -3529,9 +3529,10 @@ impl PersistentLocalSwarm {
         parent: &StreamAggregate<LocalStream>,
         seed: &ForkSeed,
     ) -> Result<LocalForkOutcome> {
-        let activation = self.prepare_published_child(
+        // Keep the large preparation future off recursive caller frames.
+        let activation = Box::pin(self.prepare_published_child(
             request, host, stream, issuer, parent, seed,
-        ).await?;
+        )).await?;
         match activation {
             LocalChildActivation::Completed(outcome) => Ok(outcome),
             LocalChildActivation::Ready(turn) => self.execute_child_turn(turn).await,
@@ -4332,16 +4333,16 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
-        Ok(LocalChildActivation::Ready(LocalChildTurn {
+        Ok(LocalChildActivation::Ready(Box::new(LocalChildTurn {
             request, stream, harness, bundle, max_steps, cancelled,
             _activation_guard: activation_guard,
-        }))
+        })))
     }
 
-    async fn execute_child_turn(&self, turn: LocalChildTurn) -> Result<LocalForkOutcome> {
+    async fn execute_child_turn(&self, turn: Box<LocalChildTurn>) -> Result<LocalForkOutcome> {
         let LocalChildTurn {
             request, stream, harness, bundle, max_steps, cancelled, _activation_guard,
-        } = turn;
+        } = *turn;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
         let child_result = Self::run_owned_child_turn(
