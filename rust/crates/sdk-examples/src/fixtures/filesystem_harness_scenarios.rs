@@ -571,6 +571,7 @@ where
                     "bytes_base64": b64(&export_request_bytes),
                     "sha256": digest(&export_request_bytes),
                 },
+                "response_frames": encoded,
                 "response": { "chunks": encoded },
                 "state": state,
             }));
@@ -700,6 +701,7 @@ where
                     "sha256": digest(&import_request_bytes),
                     "chunks": import_request_chunks,
                 },
+                "request_frames": import_request_chunks,
                 "response": {
                     "type": "acyclic.filesystem.v2.ImportResponse",
                     "bytes_base64": b64(&response.encode_to_vec()),
@@ -720,6 +722,7 @@ where
                 "sha256": digest(&import_request_bytes),
                 "chunks": import_request_chunks,
             },
+            "request_frames": import_request_chunks,
             "response": {
                 "status": error.code().to_string(),
                 "code": format!("{:?}", error.code()),
