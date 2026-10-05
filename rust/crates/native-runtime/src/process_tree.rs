@@ -183,6 +183,8 @@ mod tests {
         };
         let root = std::path::PathBuf::from(std::env::var_os(ROOT).expect("helper root"));
         if mode == "grandchild" {
+            fs::write(root.join("grandchild-pid"), std::process::id().to_string())
+                .expect("grandchild pid");
             fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
             thread::sleep(Duration::from_millis(750));
             fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
@@ -221,8 +223,13 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(temporary.path().join("tree-ready").exists());
+        let grandchild_pid = read_pid(temporary.path());
+        assert!(
+            process_is_alive(grandchild_pid),
+            "grandchild exited before termination"
+        );
         tree.terminate().expect("terminate process tree");
-        thread::sleep(Duration::from_secs(1));
+        wait_for_process_exit(grandchild_pid);
         assert!(!temporary.path().join("escaped").exists());
     }
 
@@ -236,6 +243,11 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(temporary.path().join("tree-ready").exists());
+        let grandchild_pid = read_pid(temporary.path());
+        assert!(
+            process_is_alive(grandchild_pid),
+            "grandchild exited before parent"
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut exited = false;
         while Instant::now() < deadline {
@@ -247,8 +259,60 @@ mod tests {
         }
         assert!(exited, "direct child did not exit before the cleanup check");
         drop(tree);
-        thread::sleep(Duration::from_secs(1));
+        wait_for_process_exit(grandchild_pid);
         assert!(!temporary.path().join("escaped").exists());
+    }
+
+    fn read_pid(root: &Path) -> u32 {
+        fs::read_to_string(root.join("grandchild-pid"))
+            .expect("grandchild pid marker")
+            .trim()
+            .parse()
+            .expect("valid grandchild pid")
+    }
+
+    fn wait_for_process_exit(pid: u32) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_is_alive(pid) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !process_is_alive(pid),
+            "owned grandchild {pid} remained alive"
+        );
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: u32) -> bool {
+        let pid = match libc::pid_t::try_from(pid) {
+            Ok(pid) => pid,
+            Err(_) => return false,
+        };
+        // SAFETY: signal 0 performs an existence check without changing the
+        // target process. The PID came from the fixture's own child.
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[cfg(windows)]
+    fn process_is_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: the fixture owns this PID and requests query-only access.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0;
+        // SAFETY: handle is valid until the close below and exit_code is an
+        // initialized out-parameter of the documented size.
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        // SAFETY: handle was returned by OpenProcess and is closed exactly once.
+        unsafe { CloseHandle(handle) };
+        queried && exit_code == STILL_ACTIVE
     }
 }
 
