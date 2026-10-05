@@ -282,3 +282,29 @@ test("workflow pins actions, aligns Rust edition, and keeps downstream work out 
   assert.ok(metadataStep >= 0, "release qualification must preflight full locked Cargo metadata");
   assert.ok(expensiveStep > metadataStep, "locked metadata must run before qualification tests");
 });
+
+function assertIndependentCanonicalProducer(workflow) {
+  const begin = workflow.indexOf('- name: Generate Rust-owned executable typed request manifest');
+  const end = workflow.indexOf('- name: Build and consume generated package', begin);
+  assert.ok(begin >= 0 && end > begin, 'manifest production must precede installed consumption');
+  const producer = workflow.slice(begin, end);
+  assert.match(producer, /export ACYCLIC_RUST_SOURCE_REVISION="\$\(git rev-parse HEAD\)"/);
+  const invocations = [...producer.matchAll(/--bin typed-request-manifest > "([^"\n]+)"/g)].map(match => match[1]);
+  assert.equal(invocations.length, 2, 'independent canonical evidence requires two Rust producer executions');
+  assert.equal(new Set(invocations).size, 2, 'consumer input and canonical evidence must use distinct paths');
+  assert.ok(invocations.includes('$RUNNER_TEMP/rust-canonical-typed-request-manifest.json'));
+  const consumer = workflow.slice(end);
+  assert.match(consumer, /ACYCLIC_RUST_CANONICAL_TYPED_REQUEST_MANIFEST:.*rust-canonical-typed-request-manifest\.json/);
+}
+
+test('additional language qualification independently regenerates canonical Rust evidence', () => {
+  const workflow = read('.github/workflows/additional-language-qualification.yml');
+  assertIndependentCanonicalProducer(workflow);
+  const copied = workflow.replace(
+    /cargo run --locked --manifest-path rust\/crates\/sdk-examples\/Cargo\.toml \\\r?\n\s*--bin typed-request-manifest > "\$RUNNER_TEMP\/rust-canonical-typed-request-manifest\.json"/,
+    'cp "$RUNNER_TEMP/rust-typed-request-manifest.json" "$RUNNER_TEMP/rust-canonical-typed-request-manifest.json"',
+  );
+  assert.notEqual(copied, workflow, 'negative control must replace the actual independent invocation');
+  assert.throws(() => assertIndependentCanonicalProducer(copied), /two Rust producer executions/);
+  assert.throws(() => assertIndependentCanonicalProducer(workflow.replace(/export ACYCLIC_RUST_SOURCE_REVISION=.*\n/, '')), /ACYCLIC_RUST_SOURCE_REVISION/);
+});
