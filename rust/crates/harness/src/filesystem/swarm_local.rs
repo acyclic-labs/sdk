@@ -5333,10 +5333,8 @@ impl PersistentLocalSwarm {
         max_steps: u32,
         mut cancelled: tokio::sync::watch::Receiver<bool>,
     ) -> Result<TurnOutput> {
-        // The worker registry already owns and joins this future. Running the
-        // model turn directly avoids a second JoinHandle whose Drop path can
-        // abort and detach the inner task before its provider cleanup has
-        // finished.
+        // Keep recursive model/tool polling behind a heap boundary. The worker
+        // registry remains the sole owner and join boundary for cancellation.
         let child_task = Self::run_child_turn(harness, bundle, admission, request, max_steps);
         tokio::pin!(child_task);
         tokio::select! {
@@ -5350,16 +5348,18 @@ impl PersistentLocalSwarm {
         }
     }
 
-    async fn run_child_turn(
+    fn run_child_turn(
         harness: Arc<PersistentLocalHarness>,
         bundle: crate::Harness,
         admission: crate::runtime::TaskAdmissionRecord,
         request: LocalForkRequest,
         max_steps: u32,
-    ) -> Result<TurnOutput> {
-        harness
-            .run_with_admission(&bundle, &admission, &request.prompt, max_steps)
-            .await
+    ) -> BoxFuture<'static, Result<TurnOutput>> {
+        Box::pin(async move {
+            harness
+                .run_with_admission(&bundle, &admission, &request.prompt, max_steps)
+                .await
+        })
     }
 
     fn inherited_task_bundle(
