@@ -2427,24 +2427,27 @@ pub fn audit_generated_public_surfaces(
             .display()
             .to_string();
 
+        let imported_proto_names = if language == "typescript" {
+            typescript_imported_proto_names(&source)
+        } else {
+            std::collections::BTreeSet::new()
+        };
         for (line_number, line) in source.lines().enumerate() {
             let line_number = line_number + 1;
             let reason = match language {
                 "typescript"
-                    if line.contains("request:")
-                        && line.contains("Promise<")
-                        && line.contains("Request")
-                        && line.contains("Response") =>
+                    if typescript_raw_signature(
+                        &source,
+                        line_number,
+                        &imported_proto_names,
+                    ) =>
                 {
                     Some("public TypeScript client method exposes a raw protobuf request/response")
                 }
-                "python" if line.contains("return await self.") => {
+                "python" if python_raw_public_return(&source, line_number, line) => {
                     Some("public Python route returns the raw transport response")
                 }
-                "go"
-                    if line.contains("func (client *Client)")
-                        && line.contains("Response, error)")
-                        && line.contains("*") =>
+                "go" if go_raw_protobuf_response(line) =>
                 {
                     Some("public Go client method returns a raw protobuf response pointer")
                 }
@@ -2456,9 +2459,12 @@ pub fn audit_generated_public_surfaces(
                 {
                     Some("Go semantic identity is erased to any")
                 }
-                "jvm" if line.contains("public acyclic.") && !line.contains("toWire") => {
-                    Some("public JVM response getter exposes a raw protobuf message")
-                }
+                "jvm"
+                    if ((line.contains("public acyclic.") && line.contains("()"))
+                        || line.contains("public java.util.List<acyclic.")
+                        || line.contains("public com.google.protobuf.ByteString"))
+                        && !line.contains("toWire") =>
+                    Some("public JVM response getter exposes a raw protobuf message"),
                 "swift" if line.contains("public let wire: RustWireMessage") => {
                     Some("public Swift wrapper exposes an opaque RustWireMessage")
                 }
@@ -2479,6 +2485,81 @@ pub fn audit_generated_public_surfaces(
     }
 
     Ok(violations)
+}
+
+fn typescript_imported_proto_names(source: &str) -> std::collections::BTreeSet<String> {
+    source
+        .lines()
+        .filter(|line| line.contains("import") && (line.contains("_pb") || line.contains("/proto/")))
+        .flat_map(|line| {
+            line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                .filter(|token| token.ends_with("Request") || token.ends_with("Response"))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn typescript_raw_signature(
+    source: &str,
+    line_number: usize,
+    imported_proto_names: &std::collections::BTreeSet<String>,
+) -> bool {
+    if imported_proto_names.is_empty() {
+        return false;
+    }
+    let lines = source.lines().collect::<Vec<_>>();
+    let start = line_number.saturating_sub(1);
+    let end = (start + 6).min(lines.len());
+    let normalized = lines[start..end].join(" ");
+    let Some(request_start) = normalized.find("request:") else {
+        return false;
+    };
+    let request = normalized[request_start + "request:".len()..]
+        .split(|character: char| character == ')' || character == ',' || character.is_whitespace())
+        .find(|token| !token.is_empty())
+        .unwrap_or_default();
+    let Some(response_start) = normalized.find("Promise<") else {
+        return false;
+    };
+    let response = normalized[response_start + "Promise<".len()..]
+        .split(|character: char| character == '>' || character == ',' || character.is_whitespace())
+        .find(|token| !token.is_empty())
+        .unwrap_or_default();
+    imported_proto_names.contains(request) && imported_proto_names.contains(response)
+}
+
+fn python_raw_public_return(source: &str, line_number: usize, line: &str) -> bool {
+    let Some(returned) = line.split("return await self.").nth(1) else {
+        return false;
+    };
+    if returned.starts_with('_') {
+        return false;
+    }
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut method = None;
+    for candidate in lines[..line_number.saturating_sub(1)].iter().rev() {
+        let trimmed = candidate.trim_start();
+        if trimmed.starts_with("async def ") || trimmed.starts_with("def ") {
+            method = trimmed
+                .split_whitespace()
+                .nth(1)
+                .map(|name| name.split('(').next().unwrap_or(name));
+            break;
+        }
+    }
+    method.is_some_and(|name| !name.starts_with('_'))
+}
+
+fn go_raw_protobuf_response(line: &str) -> bool {
+    if !line.contains("func (client *Client)") || !line.contains("Response, error)") {
+        return false;
+    }
+    line.split('*').skip(1).any(|tail| {
+        tail.chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_lowercase())
+            && tail.contains('.')
+    })
 }
 
 /// Check that each generated facade contains the Rust-owned type features
@@ -2506,7 +2587,7 @@ pub fn audit_generated_type_features(
             .display()
             .to_string();
         for (marker, feature) in required_type_feature_markers(language) {
-            if !source.contains(marker) {
+            if !contains_non_comment_marker(&source, marker) {
                 violations.push(GeneratedSurfaceViolation {
                     language,
                     path: relative.clone(),
@@ -2517,6 +2598,17 @@ pub fn audit_generated_type_features(
         }
     }
     Ok(violations)
+}
+
+fn contains_non_comment_marker(source: &str, marker: &str) -> bool {
+    source.lines().any(|line| {
+        let trimmed = line.trim_start();
+        !trimmed.starts_with("//")
+            && !trimmed.starts_with('#')
+            && !trimmed.starts_with("/*")
+            && !trimmed.starts_with('*')
+            && line.contains(marker)
+    })
 }
 
 fn required_type_feature_markers(language: &str) -> &'static [(&'static str, &'static str)] {
