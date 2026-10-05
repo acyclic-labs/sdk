@@ -8674,6 +8674,24 @@ mod tests {
         arguments
     }
 
+    fn shell_arguments_with_delay(root: &Path) -> Value {
+        let mut arguments = shell_arguments(root);
+        // Keep the marker after the delay.  A budget deadline must interrupt
+        // the approved native command before it can publish a successful
+        // effect, leaving the durable ToolStarted record for recovery.
+        #[cfg(windows)]
+        let command = "ping -n 3 127.0.0.1 >NUL & echo %HARNESS_SHELL_MARKER%>>launches.txt";
+        #[cfg(not(windows))]
+        let command = "sleep 1; printf %s \"$HARNESS_SHELL_MARKER\" >> launches.txt";
+        arguments["arguments"] = json!(if cfg!(windows) {
+            vec!["/C", command]
+        } else {
+            vec!["-c", command]
+        });
+        arguments["timeout_ms"] = json!(10_000);
+        arguments
+    }
+
     async fn resolve_shell_approval(
         swarm: &PersistentLocalSwarm,
         task: TaskId,
@@ -10621,6 +10639,81 @@ mod tests {
         assert_eq!(
             launches.lines().map(str::trim).collect::<Vec<_>>(),
             vec!["approved"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_runtime_approved_command_budget_timeout_reopens_without_redispatch_or_double_charge(
+    ) -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "shell-budget-timeout", "1", json!({}))?;
+        let budget_limits = SwarmBudgetLimits {
+            max_active_agents: 1,
+            max_total_agents: 1,
+            max_recursion_depth: 0,
+            max_model_steps: 8,
+            max_output_bytes: 64 * 1024,
+            max_execution_time_ms: 25,
+        };
+        let config = || {
+            LocalSwarmConfig::new(model.clone(), Limits::default())?
+                .with_budget_limits(budget_limits)
+        };
+        let operation = OperationId::from_bytes([0xE4; 16]);
+        let consumed_before_reopen;
+        {
+            let provider = Arc::new(ShellModel {
+                calls: AtomicUsize::new(0),
+                arguments: shell_arguments_with_delay(root.path()),
+                usage: mock_usage_source(),
+            });
+            let swarm = PersistentLocalSwarm::open(root.path(), config()?, provider.clone())
+                .await?;
+            let task = swarm.root_task().await?;
+            assert!(matches!(
+                swarm.run_root(operation, "run the approved delayed shell command").await,
+                Err(Error::Indeterminate(id)) if id == operation
+            ));
+            resolve_shell_approval(&swarm, task, true).await?;
+            assert!(matches!(
+                swarm.run_root(operation, "run the approved delayed shell command").await,
+                Err(Error::Indeterminate(id)) if id == operation
+            ));
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+            assert!(!root.path().join("launches.txt").exists());
+            consumed_before_reopen = swarm
+                .budget_journal()
+                .lock()
+                .await
+                .usage()?
+                .consumed;
+        }
+
+        let reopened_provider = Arc::new(ShellModel {
+            calls: AtomicUsize::new(0),
+            arguments: shell_arguments_with_delay(root.path()),
+            usage: mock_usage_source(),
+        });
+        let reopened =
+            PersistentLocalSwarm::open(root.path(), config()?, reopened_provider.clone()).await?;
+        assert!(matches!(
+            reopened
+                .run_root(operation, "run the approved delayed shell command")
+                .await,
+            Err(Error::Indeterminate(id)) if id == operation
+        ));
+        assert_eq!(reopened_provider.calls.load(Ordering::SeqCst), 0);
+        assert!(!root.path().join("launches.txt").exists());
+        assert_eq!(
+            reopened
+                .budget_journal()
+                .lock()
+                .await
+                .usage()?
+                .consumed,
+            consumed_before_reopen,
+            "cold recovery must not re-charge the interrupted native effect"
         );
         Ok(())
     }

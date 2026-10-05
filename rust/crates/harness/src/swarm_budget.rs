@@ -614,12 +614,6 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         self.source.supports_harness_effect_time()
     }
 
-    /// Returns whether the source can durably retain Harness effect time.
-    #[must_use]
-    pub fn supports_harness_effect_time(&self) -> bool {
-        self.source.supports_harness_effect_time()
-    }
-
     /// Returns transport provenance authenticated by this provider issuer.
     #[must_use]
     pub fn provider_dispatch_context(
