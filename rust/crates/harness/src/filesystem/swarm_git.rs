@@ -78,7 +78,7 @@ where
         scope: Scope,
     ) -> Result<Self> {
         project.validate()?;
-        if project.class() != VolumeClass::Project || project.provider() != host.provider() {
+        if project.class() != VolumeClass::Project || project.provider() != &host.provider {
             return Err(Error::Invalid(
                 "local Git project belongs to another provider or volume class".into(),
             ));
@@ -99,6 +99,7 @@ where
             }
         }
         let workspace_id = host
+            .filesystem
             .workspace_id(project.storage_name()?)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let name = project.storage_name()?;
@@ -183,18 +184,18 @@ where
     async fn workspace_for(&self, id: WorkspaceId) -> Result<acyclic_fs::Workspace<A, O>> {
         let name = self.workspace_name(id)?;
         self.host
-            .open_workspace(&workspace_ref(self.host.provider().clone(), &name)?)
+            .open(&workspace_ref(self.host.provider.clone(), &name)?)
             .await
     }
 
     async fn generation(&self, tree: GitTreeRef) -> Result<acyclic_fs::Generation<A, O>> {
         let workspace = self.workspace_for(tree.workspace_id()).await?;
         let generation = GenerationRef::new(
-            self.host.provider().clone(),
+            self.host.provider.clone(),
             tree.authored_generation().digest().into_bytes(),
             None,
         )?;
-        self.host.open_generation(&workspace, &generation).await
+        self.host.generation(&workspace, &generation).await
     }
 
     async fn resulting_tree(
@@ -238,7 +239,7 @@ where
             let name = self.workspace_name(active)?;
             let observation = self
                 .host
-                .resolve(&workspace_ref(self.host.provider().clone(), &name)?)
+                .resolve(&workspace_ref(self.host.provider.clone(), &name)?)
                 .await?;
             let bytes: [u8; 32] = observation
                 .generation

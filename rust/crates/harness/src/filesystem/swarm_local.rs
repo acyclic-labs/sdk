@@ -10,6 +10,7 @@ use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool,
     FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
     LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
+    ProjectWorkspaceTree,
     PersistentLocalHarness, workspace_ref,
 };
 use crate::{
@@ -2870,7 +2871,7 @@ impl PersistentLocalSwarm {
                         &binding.child,
                         &binding.project,
                         &plan,
-                        operation_id,
+                        OperationId::from_bytes(operation_id.into_bytes()),
                     )
                     .await?
                 {
