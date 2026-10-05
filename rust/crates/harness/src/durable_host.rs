@@ -467,7 +467,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation_id: OperationId,
         bytes: &[u8],
     ) -> Result<()> {
-        crate::durable_mail::publish_control_record(
+        crate::communication::publish_control_record(
             &self.stream,
             stream,
             kind,
