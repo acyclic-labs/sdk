@@ -39,9 +39,16 @@ pub struct ResolvedRequestField {
     pub number: i32,
     pub json_name: String,
     pub type_name: Option<String>,
+    /// True when the descriptor type is a protobuf map-entry message. Target
+    /// generators must project this as a native map instead of inventing a
+    /// public wrapper for the compiler-generated entry type.
+    pub map_entry: bool,
     pub wire_type: Option<i32>,
     pub label: Option<i32>,
     pub oneof_index: Option<i32>,
+    /// Rust descriptor oneof identity used to generate a nominal target union
+    /// while retaining the original wire bytes for unknown arms.
+    pub oneof_name: Option<String>,
     pub proto3_optional: bool,
     pub semantic_type: Option<String>,
     pub validation_rules: Vec<String>,
@@ -379,6 +386,19 @@ fn collect_reachable_fields(
             field.r#type,
             field.type_name.as_deref(),
         );
+        let map_entry = field
+            .type_name
+            .as_deref()
+            .map(|reference| reference.trim_start_matches('.'))
+            .and_then(|reference| messages.get(reference))
+            .and_then(|message| message.options.as_ref())
+            .and_then(|options| options.map_entry)
+            .unwrap_or(false);
+        let oneof_name = field
+            .oneof_index
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| message.oneof_decl.get(index))
+            .and_then(|declaration| declaration.name.clone());
         output.push(ResolvedRequestField {
             family: family.to_owned(),
             rpc: rpc.to_owned(),
@@ -391,9 +411,11 @@ fn collect_reachable_fields(
                 .clone()
                 .unwrap_or_else(|| field_name.to_owned()),
             type_name: field.type_name.clone(),
+            map_entry,
             wire_type: field.r#type,
             label: field.label,
             oneof_index: field.oneof_index,
+            oneof_name,
             proto3_optional: field.proto3_optional.unwrap_or(false),
             semantic_type: semantic_type_id.clone(),
             validation_rules: validation_rules_for_field(family, rpc, message_path, field_name),
