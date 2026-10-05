@@ -1131,6 +1131,11 @@ async fn post_execution_disconnect_replays_child_result_without_duplicate_dispat
         swarm.outcome(task(child_a)).await,
         Err(Error::NotFound(_))
     ));
+    assert_eq!(
+        swarm.outcome(task(child_b)).await?.text,
+        "ordinary completion",
+        "a sibling must complete while the failed child remains recoverable"
+    );
     drop(swarm);
     drop(host);
     drop(stream);
