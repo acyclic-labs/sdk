@@ -11803,3 +11803,114 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
     assert_eq!(head.bytes, Bytes::from_static(b"rqponmlk"));
     Ok(())
 }
+
+/// Dropping a rewritten file's byte-range dependencies keeps its record dependency, so a whole
+/// rewrite planned against a stale base still conflicts with a rewrite another checkout
+/// committed first, rather than silently replacing it.
+#[test]
+fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let mut limited = config();
+    limited.limits.maximum_read_bytes = 8;
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([233; 16]),
+        limited,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let file = path("large")?;
+    let checkout = || {
+        poll_ready(volume.checkout(
+            GenerationSelector::Head,
+            writable_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("checkout blocked")?
+        .map(|checkout| checkout.value)
+        .map_err(|failure| format!("checkout failed: {:?}", failure.error))
+    };
+    let stage = |checkout: &Checkout<_, _>, body: &'static [u8]| {
+        let mut source = std::io::Cursor::new(Bytes::from_static(body));
+        poll_ready(checkout.stage_content(&mut source, 64, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("staging blocked")?
+            .map(|staged| staged.value)
+            .map_err(|failure| format!("staging failed: {:?}", failure.error))
+    };
+    let rewrite = |checkout: &mut Checkout<_, _>, body: &'static [u8]| {
+        let content = stage(checkout, body)?;
+        poll_ready(checkout.apply_authored_transaction(
+            vec![
+                AuthoredMutation::Resize {
+                    path: file.clone(),
+                    logical_bytes: 0,
+                },
+                AuthoredMutation::Resize {
+                    path: file.clone(),
+                    logical_bytes: 32,
+                },
+                AuthoredMutation::WriteFromContent {
+                    path: file.clone(),
+                    offset: 0,
+                    content,
+                },
+            ],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("rewrite blocked")?
+        .map(|_| ())
+        .map_err(|failure| format!("rewrite refused: {:?}", failure.error))
+    };
+
+    let mut seed = checkout()?;
+    let original = stage(&seed, b"0123456789abcdef0123456789abcdef")?;
+    poll_ready(seed.apply_authored_transaction(
+        vec![AuthoredMutation::CreateFileFromContent {
+            path: file.clone(),
+            content: original,
+            metadata: empty_metadata(),
+            file_id: None,
+        }],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("create blocked")??;
+    poll_ready(seed.commit(
+        OperationId::from_bytes([233; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed commit blocked")??;
+
+    let mut first = checkout()?;
+    let mut stale = checkout()?;
+    rewrite(&mut first, b"FIRSTFIRSTFIRSTFIRSTFIRSTFIRST12")?;
+    let committed = poll_ready(first.commit(
+        OperationId::from_bytes([234; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("first commit blocked")??
+    .value;
+    assert!(
+        matches!(committed, CheckoutCommitOutcome::Committed { .. }),
+        "{committed:?}"
+    );
+    rewrite(&mut stale, b"STALESTALESTALESTALESTALESTALE12")?;
+    let refused = poll_ready(stale.commit(
+        OperationId::from_bytes([235; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("stale commit blocked")??
+    .value;
+    assert!(
+        matches!(refused, CheckoutCommitOutcome::Conflict { .. }),
+        "{refused:?}"
+    );
+    Ok(())
+}
