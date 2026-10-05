@@ -56,6 +56,8 @@ use tokio::sync::Mutex;
 
 #[path = "swarm_read_projection.rs"]
 mod read_projection;
+#[path = "swarm_communication.rs"]
+mod communication_host;
 pub use read_projection::{LocalSwarmAgent, LocalSwarmPage};
 use read_projection::{
     page_by_cursor, page_from_sorted, recursive_agent_tree as project_recursive_agent_tree,
@@ -2625,13 +2627,15 @@ impl PersistentLocalSwarm {
         })?;
         let host_secret = root_harness.signing_key();
         let resolver = Arc::new(
-            LocalFilesystemForkResolver::new(host, stream, stream_provider, project)?
+            LocalFilesystemForkResolver::new(host, stream.clone(), stream_provider, project)?
                 .with_host_secret(host_secret)?,
         );
         let plans = Arc::new(LocalModelForkPlans::new().with_resolver(resolver.clone()));
         plans.bind_journal(swarm.registry.clone()).await?;
         let publisher = Arc::new(LocalModelForkPublisher::new(plans.clone()));
-        swarm.bindings = LocalSwarmBindings::default()
+        let communication = Arc::new(communication_host::SwarmCommunicationHost::new(stream.clone()));
+        let waits = Arc::new(crate::communication::StreamWaitStore::new(stream.clone()));
+        swarm.bindings = LocalSwarmBindings::communication(communication.clone(), Some(waits), None)
             .with_filesystem_fork_resolver(resolver)
             .with_model_fork_plans(plans.clone())
             .with_model_batch_publisher(publisher.clone());
@@ -2643,6 +2647,7 @@ impl PersistentLocalSwarm {
         let swarm = Arc::new(swarm);
         plans.bind_swarm(Arc::downgrade(&swarm))?;
         publisher.bind(Arc::downgrade(&swarm))?;
+        communication.bind(Arc::downgrade(&swarm))?;
         Ok(swarm)
     }
 
@@ -3157,17 +3162,16 @@ impl PersistentLocalSwarm {
             self.bindings.communication_host.clone().ok_or_else(|| {
                 Error::Unsupported("durable communication host is not bound".into())
             })?;
-        // Mail payloads are staged into the recipient's own private volume.
-        // A sender-owned FileRef would require an implicit sibling read grant
-        // and would make an otherwise valid parent/child message unreadable
-        // at inbox time. The owner host performs this copy before publishing
-        // the ref-only inbox event.
-        let harness = self.open_session(recipient).await?;
+        // The sender owns the explicit source. The communication host checks
+        // sender read authority and transfers it into recipient-private storage
+        // before publishing the inbox record.
+        let harness = self.open_session(sender).await?;
+        let transfer = crate::communication::message_endpoint_operation(sender, recipient, message_id);
         let payload = harness
             .storage()
             .stage(
-                message_id,
-                &format!("system/swarm/messages/{message_id}.txt"),
+                transfer,
+                &format!("system/swarm/messages/{transfer}.txt"),
                 body,
                 "text/plain",
                 "message.txt",
@@ -4502,7 +4506,7 @@ impl PersistentLocalSwarm {
         let Some(host) = &self.bindings.communication_host else {
             return Ok(());
         };
-        let admission = host.observe_admission(task).await?;
+        let admission = host.communication_scope(task).await?;
         if admission.parent != parent
             || admission.limits != self.config.limits
             || admission.run_limits != self.config.run_limits

@@ -109,6 +109,8 @@ struct DeterministicProvider {
     child_read_verified: AtomicBool,
     grandchild_inherited_read: AtomicBool,
     sibling_fork_sent: AtomicBool,
+    communication_enabled: AtomicBool,
+    communication_sent: AtomicBool,
     dispatches: AtomicUsize,
     swarm: Mutex<Option<Weak<PersistentLocalSwarm>>>,
     child_a: OperationId,
@@ -205,6 +207,8 @@ impl DeterministicProvider {
             child_read_verified: AtomicBool::new(false),
             grandchild_inherited_read: AtomicBool::new(false),
             sibling_fork_sent: AtomicBool::new(false),
+            communication_enabled: AtomicBool::new(false),
+            communication_sent: AtomicBool::new(false),
             dispatches: AtomicUsize::new(0),
             swarm: Mutex::new(None),
             child_a,
@@ -401,6 +405,27 @@ impl ModelProvider for DeterministicProvider {
                 ModelEvent::Completed {
                     metadata: Value::Null,
                 },
+            ]
+        } else if root && self.communication_enabled.load(Ordering::SeqCst)
+            && !self.communication_sent.swap(true, Ordering::SeqCst)
+        {
+            let file = staged_file(&request).expect("root staged payload is present");
+            vec![
+                ModelEvent::ToolCall {
+                    call_id: "default-message-child".into(),
+                    name: "swarm.message".into(),
+                    arguments: json!({
+                        "recipient": self.child_a.to_string(), "target": "child", "payload": file,
+                    }),
+                },
+                ModelEvent::ToolCall {
+                    call_id: "default-wait-children".into(),
+                    name: "swarm.wait".into(),
+                    arguments: json!({
+                        "kind": "tasks", "task_ids": [self.child_a.to_string(), self.child_b.to_string()],
+                    }),
+                },
+                ModelEvent::Completed { metadata: Value::Null },
             ]
         } else {
             Self::ordinary()
@@ -762,6 +787,7 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
 async fn default_local_composition_runs_recursive_models_and_reopens_without_dispatch() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let provider = DeterministicProvider::new(id(0xF1), id(0xF2), id(0xF3));
+    provider.communication_enabled.store(true, Ordering::SeqCst);
     let model = Model::new("mock", "default-local-composition", "1", json!({}))?;
     let limits = Limits::default();
     let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
@@ -774,12 +800,46 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
     assert_eq!(swarm.sessions().await?.len(), 4);
     assert!(provider.child_read_verified.load(Ordering::SeqCst));
     assert!(provider.grandchild_inherited_read.load(Ordering::SeqCst));
+    let root = swarm.root_task().await?;
+    let child_a = acyclic_harness::TaskId::from_bytes(id(0xF1).into_bytes());
+    let child_b = acyclic_harness::TaskId::from_bytes(id(0xF2).into_bytes());
+    let inbox = swarm.read_inbox(child_a, 0, 8).await?;
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].sender, root);
+    let decoded = provider.decoded_requests();
+    let last = decoded.last().expect("completed root request");
+    let results: Vec<_> = last.messages.iter().filter_map(|message| match &message.content {
+        ModelContent::Part(ModelContentPart::ToolResult { call_id, name, value }) =>
+            Some((call_id.as_str(), name.as_str(), value)),
+        _ => None,
+    }).collect();
+    let message_result = results.iter().find(|(call, name, _)|
+        *call == "default-message-child" && *name == "swarm.message").expect("message result paired");
+    assert_eq!(message_result.2["delivered"], true);
+    let wait_result = results.iter().find(|(call, name, _)|
+        *call == "default-wait-children" && *name == "swarm.wait").expect("wait result paired");
+    assert_eq!(wait_result.2["kind"], "tasks");
+    let tasks = wait_result.2["outcomes"].as_array().expect("task results");
+    assert_eq!(tasks.len(), 2);
+    for (index, expected) in [child_a, child_b].iter().enumerate() {
+        assert_eq!(tasks[index]["task_id"], expected.to_string());
+        assert_eq!(tasks[index]["status"], "succeeded");
+        assert_eq!(tasks[index]["value"]["text"], "ordinary completion");
+    }
+    assert!(matches!(swarm.send_message(child_a, child_b, id(0xE0), b"sibling").await,
+        Err(Error::Unauthorized(_))));
+    let receipt = swarm.send_message(child_a, root, id(0xE1), "explicit λ🦀\n  reply".as_bytes()).await?;
+    assert_eq!(swarm.send_message(child_a, root, id(0xE1), "explicit λ🦀\n  reply".as_bytes()).await?, receipt);
+    let root_inbox = swarm.read_inbox(root, 0, 8).await?;
+    assert_eq!(root_inbox.len(), 1);
     let requests = provider.serialized_requests();
     drop(swarm);
     let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
         directory.path(), model, provider.clone(), limits,
     ).await?;
     provider.bind_swarm(&reopened);
+    assert_eq!(reopened.read_inbox(child_a, 0, 8).await?, inbox);
+    assert_eq!(reopened.read_inbox(root, 0, 8).await?, root_inbox);
     assert_eq!(reopened.run_root(operation, "run default recursive composition").await?, output);
     assert_eq!(provider.serialized_requests(), requests);
     Ok(())

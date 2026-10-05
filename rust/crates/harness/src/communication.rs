@@ -952,8 +952,8 @@ impl DurableCommunication {
     /// publishing the ref-only message through the host.
     pub async fn send(&self, request: MessageRequest) -> Result<()> {
         request.validate()?;
-        let sender = self.host.observe_admission(request.sender).await?;
-        let recipient = self.host.observe_admission(request.recipient).await?;
+        let sender = self.host.communication_scope(request.sender).await?;
+        let recipient = self.host.communication_scope(request.recipient).await?;
         request.target.authorize(
             request.sender,
             request.recipient,
@@ -1111,12 +1111,12 @@ impl DurableCommunication {
         // Authenticate the waiter before returning a retained timeout or
         // cancellation so a caller cannot use a known operation identity as a
         // bearer credential after restart.
-        self.host.observe_admission(request.waiter).await?;
+        self.host.communication_scope(request.waiter).await?;
         let WaitTarget::Tasks { task_ids } = &request.target else {
             return Ok(());
         };
         for task_id in task_ids {
-            let admission = self.host.observe_admission(*task_id).await?;
+            let admission = self.host.communication_scope(*task_id).await?;
             if admission.parent != Some(request.waiter) {
                 return Err(Error::Unauthorized(
                     "wait target is not a direct child of the waiter".into(),

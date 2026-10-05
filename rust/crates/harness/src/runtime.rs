@@ -654,6 +654,20 @@ impl TaskAdmissionRecord {
     }
 }
 
+/// Owner-authenticated authority for messaging and waits, independent of the
+/// execution machinery that admitted the task.
+#[derive(Clone, Debug)]
+pub struct TaskCommunicationScope {
+    /// Immutable direct parent retained by the owning task runtime.
+    pub parent: Option<TaskId>,
+    /// Owner-authenticated effective communication and content grants.
+    pub grants: Capabilities,
+    /// Owner-pinned content bounds.
+    pub limits: Limits,
+    /// Owner-pinned task execution bounds.
+    pub run_limits: TaskRunLimits,
+}
+
 /// Provider boundary for stable durable admission and outcome observation.
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
@@ -695,6 +709,25 @@ pub trait DurableTaskHost: Send + Sync {
             Err(Error::Unsupported(
                 "full durable admission observation is not bound".into(),
             ))
+        })
+    }
+
+    /// Authenticates the authority needed for communication without requiring
+    /// a second workflow admission. Workflow hosts project their immutable
+    /// admission by default; other runtimes must retain equivalent authority
+    /// in their own authoritative task records.
+    fn communication_scope<'a>(
+        &'a self,
+        task_id: TaskId,
+    ) -> BoxFuture<'a, Result<TaskCommunicationScope>> {
+        Box::pin(async move {
+            let admission = self.observe_admission(task_id).await?;
+            Ok(TaskCommunicationScope {
+                parent: admission.parent,
+                grants: admission.grants,
+                limits: admission.limits,
+                run_limits: admission.run_limits,
+            })
         })
     }
 

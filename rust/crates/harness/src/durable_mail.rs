@@ -75,11 +75,11 @@ impl<P: StreamProvider> MailboxStore<P> {
         payload: FileRef,
     ) -> Result<()> {
         payload.validate()?;
-        let sender = host.observe_admission(sender_id).await?;
+        let sender = host.communication_scope(sender_id).await?;
         if !sender.grants.contains("mail:send") {
             return Err(Error::Unauthorized("sender scope lacks mail:send".into()));
         }
-        let recipient = host.observe_admission(recipient_id).await?;
+        let recipient = host.communication_scope(recipient_id).await?;
         if sender.parent != Some(recipient_id) && recipient.parent != Some(sender_id) {
             return Err(Error::Unauthorized(
                 "message endpoints are not direct parent and child".into(),
@@ -123,7 +123,7 @@ impl<P: StreamProvider> MailboxStore<P> {
         if limit == 0 || limit > 1_024 {
             return Err(Error::Invalid("inbox page bound is invalid".into()));
         }
-        let recipient = host.observe_admission(task).await?;
+        let recipient = host.communication_scope(task).await?;
         if !recipient.grants.contains("mail:read") {
             return Err(Error::Unauthorized(
                 "recipient scope lacks mail:read".into(),
@@ -161,7 +161,7 @@ impl<P: StreamProvider> MailboxStore<P> {
                     "mail history contains an unreadable payload".into(),
                 ));
             }
-            let sender = host.observe_admission(event.sender).await?;
+            let sender = host.communication_scope(event.sender).await?;
             if !sender.grants.contains("mail:send")
                 || (sender.parent != Some(task) && recipient.parent != Some(event.sender))
             {
