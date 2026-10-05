@@ -423,22 +423,6 @@ impl LocalSwarmBindings {
         self
     }
 
-    /// Reads the exact owner-retained admission for a task. Budget admission
-    /// callers must use this record rather than reconstructing limits from a
-    /// local fork request.
-    pub async fn authenticated_admission(
-        &self,
-        task: TaskId,
-    ) -> Result<crate::runtime::TaskAdmissionRecord> {
-        self.communication_host
-            .as_ref()
-            .ok_or_else(|| {
-                Error::Unauthorized("durable task admission host is not configured".into())
-            })?
-            .observe_admission(task)
-            .await
-    }
-
     fn tools_for(&self, parent: TaskId) -> Result<LocalHarnessTools> {
         let Some(host) = self.communication_host.clone() else {
             let mut tools = LocalHarnessTools::new();
