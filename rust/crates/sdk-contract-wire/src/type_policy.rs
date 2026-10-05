@@ -2509,6 +2509,12 @@ fn typescript_raw_signature(
     }
     let lines = source.lines().collect::<Vec<_>>();
     let start = line_number.saturating_sub(1);
+    if !lines
+        .get(start)
+        .is_some_and(|line| line.contains("request:"))
+    {
+        return false;
+    }
     let end = (start + 6).min(lines.len());
     let normalized = lines[start..end].join(" ");
     let Some(request_start) = normalized.find("request:") else {
@@ -2787,12 +2793,12 @@ mod tests {
         fs::create_dir_all(root.join("python")).expect("audit fixture directory");
         fs::write(
             root.join("typescript-metadata.ts"),
-            "publish(request: PublishRequest): Promise<PublishResponse> { }\n",
+            "import { PublishRequest, PublishResponse } from \"./generated/proto/workers_pb\";\npublish(request: PublishRequest): Promise<PublishResponse> { }\n",
         )
         .expect("typescript fixture");
         fs::write(
             root.join("python").join("remote.py"),
-            "    return await self.actors.InvokeActor(request)\n",
+            "    async def invoke_actor(self):\n        return await self.actors.InvokeActor(request)\n",
         )
         .expect("python fixture");
         fs::write(
