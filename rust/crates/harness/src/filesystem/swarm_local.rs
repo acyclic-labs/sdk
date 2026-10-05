@@ -14,7 +14,7 @@ use super::{
     PersistentLocalHarness, workspace_ref, workspace_tools,
 };
 use crate::{
-    AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
+    AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
@@ -32,9 +32,7 @@ use crate::{
         InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse,
         InteractionTicket,
     },
-    model::{
-        Model, ModelContent, ModelMessage, ModelProvider, ModelRole, ProviderDispatchContext,
-    },
+    model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
@@ -43,13 +41,18 @@ use crate::{
     swarm_budget::{
         SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
         SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource, VerifiedForkPublication,
-        SwarmUsage,
     },
     swarm_budget_journal::SwarmBudgetJournal,
     tool::{
         ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
         ToolRegistry, ToolResult,
     },
+};
+#[cfg(test)]
+use crate::{
+    model::ProviderDispatchContext,
+    swarm_budget::SwarmUsage,
+    IdempotencyKey,
 };
 use acyclic_fs::{
     GitFilesystemAction, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
