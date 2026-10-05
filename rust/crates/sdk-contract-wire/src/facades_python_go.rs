@@ -1292,11 +1292,7 @@ fn go_constructor_call(item: &crate::type_policy::SemanticType, expression: &str
         WireValueKind::Message => format!("{}, nil", expression),
         WireValueKind::String => format!("New{}(string({}))", go_constructor_name(item), expression),
         WireValueKind::Bytes => {
-            let argument = if item.rules.iter().any(|rule| matches!(rule, SemanticRule::FixedLength(_))) {
-                format!("[]byte({})", expression)
-            } else {
-                format!("[]byte({})", expression)
-            };
+            let argument = format!("[]byte({})", expression);
             format!("New{}({})", go_constructor_name(item), argument)
         }
         WireValueKind::UnsignedInteger => format!("New{}(uint64({}))", go_constructor_name(item), expression),
@@ -1464,13 +1460,12 @@ fn go_constructor_result(item: &crate::type_policy::SemanticType) -> String {
 }
 
 fn go_zero_value(item: &crate::type_policy::SemanticType) -> String {
-    if item.wire_kind == WireValueKind::Bytes {
-        if let Some(length) = item.rules.iter().find_map(|rule| match rule {
+    if item.wire_kind == WireValueKind::Bytes
+        && let Some(length) = item.rules.iter().find_map(|rule| match rule {
             SemanticRule::FixedLength(length) => Some(length),
             _ => None,
         }) {
-            return format!("[{}]byte{{}}", length);
-        }
+        return format!("[{}]byte{{}}", length);
     }
     "nil".to_owned()
 }
