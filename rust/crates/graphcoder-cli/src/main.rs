@@ -1102,10 +1102,10 @@ fn replacement(
         .unwrap_or("atomic")
     {
         "atomic" => Ok(HostPathReplacement::Atomic),
-        "live_mount" => Ok(HostPathReplacement::LiveMount),
-        _ => Err(DispatchError::invalid(
-            "replacement must be atomic or live_mount",
+        "live_mount" => Err(DispatchError::denied(
+            "live_mount requires an approval bound to that replacement effect",
         )),
+        _ => Err(DispatchError::invalid("replacement must be atomic")),
     }
 }
 
@@ -1927,6 +1927,30 @@ mod tests {
                 },
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn writeback_replacement_requires_an_approved_effect() {
+        let live_mount = json!({"replacement": "live_mount"});
+        assert!(matches!(
+            replacement(live_mount.as_object().expect("replacement object")),
+            Err(DispatchError { code: "denied", .. })
+        ));
+
+        let unknown = json!({"replacement": "unknown"});
+        assert!(matches!(
+            replacement(unknown.as_object().expect("replacement object")),
+            Err(DispatchError {
+                code: "invalid_input",
+                ..
+            })
+        ));
+
+        let atomic = json!({"replacement": "atomic"});
+        assert!(matches!(
+            replacement(atomic.as_object().expect("replacement object")),
+            Ok(HostPathReplacement::Atomic)
         ));
     }
 
