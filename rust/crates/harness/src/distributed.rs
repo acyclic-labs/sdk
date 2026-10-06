@@ -11,6 +11,7 @@ use crate::{
         assembly_invocation_digest, reduction_invocation_digest,
     },
     wire,
+    wire_codec::validate_protocol,
 };
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
@@ -1056,7 +1057,11 @@ fn encode(
 fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, SchedulerEvent)> {
     let envelope = wire::SchedulerEventEnvelope::decode(bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    validate_coordinator_protocol(envelope.protocol.as_ref())?;
+    validate_protocol(
+        envelope.protocol.as_ref(),
+        &coordinator_protocol_identity(),
+        Error::Storage,
+    )?;
     let digest: [u8; 32] = envelope
         .event_digest
         .try_into()
@@ -1093,19 +1098,6 @@ fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
     wire::ProtocolIdentity {
         version: COORDINATOR_WIRE_VERSION.into(),
         descriptor_digest: blake3::hash(COORDINATOR_WIRE_CONTRACT).to_hex().to_string(),
-    }
-}
-
-fn validate_coordinator_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
-    let actual =
-        protocol.ok_or_else(|| Error::Storage("coordinator event protocol is missing".into()))?;
-    let current = coordinator_protocol_identity();
-    if actual == &current {
-        Ok(())
-    } else {
-        Err(Error::Unsupported(
-            "unsupported coordinator event wire version".into(),
-        ))
     }
 }
 

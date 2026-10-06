@@ -22,13 +22,7 @@ pub fn negotiate(
     supported: &wire::CapabilitySet,
 ) -> Result<wire::HandshakeResponse> {
     let expected = current_protocol();
-    let actual = request
-        .protocol
-        .as_ref()
-        .ok_or_else(|| Error::Invalid("handshake protocol is missing".into()))?;
-    if actual != &expected {
-        return Err(Error::Unsupported("protocol identity mismatch".into()));
-    }
+    validate_protocol(request.protocol.as_ref(), &expected, Error::Invalid)?;
     let available = supported
         .capabilities
         .iter()
@@ -80,7 +74,11 @@ pub fn validate_operation_status(
     request: &wire::ObserveRequest,
     status: &wire::OperationStatus,
 ) -> Result<()> {
-    validate_protocol(status.protocol.as_ref())?;
+    validate_protocol(
+        status.protocol.as_ref(),
+        &current_protocol(),
+        Error::Conflict,
+    )?;
     if request.operation_id.is_empty()
         || status
             .operation

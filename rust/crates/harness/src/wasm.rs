@@ -17,7 +17,7 @@ use crate::{
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
+        ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
@@ -2432,18 +2432,8 @@ pub fn decode_apply_response(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
 /// Decodes a generated aggregate kind using the native enum mapping.
 #[wasm_bindgen(js_name = decodeAggregateKind)]
 pub fn decode_aggregate_kind_wasm(value: i32) -> Result<JsValue, JsValue> {
-    let kind = match crate::wire::AggregateKind::try_from(value)
-        .map_err(|_| JsValue::from_str("aggregate kind is invalid"))?
-    {
-        crate::wire::AggregateKind::Agent => AggregateKind::Agent,
-        crate::wire::AggregateKind::Conversation => AggregateKind::Conversation,
-        crate::wire::AggregateKind::Session => AggregateKind::Session,
-        crate::wire::AggregateKind::Turn => AggregateKind::Turn,
-        crate::wire::AggregateKind::Task => AggregateKind::Task,
-        crate::wire::AggregateKind::Unspecified => {
-            return Err(JsValue::from_str("aggregate kind is unspecified"));
-        }
-    };
+    let kind =
+        crate::wire_codec::decode_aggregate_kind(value, crate::Error::Invalid).map_err(js_error)?;
     to_js(&kind)
 }
 
