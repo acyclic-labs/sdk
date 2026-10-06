@@ -2153,6 +2153,7 @@ fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<(
         RenameMode::NoReplace => libc::RENAME_NOREPLACE,
         RenameMode::Replace => 0,
     };
+    // SAFETY: both paths are NUL-terminated `CString`s that outlive the syscall.
     let result = unsafe {
         libc::syscall(
             libc::SYS_renameat2,
@@ -2181,6 +2182,7 @@ fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<(
         RenameMode::NoReplace => libc::RENAME_EXCL,
         RenameMode::Replace => 0,
     };
+    // SAFETY: both paths are NUL-terminated `CString`s that outlive the call.
     if unsafe { libc::renamex_np(from_path.as_ptr(), to_path.as_ptr(), flags) } != 0 {
         return Err(io::Error::last_os_error());
     }

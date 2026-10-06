@@ -682,8 +682,8 @@ impl LinuxMetadataTarget {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: successful openat returned one exclusively owned descriptor.
         Ok(Self {
+            // SAFETY: successful openat returned one exclusively owned descriptor.
             inode: unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) },
         })
     }
@@ -911,6 +911,7 @@ fn linux_require_fchmodat2() -> Result<(), LinuxMetadataError> {
     // An invalid descriptor makes the capability probe non-mutating. A kernel
     // with fchmodat2 and AT_EMPTY_PATH support returns EBADF; an older kernel
     // returns ENOSYS or EINVAL before any ownership change is attempted.
+    // SAFETY: the probe passes only descriptor -1 and a static empty C string.
     let result = unsafe {
         libc::syscall(
             LINUX_FCHMODAT2_SYSCALL,
@@ -1985,6 +1986,7 @@ impl MacMetadataTarget {
             // Ownership changes may clear setuid/setgid, so mode is applied last.
             let mask = libc::mode_t::try_from(mode & 0o7777)
                 .map_err(|_| MacMetadataError::Unsupported("posix_mode"))?;
+            // SAFETY: fd pins the admitted inode; fchmod reads no memory.
             if unsafe { libc::fchmod(fd, mask) } != 0 {
                 return Err(io::Error::last_os_error().into());
             }
@@ -2132,6 +2134,7 @@ fn macos_fstat(fd: std::os::fd::RawFd) -> io::Result<libc::stat> {
     if unsafe { libc::fstat(fd, observed.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: fstat succeeded above, so it initialized `observed`.
     Ok(unsafe { observed.assume_init() })
 }
 
@@ -2732,6 +2735,7 @@ async fn copy_windows_file_worker(
     // transferred once; no independent I/O is performed after this point.
     #[allow(unsafe_code)]
     let source = unsafe { NativeFile::from_overlapped_file_unchecked(source)? };
+    // SAFETY: as above.
     #[allow(unsafe_code)]
     let destination = unsafe { NativeFile::from_overlapped_file_unchecked(destination)? };
     let mut offset = 0_u64;
@@ -3075,6 +3079,8 @@ fn clone_windows_file(
     }
     // The materializer creates sparse source files on Windows. The target
     // must also be sparse for the clone FSCTL to preserve holes.
+    // SAFETY: the target handle is live for this synchronous FSCTL, which takes
+    // no buffers.
     unsafe {
         DeviceIoControl(
             HANDLE(target.as_raw_handle()),
@@ -3848,6 +3854,7 @@ mod macos_metadata_tests {
         let temporary = tempfile::tempdir()?;
         let pipe = temporary.path().join("pipe");
         let name = std::ffi::CString::new(pipe.as_os_str().as_bytes())?;
+        // SAFETY: `name` is a NUL-terminated path that outlives the call.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         let socket = temporary.path().join("socket");
         let _listener = std::os::unix::net::UnixListener::bind(&socket)?;

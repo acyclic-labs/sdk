@@ -3808,6 +3808,8 @@ unsafe fn notification(
     ) {
         runtime.projector.retry();
     }
+    // SAFETY: `runtime` accepted `callback_data` above as the live ProjFS
+    // callback record.
     if unsafe { (*callback_data).TriggeringProcessId } == std::process::id()
         && matches!(
             notification,
@@ -3818,7 +3820,10 @@ unsafe fn notification(
         return HR_OK;
     }
     let file_id = file_id(data);
+    // SAFETY: ProjFS passes these names as null or NUL-terminated strings
+    // valid for the callback.
     let source_is_external = unsafe { empty_destination(data.FilePathName) };
+    // SAFETY: as above.
     let destination_is_external = unsafe { empty_destination(destination_filename) };
     if notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
         && (source_is_external
@@ -5418,6 +5423,7 @@ mod tests {
         }?;
         // No Acyclic source, notification mappings, or mount setup participates.
         let callbacks = super::callbacks();
+        // SAFETY: `wide` and `callbacks` outlive the synchronous start call.
         let context = unsafe {
             PrjStartVirtualizing(
                 PCWSTR::from_raw(wide.as_ptr()),
@@ -5432,6 +5438,7 @@ mod tests {
                 unsafe { PrjStopVirtualizing(context) };
                 // A crash leaves the designation in place. The provider must
                 // be able to restart without marking or clearing that root.
+                // SAFETY: `wide` and `callbacks` outlive the synchronous start call.
                 let restarted = unsafe {
                     PrjStartVirtualizing(
                         PCWSTR::from_raw(wide.as_ptr()),
@@ -5441,8 +5448,10 @@ mod tests {
                     )
                 }?;
                 let mut instance = PRJ_VIRTUALIZATION_INSTANCE_INFO::default();
+                // SAFETY: `restarted` is live and `instance` is a writable output.
                 unsafe { PrjGetVirtualizationInstanceInfo(restarted, &raw mut instance) }?;
                 assert_eq!(instance.InstanceID, guid);
+                // SAFETY: `restarted` is the sole live context from the restart.
                 unsafe { PrjStopVirtualizing(restarted) };
             }
             Err(error) => {
