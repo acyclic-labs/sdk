@@ -557,6 +557,27 @@ test("clean JSONL EOF makes an unanswered command indeterminate", async () => {
   await expect(pending).rejects.toBeInstanceOf(WireError);
 });
 
+test("requests after the server stream ended fail instead of waiting forever", async () => {
+  const channel: JsonlChannel = {
+    async write() {},
+    close() {},
+    async *[Symbol.asyncIterator]() {
+      yield `${toJsonString(ServerFrameSchema, create(ServerFrameSchema, {
+        frame: { case: "handshake", value: handshake },
+      }))}
+`;
+    },
+  };
+  const connection = await new JsonlWireTransport(async () => channel, negotiation).connect(resume);
+  expect(await collect(connection)).toEqual([]);
+  await expect(connection.send(validCommand())).rejects.toBeInstanceOf(WireError);
+  await expect(connection.observe(create(ObserveRequestSchema, {
+    owner: { kind: 5, id: "owner" },
+    operationId: "01010101-0101-0101-0101-010101010101",
+    scope: { id: "control", capabilities: ["operation:observe"], issuer: "runtime", proof: new Uint8Array(32) },
+  }))).rejects.toBeInstanceOf(WireError);
+});
+
 async function collect<T>(values: AsyncIterable<T>): Promise<T[]> {
   const result: T[] = [];
   for await (const value of values) result.push(value);

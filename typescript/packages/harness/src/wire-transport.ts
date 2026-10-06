@@ -338,6 +338,8 @@ class FramedConnection implements WireConnection {
   }>();
   /** Reservations cover the async Rust validation window before a request is framed. */
   readonly #controls = new Set<string>();
+  /** Cleared once the server stream ends; later requests could never be answered. */
+  #open = true;
 
   constructor(
     source: AsyncIterator<string>,
@@ -351,6 +353,7 @@ class FramedConnection implements WireConnection {
   async send(command: CommandEnvelope): Promise<void> {
     command = withProtocol(command, this.negotiation);
     await validateCommand(command);
+    this.#assertOpen();
     const operationId = command.operation?.operationId;
     if (!operationId) throw new TypeError("command operation identity is missing");
     if (this.#pending.has(operationId)) throw new Error("command admission is already pending");
@@ -377,6 +380,7 @@ class FramedConnection implements WireConnection {
     this.#controls.add(operationId);
     try {
       await validateObserve(request);
+      this.#assertOpen();
       if (!this.#controls.has(operationId)) {
         throw new WireError(ErrorCode.INDETERMINATE, "connection closed during operation control validation");
       }
@@ -406,6 +410,7 @@ class FramedConnection implements WireConnection {
     this.#controls.add(operationId);
     try {
       await validateCancel(request);
+      this.#assertOpen();
       if (!this.#controls.has(operationId)) {
         throw new WireError(ErrorCode.INDETERMINATE, "connection closed during operation control validation");
       }
@@ -502,13 +507,19 @@ class FramedConnection implements WireConnection {
         this.#fail(error);
         return;
       }
+      this.#open = false;
       this.#deliveries.end();
     } catch (error) {
       this.#fail(error);
     }
   }
 
+  #assertOpen(): void {
+    if (!this.#open) throw new WireError(ErrorCode.INDETERMINATE, "connection closed before the request was sent");
+  }
+
   #fail(error: unknown): void {
+    this.#open = false;
     for (const pending of this.#pending.values()) pending.reject(error);
     this.#pending.clear();
     for (const pending of this.#observations.values()) pending.reject(error);
