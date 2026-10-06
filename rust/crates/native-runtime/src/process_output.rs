@@ -159,12 +159,14 @@ where
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod unix {
     use super::OutputReader;
-    #[cfg(target_os = "linux")]
-    use std::os::fd::FromRawFd;
     use std::{
         io::{self, Read},
-        os::fd::{AsRawFd, OwnedFd},
-        sync::mpsc,
+        os::fd::AsRawFd,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
         thread,
     };
 
@@ -173,34 +175,19 @@ mod unix {
         R: Read + AsRawFd + Send + 'static,
         F: FnMut(&[u8]) -> bool + Send + 'static,
     {
-        let (cancel_read, cancel_write) = make_cancel_pipe()?;
-        let cancel_read = std::sync::Arc::new(cancel_read);
-        let worker_cancel_read = std::sync::Arc::clone(&cancel_read);
+        configure_nonblocking(reader.as_raw_fd())?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
         let (sender, receiver) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("acyclic-output-reader".into())
             .spawn(move || {
-                let result = run_reader_poll(reader, worker_cancel_read, consume);
+                let result = run_reader_poll(reader, worker_cancelled, consume);
                 let _ = sender.send(result);
             })?;
         let cancel = Box::new(move || {
-            let byte = [1_u8];
-            loop {
-                let written = unsafe {
-                    libc::write(cancel_write.as_raw_fd(), byte.as_ptr().cast(), byte.len())
-                };
-                if written == 1 {
-                    return Ok(());
-                }
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                // Keep the read end alive through this closure so a failed
-                // worker cannot turn cancellation into SIGPIPE.
-                let _ = &cancel_read;
-                return Err(error);
-            }
+            cancelled.store(true, Ordering::Release);
+            Ok(())
         });
         Ok(OutputReader {
             receiver,
@@ -212,7 +199,7 @@ mod unix {
 
     fn run_reader_poll<R, F>(
         mut reader: R,
-        cancel: std::sync::Arc<OwnedFd>,
+        cancelled: Arc<AtomicBool>,
         mut consume: F,
     ) -> io::Result<Vec<u8>>
     where
@@ -222,8 +209,18 @@ mod unix {
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 8192];
         loop {
-            wait_for_input(&reader, &cancel)?;
-            let read = reader.read(&mut buffer)?;
+            wait_for_input(&reader, &cancelled)?;
+            if cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "process output reader cancelled",
+                ));
+            }
+            let read = match reader.read(&mut buffer) {
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error),
+            };
             if read == 0 {
                 return Ok(bytes);
             }
@@ -237,21 +234,23 @@ mod unix {
         }
     }
 
-    fn wait_for_input<R: AsRawFd>(reader: &R, cancel: &OwnedFd) -> io::Result<()> {
-        let mut descriptors = [
-            libc::pollfd {
+    fn wait_for_input<R: AsRawFd>(reader: &R, cancelled: &AtomicBool) -> io::Result<()> {
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "process output reader cancelled",
+                ));
+            }
+            let mut descriptor = libc::pollfd {
                 fd: reader.as_raw_fd(),
                 events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
                 revents: 0,
-            },
-            libc::pollfd {
-                fd: cancel.as_raw_fd(),
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-                revents: 0,
-            },
-        ];
-        loop {
-            let polled = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+            };
+            // A bounded wait makes cancellation independent of pipe-writer
+            // lifetime. The descriptor is nonblocking, so a cancellation
+            // race after poll cannot strand the worker in read.
+            let polled = unsafe { libc::poll(&mut descriptor, 1, 50) };
             if polled < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {
@@ -259,43 +258,32 @@ mod unix {
                 }
                 return Err(error);
             }
-            if descriptors[1].revents != 0 {
+            if cancelled.load(Ordering::Acquire) {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "process output reader cancelled",
                 ));
             }
-            if descriptors[0].revents != 0 {
+            if polled == 0 {
+                continue;
+            }
+            if descriptor.revents != 0 {
                 return Ok(());
             }
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn make_cancel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-        let mut descriptors = [0; 2];
-        if unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+    fn configure_nonblocking(fd: std::os::fd::RawFd) -> io::Result<()> {
+        // SAFETY: fcntl only reads and updates status flags on the owned
+        // native output descriptor.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: pipe initialized both descriptors on success and ownership
-        // is transferred exactly once to these OwnedFd values.
-        Ok(unsafe {
-            (
-                OwnedFd::from_raw_fd(descriptors[0]),
-                OwnedFd::from_raw_fd(descriptors[1]),
-            )
-        })
-    }
-
-    #[cfg(target_vendor = "apple")]
-    fn make_cancel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-        // Apple has no atomic CLOEXEC pipe primitive exposed by the current
-        // SDK dependency. Refuse this execution capability rather than using
-        // a racy `pipe` followed by `fcntl(FD_CLOEXEC)` sequence.
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "interruptible native output readers require an atomic CLOEXEC pipe on Apple",
-        ))
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 
