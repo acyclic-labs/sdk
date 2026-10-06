@@ -165,6 +165,7 @@ test("inherited dispatch captures fresh pinned local files after builder constru
     const volumeGrant = core.volumeCapability(volume, "read");
     const scope = core.issueScopeForAgent(agent, "local-reader", [volumeGrant]);
     let fresh: FileRef;
+    let prefixOnly = false;
     let calls = 0;
     let reads = 0;
     const content = {
@@ -175,11 +176,13 @@ test("inherited dispatch captures fresh pinned local files after builder constru
       volumeReadCapability: (volume: FileRef["volume"]) => core.volumeCapability(volume, "read"),
       directoryReadCapability: (volume: FileRef["volume"], prefix: string) => core.directoryReadCapability(volume, prefix),
     };
-    const context = { async build() { return [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }]; } };
+    const context = { async build() { return prefixOnly ? []
+      : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }]; } };
     const provider = { async *generate(request: import("../src/model.js").ModelRequest & { serializedInput: Uint8Array }) {
       calls++;
       expect(request.serializedInput).toEqual(prepareModelRequest({ model, tools: [], maxOutputTokens: 4096,
-        messages: [{ role: "user", content: "parent" }, { role: "user", content: { kind: "file", file: fresh, policy: "reference" } }] }, DEFAULT_LIMITS));
+        messages: [{ role: "user", content: "parent" }, ...(prefixOnly ? []
+          : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }])] }, DEFAULT_LIMITS));
       yield { kind: "completed" as const, metadata: {} };
     }, async reconcile() { return undefined; } };
     const runtime = Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
@@ -191,15 +194,20 @@ test("inherited dispatch captures fresh pinned local files after builder constru
     }
     expect(calls).toBe(2);
     expect(reads).toBe(2);
+    prefixOnly = true;
+    await runtime.run("go");
+    expect(calls).toBe(3);
+    expect(reads).toBe(2);
+    prefixOnly = false;
     const denied = core.issueScopeForAgent(agent, "head-only", [core.fileReadCapability(head)]);
     const deniedRuntime = Harness.builder(contracts).inheritedModelPrefix({ core, scope: denied, head, files })
       .content(content).context(context).model(model, provider).grant(volumeGrant).build();
     await expect(deniedRuntime.run("go")).rejects.toThrow();
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
     expect(reads).toBe(2);
     resident.set(key(fresh!), new TextEncoder().encode("corrupt"));
     await expect(runtime.run("go")).rejects.toThrow();
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   } finally { core.free(); }
 });
 

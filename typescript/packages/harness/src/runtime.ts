@@ -2343,8 +2343,9 @@ export class AgentHarness {
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
         const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), maxOutputTokens: 4_096 });
         const prefix = this.components.inheritedModelPrefix;
-        let bytes = prepareModelRequestWasm(request, nativeLimits(this.limits));
-        if (prefix !== undefined) {
+        let bytes: Uint8Array;
+        if (prefix === undefined) bytes = prepareModelRequestWasm(request, nativeLimits(this.limits));
+        else {
           const files = new Map(prefix.files);
           for (const message of request.messages) {
             const parts = typeof message.content === "string" ? []
