@@ -4427,10 +4427,12 @@ mod tests {
         let file = destination.join("late.txt");
         std::fs::write(root.path().join("seed"), b"late")?;
         // ProjFS notifies the provider only of other processes' I/O.
-        let copied = std::process::Command::new("cmd.exe")
-            .args(["/D", "/C", "copy /Y seed projection\\late.txt > nul"])
-            .current_dir(root.path())
-            .status()?;
+        let copied = acyclic_native_runtime::process_status(
+            std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "copy /Y seed projection\\late.txt > nul"])
+                .current_dir(root.path()),
+            std::time::Duration::from_secs(120),
+        )?;
         assert!(copied.success());
         // The file is still awaiting capture when this handle opens; the
         // boundary below captures it, and only then is its time rewritten.
@@ -4445,19 +4447,23 @@ mod tests {
             $h.Close()";
         let ready = root.path().join("ready");
         let go = root.path().join("go");
-        let mut editor = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("ACYCLIC_FS_TEST_FILE", &file)
-            .env("ACYCLIC_FS_TEST_READY", &ready)
-            .env("ACYCLIC_FS_TEST_GO", &go)
-            .spawn()?;
+        let mut editor = acyclic_native_runtime::spawn_process_tree(
+            std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .env("ACYCLIC_FS_TEST_FILE", &file)
+                .env("ACYCLIC_FS_TEST_READY", &ready)
+                .env("ACYCLIC_FS_TEST_GO", &go),
+        )?;
         while !ready.exists() {
             assert!(editor.try_wait()?.is_none(), "editor exited early");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         session.flush_callbacks()?;
         std::fs::write(&go, b"")?;
-        assert!(editor.wait()?.success(), "metadata edit failed");
+        assert!(
+            editor.wait(std::time::Duration::from_secs(30))?.success(),
+            "metadata edit failed"
+        );
         session.flush_callbacks()?;
         let captured = source
             .lookup(&windows_path("late.txt"))?
@@ -4487,10 +4493,13 @@ mod tests {
             $h = [IO.File]::Open($seed, 'Open', 'ReadWrite', 'ReadWrite,Delete');
             [IO.File]::Move($seed, $moved);
             $h.Seek(0, 'End') | Out-Null; $h.WriteByte(33); $h.Close()";
-        let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("ACYCLIC_FS_TEST_ROOT", &destination)
-            .output()?;
+        let output = acyclic_native_runtime::process_output(
+            std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .env("ACYCLIC_FS_TEST_ROOT", &destination),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(output.status.success(), "external edit failed: {output:?}");
         session.flush_callbacks()?;
         assert!(source.lookup(&seed)?.is_none());
@@ -4508,10 +4517,13 @@ mod tests {
         let (_root, destination, mut session) = mount_source(&source)?;
         // ProjFS notifies the provider only of other processes' I/O.
         let external = |command: &str| -> Result<(), Box<dyn std::error::Error>> {
-            let output = std::process::Command::new("cmd.exe")
-                .args(["/D", "/C", command])
-                .current_dir(&destination)
-                .output()?;
+            let output = acyclic_native_runtime::process_output(
+                std::process::Command::new("cmd.exe")
+                    .args(["/D", "/C", command])
+                    .current_dir(&destination),
+                std::time::Duration::from_secs(120),
+                8 * 1024 * 1024,
+            )?;
             assert!(output.status.success(), "{command} failed: {output:?}");
             Ok(())
         };
@@ -4565,10 +4577,13 @@ mod tests {
         // Creates and removals through the mount stay exact before and after
         // the provider captures them into the source. ProjFS notifies the
         // provider only of other processes' I/O.
-        let external = std::process::Command::new("cmd.exe")
-            .args(["/D", "/C", "echo c> c.txt && del b.txt"])
-            .current_dir(&destination)
-            .output()?;
+        let external = acyclic_native_runtime::process_output(
+            std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "echo c> c.txt && del b.txt"])
+                .current_dir(&destination),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(
             external.status.success(),
             "external edit failed: {external:?}"
@@ -4615,14 +4630,23 @@ mod tests {
 
     /// Runs `script` in another process: `ProjFS` notifies the provider only
     /// of other processes' I/O.
-    fn powershell(script: &str) -> std::io::Result<std::process::Child> {
-        std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .spawn()
+    fn powershell(script: &str) -> std::io::Result<acyclic_native_runtime::ProcessTree> {
+        acyclic_native_runtime::spawn_process_tree(
+            std::process::Command::new("powershell.exe").args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ]),
+        )
     }
 
-    fn succeeded(mut child: std::process::Child) -> Result<(), Box<dyn std::error::Error>> {
-        let status = child.wait()?;
+    fn succeeded(
+        mut child: acyclic_native_runtime::ProcessTree,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let result = child.wait(std::time::Duration::from_secs(120));
+        child.terminate()?;
+        let status = result?;
         if status.success() {
             Ok(())
         } else {
@@ -5295,10 +5319,13 @@ mod tests {
         };
         assert_eq!(listed(&destination.join("pkg"))?, ["shared.rs", "sub"]);
         // ProjFS reports only other processes' I/O to its provider.
-        let moved = std::process::Command::new("cmd.exe")
-            .args(["/D", "/C", "move pkg lib"])
-            .current_dir(&destination)
-            .output()?;
+        let moved = acyclic_native_runtime::process_output(
+            std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "move pkg lib"])
+                .current_dir(&destination),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(moved.status.success(), "move failed: {moved:?}");
         let read = |path: &std::path::Path| {
             std::fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))
@@ -5453,16 +5480,19 @@ mod tests {
             .await?;
         let compiler_path = path.clone();
         let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("rustc")
-                .current_dir(compiler_path)
-                .args([
-                    "--edition",
-                    "2021",
-                    "acyclic-workflow.rs",
-                    "-o",
-                    "acyclic-workflow-bin.exe",
-                ])
-                .output()
+            acyclic_native_runtime::process_output(
+                std::process::Command::new("rustc")
+                    .current_dir(compiler_path)
+                    .args([
+                        "--edition",
+                        "2021",
+                        "acyclic-workflow.rs",
+                        "-o",
+                        "acyclic-workflow-bin.exe",
+                    ]),
+                std::time::Duration::from_secs(120),
+                8 * 1024 * 1024,
+            )
         })
         .await??;
         assert!(
@@ -5472,9 +5502,14 @@ mod tests {
         );
         mount.sync().await?;
         let executable = path.join("acyclic-workflow-bin.exe");
-        let execution =
-            tokio::task::spawn_blocking(move || std::process::Command::new(executable).output())
-                .await??;
+        let execution = tokio::task::spawn_blocking(move || {
+            acyclic_native_runtime::process_output(
+                &mut std::process::Command::new(executable),
+                std::time::Duration::from_secs(120),
+                8 * 1024 * 1024,
+            )
+        })
+        .await??;
         assert!(execution.status.success());
         assert_eq!(execution.stdout, b"ok\n");
         mount.unmount().await?;
@@ -5511,10 +5546,12 @@ mod tests {
             assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
         }
         let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("attrib")
-                .arg("+R")
-                .arg(projected)
-                .status()
+            acyclic_native_runtime::process_status(
+                std::process::Command::new("attrib")
+                    .arg("+R")
+                    .arg(projected),
+                std::time::Duration::from_secs(120),
+            )
         })
         .await??;
         assert!(status.success(), "attrib failed with {status}");
@@ -5566,10 +5603,13 @@ mod tests {
             )
             .await?;
         // ProjFS notifies the provider only of other processes' I/O.
-        let external = std::process::Command::new("cmd.exe")
-            .args(["/D", "/C", "ren before.txt after.txt"])
-            .current_dir(&destination)
-            .output()?;
+        let external = acyclic_native_runtime::process_output(
+            std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "ren before.txt after.txt"])
+                .current_dir(&destination),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(external.status.success(), "rename failed: {external:?}");
         mount.sync().await?;
         // The rename moved the written file; nothing writes it again,
@@ -5615,14 +5655,17 @@ mod tests {
             assert_eq!(std::fs::read(&original)?, b"original");
         }
         // ProjFS notifies the provider only of other processes' I/O.
-        let external = std::process::Command::new("cmd.exe")
-            .args([
-                "/D",
-                "/C",
-                "ren original.txt renamed.txt && echo replacement> original.txt",
-            ])
-            .current_dir(&first)
-            .output()?;
+        let external = acyclic_native_runtime::process_output(
+            std::process::Command::new("cmd.exe")
+                .args([
+                    "/D",
+                    "/C",
+                    "ren original.txt renamed.txt && echo replacement> original.txt",
+                ])
+                .current_dir(&first),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(
             external.status.success(),
             "external edit failed: {external:?}"
@@ -5690,12 +5733,15 @@ mod tests {
             WatchBatch::Changes { .. }
         ));
 
-        let external = std::process::Command::new("cmd.exe")
-            .arg("/D")
-            .arg("/C")
-            .arg("ren original.txt renamed.txt && echo replacement> original.txt")
-            .current_dir(&destination)
-            .output()?;
+        let external = acyclic_native_runtime::process_output(
+            std::process::Command::new("cmd.exe")
+                .arg("/D")
+                .arg("/C")
+                .arg("ren original.txt renamed.txt && echo replacement> original.txt")
+                .current_dir(&destination),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(
             external.status.success(),
             "external projected rename failed: {}",

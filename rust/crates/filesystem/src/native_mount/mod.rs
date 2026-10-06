@@ -1835,14 +1835,15 @@ fn recover_platform_destination(destination: &Path) -> Result<(), NativeMountErr
             "no canonical fusermount helper is available for crash recovery".to_owned(),
         )
     })?;
-    let mut child = Command::new(helper)
-        .args(["-u", "-q", "-z", "--"])
-        .arg(destination)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+    let mut child = acyclic_native_runtime::spawn_process_tree(
+        Command::new(helper)
+            .args(["-u", "-q", "-z", "--"])
+            .arg(destination)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .map_err(|error| NativeMountError::Driver(error.to_string()))?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if child
@@ -1853,14 +1854,18 @@ fn recover_platform_destination(destination: &Path) -> Result<(), NativeMountErr
             break;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            child
+                .terminate()
+                .map_err(|error| NativeMountError::Driver(error.to_string()))?;
             return Err(NativeMountError::Driver(
                 "fusermount crash recovery exceeded 30 seconds".to_owned(),
             ));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    child
+        .terminate()
+        .map_err(|error| NativeMountError::Driver(error.to_string()))?;
     if linux_destination_is_mounted(destination)? {
         return Err(NativeMountError::Driver(
             "FUSE destination remained mounted after crash recovery".to_owned(),
@@ -2503,17 +2508,6 @@ mod tests {
     #[test]
     fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct KillChildren(Vec<std::process::Child>);
-
-        impl Drop for KillChildren {
-            fn drop(&mut self) {
-                for child in &mut self.0 {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-            }
-        }
-
         let temporary = tempfile::tempdir()?;
         let destination = temporary.path().join("mount");
         let release = temporary.path().join("release");
@@ -2524,26 +2518,27 @@ mod tests {
         std::mem::forget(crashed);
 
         let executable = std::env::current_exe()?;
-        let mut children = KillChildren(Vec::new());
+        let mut children = Vec::new();
         let mut readiness = Vec::new();
         for ordinal in 0..2 {
             let ready = temporary.path().join(format!("ready-{ordinal}"));
-            let child = std::process::Command::new(&executable)
-                .args([
-                    "--exact",
-                    "native_mount::tests::destination_reclaim_child_waits_for_external_release",
-                    "--nocapture",
-                ])
-                .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination)
-                .env("ACYCLIC_FS_RECLAIM_CHILD_READY", &ready)
-                .env("ACYCLIC_FS_RECLAIM_CHILD_RELEASE", &release)
-                .spawn()?;
+            let child = acyclic_native_runtime::spawn_process_tree(
+                std::process::Command::new(&executable)
+                    .args([
+                        "--exact",
+                        "native_mount::tests::destination_reclaim_child_waits_for_external_release",
+                        "--nocapture",
+                    ])
+                    .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination)
+                    .env("ACYCLIC_FS_RECLAIM_CHILD_READY", &ready)
+                    .env("ACYCLIC_FS_RECLAIM_CHILD_RELEASE", &release),
+            )?;
             readiness.push(ready);
-            children.0.push(child);
+            children.push(child);
         }
         let deadline = Instant::now() + Duration::from_secs(10);
         while readiness.iter().any(|path| !path.is_file()) {
-            for child in &mut children.0 {
+            for child in &mut children {
                 if let Some(status) = child.try_wait()? {
                     return Err(format!("reclaim child exited before release: {status}").into());
                 }
@@ -2554,13 +2549,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         std::fs::write(&release, b"release")?;
-        for child in &mut children.0 {
-            let status = child.wait()?;
+        for child in &mut children {
+            let status = child.wait(Duration::from_secs(5))?;
             if !status.success() {
                 return Err(format!("reclaim child failed: {status}").into());
             }
         }
-        children.0.clear();
+        children.clear();
         assert!(!crash_left_path.exists());
         assert!(destination.is_dir());
         Ok(())
@@ -2584,32 +2579,24 @@ mod tests {
     #[test]
     fn destination_ownership_is_reclaimed_after_process_death()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct KillOnDrop(std::process::Child);
-
-        impl Drop for KillOnDrop {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-
         let temporary = tempfile::tempdir()?;
         let destination = temporary.path().join("mount");
         let ready = temporary.path().join("ready");
         std::fs::create_dir(&destination)?;
-        let child = std::process::Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "native_mount::tests::destination_ownership_child_holds_lock_until_killed",
-                "--nocapture",
-            ])
-            .env("ACYCLIC_FS_LOCK_CHILD_DESTINATION", &destination)
-            .env("ACYCLIC_FS_LOCK_CHILD_READY", &ready)
-            .spawn()?;
-        let mut child = KillOnDrop(child);
+        let child = acyclic_native_runtime::spawn_process_tree(
+            std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "native_mount::tests::destination_ownership_child_holds_lock_until_killed",
+                    "--nocapture",
+                ])
+                .env("ACYCLIC_FS_LOCK_CHILD_DESTINATION", &destination)
+                .env("ACYCLIC_FS_LOCK_CHILD_READY", &ready),
+        )?;
+        let mut child = child;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.is_file() {
-            if let Some(status) = child.0.try_wait()? {
+            if let Some(status) = child.try_wait()? {
                 return Err(format!("lock child exited before readiness: {status}").into());
             }
             if Instant::now() >= deadline {
@@ -2625,8 +2612,8 @@ mod tests {
             reclaim_native_mount_destination_fence(&destination),
             Err(NativeMountError::DestinationBusy)
         ));
-        child.0.kill()?;
-        let status = child.0.wait()?;
+        child.terminate_descendants()?;
+        let status = child.wait(Duration::from_secs(5))?;
         assert!(
             !status.success(),
             "killed lock child unexpectedly succeeded"

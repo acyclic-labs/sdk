@@ -157,9 +157,10 @@ fn fixture(args: &[String]) -> Result<(), Failure> {
     fs::hard_link(root.join("hardlink-a"), root.join("hardlink-b"))?;
 
     if with_fifo {
-        let status = std::process::Command::new("mkfifo")
-            .arg(root.join("pipe.fifo"))
-            .status()?;
+        let status = acyclic_native_runtime::process_status(
+            std::process::Command::new("mkfifo").arg(root.join("pipe.fifo")),
+            std::time::Duration::from_secs(120),
+        )?;
         if !status.success() {
             return Err("mkfifo failed".into());
         }
@@ -407,13 +408,12 @@ fn mount_smoke(args: &[String]) -> Result<(), Failure> {
             let external = work.join("external-import.txt");
             let imported_host = mount_dir.join("imported.txt");
             fs::write(&external, b"imported through rename\n")?;
-            let status = std::process::Command::new("powershell.exe")
+            let status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command"])
                 .arg("Move-Item -LiteralPath $env:ACYCLIC_MOVE_SOURCE -Destination $env:ACYCLIC_MOVE_DESTINATION -ErrorAction Stop")
                 .env("ACYCLIC_MOVE_SOURCE", &external)
                 .env("ACYCLIC_MOVE_DESTINATION", &imported_host)
-                .creation_flags(0x0800_0000)
-                .status()?;
+                .creation_flags(0x0800_0000), std::time::Duration::from_secs(120))?;
             if !status.success() {
                 return Err(format!("external rename helper failed: {status}").into());
             }
@@ -432,13 +432,12 @@ fn mount_smoke(args: &[String]) -> Result<(), Failure> {
             }
             drop(file);
             let exported = work.join("external-export.txt");
-            let status = std::process::Command::new("powershell.exe")
+            let status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command"])
                 .arg("Move-Item -LiteralPath $env:ACYCLIC_MOVE_SOURCE -Destination $env:ACYCLIC_MOVE_DESTINATION -ErrorAction Stop")
                 .env("ACYCLIC_MOVE_SOURCE", &imported_host)
                 .env("ACYCLIC_MOVE_DESTINATION", &exported)
-                .creation_flags(0x0800_0000)
-                .status()?;
+                .creation_flags(0x0800_0000), std::time::Duration::from_secs(120))?;
             if !status.success() {
                 return Err(format!("external export helper failed: {status}").into());
             }
@@ -451,13 +450,12 @@ fn mount_smoke(args: &[String]) -> Result<(), Failure> {
             let external_tree = work.join("external-tree");
             fs::create_dir(&external_tree)?;
             fs::write(external_tree.join("payload.txt"), b"rejected import\n")?;
-            let status = std::process::Command::new("powershell.exe")
+            let status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command"])
                 .arg("Move-Item -LiteralPath $env:ACYCLIC_MOVE_SOURCE -Destination $env:ACYCLIC_MOVE_DESTINATION -ErrorAction Stop")
                 .env("ACYCLIC_MOVE_SOURCE", &external_tree)
                 .env("ACYCLIC_MOVE_DESTINATION", mount_dir.join("imported-tree"))
-                .creation_flags(0x0800_0000)
-                .status()?;
+                .creation_flags(0x0800_0000), std::time::Duration::from_secs(120))?;
             if status.success() {
                 return Err(
                     "ProjFS admitted an external directory without an exact close boundary".into(),
@@ -833,10 +831,13 @@ fn mount_run(args: &[String]) -> Result<(), Failure> {
     let arguments = args.get(4..).unwrap_or_default();
     let run = |directory: &Path| -> Result<f64, Failure> {
         let started = Instant::now();
-        let output = std::process::Command::new(program)
-            .args(arguments)
-            .current_dir(directory)
-            .output()?;
+        let output = acyclic_native_runtime::process_output(
+            std::process::Command::new(program)
+                .args(arguments)
+                .current_dir(directory),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         let elapsed = started.elapsed().as_secs_f64() * 1e3;
         if !output.status.success() {
             return Err(format!(
@@ -1075,13 +1076,16 @@ fn workload(
     })?;
     fs::create_dir_all(writes).map_err(io_at("create", writes))?;
     let written = files.min(500);
-    let output = std::process::Command::new(std::env::current_exe()?)
-        .arg("mount-bench-writer")
-        .arg(writes)
-        .arg(written.to_string())
-        .arg(payload.len().to_string())
-        .arg(threads.to_string())
-        .output()?;
+    let output = acyclic_native_runtime::process_output(
+        std::process::Command::new(std::env::current_exe()?)
+            .arg("mount-bench-writer")
+            .arg(writes)
+            .arg(written.to_string())
+            .arg(payload.len().to_string())
+            .arg(threads.to_string()),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )?;
     if !output.status.success() {
         return Err(format!(
             "writer failed: {}",
@@ -1297,19 +1301,23 @@ fn par_bench(args: &[String]) -> Result<(), Failure> {
             .map(|writer| {
                 let directory = root.join("par").join(format!("w{writer:03}"));
                 fs::create_dir_all(&directory)?;
-                Ok(std::process::Command::new(std::env::current_exe()?)
-                    .arg("mount-bench-writer")
-                    .arg(&directory)
-                    .arg(each.to_string())
-                    .arg("4096")
-                    .arg("1")
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()?)
+                Ok(acyclic_native_runtime::spawn_process_tree(
+                    std::process::Command::new(std::env::current_exe()?)
+                        .arg("mount-bench-writer")
+                        .arg(&directory)
+                        .arg(each.to_string())
+                        .arg("4096")
+                        .arg("1")
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::piped()),
+                )?)
             })
             .collect::<Result<Vec<_>, Failure>>()?;
-        for child in children {
-            let output = child.wait_with_output()?;
+        for mut child in children {
+            let output = child.wait_with_output(
+                std::time::Duration::from_secs(120).saturating_sub(started.elapsed()),
+                8 * 1024 * 1024,
+            )?;
             if !output.status.success() {
                 return Err(format!(
                     "writer failed: {}",

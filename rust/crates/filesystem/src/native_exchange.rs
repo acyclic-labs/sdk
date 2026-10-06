@@ -83,6 +83,7 @@ pub fn prepare_native_exchange_with_recovery(
     recovery: Vec<u8>,
 ) -> Result<(), NativeExchangeError> {
     validate_layout(live, prepared)?;
+    validate_carried_paths(&carried)?;
     let journal = NativeExchangeJournal {
         version: NATIVE_EXCHANGE_JOURNAL_VERSION,
         operation,
@@ -244,6 +245,12 @@ pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExc
 }
 
 /// Recovers one interrupted whole-tree publication.
+///
+/// The caller owns the journal and serializes exchange/recovery for its roots.
+/// Roots and intermediate directories must remain stable, without symlink or
+/// reparse redirection, throughout recovery. Root identity checks detect prior
+/// replacement; they do not exclude concurrent parent replacement. A rollback
+/// never replaces an existing destination entry and retains the journal on error.
 pub fn recover_native_exchange(
     journal_path: &Path,
 ) -> Result<NativeExchangeOutcome, NativeExchangeError> {
@@ -251,6 +258,13 @@ pub fn recover_native_exchange(
     validate_layout(&journal.live, &journal.prepared)?;
     match journal.phase {
         NativeExchangePhase::Carrying => {
+            if [
+                root_identity(&journal.live)?,
+                root_identity(&journal.prepared)?,
+            ] != journal.roots
+            {
+                return Err(NativeExchangeError::IncompatibleJournal);
+            }
             move_back(&journal.prepared, &journal.live, &journal.carried)?;
             remove_journal(journal_path)?;
             Ok(NativeExchangeOutcome {
@@ -266,7 +280,10 @@ pub fn recover_native_exchange(
 fn read_journal(path: &Path) -> Result<NativeExchangeJournal, NativeExchangeError> {
     let journal: NativeExchangeJournal = serde_json::from_slice(&std::fs::read(path)?)?;
     match journal.version {
-        NATIVE_EXCHANGE_JOURNAL_VERSION => Ok(journal),
+        NATIVE_EXCHANGE_JOURNAL_VERSION => {
+            validate_carried_paths(&journal.carried)?;
+            Ok(journal)
+        }
         version => Err(NativeExchangeError::UnsupportedJournalVersion(version)),
     }
 }
@@ -278,15 +295,21 @@ fn validate_layout(live: &Path, prepared: &Path) -> Result<(), NativeExchangeErr
     Ok(())
 }
 
-fn carry(from: &Path, into: &Path, relative: &[PathBuf]) -> Result<(), NativeExchangeError> {
+fn validate_carried_paths(relative: &[PathBuf]) -> Result<(), NativeExchangeError> {
     for path in relative {
-        if path.is_absolute()
+        if path.as_os_str().is_empty()
             || path
                 .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
         {
             return Err(NativeExchangeError::IncompatibleJournal);
         }
+    }
+    Ok(())
+}
+
+fn carry(from: &Path, into: &Path, relative: &[PathBuf]) -> Result<(), NativeExchangeError> {
+    for path in relative {
         let source = from.join(path);
         if !entry_exists(&source)? {
             continue;
@@ -308,15 +331,36 @@ fn move_back(from: &Path, into: &Path, relative: &[PathBuf]) -> Result<(), Nativ
             continue;
         }
         let destination = into.join(path);
-        if entry_exists(&destination)? {
-            return Err(NativeExchangeError::CarriedPathConflict(path.clone()));
-        }
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::rename(source, destination)?;
+        #[cfg(test)]
+        BEFORE_ROLLBACK_RENAME.with(|hook| {
+            if let Some(barrier) = hook.take() {
+                barrier.wait();
+                barrier.wait();
+            }
+        });
+        match durable_rename(
+            &source,
+            &destination,
+            acyclic_native_runtime::RenameMode::NoReplace,
+        ) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(NativeExchangeError::CarriedPathConflict(path.clone()));
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    // Schedule a real user binding at the rollback's final publication boundary.
+    static BEFORE_ROLLBACK_RENAME: std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn write_journal(path: &Path, journal: &NativeExchangeJournal) -> Result<(), NativeExchangeError> {
@@ -592,6 +636,207 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn carrying_recovery_keeps_a_concurrently_recreated_live_path() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::create_dir(&live).expect("live tree");
+        std::fs::create_dir(&prepared).expect("prepared tree");
+        std::fs::write(live.join("private"), b"original").expect("original entry");
+        let journal = temporary.path().join("exchange.json");
+        let operation = crate::IdempotencyKey::from_bytes([30; 16]);
+        let carried = vec![PathBuf::from("private")];
+        prepare_native_exchange(&journal, &live, &prepared, operation, carried.clone())
+            .expect("prepare exchange");
+        carry(&live, &prepared, &carried).expect("crash after carry");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        BEFORE_ROLLBACK_RENAME.with(|hook| {
+            hook.replace(Some(barrier.clone()));
+        });
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                barrier.wait();
+                assert!(!live.join("private").exists());
+                std::fs::write(live.join("private"), b"user edit").expect("user edit");
+                barrier.wait();
+            });
+            assert!(matches!(
+                recover_native_exchange(&journal),
+                Err(NativeExchangeError::CarriedPathConflict(path)) if path == carried[0]
+            ));
+        });
+        assert_eq!(
+            std::fs::read(live.join("private")).expect("user entry"),
+            b"user edit"
+        );
+        assert_eq!(
+            std::fs::read(prepared.join("private")).expect("original entry"),
+            b"original"
+        );
+        assert_eq!(
+            read_journal(&journal).expect("retained journal").operation,
+            operation
+        );
+
+        std::fs::rename(live.join("private"), live.join("saved-user-edit"))
+            .expect("resolve conflict without discarding user edit");
+        assert!(
+            !recover_native_exchange(&journal)
+                .expect("retry recovery")
+                .published
+        );
+        assert_eq!(
+            std::fs::read(live.join("private")).expect("restored entry"),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(live.join("saved-user-edit")).expect("saved user entry"),
+            b"user edit"
+        );
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn carrying_recovery_replays_a_partially_completed_rollback() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::create_dir(&live).expect("live tree");
+        std::fs::create_dir(&prepared).expect("prepared tree");
+        let carried = vec![PathBuf::from("first"), PathBuf::from("second")];
+        for path in &carried {
+            std::fs::write(live.join(path), b"original").expect("original entry");
+        }
+        let journal = temporary.path().join("exchange.json");
+        prepare_native_exchange(
+            &journal,
+            &live,
+            &prepared,
+            crate::IdempotencyKey::from_bytes([33; 16]),
+            carried.clone(),
+        )
+        .expect("prepare exchange");
+        carry(&live, &prepared, &carried).expect("carry entries");
+        move_back(&prepared, &live, &carried[..1]).expect("crash after first rollback rename");
+        std::fs::write(live.join("first"), b"later user edit").expect("edit returned entry");
+        assert!(
+            !recover_native_exchange(&journal)
+                .expect("resume rollback")
+                .published
+        );
+        assert_eq!(
+            std::fs::read(live.join("first")).expect("returned entry"),
+            b"later user edit"
+        );
+        assert_eq!(
+            std::fs::read(live.join("second")).expect("remaining entry"),
+            b"original"
+        );
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn carrying_recovery_rejects_replaced_roots_without_mutation() {
+        for replace_live in [true, false] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let live = temporary.path().join("live");
+            let prepared = temporary.path().join("prepared");
+            std::fs::create_dir(&live).expect("live tree");
+            std::fs::create_dir(&prepared).expect("prepared tree");
+            std::fs::write(live.join("private"), b"original").expect("original entry");
+            let journal = temporary.path().join("exchange.json");
+            let carried = vec![PathBuf::from("private")];
+            prepare_native_exchange(
+                &journal,
+                &live,
+                &prepared,
+                crate::IdempotencyKey::from_bytes([31; 16]),
+                carried.clone(),
+            )
+            .expect("prepare exchange");
+            carry(&live, &prepared, &carried).expect("crash after carry");
+            let replaced = if replace_live { &live } else { &prepared };
+            let saved = temporary.path().join("saved");
+            std::fs::rename(replaced, &saved).expect("displace original root");
+            std::fs::create_dir(replaced).expect("replacement root");
+            std::fs::write(replaced.join("private"), b"unrelated").expect("replacement entry");
+            assert!(matches!(
+                recover_native_exchange(&journal),
+                Err(NativeExchangeError::IncompatibleJournal)
+            ));
+            assert_eq!(
+                std::fs::read(replaced.join("private")).expect("replacement entry"),
+                b"unrelated"
+            );
+            let original = if replace_live { &prepared } else { &saved };
+            assert_eq!(
+                std::fs::read(original.join("private")).expect("original entry"),
+                b"original"
+            );
+            assert!(journal.exists());
+        }
+    }
+
+    #[test]
+    fn invalid_carried_paths_fail_before_preparation_or_recovery_effects() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::create_dir(&live).expect("live tree");
+        std::fs::create_dir(&prepared).expect("prepared tree");
+        std::fs::write(prepared.join("valid"), b"untouched").expect("prepared entry");
+        let journal_path = temporary.path().join("exchange.json");
+        let mut invalid = vec![
+            PathBuf::new(),
+            PathBuf::from("."),
+            PathBuf::from("../outside"),
+            PathBuf::from("nested/../../outside"),
+            live.clone(),
+        ];
+        #[cfg(windows)]
+        invalid.extend([PathBuf::from("C:relative"), PathBuf::from("\\rooted")]);
+        for path in invalid.drain(..) {
+            let carried = vec![PathBuf::from("valid"), path];
+            assert!(matches!(
+                prepare_native_exchange(
+                    &journal_path,
+                    &live,
+                    &prepared,
+                    crate::IdempotencyKey::from_bytes([32; 16]),
+                    carried.clone()
+                ),
+                Err(NativeExchangeError::IncompatibleJournal)
+            ));
+            assert!(!journal_path.exists());
+            let journal = NativeExchangeJournal {
+                version: NATIVE_EXCHANGE_JOURNAL_VERSION,
+                operation: crate::IdempotencyKey::from_bytes([32; 16]),
+                recovery: Vec::new(),
+                live: live.clone(),
+                prepared: prepared.clone(),
+                carried,
+                roots: [
+                    root_identity(&live).expect("live identity"),
+                    root_identity(&prepared).expect("prepared identity"),
+                ],
+                phase: NativeExchangePhase::Carrying,
+            };
+            write_journal(&journal_path, &journal).expect("malformed persisted journal");
+            assert!(matches!(
+                recover_native_exchange(&journal_path),
+                Err(NativeExchangeError::IncompatibleJournal)
+            ));
+            assert_eq!(
+                std::fs::read(prepared.join("valid")).expect("untouched entry"),
+                b"untouched"
+            );
+            assert!(!live.join("valid").exists());
+            std::fs::remove_file(&journal_path).expect("remove fixture journal");
+        }
+    }
 
     #[cfg(windows)]
     #[test]

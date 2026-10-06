@@ -6,6 +6,7 @@ pub use scripted_provider::{RequestFingerprint, ScriptedProvider};
 use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -88,7 +89,7 @@ fn default_e2e_scratch_root() -> PathBuf {
 pub struct ServiceGuard {
     home: PathBuf,
     identity: Option<String>,
-    process_tree: Option<ProcessTree>,
+    process_trees: RefCell<Vec<ProcessTree>>,
     active: bool,
 }
 
@@ -97,13 +98,30 @@ impl ServiceGuard {
         Self {
             home: home.to_path_buf(),
             identity: None,
-            process_tree: None,
+            process_trees: RefCell::new(Vec::new()),
             active: true,
         }
     }
 
-    pub fn attach_process_tree(&mut self, process_tree: ProcessTree) {
-        assert!(self.process_tree.replace(process_tree).is_none());
+    pub fn attach_process_tree(&self, process_tree: ProcessTree) {
+        self.process_trees.borrow_mut().push(process_tree);
+    }
+
+    /// Keep client containment alive until authenticated service drain. On
+    /// Windows the service inherits the starting client's non-breakaway Job.
+    pub fn output_with_stdin(&self, command: &mut Command, input: &[u8]) -> Output {
+        let bounded = output_with_stdin_timeout(command, input, Duration::from_secs(120));
+        self.attach_process_tree(bounded.process_tree);
+        assert!(!bounded.expired, "service client exceeded its deadline");
+        bounded.output
+    }
+
+    fn terminate_clients(&mut self) -> Result<(), String> {
+        for tree in self.process_trees.get_mut().iter_mut() {
+            tree.terminate().map_err(|error| error.to_string())?;
+        }
+        self.process_trees.get_mut().clear();
+        Ok(())
     }
 
     pub fn assert_hook_service_live(&mut self) -> String {
@@ -155,19 +173,16 @@ impl ServiceGuard {
             Ok(authenticated) => authenticated,
             Err(authentication_error) => {
                 if self.clear_dead_service_marker()? {
-                    if let Some(tree) = self.process_tree.as_mut() {
-                        tree.terminate().map_err(|error| error.to_string())?;
-                    }
+                    self.terminate_clients()?;
                     self.active = false;
-                    drop(self.process_tree.take());
                     return Ok(());
                 }
                 return Err(authentication_error);
             }
         };
         let Some(identity) = authenticated else {
+            self.terminate_clients()?;
             self.active = false;
-            drop(self.process_tree.take());
             return Ok(());
         };
         // A host can retain open handles below its native mount even after its direct process
@@ -175,9 +190,7 @@ impl ServiceGuard {
         // containment before asking it to synchronize and unmount; the reverse order can deadlock
         // Linux FUSE teardown.
         #[cfg(target_os = "linux")]
-        if let Some(tree) = self.process_tree.as_mut() {
-            tree.terminate().map_err(|error| error.to_string())?;
-        }
+        self.terminate_clients()?;
         let mut drain = command(ACYCLIC);
         drain.arg("__service-drain").arg(&identity);
         isolated_state(&mut drain, &self.home);
@@ -196,11 +209,8 @@ impl ServiceGuard {
         }
         self.verify_drained(&identity)?;
         #[cfg(not(target_os = "linux"))]
-        if let Some(tree) = self.process_tree.as_mut() {
-            tree.terminate().map_err(|error| error.to_string())?;
-        }
+        self.terminate_clients()?;
         self.active = false;
-        drop(self.process_tree.take());
         Ok(())
     }
 
@@ -381,19 +391,12 @@ pub fn isolated_state(command: &mut Command, root: &Path) {
 }
 
 pub fn output_with_stdin(command: &mut Command, input: &[u8]) -> Output {
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn child process");
-    child
-        .stdin
-        .take()
-        .expect("child stdin")
-        .write_all(input)
-        .expect("write child stdin");
-    child.wait_with_output().expect("wait for child process")
+    let bounded = output_with_stdin_timeout(command, input, Duration::from_secs(120));
+    assert!(
+        !bounded.expired,
+        "child input operation exceeded its deadline"
+    );
+    bounded.output
 }
 
 pub struct BoundedOutput {
@@ -448,9 +451,8 @@ pub fn output_after_provider_admission(
         if captured_output_exceeds_limit(&stdout, &stderr).expect("inspect provider output capture")
         {
             process_tree
-                .terminate_descendants()
+                .terminate()
                 .expect("terminate output-flooding provider descendants");
-            let _ = process_tree.wait();
             panic!("provider output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes");
         }
         match process_tree
@@ -477,7 +479,7 @@ pub fn output_after_provider_admission(
                     .terminate_descendants()
                     .expect("terminate admitted provider descendants");
                 let status = process_tree
-                    .wait()
+                    .wait(Duration::from_secs(5))
                     .expect("wait for timed-out provider process tree");
                 let output = captured_output(status, &mut stdout, &mut stderr)
                     .expect("collect timed-out provider process tree");
@@ -511,8 +513,7 @@ fn try_output_with_timeout_and_stdin(
     let deadline = Instant::now() + timeout;
     loop {
         if captured_output_exceeds_limit(&stdout, &stderr)? {
-            process_tree.terminate_descendants()?;
-            let _ = process_tree.wait();
+            process_tree.terminate()?;
             return Err(std::io::Error::new(
                 std::io::ErrorKind::FileTooLarge,
                 format!("host output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes"),
@@ -530,7 +531,7 @@ fn try_output_with_timeout_and_stdin(
             None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             None => {
                 process_tree.terminate_descendants()?;
-                let status = process_tree.wait()?;
+                let status = process_tree.wait(Duration::from_secs(5))?;
                 let output = captured_output(status, &mut stdout, &mut stderr)?;
                 return Ok(BoundedOutput {
                     output,
@@ -617,12 +618,15 @@ pub fn target_name() -> &'static str {
 pub fn package_production_plugin(temporary: &Path) -> PackagedPlugin {
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR"));
     let package_root = temporary.join("package");
-    let package = command("node")
-        .arg(plugin.join("scripts/package.mjs"))
-        .args(["--binary", &format!("{}={ACYCLIC}", target_name()), "--out"])
-        .arg(&package_root)
-        .output()
-        .expect("run package builder");
+    let package = acyclic_native_runtime::process_output(
+        command("node")
+            .arg(plugin.join("scripts/package.mjs"))
+            .args(["--binary", &format!("{}={ACYCLIC}", target_name()), "--out"])
+            .arg(&package_root),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("run package builder");
     assert!(
         package.status.success(),
         "{}",
@@ -633,7 +637,12 @@ pub fn package_production_plugin(temporary: &Path) -> PackagedPlugin {
     install.arg(root.join("bin/install.js"));
     install.env("NODE_ENV", "test");
     isolated_state(&mut install, temporary);
-    let installed = install.output().expect("install packaged binary");
+    let installed = acyclic_native_runtime::process_output(
+        &mut install,
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("install packaged binary");
     assert!(
         installed.status.success(),
         "{}",
@@ -742,10 +751,12 @@ pub fn write_qualification_receipt(host: &str, host_binary: &Path, invariants: &
     let Some(directory) = std::env::var_os("ACYCLIC_E2E_RECEIPT_DIR") else {
         return;
     };
-    let version = command(host_binary)
-        .arg("--version")
-        .output()
-        .expect("read host version");
+    let version = acyclic_native_runtime::process_output(
+        command(host_binary).arg("--version"),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("read host version");
     assert!(version.status.success(), "host --version failed");
     let package = qualification_environment("ACYCLIC_E2E_HOST_PACKAGE");
     let package_version = qualification_environment("ACYCLIC_E2E_HOST_PACKAGE_VERSION");

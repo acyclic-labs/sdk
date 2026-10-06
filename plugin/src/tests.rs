@@ -2772,7 +2772,7 @@ fn root_git_uses_the_same_repository_and_materializer() {
 /// provider, which runs in this test's process.
 fn write_as_another_process(root: &Path, directory: &str, name: &str, contents: &str) {
     #[cfg(windows)]
-    let status = std::process::Command::new("cmd.exe")
+    let status = acyclic_native_runtime::process_status(std::process::Command::new("cmd.exe")
         .args([
             "/D",
             "/C",
@@ -2780,18 +2780,19 @@ fn write_as_another_process(root: &Path, directory: &str, name: &str, contents: 
                 "(if not exist {directory} mkdir {directory}) && (echo {contents}> {directory}\\{name})"
             ),
         ])
-        .current_dir(root)
-        .status()
+        .current_dir(root), std::time::Duration::from_secs(30))
         .expect("spawn writer");
     #[cfg(not(windows))]
-    let status = std::process::Command::new("sh")
-        .args([
-            "-c",
-            &format!("mkdir -p {directory} && printf %s {contents} > {directory}/{name}"),
-        ])
-        .current_dir(root)
-        .status()
-        .expect("spawn writer");
+    let status = acyclic_native_runtime::process_status(
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("mkdir -p {directory} && printf %s {contents} > {directory}/{name}"),
+            ])
+            .current_dir(root),
+        std::time::Duration::from_secs(30),
+    )
+    .expect("spawn writer");
     assert!(status.success(), "external write failed");
 }
 
@@ -3454,31 +3455,24 @@ async fn rustc_child_mount_case() {
         .await
         .expect("tool lease");
     let started = std::time::Instant::now();
-    let mut compiler = std::process::Command::new("rustc")
-        .current_dir(&child)
-        .args([
-            "--edition",
-            "2021",
-            "acyclic-workflow.rs",
-            "-o",
-            if cfg!(windows) { "main.exe" } else { "main" },
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("start rustc");
-    let deadline = started + std::time::Duration::from_secs(10);
-    let timed_out = loop {
-        if compiler.try_wait().expect("poll rustc").is_some() {
-            break false;
-        }
-        if std::time::Instant::now() >= deadline {
-            compiler.kill().expect("kill timed out rustc");
-            break true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    };
-    let output = compiler.wait_with_output().expect("collect rustc output");
+    let mut command = std::process::Command::new("rustc");
+    command.current_dir(&child).args([
+        "--edition",
+        "2021",
+        "acyclic-workflow.rs",
+        "-o",
+        if cfg!(windows) { "main.exe" } else { "main" },
+    ]);
+    let output = acyclic_native_runtime::run_blocking_io(move || {
+        acyclic_native_runtime::process_output(
+            &mut command,
+            std::time::Duration::from_secs(10),
+            8 * 1024 * 1024,
+        )
+    })
+    .await
+    .expect("native compiler task")
+    .expect("bounded rustc output");
     let executable = child.join(if cfg!(windows) { "main.exe" } else { "main" });
     #[cfg(unix)]
     let executable_mode = std::fs::metadata(&executable)
@@ -3497,23 +3491,19 @@ async fn rustc_child_mount_case() {
         )
         .await
         .expect("close tool lease");
-    let mut workflow = std::process::Command::new(&executable)
+    let mut command = std::process::Command::new(&executable);
+    command
         .current_dir(&child)
         .arg("workflow-output.txt")
-        .env("ACYCLIC_WORKFLOW_TOKEN", "qualified")
-        .spawn()
-        .expect("start mounted workflow");
-    let workflow_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let execution_after_sync = loop {
-        if let Some(status) = workflow.try_wait().expect("poll mounted workflow") {
-            break Some(status);
-        }
-        if std::time::Instant::now() >= workflow_deadline {
-            workflow.kill().expect("kill timed-out mounted workflow");
-            break None;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    };
+        .env("ACYCLIC_WORKFLOW_TOKEN", "qualified");
+    let execution_after_sync = Some(
+        acyclic_native_runtime::run_blocking_io(move || {
+            acyclic_native_runtime::process_status(&mut command, std::time::Duration::from_secs(10))
+        })
+        .await
+        .expect("native workflow task")
+        .expect("bounded mounted workflow"),
+    );
     assert_eq!(
         std::fs::read(child.join("workflow-output.txt")).expect("workflow output"),
         b"isolated"
@@ -3537,7 +3527,6 @@ async fn rustc_child_mount_case() {
         .await
         .expect("session end");
     service.shutdown().await.expect("service shutdown");
-    assert!(!timed_out, "rustc exceeded its 10 second deadline");
     assert!(
         output.status.success(),
         "rustc failed after {:?}\nstdout:\n{}\nstderr:\n{}",
@@ -3570,11 +3559,14 @@ async fn real_lean_child_mount_case() {
     assert!(root.join("lakefile.toml").exists() || root.join("lakefile.lean").exists());
     // Resolve the real project environment before mounting so this bounded gate measures
     // Lean compiler I/O, not Lake's whole dependency-graph freshness scan.
-    let lean_environment = std::process::Command::new("lake")
-        .args(["env", "printenv", "LEAN_PATH"])
-        .current_dir(&root)
-        .output()
-        .expect("resolve Lean project environment");
+    let lean_environment = acyclic_native_runtime::process_output(
+        std::process::Command::new("lake")
+            .args(["env", "printenv", "LEAN_PATH"])
+            .current_dir(&root),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("resolve Lean project environment");
     assert!(
         lean_environment.status.success(),
         "lake env failed: {}",
@@ -3636,36 +3628,25 @@ async fn real_lean_child_mount_case() {
         .await
         .expect("tool lease");
     let started = std::time::Instant::now();
-    let mut compilation = std::process::Command::new("lean")
+    let mut command = std::process::Command::new("lean");
+    command
         .args([
             "YcDemo/Lemmas.lean",
             "-o",
             ".acyclic-lean-qualification.olean",
         ])
         .current_dir(&child)
-        .env("LEAN_PATH", lean_path)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("start Lean compilation");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let timed_out = loop {
-        if compilation
-            .try_wait()
-            .expect("poll Lean compilation")
-            .is_some()
-        {
-            break false;
-        }
-        if std::time::Instant::now() >= deadline {
-            compilation.kill().expect("kill timed out Lean compilation");
-            break true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    };
-    let output = compilation
-        .wait_with_output()
-        .expect("collect Lean compilation output");
+        .env("LEAN_PATH", lean_path);
+    let output = acyclic_native_runtime::run_blocking_io(move || {
+        acyclic_native_runtime::process_output(
+            &mut command,
+            std::time::Duration::from_secs(30),
+            8 * 1024 * 1024,
+        )
+    })
+    .await
+    .expect("native compiler task")
+    .expect("bounded Lean compilation output");
     let child_output_exists = child.join(".acyclic-lean-qualification.olean").is_file();
     service
         .dispatch_native_hook(
@@ -3698,12 +3679,6 @@ async fn real_lean_child_mount_case() {
         .await
         .expect("session end");
     service.shutdown().await.expect("service shutdown");
-    assert!(
-        !timed_out,
-        "Lean compilation exceeded the 30 second mount budget\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
     assert!(
         output.status.success(),
         "Lean compilation failed after {:?}:\n{}",
@@ -5160,18 +5135,21 @@ async fn recursive_publication_case() {
         }))
         .await
         .expect("descendant closes against stable parent generation");
-    let writer = std::process::Command::new(std::env::current_exe().expect("test binary"))
-        .args([
-            "--exact",
-            "tests::projected_mount_writer_child",
-            "--ignored",
-        ])
-        .env(
-            "ACYCLIC_TEST_PROJECTED_WRITE_PATH",
-            child_path.join("base.txt"),
-        )
-        .output()
-        .expect("external writer process");
+    let writer = acyclic_native_runtime::process_output(
+        std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "tests::projected_mount_writer_child",
+                "--ignored",
+            ])
+            .env(
+                "ACYCLIC_TEST_PROJECTED_WRITE_PATH",
+                child_path.join("base.txt"),
+            ),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("external writer process");
     assert!(
         writer.status.success(),
         "external writer failed: {}",
