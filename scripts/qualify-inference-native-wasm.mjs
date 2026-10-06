@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  renameSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -209,6 +210,7 @@ async function runFromEnvProbe(consumer, target) {
   writeFileSync(probePath, `
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fromEnv } from "@acyclic-labs/inference";
 const client = fromEnv({ endpoint: "http://127.0.0.1:1", token: "qualification" });
@@ -240,7 +242,49 @@ const cancellation = new native.NativeInferenceCancellation();
 if (cancellation.cancelled !== false) throw new Error("native cancellation did not start active");
 cancellation.cancel();
 if (cancellation.cancelled !== true) throw new Error("native cancellation did not become cancelled");
-console.log(JSON.stringify({ transport: client.transport.constructor.name, cancellation: "passed", companion: companionName }));
+
+const sockets = new Set();
+let acceptedResolve;
+let acceptedReject;
+const accepted = new Promise((resolve, reject) => { acceptedResolve = resolve; acceptedReject = reject; });
+const server = createServer((socket) => {
+  sockets.add(socket);
+  socket.once("close", () => sockets.delete(socket));
+  acceptedResolve();
+});
+server.once("error", acceptedReject);
+const port = await new Promise((resolve, reject) => {
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    if (address === null || typeof address === "string") reject(new Error("native connection fixture did not expose a TCP port"));
+    else resolve(address.port);
+  });
+  server.once("error", reject);
+});
+const activeController = new AbortController();
+const activeClient = fromEnv({ endpoint: \`http://127.0.0.1:\${port}\`, token: "qualification" });
+const activeOperation = activeClient.inspectRun(new Uint8Array(16), activeController.signal).then(
+  () => ({ kind: "resolved" }),
+  (error) => ({ kind: "rejected", name: error?.name, message: String(error) }),
+);
+try {
+  await Promise.race([
+    accepted,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("native facade did not start an un-aborted connection")), 2_000)),
+  ]);
+  activeController.abort();
+  const outcome = await Promise.race([
+    activeOperation,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("native facade connection ignored cancellation")), 2_000)),
+  ]);
+  if (outcome.kind !== "rejected" || outcome.name !== "AbortError") {
+    throw new Error("native facade connection did not reject with AbortError: " + JSON.stringify(outcome));
+  }
+} finally {
+  for (const socket of sockets) socket.destroy();
+  if (server.listening) await new Promise((resolve) => server.close(() => resolve()));
+}
+console.log(JSON.stringify({ transport: client.transport.constructor.name, cancellation: "passed", companion: companionName, native_connection: "passed" }));
 `, "utf8");
   const result = spawnSync(process.execPath, [probePath], {
     cwd: consumer,
@@ -252,6 +296,64 @@ console.log(JSON.stringify({ transport: client.transport.constructor.name, cance
   }
   const line = result.stdout.trim().split(/\r?\n/).at(-1);
   return JSON.parse(line);
+}
+
+async function runFallbackProbe(consumer, target) {
+  const companionRoot = join(consumer, "node_modules", "@acyclic-labs", `inference-${target}`);
+  const disabledRoot = `${companionRoot}.disabled`;
+  requireInput(existsSync(companionRoot), `installed companion is missing before fallback fixture: ${companionRoot}`);
+  requireInput(!existsSync(disabledRoot), `fallback fixture path already exists: ${disabledRoot}`);
+  const probePath = join(consumer, "inference-wasm-fallback-probe.mjs");
+  writeFileSync(probePath, `
+import { createServer } from "node:http";
+import { fromEnv } from "@acyclic-labs/inference";
+import { INFERENCE_HANDSHAKE } from "@acyclic-labs/inference/generated-client";
+const requests = [];
+const server = createServer((request, response) => {
+  requests.push({ method: request.method, path: request.url });
+  request.resume();
+  const body = request.url === INFERENCE_HANDSHAKE.route
+    ? JSON.stringify({ protocol: { version: INFERENCE_HANDSHAKE.version, descriptorDigest: INFERENCE_HANDSHAKE.descriptorDigest }, supported: { capabilities: [{ name: INFERENCE_HANDSHAKE.family, version: INFERENCE_HANDSHAKE.version }] } })
+    : "{}";
+  response.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(body), connection: "close" });
+  response.end(body);
+});
+const port = await new Promise((resolve, reject) => {
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    if (address === null || typeof address === "string") reject(new Error("WASM fallback fixture did not expose a TCP port"));
+    else resolve(address.port);
+  });
+  server.once("error", reject);
+});
+try {
+  const client = fromEnv({ endpoint: \`http://127.0.0.1:\${port}\`, token: "qualification" });
+  if (client.transport.constructor.name !== "DeferredNativeInferenceTransport") throw new Error("fromEnv did not preserve the native-first facade while qualifying fallback");
+  const response = await Promise.race([
+    client.listModels(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Rust WASM fallback did not complete")), 5_000)),
+  ]);
+  if (response === undefined || requests.length < 2) throw new Error("Rust WASM fallback did not complete handshake and operation requests");
+  console.log(JSON.stringify({ status: "passed", transport: client.transport.constructor.name, wasm_fallback: "passed", requests }));
+} finally {
+  await new Promise((resolve) => server.close(() => resolve()));
+}
+`, "utf8");
+  renameSync(companionRoot, disabledRoot);
+  try {
+    const result = spawnSync(process.execPath, [probePath], {
+      cwd: consumer,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.status !== 0) {
+      throw new Error(`installed Rust WASM fallback consumer failed:\n${result.stdout ?? ""}${result.stderr ?? ""}`);
+    }
+    const line = result.stdout.trim().split(/\r?\n/).at(-1);
+    return JSON.parse(line);
+  } finally {
+    renameSync(disabledRoot, companionRoot);
+  }
 }
 
 async function verifyWasm(installedFacade) {
@@ -302,6 +404,7 @@ export async function qualify(options) {
     const runtimeIdentity = validateRuntimeIdentity(build, facadeManifest.acyclicGenerated.nativeRuntime);
     const wasm = await verifyWasm(installedFacade);
     const probe = await runFromEnvProbe(consumer, target);
+    const fallback = await runFallbackProbe(consumer, target);
     requireInput(probe.companion === mapping.expectedName,
       "installed facade did not resolve the Rust companion declared by its optional dependency mapping");
     receipt = {
@@ -328,6 +431,7 @@ export async function qualify(options) {
         optional_dependency_mapping: { status: "passed", ...mapping },
         wasm,
         from_env: { status: "passed", ...probe },
+        wasm_fallback: { status: "passed", ...fallback },
         installed_companion: { status: "passed", package: companionManifest.name },
       },
       consumer_root: options.keepConsumer ? consumer : undefined,

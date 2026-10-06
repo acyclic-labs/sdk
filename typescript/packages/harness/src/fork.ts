@@ -4,7 +4,6 @@ import { NativeContracts } from "./native-contracts.js";
 import type { ResourceKind } from "./enums.js";
 export type { ResourceKind } from "./enums.js";
 import type { AgentId, Authority, OperationId } from "./index.js";
-import { MAX_FORK_INHERITED_MESSAGES } from "./limits-contract.js";
 export {
   MAX_FORK_AGENTS,
   MAX_FORK_ATTACHMENT_MANIFEST_BYTES,
@@ -156,7 +155,6 @@ export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"
 
 /** Rust alone converts the complete capture report to its child-visible seed. */
 export async function forkSeed(report: ForkReport): Promise<ForkSeed> {
-  checkInheritedMessageLimit(report.inherited_through_sequence);
   return (await NativeContracts.create()).forkSeed(report);
 }
 
@@ -168,42 +166,10 @@ export async function validateForkSeed(seed: ForkSeed): Promise<void> {
   (await NativeContracts.create()).validate("fork_seed", seed);
 }
 export async function validateForkReport(report: ForkReport): Promise<void> {
-  checkInheritedMessageLimit(report.inherited_through_sequence);
   (await NativeContracts.create()).validate("fork_report", report);
 }
 /** Pinned refs that the owning provider may authorize for an attached reader.
  * This is an access plan, not a bearer token or a byte-resolution grant. */
 export async function forkReadableReferences(seed: ForkSeed, reader: AgentId): Promise<readonly FileRef[]> {
-  const native = await NativeContracts.create();
-  const admitted = native.validate("fork_seed", seed);
-  const canonicalReader = native.validateIdentity("agent", reader);
-  if (canonicalReader !== admitted.child_agent && !admitted.attached_agents.includes(canonicalReader)) {
-    throw new TypeError("agent is not attached to fork");
-  }
-  const decoder = new TextDecoder();
-  const identity = (file: FileRef): string => decoder.decode(native.encodeCanonicalJson(file));
-  const refs = new Map<string, FileRef>();
-  for (const file of admitted.inherited_context) refs.set(identity(file), file);
-  for (const grant of admitted.reference_grants) {
-    if (grant.reader === canonicalReader) refs.set(identity(grant.file), grant.file);
-  }
-  for (const manifest of admitted.attachment_manifests) {
-    const volume = manifest.volume;
-    const ownerRead = volume.class === "agent_private" && volume.owner.kind === "agent"
-      && volume.owner.id === canonicalReader;
-    const sharedRead = volume.class === "session_shared" && admitted.shared_grants.some(grant =>
-      grant.child_agent === canonicalReader && grant.operations.includes("read")
-        && native.canonicalEqual(grant.volume, volume));
-    const projectRead = volume.class === "project" && admitted.resources.some(resource =>
-      resource.revision.kind === "project"
-        && native.canonicalEqual(resource.revision.reference.volume, volume));
-    if (ownerRead || sharedRead || projectRead) refs.set(identity(manifest), manifest);
-  }
-  return Object.freeze([...refs.values()]);
-}
-
-function checkInheritedMessageLimit(sequence: bigint): void {
-  if (sequence > MAX_FORK_INHERITED_MESSAGES) {
-    throw new TypeError("inherited message limit exceeds protocol cap");
-  }
+  return (await NativeContracts.create()).forkReadableReferences(seed, reader);
 }

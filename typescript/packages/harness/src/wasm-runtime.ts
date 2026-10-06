@@ -24,7 +24,7 @@ export type RustHarnessRemoteClient = Awaited<
 /** Every JS function used by either Harness initialization path. */
 export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
-  "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
+  "encodeAttachmentManifest", "forkSeedFromReport", "forkReadableReferences", "validateToolValue",
   "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",

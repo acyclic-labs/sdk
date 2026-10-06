@@ -68,6 +68,19 @@ test("runtime source identity covers runtime sources, workspace inputs, descript
     assert.equal(first.descriptor.environment, null);
     assert.match(first.toolchain.rustc_verbose, /release|commit-hash|host/);
     assert.ok(first.toolchain.executables.some((entry) => entry.label === "rustc" && /^[0-9a-f]{64}$/.test(entry.sha256)));
+    assert.ok(first.toolchain.executables.some((entry) => entry.label === "cargo" && /^[0-9a-f]{64}$/.test(entry.sha256)));
+    assert.equal(first.toolchain.effective_linker.command, "cc");
+    if (process.platform === "win32") {
+      const windows = runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-pc-windows-msvc", options);
+      assert.match(windows.toolchain.effective_linker.command.toLowerCase(), /(?:microsoft visual studio|\\vc\\tools\\msvc\\).*link\.exe$/);
+      assert.ok(windows.toolchain.executables.some((entry) => entry.label === "effective-linker" && /^[0-9a-f]{64}$/.test(entry.sha256)));
+    }
+    assert.throws(() => runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", {
+      environment: { ...value.environment, RUSTC: "custom-rustc" },
+    }), /RUSTC override is unsupported/);
+    assert.throws(() => runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", {
+      environment: { ...value.environment, CARGO: "custom-cargo" },
+    }), /CARGO override is unsupported/);
 
     writeFileSync(join(value.native, "src", "lib.rs"), "native-v2\n");
     assert.notEqual(runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", options).closureSha256, first.closureSha256);

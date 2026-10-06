@@ -955,6 +955,13 @@ export function encodeHttpRequest(route: string, input: Uint8Array): string;
 export function fileDescriptor(bytes: Uint8Array, media_type: string): any;
 
 /**
+ * Projects the canonical file references readable by one attached fork
+ * agent.  Rust owns the volume and grant authority; JavaScript only receives
+ * the resulting immutable reference list.
+ */
+export function forkReadableReferences(seed: any, reader: string): any;
+
+/**
  * Converts a fully captured report into its canonical publishable child seed.
  */
 export function forkSeedFromReport(report: any): any;
@@ -1396,6 +1403,7 @@ export interface InitOutput {
     readonly encodeAttachmentManifest: (a: any) => [number, number, number, number];
     readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly forkReadableReferences: (a: any, b: number, c: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
     readonly harnessAttachmentManifestMediaType: () => [number, number];
     readonly harnessMaxInlineAttachments: () => number;
@@ -1555,6 +1563,11 @@ export interface InitOutput {
     readonly wasmmemorystream_open_follow: (a: number, b: number, c: number) => any;
     readonly wasmmemorystream_read: (a: number, b: number, c: number) => any;
     readonly defaultHttpResponseBytes: () => bigint;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_94fa5eb15954fe4d___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined___js_sys_8b25c55417977075___Function_fn_wasm_bindgen_94fa5eb15954fe4d___JsValue_____wasm_bindgen_94fa5eb15954fe4d___sys__Undefined_______true__179: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke___wasm_bindgen_94fa5eb15954fe4d___JsValue______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_94fa5eb15954fe4d___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

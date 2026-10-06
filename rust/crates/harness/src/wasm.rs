@@ -2226,6 +2226,16 @@ pub fn fork_seed_from_report(report: JsValue) -> Result<JsValue, JsValue> {
     to_js_admitted(&report.into_seed().map_err(js_error)?)
 }
 
+/// Projects the canonical file references readable by one attached fork
+/// agent.  Rust owns the volume and grant authority; JavaScript only receives
+/// the resulting immutable reference list.
+#[wasm_bindgen(js_name = forkReadableReferences)]
+pub fn fork_readable_references(seed: JsValue, reader: String) -> Result<JsValue, JsValue> {
+    let seed: ForkSeed = from_js(seed)?;
+    let reader = AgentId::parse(&reader).map_err(js_error)?;
+    to_js_admitted(&seed.readable_references(reader).map_err(js_error)?)
+}
+
 #[wasm_bindgen]
 impl WasmReducer {
     /// Creates an empty reducer with explicit host-managed authority.

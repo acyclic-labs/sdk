@@ -107,6 +107,36 @@ pub fn supervise_file(
     if argv.is_empty() || argv.iter().any(|part| part.as_str().is_none_or(str::is_empty)) {
         return Err("typed-consumer command argv is empty or contains a non-string".into());
     }
+    let argv_program = argv[0]
+        .as_str()
+        .ok_or_else(|| "typed-consumer command runner is not a string".to_owned())?;
+    let approved_program = super::resolve_typed_consumer_program(expected_target, argv_program)?;
+    let recorded_program = command
+        .get("tool_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "typed-consumer command has no supervised tool path".to_owned())?;
+    let recorded_program = fs::canonicalize(recorded_program)
+        .map_err(|error| format!("canonicalize recorded typed-consumer runner: {error}"))?;
+    if recorded_program != approved_program {
+        return Err("typed-consumer receipt tool path differs from Rust-approved runner".into());
+    }
+    let tool_hash = required_sha256(command, "tool_sha256", "typed-consumer runner")?;
+    let actual_tool_hash = format!("sha256:{:x}", Sha256::digest(fs::read(&approved_program).map_err(
+        |error| format!("read approved typed-consumer runner: {error}"),
+    )?));
+    if tool_hash != actual_tool_hash {
+        return Err("typed-consumer runner hash differs from supervised executable".into());
+    }
+    let tool_version = command
+        .get("tool_version")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "typed-consumer command has no supervised tool version".to_owned())?;
+    if let Some(expected_version) = super::typed_consumer_toolchain_version(expected_target) {
+        if !tool_version.contains(expected_version) {
+            return Err(format!("typed-consumer runner version is not pinned to {expected_version}"));
+        }
+    }
     let argv = argv
         .iter()
         .map(|part| part.as_str().expect("checked above").to_owned())
@@ -120,12 +150,23 @@ pub fn supervise_file(
     }) {
         return Err("typed-consumer command may not use inline shell or evaluator flags".into());
     }
+    let tool_sha256 = hash_program(&approved_program)?;
+    ensure_toolchain_path_readonly(&approved_program)?;
     let tool_version = if let Some(expected_version) =
         super::typed_consumer_toolchain_version(expected_target)
     {
         let version_args = vec!["version".to_owned()];
-        let (status, stdout, _) = run_bounded_command(&approved_program, &version_args, output_root)?;
+        let (status, stdout, _) = run_bounded_command(
+            &approved_program,
+            &version_args,
+            output_root,
+            &output_root.join("typed-consumer-version.stdout"),
+            &output_root.join("typed-consumer-version.stderr"),
+            &tool_sha256,
+        )?;
         let version = String::from_utf8_lossy(&stdout).into_owned();
+        let _ = fs::remove_file(output_root.join("typed-consumer-version.stdout"));
+        let _ = fs::remove_file(output_root.join("typed-consumer-version.stderr"));
         if !status.success() || !version.contains(expected_version) {
             return Err(format!(
                 "approved typed-consumer runner version is not pinned to {expected_version}"
@@ -135,31 +176,38 @@ pub fn supervise_file(
     } else {
         String::from("catalogue-approved")
     };
-    let tool_sha256 = format!(
-        "sha256:{:x}",
-        Sha256::digest(
-            &fs::read(&approved_program)
-                .map_err(|error| format!("read approved typed-consumer runner: {error}"))?,
-        )
-    );
     if !super::typed_consumer_source_matches_target(expected_target, &generated_path) {
         return Err("generated consumer source type is not approved for the target".into());
     }
-    let source_marker = generated_path.to_string_lossy().replace('\\', "/");
     let source_index = super::typed_consumer_source_argument_index(expected_target, &argv[1..])
         .ok_or_else(|| "typed-consumer command has no approved source invocation form".to_owned())?
         + 1;
-    let source_argument = argv.get(source_index).map(|part| part.replace('\\', "/"));
-    if source_argument.as_deref() != Some(source_marker.as_str())
-        && !source_argument
-            .as_deref()
-            .is_some_and(|part| part.ends_with(&format!("/{source_marker}")))
-    {
+    let source_argument = argv
+        .get(source_index)
+        .ok_or_else(|| "typed-consumer command is missing its generated source argument".to_owned())?;
+    let source_argument = Path::new(source_argument);
+    let source_argument = if source_argument.is_absolute() {
+        source_argument.to_owned()
+    } else {
+        output_root.join(source_argument)
+    };
+    let expected_source_path = fs::canonicalize(output_root.join(&generated_path))
+        .map_err(|error| format!("canonicalize generated source: {error}"))?;
+    let actual_source_path = fs::canonicalize(&source_argument)
+        .map_err(|error| format!("canonicalize typed-consumer source argument: {error}"))?;
+    if actual_source_path != expected_source_path {
         return Err("typed-consumer command must directly invoke the declared generated source".into());
     }
     let stdout_path = PathBuf::from("typed-consumer-supervisor.stdout");
     let stderr_path = PathBuf::from("typed-consumer-supervisor.stderr");
-    let (status, stdout, stderr) = run_bounded_command(&approved_program, &argv[1..], output_root)?;
+    let (status, stdout, stderr) = run_bounded_command(
+        &approved_program,
+        &argv[1..],
+        output_root,
+        &output_root.join("typed-consumer-supervisor.stdout"),
+        &output_root.join("typed-consumer-supervisor.stderr"),
+        &tool_sha256,
+    )?;
     for path in [&stdout_path, &stderr_path] {
         if let Ok(metadata) = fs::symlink_metadata(output_root.join(path)) {
             if metadata.file_type().is_symlink() {
@@ -440,25 +488,51 @@ fn run_bounded_command(
     program: &Path,
     args: &[String],
     current_dir: &Path,
+    stdout_path: &Path,
+    stderr_path: &Path,
+    expected_program_hash: &str,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), String> {
-    let mut child = Command::new(program)
+    let before_hash = hash_program(program)?;
+    if before_hash != expected_program_hash {
+        return Err("approved typed-consumer runner changed before execution".into());
+    }
+    for path in [stdout_path, stderr_path] {
+        if let Ok(metadata) = fs::symlink_metadata(path) {
+            if metadata.file_type().is_symlink() {
+                return Err(format!("refusing to overwrite symlinked log {}", path.display()));
+            }
+        }
+    }
+    let stdout_file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(stdout_path)
+        .map_err(|error| format!("open typed-consumer stdout: {error}"))?;
+    let stderr_file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(stderr_path)
+        .map_err(|error| format!("open typed-consumer stderr: {error}"))?;
+    #[cfg(unix)]
+    let mut command = {
+        // Start a new session so descendants share a process group that can
+        // be terminated after either normal exit or a deadline.
+        let mut command = Command::new("/usr/bin/setsid");
+        command.arg(program);
+        command
+    };
+    #[cfg(not(unix))]
+    let mut command = Command::new(program);
+    let mut child = command
         .args(args)
         .current_dir(current_dir)
         .env("ACYCLIC_RUST_GENERATION_ENTRYPOINT", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .map_err(|error| format!("start typed-consumer command: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "typed-consumer stdout pipe was not created".to_owned())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "typed-consumer stderr pipe was not created".to_owned())?;
-    let stdout_thread = thread::spawn(move || read_bounded(stdout));
-    let stderr_thread = thread::spawn(move || read_bounded(stderr));
     let deadline = Instant::now() + SUPERVISOR_TIMEOUT;
     let status = loop {
         if let Some(status) = child
@@ -468,7 +542,7 @@ fn run_bounded_command(
             break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            terminate_process_tree(&mut child)?;
             let _ = child.wait();
             return Err(format!(
                 "typed-consumer command exceeded {} second deadline",
@@ -477,33 +551,121 @@ fn run_bounded_command(
         }
         thread::sleep(Duration::from_millis(25));
     };
-    let stdout = stdout_thread
-        .join()
-        .map_err(|_| "typed-consumer stdout capture thread panicked".to_owned())??;
-    let stderr = stderr_thread
-        .join()
-        .map_err(|_| "typed-consumer stderr capture thread panicked".to_owned())??;
+    // A successful launcher can leave descendants alive and still writing the
+    // captured files. Reap the whole tree before reading or hashing output.
+    terminate_process_tree(&mut child)?;
+    let after_hash = hash_program(program)?;
+    if after_hash != expected_program_hash {
+        return Err("approved typed-consumer runner changed during execution".into());
+    }
+    for path in [stdout_path, stderr_path] {
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("inspect typed-consumer output {}: {error}", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "typed-consumer output was replaced by a non-regular file: {}",
+                path.display()
+            ));
+        }
+    }
+    let stdout = read_bounded_file(stdout_path)?;
+    let stderr = read_bounded_file(stderr_path)?;
     Ok((status, stdout, stderr))
 }
 
-fn read_bounded(mut reader: impl Read) -> Result<Vec<u8>, String> {
+fn read_bounded_file(path: &Path) -> Result<Vec<u8>, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("open typed-consumer output: {error}"))?;
     let mut bytes = Vec::new();
-    let mut chunk = [0u8; 64 * 1024];
-    loop {
-        let count = reader
-            .read(&mut chunk)
-            .map_err(|error| format!("read typed-consumer output: {error}"))?;
-        if count == 0 {
-            return Ok(bytes);
-        }
-        if bytes.len().saturating_add(count) > SUPERVISOR_OUTPUT_LIMIT {
-            return Err(format!(
-                "typed-consumer output exceeded {} byte limit",
-                SUPERVISOR_OUTPUT_LIMIT
-            ));
-        }
-        bytes.extend_from_slice(&chunk[..count]);
+    file.take((SUPERVISOR_OUTPUT_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read typed-consumer output: {error}"))?;
+    if bytes.len() > SUPERVISOR_OUTPUT_LIMIT {
+        return Err(format!(
+            "typed-consumer output exceeded {} byte limit",
+            SUPERVISOR_OUTPUT_LIMIT
+        ));
     }
+    Ok(bytes)
+}
+
+fn terminate_process_tree(child: &mut std::process::Child) -> Result<(), String> {
+    let pid = child.id();
+    #[cfg(windows)]
+    {
+        // taskkill is addressed by its protected absolute path; PATH is never
+        // consulted for process-tree cleanup.
+        let helper = Path::new(r"C:\Windows\System32\taskkill.exe");
+        if !helper.is_file() {
+            return Err("trusted Windows process-tree helper is unavailable".into());
+        }
+        let _ = Command::new(helper)
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .map_err(|error| format!("run trusted Windows process-tree helper: {error}"))?;
+    }
+    #[cfg(unix)]
+    {
+        // setsid made the launcher the process-group leader; use the absolute
+        // system kill helper so a PATH entry cannot redirect cleanup.
+        let helper = Path::new("/bin/kill");
+        if !helper.is_file() {
+            return Err("trusted Unix process-group helper is unavailable".into());
+        }
+        let group = format!("-{pid}");
+        let _ = Command::new(helper).args(["-TERM", &group]).status();
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < deadline {
+            let running = Command::new(helper)
+                .args(["-0", &group])
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !running {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let running = Command::new(helper)
+            .args(["-0", &group])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if running {
+            let _ = Command::new(helper).args(["-KILL", &group]).status();
+        }
+    }
+    let _ = child.kill();
+    Ok(())
+}
+
+fn hash_program(program: &Path) -> Result<String, String> {
+    let bytes = fs::read(program)
+        .map_err(|error| format!("read approved typed-consumer runner: {error}"))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+fn ensure_toolchain_path_readonly(program: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(program)
+        .map_err(|error| format!("inspect approved typed-consumer runner: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("approved typed-consumer runner is not a regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for ancestor in program.ancestors() {
+            let metadata = fs::metadata(ancestor)
+                .map_err(|error| format!("inspect approved toolchain path: {error}"))?;
+            if metadata.permissions().mode() & 0o002 != 0 {
+                return Err(format!(
+                    "approved typed-consumer runner is under a world-writable path: {}",
+                    ancestor.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn verify_file_hash(

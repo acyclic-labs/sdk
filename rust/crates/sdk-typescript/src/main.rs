@@ -1428,7 +1428,7 @@ fn typescript_public_types_section(
         let alias = format!("RustOwnedPublic{message}");
         if family == "machines" && message == "Image" {
             output.push_str("export type RustOwnedPublicImage = Omit<RustWire.Image, \"immutableReference\"> & {\n");
-            output.push_str("  readonly immutableReference: { readonly value: RustOwnedSha256Digest; readonly case: \"managedDigest\" } | { readonly value: RustOwnedSha256Digest; readonly case: \"customDigest\" } | { readonly value: RustWire.CheckpointId; readonly case: \"checkpoint\" } | { readonly case: undefined; readonly value?: undefined };\n");
+            output.push_str("  readonly immutableReference: { readonly value: RustOwnedSha256Digest; readonly case: \"managedDigest\" } | { readonly value: RustOwnedSha256Digest; readonly case: \"customDigest\" } | { readonly value: Omit<RustWire.CheckpointId, \"value\"> & { readonly value: RustOwnedCheckpointId }; readonly case: \"checkpoint\" } | { readonly case: undefined; readonly value?: undefined };\n");
             output.push_str("} & { readonly [rustOwnedSemanticBrand]: \"immutable_image\" };\n");
             continue;
         }
@@ -1839,7 +1839,7 @@ export function isRustOwnedTransportUnavailable(error: unknown): boolean {
         "stream" => output.push_str("export function validateRustOwnedCredentialPolicy(token: string): void {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\" && validateBearerToken(token) !== \"\") throw new TypeError(\"invalid bearer credential\");\n}\n\n"),
         "inference" => output.push_str("export async function validateRustOwnedCredentialPolicy(token: string): Promise<void> {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\") await validateInferenceCredential(token);\n}\n\n"),
         "filesystem" => output.push_str("export async function validateRustOwnedCredentialPolicy(token: string): Promise<void> {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\") await validateFilesystemCredential(token);\n}\n\n"),
-        _ => output.push_str("export function validateRustOwnedCredentialPolicy(_token: string): void {}\n\n"),
+        _ => output.push_str("export function validateRustOwnedCredentialPolicy(token: string): void {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\" && (token.trim().length === 0 || /[\\r\\n]/.test(token))) throw new TypeError(\"invalid bearer credential\");\n}\n\n"),
     }
     match service.family.as_str() {
         "inference" | "filesystem" => output.push_str("export async function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): Promise<void> {\n  if ((method.credentialPolicy as string) === (RUST_OWNED_CREDENTIAL_POLICY as string)) await validateRustOwnedCredentialPolicy(token);\n}\n\n"),
@@ -3391,6 +3391,20 @@ mod tests {
     }
 
     #[test]
+    fn credential_policy_emits_machine_bearer_guard() {
+        let service = model()
+            .expect("model")
+            .services
+            .into_iter()
+            .find(|service| service.family == "machines")
+            .expect("Machines metadata");
+        let generated = typescript(&service).expect("generated Machines metadata");
+        assert!(generated.contains("token.trim().length === 0"));
+        assert!(generated.contains("/[\\r\\n]/.test(token)"));
+        assert!(!generated.contains("validateRustOwnedCredentialPolicy(_token"));
+    }
+
+    #[test]
     fn generated_abort_helpers_observe_started_promises_before_preabort() {
         let service = model()
             .expect("model")
@@ -3434,6 +3448,8 @@ mod tests {
         assert!(generated.contains("case: \"managedDigest\""));
         assert!(generated.contains("case: \"customDigest\""));
         assert!(generated.contains("case: \"checkpoint\""));
+        assert!(generated.contains("Omit<RustWire.CheckpointId, \"value\"> & { readonly value: RustOwnedCheckpointId }"));
+        assert!(!generated.contains("readonly value: RustWire.CheckpointId; readonly case: \"checkpoint\""));
         assert!(!generated.contains("readonly customDigest: RustOwnedSha256Digest"));
         assert!(!generated.contains("readonly managedDigest: RustOwnedSha256Digest"));
 

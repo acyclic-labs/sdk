@@ -55,6 +55,26 @@ for (let i = 2; i < process.argv.length; i += 1) {
 const output = resolve(args.get("--output") ?? join(repo, "work", "guide-projection-qualification"));
 const snippets = join(output, "snippets");
 mkdirSync(snippets, { recursive: true });
+// Rust guide archives have private contract crates which are intentionally
+// publish = false.  Keep their immutable package archives in the qualification
+// input and overlay those archive bytes onto an isolated Cargo vendor tree.
+// The consumer then resolves registry sources from that tree, never checkout
+// paths or a source-patched dependency graph.
+const rustGuidePackageClosure = [
+  "acyclic-sdk-contract-validation",
+  "acyclic-sdk-contract-options",
+  "acyclic-sdk-contract-wire",
+  "acyclic-sdk-remote-web",
+  "acyclic-native-runtime",
+  "acyclic-stream",
+  "acyclic-objects",
+  "acyclic-fs",
+  "acyclic-machines",
+  "acyclic-inference",
+  "acyclic-workers",
+  "acyclic-harness",
+];
+let rustVendorState = null;
 // Keep consumer compilation artifacts outside each receipt directory so a
 // stable output path can reuse them. An explicit target may point at a shared
 // cache; the default remains owned by this checkout.
@@ -292,6 +312,72 @@ function validateRustArchivePaths(root) {
   }
 }
 
+function rustArchiveManifest(root) {
+  const manifests = allFiles(root).filter((path) => path.endsWith(`${sep}Cargo.toml`) || path.endsWith("/Cargo.toml"));
+  const rootManifest = manifests.find((manifest) => dirname(manifest) === resolve(root));
+  if (!rootManifest) throw new Error("Rust package archive has no top-level Cargo.toml");
+  const source = readFileSync(rootManifest, "utf8");
+  const name = source.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+  const version = source.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+  if (!name) throw new Error("Rust package archive top-level Cargo.toml has no package name");
+  if (!version) throw new Error(`Rust package archive ${name} has no resolved version`);
+  return { manifest: rootManifest, name, version, root: dirname(rootManifest) };
+}
+
+function writeCargoDirectoryChecksum(root, extracted) {
+  const files = {};
+  for (const path of allFiles(root)) {
+    if (path.endsWith(`${sep}.cargo-checksum.json`) || path.endsWith("/.cargo-checksum.json")) continue;
+    const relativePath = relative(root, path).replaceAll("\\", "/");
+    files[relativePath] = createHash("sha256").update(readFileSync(path)).digest("hex");
+  }
+  writeFileSync(join(root, ".cargo-checksum.json"), JSON.stringify({ files, package: extracted.archiveSha256.slice("sha256:".length) }) + "\n");
+}
+
+function ensureRustVendor() {
+  if (rustVendorState) return rustVendorState;
+  const archiveDirectory = join(repo, "qualification", "packages");
+  if (!existsSync(archiveDirectory)) throw new Error(`Rust package closure archive directory is absent: ${archiveDirectory}`);
+  const vendorRoot = join(output, "installed-rust-vendor");
+  rmSync(vendorRoot, { recursive: true, force: true });
+  mkdirSync(vendorRoot, { recursive: true });
+  const seeded = command(cargo, ["vendor", "--locked", "--offline", "--manifest-path", join(repo, "Cargo.toml"), vendorRoot], repo, { CARGO_TARGET_DIR: cargoTargetDir });
+  if (seeded.exitCode !== 0) throw new Error(`cargo vendor failed: ${seeded.stderr || seeded.stdout}`);
+  const archiveStage = join(output, "installed-rust-archives");
+  rmSync(archiveStage, { recursive: true, force: true });
+  mkdirSync(archiveStage, { recursive: true });
+  const archives = readdirSync(archiveDirectory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".crate"))
+    .map((entry) => join(archiveDirectory, entry.name));
+  const packages = new Map();
+  for (const archive of archives) {
+    const extractionRoot = join(archiveStage, archive.replaceAll("\\", "/").split("/").at(-1).slice(0, -6));
+    const extracted = extractPackageArchive(archive, extractionRoot);
+    validateRustArchivePaths(extractionRoot);
+    const manifest = rustArchiveManifest(extractionRoot);
+    if (packages.has(manifest.name)) throw new Error(`Rust package closure contains multiple archives for ${manifest.name}`);
+    packages.set(manifest.name, { archive, extracted, manifest });
+  }
+  const missing = rustGuidePackageClosure.filter((name) => !packages.has(name));
+  if (missing.length) throw new Error(`Rust package closure archives are missing: ${missing.join(", ")}`);
+  for (const name of rustGuidePackageClosure) {
+    const packageRecord = packages.get(name);
+    const destination = join(vendorRoot, `${name}-${packageRecord.manifest.version}`);
+    rmSync(destination, { recursive: true, force: true });
+    cpSync(packageRecord.manifest.root, destination, { recursive: true });
+    writeCargoDirectoryChecksum(destination, packageRecord.extracted);
+  }
+  rustVendorState = { vendorRoot, overlaidNames: new Set(rustGuidePackageClosure) };
+  return rustVendorState;
+}
+
+function writeRustVendorConfig(directory, vendorRoot) {
+  const configDirectory = join(directory, ".cargo");
+  mkdirSync(configDirectory, { recursive: true });
+  const quotedRoot = vendorRoot.replaceAll("\\", "/").replaceAll('"', '\\"');
+  writeFileSync(join(configDirectory, "config.toml"), `[source.crates-io]\nreplace-with = "guide-vendor"\n\n[source.guide-vendor]\ndirectory = "${quotedRoot}"\n\n[net]\noffline = true\n`);
+}
+
 function extension(language) {
   return ({ rust: ".rs", python: ".py", typescript: ".ts", go: ".go", java: ".java", csharp: ".cs", ruby: ".rb", dart: ".dart", php: ".php" })[language];
 }
@@ -357,6 +443,13 @@ function prepare(language, packageArtifact, directory, projection) {
     } catch (error) {
       return { status: "install-failed", install: null, environment: {}, error: String(error.message ?? error) };
     }
+    let vendor;
+    try {
+      vendor = ensureRustVendor();
+      writeRustVendorConfig(directory, vendor.vendorRoot);
+    } catch (error) {
+      return { status: "install-failed", install: null, environment: {}, packageSha256: extracted.archiveSha256, packageTreeSha256: extracted.treeSha256, archiveFormat: "gzip+ustar", error: String(error.message ?? error) };
+    }
     const installedRoot = rustPackagePath(packageInstall, packageName);
     writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nprost = "0.14.4"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
     const environment = { CARGO_TARGET_DIR: cargoTargetDir };
@@ -370,9 +463,10 @@ function prepare(language, packageArtifact, directory, projection) {
       const expectedManifest = resolve(installedRoot, "Cargo.toml");
       const resolved = localPackages.find((entry) => entry.name === packageName);
       if (!resolved || resolve(resolved.manifest_path) !== expectedManifest) throw new Error("Cargo metadata resolved a different package manifest");
-      for (const entry of localPackages.filter((value) => value.source == null)) {
+      for (const entry of localPackages) {
         const manifest = resolve(entry.manifest_path);
-        if (!within(packageInstall, manifest) && !within(directory, manifest)) throw new Error(`Cargo metadata resolved checkout path ${manifest}`);
+        if (entry.source == null && !within(packageInstall, manifest) && !within(directory, manifest) && !within(vendor.vendorRoot, manifest)) throw new Error(`Cargo metadata resolved checkout path ${manifest}`);
+        if (vendor.overlaidNames.has(entry.name) && entry.name !== packageName && !within(vendor.vendorRoot, manifest)) throw new Error(`Cargo metadata resolved closure package ${entry.name} outside the immutable vendor tree`);
       }
     } catch (error) {
       return { status: "install-failed", install: { ...metadata, stderr: `${metadata.stderr}${error.message ?? error}` }, environment, packageSha256: extracted.archiveSha256, packageTreeSha256: extracted.treeSha256, archiveFormat: "gzip+ustar", resolvedPackageRoot: relative(repo, installedRoot).replaceAll("\\", "/") };
@@ -384,7 +478,7 @@ function prepare(language, packageArtifact, directory, projection) {
       packageTreeSha256: extracted.treeSha256,
       archiveFormat: "gzip+ustar",
       resolvedPackageRoot: relative(repo, installedRoot).replaceAll("\\", "/"),
-      install: { ...metadata, command: `archive extract ${packageArtifact} && ${metadata.command}`, stdout: `extracted ${extracted.files.length} immutable package files\n${metadata.stdout}`, stderr: metadata.stderr },
+      install: { ...metadata, command: `archive extract ${packageArtifact} && cargo vendor overlay && ${metadata.command}`, stdout: `extracted ${extracted.files.length} immutable package files; vendored ${vendor.overlaidNames.size} Rust closure archives\n${metadata.stdout}`, stderr: metadata.stderr },
       environment,
     };
   }

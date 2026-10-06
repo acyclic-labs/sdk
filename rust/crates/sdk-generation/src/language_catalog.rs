@@ -2626,6 +2626,13 @@ mod tests {
     }
 
     #[test]
+    fn typed_consumer_invocation_manifest_handles_go_run() {
+        let args = vec!["run".to_owned(), "consumer.go".to_owned()];
+        assert_eq!(typed_consumer_source_argument_index("go", &args), Some(1));
+        assert_eq!(typed_consumer_source_argument_index("python", &args), Some(0));
+    }
+
+    #[test]
     fn catalog_schema_uses_standard_integer_constraints() {
         let generated = schema();
         let version = &generated["properties"]["schema_version"];
