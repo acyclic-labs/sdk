@@ -508,6 +508,34 @@ async fn selected_context_reaches_a_new_codex_thread() {
     assert!(argv.contains("now compare fee schedules"), "{argv}");
 }
 
+#[tokio::test]
+async fn invalid_output_awaits_explicit_cleanup_and_ends_background_descendants() {
+    let turn = Turn::new().await;
+    let executor = turn.executor(
+        &FakeCodex::default(),
+        Some(Instant::now() + Duration::from_secs(20)),
+    );
+    // The TERM marker distinguishes awaited graceful cleanup from best-effort
+    // Drop's immediate SIGKILL. The background member ignores TERM so successful
+    // cleanup must also perform the mandatory final group termination.
+    std::fs::write(
+        turn.dir.path().join("bin/codex"),
+        "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'codex 0.155.1'; exit 0; fi\n\
+         trap 'echo terminated > graceful; exit 143' TERM\n\
+         (trap '' TERM; sleep 1; touch escaped) >/dev/null 2>&1 &\n\
+         printf '\\377\\n'\nwait\n",
+    )
+    .expect("write invalid-stream executable");
+    let error = executor
+        .execute(input(OperationId::new(), "task"), &Journal::default())
+        .await
+        .expect_err("invalid UTF-8 output must fail");
+    assert!(error.to_string().contains("codex output failed"), "{error}");
+    assert_eq!(read(&turn.workspace.join("graceful")).trim(), "terminated");
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(!turn.workspace.join("escaped").exists());
+}
+
 // ------------------------------------------------------- the fake itself
 
 #[test]

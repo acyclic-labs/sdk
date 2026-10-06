@@ -354,6 +354,7 @@ impl CodexExecutor {
                 }
                 Next::Eof => break,
                 Next::Failed(error) => {
+                    process.terminate().await?;
                     return Err(Error::Storage(format!("codex output failed: {error}")));
                 }
                 Next::Deadline => {
