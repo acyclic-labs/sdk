@@ -16,10 +16,11 @@ use super::{
 use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
-    communication::DurableCommunication,
+    communication::{DurableCommunication, MessageRequest, MessageTarget},
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
     conversation::{
-        ConversationMessage, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef,
+        ConversationMessage, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOperation,
+        VolumeOwner, VolumeRef,
     },
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::{
@@ -43,8 +44,9 @@ use crate::{
     runtime::TaskRunLimits,
     store::StreamAggregate,
     swarm_budget::{
-        SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
-        SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource, VerifiedForkPublication,
+        ForkPublication, SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken,
+        SwarmForkReservation, SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource,
+        VerifiedForkPublication,
     },
     swarm_budget_journal::SwarmBudgetJournal,
     tool::{
@@ -10826,6 +10828,206 @@ mod tests {
         assert_eq!(reopened.open_session(task).await?.signing_key(), first_key);
         assert!(reopened.bindings.filesystem_fork_resolver.is_some());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    /// Installs an active direct child through the same durable admission and
+    /// budget boundaries used by recursive dispatch, then stages an immutable
+    /// resident payload in that child's local filesystem. The synthetic
+    /// publication digests only open the communication surface for this
+    /// focused test; no model transcript or workspace content is fabricated.
+    async fn active_mail_child(
+        swarm: &PersistentLocalSwarm,
+        parent: TaskId,
+        child: TaskId,
+        operation: OperationId,
+        exact_read: bool,
+    ) -> Result<FileRef> {
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let tail = match registry.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        append_record_at(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: child,
+                parent: Some(parent),
+                depth: 1,
+                task_description: format!("read grant child {child}"),
+                operation: Some(operation),
+                phase: StoredPhase::Ready,
+            }),
+            tail,
+        )
+        .await?;
+        swarm.refresh_registry_state().await?;
+
+        let child_harness = swarm.open_session(child).await?;
+        let path = format!("system/read-grant/{child}.txt");
+        let body = format!("resident payload for {child}");
+        let payload = child_harness
+            .storage()
+            .stage(
+                OperationId::from_bytes([child.into_bytes()[0].wrapping_add(1); 16]),
+                &path,
+                body.as_bytes(),
+                "text/plain",
+                "resident.txt",
+            )
+            .await?;
+        let parent_admission = swarm.authenticated_admission(parent).await?;
+        let denied = [
+            payload.read_capability()?,
+            payload.volume().capability(VolumeOperation::Read)?,
+        ];
+        let mut directory_denials = BTreeSet::new();
+        let segments: Vec<_> = payload.path().split('/').collect();
+        for count in 0..segments.len() {
+            let prefix = segments[..count].join("/");
+            if let Ok(capability) = payload.volume().directory_read_capability(&prefix) {
+                directory_denials.insert(capability);
+            }
+        }
+        let grants_without_payload_read = parent_admission
+            .grants
+            .iter()
+            .filter(|grant| {
+                !denied.iter().any(|capability| capability == grant)
+                    && !directory_denials.contains(*grant)
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let grants = if exact_read {
+            let mut grants = grants_without_payload_read;
+            grants.push(payload.read_capability()?);
+            Capabilities::new(grants)
+        } else {
+            Capabilities::new(grants_without_payload_read)
+        };
+        let mut admission = parent_admission;
+        admission.operation_id = operation;
+        admission.parent = Some(parent);
+        admission.grants = grants;
+        swarm.persist_local_admission(child, admission).await?;
+        let resources = swarm
+            .child_budget_resources(parent, Limits::default(), swarm.config.run_limits)
+            .await?;
+        swarm
+            .reserve_child_budget(
+                child,
+                IdempotencyKey::new(format!("read-grant-reservation-{child}"))?,
+                None,
+                1,
+                resources,
+            )
+            .await?;
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: operation,
+            parent_operation_id: None,
+            completed_boundary_digest: [child.into_bytes()[0]; 32],
+            workspace_generation_digest: [child.into_bytes()[0].wrapping_add(1); 32],
+        })?;
+        swarm
+            .activate_child_budget(
+                operation,
+                swarm.config.budget.owner.clone(),
+                IdempotencyKey::new(format!("read-grant-dispatch-{child}"))?,
+                publication,
+            )
+            .await?;
+        Ok(payload)
+    }
+
+    #[tokio::test]
+    async fn local_mail_requires_sender_read_grant_before_publication() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            usage: mock_usage_source(),
+        });
+        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "sender-read-grant", "1", json!({}))?,
+            provider,
+            Limits::default(),
+        )
+        .await?;
+        let parent = swarm.root_task().await?;
+        let denied_sender = TaskId::from_bytes([0xA1; 16]);
+        let allowed_sender = TaskId::from_bytes([0xA2; 16]);
+        let denied_payload = active_mail_child(
+            &swarm,
+            parent,
+            denied_sender,
+            OperationId::from_bytes([0xA3; 16]),
+            false,
+        )
+        .await?;
+        let allowed_payload = active_mail_child(
+            &swarm,
+            parent,
+            allowed_sender,
+            OperationId::from_bytes([0xA4; 16]),
+            true,
+        )
+        .await?;
+        assert!(!denied_payload.version().is_empty());
+        assert!(!allowed_payload.version().is_empty());
+
+        let host = swarm
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        let communication = DurableCommunication::new(host);
+        let denied_message = OperationId::from_bytes([0xA5; 16]);
+        assert!(matches!(
+            communication
+                .send(MessageRequest {
+                    sender: denied_sender,
+                    recipient: parent,
+                    message_id: denied_message,
+                    target: MessageTarget::Parent,
+                    payload: denied_payload.clone(),
+                })
+                .await,
+            Err(Error::Unauthorized(message)) if message.contains("read")
+        ));
+        assert!(swarm.read_inbox(parent, 0, 8).await?.is_empty());
+        assert!(!swarm
+            .find_message_admission(denied_sender, parent, denied_message, &denied_payload)
+            .await?);
+
+        let allowed_message = OperationId::from_bytes([0xA6; 16]);
+        communication
+            .send(MessageRequest {
+                sender: allowed_sender,
+                recipient: parent,
+                message_id: allowed_message,
+                target: MessageTarget::Parent,
+                payload: allowed_payload.clone(),
+            })
+            .await?;
+        let inbox = swarm.read_inbox(parent, 0, 8).await?;
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].sender, allowed_sender);
+        assert!(swarm
+            .find_message_admission(allowed_sender, parent, allowed_message, &allowed_payload)
+            .await?);
+        assert_eq!(
+            swarm
+                .read_file(parent, inbox[0].payload.path(), None)
+                .await?
+                .1,
+            format!("resident payload for {allowed_sender}").as_bytes()
+        );
         Ok(())
     }
 
