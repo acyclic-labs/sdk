@@ -2083,7 +2083,7 @@ fn load_scenario_bundle_with_authority(
         .get_mut("snippets")
         .and_then(serde_json::Value::as_array_mut)
         .ok_or_else(|| Error::Strict("SDK examples bundle snippets are missing".to_owned()))?;
-    for snippet in snippets {
+    for snippet in snippets.iter_mut() {
         let object = snippet
             .as_object_mut()
             .ok_or_else(|| Error::Strict("SDK examples snippet is not an object".to_owned()))?;
@@ -2177,6 +2177,7 @@ fn load_scenario_bundle_with_authority(
             serde_json::Value::String(actual_code_hash),
         );
     }
+    validate_authored_rust_fence_coverage(repository_root, snippets)?;
     Ok(manifest)
 }
 
@@ -2610,6 +2611,153 @@ fn is_portable_relative_path(path: &Path) -> bool {
 /// Bind a producer's guide scenario to the exact authored Markdown fence. A
 /// path, ordinal, and language alone are insufficient: the marker, file hash,
 /// fence hash, and (for Rust) exact executable body must all agree.
+fn guide_scenario_id(marker: &str) -> Option<&str> {
+    marker
+        .strip_prefix("<!-- acyclic-guide-scenario:")
+        .and_then(|value| value.strip_suffix("-->"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Every authored Rust fence marked as a scenario must have exactly one
+/// matching Rust snippet binding. The producer validates the exact body and
+/// hashes; this importer closes the coverage hole where a marked fence could
+/// otherwise be silently omitted from the bundle.
+fn validate_authored_rust_fence_coverage(
+    repository_root: &Path,
+    snippets: &[serde_json::Value],
+) -> Result<(), Error> {
+    let crates_root = repository_root.join("rust").join("crates");
+    let scan_root = if crates_root.is_dir() {
+        crates_root
+    } else {
+        repository_root.to_path_buf()
+    };
+    let mut paths = Vec::new();
+    collect_files_recursive(&scan_root, &mut paths)?;
+    paths.retain(|path| path.extension().and_then(|extension| extension.to_str()) == Some("md"));
+    paths.sort();
+
+    let mut authored = BTreeMap::<(String, u32), String>::new();
+    let mut authored_ids = HashMap::<String, (String, u32)>::new();
+    for path in paths {
+        let bytes = fs::read(&path)?;
+        let contents = String::from_utf8(bytes).map_err(|error| {
+            Error::Strict(format!(
+                "authored guide source {} is not UTF-8: {error}",
+                relative_path(repository_root, &path)
+            ))
+        })?;
+        let relative = relative_path(repository_root, &path);
+        for (fence, _) in parse_guide_fences_with_bodies(&relative, &contents)? {
+            if fence.fence_language != "rust" {
+                continue;
+            }
+            let Some(marker) = fence.marker.as_deref() else {
+                continue;
+            };
+            let scenario_id = guide_scenario_id(marker).ok_or_else(|| {
+                Error::Strict(format!(
+                    "authored Rust guide fence has an invalid scenario marker: {}#{}",
+                    fence.path, fence.fence_ordinal
+                ))
+            })?;
+            let key = (fence.path.clone(), fence.fence_ordinal);
+            if authored.insert(key.clone(), scenario_id.to_owned()).is_some() {
+                return Err(Error::Strict(format!(
+                    "authored Rust guide fence is duplicated: {}#{}",
+                    key.0, key.1
+                )));
+            }
+            if authored_ids
+                .insert(scenario_id.to_owned(), key.clone())
+                .is_some()
+            {
+                return Err(Error::Strict(format!(
+                    "authored Rust guide scenario marker is duplicated: {scenario_id}"
+                )));
+            }
+        }
+    }
+
+    let mut bound = BTreeMap::<(String, u32), String>::new();
+    for snippet in snippets {
+        let Some(object) = snippet.as_object() else {
+            return Err(Error::Strict("SDK examples snippet is not an object".to_owned()));
+        };
+        if object.get("language").and_then(serde_json::Value::as_str) != Some("rust") {
+            continue;
+        }
+        let Some(guide) = object.get("guide") else {
+            continue;
+        };
+        let guide = guide.as_object().ok_or_else(|| {
+            Error::Strict("SDK examples Rust guide binding is not an object".to_owned())
+        })?;
+        let id = object
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| Error::Strict("SDK examples Rust snippet has no scenario ID".to_owned()))?;
+        let path = guide
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::Strict(format!("Rust guide binding is missing a path: {id}")))?;
+        let ordinal = guide
+            .get("fence_ordinal")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| Error::Strict(format!("Rust guide binding has an invalid fence ordinal: {id}")))?;
+        let marker = guide
+            .get("marker")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::Strict(format!("Rust guide binding is missing a marker: {id}")))?;
+        let marker_id = guide_scenario_id(marker).ok_or_else(|| {
+            Error::Strict(format!("Rust guide binding has an invalid marker: {id}"))
+        })?;
+        if marker_id != id {
+            return Err(Error::Strict(format!(
+                "Rust guide binding scenario ID does not match its marker: {id} vs {marker_id}"
+            )));
+        }
+        let key = (path.to_owned(), ordinal);
+        if bound.insert(key.clone(), id.to_owned()).is_some() {
+            return Err(Error::Strict(format!(
+                "Rust guide binding is duplicated: {}#{}",
+                key.0, key.1
+            )));
+        }
+    }
+
+    for (key, scenario_id) in &authored {
+        match bound.get(key) {
+            None => {
+                return Err(Error::Strict(format!(
+                    "authored Rust guide fence has no matching snippet binding: {}#{} ({scenario_id})",
+                    key.0, key.1
+                )));
+            }
+            Some(bound_id) if bound_id != scenario_id => {
+                return Err(Error::Strict(format!(
+                    "authored Rust guide fence is bound to the wrong scenario: {}#{} ({bound_id}, expected {scenario_id})",
+                    key.0, key.1
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, scenario_id) in &bound {
+        if !authored.contains_key(key) {
+            return Err(Error::Strict(format!(
+                "Rust guide binding points at an unmarked authored fence: {}#{} ({scenario_id})",
+                key.0, key.1
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_guide_fence_binding(
     snippet: &serde_json::Map<String, serde_json::Value>,
     repository_root: &Path,
@@ -8086,6 +8234,34 @@ mod tests {
         root
     }
 
+    fn authored_coverage_fixture(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-guide-coverage-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("rust/crates/demo/docs")).expect("create coverage fixture");
+        fs::write(
+            root.join("rust/crates/demo/docs/guide.md"),
+            "<!-- acyclic-guide-scenario: demo-run -->\n```rust\nfn main() {}\n```\n",
+        )
+        .expect("write coverage guide");
+        root
+    }
+
+    fn authored_coverage_binding(path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "demo-run",
+            "language": "rust",
+            "guide": {
+                "path": path,
+                "fence_ordinal": 1,
+                "fence_language": "rust",
+                "marker": "<!-- acyclic-guide-scenario: demo-run -->",
+            }
+        })
+    }
+
     #[test]
     fn guide_source_records_all_fences_and_immediate_scenario_marker() {
         let contents = "# Demo\n\n```toml\nname = \"demo\"\n```\n\n<!-- acyclic-guide-scenario: demo-run -->\n```rust\nfn main() {}\n```\n";
@@ -8141,6 +8317,44 @@ mod tests {
         .expect_err("substituted Rust fence must fail closed");
         assert!(error.to_string().contains("differs from authored fence"));
         fs::remove_dir_all(root).expect("remove guide fixture");
+    }
+
+    #[test]
+    fn authored_rust_fence_coverage_rejects_missing_binding() {
+        let root = authored_coverage_fixture("missing");
+        let error = validate_authored_rust_fence_coverage(&root, &[])
+            .expect_err("marked Rust fence without a snippet must fail closed");
+        assert!(error
+            .to_string()
+            .contains("has no matching snippet binding"));
+        fs::remove_dir_all(root).expect("remove coverage fixture");
+    }
+
+    #[test]
+    fn authored_rust_fence_coverage_rejects_duplicate_binding() {
+        let root = authored_coverage_fixture("duplicate");
+        let binding = authored_coverage_binding("rust/crates/demo/docs/guide.md");
+        let error = validate_authored_rust_fence_coverage(
+            &root,
+            &[binding.clone(), binding],
+        )
+        .expect_err("two snippets cannot bind one authored Rust fence");
+        assert!(error.to_string().contains("Rust guide binding is duplicated"));
+        fs::remove_dir_all(root).expect("remove coverage fixture");
+    }
+
+    #[test]
+    fn authored_rust_fence_coverage_rejects_extra_binding() {
+        let root = authored_coverage_fixture("extra");
+        let error = validate_authored_rust_fence_coverage(
+            &root,
+            &[authored_coverage_binding("rust/crates/demo/docs/other.md")],
+        )
+        .expect_err("unmarked Rust guide binding must fail closed");
+        assert!(error
+            .to_string()
+            .contains("unmarked authored fence"));
+        fs::remove_dir_all(root).expect("remove coverage fixture");
     }
 
     #[test]

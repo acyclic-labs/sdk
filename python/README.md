@@ -17,8 +17,26 @@ cargo run --manifest-path rust/crates/sdk-python/Cargo.toml --locked -- \
   --output python/src/acyclic_sdk/generated
 python -m pytest -q python
 set SOURCE_DATE_EPOCH=1735689600
-python -m pip wheel ./python --no-deps --no-build-isolation --wheel-dir python/dist
+python -m build --sdist --wheel --no-isolation --outdir target/python-artifacts
 ```
+
+For a source-bound installable package, use the Rust packaging entrypoint after
+the Rust authority and Python generated subtree have been emitted. It stages a
+fresh source tree, excludes the checkout's disposable `python/dist` output,
+builds both wheel and sdist artifacts, and verifies that each archive contains
+the Rust-owned `remote.py`, `py.typed`, and generation metadata:
+
+```text
+cargo run --manifest-path rust/crates/sdk-python/Cargo.toml --locked -- \
+  package --source-root python \
+  --generated-root target/python-generated \
+  --output target/python-package \
+  --python python
+```
+
+The package command requires `build==1.3.0` in the selected Python
+environment. It clears only its explicit external output directory and never
+reads or writes `python/dist`.
 
 The Python helper only invokes `grpc_tools.protoc`; it enumerates every family
 and in-root imported dependency listed by `rust-authority.json`. The Rust CLI

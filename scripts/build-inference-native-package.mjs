@@ -14,6 +14,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { runtimeSourceIdentity } from "./inference-native-source-identity.mjs";
 
 const NATIVE_BINARY = "acyclic_inference_native.node";
 
@@ -182,6 +183,9 @@ if (target === undefined) {
   throw new Error(`unknown native package target ${packageTarget}; Rust-owned targets: ${[...targets.keys()].join(", ")}`);
 }
 
+const runtimeManifest = join(crate, "Cargo.toml");
+const runtimeSourceIdentityBeforeBuild = runtimeSourceIdentity(root, runtimeManifest, target.rust);
+
 // Bind the build to the exact source identity before creating or deleting any
 // output. Dirty checkouts require both Rust model and source-content identities.
 const revision = process.env.SOURCE_REVISION?.trim();
@@ -206,6 +210,22 @@ if (suppliedSourceContentSha256 !== undefined &&
 }
 const sourceModelRevision = sourceIdentityBeforeBuild.modelRevision;
 const sourceContentSha256 = sourceIdentityBeforeBuild.sourceContentSha256;
+const suppliedRuntimeClosureSha256 = process.env.SOURCE_RUNTIME_CLOSURE_SHA256?.trim() || undefined;
+if (suppliedRuntimeClosureSha256 !== undefined && !/^[0-9a-f]{64}$/i.test(suppliedRuntimeClosureSha256)) {
+  throw new Error("SOURCE_RUNTIME_CLOSURE_SHA256 must be a 64-character SHA-256 digest");
+}
+if (suppliedRuntimeClosureSha256 !== undefined &&
+    suppliedRuntimeClosureSha256.toLowerCase() !== runtimeSourceIdentityBeforeBuild.closureSha256) {
+  throw new Error("SOURCE_RUNTIME_CLOSURE_SHA256 does not match the native Rust source closure");
+}
+const suppliedRuntimeRecipeSha256 = process.env.SOURCE_RUNTIME_RECIPE_SHA256?.trim() || undefined;
+if (suppliedRuntimeRecipeSha256 !== undefined && !/^[0-9a-f]{64}$/i.test(suppliedRuntimeRecipeSha256)) {
+  throw new Error("SOURCE_RUNTIME_RECIPE_SHA256 must be a 64-character SHA-256 digest");
+}
+if (suppliedRuntimeRecipeSha256 !== undefined &&
+    suppliedRuntimeRecipeSha256.toLowerCase() !== runtimeSourceIdentityBeforeBuild.recipeSha256) {
+  throw new Error("SOURCE_RUNTIME_RECIPE_SHA256 does not match the native Rust build recipe");
+}
 
 const gitHeadResult = spawnSync("git", ["rev-parse", "--verify", "HEAD"], {
   cwd: root,
@@ -271,6 +291,13 @@ if (sourceIdentityAfterBuild.modelRevision !== sourceIdentityBeforeBuild.modelRe
     sourceIdentityAfterBuild.sourceContentSha256 !== sourceIdentityBeforeBuild.sourceContentSha256) {
   throw new Error("Rust source closure changed during native compilation");
 }
+const runtimeSourceIdentityAfterBuild = runtimeSourceIdentity(root, runtimeManifest, target.rust);
+if (runtimeSourceIdentityAfterBuild.closureSha256 !== runtimeSourceIdentityBeforeBuild.closureSha256 ||
+    runtimeSourceIdentityAfterBuild.recipeSha256 !== runtimeSourceIdentityBeforeBuild.recipeSha256 ||
+    JSON.stringify(runtimeSourceIdentityAfterBuild.descriptor) !== JSON.stringify(runtimeSourceIdentityBeforeBuild.descriptor) ||
+    JSON.stringify(runtimeSourceIdentityAfterBuild.toolchain) !== JSON.stringify(runtimeSourceIdentityBeforeBuild.toolchain)) {
+  throw new Error("native Rust runtime source closure changed during compilation");
+}
 
 const packageRoot = join(artifactRoot, packageTarget);
 rmSync(packageRoot, { recursive: true, force: true });
@@ -323,6 +350,11 @@ const build = {
   source_content_sha256: `sha256:${sourceContentSha256}`,
   source_content_sources: sourceIdentityBeforeBuild.contentSources,
   source_model_sources: sourceIdentityBeforeBuild.modelSources,
+  runtime_source_closure_sha256: `sha256:${runtimeSourceIdentityBeforeBuild.closureSha256}`,
+  runtime_build_recipe_sha256: `sha256:${runtimeSourceIdentityBeforeBuild.recipeSha256}`,
+  runtime_source_files: runtimeSourceIdentityBeforeBuild.files,
+  runtime_descriptor: runtimeSourceIdentityBeforeBuild.descriptor,
+  runtime_toolchain: runtimeSourceIdentityBeforeBuild.toolchain,
   generator: {
     name: "scripts/build-inference-native-package.mjs",
     version: "1",
@@ -370,6 +402,10 @@ if (provenancePath) {
     source_model_revision: sourceModelRevision,
     source_model_revision_kind: "rust-model-sha256",
     source_content_sha256: `sha256:${sourceContentSha256}`,
+    runtime_source_closure_sha256: `sha256:${runtimeSourceIdentityBeforeBuild.closureSha256}`,
+    runtime_build_recipe_sha256: `sha256:${runtimeSourceIdentityBeforeBuild.recipeSha256}`,
+    runtime_descriptor: runtimeSourceIdentityBeforeBuild.descriptor,
+    runtime_toolchain: runtimeSourceIdentityBeforeBuild.toolchain,
     package_target: packageTarget,
     rust_target: target.rust,
     package_root: packageRoot,

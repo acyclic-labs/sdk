@@ -2342,16 +2342,144 @@ pub fn catalog() -> serde_json::Value {
 /// Return the typed-consumer requirement from the Rust-owned target metadata.
 /// HTTP/OpenAPI-only targets deliberately do not enter the protobuf receipt
 /// gate, while every full-gRPC target does.
-pub fn target_requires_typed_consumer(target_id: &str) -> bool {
+pub fn target_requires_typed_consumer(target_id: &str) -> Result<bool, String> {
     assert_language_inventory_matches_type_policy();
     CATALOG
         .targets
         .iter()
         .find(|target| target.id == target_id)
-        .is_some_and(|target| {
+        .map(|target| {
             target.remote.wire == WireKind::ProtobufGrpc
                 && target.remote.level == RemoteLevel::FullGrpc
         })
+        .ok_or_else(|| format!("unknown Rust language target: {target_id}"))
+}
+
+/// Approve only the pinned language runner family for a Rust-catalogued
+/// target. The staged receipt may select arguments, but cannot replace the
+/// consumer with a shell or an unrelated executable.
+pub fn approve_typed_consumer_program(target_id: &str, program: &str) -> Result<(), String> {
+    assert_language_inventory_matches_type_policy();
+    if !CATALOG.targets.iter().any(|target| target.id == target_id) {
+        return Err(format!("unknown Rust language target: {target_id}"));
+    }
+    let basename = std::path::Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let allowed = match target_id {
+        "rust" => ["cargo"].as_slice(),
+        "typescript" => ["node", "node.exe", "bun", "deno", "tsx"].as_slice(),
+        "python" => ["python", "python.exe", "python3"].as_slice(),
+        "go" => ["go", "go.exe"].as_slice(),
+        "dart" => ["dart", "dart.exe"].as_slice(),
+        "kotlin" | "java" | "scala" => ["java", "java.exe", "mvn", "gradle", "kotlinc", "scala"].as_slice(),
+        "csharp" => ["dotnet", "dotnet.exe"].as_slice(),
+        "swift" => ["swift", "swift.exe"].as_slice(),
+        "elixir" => ["elixir", "elixir.bat", "mix", "mix.bat"].as_slice(),
+        "ballerina" => ["bal", "bal.exe"].as_slice(),
+        "objective-c" => ["clang", "clang.exe", "xcrun"].as_slice(),
+        "erlang" => ["erl", "erl.exe", "rebar3", "rebar3.cmd"].as_slice(),
+        "ocaml" => ["ocaml", "dune", "opam"].as_slice(),
+        "common-lisp" => ["sbcl", "sbcl.exe", "clisp", "ros"].as_slice(),
+        "haskell" => ["cabal", "stack", "runghc", "ghc"].as_slice(),
+        "ruby" => ["ruby", "ruby.exe"].as_slice(),
+        "php" => ["php", "php.exe"].as_slice(),
+        "cpp" => ["c++", "g++", "clang++", "cl"].as_slice(),
+        "c" => ["cc", "gcc", "clang", "cl"].as_slice(),
+        "clojure" => ["clojure", "clojure.exe", "java"].as_slice(),
+        "elm" => ["elm", "elm.exe"].as_slice(),
+        "gdscript" => ["godot", "godot.exe"].as_slice(),
+        "bash" => ["bash", "bash.exe"].as_slice(),
+        "perl" => ["perl", "perl.exe"].as_slice(),
+        "powershell" => ["pwsh", "pwsh.exe", "powershell", "powershell.exe"].as_slice(),
+        "ada" => ["gnatmake", "gnatmake.exe", "gprbuild"].as_slice(),
+        "crystal" => ["crystal", "crystal.exe"].as_slice(),
+        "nim" => ["nim", "nim.exe"].as_slice(),
+        "r" => ["r", "rscript", "rscript.exe"].as_slice(),
+        _ => return Err(format!("Rust language target has no typed-consumer program manifest: {target_id}")),
+    };
+    if allowed.iter().any(|candidate| *candidate == basename) {
+        Ok(())
+    } else {
+        Err(format!(
+            "typed-consumer program {program} is not approved for Rust target {target_id}"
+        ))
+    }
+}
+
+pub fn resolve_typed_consumer_program(target_id: &str, program: &str) -> Result<std::path::PathBuf, String> {
+    approve_typed_consumer_program(target_id, program)?;
+    let path = std::path::Path::new(program);
+    if path.components().count() != 1 {
+        return Err(format!("typed-consumer runner must be a bare approved tool name: {program}"));
+    }
+    let path_var = std::env::var_os("PATH")
+        .ok_or_else(|| "typed-consumer runner PATH is unavailable".to_owned())?;
+    for directory in std::env::split_paths(&path_var) {
+        let candidate = directory.join(path);
+        if candidate.is_file() {
+            return std::fs::canonicalize(&candidate)
+                .map_err(|error| format!("canonicalize approved typed-consumer runner: {error}"));
+        }
+        #[cfg(windows)]
+        for extension in [".exe", ".cmd", ".bat"] {
+            let candidate = directory.join(format!("{program}{extension}"));
+            if candidate.is_file() {
+                return std::fs::canonicalize(&candidate).map_err(|error| {
+                    format!("canonicalize approved typed-consumer runner: {error}")
+                });
+            }
+        }
+    }
+    Err(format!("approved typed-consumer runner is not on PATH: {program}"))
+}
+
+pub fn typed_consumer_source_matches_target(target_id: &str, source: &std::path::Path) -> bool {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    match target_id {
+        "python" => matches!(extension.as_deref(), Some("py")),
+        "go" => matches!(extension.as_deref(), Some("go")),
+        "java" | "kotlin" | "scala" => {
+            matches!(extension.as_deref(), Some("java" | "kt" | "scala"))
+        }
+        "csharp" => matches!(extension.as_deref(), Some("cs")),
+        "swift" => matches!(extension.as_deref(), Some("swift")),
+        "cpp" => matches!(extension.as_deref(), Some("cc" | "cpp" | "cxx")),
+        "ruby" => matches!(extension.as_deref(), Some("rb")),
+        "php" => matches!(extension.as_deref(), Some("php")),
+        "dart" => matches!(extension.as_deref(), Some("dart")),
+        "haskell" => matches!(extension.as_deref(), Some("hs")),
+        "bash" => matches!(extension.as_deref(), Some("sh")),
+        "perl" => matches!(extension.as_deref(), Some("pl")),
+        "powershell" => matches!(extension.as_deref(), Some("ps1")),
+        "ada" => matches!(extension.as_deref(), Some("adb" | "ads")),
+        "crystal" => matches!(extension.as_deref(), Some("cr")),
+        "nim" => matches!(extension.as_deref(), Some("nim")),
+        "r" => matches!(extension.as_deref(), Some("r")),
+        "typescript" => matches!(extension.as_deref(), Some("ts" | "js" | "mjs")),
+        "rust" => matches!(extension.as_deref(), Some("rs")),
+        _ => false,
+    }
+}
+
+pub fn typed_consumer_source_argument_index(target_id: &str, args: &[String]) -> Option<usize> {
+    match target_id {
+        "go" if args.first().is_some_and(|arg| arg == "run") => Some(1),
+        "csharp" if args.first().is_some_and(|arg| arg == "script") => Some(1),
+        _ => Some(0),
+    }
+}
+
+pub fn typed_consumer_toolchain_version(target_id: &str) -> Option<&'static str> {
+    match target_id {
+        "go" => Some("go1.27.1"),
+        _ => None,
+    }
 }
 
 /// Compatibility projection for consumers of the former package inventory.
@@ -2486,10 +2614,24 @@ mod tests {
 
     #[test]
     fn typed_consumer_gate_follows_rust_target_wire_capability() {
-        assert!(target_requires_typed_consumer("ruby"));
-        assert!(target_requires_typed_consumer("cpp"));
-        assert!(!target_requires_typed_consumer("bash"));
-        assert!(!target_requires_typed_consumer("unknown-target"));
+        assert_eq!(target_requires_typed_consumer("ruby"), Ok(true));
+        assert_eq!(target_requires_typed_consumer("cpp"), Ok(true));
+        assert_eq!(target_requires_typed_consumer("bash"), Ok(false));
+        assert!(target_requires_typed_consumer("unknown-target").is_err());
+    }
+
+    #[test]
+    fn typed_consumer_program_manifest_rejects_shell_substitution() {
+        assert!(approve_typed_consumer_program("python", "python").is_ok());
+        assert!(approve_typed_consumer_program("python", "sh").is_err());
+        assert!(approve_typed_consumer_program("unknown-target", "python").is_err());
+    }
+
+    #[test]
+    fn typed_consumer_invocation_manifest_handles_go_run() {
+        let args = vec!["run".to_owned(), "consumer.go".to_owned()];
+        assert_eq!(typed_consumer_source_argument_index("go", &args), Some(1));
+        assert_eq!(typed_consumer_source_argument_index("python", &args), Some(0));
     }
 
     #[test]

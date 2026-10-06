@@ -18,7 +18,7 @@ import type { ApprovalBinding, InteractionId, InteractionResolution, Interaction
 import type { ProjectMergeReceipt } from "./project.js";
 import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId, TaskChildrenPage } from "./runtime.js";
 import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
-import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
+import type { AgentId, IdentityKind, IdentityKindMap, OperationId } from "./index.js";
 import { assertHarnessWasmExports, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
 import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
@@ -233,6 +233,13 @@ export class NativeContracts {
 
   forkSeed(report: ForkReport): ForkSeed {
     return freezeNative(normalizeNativeValue(this.native.forkSeedFromReport(report))) as ForkSeed;
+  }
+
+  /** Rust-owned readable-reference projection for one attached fork agent. */
+  forkReadableReferences(seed: ForkSeed, reader: AgentId): readonly FileRef[] {
+    return freezeNative(normalizeNativeValue(
+      this.native.forkReadableReferences(seed, reader),
+    )) as readonly FileRef[];
   }
 
   /** The Rust tool registry's JSON Schema admission, before a typed parser runs. */

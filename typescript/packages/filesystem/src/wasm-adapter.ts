@@ -63,11 +63,9 @@ export function adaptWasmFs(
   const engine: FsVolumeEngine = {
     capabilities: raw.capabilities,
     async createWorkspace(name: string): Promise<FsWorkspace> {
-      requireWorkspaceName(name);
       return adaptWorkspace(await raw.createWorkspace(name), validatePositiveBound, adaptChangeSet, generationAdapter);
     },
     async openWorkspace(name: string): Promise<FsWorkspace> {
-      requireWorkspaceName(name);
       return adaptWorkspace(await raw.openWorkspace(name), validatePositiveBound, adaptChangeSet, generationAdapter);
     },
     objectCacheStats(): ObjectCacheStats { return objectCacheStats(raw.objectCacheStats()); },
@@ -270,14 +268,12 @@ function adaptWorkspace(
   const workspace: FsWorkspace = {
     get name() { return raw.name; },
     get id() { return copyBytes(raw.id); },
-    ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult, validatePositiveBound),
+    ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult),
     async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
-      requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptWorkspace(await raw.fork(destination, idempotencyKey), validatePositiveBound, adaptChangeSet, generationAdapter);
     },
     async forkAt(destination: string, generation: FsGeneration): Promise<FsWorkspace> {
-      requireWorkspaceName(destination);
       return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation)), validatePositiveBound, adaptChangeSet, generationAdapter);
     },
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
@@ -308,10 +304,6 @@ function rawWorkspace(workspace: FsWorkspace): WasmRawWorkspace {
 const parseJoinResult = (value: WasmRawJoinResult): JoinResult => parseSharedJoinResult(value, decodeMergeConflict);
 const parseWorkspaceRebaseResult = (value: WasmRawJoinResult): WorkspaceRebaseResult => parseSharedWorkspaceRebaseResult(value, decodeMergeConflict);
 const adaptJoinPlan = (raw: WasmRawJoinPlan): FsJoinPlan => adaptJoinPlanBase(raw, parseJoinResult);
-
-function requireWorkspaceName(name: string): void {
-  if (name.length === 0) throw new RangeError("workspace name must be non-empty");
-}
 
 function copyBytes(value: Uint8Array): Uint8Array {
   return Uint8Array.from(value);

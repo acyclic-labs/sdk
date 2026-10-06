@@ -4,7 +4,10 @@ import type {
   WasmRawJoinResult, WasmRawWorkspace, WorkspaceRebaseResult,
 } from "./contracts.js";
 import { copyWorkspaceExtentPlan, copyWorkspaceStat } from "./workspace-copies.js";
-import { parseWorkspaceCommit, parseWorkspaceDelete } from "./workspace-results.js";
+import {
+  parseWorkspaceCommit, parseWorkspaceDelete,
+  validateRustOwnedFixedBytes, validateRustOwnedPositiveBigInt, validateRustOwnedPositiveInteger,
+} from "./workspace-results.js";
 
 function nativeBoundary<T>(value: unknown): T {
   return value as T;
@@ -25,7 +28,6 @@ export function workspaceOperations(
   raw: RawOperations,
   adaptGeneration: (raw: WasmRawGeneration) => FsGeneration,
   parseRebase: (raw: WasmRawJoinResult) => WorkspaceRebaseResult,
-  validatePositiveBound: (value: number, label: string) => void = requirePositiveInteger,
 ): WorkspaceOperations {
   return {
     async head() { return Uint8Array.from(await raw.head()); },
@@ -37,26 +39,26 @@ export function workspaceOperations(
       return adaptGeneration(await raw.pin(identity));
     },
     async delete(idempotencyKey) {
-      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      if (idempotencyKey !== undefined) validateRustOwnedFixedBytes(idempotencyKey, 16, "idempotency key");
       return parseWorkspaceDelete(await raw.delete(idempotencyKey));
     },
     async read(path, maximumBytes) {
-      if (maximumBytes <= 0n) throw new RangeError("maximum read bytes must be positive");
+      validateRustOwnedPositiveBigInt(maximumBytes, "maximum read bytes");
       return Uint8Array.from(await raw.read(path, maximumBytes));
     },
     async readRange(path, offset, length) { return Uint8Array.from(await raw.readRange(path, offset, length)); },
     async stat(path) { return copyWorkspaceStat(await raw.stat(path)); },
     async readSymbolicLink(path) { return Uint8Array.from(await raw.readSymbolicLink(path)); },
     async planExtents(path, offset, length, maximumSpans) {
-      validatePositiveBound(maximumSpans, "maximum extent spans");
+      validateRustOwnedPositiveInteger(maximumSpans, "maximum extent spans");
       return copyWorkspaceExtentPlan(await raw.planExtents(path, offset, length, maximumSpans));
     },
     async write(path, bytes) { return parseWorkspaceCommit(await raw.write(path, bytes)); },
     async remove(path) { return parseWorkspaceCommit(await raw.remove(path)); },
     async liveRebase(options, idempotencyKey) {
-      validatePositiveBound(options.maximumGenerations, "maximum rebase generations");
-      validatePositiveBound(options.maximumChanges, "maximum rebase changes");
-      validatePositiveBound(options.maximumConflicts, "maximum rebase conflicts");
+      validateRustOwnedPositiveInteger(options.maximumGenerations, "maximum rebase generations");
+      validateRustOwnedPositiveInteger(options.maximumChanges, "maximum rebase changes");
+      validateRustOwnedPositiveInteger(options.maximumConflicts, "maximum rebase conflicts");
       return parseRebase(await raw.liveRebase(
         idempotencyKey, options.maximumGenerations, options.maximumChanges, options.maximumConflicts,
       ));
@@ -72,8 +74,8 @@ export function adaptJoinPlanBase(
     get targetHead() { return Uint8Array.from(raw.targetHead); },
     get commonAncestor() { return Uint8Array.from(raw.commonAncestor); },
     async apply(ifTarget, idempotencyKey) {
-      requireGenerationIdentity(ifTarget, "generation identity");
-      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      validateRustOwnedFixedBytes(ifTarget, 32, "generation identity");
+      if (idempotencyKey !== undefined) validateRustOwnedFixedBytes(idempotencyKey, 16, "idempotency key");
       return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.apply(ifTarget, idempotencyKey)));
     },
     async close() {},
@@ -90,8 +92,8 @@ export function adaptResolvableJoinPlan(
       selections: readonly MergeConflictSelection[],
       idempotencyKey?: Uint8Array,
     ): Promise<JoinResult> {
-      requireGenerationIdentity(ifTarget, "generation identity");
-      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      validateRustOwnedFixedBytes(ifTarget, 32, "generation identity");
+      if (idempotencyKey !== undefined) validateRustOwnedFixedBytes(idempotencyKey, 16, "idempotency key");
       return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.applySides(ifTarget, idempotencyKey, selections.map((selection) =>
         selection.kind === "file"
           ? { kind: "file", fileId: Uint8Array.from(selection.fileId), side: selection.side }
@@ -104,18 +106,4 @@ export function adaptResolvableJoinPlan(
       ))));
     },
   });
-}
-
-function requireIdentity(value: Uint8Array, label: string): void {
-  if (value.byteLength !== 16) throw new RangeError(`${label} must be exactly 16 bytes`);
-}
-
-function requireGenerationIdentity(value: Uint8Array, label: string): void {
-  if (value.byteLength !== 32) throw new RangeError(`${label} must be exactly 32 bytes`);
-}
-
-function requirePositiveInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${label} must be a positive safe integer`);
-  }
 }

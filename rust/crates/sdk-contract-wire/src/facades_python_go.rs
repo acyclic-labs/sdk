@@ -3578,6 +3578,7 @@ def test_rust_owned_production_object_stream_decodes_typed_frames():
 
     async def run():
         client = object.__new__(Client)
+        client._transports = {}
         client._objects = ObjectsStub()
         stream = await client.get_object_key(ObjectsGetObjectRequestKey(key="artifact"))
         frames = [frame async for frame in stream]
@@ -3671,6 +3672,7 @@ def test_rust_owned_nested_fields_are_in_production_request_signatures():
 
     async def run():
         client = object.__new__(Client)
+        client._transports = {}
         class Buckets:
             async def CreateBucket(self, request, timeout=None):
                 return objects_pb2.Bucket(bucket=objects_pb2.BucketRef(name=request.name))

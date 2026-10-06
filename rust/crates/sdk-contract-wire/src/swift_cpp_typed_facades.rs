@@ -412,20 +412,19 @@ fn cpp_field_annotation(value: &str) -> String {
     }
 }
 
-fn swift_kind(kind: WireValueKind, name: &str) -> String {
-    match kind {
-        WireValueKind::String
-        | WireValueKind::Bytes
-        | WireValueKind::Message
-        | WireValueKind::UnsignedInteger => name.to_owned(),
-        WireValueKind::SignedInteger => "Int64".into(),
-        WireValueKind::Boolean => "Bool".into(),
-        WireValueKind::Timestamp => "Date".into(),
-        // Closed Rust-owned descriptor enums and oneofs are emitted as
-        // concrete per-identity types below.  Never erase a semantic value
-        // into a public catch-all WireChoice.
-        WireValueKind::Enum | WireValueKind::Oneof => name.to_owned(),
+fn swift_public_type_name(name: &str) -> String {
+    match name {
+        // Semantic names are Rust-owned, but these spellings collide with
+        // Swift standard-library types when emitted as public wrappers.
+        "Bool" | "Data" | "Date" | "Double" | "Float" | "Int" | "Int8"
+        | "Int16" | "Int32" | "Int64" | "String" | "UInt" | "UInt8"
+        | "UInt16" | "UInt32" | "UInt64" => format!("{name}Value"),
+        _ => name.to_owned(),
     }
+}
+
+fn swift_kind(_kind: WireValueKind, name: &str) -> String {
+    swift_public_type_name(name)
 }
 
 fn cpp_kind(kind: WireValueKind, name: &str) -> String {
@@ -1393,10 +1392,10 @@ public final class RustTypedClientStream<Request: RustWireRequest, Response: Rus
             continue;
         }
         match item.wire_kind {
-            WireValueKind::String => out.push_str(&format!("public struct {}: Sendable {{ public let value: String; public init?(_ value: String) {{{} self.value = value }} }}\n", item.rust_name, swift_checks(item.wire_kind, item.rules))),
-            WireValueKind::Bytes => out.push_str(&format!("public struct {}: Sendable {{ public let value: Data; public init?(_ value: Data) {{{} self.value = value }} }}\n", item.rust_name, swift_checks(item.wire_kind, item.rules))),
-            WireValueKind::UnsignedInteger => out.push_str(&format!("public struct {}: Sendable {{ public let value: UInt64; public init?(_ value: UInt64) {{{} self.value = value }} }}\n", item.rust_name, swift_checks(item.wire_kind, item.rules))),
-            WireValueKind::SignedInteger => out.push_str(&format!("public struct {}: Sendable {{ public let value: Int64; public init?(_ value: Int64) {{{} self.value = value }} }}\n", item.rust_name, swift_checks(item.wire_kind, item.rules))),
+            WireValueKind::String => out.push_str(&format!("public struct {}: Sendable {{ public let value: String; public init?(_ value: String) {{{} self.value = value }} }}\n", swift_public_type_name(item.rust_name), swift_checks(item.wire_kind, item.rules))),
+            WireValueKind::Bytes => out.push_str(&format!("public struct {}: Sendable {{ public let value: Data; public init?(_ value: Data) {{{} self.value = value }} }}\n", swift_public_type_name(item.rust_name), swift_checks(item.wire_kind, item.rules))),
+            WireValueKind::UnsignedInteger => out.push_str(&format!("public struct {}: Sendable {{ public let value: UInt64; public init?(_ value: UInt64) {{{} self.value = value }} }}\n", swift_public_type_name(item.rust_name), swift_checks(item.wire_kind, item.rules))),
+            WireValueKind::SignedInteger => out.push_str(&format!("public struct {}: Sendable {{ public let value: Int64; public init?(_ value: Int64) {{{} self.value = value }} }}\n", swift_public_type_name(item.rust_name), swift_checks(item.wire_kind, item.rules))),
             WireValueKind::Message => {
                 let nested = semantic_nested_fields(item.rust_name);
                 let oneofs = model_oneof_groups(item.rust_name, PublicFieldDirection::NestedMessage);
@@ -1460,7 +1459,7 @@ public final class RustTypedClientStream<Request: RustWireRequest, Response: Rus
                 } else {
                     String::new()
                 };
-                out.push_str(&format!("public final class {}: Sendable {{\n private let wire: RustWireMessage\n{} internal init?(_ wire: RustWireMessage) {{{} self.wire = wire\n{} }}\n public init?({}) {{{}{} self.wire = RustWireMessage(wire: Data())\n{} }}\n}}\n", item.rust_name, declarations, swift_message_checks(item.rules), raw_assignments, params, typed_checks, image_oneof, assignments));
+                out.push_str(&format!("public final class {}: Sendable {{\n private let wire: RustWireMessage\n{} internal init?(_ wire: RustWireMessage) {{{} self.wire = wire\n{} }}\n public init?({}) {{{}{} self.wire = RustWireMessage(wire: Data())\n{} }}\n}}\n", swift_public_type_name(item.rust_name), declarations, swift_message_checks(item.rules), raw_assignments, params, typed_checks, image_oneof, assignments));
             }
             _ => {}
         }
@@ -1692,11 +1691,11 @@ public final class RustTypedClientStream<Request: RustWireRequest, Response: Rus
             } else if let Some(semantic) = semantic_field(field, PublicFieldDirection::Response) {
                 let wire_cast = swift_wire_cast(semantic.wire_kind);
                 if field.label == Some(FieldLabel::Repeated as i32) {
-                    format!("guard let raw_{local} = wire[\"{key}\"] as? [{wire_cast}] else {{ throw RustWireDecodeError.invalidField(\"{key}\") }}; let {field_name} = raw_{local}.compactMap {{ {ty}($0) }};", local=local, field_name=field_name, key=key, wire_cast=wire_cast, ty=semantic.rust_name)
+                    format!("guard let raw_{local} = wire[\"{key}\"] as? [{wire_cast}] else {{ throw RustWireDecodeError.invalidField(\"{key}\") }}; let {field_name} = raw_{local}.compactMap {{ {ty}($0) }};", local=local, field_name=field_name, key=key, wire_cast=wire_cast, ty=swift_public_type_name(semantic.rust_name))
                 } else if field_has_presence(field) {
-                    format!("let {field_name} = (wire[\"{key}\"] as? {wire_cast}).flatMap {{ {ty}($0) }};", field_name=field_name, key=key, wire_cast=wire_cast, ty=semantic.rust_name)
+                    format!("let {field_name} = (wire[\"{key}\"] as? {wire_cast}).flatMap {{ {ty}($0) }};", field_name=field_name, key=key, wire_cast=wire_cast, ty=swift_public_type_name(semantic.rust_name))
                 } else {
-                    format!("guard let raw_{local} = wire[\"{key}\"] as? {wire_cast}, let {field_name} = {ty}(raw_{local}) else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", local=local, field_name=field_name, key=key, wire_cast=wire_cast, ty=semantic.rust_name)
+                    format!("guard let raw_{local} = wire[\"{key}\"] as? {wire_cast}, let {field_name} = {ty}(raw_{local}) else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", local=local, field_name=field_name, key=key, wire_cast=wire_cast, ty=swift_public_type_name(semantic.rust_name))
                 }
             } else {
                 if field.label == Some(FieldLabel::Repeated as i32) {
@@ -1883,7 +1882,7 @@ public final class RustTypedClientStream<Request: RustWireRequest, Response: Rus
             );
             let method_name = swift_method_name(&method_name);
             if method.client_streaming {
-                out.push_str(&format!(" public func {method_name}() async throws -> RustTypedClientStream<{request}, {response}> {{ try await transport.openClientStream(\"{rpc}\") }} public func {method_name}(_ requests: RustTypedRequestSequence<{request}>) async throws -> {response} {{ try await transport.sendClientStream(\"{rpc}\", requests) }}\n", rpc = method.rpc));
+                out.push_str(&format!(" public func {method_name}() async throws -> RustTypedClientStream<{request}, {response}> {{ try await transport.openClientStream(\"{rpc}\") }}\n public func {method_name}(_ requests: RustTypedRequestSequence<{request}>) async throws -> {response} {{ try await transport.sendClientStream(\"{rpc}\", requests) }}\n", rpc = method.rpc));
             } else if method.server_streaming {
                 out.push_str(&format!(" public func {method_name}(_ request: {request}) async throws -> RustTypedStream<{response}> {{ try await transport.stream(\"{rpc}\", request) }}\n", rpc = method.rpc));
             } else {
@@ -2397,6 +2396,9 @@ mod tests {
         assert!(!swift.contains("} let "));
         assert!(!swift.contains("} return "));
         assert!(!swift.contains("} switch "));
+        assert!(!swift.contains("} public func "));
+        assert!(!swift.contains("public struct UInt64: Sendable"));
+        assert!(swift.contains("public struct UInt64Value: Sendable"));
         assert!(!swift.contains("case known(tag: String"));
         assert!(!swift.contains("public enum WireChoice"));
         assert!(!swift.contains("std::shared_ptr"));

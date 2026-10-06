@@ -1672,6 +1672,59 @@ impl ForkSeed {
         }
         Ok(Capabilities::new(values))
     }
+
+    /// Returns the exact file references readable by one attached fork agent.
+    ///
+    /// The result includes inherited files, direct reference grants, and
+    /// attachment manifests whose volume authority covers the reader.  It is
+    /// an access projection only: resolving any returned reference still
+    /// requires the corresponding provider capability check.
+    pub fn readable_references(&self, reader: AgentId) -> Result<Vec<FileRef>> {
+        self.validate()?;
+        if reader != self.child_agent && !self.attached_agents.contains(&reader) {
+            return Err(Error::Unauthorized("agent is not attached to fork".into()));
+        }
+
+        let mut references = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut add = |file: &FileRef| -> Result<()> {
+            if seen.insert(crate::contract::canonical_json_bytes(file)?) {
+                references.push(file.clone());
+            }
+            Ok(())
+        };
+
+        for file in &self.inherited_context {
+            add(file)?;
+        }
+        for grant in &self.reference_grants {
+            if grant.reader == reader {
+                add(&grant.file)?;
+            }
+        }
+        for manifest in &self.attachment_manifests {
+            let volume = manifest.volume();
+            let owner_read = volume.class() == VolumeClass::AgentPrivate
+                && volume.owner() == &VolumeOwner::Agent(reader);
+            let shared_read = volume.class() == VolumeClass::SessionShared
+                && self.shared_grants.iter().any(|grant| {
+                    grant.child_agent == reader
+                        && grant.operations.contains(&VolumeOperation::Read)
+                        && &grant.volume == volume
+                });
+            let project_read = volume.class() == VolumeClass::Project
+                && self.resources.iter().any(|resource| {
+                    matches!(
+                        &resource.revision,
+                        ResourceRevision::Project { volume: project, .. } if project == volume
+                    )
+                });
+            if owner_read || shared_read || project_read {
+                add(manifest)?;
+            }
+        }
+        Ok(references)
+    }
 }
 
 #[cfg(test)]

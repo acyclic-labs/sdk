@@ -1,6 +1,8 @@
 name: Python and Go Rust-authority qualification
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:
@@ -57,7 +59,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends protobuf-compiler
           python -m pip install --disable-pip-version-check --no-cache-dir \
             grpcio==1.83.0 grpcio-tools==1.83.0 protobuf==7.36.0 \
-            setuptools==84.0.0 wheel==0.46.3
+            setuptools==84.0.0 wheel==0.46.3 build==1.3.0 pytest==9.1.1
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -72,14 +74,20 @@ jobs:
             generate --out "$out/authority"
           cargo run --locked --manifest-path rust/crates/sdk-python/Cargo.toml -- \
             generate --schema-root "$out/authority" --output "$out/python-generated"
-          cp -a python "$out/python-package"
-          rm -rf "$out/python-package/src/acyclic_sdk/generated"
-          mkdir -p "$out/python-package/src/acyclic_sdk/generated"
-          cp -a "$out/python-generated/." "$out/python-package/src/acyclic_sdk/generated/"
-          SOURCE_DATE_EPOCH=1735689600 python -m pip wheel "$out/python-package" \
-            --no-deps --no-build-isolation --wheel-dir "$out/python-dist"
+          SOURCE_DATE_EPOCH=1735689600 cargo run --locked \
+            --manifest-path rust/crates/sdk-python/Cargo.toml -- \
+            package --source-root "$GITHUB_WORKSPACE/python" \
+            --generated-root "$out/python-generated" \
+            --output "$out/python-package" --python python
           python -m pip install --no-deps --target "$out/python-site" \
-            "$out/python-dist"/*.whl
+            "$out/python-package/artifacts"/*.whl
+          python -m pip install --no-deps --no-build-isolation \
+            --target "$out/python-sdist-site" \
+            "$out/python-package/artifacts"/*.tar.gz
+          PYTHONPATH="$out/python-site" python -m pytest -q python/tests \
+            --override-ini "pythonpath=$out/python-site"
+          PYTHONPATH="$out/python-sdist-site" python -m pytest -q python/tests \
+            --override-ini "pythonpath=$out/python-sdist-site"
           git rev-parse HEAD > "$out/source-revision"
 
       - name: Build Rust fixture and start it

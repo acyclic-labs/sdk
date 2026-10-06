@@ -48,7 +48,10 @@
         "stdout_path",
         "stdout_sha256",
         "stderr_path",
-        "stderr_sha256"
+        "stderr_sha256",
+        "tool_path",
+        "tool_sha256",
+        "tool_version"
       ],
       "properties": {
         "executed": {
@@ -83,6 +86,17 @@
         },
         "stderr_sha256": {
           "$ref": "#/$defs/sha256"
+        },
+        "tool_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "tool_version": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -126,7 +140,10 @@
               "runtime",
               "generated_consumer_path",
               "stdout_path",
-              "stderr_path"
+              "stderr_path",
+              "generated_consumer_sha256",
+              "stdout_sha256",
+              "stderr_sha256"
             ],
             "properties": {
               "runtime": {
@@ -140,6 +157,15 @@
               },
               "stderr_path": {
                 "$ref": "#/$defs/relativePath"
+              },
+              "generated_consumer_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "stdout_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "stderr_sha256": {
+                "$ref": "#/$defs/sha256"
               }
             }
           }

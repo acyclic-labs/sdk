@@ -110,7 +110,14 @@ pub const fn qualification_recipe(language: Language) -> GuideQualificationRecip
 pub struct GuidePackageSpec {
     pub package_manager: &'static str,
     pub package_name: &'static str,
+    /// Source manifest retained for provenance and source-closure checks.
     pub artifact_path: &'static str,
+    /// Repository-relative immutable archive staged by the package producer.
+    ///
+    /// The version is intentionally a wildcard: Cargo and npm derive it from
+    /// the package manifest at staging time, while the qualifier resolves the
+    /// resulting archive and records its bytes and tree digest.
+    pub package_artifact_path: Option<&'static str>,
 }
 
 /// Typed request identity consumed by package and documentation validators.
@@ -394,11 +401,21 @@ fn package_spec(family: &str, language: Language) -> Option<GuidePackageSpec> {
                 "workers" => "rust/crates/workers/Cargo.toml",
                 _ => return None,
             },
+            package_artifact_path: Some(match family {
+                "filesystem" => "qualification/packages/acyclic-fs-*.crate",
+                "harness" => "qualification/packages/acyclic-harness-*.crate",
+                "inference" => "qualification/packages/acyclic-inference-*.crate",
+                "machines" => "qualification/packages/acyclic-machines-*.crate",
+                "objects" => "qualification/packages/acyclic-objects-*.crate",
+                "workers" => "qualification/packages/acyclic-workers-*.crate",
+                _ => return None,
+            }),
         },
         Language::Python => GuidePackageSpec {
             package_manager: "pip",
             package_name: "acyclic-sdk-transport",
             artifact_path: "python/dist/*.whl",
+            package_artifact_path: None,
         },
         Language::TypeScript => GuidePackageSpec {
             package_manager: "npm",
@@ -420,36 +437,51 @@ fn package_spec(family: &str, language: Language) -> Option<GuidePackageSpec> {
                 "workers" => "typescript/packages/workers/package.json",
                 _ => return None,
             },
+            package_artifact_path: Some(match family {
+                "filesystem" => "qualification/packages/acyclic-labs-fs-*.tgz",
+                "harness" => "qualification/packages/acyclic-labs-harness-*.tgz",
+                "inference" => "qualification/packages/acyclic-labs-inference-*.tgz",
+                "machines" => "qualification/packages/acyclic-labs-machines-*.tgz",
+                "objects" => "qualification/packages/acyclic-labs-objects-*.tgz",
+                "workers" => "qualification/packages/acyclic-labs-workers-*.tgz",
+                _ => return None,
+            }),
         },
         Language::Go => GuidePackageSpec {
             package_manager: "go",
             package_name: "github.com/acyclic-labs/sdk/go",
             artifact_path: "go/go.mod",
+            package_artifact_path: None,
         },
         Language::Java => GuidePackageSpec {
             package_manager: "maven",
             package_name: "dev.acyclic:acyclic-sdk-jvm-transport",
             artifact_path: ".tmp-jvm-producer-smoke/acyclic-sdk-jvm-transport-*.jar",
+            package_artifact_path: None,
         },
         Language::CSharp => GuidePackageSpec {
             package_manager: "nuget",
             package_name: "Acyclic.Sdk.Transport",
             artifact_path: ".tmp-dotnet-producer-smoke/Acyclic.Sdk.Transport.*.nupkg",
+            package_artifact_path: None,
         },
         Language::Ruby => GuidePackageSpec {
             package_manager: "bundler",
             package_name: "acyclic-sdk",
             artifact_path: "ruby/acyclic-sdk.gemspec",
+            package_artifact_path: None,
         },
         Language::Dart => GuidePackageSpec {
             package_manager: "pub",
             package_name: "acyclic_sdk",
             artifact_path: "dart/pubspec.yaml",
+            package_artifact_path: None,
         },
         Language::Php => GuidePackageSpec {
             package_manager: "composer",
             package_name: "acyclic/sdk-transport",
             artifact_path: "php/composer.json",
+            package_artifact_path: None,
         },
     };
     Some(package)
@@ -1333,6 +1365,28 @@ mod tests {
                 projection.code,
                 rust_body(scenario_id).expect("Rust scenario body")
             );
+        }
+    }
+
+    #[test]
+    fn rust_and_typescript_projections_bind_staged_package_archives() {
+        for (scenario_id, _, _, _) in GUIDE_PROJECTION_SCENARIOS {
+            for language in [Language::Rust, Language::TypeScript] {
+                let projection = project(scenario_id, language).expect("package projection");
+                let archive = projection
+                    .package
+                    .package_artifact_path
+                    .expect("archive path for installable projection");
+                assert!(archive.starts_with("qualification/packages/"));
+                assert!(archive.ends_with(if language == Language::Rust {
+                    ".crate"
+                } else {
+                    ".tgz"
+                }));
+                assert!(archive.contains("*"));
+                assert!(!archive.contains("Cargo.toml"));
+                assert!(!archive.contains("package.json"));
+            }
         }
     }
 

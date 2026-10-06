@@ -24,6 +24,8 @@ const AUTHORITY_MARKER: &str = "rust-authority.json";
 struct AuthorityManifest {
     schema: String,
     authority: String,
+    source_git_sha: Option<String>,
+    source_git_sha_kind: Option<String>,
     source_revision: Option<String>,
     source_revision_kind: Option<String>,
     exporter: Option<String>,
@@ -39,18 +41,21 @@ struct AuthorityFamily {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
+enum CommandMode {
     Generate,
     Check,
+    Package,
 }
 
 #[derive(Debug)]
 struct Config {
-    mode: Mode,
+    mode: CommandMode,
     schema_root: PathBuf,
     output: PathBuf,
     python_script: PathBuf,
     python: String,
+    source_root: Option<PathBuf>,
+    generated_root: Option<PathBuf>,
 }
 
 fn main() {
@@ -62,6 +67,9 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut config = parse_args(env::args().skip(1))?;
+    if config.mode == CommandMode::Package {
+        return package_python(&config);
+    }
     if !config.schema_root.is_absolute() {
         config.schema_root = env::current_dir()
             .map_err(|error| format!("resolve current directory: {error}"))?
@@ -83,11 +91,11 @@ fn run() -> Result<(), String> {
         normalize_generated(&temporary)?;
         write_generation_metadata(&temporary, &config.schema_root)?;
         match config.mode {
-            Mode::Generate => {
+            CommandMode::Generate => {
                 replace_output(&temporary, &config.output)?;
                 Ok(())
             }
-            Mode::Check => {
+            CommandMode::Check => {
                 if same_tree(&temporary, &config.output)? {
                     Ok(())
                 } else {
@@ -97,6 +105,7 @@ fn run() -> Result<(), String> {
                     ))
                 }
             }
+            CommandMode::Package => unreachable!("package mode returned before generation"),
         }
     })();
     let _ = fs::remove_dir_all(&temporary);
@@ -109,11 +118,13 @@ where
 {
     let mut arguments = arguments.into_iter();
     let mode = match arguments.next().as_deref() {
-        Some("generate") => Mode::Generate,
-        Some("check") => Mode::Check,
+        Some("generate") => CommandMode::Generate,
+        Some("check") => CommandMode::Check,
+        Some("package") => CommandMode::Package,
         Some("--help") | Some("-h") => {
             println!(
-                "sdk-python-generator <generate|check> --schema-root ROOT --output DIR [--python-script FILE] [--python BIN]"
+                "sdk-python-generator <generate|check> --schema-root ROOT --output DIR [--python-script FILE] [--python BIN]\n\
+                 sdk-python-generator package --source-root ROOT --generated-root DIR --output DIR [--python BIN]"
             );
             std::process::exit(0);
         }
@@ -125,6 +136,8 @@ where
     let mut output = None;
     let mut python_script = None;
     let mut python = env::var("PYTHON").unwrap_or_else(|_| "python".to_owned());
+    let mut source_root = None;
+    let mut generated_root = None;
     while let Some(argument) = arguments.next() {
         let mut value = || {
             arguments
@@ -136,8 +149,23 @@ where
             "--output" => output = Some(PathBuf::from(value()?)),
             "--python-script" => python_script = Some(PathBuf::from(value()?)),
             "--python" => python = value()?,
+            "--source-root" => source_root = Some(PathBuf::from(value()?)),
+            "--generated-root" => generated_root = Some(PathBuf::from(value()?)),
             unknown => return Err(format!("unknown argument {unknown}")),
         }
+    }
+
+    if mode == CommandMode::Package {
+        let output = output.ok_or("--output is required")?;
+        return Ok(Config {
+            mode,
+            schema_root: PathBuf::new(),
+            output,
+            python_script: PathBuf::new(),
+            python,
+            source_root,
+            generated_root,
+        });
     }
 
     let schema_root = schema_root.ok_or("--schema-root is required")?;
@@ -156,6 +184,8 @@ where
         output,
         python_script: script,
         python,
+        source_root: None,
+        generated_root: None,
     })
 }
 
@@ -294,6 +324,416 @@ fn invoke_python(config: &Config, output: &Path) -> Result<(), String> {
     }
 }
 
+/// Build the installable Python artifacts from a Rust-generated package tree.
+///
+/// This is deliberately a Rust entrypoint rather than a second package recipe
+/// in CI.  The source package is copied to an isolated staging directory,
+/// stale generated output is omitted, and the exact generated subtree from the
+/// preceding Rust authority stage is installed before invoking the pinned
+/// Python build frontend.  In particular, `python/dist` is never used as an
+/// input or output, so a wheel left by an older checkout cannot be qualified.
+fn package_python(config: &Config) -> Result<(), String> {
+    let source_root = config
+        .source_root
+        .as_deref()
+        .ok_or("package mode requires --source-root")?;
+    let generated_root = config
+        .generated_root
+        .as_deref()
+        .ok_or("package mode requires --generated-root")?;
+    let source_root = absolute_path(source_root)?;
+    let generated_root = absolute_path(generated_root)?;
+    let output_root = absolute_path(&config.output)?;
+    require_directory(&source_root, "Python package source")?;
+    require_directory(&generated_root, "Rust-generated Python subtree")?;
+    require_file(
+        &source_root.join("src/acyclic_sdk/remote.py"),
+        "Rust-owned Python remote facade",
+    )?;
+    require_file(
+        &source_root.join("src/acyclic_sdk/py.typed"),
+        "Python typing marker",
+    )?;
+    require_file(
+        &generated_root.join("generation.json"),
+        "Rust Python generation metadata",
+    )?;
+    if let Some(parent) = output_root.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create Python package output parent: {error}"))?;
+    }
+    ensure_disjoint(&source_root, &generated_root, &output_root)?;
+    prepare_empty_directory(&output_root)?;
+
+    let stage = temporary_directory("acyclic-sdk-python-package");
+    if stage.exists() {
+        fs::remove_dir_all(&stage)
+            .map_err(|error| format!("remove stale Python package staging directory: {error}"))?;
+    }
+    fs::create_dir_all(&stage)
+        .map_err(|error| format!("create Python package staging directory: {error}"))?;
+    let result = (|| {
+        copy_package_source(&source_root, &stage)?;
+        let generated_destination = stage.join("src/acyclic_sdk/generated");
+        copy_tree(&generated_root, &generated_destination)
+            .map_err(|error| format!("copy Rust-generated Python subtree: {error}"))?;
+        require_file(
+            &stage.join("src/acyclic_sdk/remote.py"),
+            "staged Python remote facade",
+        )?;
+        require_file(
+            &stage.join("src/acyclic_sdk/py.typed"),
+            "staged Python typing marker",
+        )?;
+        let staged_source_sha256 = tree_sha256(&stage)?;
+
+        let build_version = probe_package_build(&config.python)?;
+        let source_date_epoch =
+            env::var("SOURCE_DATE_EPOCH").unwrap_or_else(|_| "1735689600".to_owned());
+        let artifact_root = output_root.join("artifacts");
+        fs::create_dir_all(&artifact_root)
+            .map_err(|error| format!("create Python artifact directory: {error}"))?;
+        let status = Command::new(&config.python)
+            .args([
+                "-m",
+                "build",
+                "--sdist",
+                "--wheel",
+                "--no-isolation",
+                "--outdir",
+                artifact_root.to_string_lossy().as_ref(),
+            ])
+            .env("SOURCE_DATE_EPOCH", &source_date_epoch)
+            .current_dir(&stage)
+            .status()
+            .map_err(|error| format!("invoke Python package builder: {error}"))?;
+        if !status.success() {
+            return Err(format!("Python package builder failed with {status}"));
+        }
+
+        let artifacts = collect_python_artifacts(&artifact_root)?;
+        if artifacts.wheel.is_none() || artifacts.sdist.is_none() {
+            return Err(format!(
+                "Python package builder must produce exactly one wheel and one sdist in {}",
+                artifact_root.display()
+            ));
+        }
+        for artifact in [&artifacts.wheel, &artifacts.sdist].into_iter().flatten() {
+            if artifact.extension().and_then(|value| value.to_str()) == Some("gz") {
+                normalize_python_sdist(&config.python, artifact, &source_date_epoch)?;
+            }
+            verify_python_archive(&config.python, artifact)?;
+        }
+
+        let generation_metadata = fs::read(generated_root.join("generation.json"))
+            .map_err(|error| format!("read Rust Python generation metadata: {error}"))?;
+        let generation_value: serde_json::Value = serde_json::from_slice(&generation_metadata)
+            .map_err(|error| format!("parse Rust Python generation metadata: {error}"))?;
+        let source_git_sha = generation_value
+            .get("source_git_sha")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or("Rust Python generation metadata is missing source_git_sha")?;
+        let source_git_sha_kind = generation_value
+            .get("source_git_sha_kind")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or("Rust Python generation metadata is missing source_git_sha_kind")?;
+        let receipt = json!({
+            "schema": "acyclic.sdk.python-package-receipt.v1",
+            "authority": "rust",
+            "builder": {
+                "generator": format!("sdk-python-generator@{}", env!("CARGO_PKG_VERSION")),
+                "build": build_version,
+                "source_date_epoch": source_date_epoch,
+                "source_root": "python",
+                "generated_root": "rust-authority/python/generated",
+            },
+            "source_revision": generation_value.get("source_revision"),
+            "source_revision_kind": generation_value.get("source_revision_kind"),
+            "source_git_sha": source_git_sha,
+            "source_git_sha_kind": source_git_sha_kind,
+            "generation_metadata_sha256": sha256_bytes(&generation_metadata),
+            "staged_source_sha256": staged_source_sha256,
+            "artifacts": {
+                "wheel": artifact_receipt(output_root.as_path(), artifacts.wheel.as_deref().unwrap()),
+                "sdist": artifact_receipt(output_root.as_path(), artifacts.sdist.as_deref().unwrap()),
+            },
+        });
+        let receipt_path = output_root.join("package-receipt.json");
+        let receipt_text = serde_json::to_string_pretty(&receipt)
+            .map_err(|error| format!("serialize Python package receipt: {error}"))?;
+        fs::write(&receipt_path, format!("{receipt_text}\n"))
+            .map_err(|error| format!("write Python package receipt: {error}"))?;
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&stage);
+    result
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        Ok(path.to_owned())
+    } else {
+        Ok(env::current_dir()
+            .map_err(|error| format!("resolve current directory: {error}"))?
+            .join(path))
+    }
+}
+
+fn require_directory(path: &Path, label: &str) -> Result<(), String> {
+    if path.is_dir() {
+        Ok(())
+    } else {
+        Err(format!("{label} directory is missing: {}", path.display()))
+    }
+}
+
+fn require_file(path: &Path, label: &str) -> Result<(), String> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("{label} is missing: {}", path.display()))
+    }
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+fn ensure_disjoint(source: &Path, generated: &Path, output: &Path) -> Result<(), String> {
+    let source =
+        fs::canonicalize(source).map_err(|error| format!("canonicalize source: {error}"))?;
+    let generated = fs::canonicalize(generated)
+        .map_err(|error| format!("canonicalize generated output: {error}"))?;
+    let output = if output.exists() {
+        fs::canonicalize(output).map_err(|error| format!("canonicalize package output: {error}"))?
+    } else {
+        let parent = output
+            .parent()
+            .ok_or("package output has no parent directory")?;
+        fs::canonicalize(parent)
+            .map_err(|error| format!("canonicalize package output parent: {error}"))?
+            .join(
+                output
+                    .file_name()
+                    .ok_or("package output has no file name")?,
+            )
+    };
+    if path_is_within(&output, &source)
+        || path_is_within(&source, &output)
+        || path_is_within(&output, &generated)
+        || path_is_within(&generated, &output)
+    {
+        return Err(
+            "Python package source, generated subtree, and artifact output must be disjoint"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn prepare_empty_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| format!("create package output: {error}"))?;
+    for entry in fs::read_dir(path).map_err(|error| format!("read package output: {error}"))? {
+        let entry = entry.map_err(|error| format!("read package output entry: {error}"))?;
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            fs::remove_dir_all(&entry_path)
+                .map_err(|error| format!("clear package output: {error}"))?;
+        } else {
+            fs::remove_file(&entry_path)
+                .map_err(|error| format!("clear package output: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_package_source(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|error| format!("create package stage: {error}"))?;
+    for entry in fs::read_dir(source).map_err(|error| format!("read package source: {error}"))? {
+        let entry = entry.map_err(|error| format!("read package source entry: {error}"))?;
+        let name = entry.file_name();
+        let name_text = name.to_string_lossy();
+        if matches!(
+            name_text.as_ref(),
+            "dist" | "build" | ".pytest_cache" | "__pycache__" | ".git"
+        ) || name_text.ends_with(".egg-info")
+        {
+            continue;
+        }
+        let from = entry.path();
+        let to = destination.join(&name);
+        if from.is_dir() {
+            copy_package_source(&from, &to)?;
+        } else if from.is_file() {
+            fs::copy(&from, &to).map_err(|error| {
+                format!("copy Python package source {}: {error}", from.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn probe_package_build(python: &str) -> Result<String, String> {
+    let output = Command::new(python)
+        .args([
+            "-c",
+            "import importlib.metadata as m; print(m.version('build'))",
+        ])
+        .output()
+        .map_err(|error| format!("probe Python build frontend: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Python package build requires pinned build; install build before packaging: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if version.is_empty() {
+        return Err("Python build frontend returned no version".to_owned());
+    }
+    Ok(version)
+}
+
+#[derive(Debug, Default)]
+struct PythonArtifacts {
+    wheel: Option<PathBuf>,
+    sdist: Option<PathBuf>,
+}
+
+fn collect_python_artifacts(root: &Path) -> Result<PythonArtifacts, String> {
+    let mut artifacts = PythonArtifacts::default();
+    for entry in fs::read_dir(root).map_err(|error| format!("read Python artifacts: {error}"))? {
+        let path = entry
+            .map_err(|error| format!("read Python artifact entry: {error}"))?
+            .path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if name.ends_with(".whl") {
+            if artifacts.wheel.replace(path).is_some() {
+                return Err("Python package builder produced multiple wheels".to_owned());
+            }
+        } else if name.ends_with(".tar.gz") {
+            if artifacts.sdist.replace(path).is_some() {
+                return Err("Python package builder produced multiple sdists".to_owned());
+            }
+        } else {
+            return Err(format!("unexpected file in Python artifact output: {name}"));
+        }
+    }
+    Ok(artifacts)
+}
+
+fn verify_python_archive(python: &str, path: &Path) -> Result<(), String> {
+    let script = r#"
+import pathlib, sys, tarfile, zipfile
+path = pathlib.Path(sys.argv[1])
+if path.name.endswith('.whl'):
+    names = zipfile.ZipFile(path).namelist()
+else:
+    names = tarfile.open(path, 'r:gz').getnames()
+def has(suffix):
+    return any(name == suffix or name.endswith('/' + suffix) for name in names)
+required = ('acyclic_sdk/remote.py', 'acyclic_sdk/py.typed', 'acyclic_sdk/generated/generation.json')
+missing = [item for item in required if not has(item)]
+if missing:
+    raise SystemExit('archive is missing required Rust-owned package files: ' + ', '.join(missing))
+"#;
+    let status = Command::new(python)
+        .args(["-c", script, path.to_string_lossy().as_ref()])
+        .status()
+        .map_err(|error| format!("verify Python artifact {}: {error}", path.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Python artifact verification failed: {}",
+            path.display()
+        ))
+    }
+}
+
+fn normalize_python_sdist(
+    python: &str,
+    path: &Path,
+    source_date_epoch: &str,
+) -> Result<(), String> {
+    let script = r#"
+import gzip, io, os, pathlib, tarfile
+source = pathlib.Path(os.environ['ACYCLIC_PYTHON_SDIST'])
+temporary = source.with_name(source.name + '.normalized')
+epoch = int(os.environ['SOURCE_DATE_EPOCH'])
+with tarfile.open(source, 'r:gz') as source_tar, open(temporary, 'wb') as raw:
+    with gzip.GzipFile(fileobj=raw, mode='wb', mtime=epoch) as compressed:
+        with tarfile.open(fileobj=compressed, mode='w', format=tarfile.PAX_FORMAT) as target_tar:
+            for member in sorted(source_tar.getmembers(), key=lambda item: item.name):
+                payload = None
+                if member.isfile():
+                    extracted = source_tar.extractfile(member)
+                    payload = io.BytesIO(extracted.read() if extracted else b'')
+                member.mtime = epoch
+                member.uid = 0
+                member.gid = 0
+                member.uname = ''
+                member.gname = ''
+                member.pax_headers = {}
+                target_tar.addfile(member, payload)
+os.replace(temporary, source)
+"#;
+    let status = Command::new(python)
+        .args(["-c", script])
+        .env("ACYCLIC_PYTHON_SDIST", path)
+        .env("SOURCE_DATE_EPOCH", source_date_epoch)
+        .status()
+        .map_err(|error| format!("normalize Python sdist {}: {error}", path.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Python sdist normalization failed: {}",
+            path.display()
+        ))
+    }
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn tree_sha256(root: &Path) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    for relative in relative_files(root)? {
+        hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
+        hasher.update([0]);
+        let bytes = fs::read(root.join(&relative))
+            .map_err(|error| format!("read staged package file: {error}"))?;
+        hasher.update(bytes);
+        hasher.update([0]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn artifact_receipt(output_root: &Path, artifact: &Path) -> serde_json::Value {
+    let relative = artifact
+        .strip_prefix(output_root)
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| artifact.to_string_lossy().replace('\\', "/"));
+    let bytes = fs::read(artifact).unwrap_or_default();
+    json!({
+        "path": relative,
+        "sha256": sha256_bytes(&bytes),
+        "remote_py": true,
+        "py_typed": true,
+        "generation_json": true,
+    })
+}
+
 fn normalize_generated(root: &Path) -> Result<(), String> {
     let directories = collect_directories(root)?;
     for directory in directories {
@@ -378,6 +818,8 @@ fn write_generation_metadata(root: &Path, schema_root: &Path) -> Result<(), Stri
         "generator": format!("sdk-python-generator@{}", env!("CARGO_PKG_VERSION")),
         "grpcio-tools": EXPECTED_GRPCIO_TOOLS,
         "protobuf": EXPECTED_PROTOBUF,
+        "source_git_sha": manifest.source_git_sha,
+        "source_git_sha_kind": manifest.source_git_sha_kind,
         "source_revision": manifest.source_revision,
         "source_revision_kind": manifest.source_revision_kind,
         "exporter": manifest.exporter,
@@ -600,9 +1042,11 @@ mod tests {
             fs::read(package.join("src/acyclic_sdk/py.typed")).expect("read package marker"),
             b"typed\n"
         );
-        assert!(!package
-            .join("src/acyclic_sdk/generated/stale_pb2.py")
-            .exists());
+        assert!(
+            !package
+                .join("src/acyclic_sdk/generated/stale_pb2.py")
+                .exists()
+        );
         assert_eq!(
             fs::read(package.join("src/acyclic_sdk/generated/fresh_pb2.py"))
                 .expect("read fresh generated file"),

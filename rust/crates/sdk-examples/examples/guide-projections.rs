@@ -27,7 +27,16 @@ fn main() {
                 "capability": projection.capability.as_str(),
                 "package_manager": projection.package.package_manager,
                 "package_name": projection.package.package_name,
-                "artifact_path": projection.package.artifact_path,
+                // Rust and TypeScript projections bind to the immutable
+                // archive produced by the packaging stage. Keep the source
+                // manifest separately for provenance; it must never become
+                // an install input for qualification.
+                "artifact_path": projection
+                    .package
+                    .package_artifact_path
+                    .unwrap_or(projection.package.artifact_path),
+                "source_artifact_path": projection.package.artifact_path,
+                "package_artifact_path": projection.package.package_artifact_path,
                 "qualification": {
                     "install": projection.qualification.install,
                     "compile": projection.qualification.compile,

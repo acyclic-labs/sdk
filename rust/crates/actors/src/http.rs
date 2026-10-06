@@ -608,7 +608,7 @@ mod tests {
         assert!(!second, "second waiter should observe HTTP fallback");
         timeout(FIXTURE_TIMEOUT, server)
             .await
-            .map_err(|_| std::io::Error::other("fixture server timed out"))??;
+            .map_err(|_| std::io::Error::other("fixture server timed out"))???;
         Ok(())
             })
             .await
@@ -686,7 +686,7 @@ mod tests {
                 assert!(matches!(second, Err(Error::Service { status: 401, .. })));
                 timeout(FIXTURE_TIMEOUT, server)
                     .await
-                    .map_err(|_| std::io::Error::other("fixture server timed out"))??;
+                    .map_err(|_| std::io::Error::other("fixture server timed out"))???;
                 Ok(())
             })
             .await

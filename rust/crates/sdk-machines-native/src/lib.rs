@@ -72,7 +72,7 @@ impl MachinesNativeClient {
             certificate,
             private_key,
         ) {
-            (Some(token), None, None, None) => Machines::connect(&endpoint, token)
+            (Some(token), None, None, None) => Machines::connect(&endpoint, token.as_str())
                 .await
                 .map_err(provider_error)?,
             (None, Some(ca), Some(certificate), Some(private_key)) => Machines::connect(

@@ -89,4 +89,35 @@ describe("shared workspace operations", () => {
     expect(head[0]).toBe(1);
     await expect(operations.delete(new Uint8Array(15))).rejects.toThrow("idempotency key");
   });
+
+  test("uses generated Rust-owned validators for scalar bounds", async () => {
+    let reads = 0;
+    let extents = 0;
+    let rebases = 0;
+    const raw = {
+      async read() { reads += 1; return new Uint8Array(); },
+      async planExtents() { extents += 1; return { extents: [], totalBytes: 0n }; },
+      async liveRebase() { rebases += 1; return { status: "current", generationId: undefined, conflicts: [], truncated: false }; },
+    } as unknown as Parameters<typeof workspaceOperations>[0];
+    const operations = workspaceOperations(
+      raw,
+      (generation) => generation as unknown as FsGeneration,
+      (value) => value as unknown as WorkspaceRebaseResult,
+    );
+
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, Number.MAX_SAFE_INTEGER + 1, 0, -1]) {
+      await expect(operations.planExtents("/item", 0n, 1n, value)).rejects.toThrow("maximum extent spans");
+    }
+    for (const field of ["maximumGenerations", "maximumChanges", "maximumConflicts"] as const) {
+      await expect(operations.liveRebase({
+        maximumGenerations: 1,
+        maximumChanges: 1,
+        maximumConflicts: 1,
+        [field]: Number.NaN,
+      })).rejects.toThrow("maximum rebase");
+    }
+    await expect(operations.read("/item", -1n)).rejects.toThrow("maximum read bytes");
+    await expect(operations.read("/item", 0 as unknown as bigint)).rejects.toThrow("maximum read bytes");
+    expect([reads, extents, rebases]).toEqual([0, 0, 0]);
+  });
 });

@@ -1839,7 +1839,7 @@ export function isRustOwnedTransportUnavailable(error: unknown): boolean {
         "stream" => output.push_str("export function validateRustOwnedCredentialPolicy(token: string): void {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\" && validateBearerToken(token) !== \"\") throw new TypeError(\"invalid bearer credential\");\n}\n\n"),
         "inference" => output.push_str("export async function validateRustOwnedCredentialPolicy(token: string): Promise<void> {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\") await validateInferenceCredential(token);\n}\n\n"),
         "filesystem" => output.push_str("export async function validateRustOwnedCredentialPolicy(token: string): Promise<void> {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\") await validateFilesystemCredential(token);\n}\n\n"),
-        _ => output.push_str("export function validateRustOwnedCredentialPolicy(_token: string): void {}\n\n"),
+        _ => output.push_str("export function validateRustOwnedCredentialPolicy(token: string): void {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\" && (token.trim().length === 0 || /[\\r\\n]/.test(token))) throw new TypeError(\"invalid bearer credential\");\n}\n\n"),
     }
     match service.family.as_str() {
         "inference" | "filesystem" => output.push_str("export async function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): Promise<void> {\n  if ((method.credentialPolicy as string) === (RUST_OWNED_CREDENTIAL_POLICY as string)) await validateRustOwnedCredentialPolicy(token);\n}\n\n"),
@@ -3378,6 +3378,20 @@ mod tests {
         assert!(filesystem_generated.contains("assertRustOwnedString(value);"));
         assert!(!filesystem_generated.contains("function assertRustOwnedInt64"));
         assert!(!filesystem_generated.contains("function assertRustOwnedMessage"));
+    }
+
+    #[test]
+    fn credential_policy_emits_machine_bearer_guard() {
+        let service = model()
+            .expect("model")
+            .services
+            .into_iter()
+            .find(|service| service.family == "machines")
+            .expect("Machines metadata");
+        let generated = typescript(&service).expect("generated Machines metadata");
+        assert!(generated.contains("token.trim().length === 0"));
+        assert!(generated.contains("/[\\r\\n]/.test(token)"));
+        assert!(!generated.contains("validateRustOwnedCredentialPolicy(_token"));
     }
 
     #[test]

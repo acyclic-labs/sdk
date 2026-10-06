@@ -71,6 +71,24 @@ pub(crate) fn emit(source_root: &Path) -> Result<String, Error> {
     output.push_str(
         "import type { JoinOptions, JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters,\n  WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseOptions, WorkspaceRebaseResult, WorkspaceRebaseStatus, WasmRawMergeConflict,\n} from \"./contracts.js\";\n\n",
     );
+    output.push_str(
+        r#"/** Validates a Rust-owned fixed-width byte identity at a thin adapter boundary. */
+export function validateRustOwnedFixedBytes(value: Uint8Array, length: 16 | 32, label: string): void {
+  if (!(value instanceof Uint8Array) || value.byteLength !== length) throw new RangeError(`${label} must be exactly ${length} bytes`);
+}
+
+/** Validates a Rust-owned positive bounded integer before crossing a thin adapter boundary. */
+export function validateRustOwnedPositiveInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${label} must be a positive safe integer`);
+}
+
+/** Validates a Rust-owned positive byte-count bound before crossing a thin adapter boundary. */
+export function validateRustOwnedPositiveBigInt(value: bigint, label: string): void {
+  if (typeof value !== "bigint" || value <= 0n) throw new RangeError(`${label} must be positive`);
+}
+
+"#,
+    );
     output.push_str(&format!(
         "const JOIN_STATUSES: readonly JoinStatus[] = [{}];\nconst REBASE_STATUSES: readonly WorkspaceRebaseStatus[] = [{}];\nconst COMMIT_STATUSES: readonly WorkspaceCommit[\"status\"][] = [{}];\nconst DELETE_STATUSES: readonly WorkspaceDeleteStatus[] = [{}];\nconst MERGE_PREPARATION_STATUSES: readonly string[] = [{}];\ntype GenerationLimitOptions = Pick<JoinOptions, \"maximumGenerations\" | \"maximumChanges\" | \"maximumConflicts\">;\nconst GENERATION_LIMIT_FIELDS: readonly (keyof GenerationLimitOptions)[] = [{}];\n\n",
         join, rebase, committed, delete, merge, generation_limit_fields
