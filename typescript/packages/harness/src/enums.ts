@@ -19,6 +19,8 @@ type SnakeCase<Value extends string> = Value extends `${infer Head}_${infer Tail
   : Lowercase<Value>;
 type PublicEnum<Wire extends object> = SnakeCase<WireNames<Wire>>;
 type AssertNever<Value extends never> = Value;
+/** Members present in only one of two unions; `never` when they match exactly. */
+type Mismatch<Actual, Expected> = Exclude<Actual, Expected> | Exclude<Expected, Actual>;
 
 /** Exact string unions emitted by the Rust WASM DTO generator. */
 export type VolumeClass = WasmVolumeRefWire["class"];
@@ -33,20 +35,12 @@ export type InteractionKind = PublicEnum<typeof WireInteractionKind>;
 export type ExtensionForkPolicy = PublicEnum<typeof WireExtensionForkPolicy>;
 export type AggregateKind = PublicEnum<typeof WireAggregateKind>;
 
-type _MessageKindExpected = AssertNever<Exclude<MessageKind,
-  "user" | "assistant" | "system" | "tool_call" | "tool_result"
+type _MessageKinds = AssertNever<Mismatch<MessageKind, "user" | "assistant" | "system" | "tool_call" | "tool_result"
   | "interaction" | "permission" | "fork" | "merge">>;
-type _MessageKindMissing = AssertNever<Exclude<
-  "user" | "assistant" | "system" | "tool_call" | "tool_result"
-  | "interaction" | "permission" | "fork" | "merge", MessageKind>>;
-type _VolumeOperationExpected = AssertNever<Exclude<VolumeOperation, "read" | "write">>;
-type _VolumeOperationMissing = AssertNever<Exclude<"read" | "write", VolumeOperation>>;
-type _InteractionKindExpected = AssertNever<Exclude<InteractionKind, "question" | "choice" | "form" | "approval">>;
-type _InteractionKindMissing = AssertNever<Exclude<"question" | "choice" | "form" | "approval", InteractionKind>>;
-type _ExtensionForkPolicyExpected = AssertNever<Exclude<ExtensionForkPolicy, "inherit" | "reset" | "reject">>;
-type _ExtensionForkPolicyMissing = AssertNever<Exclude<"inherit" | "reset" | "reject", ExtensionForkPolicy>>;
-type _AggregateKindExpected = AssertNever<Exclude<AggregateKind, "agent" | "conversation" | "session" | "turn" | "task">>;
-type _AggregateKindMissing = AssertNever<Exclude<"agent" | "conversation" | "session" | "turn" | "task", AggregateKind>>;
+type _VolumeOperations = AssertNever<Mismatch<VolumeOperation, "read" | "write">>;
+type _InteractionKinds = AssertNever<Mismatch<InteractionKind, "question" | "choice" | "form" | "approval">>;
+type _ExtensionForkPolicies = AssertNever<Mismatch<ExtensionForkPolicy, "inherit" | "reset" | "reject">>;
+type _AggregateKinds = AssertNever<Mismatch<AggregateKind, "agent" | "conversation" | "session" | "turn" | "task">>;
 
 /** Aggregate identity is encoded in every Harness authority envelope. */
 export const aggregateKindToWire = Object.freeze({
