@@ -40,23 +40,31 @@ options and explicit caller content remain caller-owned inputs.
 The default `acyclic.read_file` contract advances to revision 2: raw and projected
 outputs both satisfy its pinned string schema, without a redundant file echo.
 
-## Verification status
+## Verification records
 
-Final source-bound native, WASM, Linux and macOS verification is still in progress.
-Earlier source snapshots are not evidence for later edits. The request-only
-snapshot based on `105728988b2b1831f2a0d596fc744e3b2d4eee5e`, archive SHA-256
-`5a8ad8f395d2d310e2c93588790b751ffcf5dd9d4481b73aebc216bb8c42e3e8`, passed
-191 Harness unit and 17 integration tests on Linux and macOS. Its macOS Codex
-consumer passed 43 tests, with three real-Codex qualification tests ignored.
-Its default parallel Linux consumer had an `ETXTBSY` fixture launch failure;
-isolated and serial passes do not erase that failure.
+Passing snapshots are identified below; they do not qualify later source edits.
+The final-head CI receipts, additional platform results and actual merged main
+commit are recorded in [PR #251](https://github.com/acyclic-labs/sdk/pull/251).
+Completion requires every required gate to pass against current main and
+verification of the landed commit.
 
-The new durable provider/fork test and the 12 focused WASM model tests passed at
-intermediate checkpoints. A later concurrent full TypeScript run timed out in
-an existing large-attachment test; that failure is retained pending an uncontended
-rerun. No real-Codex or production-provider qualification is claimed.
+| Source snapshot | Passing checks |
+| --- | --- |
+| `b178db478fcfca9bbd12467c970486aa824d7060`, based on `1fe8b86685910437dd1ec350bc4ab4088aacbdc8`; archive SHA-256 `0dfd488145a9e8936be432eeb3b64b8d1095f0c31d38eef1ffe25fe22b875a4a` | Windows: warnings-denied all-targets filesystem-local lint, 193 Harness unit tests, 17 integration tests and doc-test invocation. WASM: warnings-denied target lint and fresh build. TypeScript: 226 tests, 1,106 assertions, package and type-test checks. macOS: the same Harness test counts and lint; 43 mock Codex consumer tests and a repeated default-parallel 13-test executor suite. |
+| `aa0915627593d95e9c70801a8b18f6f21766f7f5`; archive SHA-256 `2118d88509d494314b5a003a7c0ea0a8c4dd9ff7c8fe4de608d7b0cb1de4aaad` | Shared fixtures moved into the published crate, with unchanged bytes and production behavior. Windows: 193 Harness unit and 17 integration tests. TypeScript: all 226 tests. macOS: warnings-denied lint, 193 Harness unit and 17 integration tests, 43 mock Codex consumer tests and the repeated default-parallel executor suite. |
 
-Completion requires current-main source verification, all required green gates,
-one focused draft PR, and verification of the actual merged main commit. The
-user has authorized administrative merge after those gates; review is not a
-required gate.
+Failures remain part of the record. The earlier request-only Linux snapshot had
+an `ETXTBSY` fixture launch failure; isolated and serial passes did not qualify
+that parallel run. The installer-child repair subsequently passed full and
+repeated parallel consumer runs. An intermediate concurrent TypeScript run timed
+out in the existing large-attachment test; uncontended full reruns passed without
+changing its timeout. The first `b178db478f` Linux lint compilation crashed inside
+a dependency with the compiler cache wrapper; the uncached lint rerun passed.
+The `b178db478f` Linux CI package test exposed missing external fixture files,
+which prompted the crate-local fixture move. Later CI exposed a kernel-cache
+test expecting cached attributes immediately after a Linux read invalidated
+atime; its correction refreshes those attributes once and still requires zero
+requests across repeated unchanged stats, without sleeps or retries.
+
+No real-Codex or production-provider qualification is claimed. Three existing
+real-Codex qualification tests remain ignored in the mock-consumer suites.
