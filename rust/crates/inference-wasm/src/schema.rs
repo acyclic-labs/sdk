@@ -608,7 +608,7 @@ pub fn runtime_encode(message_name: &str, value: &JsValue) -> Result<Uint8Array,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_inference_contract::wire;
+    use acyclic_inference::wire;
     use prost::Message;
 
     #[test]

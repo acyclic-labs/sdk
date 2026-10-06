@@ -10,7 +10,6 @@ members = [
   "rust/crates/harness",
   "rust/crates/harness-codex",
   "rust/crates/inference",
-  "rust/crates/inference-contract",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
   "rust/crates/machines-wasm",
