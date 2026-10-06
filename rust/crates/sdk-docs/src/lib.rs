@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -75,6 +75,10 @@ pub struct ApiItem {
     pub path: String,
     pub signature: String,
     pub docs: Option<String>,
+    /// Public same-crate Rustdoc links keyed by their rendered label.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<String, Vec<String>>,
     pub source: Option<SourceSpan>,
     pub reexport: Option<String>,
     pub reexport_target: Option<String>,
@@ -86,6 +90,10 @@ pub struct Guide {
     pub path: String,
     pub title: String,
     pub markdown: String,
+    /// Public same-crate Rustdoc links keyed by their rendered label.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
@@ -483,6 +491,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
     let title = titleize(&crate_name);
     let mut public_items = public_api::extract(json_path)?;
     deduplicate_public_items(&mut public_items);
+    let public_occurrence_paths = public_occurrence_paths(&public_items, &crate_name);
     let use_occurrences = public_use_occurrences(krate, &crate_name)?;
     let mut items = Vec::new();
     for public_item in &public_items {
@@ -541,6 +550,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
             path: path.join("::"),
             signature: public_item.display.clone(),
             docs,
+            links: rustdoc_links(item, &public_occurrence_paths),
             source: item
                 .span
                 .as_ref()
@@ -551,7 +561,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         });
     }
     items.sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));
-    let guides = guides_from_rustdoc(krate, &crate_name, &public_items)?;
+    let guides = guides_from_rustdoc(krate, &crate_name, &public_items, &public_occurrence_paths)?;
     Ok(Family {
         slug,
         title,
@@ -559,6 +569,46 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         items,
         guides,
     })
+}
+
+fn public_occurrence_paths(
+    public_items: &[public_api::PublicItemSignature],
+    crate_name: &str,
+) -> HashMap<Id, Vec<String>> {
+    // Rustdoc IDs identify definitions within this blob. A public `use` alias
+    // or glob contributes an occurrence path for that definition, so retain
+    // those paths while keeping the link target anchored to the definition ID.
+    // Only local public-api occurrences are safe to expose as stable targets.
+    let mut paths = HashMap::<Id, Vec<String>>::new();
+    for public_item in public_items {
+        if public_item.path.first().map(String::as_str) != Some(crate_name) {
+            continue;
+        }
+        paths
+            .entry(public_item.id)
+            .or_default()
+            .push(public_item.path.join("::"));
+    }
+    for occurrences in paths.values_mut() {
+        occurrences.sort();
+        occurrences.dedup();
+    }
+    paths
+}
+
+fn rustdoc_links(
+    item: &Item,
+    public_occurrence_paths: &HashMap<Id, Vec<String>>,
+) -> BTreeMap<String, Vec<String>> {
+    item.links
+        .iter()
+        .filter_map(|(label, target)| {
+            public_occurrence_paths
+                .get(target)
+                .filter(|paths| !paths.is_empty())
+                .map(|paths| (label.clone(), paths.clone()))
+        })
+        .collect()
 }
 
 fn deduplicate_public_items(items: &mut Vec<public_api::PublicItemSignature>) {
@@ -710,6 +760,7 @@ fn guides_from_rustdoc(
     krate: &Crate,
     crate_name: &str,
     public_items: &[public_api::PublicItemSignature],
+    public_occurrence_paths: &HashMap<Id, Vec<String>>,
 ) -> Result<Vec<Guide>, Error> {
     let mut guides = Vec::new();
     for public_item in public_items {
@@ -743,6 +794,7 @@ fn guides_from_rustdoc(
             path,
             title,
             markdown,
+            links: rustdoc_links(item, public_occurrence_paths),
         });
     }
     guides.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1118,12 +1170,15 @@ mod tests {
             "crate_version": null,
             "includes_private": false,
             "index": {
-                "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [1, 2], "is_stripped": false}}},
-                "1": {"id": 1, "crate_id": 0, "name": "hidden", "span": null, "visibility": "default", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": false, "items": [3], "is_stripped": true}}},
+                "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [2, 4, 5, 6], "is_stripped": false}}},
                 "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": "alias", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
-                "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}}
+                "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
+                "4": {"id": 4, "crate_id": 0, "name": "linked", "span": null, "visibility": "public", "docs": "links", "links": {"alias target": 3, "associated target": 5, "private target": 1, "external target": 99}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
+                "5": {"id": 5, "crate_id": 0, "name": "associated_target", "span": null, "visibility": "public", "docs": "target", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
+                "6": {"id": 6, "crate_id": 0, "name": "nested", "span": null, "visibility": "public", "docs": "Nested guide", "links": {"associated target": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": false, "items": [7], "is_stripped": false}}},
+                "7": {"id": 7, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "crate", "name": "crate", "id": 0, "is_glob": true}}}
             },
-            "paths": {"3": {"crate_id": 0, "path": ["demo", "hidden", "private_function"], "kind": "function"}},
+            "paths": {"3": {"crate_id": 0, "path": ["demo", "hidden", "private_function"], "kind": "function"}, "4": {"crate_id": 0, "path": ["demo", "linked"], "kind": "function"}, "5": {"crate_id": 0, "path": ["demo", "associated_target"], "kind": "function"}},
             "external_crates": {},
             "target": {"triple": "x86_64-pc-windows-msvc", "target_features": []},
             "format_version": 60
@@ -1160,6 +1215,67 @@ mod tests {
             })
             .expect("the public alias should be projected");
         assert!(alias.parent_id.is_some());
+        let linked = family
+            .items
+            .iter()
+            .find(|item| item.name == "linked")
+            .expect("the link source should be projected");
+        // Rustdoc resolves the alias reference to definition id 3; the
+        // public occurrence map still exposes the reachable `demo::Visible`
+        // use path rather than confusing the use item id with the definition.
+        assert!(linked
+            .links
+            .get("alias target")
+            .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned())));
+        let associated_paths = linked
+            .links
+            .get("associated target")
+            .expect("the associated public target should be projected");
+        assert!(associated_paths.contains(&"demo::associated_target".to_owned()));
+        assert!(associated_paths.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            associated_paths,
+            &associated_paths
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !linked.links.contains_key("private target"),
+            "private link unexpectedly projected: links={:?}; items={:?}",
+            linked.links,
+            family
+                .items
+                .iter()
+                .map(|item| (&item.id, &item.path, &item.name))
+                .collect::<Vec<_>>()
+        );
+        assert!(!linked.links.contains_key("external target"));
+        assert_eq!(
+            linked.links.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["alias target", "associated target"]
+        );
+        let guide = family
+            .guides
+            .iter()
+            .find(|guide| guide.path == "demo::nested")
+            .expect("the public module guide should be projected");
+        assert!(guide
+            .links
+            .get("associated target")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
+        let linked_roundtrip: ApiItem = serde_json::from_value(
+            serde_json::to_value(linked).expect("non-empty links should serialize"),
+        )
+        .expect("non-empty links should deserialize");
+        assert_eq!(&linked_roundtrip, linked);
+        let alias_json = serde_json::to_value(alias).expect("empty links should serialize");
+        assert!(alias_json.get("links").is_none());
+        let alias_roundtrip: ApiItem =
+            serde_json::from_value(alias_json).expect("omitted links should default");
+        assert!(alias_roundtrip.links.is_empty());
         let mismatched_path = root.join("mismatched.json");
         let mut mismatched = fixture.clone();
         mismatched["crate_version"] = serde_json::json!("9.9.9");
