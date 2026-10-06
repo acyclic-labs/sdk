@@ -51,7 +51,7 @@ function Assert-SafeDestination([string] $Destination, [string] $Root, [string] 
     }
 }
 
-function Resolve-PinnedTool([string] $Name, [string[]] $Candidates) {
+function Resolve-PinnedTool([string] $Name, [string[]] $Candidates, [string] $ExpectedSha256 = $null) {
     $explicit = [Environment]::GetEnvironmentVariable("ACYCLIC_$($Name.ToUpperInvariant())")
     $expected = [Environment]::GetEnvironmentVariable("ACYCLIC_$($Name.ToUpperInvariant())_SHA256")
     $builtinHashes = @{
@@ -65,6 +65,7 @@ function Resolve-PinnedTool([string] $Name, [string[]] $Candidates) {
         java = '7e8b8f4be1a64db6784d95c16d833f292a5d32b070442a764117f34dc2a001f9'
         'protoc-gen-swift' = 'b9d026472016eb8606f4bacd691c089b5fb23207e1f5fe31d5958749cee6802e'
     }
+    if (-not $expected -and $ExpectedSha256) { $expected = $ExpectedSha256 }
     if (-not $expected -and $builtinHashes.ContainsKey($Name)) { $expected = $builtinHashes[$Name] }
     $paths = @()
     if ($explicit) { $paths += $explicit }
@@ -170,22 +171,51 @@ switch ($TargetId) {
         Copy-PackageTree $input $TargetOutput @('tests')
     }
     'dart' {
+        # Dart generation uses the same Cargo-locked protoc-bin-vendored
+        # package as the Rust contract producer. Keep this pin separate from
+        # the legacy protobuf 36.x release pin used by other lanes: silently
+        # substituting that host binary would make Dart output non-reproducible.
+        $cargoHome = [Environment]::GetEnvironmentVariable('CARGO_HOME')
+        if (-not $cargoHome) { $cargoHome = Join-Path $HOME '.cargo' }
+        $vendoredProtoc = @(
+            Get-ChildItem -LiteralPath (Join-Path $cargoHome 'registry/src') -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    Get-ChildItem -LiteralPath $_.FullName -Directory -Filter 'protoc-bin-vendored-win32-3.2.0' -ErrorAction SilentlyContinue
+                } |
+                ForEach-Object { Join-Path $_.FullName 'bin/protoc.exe' }
+        )
         $dart = Resolve-PinnedTool 'dart' @(
             (Join-Path $SourceRoot 'dart/.toolchain/dart-sdk/bin/dart.exe'),
+            'Q:\sdk\toolchains\dart-3.13.5\dart-sdk\bin\dart.exe',
             'Q:\sdk\dart\.toolchain\dart-sdk\bin\dart.exe',
             'C:\Users\varun\.codex\worktrees\rust-sdk-docs-source\sdk\dart\.toolchain\dart-sdk\bin\dart.exe'
-        )
+        ) '9033c8b5402f7d5b587311ddd4e9ab942acfa79b66aa296eb84cbfeac9d1cf23'
         $protoc = Resolve-PinnedTool 'protoc' @(
             (Join-Path $SourceRoot 'build/protobuf-36.2/bin/protoc.exe'),
-            'Q:\sdk\build\protobuf-36.2\bin\protoc.exe'
-        )
+            'Q:\sdk\build\protobuf-36.2\bin\protoc.exe',
+            'Q:\sdk\toolchains\protoc-31.1\bin\protoc.exe',
+            $vendoredProtoc
+        ) 'cbd1ca1fd6afd1bb6ddd1c09c118ecd4c50f928980857f16fe6fc23704ea17e2'
+        $pubCacheRoot = [Environment]::GetEnvironmentVariable('PUB_CACHE')
+        if (-not $pubCacheRoot) { $pubCacheRoot = Join-Path $env:LOCALAPPDATA 'Pub/Cache' }
         $dartPlugin = Resolve-PinnedTool 'protoc-gen-dart' @(
             (Join-Path $SourceRoot 'dart/.toolchain/protoc-gen-dart-shim.exe'),
             'Q:\sdk\dart\.toolchain\protoc-gen-dart-shim.exe',
-            'C:\Users\varun\.codex\worktrees\rust-sdk-docs-source\sdk\dart\.toolchain\protoc-gen-dart-shim.exe'
-        )
+            'C:\Users\varun\.codex\worktrees\rust-sdk-docs-source\sdk\dart\.toolchain\protoc-gen-dart-shim.exe',
+            (Join-Path $pubCacheRoot 'bin/protoc-gen-dart.bat')
+        ) 'abd4c73ecff068bfea97a1315c65a2f5b9aa64ca22c263ce568dea95d4161fc5'
+        $dartPluginSnapshot = @(
+            Get-ChildItem -LiteralPath (Join-Path $pubCacheRoot 'global_packages/protoc_plugin/bin') -File -Filter 'protoc_plugin.dart-*.snapshot' -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending |
+                Select-Object -First 1 -ExpandProperty FullName
+        ) | Select-Object -First 1
+        if (-not $dartPluginSnapshot) {
+            throw 'protoc-gen-dart requires the locked protoc_plugin snapshot; activate protoc_plugin 25.1.0 in the pinned PUB_CACHE'
+        }
         $env:PROTOC = $protoc
         $env:PROTOC_GEN_DART = $dartPlugin
+        $env:DART_EXECUTABLE = $dart
+        $env:PROTOC_DART_SNAPSHOT = $dartPluginSnapshot
         $pubCache = @(
             (Join-Path $SourceRoot 'dart/.pub-cache'),
             $env:PUB_CACHE,
@@ -201,7 +231,13 @@ switch ($TargetId) {
         Copy-Tree (Join-Path $SourceRoot 'dart') $input
         & $dart pub get --offline --directory $input
         if ($LASTEXITCODE -ne 0) { throw "Dart dependency restore failed with exit code $LASTEXITCODE" }
-        & $dart 'run' (Join-Path $input 'tool/generate.dart') '--schema-root' $WireRoot '--manifest' $wireManifest
+        $producerLocation = Get-Location
+        try {
+            Set-Location -LiteralPath $input
+            & $dart 'run' 'tool/generate.dart' '--schema-root' $WireRoot '--manifest' $wireManifest
+        } finally {
+            Set-Location -LiteralPath $producerLocation
+        }
         if ($LASTEXITCODE -ne 0) { throw "Dart producer failed with exit code $LASTEXITCODE" }
         Copy-PackageTree $input $TargetOutput @('.dart_tool', '.pub-cache', '.toolchain', 'test')
     }
@@ -285,6 +321,7 @@ switch ($TargetId) {
 
 $operationEntries = [System.Collections.Generic.List[object]]::new()
 $openApiStage = Join-Path $OutputRoot 'openapi'
+if (Test-Path -LiteralPath $openApiStage -PathType Container) {
 foreach ($familySpec in Get-ChildItem -LiteralPath $openApiStage -Filter '*.json' -File -ErrorAction Stop | Sort-Object Name) {
     $family = [IO.Path]::GetFileNameWithoutExtension($familySpec.Name)
     $document = Get-Content -LiteralPath $familySpec.FullName -Raw | ConvertFrom-Json
@@ -311,6 +348,7 @@ foreach ($familySpec in Get-ChildItem -LiteralPath $openApiStage -Filter '*.json
             })
         }
     }
+}
 }
 $operationPlan = [ordered]@{
     schema = 'acyclic.sdk.http-operation-plan.v1'
