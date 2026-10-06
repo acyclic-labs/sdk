@@ -1737,7 +1737,6 @@ mod tests {
     use futures::stream;
     use rcgen::generate_simple_self_signed;
     use tokio::net::TcpListener;
-    use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
     use tonic::{Code, Request, Response, Status};
     use wire::machines_service_server::{MachinesService, MachinesServiceServer};
@@ -1939,14 +1938,25 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+            },
+        );
         let server = tokio::spawn(async move {
             Server::builder()
                 .add_service(MachinesServiceServer::new(service))
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
         });
+        ready_receiver.await?;
         let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
             .connect()
             .await?;
@@ -1966,14 +1976,25 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+            },
+        );
         let server = tokio::spawn(async move {
             Server::builder()
                 .add_service(MachinesServiceServer::new(service))
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
         });
+        ready_receiver.await?;
         let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
             .connect()
             .await?;
@@ -2177,11 +2198,22 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let address = listener.local_addr()?;
             let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+            let incoming = futures::stream::unfold(
+                (listener, Some(ready)),
+                |(listener, ready)| async move {
+                    if let Some(ready) = ready {
+                        let _ = ready.send(());
+                    }
+                    Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+                },
+            );
             let server = tokio::spawn(async move {
                 Server::builder().add_service(
                     control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::new(MachineControl(mode)))
-                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async { let _ = stopped.await; }).await
+                    .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }).await
             });
+            ready_receiver.await?;
             let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
                 .connect()
                 .await?;
@@ -2215,6 +2247,16 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+            },
+        );
         let server_certificate_pem = certificate_pem.clone();
         let server_key_pem = private_key_pem.clone();
         let server = tokio::spawn(async move {
@@ -2230,11 +2272,12 @@ mod tests {
                 .add_service(control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::new(
                     MachineControl(ControlMode::Valid)))
                 .add_service(MachinesServiceServer::new(service))
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
         });
+        ready_receiver.await?;
 
         let machines = Machines::connect(
             &endpoint,
@@ -2268,6 +2311,16 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
             let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+            let incoming = futures::stream::unfold(
+                (listener, Some(ready)),
+                |(listener, ready)| async move {
+                    if let Some(ready) = ready {
+                        let _ = ready.send(());
+                    }
+                    Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+                },
+            );
             let calls = Arc::new(AtomicUsize::new(0));
             let observed = calls.clone();
             let server_certificate = certificate.clone();
@@ -2292,8 +2345,9 @@ mod tests {
                             observed.fetch_add(1, Ordering::SeqCst);
                             Ok(request)
                         }))
-                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async { let _ = stopped.await; }).await
+                    .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }).await
             });
+            ready_receiver.await?;
             let admitted =
                 Machines::remote_with_ca(&endpoint, "machine-token", Some(certificate.as_bytes()))
                     .await;

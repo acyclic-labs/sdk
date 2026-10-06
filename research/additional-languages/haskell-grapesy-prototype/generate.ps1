@@ -38,6 +38,7 @@ $contractProto = Join-Path $root 'proto'
 $target = "/tmp/acyclic-haskell-generator-$SourceRevision"
 $semantics = To-WslPath (Join-Path $outputPath 'src/Acyclic/Semantics.hs')
 $semanticTest = To-WslPath (Join-Path $outputPath 'app/SemanticTypesMain.hs')
+$remoteApi = To-WslPath (Join-Path $outputPath 'src/Acyclic/Remote/Api.hs')
 New-Item -ItemType Directory -Force -Path (Join-Path $outputPath 'source/stream/v2'), (Join-Path $outputPath 'generated'), (Join-Path $outputPath 'app'), (Join-Path $outputPath 'src') | Out-Null
 Copy-Item -LiteralPath (Join-Path $scriptDir 'acyclic-haskell-grapesy-prototype.cabal') -Destination (Join-Path $outputPath 'acyclic-sdk-haskell.cabal')
 Copy-Item -LiteralPath (Join-Path $scriptDir 'cabal.project') -Destination $outputPath
@@ -45,7 +46,8 @@ Copy-Item -LiteralPath (Join-Path $scriptDir 'cabal.project.freeze') -Destinatio
 Copy-Item -LiteralPath (Join-Path $scriptDir 'hackage-root.json') -Destination $outputPath
 Copy-Item -Path (Join-Path $scriptDir 'app\*.hs') -Destination (Join-Path $outputPath 'app')
 Copy-Item -Path (Join-Path $scriptDir 'src\*') -Destination (Join-Path $outputPath 'src') -Recurse
-New-Item -ItemType Directory -Force -Path (Join-Path $outputPath 'src/Acyclic') | Out-Null
+Remove-Item -LiteralPath (Join-Path $outputPath 'src/Acyclic/Remote/Api.hs') -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path (Join-Path $outputPath 'src/Acyclic/Remote') | Out-Null
 Copy-Item -Path (Join-Path $contractProto '*') -Destination (Join-Path $outputPath 'source') -Recurse
 Copy-Item -LiteralPath (Join-Path $root 'rust/crates/stream/proto/stream/v2/stream.proto') -Destination (Join-Path $outputPath 'source/stream/v2/stream.proto')
 $cmd = @(
@@ -60,11 +62,12 @@ $cmd = @(
   '  ''$wslOutput/source/objects/v2/objects.proto'' ''$wslOutput/source/protocol/v1/protocol.proto'' \',
   '  ''$wslOutput/source/validation/v1/options.proto'' ''$wslOutput/source/workers/v1/workers.proto'' \',
   '  ''$wslOutput/source/stream/v2/stream.proto''',
+  'cargo run --manifest-path ''$wslRoot/rust/crates/sdk-examples/Cargo.toml'' --locked --target-dir ''$target'' --bin typed-request-manifest -- --haskell-remote-api-output ''$remoteApi''',
   'cargo run --manifest-path ''$wslRoot/rust/crates/sdk-examples/Cargo.toml'' --locked --target-dir ''$target'' --bin typed-request-manifest -- --haskell-semantics-output ''$semantics''',
   'cargo run --manifest-path ''$wslRoot/rust/crates/sdk-examples/Cargo.toml'' --locked --target-dir ''$target'' --bin typed-request-manifest -- --haskell-semantics-test-output ''$semanticTest''',
   'rm -rf ''$target'''
 ) -join "`n"
-$cmd = $cmd.Replace('$wslRoot', $wslRoot).Replace('$wslOutput', $wslOutput).Replace('$target', $target).Replace('$semantics', $semantics).Replace('$semanticTest', $semanticTest)
+$cmd = $cmd.Replace('$wslRoot', $wslRoot).Replace('$wslOutput', $wslOutput).Replace('$target', $target).Replace('$semantics', $semantics).Replace('$semanticTest', $semanticTest).Replace('$remoteApi', $remoteApi)
 $linuxScript = Join-Path $outputPath 'generate-haskell.sh'
 [IO.File]::WriteAllText($linuxScript, $cmd, [Text.UTF8Encoding]::new($false))
 wsl.exe -d Ubuntu -- bash (To-WslPath $linuxScript)
@@ -96,5 +99,6 @@ $provenance = [ordered]@{
   }
   generated_files = $fileHashes
 }
-$provenance | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $outputPath 'provenance.json') -Encoding utf8NoBOM
+$provenanceJson = $provenance | ConvertTo-Json -Depth 12
+[IO.File]::WriteAllText((Join-Path $outputPath 'provenance.json'), $provenanceJson, [Text.UTF8Encoding]::new($false))
 Write-Output "Generated Rust-owned Haskell package: $outputPath"

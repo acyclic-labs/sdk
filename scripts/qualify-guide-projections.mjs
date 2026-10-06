@@ -1,25 +1,38 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { readBoundedGzip, tarEntries } from "./archive-utils.mjs";
 import { verifyQualificationSummary } from "./verify-guide-projection-receipts.mjs";
 
 // Resolve from the script directory so this remains correct when invoked from a docs checkout, a release archive, or a clean worktree.
 const repo = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const cargo = process.env.CARGO_BIN ?? (process.platform === "win32" ? join(process.env.USERPROFILE ?? "C:\\Users\\varun", ".cargo", "bin", "cargo.exe") : "cargo");
-const defaultTsc = process.platform === "win32" && existsSync(join(repo, "node_modules", ".bin", "tsc.exe"))
-  ? join(repo, "node_modules", ".bin", "tsc.exe")
+const defaultTsc = process.platform === "win32"
+  ? (() => {
+      const candidates = [
+        join(repo, "node_modules", ".bin", "tsc.cmd"),
+        join(process.env.APPDATA ?? join(process.env.USERPROFILE ?? "C:\\Users\\varun", "AppData", "Roaming"), "npm", "tsc.cmd"),
+      ];
+      return candidates.find(candidate => existsSync(candidate)) ?? "tsc";
+    })()
   : "tsc";
+const defaultBun = process.platform === "win32"
+  ? (() => {
+      const candidate = join(process.env.APPDATA ?? join(process.env.USERPROFILE ?? "C:\\Users\\varun", "AppData", "Roaming"), "npm", "node_modules", "bun", "bin", "bun.exe");
+      return existsSync(candidate) ? candidate : "bun";
+    })()
+  : "bun";
 // Release qualification supplies pinned toolchain paths. Keep every local
 // fallback overridable so a clean checkout can use the same resolver without
 // depending on a machine's PATH layout.
 const binaries = {
   rustfmt: process.env.SDK_RUSTFMT_BIN ?? process.env.RUSTFMT_BIN ?? "rustfmt",
   python: process.env.SDK_PYTHON_BIN ?? process.env.PYTHON_BIN ?? "python",
-  bun: process.env.SDK_BUN_BIN ?? process.env.BUN_BIN ?? "bun",
+  bun: process.env.SDK_BUN_BIN ?? process.env.BUN_BIN ?? defaultBun,
   node: process.env.SDK_NODE_BIN ?? process.env.NODE_BIN ?? "node",
   tsc: process.env.SDK_TSC_BIN ?? process.env.TSC_BIN ?? defaultTsc,
   go: process.env.SDK_GO_BIN ?? process.env.GO_BIN ?? "go",
@@ -42,6 +55,13 @@ for (let i = 2; i < process.argv.length; i += 1) {
 const output = resolve(args.get("--output") ?? join(repo, "work", "guide-projection-qualification"));
 const snippets = join(output, "snippets");
 mkdirSync(snippets, { recursive: true });
+const expectedProjectionCount = args.has("--expected-count")
+  ? Number(args.get("--expected-count"))
+  : 54;
+if (!Number.isInteger(expectedProjectionCount) || expectedProjectionCount < 1) {
+  console.error("--expected-count must be a positive integer");
+  process.exit(2);
+}
 
 function command(name, commandArgs, cwd = repo, extraEnv = {}) {
   const shell = /\.(?:cmd|bat)$/i.test(name);
@@ -58,7 +78,7 @@ function command(name, commandArgs, cwd = repo, extraEnv = {}) {
     command: [name, ...commandArgs].join(" "),
     exitCode: result.status ?? 127,
     stdout: result.stdout ?? "",
-    stderr: result.stderr ?? (result.error?.message ?? ""),
+    stderr: result.stderr || (result.error?.message ?? ""),
   };
 }
 
@@ -132,40 +152,114 @@ function artifact(root, pattern) {
   return allFiles(searchRoot).find((path) => expression.test(relative(root, path).replaceAll("\\", "/"))) ?? null;
 }
 
-// Locate Rust manifests without descending into build targets. The install
-// archive needs every workspace manifest for Cargo's workspace resolver, but
-// only the selected crate's source and its local path-dependency closure.
-function rustPathDependencyClosure(root) {
-  const closure = [];
-  const visited = new Set();
-  const pending = [root];
-  while (pending.length) {
-    const current = resolve(pending.pop());
-    if (visited.has(current) || !existsSync(join(current, "Cargo.toml"))) continue;
-    visited.add(current);
-    closure.push(current);
-    const manifest = readFileSync(join(current, "Cargo.toml"), "utf8");
-    for (const match of manifest.matchAll(/path\s*=\s*"([^"]+)"/g)) {
-      const dependency = resolve(current, match[1]);
-      if (existsSync(join(dependency, "Cargo.toml"))) pending.push(dependency);
-    }
-  }
-  return closure;
+const archivePattern = /\.(?:tgz|tar\.gz|crate)$/i;
+const maxArchiveBytes = Number(process.env.SDK_MAX_PACKAGE_ARCHIVE_BYTES ?? 256 * 1024 * 1024);
+const maxExpandedArchiveBytes = Number(process.env.SDK_MAX_PACKAGE_EXPANDED_BYTES ?? 1024 * 1024 * 1024);
+
+function within(root, candidate) {
+  const base = resolve(root);
+  const path = resolve(candidate);
+  return path === base || path.startsWith(`${base}${sep}`);
 }
 
-function rustIncludedAssets(crateDirs, repo) {
-  const assets = new Set();
-  for (const crateDir of crateDirs) {
-    for (const sourcePath of allFiles(crateDir)) {
-      if (!/\.(rs|toml|build|txt)$/i.test(sourcePath)) continue;
-      const source = readFileSync(sourcePath, "utf8");
-      for (const match of source.matchAll(/include_bytes!\s*\(\s*"([^"]+)"/g)) {
-        const asset = resolve(dirname(sourcePath), match[1]);
-        if (existsSync(asset) && asset.startsWith(`${resolve(repo)}${sep}`)) assets.add(asset);
+function sourcePackagePath(path) {
+  const normalized = path.replaceAll("\\", "/").toLowerCase();
+  return normalized.includes("/rust/crates/") || normalized.includes("/typescript/packages/");
+}
+
+function findPackageArtifact(root, projection) {
+  // Qualification may consume only a produced immutable package archive.
+  // Source manifests remain useful metadata, but they are never install inputs.
+  const declared = projection.package_artifact_path ?? projection.package_artifact ?? projection.artifact_path;
+  if (typeof declared !== "string" || !archivePattern.test(declared)) return null;
+  const resolvedArtifact = artifact(root, declared);
+  if (!resolvedArtifact || sourcePackagePath(resolvedArtifact)) return null;
+  return resolvedArtifact;
+}
+
+function normalizedArchivePath(path) {
+  const normalized = path.replaceAll("\\", "/").replace(/^\.\//, "");
+  if (!normalized || normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) {
+    throw new Error(`archive member has an absolute path: ${path}`);
+  }
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.some((part) => part === "..")) throw new Error(`archive member escapes extraction root: ${path}`);
+  return parts.join("/");
+}
+
+function archiveRootPrefix(paths) {
+  const first = paths[0]?.split("/")[0];
+  if (!first || paths.some((path) => path === first || !path.startsWith(`${first}/`))) return "";
+  return `${first}/`;
+}
+
+function archiveTreeDigest(files) {
+  const digest = createHash("sha256");
+  for (const file of [...files].sort((left, right) => left.path.localeCompare(right.path))) {
+    digest.update(file.path);
+    digest.update(Buffer.from([0]));
+    digest.update(file.body);
+    digest.update(Buffer.from([0]));
+  }
+  return `sha256:${digest.digest("hex")}`;
+}
+
+function extractPackageArchive(packageArtifact, extractionRoot) {
+  rmSync(extractionRoot, { recursive: true, force: true });
+  mkdirSync(extractionRoot, { recursive: true });
+  const { compressed, expanded } = readBoundedGzip(packageArtifact, maxArchiveBytes, maxExpandedArchiveBytes);
+  const entries = tarEntries(expanded);
+  const regularEntries = entries
+    .filter((entry) => entry.type === "0" || entry.type === "\0")
+    .map((entry) => ({ ...entry, path: normalizedArchivePath(entry.path) }));
+  if (!regularEntries.length) throw new Error("package archive contains no regular files");
+  const prefix = archiveRootPrefix(regularEntries.map((entry) => entry.path));
+  const files = [];
+  const seen = new Set();
+  for (const entry of regularEntries) {
+    const path = prefix ? entry.path.slice(prefix.length) : entry.path;
+    if (!path || seen.has(path)) throw new Error(`package archive contains a duplicate member: ${path}`);
+    seen.add(path);
+    const target = resolve(extractionRoot, path);
+    if (!within(extractionRoot, target)) throw new Error(`package archive member escapes extraction root: ${entry.path}`);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, entry.body, { flag: "wx" });
+    files.push({ path, body: entry.body });
+  }
+  for (const entry of entries) {
+    if (entry.type !== "0" && entry.type !== "\0" && entry.type !== "5") {
+      throw new Error(`package archive contains unsupported member type ${JSON.stringify(entry.type)}`);
+    }
+  }
+  return {
+    archiveSha256: `sha256:${createHash("sha256").update(compressed).digest("hex")}`,
+    treeSha256: archiveTreeDigest(files),
+    files,
+    extractionRoot,
+  };
+}
+
+function packageJsonPath(root) {
+  return allFiles(root).find((path) => path.toLowerCase().endsWith(`${sep}package.json`) || path.toLowerCase().endsWith("/package.json")) ?? null;
+}
+
+function rustPackagePath(root, packageName) {
+  const manifests = allFiles(root).filter((path) => path.endsWith(`${sep}Cargo.toml`) || path.endsWith("/Cargo.toml"));
+  const matches = manifests.filter((path) => readFileSync(path, "utf8").match(/^name\s*=\s*"([^"]+)"/m)?.[1] === packageName);
+  if (matches.length !== 1) throw new Error(`package archive must contain exactly one Cargo package named ${packageName}`);
+  return dirname(matches[0]);
+}
+
+function validateRustArchivePaths(root) {
+  for (const manifest of allFiles(root).filter((path) => path.endsWith(`${sep}Cargo.toml`) || path.endsWith("/Cargo.toml"))) {
+    const source = readFileSync(manifest, "utf8");
+    for (const match of source.matchAll(/path\s*=\s*"([^"]+)"/g)) {
+      const dependency = resolve(dirname(manifest), match[1]);
+      if (!within(root, dependency) || !existsSync(join(dependency, "Cargo.toml"))) {
+        throw new Error(`Rust package archive has an external path dependency: ${match[1]}`);
       }
     }
   }
-  return [...assets];
 }
 
 function extension(language) {
@@ -219,65 +313,50 @@ function execute(language, file, cwd, environment = {}) {
   }
 }
 
-function prepare(language, packageArtifact, directory) {
+function prepare(language, packageArtifact, directory, projection) {
   if (!packageArtifact) return { status: "artifact-missing", install: null, environment: {} };
 
-  if (language === "rust" && packageArtifact.endsWith("Cargo.toml")) {
-    const packageRoot = resolve(packageArtifact, "..");
-    const packageToml = readFileSync(packageArtifact, "utf8");
-    const packageName = packageToml.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
-    if (!packageName) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package name" };
-    const packageVersion = packageToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1]
-      ?? readFileSync(join(repo, "Cargo.toml"), "utf8").match(/\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1];
-    if (!packageVersion) return { status: "install-failed", install: null, environment: {}, error: "Cargo.toml has no package version" };
-    const packageCache = join(output, "cargo-packages");
-    const bundleSource = join(packageCache, "workspace-source");
-    const packageManifest = join(packageCache, `${packageName}-${packageVersion}.manifest.json`);
-    mkdirSync(packageCache, { recursive: true });
-    let packaged = { command: "", exitCode: 0, stdout: "", stderr: "" };
-    if (!existsSync(packageManifest)) {
-      mkdirSync(bundleSource, { recursive: true });
-      const workspaceCrates = rustPathDependencyClosure(packageRoot);
-      for (const crateDir of workspaceCrates) {
-        const destination = join(bundleSource, relative(repo, crateDir));
-        mkdirSync(destination, { recursive: true });
-        cpSync(crateDir, destination, { recursive: true, filter: (path) => !/(^|[\\/])(target|\.git)([\\/]|$)/i.test(path) });
-      }
-      for (const asset of rustIncludedAssets(workspaceCrates, repo)) {
-        const destination = join(bundleSource, relative(repo, asset));
-        mkdirSync(dirname(destination), { recursive: true });
-        cpSync(asset, destination);
-      }
-      const workspaceManifest = readFileSync(join(repo, "Cargo.toml"), "utf8");
-      const memberPaths = workspaceCrates
-        .map((crateDir) => `  "${relative(repo, crateDir).replaceAll("\\", "/")}",`)
-        .sort();
-      const stagedManifest = workspaceManifest.replace(
-        /members\s*=\s*\[[\s\S]*?\]\s*\nresolver\s*=/,
-        `members = [\n${memberPaths.join("\n")}\n]\nresolver =`,
-      );
-      if (stagedManifest === workspaceManifest) {
-        throw new Error("Rust workspace manifest has no replaceable members list");
-      }
-      writeFileSync(join(bundleSource, "Cargo.toml"), stagedManifest);
-      cpSync(join(repo, "Cargo.lock"), join(bundleSource, "Cargo.lock"));
-      const files = allFiles(bundleSource).map((path) => ({
-        path: relative(bundleSource, path).replaceAll("\\", "/"),
-        sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
-      })).sort((left, right) => left.path.localeCompare(right.path));
-      writeFileSync(packageManifest, `${JSON.stringify({ schema: "acyclic.sdk.rust-package-bundle.v1", package: packageName, version: packageVersion, files }, null, 2)}\n`);
-      packaged = { command: `internal rust package staging ${packageManifest}`, exitCode: 0, stdout: `staged ${files.length} immutable source files\n`, stderr: "" };
-    }
-    // Keep the installed workspace outside the consumer's directory. The
-    // consumer is its own tiny workspace, while the staged package must let
-    // Cargo discover the bundle's workspace root rather than inheriting the
-    // consumer (or any checkout ancestor) as its root.
+  if (language === "rust" && archivePattern.test(packageArtifact)) {
+    const packageName = typeof projection.package_name === "string" ? projection.package_name.trim() : "";
+    if (!packageName) return { status: "install-failed", install: null, environment: {}, error: "Rust package archive has no Cargo package name" };
     const packageInstall = join(output, "installed-rust-packages", packageName);
-    mkdirSync(packageInstall, { recursive: true });
-    cpSync(bundleSource, packageInstall, { recursive: true });
-    const installedRoot = join(packageInstall, relative(repo, packageRoot));
+    let extracted;
+    try {
+      extracted = extractPackageArchive(packageArtifact, packageInstall);
+      validateRustArchivePaths(packageInstall);
+    } catch (error) {
+      return { status: "install-failed", install: null, environment: {}, error: String(error.message ?? error) };
+    }
+    const installedRoot = rustPackagePath(packageInstall, packageName);
     writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nprost = "0.14.4"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
-    return { status: "installed", packageArtifact: packageManifest, install: { ...packaged, command: `${packaged.command} && internal rust package install ${packageInstall}`, stdout: packaged.stdout, stderr: packaged.stderr }, environment: { CARGO_TARGET_DIR: join(output, "cargo-target") } };
+    const environment = { CARGO_TARGET_DIR: join(output, "cargo-target") };
+    const metadata = command(cargo, ["metadata", "--offline", "--manifest-path", join(directory, "Cargo.toml"), "--format-version", "1"], directory, environment);
+    if (metadata.exitCode !== 0) {
+      return { status: "install-failed", install: metadata, environment, packageSha256: extracted.archiveSha256, packageTreeSha256: extracted.treeSha256, archiveFormat: "gzip+ustar", resolvedPackageRoot: relative(repo, installedRoot).replaceAll("\\", "/") };
+    }
+    try {
+      const metadataJson = JSON.parse(metadata.stdout);
+      const localPackages = metadataJson.packages ?? [];
+      const expectedManifest = resolve(installedRoot, "Cargo.toml");
+      const resolved = localPackages.find((entry) => entry.name === packageName);
+      if (!resolved || resolve(resolved.manifest_path) !== expectedManifest) throw new Error("Cargo metadata resolved a different package manifest");
+      for (const entry of localPackages.filter((value) => value.source == null)) {
+        const manifest = resolve(entry.manifest_path);
+        if (!within(packageInstall, manifest) && !within(directory, manifest)) throw new Error(`Cargo metadata resolved checkout path ${manifest}`);
+      }
+    } catch (error) {
+      return { status: "install-failed", install: { ...metadata, stderr: `${metadata.stderr}${error.message ?? error}` }, environment, packageSha256: extracted.archiveSha256, packageTreeSha256: extracted.treeSha256, archiveFormat: "gzip+ustar", resolvedPackageRoot: relative(repo, installedRoot).replaceAll("\\", "/") };
+    }
+    return {
+      status: "installed",
+      packageArtifact,
+      packageSha256: extracted.archiveSha256,
+      packageTreeSha256: extracted.treeSha256,
+      archiveFormat: "gzip+ustar",
+      resolvedPackageRoot: relative(repo, installedRoot).replaceAll("\\", "/"),
+      install: { ...metadata, command: `archive extract ${packageArtifact} && ${metadata.command}`, stdout: `extracted ${extracted.files.length} immutable package files\n${metadata.stdout}`, stderr: metadata.stderr },
+      environment,
+    };
   }
 
   if (language === "python" && packageArtifact.endsWith(".whl")) {
@@ -324,15 +403,39 @@ function prepare(language, packageArtifact, directory) {
     return { status: "installed", install: { ...classpath, command: `${installed.command} && ${classpath.command}` }, environment: { MAVEN_REPO_LOCAL: localRepo } };
   }
 
-  if (language === "typescript") {
-    const packageRoot = resolve(packageArtifact, "..");
-    const packageJson = JSON.parse(readFileSync(packageArtifact, "utf8"));
+  if (language === "typescript" && archivePattern.test(packageArtifact)) {
+    const packageInstall = join(output, "installed-ts-packages");
+    let extracted;
+    try {
+      extracted = extractPackageArchive(packageArtifact, packageInstall);
+    } catch (error) {
+      return { status: "install-failed", install: null, environment: {}, error: String(error.message ?? error) };
+    }
+    const archiveFields = {
+      packageArtifact,
+      packageSha256: extracted.archiveSha256,
+      packageTreeSha256: extracted.treeSha256,
+      archiveFormat: "gzip+ustar",
+      resolvedPackageRoot: relative(repo, packageInstall).replaceAll("\\", "/"),
+    };
+    const packageJsonFile = packageJsonPath(packageInstall);
+    if (!packageJsonFile) return { status: "install-failed", ...archiveFields, install: null, environment: {}, error: "TypeScript package archive has no package.json" };
+    let packageJson;
+    try {
+      packageJson = JSON.parse(readFileSync(packageJsonFile, "utf8"));
+    } catch (error) {
+      return { status: "install-failed", ...archiveFields, install: null, environment: {}, error: `TypeScript package package.json is invalid: ${error.message ?? error}` };
+    }
+    if (typeof packageJson.name !== "string" || !packageJson.name) return { status: "install-failed", ...archiveFields, install: null, environment: {}, error: "TypeScript package package.json has no name" };
+    if (projection.package_name && projection.package_name !== packageJson.name) return { status: "install-failed", ...archiveFields, install: null, environment: {}, error: `TypeScript package name ${packageJson.name} does not match projection ${projection.package_name}` };
+    rmSync(join(directory, "node_modules"), { recursive: true, force: true });
+    rmSync(join(directory, "bun.lock"), { force: true });
     writeFileSync(join(directory, "package.json"), JSON.stringify({
       name: "guide-snippet",
       private: true,
       type: "module",
       dependencies: {
-        [packageJson.name]: `file:${packageRoot.replaceAll("\\", "/")}`,
+        [packageJson.name]: `file:${relative(directory, packageArtifact).replaceAll("\\", "/")}`,
         "@connectrpc/connect": packageJson.dependencies?.["@connectrpc/connect"] ?? "2.1.1",
         "@connectrpc/connect-node": "2.1.1",
       },
@@ -341,8 +444,17 @@ function prepare(language, packageArtifact, directory) {
       },
     }, null, 2));
     const install = command(binaries.bun, ["install", "--offline", "--no-progress"], directory);
-    const nodePath = [join(directory, "node_modules"), join(repo, "typescript", "node_modules"), join(packageRoot, "node_modules")].join(delimiter);
-    return { status: install.exitCode === 0 ? "installed" : "install-failed", install, environment: { NODE_PATH: nodePath, PATH: process.env.PATH } };
+    if (install.exitCode !== 0) return {
+      status: "install-failed",
+      ...archiveFields,
+      install,
+      environment: {},
+    };
+    const packageNodeRoot = join(directory, "node_modules", ...packageJson.name.split("/"));
+    if (!existsSync(join(packageNodeRoot, "package.json")) || statSync(packageNodeRoot).isSymbolicLink()) return { status: "install-failed", ...archiveFields, install, environment: {}, error: "Bun did not install the TypeScript archive into node_modules" };
+    const lock = join(directory, "bun.lock");
+    if (existsSync(lock) && /typescript[\\/]packages[\\/]/i.test(readFileSync(lock, "utf8"))) return { status: "install-failed", ...archiveFields, install, environment: {}, error: "Bun lockfile resolves a TypeScript checkout path" };
+    return { status: "installed", packageArtifact, packageSha256: extracted.archiveSha256, packageTreeSha256: extracted.treeSha256, archiveFormat: "gzip+ustar", resolvedPackageRoot: relative(repo, packageNodeRoot).replaceAll("\\", "/"), install, environment: { PATH: process.env.PATH } };
   }
 
   if (language === "csharp") {
@@ -463,7 +575,7 @@ for (const projection of projections) {
     : `${projection.scenario_id}${extension(projection.language)}`;
   const file = join(directory, fileName);
   writeFileSync(file, projection.code);
-  const packageArtifact = artifact(repo, projection.artifact_path);
+  const packageArtifact = findPackageArtifact(repo, projection);
   const receipt = {
     scenario_id: projection.scenario_id,
     family: projection.family,
@@ -478,10 +590,14 @@ for (const projection of projections) {
     package_name: projection.package_name,
     artifact_path: projection.artifact_path,
     package_artifact: packageArtifact ? relative(repo, packageArtifact).replaceAll("\\", "/") : null,
-    package_sha256: packageArtifact ? createHash("sha256").update(readFileSync(packageArtifact)).digest("hex") : null,
+    package_sha256: packageArtifact ? `sha256:${createHash("sha256").update(readFileSync(packageArtifact)).digest("hex")}` : null,
     snippet_path: relative(repo, file).replaceAll("\\", "/"),
     snippet_sha256: createHash("sha256").update(projection.code, "utf8").digest("hex"),
     qualification: projection.qualification ?? null,
+    package_archive_sha256: null,
+    package_tree_sha256: null,
+    package_archive_format: null,
+    resolved_package_root: null,
   };
   const recipe = projection.qualification;
   if (!recipe || !recipe.install || !recipe.compile || !recipe.execute) {
@@ -490,12 +606,21 @@ for (const projection of projections) {
   } else if (!packageArtifact) {
     receipt.status = "artifact-missing";
   } else {
-    const prepared = prepare(projection.language, packageArtifact, directory);
+    const prepared = prepare(projection.language, packageArtifact, directory, projection);
     if (prepared.packageArtifact && existsSync(prepared.packageArtifact)) {
       receipt.package_artifact = relative(repo, prepared.packageArtifact).replaceAll("\\", "/");
-      receipt.package_sha256 = createHash("sha256").update(readFileSync(prepared.packageArtifact)).digest("hex");
+      receipt.package_sha256 = prepared.packageSha256 ?? `sha256:${createHash("sha256").update(readFileSync(prepared.packageArtifact)).digest("hex")}`;
     }
-    receipt.install = prepared.install;
+    receipt.package_archive_sha256 = prepared.packageSha256 ?? receipt.package_sha256;
+    receipt.package_tree_sha256 = prepared.packageTreeSha256 ?? null;
+    receipt.package_archive_format = prepared.archiveFormat ?? null;
+    receipt.resolved_package_root = prepared.resolvedPackageRoot ?? null;
+    receipt.install = prepared.install ?? (prepared.error ? {
+      command: `archive validation ${packageArtifact}`,
+      exitCode: 1,
+      stdout: "",
+      stderr: prepared.error,
+    } : null);
     receipt.install_status = prepared.status;
     if (prepared.status !== "installed") {
       receipt.status = prepared.status;
@@ -543,10 +668,11 @@ const everyReceiptHasEvidence = receipts.every((receipt) =>
 summary.evidence_complete = everyReceiptHasEvidence;
 const verification = verifyQualificationSummary(summary, {
   expectedProjections: projections,
+  expectedProjectionCount,
   requireExecution: args.has("--execute"),
   readArtifact: (path) => readFileSync(resolve(repo, path)),
 });
 summary.verification = verification;
 writeFileSync(join(output, "qualification.json"), `${JSON.stringify(summary, null, 2)}\n`);
 console.log(JSON.stringify({ ...summary, receipts: undefined }, null, 2));
-if (args.has("--strict") && (summary.artifact_missing > 0 || summary.failed > 0 || summary.projection_count !== 54 || !sourceRevision || !sourceSha256 || !everyReceiptHasEvidence || !verification.valid || projections.some((projection) => projection.source_sha256 !== sourceSha256))) process.exit(1);
+if (args.has("--strict") && (summary.artifact_missing > 0 || summary.failed > 0 || summary.projection_count !== expectedProjectionCount || !sourceRevision || !sourceSha256 || !everyReceiptHasEvidence || !verification.valid || projections.some((projection) => projection.source_sha256 !== sourceSha256))) process.exit(1);

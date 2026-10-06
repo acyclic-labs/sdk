@@ -152,6 +152,7 @@ impl<F: Future> PlatformFutureExt for F {
 #[doc(hidden)]
 #[cfg(not(target_arch = "wasm32"))]
 pub trait PlatformServiceBounds: Send + Sync {}
+#[doc(hidden)]
 #[cfg(target_arch = "wasm32")]
 pub trait PlatformServiceBounds {}
 
@@ -164,20 +165,24 @@ impl<T: ?Sized> PlatformServiceBounds for T {}
 /// Bounds for live task callbacks, which are thread-safe only on native
 /// targets. Browser callbacks stay on the local executor.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) trait PlatformTaskCallback: Send + Sync {}
+#[doc(hidden)]
+pub trait PlatformTaskCallback: Send + Sync {}
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Send + Sync> PlatformTaskCallback for T {}
 #[cfg(target_arch = "wasm32")]
-pub(crate) trait PlatformTaskCallback {}
+#[doc(hidden)]
+pub trait PlatformTaskCallback {}
 #[cfg(target_arch = "wasm32")]
 impl<T> PlatformTaskCallback for T {}
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) trait PlatformTaskFuture: Send {}
+#[doc(hidden)]
+pub trait PlatformTaskFuture: Send {}
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Send> PlatformTaskFuture for T {}
 #[cfg(target_arch = "wasm32")]
-pub(crate) trait PlatformTaskFuture {}
+#[doc(hidden)]
+pub trait PlatformTaskFuture {}
 #[cfg(target_arch = "wasm32")]
 impl<T> PlatformTaskFuture for T {}
 

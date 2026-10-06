@@ -30,6 +30,20 @@ if ([string]::IsNullOrWhiteSpace($sourceRevision)) {
   throw "Unable to bind the Haskell artifact to a Rust source revision: $Root"
 }
 New-Item -ItemType Directory -Force -Path $work | Out-Null
+$request = Join-Path $scriptDir 'request-manifest.json'
+$generated = Join-Path $work 'generated-package'
+if (Test-Path -LiteralPath $generated) { Remove-Item -LiteralPath $generated -Recurse -Force }
+& (Join-Path $scriptDir 'generate.ps1') -Request $request -Output $generated -SourceRevision $sourceRevision
+if ($LASTEXITCODE -ne 0) { throw "Rust-owned Haskell generation failed with exit code $LASTEXITCODE" }
+$provenancePath = Join-Path $generated 'provenance.json'
+$remoteApiPath = Join-Path $generated 'src/Acyclic/Remote/Api.hs'
+if (-not (Test-Path -LiteralPath $remoteApiPath -PathType Leaf)) { throw "Rust-generated Haskell facade is missing: $remoteApiPath" }
+$remoteApi = Get-Content -LiteralPath $remoteApiPath -Raw
+if ($remoteApi -notmatch 'Rust typed-request-manifest authority') { throw 'Haskell facade is not marked as Rust-emitted' }
+if ($remoteApi -notmatch 'Rust RPC inventory count: 106') { throw 'Haskell facade does not cover the Rust 106-RPC inventory' }
+$provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+if ([string]$provenance.source_revision -ne $sourceRevision.ToLowerInvariant()) { throw 'Generated Haskell provenance is not source-bound' }
+if (@($provenance.generated_files.PSObject.Properties.Name) -notcontains 'src/Acyclic/Remote/Api.hs') { throw 'Generated Haskell provenance omits the Rust facade' }
 $fixtureTarget = Join-Path $work 'rust-target'
 & cargo build --manifest-path (Join-Path $Root 'rust/crates/sdk-examples/Cargo.toml') --locked --release --bin fixture-server --target-dir $fixtureTarget
 if ($LASTEXITCODE -ne 0) { throw "Rust fixture build failed with exit code $LASTEXITCODE" }
@@ -52,39 +66,18 @@ try {
   }
   if (-not $fixtureMetadata.grpc_address) { throw 'Rust fixture did not emit grpc_address within 10 seconds' }
 
-  $wslRepo = To-WslPath $scriptDir
-  $rustProto = To-WslPath (Join-Path $Root 'rust/crates/stream/proto')
-  $contractProto = To-WslPath (Join-Path $Root 'proto')
+  $wslGenerated = To-WslPath $generated
   $linuxRepo = '/home/var/haskell-grapesy-remote-run'
   $ghc = '/home/var/.ghcup/bin/ghc'
   $cabal = '/home/var/.ghcup/bin/cabal'
-  $generator = ''
   $endpoint = [string]$fixtureMetadata.grpc_address
   $cmd = @'
 set -euo pipefail
 rm -rf '$linuxRepo'
-cp -a '$wslRepo' '$linuxRepo'
-mv '$linuxRepo/acyclic-haskell-grapesy-prototype.cabal' '$linuxRepo/acyclic-sdk-haskell.cabal'
-rm -rf '$linuxRepo/source'
-mkdir -p '$linuxRepo/source/stream/v2'
-cp -a '$contractProto/.' '$linuxRepo/source/'
-cp '$rustProto/stream/v2/stream.proto' '$linuxRepo/source/stream/v2/stream.proto'
-rm -rf '$linuxRepo/generated' '$linuxRepo/dist-newstyle' '$linuxRepo/dist-sdist' '$linuxRepo/installed'
-mkdir -p '$linuxRepo/generated' '$linuxRepo/dist-sdist' '$linuxRepo/installed'
-generator=$(/usr/bin/find /home/var/.cabal/store -path '*proto-lens-protoc-0.9.0.1*' -type f -name proto-lens-protoc | sort | head -n 1)
-test -x "$generator"
-protoc --experimental_allow_proto3_optional --plugin=protoc-gen-haskell="$generator" --haskell_out='$linuxRepo/generated' -I '$linuxRepo/source' \
-  '$linuxRepo/source/actors/v1/actors.proto' \
-  '$linuxRepo/source/filesystem/v2/filesystem.proto' \
-  '$linuxRepo/source/harness/v2/harness.proto' \
-  '$linuxRepo/source/inference/v1/inference.proto' \
-  '$linuxRepo/source/machines/v1/machines.proto' \
-  '$linuxRepo/source/objects/v1/objects.proto' \
-  '$linuxRepo/source/objects/v2/objects.proto' \
-  '$linuxRepo/source/protocol/v1/protocol.proto' \
-  '$linuxRepo/source/validation/v1/options.proto' \
-  '$linuxRepo/source/workers/v1/workers.proto' \
-  '$linuxRepo/source/stream/v2/stream.proto'
+mkdir -p '$linuxRepo'
+cp -a '$wslGenerated/.' '$linuxRepo/'
+rm -rf '$linuxRepo/dist-newstyle' '$linuxRepo/dist-sdist' '$linuxRepo/installed'
+mkdir -p '$linuxRepo/dist-sdist' '$linuxRepo/installed'
 cd '$linuxRepo'
 $cabal build --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' exe:acyclic-haskell-remote exe:acyclic-haskell-full-typed
 tar -czf '$linuxRepo/dist-sdist/acyclic-sdk-haskell-0.1.0.0.tar.gz' --exclude='dist-*' --exclude='installed' -C '$linuxRepo' .
@@ -93,6 +86,8 @@ test -n "$archive"
 tar -tzf "$archive" | grep -Eq '(^|/)acyclic-sdk-haskell\.cabal$'
 tar -tzf "$archive" | grep -Eq '(^|/)app/RemoteMain\.hs$'
 tar -tzf "$archive" | grep -Eq '(^|/)src/Acyclic/Semantics\.hs$'
+tar -tzf "$archive" | grep -Eq '(^|/)src/Acyclic/Remote/Api\.hs$'
+tar -tzf "$archive" | grep -Eq '(^|/)provenance\.json$'
 echo "artifact=$archive"
 echo "artifact-sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)"
 $cabal install "$archive" --with-compiler=$ghc --installdir='$linuxRepo/installed' --install-method=copy --overwrite-policy=always --disable-documentation --builddir='$linuxRepo/dist-newstyle-install' >/dev/null
@@ -107,7 +102,7 @@ grep -Eq '^append-response=' '$linuxRepo/installed-consumer.log'
 grep -Eq '^recovery-response=' '$linuxRepo/installed-consumer.log'
 grep -Eq '^cancel-probe=' '$linuxRepo/installed-consumer.log'
 '@
-  $cmd = $cmd.Replace('$linuxRepo',$linuxRepo).Replace('$wslRepo',$wslRepo).Replace('$rustProto',$rustProto).Replace('$contractProto',$contractProto).Replace('$cabal',$cabal).Replace('$ghc',$ghc).Replace('$endpoint',$endpoint)
+  $cmd = $cmd.Replace('$linuxRepo',$linuxRepo).Replace('$wslGenerated',$wslGenerated).Replace('$cabal',$cabal).Replace('$ghc',$ghc).Replace('$endpoint',$endpoint)
   $cmd = $cmd -replace ([string][char]13 + [char]10), [string][char]10
   $linuxScript = Join-Path $work 'haskell-remote-run.sh'
   [IO.File]::WriteAllText($linuxScript, $cmd, [Text.UTF8Encoding]::new($false))
@@ -139,17 +134,17 @@ grep -Eq '^cancel-probe=' '$linuxRepo/installed-consumer.log'
       Get-Item -LiteralPath (Join-Path $Root 'rust/crates/stream/proto/stream/v2/stream.proto')
     ) | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
     request_manifest = 'research/additional-languages/haskell-grapesy-prototype/request-manifest.json'
-    request_manifest_sha256 = (Get-FileHash -LiteralPath (Join-Path $scriptDir 'request-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+    request_manifest_sha256 = (Get-FileHash -LiteralPath $request -Algorithm SHA256).Hash.ToLowerInvariant()
     generator = [ordered]@{ package = 'proto-lens-protoc'; version = '0.9.0.1'; ghc = '9.2.8'; cabal = '3.10.2.1'; grapesy = '1.2.1' }
+    generated_package = [ordered]@{ provenance_sha256 = (Get-FileHash -LiteralPath $provenancePath -Algorithm SHA256).Hash.ToLowerInvariant(); remote_api_sha256 = (Get-FileHash -LiteralPath $remoteApiPath -Algorithm SHA256).Hash.ToLowerInvariant(); source_bound = $true; generated_by = 'Rust typed-request-manifest' }
     transport = [ordered]@{ fixture = 'rust/crates/sdk-examples/src/bin/fixture-server.rs'; protocol = 'HTTP/2 gRPC'; endpoint = $endpoint; tls = $false }
     artifact = [ordered]@{ path = 'dist-sdist/acyclic-sdk-haskell-0.1.0.0.tar.gz'; sha256 = if ($artifactLine) { ($artifactLine -split '=',2)[1] } else { '' }; archive_contents_verified = $true }
     installed_consumer = [ordered]@{ path = 'installed/acyclic-haskell-remote'; status = 'passed'; sha256 = if ($installedLine) { ($installedLine -split '=',2)[1] } else { '' }; source_bound = $true; typed_rpc_surface = '106 methods across 18 Rust-derived services'; output_proof_verified = $true }
     scenarios = [ordered]@{ typed_surface = 'passed'; append = 'passed'; cancellation = 'deadline probe completed before deadline; cancellation API wired but timeout was not forced by the fixture'; recovery = 'passed on the same live HTTP/2 connection'; tls = 'configured and available through ACYCLIC_HASKELL_GRPC_TLS; no TLS Rust fixture supplied' }
   }
-  $receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $work 'haskell-remote-receipt.json') -Encoding utf8NoBOM
+  $receiptJson = $receipt | ConvertTo-Json -Depth 10
+  [IO.File]::WriteAllText((Join-Path $work 'haskell-remote-receipt.json'), $receiptJson, [Text.UTF8Encoding]::new($false))
 } finally {
   if ($fixtureProcess -and -not $fixtureProcess.HasExited) { Stop-Process -Id $fixtureProcess.Id -Force }
 }
 Write-Output "Haskell installed remote receipt: $(Join-Path $work 'haskell-remote-receipt.json')"
-
-

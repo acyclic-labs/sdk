@@ -8,8 +8,6 @@ use acyclic_actors::{
     FILE_DESCRIPTOR_SET, validate_add_subscription, validate_create, validate_update,
     wire as actors_wire,
 };
-use acyclic_fs::wire::filesystem::v2 as fs_wire;
-use acyclic_harness::{wire as harness_wire, wire_api::HarnessWireApi};
 use acyclic_objects::wire as objects_wire;
 use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, BindingFamily, credential, transport_control};
 use acyclic_sdk_examples::fixtures::objects_server::ObjectsFixture;
@@ -29,12 +27,14 @@ use acyclic_workers::{
     FILE_DESCRIPTOR_SET as WORKERS_FILE_DESCRIPTOR_SET, validate_publish, validate_select,
     validate_submit, wire as workers_wire,
 };
-use futures::{FutureExt, StreamExt, stream};
+use futures::StreamExt;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::{Deserializer, Value, json};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::env;
+#[cfg(test)]
 use std::collections::HashMap;
 use std::io;
 use std::net::IpAddr;
@@ -74,11 +74,11 @@ mod generated_control {
 
 use generated_control::acyclic::{
     protocol::v1 as control_protocol,
-    transport::v1::{
-        protocol_service_client::ProtocolServiceClient,
-        protocol_service_server::{ProtocolService, ProtocolServiceServer},
-    },
+    transport::v1::protocol_service_server::{ProtocolService, ProtocolServiceServer},
 };
+
+#[cfg(test)]
+use generated_control::acyclic::transport::v1::protocol_service_client::ProtocolServiceClient;
 
 const DEFAULT_MAX_REQUESTS: usize = 32;
 const MAX_REQUEST_BUDGET: usize = 4_096;
@@ -239,17 +239,20 @@ impl tonic::service::Interceptor for BudgetInterceptor {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct ActorsState {
     actor: Option<actors_wire::ActorObservation>,
     mutations: HashMap<String, Vec<u8>>,
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 struct ActorsFixture {
     state: Arc<Mutex<ActorsState>>,
 }
 
+#[cfg(test)]
 impl ActorsFixture {
     fn new(_app: GrpcApp) -> Self {
         Self::with_state(Arc::new(Mutex::new(ActorsState::default())))
@@ -332,6 +335,7 @@ impl ActorsFixture {
     }
 }
 
+#[cfg(test)]
 #[tonic::async_trait]
 impl actors_wire::actors_service_server::ActorsService for ActorsFixture {
     async fn create_actor(
@@ -610,392 +614,13 @@ impl actors_wire::actors_service_server::ActorsService for ActorsFixture {
     }
 }
 
-#[derive(Clone)]
-struct FilesystemFixture;
-
-#[tonic::async_trait]
-impl fs_wire::filesystem_service_server::FilesystemService for FilesystemFixture {
-    type ExportStream = stream::Iter<std::vec::IntoIter<Result<fs_wire::ExportChunk, Status>>>;
-
-    async fn handshake(
-        &self,
-        request: Request<fs_wire::HandshakeRequest>,
-    ) -> Result<Response<fs_wire::HandshakeResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn create_workspace(
-        &self,
-        request: Request<fs_wire::CreateWorkspaceRequest>,
-    ) -> Result<Response<fs_wire::WorkspaceResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn open_workspace(
-        &self,
-        request: Request<fs_wire::OpenWorkspaceRequest>,
-    ) -> Result<Response<fs_wire::WorkspaceResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn delete_workspace(
-        &self,
-        request: Request<fs_wire::DeleteWorkspaceRequest>,
-    ) -> Result<Response<fs_wire::MutationResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn get_head(
-        &self,
-        request: Request<fs_wire::GetHeadRequest>,
-    ) -> Result<Response<fs_wire::GenerationResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn get_generation(
-        &self,
-        request: Request<fs_wire::GetGenerationRequest>,
-    ) -> Result<Response<fs_wire::GenerationResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn read(
-        &self,
-        request: Request<fs_wire::ReadRequest>,
-    ) -> Result<Response<fs_wire::ReadResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn stat(
-        &self,
-        request: Request<fs_wire::StatRequest>,
-    ) -> Result<Response<fs_wire::StatResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn list_directory(
-        &self,
-        request: Request<fs_wire::ListDirectoryRequest>,
-    ) -> Result<Response<fs_wire::ListDirectoryResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn read_link(
-        &self,
-        request: Request<fs_wire::ReadLinkRequest>,
-    ) -> Result<Response<fs_wire::ReadResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn plan_extents(
-        &self,
-        request: Request<fs_wire::PlanExtentsRequest>,
-    ) -> Result<Response<fs_wire::PlanExtentsResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn apply_transaction(
-        &self,
-        request: Request<fs_wire::ApplyTransactionRequest>,
-    ) -> Result<Response<fs_wire::MutationResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn rebase_transaction(
-        &self,
-        request: Request<fs_wire::RebaseTransactionRequest>,
-    ) -> Result<Response<fs_wire::RebaseTransactionResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn fork_workspace(
-        &self,
-        request: Request<fs_wire::ForkWorkspaceRequest>,
-    ) -> Result<Response<fs_wire::WorkspaceResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn diff(
-        &self,
-        request: Request<fs_wire::DiffRequest>,
-    ) -> Result<Response<fs_wire::DiffResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn rebase(
-        &self,
-        request: Request<fs_wire::RebaseRequest>,
-    ) -> Result<Response<fs_wire::RebaseResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn plan_join(
-        &self,
-        request: Request<fs_wire::PlanJoinRequest>,
-    ) -> Result<Response<fs_wire::JoinPlan>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn apply_join(
-        &self,
-        request: Request<fs_wire::ApplyJoinRequest>,
-    ) -> Result<Response<fs_wire::JoinResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn checkpoint(
-        &self,
-        request: Request<fs_wire::RetainGenerationRequest>,
-    ) -> Result<Response<fs_wire::RetainGenerationResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn pin(
-        &self,
-        request: Request<fs_wire::RetainGenerationRequest>,
-    ) -> Result<Response<fs_wire::RetainGenerationResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn export(
-        &self,
-        request: Request<fs_wire::ExportRequest>,
-    ) -> Result<Response<Self::ExportStream>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(stream::iter(vec![Ok(
-            fs_wire::ExportChunk {
-                cursor: b"fixture-export-cursor-1".to_vec(),
-                object_id: b"fixture-export-object-1".to_vec(),
-                contents: b"rust-owned-filesystem-export".to_vec(),
-                terminal: true,
-            },
-        )])))
-    }
-    async fn import(
-        &self,
-        request: Request<tonic::Streaming<fs_wire::ImportChunk>>,
-    ) -> Result<Response<fs_wire::ImportResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn issue_mount_credential(
-        &self,
-        request: Request<fs_wire::CredentialRequest>,
-    ) -> Result<Response<fs_wire::CredentialResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn issue_s3_credential(
-        &self,
-        request: Request<fs_wire::CredentialRequest>,
-    ) -> Result<Response<fs_wire::CredentialResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn get_source_state(
-        &self,
-        request: Request<fs_wire::SourceStateRequest>,
-    ) -> Result<Response<fs_wire::SourceResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn reconcile_source(
-        &self,
-        request: Request<fs_wire::SourceOperationRequest>,
-    ) -> Result<Response<fs_wire::SourceResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn rescan_source(
-        &self,
-        request: Request<fs_wire::SourceOperationRequest>,
-    ) -> Result<Response<fs_wire::SourceResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn seal_source(
-        &self,
-        request: Request<fs_wire::SourceOperationRequest>,
-    ) -> Result<Response<fs_wire::SourceResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn observe(
-        &self,
-        request: Request<fs_wire::ObserveRequest>,
-    ) -> Result<Response<fs_wire::ObserveResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-    async fn cancel(
-        &self,
-        request: Request<fs_wire::CancelRequest>,
-    ) -> Result<Response<fs_wire::CancelResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-}
-
-#[derive(Clone)]
-struct HarnessFixtureApi {
-    journal: Arc<Mutex<Option<harness_wire::CommandEnvelope>>>,
-}
-
-impl HarnessFixtureApi {
-    fn new() -> Self {
-        Self {
-            journal: Arc::new(Mutex::new(None)),
-        }
-    }
-}
-
-impl HarnessWireApi for HarnessFixtureApi {
-    fn authorize_operation_control<'a>(
-        &'a self,
-        _request: &'a acyclic_harness::wire_api::OperationControlRequest,
-    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<()>> {
-        async { Ok(()) }.boxed()
-    }
-
-    fn handshake<'a>(
-        &'a self,
-        _request: harness_wire::HandshakeRequest,
-    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::HandshakeResponse>>
-    {
-        async {
-            Ok(harness_wire::HandshakeResponse {
-                protocol: Some(acyclic_harness::wire_api::current_protocol()),
-                supported: Some(Default::default()),
-            })
-        }
-        .boxed()
-    }
-
-    fn submit<'a>(
-        &'a self,
-        command: harness_wire::CommandEnvelope,
-    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::Admission>> {
-        let journal = Arc::clone(&self.journal);
-        async move {
-            *journal.lock().await = Some(command.clone());
-            Ok(harness_wire::Admission {
-                operation: command.operation,
-                state: harness_wire::AdmissionState::Accepted as i32,
-                error: None,
-            })
-        }
-        .boxed()
-    }
-
-    fn replay<'a>(
-        &'a self,
-        _request: harness_wire::ResumeRequest,
-    ) -> futures::future::BoxFuture<
-        'a,
-        acyclic_harness::Result<
-            futures::stream::BoxStream<'static, acyclic_harness::Result<harness_wire::Delivery>>,
-        >,
-    > {
-        let journal = Arc::clone(&self.journal);
-        async move {
-            let command = journal.lock().await.clone();
-            let Some(command) = command else {
-                return Ok(Box::pin(stream::empty()) as _);
-            };
-            let operation_id = command
-                .operation
-                .as_ref()
-                .map(|operation| operation.operation_id.clone())
-                .unwrap_or_default();
-            let scope = command
-                .scope
-                .as_ref()
-                .map(|scope| harness_wire::RecordedScope {
-                    id: scope.id.clone(),
-                    capabilities: scope.capabilities.clone(),
-                    issuer: scope.issuer.clone(),
-                    agent_id: scope.agent_id.clone(),
-                });
-            let event = harness_wire::EventEnvelope {
-                protocol: command.protocol.clone(),
-                authority: command.authority.clone(),
-                revision: 1,
-                operation_id,
-                intent_digest: command.intent_digest.clone(),
-                scope,
-                causal_parent: command.causal_parent.clone(),
-                event_type: "fixture.command.accepted".to_owned(),
-                canonical_payload_json: br#"{"status":"accepted"}"#.to_vec(),
-                attestation: vec![1; 32],
-            };
-            Ok(Box::pin(stream::once(async move {
-                Ok(harness_wire::Delivery {
-                    authority: command.authority,
-                    generation: "rust-fixture-generation-v1".to_owned(),
-                    from_revision: 1,
-                    through_revision: 1,
-                    events: vec![event],
-                    live: false,
-                })
-            })) as _)
-        }
-        .boxed()
-    }
-
-    fn observe<'a>(
-        &'a self,
-        request: harness_wire::ObserveRequest,
-    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::OperationStatus>>
-    {
-        async move {
-            Ok(harness_wire::OperationStatus {
-                operation: Some(harness_wire::OperationIdentity {
-                    operation_id: request.operation_id,
-                    idempotency_key: String::new(),
-                }),
-                state: harness_wire::CompletionState::Running as i32,
-                error: None,
-                protocol: request.protocol,
-                owner: request.owner,
-                cancellation_requested: false,
-                revision: 0,
-            })
-        }
-        .boxed()
-    }
-
-    fn cancel<'a>(
-        &'a self,
-        request: harness_wire::CancelRequest,
-    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::CancelResponse>> {
-        async move {
-            Ok(harness_wire::CancelResponse {
-                status: Some(harness_wire::OperationStatus {
-                    operation: Some(harness_wire::OperationIdentity {
-                        operation_id: request.operation_id.clone(),
-                        idempotency_key: String::new(),
-                    }),
-                    state: harness_wire::CompletionState::Cancelled as i32,
-                    error: None,
-                    protocol: request.protocol.clone(),
-                    owner: request.owner.clone(),
-                    cancellation_requested: false,
-                    revision: 1,
-                }),
-                operation: Some(harness_wire::OperationIdentity {
-                    operation_id: request.operation_id,
-                    idempotency_key: request.idempotency_key,
-                }),
-            })
-        }
-        .boxed()
-    }
-}
+#[cfg(test)]
 #[derive(Clone, Default)]
 struct WorkersFixture {
     state: Arc<Mutex<WorkersState>>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct WorkersState {
     versions: HashMap<Vec<u8>, workers_wire::CodeVersion>,
@@ -1006,6 +631,7 @@ struct WorkersState {
     publish_idempotency: HashMap<String, Vec<u8>>,
 }
 
+#[cfg(test)]
 impl WorkersFixture {
     fn invalid(error: impl std::fmt::Display) -> Status {
         Status::invalid_argument(format!("Workers fixture request: {error}"))
@@ -1034,6 +660,7 @@ impl WorkersFixture {
 }
 
 #[tonic::async_trait]
+#[cfg(test)]
 impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
     async fn publish_version(
         &self,
@@ -1832,6 +1459,7 @@ fn control_handshake_http(path: &str, authorization: Option<&str>) -> Result<Val
     }))
 }
 
+#[cfg(test)]
 fn actors_create(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
     let request = decode_actor_request(content_type, body).map_err(|error| HttpError {
         status: 400,
@@ -1874,6 +1502,7 @@ fn actors_create(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
     })
 }
 
+#[cfg(test)]
 fn decode_actor_request(
     content_type: &str,
     body: &[u8],
@@ -1896,6 +1525,7 @@ fn decode_actor_request(
     }
 }
 
+#[cfg(test)]
 fn encode_actor_response(response: &actors_wire::CreateActorResponse) -> Result<Value, String> {
     let pool = DescriptorPool::decode(FILE_DESCRIPTOR_SET)
         .map_err(|error| format!("decode Actors descriptor: {error}"))?;
@@ -2584,14 +2214,6 @@ fn io_error(error: io::Error) -> HttpError {
         status: 400,
         message: format!("read request: {error}"),
     }
-}
-
-fn digest(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn base64_bytes(bytes: &[u8]) -> String {

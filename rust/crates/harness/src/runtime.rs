@@ -71,8 +71,10 @@ type TaskDefinitionStorage = Arc<ErasedTaskDefinition>;
 type TaskDefinitionStorage = Rc<ErasedTaskDefinition>;
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Shared task-definition handle. Native handles are thread-safe reference-counted values.
 pub type TaskDefinitionHandle<I, O> = Arc<TaskDefinition<I, O>>;
 #[cfg(target_arch = "wasm32")]
+/// Shared task-definition handle. Browser handles stay on the local executor.
 pub type TaskDefinitionHandle<I, O> = Rc<TaskDefinition<I, O>>;
 
 fn erase_task_definition<I: 'static, O: 'static>(

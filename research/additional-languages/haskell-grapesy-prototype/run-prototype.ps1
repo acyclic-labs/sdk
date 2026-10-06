@@ -1,39 +1,50 @@
-# Regenerate Haskell bindings from the Rust proto and run the local generated-wire proof.
+# Generate a fresh Rust-owned Haskell package and run the local generated-wire proof.
+[CmdletBinding()]
+param(
+  [string]$OutputDirectory,
+  [string]$WorkDirectory
+)
+
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
+$root = (Resolve-Path (Join-Path $repo '..\..\..')).Path
+$request = Join-Path $repo 'request-manifest.json'
+$sourceRevision = (& git -C $root rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$') { throw "Unable to bind Haskell package to a Rust source revision: $root" }
+$generated = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+  Join-Path $root "research/additional-languages/target/haskell-generated-$sourceRevision"
+} else { [IO.Path]::GetFullPath($OutputDirectory) }
+$work = if ([string]::IsNullOrWhiteSpace($WorkDirectory)) {
+  Join-Path $root 'research/additional-languages/target/haskell-prototype-run'
+} else { [IO.Path]::GetFullPath($WorkDirectory) }
+if (Test-Path -LiteralPath $generated) { Remove-Item -LiteralPath $generated -Recurse -Force }
+if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+& (Join-Path $repo 'generate.ps1') -Request $request -Output $generated -SourceRevision $sourceRevision
+if ($LASTEXITCODE -ne 0) { throw "Rust-owned Haskell generation failed with exit code $LASTEXITCODE" }
+$provenancePath = Join-Path $generated 'provenance.json'
+$remoteApiPath = Join-Path $generated 'src/Acyclic/Remote/Api.hs'
+if (-not (Test-Path -LiteralPath $remoteApiPath -PathType Leaf)) { throw "Rust-generated Haskell facade is missing: $remoteApiPath" }
+$remoteApi = Get-Content -LiteralPath $remoteApiPath -Raw
+if ($remoteApi -notmatch 'Rust typed-request-manifest authority') { throw 'Haskell facade is not marked as Rust-emitted' }
+if ($remoteApi -notmatch 'Rust RPC inventory count: 106') { throw 'Haskell facade does not cover the Rust 106-RPC inventory' }
+$provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+if ([string]$provenance.source_revision -ne $sourceRevision.ToLowerInvariant()) { throw 'Generated Haskell provenance is not source-bound' }
+if (@($provenance.generated_files.PSObject.Properties.Name) -notcontains 'src/Acyclic/Remote/Api.hs') { throw 'Generated Haskell provenance omits the Rust facade' }
 function To-WslPath([string]$path) {
   $full = [IO.Path]::GetFullPath($path)
   return "/mnt/$($full.Substring(0,1).ToLower())$($full.Substring(2).Replace([char]92,[char]47))"
 }
-$wslRepo = To-WslPath $repo
+$wslGenerated = To-WslPath $generated
 $ghc = '/home/var/.ghcup/bin/ghc'
 $cabal = '/home/var/.ghcup/bin/cabal'
-$generator = '/home/var/.cabal/store/ghc-9.2.8/proto-lens-protoc-0.9.0.1-e-proto-lens-protoc-f0605199134fd86e314544dedd7e3f4e568e90a6f5b04ece5303e70fe3b06bd3/bin/proto-lens-protoc'
-$rustProto = To-WslPath (Join-Path $repo '../../../rust/crates/stream/proto')
-$contractProto = To-WslPath (Join-Path $repo '../../../proto')
 $linuxRepo = '/home/var/haskell-grapesy-prototype-run'
 $cmd = @"
 set -eu
 rm -rf '$linuxRepo'
-cp -a '$wslRepo' '$linuxRepo'
-rm -rf '$linuxRepo/source'
-mkdir -p '$linuxRepo/source/stream/v2'
-cp -a '$contractProto/.' '$linuxRepo/source/'
-cp '$rustProto/stream/v2/stream.proto' '$linuxRepo/source/stream/v2/stream.proto'
-rm -rf '$linuxRepo/generated' '$linuxRepo/dist-newstyle'
-mkdir -p '$linuxRepo/generated'
-protoc --plugin=protoc-gen-haskell='$generator' --haskell_out='$linuxRepo/generated' -I '$linuxRepo/source' \
-  '$linuxRepo/source/actors/v1/actors.proto' \
-  '$linuxRepo/source/filesystem/v2/filesystem.proto' \
-  '$linuxRepo/source/harness/v2/harness.proto' \
-  '$linuxRepo/source/inference/v1/inference.proto' \
-  '$linuxRepo/source/machines/v1/machines.proto' \
-  '$linuxRepo/source/objects/v1/objects.proto' \
-  '$linuxRepo/source/objects/v2/objects.proto' \
-  '$linuxRepo/source/protocol/v1/protocol.proto' \
-  '$linuxRepo/source/validation/v1/options.proto' \
-  '$linuxRepo/source/workers/v1/workers.proto' \
-  '$linuxRepo/source/stream/v2/stream.proto'
+mkdir -p '$linuxRepo'
+cp -a '$wslGenerated/.' '$linuxRepo/'
+rm -rf '$linuxRepo/dist-newstyle'
 cd '$linuxRepo'
 $cabal build --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' all
 $cabal run --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' acyclic-haskell-prototype

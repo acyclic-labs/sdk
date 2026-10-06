@@ -40,6 +40,28 @@ fn main() {
         }
         return;
     }
+    if args.iter().any(|arg| arg == "--haskell-remote-api-output") {
+        let output = args
+            .iter()
+            .position(|arg| arg == "--haskell-remote-api-output")
+            .and_then(|index| args.get(index + 1))
+            .cloned()
+            .ok_or_else(|| "--haskell-remote-api-output requires a path".to_owned())
+            .and_then(|path| {
+                let source = acyclic_sdk_examples::fixtures::typed_request_manifest::haskell_remote_api_source()?;
+                std::fs::write(&path, source)
+                    .map_err(|error| format!("write Haskell remote API: {error}"))?;
+                Ok::<_, String>(format!("generated Haskell remote API {}\n", path.to_string_lossy()))
+            });
+        match output {
+            Ok(message) => print!("{message}"),
+            Err(error) => {
+                eprintln!("typed request Haskell remote API generation failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.iter().any(|arg| arg == "--haskell-semantics-output") {
         let output = args
             .iter()

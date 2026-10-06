@@ -441,6 +441,11 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
     let source_files = source_closure::closure_files(source_root)?;
     ensure_compiled_source_matches(&source_sha256)?;
     let source_revision = git_revision(source_root);
+    // TypeScript packages are generated before this producer in the primary
+    // pipeline. Archive those generated trees once so every TypeScript guide
+    // projection consumes the exact staged package bytes rather than a
+    // checked-out package directory.
+    prepare_typescript_archives(output)?;
     let snippets = all_rendered_snippets();
     let mut entries = Vec::new();
     let mut files = BTreeMap::new();
@@ -487,7 +492,6 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
             "code_sha256": hash(snippet.code.as_bytes()),
         }));
     }
-    let rpc_scenarios = rust_rpc_scenarios();
     ensure_source_unchanged(source_root, &source_sha256)?;
     Ok(json!({
         "schema": "acyclic.sdk.examples.bundle.v1",
@@ -1082,7 +1086,7 @@ fn run_rust(
         .map_err(|error| format!("write SDK package manifest: {error}"))?;
     fs::write(
         package_root.join("src/lib.rs"),
-        b"//! Bundled generated Rust SDK facade.\npub use acyclic_actors::{validate_create, wire};\npub use acyclic_fs;\npub use acyclic_harness;\npub use acyclic_inference;\npub use acyclic_machines;\npub use acyclic_objects;\npub use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};\npub use acyclic_workers;\n",
+        b"//! Bundled generated Rust SDK facade.\npub use acyclic_actors;\npub use acyclic_actors::{validate_create, wire};\npub use acyclic_fs;\npub use acyclic_harness;\npub use acyclic_inference;\npub use acyclic_machines;\npub use acyclic_objects;\npub use acyclic_stream;\npub use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};\npub use acyclic_workers;\n",
     )
     .map_err(|error| format!("write SDK package library: {error}"))?;
     let crates_root = source_root.join("rust/crates");
@@ -1201,6 +1205,7 @@ fn run_rust(
     if !lock.status.success() {
         let mut receipt = command_receipt("cargo generate-lockfile --offline", lock, source_sha256);
         add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
+        attach_package_archive(&mut receipt, &package_path, &qualification)?;
         let _ = fs::remove_dir_all(&staging);
         return Ok(receipt);
     }
@@ -1226,6 +1231,7 @@ fn run_rust(
             source_sha256,
         );
         add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
+        attach_package_archive(&mut receipt, &package_path, &qualification)?;
         let _ = fs::remove_dir_all(&staging);
         return Ok(receipt);
     }
@@ -1293,6 +1299,7 @@ fn run_rust(
                     "snippet_code_sha256".to_owned(),
                     json!(hash(snippet.code.as_bytes())),
                 );
+            attach_package_archive(&mut receipt, &package_path, &qualification)?;
             let _ = fs::remove_dir_all(&staging);
             return Ok(receipt);
         }
@@ -1305,6 +1312,7 @@ fn run_rust(
             source_sha256,
         );
         add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
+        attach_package_archive(&mut receipt, &package_path, &qualification)?;
         let _ = fs::remove_dir_all(&staging);
         return Ok(receipt);
     }
@@ -1333,6 +1341,7 @@ fn run_rust(
             source_sha256,
         );
         add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
+        attach_package_archive(&mut receipt, &package_path, &qualification)?;
         let _ = fs::remove_dir_all(&staging);
         return Ok(receipt);
     }
@@ -1575,11 +1584,13 @@ assert!(matches!(recovered, Admission::Accepted(_)));
 
 fn rewrite_guide_imports(mut code: String) -> String {
     for crate_name in [
+        "acyclic_actors",
         "acyclic_fs",
         "acyclic_harness",
         "acyclic_inference",
         "acyclic_machines",
         "acyclic_objects",
+        "acyclic_stream",
         "acyclic_workers",
     ] {
         code = code.replace(
@@ -1911,28 +1922,44 @@ fn run_typescript(
     source_sha256: &str,
     staging_root: &Path,
 ) -> Result<Value, String> {
-    let package = match snippet.metadata.family {
-        "actors" => source_root.join("typescript/packages/actors"),
-        "stream" => source_root.join("typescript/packages/stream"),
-        family => return Err(format!("unknown TypeScript family {family}")),
+    let Some(package_slug) = typescript_package_slug(snippet.metadata.family) else {
+        return Err(format!("unknown TypeScript family {}", snippet.metadata.family));
     };
-    let artifact = package.join("dist");
-    if !artifact.is_dir() {
-        return Ok(json!({
-            "status": "pending",
-            "command": "bun",
-            "message": format!("generated package artifact is absent: {}", artifact.display()),
-            "source_sha256": source_sha256,
-        }));
-    }
+    let output_root = staging_root.parent().unwrap_or(source_root);
+    let generated_package = typescript_package_root(output_root, snippet.metadata.family);
+    let source_package = typescript_package_root(source_root, snippet.metadata.family);
+    let (package, package_root) = if let Some(package) = generated_package {
+        (package, output_root)
+    } else if let Some(package) = source_package {
+        (package, source_root)
+    } else {
+        let mut receipt = pending_receipt(
+            "bun package archive + rendered snippet",
+            "Rust-generated TypeScript package tree is absent",
+            source_sha256,
+        );
+        add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
+        return Ok(receipt);
+    };
+    let Some(package_archive) = typescript_archive_path(package_root, snippet.metadata.family)
+        .filter(|path| path.is_file())
+    else {
+        let mut receipt = pending_receipt(
+            "bun package archive + rendered snippet",
+            "Rust-generated TypeScript package archive is absent",
+            source_sha256,
+        );
+        add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
+        return Ok(receipt);
+    };
+    let package_sha256 = hash(
+        &fs::read(&package_archive)
+            .map_err(|error| format!("read TypeScript package archive: {error}"))?,
+    );
     // The checked-out worktree can be read by the validator but is not always
     // writable on Windows. Stage the installed package and its runtime
     // dependencies into a disposable consumer workspace so this still runs
     // the same package entrypoints a user quickstart imports.
-    let package_name = package
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("TypeScript package has no directory name")?;
     let staging = validation_staging(staging_root, "typescript", snippet.metadata.id);
     if staging.exists() {
         fs::remove_dir_all(&staging)
@@ -1941,20 +1968,27 @@ fn run_typescript(
     let staged_package = staging
         .join("node_modules")
         .join("@acyclic-labs")
-        .join(package_name);
+        .join(package_slug);
     fs::create_dir_all(&staged_package)
         .map_err(|error| format!("create TypeScript staging: {error}"))?;
-    for directory in ["dist", "generated"] {
-        let source = package.join(directory);
-        if source.is_dir() {
-            copy_tree(&source, &staged_package.join(directory))?;
-        }
+    let archive_root = staging.join(".package-archive");
+    fs::create_dir_all(&archive_root)
+        .map_err(|error| format!("create TypeScript archive staging: {error}"))?;
+    let extract = Command::new("tar")
+        .args(["-xzf"])
+        .arg(&package_archive)
+        .args(["-C"])
+        .arg(&archive_root)
+        .output()
+        .map_err(|error| format!("start TypeScript package extraction: {error}"))?;
+    if !extract.status.success() {
+        return Err(format!(
+            "TypeScript package archive extraction failed: {}",
+            String::from_utf8_lossy(&extract.stderr).trim()
+        ));
     }
-    fs::copy(
-        package.join("package.json"),
-        staged_package.join("package.json"),
-    )
-    .map_err(|error| format!("stage TypeScript package metadata: {error}"))?;
+    let extracted_package = find_archive_package_root(&archive_root)?;
+    copy_tree(&extracted_package, &staged_package)?;
     let dependencies = package.join("node_modules");
     if dependencies.is_dir() {
         for entry in fs::read_dir(&dependencies)
@@ -1983,15 +2017,57 @@ fn run_typescript(
     let output = match output {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let receipt = pending_receipt("bun", "Bun executable is unavailable", source_sha256);
+            let mut receipt = pending_receipt(
+                "bun package archive + rendered snippet",
+                "Bun executable is unavailable",
+                source_sha256,
+            );
+            receipt["package_artifact_path"] = json!(portable_output_path(
+                &package_archive,
+                &output_root.join("qualification")
+            ));
+            receipt["package_artifact_sha256"] = json!(package_sha256);
+            receipt["package_archive_format"] = json!("gzip+ustar");
+            receipt["package_archive_deterministic"] = json!(true);
+            add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
             let _ = fs::remove_dir_all(&staging);
             return Ok(receipt);
         }
         Err(error) => return Err(format!("start Bun validation: {error}")),
     };
-    let receipt = command_receipt("bun", output, source_sha256);
+    let mut receipt = command_receipt(
+        "bun package archive + rendered snippet",
+        output,
+        source_sha256,
+    );
+    receipt["package_artifact_path"] = json!(portable_output_path(
+        &package_archive,
+        &output_root.join("qualification")
+    ));
+    receipt["package_artifact_sha256"] = json!(package_sha256);
+    receipt["package_archive_format"] = json!("gzip+ustar");
+    receipt["package_archive_deterministic"] = json!(true);
+    add_snippet_binding(&mut receipt, source_root, snippet, source_sha256);
+    receipt["executed"] = json!(true);
     let _ = fs::remove_dir_all(&staging);
     Ok(receipt)
+}
+
+fn find_archive_package_root(root: &Path) -> Result<PathBuf, String> {
+    if root.join("package.json").is_file() {
+        return Ok(root.to_owned());
+    }
+    let mut candidates = fs::read_dir(root)
+        .map_err(|error| format!("read extracted TypeScript package: {error}"))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && path.join("package.json").is_file())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| "TypeScript package archive has no package.json".to_owned())
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
@@ -2172,6 +2248,27 @@ fn attach_artifact(receipt: &mut Value, kind: &str, path: &Path) -> Result<(), S
         .as_object_mut()
         .ok_or("command receipt is not an object")?
         .insert("artifact".to_owned(), artifact);
+    Ok(())
+}
+
+fn attach_package_archive(
+    receipt: &mut Value,
+    package_path: &Path,
+    qualification: &Path,
+) -> Result<(), String> {
+    let bytes = fs::read(package_path)
+        .map_err(|error| format!("read package archive {}: {error}", package_path.display()))?;
+    let object = receipt
+        .as_object_mut()
+        .ok_or("package receipt is not an object")?;
+    object.insert(
+        "package_artifact_path".to_owned(),
+        json!(portable_output_path(package_path, qualification)),
+    );
+    object.insert("package_artifact_sha256".to_owned(), json!(hash(&bytes)));
+    object.insert("package_artifact_size".to_owned(), json!(bytes.len()));
+    object.insert("package_archive_format".to_owned(), json!("gzip+ustar"));
+    object.insert("package_archive_deterministic".to_owned(), json!(true));
     Ok(())
 }
 
@@ -2817,7 +2914,8 @@ fn write_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
     let bytes =
         serde_json::to_vec_pretty(manifest).map_err(|error| format!("encode manifest: {error}"))?;
     fs::write(output.join(MANIFEST), [bytes.as_slice(), b"\n"].concat())
-        .map_err(|error| format!("write manifest: {error}"))
+        .map_err(|error| format!("write manifest: {error}"))?;
+    write_guide_projection_manifest(output, manifest)
 }
 
 /// Returns every Rust-owned scenario projection in the stable bundle order.
@@ -2835,6 +2933,320 @@ fn all_rendered_snippets() -> Vec<RenderedSnippet> {
                 .map(guide_projections::rendered),
         )
         .collect()
+}
+
+fn typescript_package_slug(family: &str) -> Option<&'static str> {
+    Some(match family {
+        "actors" => "actors",
+        "filesystem" => "fs",
+        "harness" => "harness",
+        "inference" => "inference",
+        "machines" => "machines",
+        "objects" => "objects",
+        "stream" => "stream",
+        "workers" => "workers",
+        _ => return None,
+    })
+}
+
+fn typescript_package_root(output: &Path, family: &str) -> Option<PathBuf> {
+    typescript_package_slug(family)
+        .map(|_| output.join("typescript/packages").join(family))
+        .filter(|path| path.join("package.json").is_file())
+}
+
+fn typescript_package_version(package_root: &Path) -> Result<String, String> {
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(package_root.join("package.json")).map_err(|error| {
+            format!("read TypeScript package manifest {}: {error}", package_root.display())
+        })?,
+    )
+    .map_err(|error| format!("decode TypeScript package manifest: {error}"))?;
+    manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .filter(|version| !version.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("TypeScript package has no version: {}", package_root.display()))
+}
+
+fn typescript_archive_path(output: &Path, family: &str) -> Option<PathBuf> {
+    let package_root = typescript_package_root(output, family)?;
+    let slug = typescript_package_slug(family)?;
+    let version = typescript_package_version(&package_root).ok()?;
+    Some(
+        output
+            .join("qualification/packages")
+            .join(format!("acyclic-labs-{slug}-{version}.tgz")),
+    )
+}
+
+fn write_deterministic_tgz(source_dir: &Path, archive_path: &Path) -> Result<(), String> {
+    let parent = source_dir
+        .parent()
+        .ok_or_else(|| format!("archive source has no parent: {}", source_dir.display()))?;
+    let member = source_dir
+        .file_name()
+        .ok_or_else(|| format!("archive source has no name: {}", source_dir.display()))?;
+    if let Some(parent) = archive_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create archive directory {}: {error}", parent.display()))?;
+    }
+    let archive = Command::new("tar")
+        .args(["-czf"])
+        .arg(archive_path)
+        .args(["--format", "ustar", "--mtime", "1970-01-01", "-C"])
+        .arg(parent)
+        .arg(member)
+        .output()
+        .map_err(|error| format!("start deterministic package archive: {error}"))?;
+    if !archive.status.success() {
+        return Err(format!(
+            "deterministic package archive failed: {}",
+            String::from_utf8_lossy(&archive.stderr).trim()
+        ));
+    }
+    normalize_gzip_header(archive_path)
+}
+
+/// Package generated TypeScript trees into the exact archive consumed by the
+/// guide validator. The package tree is copied under the npm-compatible
+/// `package/` root so extraction never reaches back into the checkout.
+fn prepare_typescript_archives(output: &Path) -> Result<(), String> {
+    let staging_root = output.join(".sdk-examples-typescript-archives");
+    if staging_root.exists() {
+        fs::remove_dir_all(&staging_root)
+            .map_err(|error| format!("remove TypeScript archive staging: {error}"))?;
+    }
+    let mut produced = false;
+    for family in [
+        "actors",
+        "filesystem",
+        "harness",
+        "inference",
+        "machines",
+        "objects",
+        "stream",
+        "workers",
+    ] {
+        let Some(package_root) = typescript_package_root(output, family) else {
+            continue;
+        };
+        let Some(archive_path) = typescript_archive_path(output, family) else {
+            continue;
+        };
+        let staged_package = staging_root.join(family).join("package");
+        copy_dir_recursive(&package_root, &staged_package)?;
+        write_deterministic_tgz(&staged_package, &archive_path)?;
+        produced = true;
+    }
+    if produced {
+        fs::remove_dir_all(&staging_root)
+            .map_err(|error| format!("remove TypeScript archive staging: {error}"))?;
+    }
+    Ok(())
+}
+
+fn write_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<(), String> {
+    let snippets = manifest
+        .get("snippets")
+        .and_then(Value::as_array)
+        .ok_or("bundle snippets are missing")?;
+    let source = manifest
+        .get("source")
+        .ok_or("bundle source is missing")?;
+    let source_revision = source
+        .get("revision")
+        .and_then(Value::as_str)
+        .ok_or("bundle source revision is missing")?;
+    let source_sha256 = source
+        .get("sha256")
+        .and_then(Value::as_str)
+        .ok_or("bundle source sha256 is missing")?;
+    let required_projections = guide_projections::all()
+        .into_iter()
+        .filter(|projection| matches!(projection.language, Language::Rust | Language::TypeScript))
+        .collect::<Vec<_>>();
+    let artifacts_ready = required_projections.iter().all(|projection| {
+        snippets.iter().any(|snippet| {
+            snippet.get("id").and_then(Value::as_str) == Some(projection.scenario_id)
+                && snippet.get("language").and_then(Value::as_str)
+                    == Some(projection.language.as_str())
+                && snippet
+                    .pointer("/validation/receipt/package_artifact_path")
+                    .or_else(|| snippet.pointer("/validation/receipt/package_artifact"))
+                    .and_then(Value::as_str)
+                    .is_some()
+        })
+    });
+    if !artifacts_ready {
+        fs::write(output.join("guide-projections.json"), b"[]\n")
+            .map_err(|error| format!("write pending guide projection manifest: {error}"))?;
+        return Ok(());
+    }
+    let projections = guide_projections::all()
+        .into_iter()
+        .filter(|projection| matches!(projection.language, Language::Rust | Language::TypeScript))
+        .map(|projection| {
+            let snippet = snippets
+                .iter()
+                .find(|snippet| {
+                    snippet.get("id").and_then(Value::as_str) == Some(projection.scenario_id)
+                        && snippet.get("language").and_then(Value::as_str)
+                            == Some(projection.language.as_str())
+                })
+                .ok_or_else(|| format!("guide projection is absent from bundle: {}", projection.scenario_id))?;
+            let receipt = snippet
+                .pointer("/validation/receipt")
+                .ok_or_else(|| format!("guide projection receipt is absent: {}", projection.scenario_id))?;
+            let artifact_path = receipt
+                .get("package_artifact_path")
+                .and_then(Value::as_str)
+                .or_else(|| receipt.get("package_artifact").and_then(Value::as_str))
+                .ok_or_else(|| format!("guide projection package artifact is absent: {}", projection.scenario_id))?;
+            let artifact_sha256 = receipt
+                .get("package_artifact_sha256")
+                .and_then(Value::as_str)
+                .or_else(|| receipt.get("package_sha256").and_then(Value::as_str))
+                .ok_or_else(|| format!("guide projection package hash is absent: {}", projection.scenario_id))?;
+            let artifact_bytes = fs::read(output.join(artifact_path)).map_err(|error| {
+                format!(
+                    "guide projection package artifact is unreadable {}: {error}",
+                    output.join(artifact_path).display()
+                )
+            })?;
+            if hash(&artifact_bytes) != artifact_sha256 {
+                return Err(format!(
+                    "guide projection package hash mismatch: {artifact_path}"
+                ));
+            }
+            if receipt
+                .get("package_archive_format")
+                .and_then(Value::as_str)
+                != Some("gzip+ustar")
+                || receipt
+                    .get("package_archive_deterministic")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+            {
+                return Err(format!(
+                    "guide projection package is not a deterministic gzip+ustar archive: {artifact_path}"
+                ));
+            }
+            let code = snippet
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(|path| fs::read(output.join(path)).ok())
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .ok_or_else(|| format!("guide projection source file is absent: {}", projection.scenario_id))?;
+            Ok(json!({
+                "scenario_id": projection.scenario_id,
+                "family": projection.family,
+                "operation": projection.operation,
+                "language": projection.language.as_str(),
+                "mode": format!("{:?}", projection.mode).to_ascii_lowercase(),
+                "source": projection.source,
+                "source_sha256": source_sha256,
+                "source_git_revision": source_revision,
+                "capability": projection.capability.as_str(),
+                "package_manager": projection.package.package_manager,
+                "package_name": projection.package.package_name,
+                "artifact_path": artifact_path,
+                "artifact_sha256": artifact_sha256,
+                "package_artifact": artifact_path,
+                "package_sha256": artifact_sha256,
+                "archive_format": "gzip+ustar",
+                "archive_deterministic": true,
+                "qualification": {
+                    "install": projection.qualification.install,
+                    "compile": projection.qualification.compile,
+                    "execute": projection.qualification.execute,
+                },
+                "code": code,
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let bytes = serde_json::to_vec_pretty(&projections)
+        .map_err(|error| format!("encode guide projection manifest: {error}"))?;
+    fs::write(
+        output.join("guide-projections.json"),
+        [bytes.as_slice(), b"\n"].concat(),
+    )
+    .map_err(|error| format!("write guide projection manifest: {error}"))
+}
+
+fn check_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<(), String> {
+    let path = output.join("guide-projections.json");
+    let actual: Value = serde_json::from_slice(
+        &fs::read(&path).map_err(|error| format!("read guide projection manifest: {error}"))?,
+    )
+    .map_err(|error| format!("decode guide projection manifest: {error}"))?;
+    let projections = actual
+        .as_array()
+        .ok_or("guide projection manifest is not an array")?;
+    let expected_count = guide_projections::all()
+        .into_iter()
+        .filter(|projection| matches!(projection.language, Language::Rust | Language::TypeScript))
+        .count();
+    if projections.len() != expected_count {
+        return Err(format!(
+            "guide projection manifest has {}; expected {} Rust and TypeScript projections",
+            projections.len(),
+            expected_count
+        ));
+    }
+    for projection in projections {
+        let artifact_path = projection
+            .get("artifact_path")
+            .and_then(Value::as_str)
+            .ok_or("guide projection artifact path is missing")?;
+        let artifact_sha256 = projection
+            .get("artifact_sha256")
+            .and_then(Value::as_str)
+            .ok_or("guide projection artifact hash is missing")?;
+        let artifact = output.join(artifact_path);
+        let bytes = fs::read(&artifact)
+            .map_err(|error| format!("read guide projection artifact {}: {error}", artifact.display()))?;
+        if hash(&bytes) != artifact_sha256 {
+            return Err(format!("guide projection artifact drift detected: {artifact_path}"));
+        }
+        if projection.get("archive_format").and_then(Value::as_str) != Some("gzip+ustar")
+            || projection
+                .get("archive_deterministic")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(format!("guide projection archive metadata drift detected: {artifact_path}"));
+        }
+        let id = projection
+            .get("scenario_id")
+            .and_then(Value::as_str)
+            .ok_or("guide projection scenario ID is missing")?;
+        let language = projection
+            .get("language")
+            .and_then(Value::as_str)
+            .ok_or("guide projection language is missing")?;
+        let snippet = manifest
+            .get("snippets")
+            .and_then(Value::as_array)
+            .and_then(|snippets| {
+                snippets.iter().find(|snippet| {
+                    snippet.get("id").and_then(Value::as_str) == Some(id)
+                        && snippet.get("language").and_then(Value::as_str) == Some(language)
+                })
+            })
+            .ok_or("guide projection is absent from snippets")?;
+        let snippet_path = snippet
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or("guide projection snippet path is missing")?;
+        let snippet_code = fs::read_to_string(output.join(snippet_path))
+            .map_err(|error| format!("read guide projection snippet: {error}"))?;
+        if projection.get("code").and_then(Value::as_str) != Some(snippet_code.as_str()) {
+            return Err(format!("guide projection code drift detected: {id}/{language}"));
+        }
+    }
+    Ok(())
 }
 
 fn check_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
@@ -2865,6 +3277,7 @@ fn check_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
             return Err(format!("snippet drift detected: {relative}"));
         }
     }
+    check_guide_projection_manifest(output, manifest)?;
     Ok(())
 }
 
