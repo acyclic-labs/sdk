@@ -17,7 +17,8 @@
   },
   "scripts": {
     "generate": "php tools/generate.php",
-    "test": "php tests/transport_test.php"
+    "test": "php tests/transport_test.php",
+    "test:typed": "php tests/portable_typed_runtime_test.php"
   },
   "minimum-stability": "stable",
   "prefer-stable": true
