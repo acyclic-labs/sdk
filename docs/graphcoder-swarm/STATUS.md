@@ -1,96 +1,83 @@
-# Local swarm implementation status
+# Harness-first local coding swarm status
 
-The goal remains active. All 68 entries in [requirements.json](requirements.json) remain required. Its locked SHA256 is `4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef`. Missing, ignored, failing, or flaky required verification prevents completion.
+This is the single current status and evidence index. The locked acceptance
+matrix has 68 required rows in [requirements.json](requirements.json), with
+the receipt contract in [qualification-receipt.schema.json](qualification-receipt.schema.json)
+and the platform inventory in [platform-gates.json](platform-gates.json).
 
-## Current integrated evidence
+## Qualification state
 
-At source `10ad465c3`, the private Harness mailbox and control-publication implementation is shared across task hosts, preserving record format, endpoint authorization, idempotency identities and exact committed-record verification. Windows native tests pass 368 library, four communication, four recursive and six fault cases, with no failures or ignored cases. The initial missing-import compilation failure is preserved separately. See [source, suite and artifact evidence](checkpoint-mailbox-extraction-native-2026-10-05.json). This extraction prepares default communication composition; it does not qualify that composition, installed artifacts or the full matrix.
+Final qualification is **open**. This checkout contains no final receipt and
+no source-bound installed native, package, PTY, WASM, or full recursive-runtime
+evidence. A focused pass never promotes a matrix row by itself. Missing,
+failed, skipped, flaky, stale, fixture-only, compile-only, or unbound evidence
+keeps the final gate closed.
 
-Wait model contract v3 at source `51987376f` declares delivered immutable payload references while preserving strict required fields for each closed result kind. Windows native verification passes 368 library, four durable communication, four recursive and six fault tests, with no failures or ignored cases. At source `b1136c59b`, all 13 exact-input tests pass (seven persistent provider-boundary, three frozen conformance and three rejection/corruption cases). The new wait-result fixture changes a real staged message path after selecting its older reference, then compares actual provider bytes against the journaled request and manifest; the manifest contains the older reference and excludes the newer generation. The result adapter is a fixture, so this qualifies model-input projection rather than default mailbox delivery. See [wait v3 regressions](checkpoint-wait-v3-native-2026-10-05.json) and [provider-boundary evidence](checkpoint-wait-provider-input-native-2026-10-05.json). Harness implementation sources are unchanged between those commits. Default durable communication composition, completion observation and installed qualification remain required.
+The historical checkpoint files were removed from the working tree because
+their external logs and binaries are no longer retained. Their commits remain
+in Git history. They must not be cited as current qualification evidence.
+The machine-readable scenarios and contracts required by the runners remain:
 
-At source `797a4c530`, the Windows native Harness library passes 367/367, recursive tests pass 4/4 and fault tests pass 6/6, with no failed or ignored cases. The immutable-reference collector supports only bounded, closed `oneOf` branches with distinct required `kind` constants, and collects references exclusively from the validated branch. Forged references, unknown tags, missing fields, open/duplicate branches and branch-count overflow are rejected. The first run's cancellation notification timeout remains preserved; its single observer now receives a retained notification permit and a failed wait aborts and awaits its owning task without increasing the five-second limit. See [tagged-reference evidence](checkpoint-tagged-references-native-2026-10-05.json). Default communication and installed qualification remain open.
+- `graphcoder-native-scenarios.json`
+- `graphcoder-installed-swarm-scenarios.json`
+- `graphcoder-real-backend-scenarios.json`
+- `graphcoder-transport-fault-scenarios.json`
+- `platform-gates.json`
+- `qualification-receipt.schema.json`
+- `requirements.json`
 
-At source `05a76fac4`, the Windows native Harness library passes 366/366, the recursive suite passes 4/4 and the fault suite passes 6/6, with no failed or ignored cases. All activation failure sites now share one guard: an unavailable journal or admitted model execution retains the claim; only an available journal proving no admission permits failure publication. The regression uses real journaled execution and reopen. Source `1dca5d501` adds a bounded TLA+ safety model of one operation and two owners: the safe configuration explores 23 distinct states without a violation; the deliberately unsafe claim-release rule yields the expected four-state counterexample. The model assumes storage/journal and provider-reconciliation contracts, checks no liveness theorem, and is not an implementation refinement proof. See [native and formal evidence](checkpoint-activation-recovery-native-formal-2026-10-05.json) and [model scope](../../rust/crates/harness/verification/README.md). Native compiled Rust sources are unchanged between these two commits. This checkpoint does not qualify default communication, approved execution/writeback, installed artifacts or the full matrix.
+## Retained Q evidence
 
-At clean source `e1c23133c`, all 15 Windows native local coordinator regressions pass with no ignored cases. Pinned registry reads reject an incomplete range instead of publishing a partial projection. Host-only observations expose lazy activity without adding durable state or model content; the cross-handle scenario proves metadata reads do not open a cold child or fetch its workspace and that stale workspace publication remains denied. The initial observation port failed compilation due to a missing test-only type name; that failure is preserved alongside the repaired run. See [source, log and executable evidence](checkpoint-coordinator-observations-native-2026-10-04.json). The production recursive swarm and installed runtime remain unqualified.
+Retained native and tooling evidence is scoped to the source in each receipt.
+It does not qualify later source revisions or the full matrix:
 
-At clean source `40e2f854d`, the Windows native GraphCoder CLI suite passes 7/7, the TypeScript dispatcher and UI boundary suites pass 42/42 (139 assertions), and GraphCoder type checking passes. Metadata-only snapshots retain an unknown workspace generation; generation-bearing reads explicitly obtain the pinned Filesystem generation. Unknown activity and approval metadata remains null rather than fabricated values. The qualification provenance suite passes 8/8, including a real receipt producer/consumer flow and altered-source, artifact, environment and missing-evidence rejection. These are focused checks, not installed recursive-runtime qualification. Logs, suite sources and the native test executable are archived with verified SHA-256 digests on D: in [metadata and tooling evidence](checkpoint-metadata-tooling-native-2026-10-04.json). The initial C: archive attempt failed due to disk exhaustion and does not count as evidence.
+- Model-input conformance/rejection: nine cases at `1932e22aa`, recorded in
+  [input contracts](checkpoint-q-input-contracts-2026-10-06.json).
+- Persistent request admission: seven cases at `46852dc41`, recorded in
+  [persistent input](checkpoint-q-persistent-input-pass-2026-10-06.json).
+- Windows native process cleanup: eleven cases at `bdd5ea0a4`, recorded in
+  [native processes](checkpoint-q-native-process-pass-2026-10-06.json).
+- Qualification tooling: twenty-three cases at `e8d329944`, recorded in
+  [qualification tooling](checkpoint-q-qualification-tooling-pass-2026-10-06.json).
+- Both recursive and unified native scenarios at `af3945f43` failed with
+  stack overflows; see [preflight failures](checkpoint-q-owned-task-preflight-failure-2026-10-06.json).
+- The owned resolver task repair at `f195400b5` prepared and published two
+  children without the prior overflow, but the scenario failed during the
+  `default-message-child` tool exchange. See [communication failure](checkpoint-q-owned-task-communication-failure-2026-10-06.json).
 
-At clean source `b3dff5345`, the 12 Windows native exact-input tests pass after pinning the explicit stage-file v2 definitions, schema digests and model binding digest. The manifest assertions independently include the declared immutable tool-result reference. Executables, suite sources and the complete log are archived in [stage-file v2 evidence](checkpoint-exact-input-stage-v2-native-2026-10-04.json). The initial v1 golden failures and the subsequent run invalidated by concurrent manifest edits do not qualify this source. Full recursive swarm, WASM and installed execution remain separate gates.
+Packaging-side focused checks also remain distinct from actual artifact builds:
 
-At source `ba66f9a12`, the production recursive `local_model_swarm` run fails with Windows `STATUS_STACK_OVERFLOW` (`0xc00000fd`) after the schema-declared inherited-file grant repair. The test runs with normal stack settings; this is a required runtime failure, not a qualified swarm. Runtime diagnosis must preserve recursive depth and real effects rather than increase fixture stack size or narrow the scenario.
+- Native binding producer commit `9da098ca9`: five producer tests pass,
+  including Cargo identity, exact `-j1` argv, retained logs, source mutation,
+  and tamper rejection. No Cargo build was run by that check.
+- Qualification validator commit `54162ce38`: twenty receipt and coverage
+  tests pass, including shared-suite assertions and rejection of unknown
+  requirement IDs. These are validator tests, not runtime qualification.
+- The final required evidence must be regenerated from the final clean source
+  after native, package, PTY, and WASM lanes complete.
 
-At source `99ae53078`, 13 Windows native local coordinator regressions pass with no ignored cases, including concurrent empty-registry openers, cancellation/completion preservation across late failure and restart, and direct-parent project selection. The production entrypoint's three Node contract tests also pass after removing its implicit working-directory fallback. This remains focused coordinator evidence, not full recursive swarm qualification. The native suite executable SHA256 is `4f0b43c6b832318be7b25aea06223981baecc0a35faa66dfe88e24e8011c0d32`.
+## Implementation and qualification checklist
 
-At source `5214f51ea`, `cargo check --workspace --all-targets` passes after the fork model-boundary bindings and async coordinator closure repair. This is native compilation evidence, not WASM execution or installed-artifact qualification.
+- [x] Isolated branch from the pinned base; no merge into the user's checkout.
+- [x] Locked 68-row matrix and source-bound evidence receipt contract.
+- [ ] Exact input, attachment and recursive-prefix tests on current native/WASM artifacts.
+- [ ] Complete recursive production workflow, communication, waits and restart.
+- [ ] Session-wide budgets with durable effect accounting and one authority.
+- [ ] Direct-parent integration, conflict/abort/rebase/discard and publication recovery.
+- [ ] Exact process approval, uncertainty and cleanup across failure boundaries.
+- [ ] Approved root writeback preserving concurrent edits and recovering partial restore.
+- [ ] Thin terminal composition, lazy inspection, interactive/headless installed tests.
+- [ ] Fresh bindings, packages, provider/platform regressions and complete 68-row qualification.
+- [ ] Final clean committed source and artifact audit; goal completion.
 
-At source `bc110358c`, 21 Windows native fork regressions pass after reports and seeds share one history-capture validator. Wire formats, proof digests and strict/rebound scopes remain unchanged. See [focused validation evidence](checkpoint-fork-validation-cut-native-2026-10-04.json).
+## Final execution order
 
-Independent review still holds duplicate child activation: concurrent retries can dispatch a child more than once. The startup and late-failure defects identified in that review have focused repairs and regression evidence above. Durable cross-handle activation claims and full production qualification remain required.
+Run the platform manifest gates, produce the Windows native binding and its
+causal receipt, run the package gate, consume fresh native and packed
+artifacts, run PTY and transport-fault lanes, then assemble and validate the
+68-row receipt. Every descriptor, transcript, artifact, source identity,
+execution count, exit status, and digest must be fresh for that source.
 
-At source `d595f3ba4`, 10 Windows native lazy-projection regressions pass with no ignored cases after integration. Registry refresh reads an unseen suffix, metadata inspection avoids cold child activation, and cancellation releases the refresh fence before host propagation. See [focused source and artifact evidence](checkpoint-integrated-lazy-native-2026-10-04.json). Independent review, installed counters and full coordinator qualification remain required.
-
-At source `173cb1b85`, 12 Windows native exact-input tests pass with no ignored cases, including the physical corruption/deletion test enabled by `test-support`. These capture serialized provider requests and exercise generation-pinned content, explicit limits, schema denials and restart replay. See [source, suite and artifact evidence](checkpoint-exact-input-native-2026-10-04.json). Full recursive coordinator, WASM and installed qualification remain separate gates.
-
-At source `1953894ae`, the two Windows native owned/shared crash-atomic regressions pass with no ignored cases after hidden subprocess launch and intentional crash termination changes. Test execution takes 14.99 seconds. See [focused source, log and executable evidence](checkpoint-hidden-crash-atomic-native-2026-10-04.json). This does not qualify the full Filesystem matrix or the Harness swarm.
-
-At source `4ba8293a9`, all 353 Windows native Harness library tests pass with no ignored cases. The recursive production swarm fails on a missing exact read capability for an inherited staged file. The separate fault suite passes 2/5: two cases observe three provider dispatches instead of two, and cold fork-intent recovery duplicates completion text. See [source, suite, log and executable evidence](checkpoint-integrated-fork-native-2026-10-04.json). These failures remain acceptance blockers; library results do not qualify production orchestration.
-
-At source `239c00bb8`, the Filesystem default-feature native library run finishes with 1112 passed, zero failed and 36 ignored. Both owned/shared crash-atomic cases pass. Ignored cases remain unqualified. See [archived Filesystem evidence](checkpoint-filesystem-native-2026-10-04.json).
-
-The cold recursive model boundary at source `9dfc54cb5` passes 3/3 after every original provider handle is released. Each cold request preserves inherited prefix bytes, serialization, binding and durable manifest. See [cold-prefix evidence](checkpoint-cold-prefix-native-pass-2026-10-04.json). This focused boundary suite does not qualify the production coordinator.
-
-Earlier passing and failing checkpoints are retained in [EVIDENCE.md](EVIDENCE.md). A receipt proves only its source and stated scope. The earlier fork-port compilation failures are repaired in the current source; their evidence remains historical.
-
-At source `3d0a42bff`, the integrated Windows native Harness library and fault suites pass 365/365 and 5/5. See [recovery regression evidence](checkpoint-recovery-foundation-native-2026-10-04.json).
-
-At source `97d11a74a`, recursive child turns run as independently scheduled, abort-on-drop owned tasks, and GraphCoder snapshot assembly uses one lazy Harness projection. The library passes 365/365 and the real recursive durable swarm passes 1/1 on the ordinary Windows stack. The fault suite passes 4/5; `cancelled_child_after_publication_cannot_be_reactivated` times out after release. This failed gate prevents qualification. See [integrated recursive evidence](checkpoint-recursive-integrated-native-2026-10-04.json).
-
-The existing public terminal tests pass 7/7 at source `f07b958d8`. Frozen dependency installation passes at `fd4e73c29` after adding the missing GraphCoder workspace lock entries; no dependency versions changed. See [terminal and lock evidence](checkpoint-cli-lock-native-2026-10-04.json). These tests do not cover installed recursive commands, native approval or user-checkout writeback.
-
-## Remaining integration and qualification
-
-At candidate source `231de6a78`, all three production recursive tests and all five fault tests pass on Windows with no ignored cases. Harness shares a live cancellation signal across handles of one composition root, signals only after durable cancellation, and awaits the owned child's termination before inspecting its journal. The cancellation fixture leaves its provider blocked and verifies that cancellation itself drops the stream. Depth denial rejects grandchild publication and dispatch while retaining the already admitted child activation for recovery. See [candidate source and artifact evidence](checkpoint-cancellation-repair-native-2026-10-04.json). These changes are integrated through `bed152979`; the full integrated library and runtime run remains required. The prior two-pass/one-failure test expectation is preserved in [earlier evidence](checkpoint-recursive-cleanup-native-2026-10-04.json).
-
-At clean integrated source `9b9186826`, the full Windows native Harness library passes 365/365, the production recursive suite passes 3/3, and the fault suite passes 5/5, with no failures or ignored cases. See [integrated cancellation evidence](checkpoint-cancellation-integrated-native-2026-10-04.json). This closes that cancellation checkpoint, not the full acceptance matrix. A separate live cross-handle activation fence remains under verification.
-
-At candidate source `c9d107c72`, all three recursive and six fault tests pass on Windows, including a second-handle retry while the first child provider is blocked. The live per-task guard is shared across handles of one composition root; a retry returns an explicit indeterminate outcome without opening another child writer or dispatching another request. Cancellation and guards share one weakly retained live-state cache. See [live activation evidence](checkpoint-live-activation-native-2026-10-04.json). The change is integrated at `9c6a899c5`; the full integrated library run remains required.
-
-At clean integrated source `c600e386f`, all 365 Harness library tests, three production recursive tests and six fault tests pass on Windows with no failures or ignored cases. See [integrated live activation evidence](checkpoint-live-activation-integrated-native-2026-10-04.json). This qualifies the live activation guard checkpoint; it does not close the remaining composition or installed acceptance gates.
-
-1. Complete default durable local composition so model-selected messaging, waits and task completion share recoverable scoped authority and remain usable after all original handles are dropped. The earlier communication candidate is not qualified merely by constructing a coordinator host.
-
-The recursive constructor now retains the originally opened root storage while binding its fork tools, rather than closing and reopening the root to recover its signing material. Candidate `22b94ef5e` passes all 365 library, four production recursive and six fault tests on Windows with no failures or ignored cases. Its new default-constructor scenario runs root/children/grandchild through actual serialized provider requests, drops the composition, and reopens the completed operation without redispatch. See [single-open composition evidence](checkpoint-single-owner-composition-native-2026-10-04.json). Integrated source `5dd97f1a7` has identical Rust sources to the tested candidate. This is a constructor checkpoint; default durable messaging and waits remain incomplete.
-2. Integrate and qualify scoped communication admission, durable resource budgeting, lazy metadata projection, pinned operator authority and approved root-writeback recovery. Worker commits remain candidates until integrated and tested.
-3. Complete recoverable process ownership, including launch-initialization failures, cancellation, overflow, descendant cleanup and installed native transport. Uncertain effects must remain uncertain.
-4. Complete the thin terminal routes and verify public inspection, exact approvals, concurrent user edits/deletions, conflicts, continuation, abort and cold recovery through installed artifacts.
-5. Build fresh distributables after final source changes. Execute every locked matrix gate, including Windows PTY, package consumption, generated bindings, provider conformance, Filesystem/plugin regressions and actual supported platform lanes.
-6. Audit library ownership and dependency boundaries, record final digests, and confirm all intended changes committed on the isolated branch without a merge.
-
-## Boundaries
-
-SCOPE-06 is not fully qualified: the original `Q:\sdk` checkout remains on pinned `main` commit `31b9ff52d63c91f2b9bf87e16b78ad682d26546f` with clean tracked and staged diffs, but no pre-task untracked-file inventory was found. A current clean tracked tree does not prove preservation of the original untracked set. Do not claim the required before/after untracked digest audit passed.
-
-Harness owns model inputs, orchestration, forks, communication, admission, effects and recovery. Filesystem owns workspace semantics and its host adapter. GraphCoder stays a composition and terminal wrapper.
-
-Models are mocked. There is no sandbox or cloud implementation. Workspace routing is not process confinement. Host commands require exact approval and exclude inherited credentials. Root writeback requires approval and reconciliation with concurrent user changes. The original checkout remains untouched; work stays on `codex/graphcoder-sdk` without merging.
-
-At source `05f67679c`, published child storage reopens through the existing authenticated fork path, and activation/later child turns share inherited-bundle construction. Default model-driven communication and cold inbox/wait replay pass. The full recursive suite fails 2/4: startup preparation exceeds the cleanup fixture watchdog and the forbidden-call fixture searches a prompt delivered as a FileRef. See [preserved failing checkpoint](checkpoint-default-communication-repair-2026-10-05.json). Source `aca6b7dd0` selects the negative response explicitly and gives durable preparation its own watchdog while retaining the five-second owned-stream shutdown bound; its verification is running. Full acceptance remains open.
-
-At source `aca6b7dd0`, all four durable communication and all four recursive production tests pass. The fault suite passes 4/6 and fails two child-dispatch notification waits, so the combined runtime gate remains failed. See [source, suite and artifact evidence](checkpoint-default-communication-native-2026-10-05.json). `c708ad98e` replaces a lossy notification with a retained permit and adds abort-and-await cleanup for timeout paths; it is under focused verification without changing fault timeout bounds.
-
-At source `c708ad98e`, all six focused Windows native fault tests pass with no ignored cases. Notification retention and owned-task failure cleanup preserve the original timeout bounds. See [source, suite and artifact evidence](checkpoint-fault-cleanup-native-2026-10-05.json). The complete integrated native library/runtime/exact-input run remains required.
-
-At source `2ff9ee0fc`, the integrated native test-support run passes 368 library, four communication and four recursive cases. The parallel fault suite still fails 2/6, and Cargo does not execute the three exact-input suites. See [integrated failure evidence](checkpoint-default-communication-integrated-2026-10-05.json). Retained notifications fix a race but do not establish the cause of the remaining preparation timeouts. Focused serial passes are not full qualification.
-
-At source `e342666bd`, default communication tools use the existing shared cancellation source, restored from durable session phases on reopen. Root turns and child activations share cancellation observation, and later root execution is fenced by the persisted cancelled state. Two real-storage focused checks pass, including interrupted wait replay and owned-provider cleanup. See [cancellation evidence](checkpoint-default-cancellation-native-2026-10-05.json). Full library and exact-input regressions are next; the earlier parallel fault preparation failures remain unqualified.
-
-At source `6d0b3d3c9`, the full Windows native Harness library passes 370/370 and the exact-input suites pass 13/13, zero failed/ignored. See [library and provider-input evidence](checkpoint-cancellation-library-input-native-2026-10-05.json). This does not close the parallel fault preparation gate or prove live bidirectional parent/child swarming. The publisher currently awaits each child activation to completion; a child waiting for a parent reply can block the parent publication path. Owned concurrent scheduling and a real live-message handshake remain required before calling the swarm usable or fully qualified.
-
-At source `24a159cb7`, all fourteen native runtime cases pass after default cancellation wiring. See [runtime evidence](checkpoint-cancellation-runtime-native-2026-10-05.json). Earlier timing failures remain unresolved evidence; live parent-child communication is not covered by these completed-child scenarios. The next implementation separates child preparation, execution and durable completion so scheduling can release the parent while child work remains owned.
-
-### Owned child execution and fork-boundary model (2026-10-05)
-Source 75859a6d7eb6661ba6c2c32a45d42feb07763102 separates provider execution/cancellation from the single durable child-completion fence. Communication 4/4, recursive 4/4 and faults 6/6 passed natively with no ignored cases. Source 32d5cb7343fe383c5660ff5ee5607dd628db3156 adds a bounded fork model: 51 reachable safe states, with expected early-dispatch and mutable-capture counterexamples. Shared formal runner preserves activation checks. These are bounded design checks, not Rust refinement or whole-swarm proof. Live nonblocking scheduling and earlier fault watchdog flakiness remain open. Evidence: checkpoint-child-execution-fork-model-native-2026-10-05.json.
-
-### Prepared child ownership (2026-10-05)
-Source 5c757f5b0ff6e6a77279cfe1c1b10c2cfdc0cc69 retains the typed preparation result, activation gate, frozen bundle and cancellation subscription in an owned child turn. The initial extraction overflowed the recursive test stack at 7b01527f5; that source/log/binary are preserved. Boxing preparation and its payload restored the normal Windows stack run: recursive 4/4 and faults 6/6 passed. Exact input 13/13 passed at the same source after a compiler memory-allocation failure and one-job retry; both logs retained. This is preparation for live scheduling, not its implementation. Session-wide budget wiring is the next admission dependency. Evidence: checkpoint-prepared-child-native-2026-10-05.json.
+Models remain mocked for this goal. Filesystem, storage, recursive agents,
+approved process effects, and terminal interaction must be real. No sandbox is
+implemented or implied by workspace routing.
