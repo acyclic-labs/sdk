@@ -4444,6 +4444,32 @@ fn run_generated_type_audit(
     let _ = fs::remove_dir_all(&audit_root);
     Ok(result)
 }
+fn product_artifact_command(
+    manifest: &Path,
+    operation: &str,
+    root: &Path,
+    destination: &Path,
+    profile: GenerationProfile,
+) -> Vec<OsString> {
+    vec![
+        cargo_program(),
+        OsString::from("run"),
+        OsString::from("--manifest-path"),
+        manifest.as_os_str().to_os_string(),
+        OsString::from("--locked"),
+        OsString::from("--bin"),
+        OsString::from("sdk-contract-wire"),
+        OsString::from("--"),
+        OsString::from(operation),
+        OsString::from("--root"),
+        root.as_os_str().to_os_string(),
+        OsString::from("--out"),
+        destination.as_os_str().to_os_string(),
+        OsString::from("--profile"),
+        OsString::from(profile.as_str()),
+    ]
+}
+
 fn run_product_artifacts(
     root: &Path,
     output: &Path,
@@ -4484,23 +4510,7 @@ fn run_product_artifacts(
     };
     ensure_product_destination(root, destination, operation)?;
     for operation in operations {
-        let command = vec![
-            cargo_program(),
-            OsString::from("run"),
-            OsString::from("--manifest-path"),
-            manifest.as_os_str().to_os_string(),
-            OsString::from("--locked"),
-            OsString::from("--bin"),
-            OsString::from("sdk-contract-wire"),
-            OsString::from("--"),
-            OsString::from(operation),
-            OsString::from("--root"),
-            root.as_os_str().to_os_string(),
-            OsString::from("--out"),
-            destination.as_os_str().to_os_string(),
-            OsString::from("--profile"),
-            OsString::from(profile.as_str()),
-        ];
+        let command = product_artifact_command(manifest, operation, root, destination, profile);
         if first_command.is_empty() {
             first_command = command.clone();
         }
@@ -9331,6 +9341,29 @@ mod tests {
             text.windows(2)
                 .any(|pair| { pair[0] == "--model-digest" && pair[1] == "a".repeat(64) })
         );
+    }
+
+    #[test]
+    fn product_artifact_command_forwards_each_generation_profile() {
+        for (profile, expected) in [
+            (GenerationProfile::RustTypescriptDocs, "rust-typescript-docs"),
+            (GenerationProfile::AllLanguages, "all-languages"),
+        ] {
+            let command = product_artifact_command(
+                Path::new("rust/crates/sdk-contract-wire/Cargo.toml"),
+                "generate-products",
+                Path::new("source"),
+                Path::new("output"),
+                profile,
+            );
+            let text = command
+                .iter()
+                .map(|part| part.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(text.windows(2).any(|pair| {
+                pair[0] == "--profile" && pair[1] == expected
+            }));
+        }
     }
 
     #[test]

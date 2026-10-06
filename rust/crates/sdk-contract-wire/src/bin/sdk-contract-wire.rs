@@ -159,6 +159,51 @@ const PRIMARY_PRODUCT_PATHS: &[&str] = &[
     "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs",
 ];
 
+// These output roots are deliberately deferred from the Rust/TypeScript/docs
+// profile. They remain generated and checked by the all-languages profile;
+// keeping the classification explicit makes a newly added product path fail
+// closed instead of silently disappearing from the primary profile.
+const DEFERRED_PRODUCT_PATH_PREFIXES: &[&str] = &[
+    "python/",
+    "go/",
+    "ruby/",
+    "php/",
+    "dart/",
+    "jvm/",
+    "dotnet/",
+    "swift/",
+    "cpp/",
+];
+
+fn is_deferred_product_path(path: &str) -> bool {
+    DEFERRED_PRODUCT_PATH_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+fn filter_product_artifacts_for_profile(
+    artifacts: Vec<GeneratedArtifact>,
+    profile: ProductProfile,
+) -> Result<Vec<GeneratedArtifact>, Box<dyn Error>> {
+    match profile {
+        ProductProfile::AllLanguages => Ok(artifacts),
+        ProductProfile::RustTypescriptDocs => artifacts
+            .into_iter()
+            .try_fold(Vec::new(), |mut selected, artifact| {
+                let path = artifact.0.as_str();
+                if PRIMARY_PRODUCT_PATHS.contains(&path) {
+                    selected.push(artifact);
+                } else if !is_deferred_product_path(path) {
+                    return Err(format!(
+                        "unclassified product artifact path {path}; classify it as primary or deferred"
+                    )
+                    .into());
+                }
+                Ok(selected)
+            }),
+    }
+}
+
 fn public_field_direction_name(direction: PublicFieldDirection) -> &'static str {
     match direction {
         PublicFieldDirection::Request => "request",
@@ -887,13 +932,7 @@ fn product_artifacts(
         artifacts.push((path.to_owned(), source.into_bytes()));
     }
     let _ = fs::remove_dir_all(staging);
-    Ok(match profile {
-        ProductProfile::AllLanguages => artifacts,
-        ProductProfile::RustTypescriptDocs => artifacts
-            .into_iter()
-            .filter(|(path, _)| PRIMARY_PRODUCT_PATHS.contains(&path.as_str()))
-            .collect(),
-    })
+    filter_product_artifacts_for_profile(artifacts, profile)
 }
 
 fn generate_products(
@@ -2004,17 +2043,68 @@ mod tests {
         }
     }
 
+    fn recursive_model_source_paths(root: &str) -> Vec<String> {
+        let mut pending = vec![root.to_owned()];
+        let mut visited = BTreeSet::new();
+        while let Some(path) = pending.pop() {
+            if !visited.insert(path.clone()) {
+                continue;
+            }
+            let (_, bytes) = MODEL_SOURCES
+                .iter()
+                .find(|(candidate, _)| *candidate == path)
+                .unwrap_or_else(|| panic!("module {path} is absent from the model inventory"));
+            let source = std::str::from_utf8(bytes).expect("model source is UTF-8");
+            let directory = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+            let file_name = path.rsplit('/').next().expect("model source has a file name");
+            let module_directory = if file_name == "mod.rs" {
+                directory.to_owned()
+            } else {
+                let stem = file_name
+                    .strip_suffix(".rs")
+                    .expect("model source has a Rust extension");
+                if directory.is_empty() {
+                    stem.to_owned()
+                } else {
+                    format!("{directory}/{stem}")
+                }
+            };
+            for declaration in source.lines().map(str::trim) {
+                let declaration = declaration
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| declaration.strip_prefix("pub "))
+                    .unwrap_or(declaration);
+                let Some(name) = declaration
+                    .strip_prefix("mod ")
+                    .and_then(|name| name.strip_suffix(';'))
+                else {
+                    continue;
+                };
+                let child = if module_directory.is_empty() {
+                    format!("{name}.rs")
+                } else {
+                    format!("{module_directory}/{name}.rs")
+                };
+                assert!(
+                    MODEL_SOURCES.iter().any(|(candidate, _)| *candidate == child),
+                    "module declaration {child} is absent from the model inventory"
+                );
+                pending.push(child);
+            }
+        }
+        visited.into_iter().collect()
+    }
+
     #[test]
     fn semantic_oracle_child_edits_change_model_identity() {
         let original = model_source_revision();
-        for child_path in [
-            "rust/crates/sdk-contract-wire/src/semantic_oracle/actors.rs",
-            "rust/crates/sdk-contract-wire/src/semantic_oracle/inference.rs",
-            "rust/crates/sdk-contract-wire/src/semantic_oracle/machines.rs",
-            "rust/crates/sdk-contract-wire/src/semantic_oracle/objects.rs",
-            "rust/crates/sdk-contract-wire/src/semantic_oracle/stream.rs",
-            "rust/crates/sdk-contract-wire/src/semantic_oracle/workers.rs",
-        ] {
+        let root = "rust/crates/sdk-contract-wire/src/semantic_oracle.rs";
+        let child_paths = recursive_model_source_paths(root)
+            .into_iter()
+            .filter(|path| path != root)
+            .collect::<Vec<_>>();
+        assert!(!child_paths.is_empty(), "semantic-oracle module graph has no children");
+        for child_path in child_paths {
             let mut sources = MODEL_SOURCES
                 .iter()
                 .map(|(path, bytes)| ((*path).to_owned(), bytes.to_vec()))
@@ -2047,6 +2137,22 @@ mod tests {
                 "new embedded emitter {path} is absent from the model inventory"
             );
         }
+    }
+
+    #[test]
+    fn primary_product_profile_rejects_unclassified_paths() {
+        let error = filter_product_artifacts_for_profile(
+            vec![("future-language/generated.rs".to_owned(), Vec::new())],
+            ProductProfile::RustTypescriptDocs,
+        )
+        .expect_err("unclassified product paths must fail closed");
+        assert!(error.to_string().contains("unclassified product artifact path"));
+        let deferred = filter_product_artifacts_for_profile(
+            vec![("python/generated.py".to_owned(), Vec::new())],
+            ProductProfile::RustTypescriptDocs,
+        )
+        .expect("known foreign-language paths remain explicitly deferred");
+        assert!(deferred.is_empty());
     }
 
     fn evidence_item() -> Value {

@@ -37,17 +37,17 @@ export function createMachinesGrpcInvoker(options: MachinesGrpcOptions): RustOwn
     nodeOptions: { ca: [...rootCertificates, caCertificate], cert: certificate, key: privateKey },
   }));
   return {
-    invokeGrpc<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest) {
+    invokeGrpc<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest, signal?: AbortSignal) {
       const operation = method.rpcName.charAt(0).toLowerCase() + method.rpcName.slice(1) as keyof typeof client;
       const call = client[operation];
       if (typeof call !== "function" || method.serverStreaming) throw new TypeError(`Machines RPC ${method.rpcName} is not unary`);
-      return (call as unknown as (request: TRequest) => Promise<TResponse>)(request);
+      return (call as unknown as (request: TRequest, options?: { readonly signal?: AbortSignal }) => Promise<TResponse>)(request, signal === undefined ? undefined : { signal });
     },
-    invokeGrpcStream<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest) {
+    invokeGrpcStream<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest, signal?: AbortSignal) {
       const operation = method.rpcName.charAt(0).toLowerCase() + method.rpcName.slice(1) as keyof typeof client;
       const call = client[operation];
       if (typeof call !== "function" || !method.serverStreaming) throw new TypeError(`Machines RPC ${method.rpcName} is not server streaming`);
-      return (call as unknown as (request: TRequest) => AsyncIterable<TResponse>)(request);
+      return (call as unknown as (request: TRequest, options?: { readonly signal?: AbortSignal }) => AsyncIterable<TResponse>)(request, signal === undefined ? undefined : { signal });
     },
   };
 }

@@ -45,9 +45,9 @@ pub fn run_terminal_metadata() -> Result<String, JsValue> {
 /// cannot independently redefine terminal names, values, or partial-output
 /// semantics.
 #[wasm_bindgen(js_name = validateRunTerminalMetadata)]
-pub fn validate_run_terminal_metadata(raw: String) -> Result<String, JsValue> {
+pub fn validate_run_terminal_metadata(raw: &str) -> Result<String, JsValue> {
     let expected = terminal_metadata().map_err(JsValue::from_str)?;
-    let actual: serde_json::Value = serde_json::from_str(&raw)
+    let actual: serde_json::Value = serde_json::from_str(raw)
         .map_err(|_| JsValue::from_str("run terminal metadata is not valid JSON"))?;
     let canonical: serde_json::Value = serde_json::from_str(&expected)
         .map_err(|_| JsValue::from_str("Rust terminal metadata is invalid"))?;

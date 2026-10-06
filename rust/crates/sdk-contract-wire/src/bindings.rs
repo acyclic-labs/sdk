@@ -412,7 +412,7 @@ fn platform_client_methods(descriptors: &FileDescriptorSet) -> String {
                     .next()
                     .expect("output name");
                 source.push_str(&format!(
-                    "    /// Execute the canonical `{name}` operation using the platform default transport.\n    ///\n    /// # Errors\n    /// Returns a transport or canonical service error.\n    pub async fn {rust_name}(&self, request: &crate::wire::{input}) -> Result<crate::wire::{output}, Error> {{\n        match &self.inner {{\n            #[cfg(not(target_arch = \"wasm32\"))]\n            Backend::Grpc(client) => client.clone().{rust_name}(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),\n            Backend::Http(client) => client.{rust_name}(request).await.map_err(Error::from_http),\n        }}\n    }}\n"
+                    "    /// Execute the canonical `{name}` operation using the platform default transport.\n    ///\n    /// # Errors\n    /// Returns a transport or canonical service error.\n    pub async fn {rust_name}(&self, request: &crate::wire::{input}) -> Result<crate::wire::{output}, Error> {{\n        match &self.inner {{\n            #[cfg(not(target_arch = \"wasm32\"))]\n            Backend::Grpc(client) => client.clone().{rust_name}(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),\n            Backend::Http(client) => client.{rust_name}(request).await.map_err(Error::from_http),\n        }}\n    }}\n"
                 ));
             }
         }

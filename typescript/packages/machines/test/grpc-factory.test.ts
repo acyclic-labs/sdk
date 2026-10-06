@@ -19,3 +19,20 @@ test("Rust-generated Machines gRPC factory exposes every native RPC", async () =
   for await (const _value of client.watchOperation({} as never)) break;
   expect(calls).toEqual(["InspectMachine", "WatchOperation"]);
 });
+
+test("Rust-generated Machines gRPC factory forwards AbortSignal to the invoker", async () => {
+  let observed: AbortSignal | undefined;
+  const invoker: RustOwnedGrpcInvoker = {
+    async invokeGrpc(_method, _request, signal) {
+      observed = signal;
+      return {};
+    },
+    invokeGrpcStream() {
+      return (async function* () { yield {}; })();
+    },
+  };
+  const client = createMachinesGrpcClient(invoker);
+  const controller = new AbortController();
+  await client.inspectMachine({} as never, controller.signal);
+  expect(observed).toBe(controller.signal);
+});

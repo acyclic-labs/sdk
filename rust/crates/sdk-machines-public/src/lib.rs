@@ -183,7 +183,9 @@ fn normalize_identity(kind: &str, value: String) -> Result<String, JsValue> {
     digest.update(value.as_bytes());
     let digest = digest.finalize();
     let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
+    for (slot, value) in bytes.iter_mut().zip(digest.iter()) {
+        *slot = *value;
+    }
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(Uuid::from_bytes(bytes).to_string())
@@ -1130,6 +1132,256 @@ pub async fn dispatch<P: MachinesProvider + ?Sized>(
     }
 }
 
+fn parse_json<T: for<'de> Deserialize<'de>>(value: serde_json::Value) -> Result<T, String> {
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+fn stringify_json<T: Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|e| e.to_string())
+}
+fn public_json_error(value: JsValue) -> String {
+    value
+        .as_string()
+        .unwrap_or_else(|| "invalid public Machines request".to_owned())
+}
+fn retired_json(value: &serde_json::Value) -> Result<(), String> {
+    if value.get("performance").is_some() {
+        return Err("unknown field performance".to_owned());
+    }
+    Ok(())
+}
+fn json_id_value<T>(
+    value: serde_json::Value,
+    parse_id: impl FnOnce(String) -> Result<T, JsValue>,
+) -> Result<T, String> {
+    parse_id(parse_json(value)?).map_err(public_json_error)
+}
+async fn dispatch_call<T, R, Fut, Map>(future: Fut, map: Map) -> Result<String, String>
+where
+    Fut: std::future::Future<Output = Result<T, ProviderError>>,
+    R: Serialize,
+    Map: FnOnce(T) -> R,
+{
+    let value = future.await.map_err(|e| e.to_string())?;
+    stringify_json(&map(value))
+}
+macro_rules! dispatch_call {
+    ($future:expr, $map:expr) => {{
+        dispatch_call($future, $map).await
+    }};
+}
+
+async fn dispatch_json_provisioning<P: MachinesProvider + ?Sized>(
+    provider: &P,
+    operation_name: &str,
+    value: serde_json::Value,
+) -> Result<String, String> {
+    match operation_name {
+        "qualifyImage" => {
+            let input: ImageIn = parse_json(value)?;
+            dispatch_call!(
+                provider.qualify_image(image_in(input).map_err(public_json_error)?),
+                qualification_out
+            )
+        }
+        "create" => {
+            retired_json(&value)?;
+            let input: CreateIn = parse_json(value)?;
+            dispatch_call!(
+                provider.create(create_in(input).map_err(public_json_error)?),
+                mutation_out
+            )
+        }
+        "inspectMachine" => dispatch_call!(
+            provider.inspect_machine(json_id_value(value, machine)?),
+            observation_out
+        ),
+        "listMachines" => {
+            let input: ListIn = parse_json(value)?;
+            let after = input
+                .after
+                .map(machine)
+                .transpose()
+                .map_err(public_json_error)?;
+            dispatch_call!(provider.list_machines(after, input.limit), page_out)
+        }
+        "checkpoint" => {
+            let input: MachineKey = parse_json(value)?;
+            dispatch_call!(
+                provider.checkpoint(
+                    machine(input.machine_id).map_err(public_json_error)?,
+                    key(input.idempotency_key).map_err(public_json_error)?
+                ),
+                mutation_out
+            )
+        }
+        "inspectCheckpoint" => dispatch_call!(
+            provider.inspect_checkpoint(json_id_value(value, checkpoint)?),
+            checkpoint_out
+        ),
+        "fork" => {
+            retired_json(&value)?;
+            let input: ForkIn = parse_json(value)?;
+            let count =
+                NonZeroU32::new(input.count).ok_or_else(|| "count must be nonzero".to_owned())?;
+            dispatch_call!(
+                provider.fork(
+                    checkpoint(input.checkpoint_id).map_err(public_json_error)?,
+                    count,
+                    key(input.idempotency_key).map_err(public_json_error)?
+                ),
+                mutation_out
+            )
+        }
+        "forkMachine" => {
+            let input: MachineForkIn = parse_json(value)?;
+            let count =
+                NonZeroU32::new(input.count).ok_or_else(|| "count must be nonzero".to_owned())?;
+            dispatch_call!(
+                provider.fork_machine(
+                    machine(input.machine_id).map_err(public_json_error)?,
+                    count,
+                    key(input.idempotency_key).map_err(public_json_error)?
+                ),
+                mutation_out
+            )
+        }
+        _ => unreachable!("provisioning operation was not routed to this helper"),
+    }
+}
+
+async fn dispatch_json_lifecycle<P: MachinesProvider + ?Sized>(
+    provider: &P,
+    operation_name: &str,
+    value: serde_json::Value,
+) -> Result<String, String> {
+    match operation_name {
+        "suspend" => {
+            let input: MachineKey = parse_json(value)?;
+            dispatch_call!(
+                provider.suspend(
+                    machine(input.machine_id).map_err(public_json_error)?,
+                    key(input.idempotency_key).map_err(public_json_error)?
+                ),
+                mutation_out
+            )
+        }
+        "wake" => {
+            let input: MachineKey = parse_json(value)?;
+            dispatch_call!(
+                provider.wake(
+                    machine(input.machine_id).map_err(public_json_error)?,
+                    key(input.idempotency_key).map_err(public_json_error)?
+                ),
+                mutation_out
+            )
+        }
+        "setSuspensionPolicy" => {
+            let input: PolicyIn = parse_json(value)?;
+            dispatch_call!(
+                provider.set_suspension_policy(
+                    machine(input.machine_id).map_err(public_json_error)?,
+                    suspension_in(input.policy).map_err(public_json_error)?,
+                    key(input.idempotency_key).map_err(public_json_error)?
+                ),
+                mutation_out
+            )
+        }
+        "destroyMachine" => {
+            let input: MachineKey = parse_json(value)?;
+            dispatch_call!(
+                provider.destroy_machine(
+                    machine(input.machine_id).map_err(public_json_error)?,
+                    key(input.idempotency_key).map_err(public_json_error)?
+                ),
+                mutation_out
+            )
+        }
+        "destroyCheckpoint" => {
+            let input: CheckpointKey = parse_json(value)?;
+            dispatch_call!(
+                provider.destroy_checkpoint(
+                    checkpoint(input.checkpoint_id).map_err(public_json_error)?,
+                    key(input.idempotency_key).map_err(public_json_error)?
+                ),
+                mutation_out
+            )
+        }
+        _ => unreachable!("lifecycle operation was not routed to this helper"),
+    }
+}
+
+async fn dispatch_json_observation<P: MachinesProvider + ?Sized>(
+    provider: &P,
+    operation_name: &str,
+    value: serde_json::Value,
+) -> Result<String, String> {
+    match operation_name {
+        "events" => {
+            let input: EventsIn = parse_json(value)?;
+            dispatch_call!(
+                provider.events(
+                    machine(input.machine_id).map_err(public_json_error)?,
+                    input.after_sequence.map(|v| v.0),
+                    input.limit
+                ),
+                events_out
+            )
+        }
+        "usage" => {
+            let input: UsageIn = parse_json(value)?;
+            dispatch_call!(
+                provider.usage(
+                    machine(input.machine_id).map_err(public_json_error)?,
+                    input.start_unix_ms.0,
+                    input.end_unix_ms.0
+                ),
+                usage_out
+            )
+        }
+        _ => unreachable!("observation operation was not routed to this helper"),
+    }
+}
+
+async fn dispatch_json_operations<P: MachinesProvider + ?Sized>(
+    provider: &P,
+    operation_name: &str,
+    value: serde_json::Value,
+) -> Result<String, String> {
+    match operation_name {
+        "recover" => dispatch_call!(
+            provider.recover(json_id_value(value, key)?),
+            mutation_out
+        ),
+        "recoverOperation" => {
+            let result = provider
+                .recover_operation(json_id_value(value, key)?)
+                .await
+                .map_err(|e| e.to_string())?;
+            stringify_json(&result.to_string())
+        }
+        "inspectOperation" => dispatch_call!(
+            provider.inspect_operation(json_id_value(value, operation)?),
+            operation_out
+        ),
+        "cancel" => dispatch_call!(
+            provider.cancel(json_id_value(value, operation)?),
+            operation_out
+        ),
+        "watchOperation" => {
+            let mut stream = provider
+                .watch_operation(json_id_value(value, operation)?)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut values = Vec::new();
+            while let Some(value) = futures::StreamExt::next(&mut stream).await {
+                values.push(operation_out(value.map_err(|e| e.to_string())?));
+            }
+            stringify_json(&values)
+        }
+        _ => unreachable!("operation was not routed to this helper"),
+    }
+}
+
 /// Dispatches one public Machines operation through JSON for native adapters.
 ///
 /// This is the same Rust-owned projection and validation used by the WASM ABI;
@@ -1140,205 +1392,26 @@ pub async fn dispatch_json<P: MachinesProvider + ?Sized>(
     payload: &str,
 ) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(payload).map_err(|e| e.to_string())?;
-    fn parse<T: for<'de> Deserialize<'de>>(value: serde_json::Value) -> Result<T, String> {
-        serde_json::from_value(value).map_err(|e| e.to_string())
-    }
-    fn stringify<T: Serialize>(value: &T) -> Result<String, String> {
-        serde_json::to_string(value).map_err(|e| e.to_string())
-    }
-    fn public_error(value: JsValue) -> String {
-        value
-            .as_string()
-            .unwrap_or_else(|| "invalid public Machines request".to_owned())
-    }
-    fn retired(value: &serde_json::Value) -> Result<(), String> {
-        if value.get("performance").is_some() {
-            return Err("unknown field performance".to_owned());
-        }
-        Ok(())
-    }
-    fn id_value<T>(
-        value: serde_json::Value,
-        parse_id: impl FnOnce(String) -> Result<T, JsValue>,
-    ) -> Result<T, String> {
-        parse_id(parse(value)?).map_err(public_error)
-    }
-    macro_rules! call {
-        ($future:expr, $map:expr) => {{
-            let value = $future.await.map_err(|e| e.to_string())?;
-            stringify(&$map(value))
-        }};
-    }
     match operation_name {
-        "qualifyImage" => {
-            let input: ImageIn = parse(value)?;
-            call!(
-                provider.qualify_image(image_in(input).map_err(public_error)?),
-                qualification_out
-            )
-        }
-        "create" => {
-            retired(&value)?;
-            let input: CreateIn = parse(value)?;
-            call!(
-                provider.create(create_in(input).map_err(public_error)?),
-                mutation_out
-            )
-        }
-        "inspectMachine" => call!(
-            provider.inspect_machine(id_value(value, |v| machine(v))?),
-            observation_out
-        ),
-        "listMachines" => {
-            let input: ListIn = parse(value)?;
-            let after = input
-                .after
-                .map(|v| machine(v))
-                .transpose()
-                .map_err(public_error)?;
-            call!(provider.list_machines(after, input.limit), page_out)
-        }
-        "checkpoint" => {
-            let input: MachineKey = parse(value)?;
-            call!(
-                provider.checkpoint(
-                    machine(input.machine_id).map_err(public_error)?,
-                    key(input.idempotency_key).map_err(public_error)?
-                ),
-                mutation_out
-            )
-        }
-        "inspectCheckpoint" => call!(
-            provider.inspect_checkpoint(id_value(value, |v| checkpoint(v))?),
-            checkpoint_out
-        ),
-        "fork" => {
-            retired(&value)?;
-            let input: ForkIn = parse(value)?;
-            let count =
-                NonZeroU32::new(input.count).ok_or_else(|| "count must be nonzero".to_owned())?;
-            call!(
-                provider.fork(
-                    checkpoint(input.checkpoint_id).map_err(public_error)?,
-                    count,
-                    key(input.idempotency_key).map_err(public_error)?
-                ),
-                mutation_out
-            )
-        }
-        "forkMachine" => {
-            let input: MachineForkIn = parse(value)?;
-            let count =
-                NonZeroU32::new(input.count).ok_or_else(|| "count must be nonzero".to_owned())?;
-            call!(
-                provider.fork_machine(
-                    machine(input.machine_id).map_err(public_error)?,
-                    count,
-                    key(input.idempotency_key).map_err(public_error)?
-                ),
-                mutation_out
-            )
-        }
-        "suspend" => {
-            let input: MachineKey = parse(value)?;
-            call!(
-                provider.suspend(
-                    machine(input.machine_id).map_err(public_error)?,
-                    key(input.idempotency_key).map_err(public_error)?
-                ),
-                mutation_out
-            )
-        }
-        "wake" => {
-            let input: MachineKey = parse(value)?;
-            call!(
-                provider.wake(
-                    machine(input.machine_id).map_err(public_error)?,
-                    key(input.idempotency_key).map_err(public_error)?
-                ),
-                mutation_out
-            )
-        }
-        "setSuspensionPolicy" => {
-            let input: PolicyIn = parse(value)?;
-            call!(
-                provider.set_suspension_policy(
-                    machine(input.machine_id).map_err(public_error)?,
-                    suspension_in(input.policy).map_err(public_error)?,
-                    key(input.idempotency_key).map_err(public_error)?
-                ),
-                mutation_out
-            )
-        }
-        "destroyMachine" => {
-            let input: MachineKey = parse(value)?;
-            call!(
-                provider.destroy_machine(
-                    machine(input.machine_id).map_err(public_error)?,
-                    key(input.idempotency_key).map_err(public_error)?
-                ),
-                mutation_out
-            )
-        }
-        "destroyCheckpoint" => {
-            let input: CheckpointKey = parse(value)?;
-            call!(
-                provider.destroy_checkpoint(
-                    checkpoint(input.checkpoint_id).map_err(public_error)?,
-                    key(input.idempotency_key).map_err(public_error)?
-                ),
-                mutation_out
-            )
-        }
-        "events" => {
-            let input: EventsIn = parse(value)?;
-            call!(
-                provider.events(
-                    machine(input.machine_id).map_err(public_error)?,
-                    input.after_sequence.map(|v| v.0),
-                    input.limit
-                ),
-                events_out
-            )
-        }
-        "usage" => {
-            let input: UsageIn = parse(value)?;
-            call!(
-                provider.usage(
-                    machine(input.machine_id).map_err(public_error)?,
-                    input.start_unix_ms.0,
-                    input.end_unix_ms.0
-                ),
-                usage_out
-            )
-        }
-        "recover" => call!(provider.recover(id_value(value, |v| key(v))?), mutation_out),
-        "recoverOperation" => {
-            let result = provider
-                .recover_operation(id_value(value, |v| key(v))?)
-                .await
-                .map_err(|e| e.to_string())?;
-            stringify(&result.to_string())
-        }
-        "inspectOperation" => call!(
-            provider.inspect_operation(id_value(value, |v| operation(v))?),
-            operation_out
-        ),
-        "cancel" => call!(
-            provider.cancel(id_value(value, |v| operation(v))?),
-            operation_out
-        ),
-        "watchOperation" => {
-            let mut stream = provider
-                .watch_operation(id_value(value, |v| operation(v))?)
-                .await
-                .map_err(|e| e.to_string())?;
-            let mut values = Vec::new();
-            while let Some(value) = futures::StreamExt::next(&mut stream).await {
-                values.push(operation_out(value.map_err(|e| e.to_string())?));
-            }
-            stringify(&values)
-        }
+        "qualifyImage"
+        | "create"
+        | "inspectMachine"
+        | "listMachines"
+        | "checkpoint"
+        | "inspectCheckpoint"
+        | "fork"
+        | "forkMachine" => dispatch_json_provisioning(provider, operation_name, value).await,
+        "suspend"
+        | "wake"
+        | "setSuspensionPolicy"
+        | "destroyMachine"
+        | "destroyCheckpoint" => dispatch_json_lifecycle(provider, operation_name, value).await,
+        "events" | "usage" => dispatch_json_observation(provider, operation_name, value).await,
+        "recover"
+        | "recoverOperation"
+        | "inspectOperation"
+        | "cancel"
+        | "watchOperation" => dispatch_json_operations(provider, operation_name, value).await,
         _ => Err("unknown Machines operation".to_owned()),
     }
 }

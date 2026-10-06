@@ -7,7 +7,7 @@ impl Client {
     pub async fn create_actor(&self, request: &crate::wire::CreateActorRequest) -> Result<crate::wire::CreateActorResponse, Error> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(client) => client.clone().create_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),
+            Backend::Grpc(client) => client.clone().create_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),
             Backend::Http(client) => client.create_actor(request).await.map_err(Error::from_http),
         }
     }
@@ -18,7 +18,7 @@ impl Client {
     pub async fn update_actor(&self, request: &crate::wire::UpdateActorRequest) -> Result<crate::wire::UpdateActorResponse, Error> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(client) => client.clone().update_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),
+            Backend::Grpc(client) => client.clone().update_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),
             Backend::Http(client) => client.update_actor(request).await.map_err(Error::from_http),
         }
     }
@@ -29,7 +29,7 @@ impl Client {
     pub async fn inspect_actor(&self, request: &crate::wire::InspectActorRequest) -> Result<crate::wire::InspectActorResponse, Error> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(client) => client.clone().inspect_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),
+            Backend::Grpc(client) => client.clone().inspect_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),
             Backend::Http(client) => client.inspect_actor(request).await.map_err(Error::from_http),
         }
     }
@@ -40,7 +40,7 @@ impl Client {
     pub async fn add_subscription(&self, request: &crate::wire::AddSubscriptionRequest) -> Result<crate::wire::AddSubscriptionResponse, Error> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(client) => client.clone().add_subscription(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),
+            Backend::Grpc(client) => client.clone().add_subscription(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),
             Backend::Http(client) => client.add_subscription(request).await.map_err(Error::from_http),
         }
     }
@@ -51,7 +51,7 @@ impl Client {
     pub async fn remove_subscription(&self, request: &crate::wire::RemoveSubscriptionRequest) -> Result<crate::wire::RemoveSubscriptionResponse, Error> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(client) => client.clone().remove_subscription(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),
+            Backend::Grpc(client) => client.clone().remove_subscription(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),
             Backend::Http(client) => client.remove_subscription(request).await.map_err(Error::from_http),
         }
     }
@@ -62,7 +62,7 @@ impl Client {
     pub async fn resume_subscription(&self, request: &crate::wire::ResumeSubscriptionRequest) -> Result<crate::wire::ResumeSubscriptionResponse, Error> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(client) => client.clone().resume_subscription(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),
+            Backend::Grpc(client) => client.clone().resume_subscription(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),
             Backend::Http(client) => client.resume_subscription(request).await.map_err(Error::from_http),
         }
     }
@@ -73,7 +73,7 @@ impl Client {
     pub async fn checkpoint_actor(&self, request: &crate::wire::CheckpointActorRequest) -> Result<crate::wire::CheckpointActorResponse, Error> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(client) => client.clone().checkpoint_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),
+            Backend::Grpc(client) => client.clone().checkpoint_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),
             Backend::Http(client) => client.checkpoint_actor(request).await.map_err(Error::from_http),
         }
     }
@@ -84,7 +84,7 @@ impl Client {
     pub async fn invoke_actor(&self, request: &crate::wire::InvokeActorRequest) -> Result<crate::wire::InvokeActorResponse, Error> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(client) => client.clone().invoke_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),
+            Backend::Grpc(client) => client.clone().invoke_actor(request.clone()).await.map(tonic::Response::into_inner).map_err(|status| Error::from_grpc(&status)),
             Backend::Http(client) => client.invoke_actor(request).await.map_err(Error::from_http),
         }
     }

@@ -3277,7 +3277,12 @@ fn reference_guide(package_name: &str, crate_path: &str, items: &[PublicItem]) -
 }
 
 fn reference_anchor(identity: &str) -> String {
-    identity.to_ascii_lowercase().replace([' ', ':'], "-")
+    identity
+        .split(|character| character == ':' || character == ' ')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn title_case(value: &str) -> String {
@@ -4355,7 +4360,7 @@ fn rustdoc_target_docs(
         if item
             .get("crate_id")
             .and_then(serde_json::Value::as_u64)
-            .is_some_and(|crate_id| crate_id != 0)
+            != Some(0)
         {
             return None;
         }
@@ -4411,12 +4416,19 @@ fn external_reexport_target(
     index: &serde_json::Map<String, serde_json::Value>,
     local_modules: &HashSet<String>,
 ) -> Option<ReexportTarget> {
-    // A target id present in this index is an in-crate declaration and is
-    // already traversed above. A missing target id usually identifies an
-    // external re-export; local module roots are filtered below so unresolved
-    // local aliases remain authored items for strict documentation checks.
+    // A target id present in this index is local only when its crate_id is 0.
+    // Missing ownership stays unresolved so strict authorship remains closed;
+    // local module roots are filtered below for missing local target IDs.
     // Keep the external path so a renderer can resolve it in that graph.
     let target_id = use_item.get("id").and_then(serde_json::Value::as_u64);
+    let target_is_local = target_id.is_some_and(|id| {
+        index
+            .get(&id.to_string())
+            .and_then(serde_json::Value::as_object)
+            .and_then(|item| item.get("crate_id"))
+            .and_then(serde_json::Value::as_u64)
+            == Some(0)
+    });
     let target_is_external = target_id.is_some_and(|id| {
         index
             .get(&id.to_string())
@@ -4425,7 +4437,7 @@ fn external_reexport_target(
             .and_then(serde_json::Value::as_u64)
             .is_some_and(|crate_id| crate_id != 0)
     });
-    if target_id.is_some_and(|id| index.contains_key(&id.to_string())) && !target_is_external {
+    if target_is_local {
         return None;
     }
     let source = use_item
@@ -4437,7 +4449,9 @@ fn external_reexport_target(
     if package.is_empty() {
         return None;
     }
-    if matches!(package, "crate" | "self" | "super") || local_modules.contains(package) {
+    if !target_is_external
+        && (matches!(package, "crate" | "self" | "super") || local_modules.contains(package))
+    {
         return None;
     }
     let path = segments.collect::<Vec<_>>().join("::");
@@ -5049,6 +5063,17 @@ fn merge_compiler_public_items(graphs: &[RustdocGraph]) -> Vec<PublicItem> {
             .cmp(&right.source_path)
             .then(left.source_line.cmp(&right.source_line))
             .then(left.name.cmp(&right.name))
+            .then_with(|| {
+                let left_documented = left
+                    .docs
+                    .as_deref()
+                    .is_some_and(|docs| !docs.trim().is_empty());
+                let right_documented = right
+                    .docs
+                    .as_deref()
+                    .is_some_and(|docs| !docs.trim().is_empty());
+                right_documented.cmp(&left_documented)
+            })
     });
     items.dedup_by(|left, right| {
         let same_identity = left.name == right.name
@@ -6049,6 +6074,47 @@ mod tests {
     }
 
     #[test]
+    fn rustdoc_fixture_marks_indexed_external_target_as_external() {
+        let value = serde_json::json!({
+            "format_version": 60,
+            "root": 1,
+            "index": {
+                "1": {
+                    "crate_id": 0,
+                    "name": "sdk",
+                    "visibility": "public",
+                    "inner": {"module": {"items": [2]}}
+                },
+                "2": {
+                    "crate_id": 0,
+                    "name": "Filesystem",
+                    "visibility": "public",
+                    "inner": {"use": {"id": 4, "name": "Filesystem", "source": "acyclic_fs::Filesystem"}}
+                },
+                "4": {
+                    "crate_id": 1,
+                    "name": "Filesystem",
+                    "visibility": "public",
+                    "docs": "External owner documentation.",
+                    "inner": {"struct": {}}
+                }
+            }
+        });
+        let mut diagnostics = Vec::new();
+        let items = rustdoc_public_items(
+            &value,
+            Path::new("Q:/sdk"),
+            Path::new("Q:/sdk/rust/crates/sdk"),
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(items.len(), 1);
+        assert!(items[0].docs.is_none());
+        assert!(items[0].reexport.is_some());
+        assert!(undocumented_rustdoc_items(&items).next().is_none());
+    }
+
+    #[test]
     fn rustdoc_generated_spans_bind_retained_bytes_and_skip_external_sources() {
         let root =
             std::env::temp_dir().join(format!("sdk-docs-generated-source-{}", std::process::id()));
@@ -6105,6 +6171,38 @@ mod tests {
             .iter()
             .any(|diagnostic| diagnostic.code == "rustdoc_external_source_skipped"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rustdoc_generated_alias_precedes_crate_path_resolution() {
+        let value = serde_json::json!({
+            "root": 1,
+            "index": {
+                "1": {"crate_id": 0, "name": "demo", "visibility": "public", "inner": {"module": {"items": [2]}}},
+                "2": {"crate_id": 0, "name": "Wire", "visibility": "public", "span": {"filename": "Q:/sdk/rust/crates/demo/target/debug/build/acyclic-demo-test/out/wire.rs", "begin": [1, 1]}, "inner": {"struct": {}}}
+            }
+        });
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            path_identity("Q:/sdk/rust/crates/demo/target/debug/build/acyclic-demo-test/out/wire.rs"),
+            "rust/crates/demo/src/generated/test/wire.rs".to_owned(),
+        );
+        let mut diagnostics = Vec::new();
+        let items = rustdoc_public_items_with_sources(
+            &value,
+            Path::new("Q:/sdk"),
+            Path::new("Q:/sdk/rust/crates/demo"),
+            &aliases,
+            true,
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(items.len(), 1);
+        assert!(items[0].generated);
+        assert_eq!(
+            items[0].source_path.as_deref(),
+            Some("rust/crates/demo/src/generated/test/wire.rs")
+        );
     }
 
     #[test]
@@ -6654,6 +6752,48 @@ mod tests {
     }
 
     #[test]
+    fn compiler_graph_merge_prefers_documented_duplicate() {
+        let undocumented = PublicItem {
+            name: "Alias".to_owned(),
+            module_path: Some("demo::Alias".to_owned()),
+            kind: "use".to_owned(),
+            signature: None,
+            signature_text: Some("pub use demo::Thing".to_owned()),
+            source_path: Some("rust/crates/demo/src/lib.rs".to_owned()),
+            source_line: Some(10),
+            docs: None,
+            conditional: false,
+            generated: false,
+            reexport: None,
+        };
+        let mut documented = undocumented.clone();
+        documented.docs = Some("Target documentation.".to_owned());
+        let graphs = vec![
+            RustdocGraph {
+                profile: "host-default".to_owned(),
+                target: "x86_64-pc-windows-msvc".to_owned(),
+                features: Vec::new(),
+                profile_blake3: "default".to_owned(),
+                public_items: vec![undocumented],
+                diagnostics: Vec::new(),
+                rustdoc: test_rustdoc_provenance(),
+            },
+            RustdocGraph {
+                profile: "host-capabilities".to_owned(),
+                target: "x86_64-pc-windows-msvc".to_owned(),
+                features: vec!["grpc".to_owned()],
+                profile_blake3: "capabilities".to_owned(),
+                public_items: vec![documented],
+                diagnostics: Vec::new(),
+                rustdoc: test_rustdoc_provenance(),
+            },
+        ];
+        let merged = merge_compiler_public_items(&graphs);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].docs.as_deref(), Some("Target documentation."));
+    }
+
+    #[test]
     fn host_profile_target_resolves_from_rustc() {
         let host = resolve_profile_target("host", None).expect("rustc host target");
         assert!(!host.is_empty());
@@ -6725,6 +6865,31 @@ mod tests {
         let guide = reference_guide("demo", "rust/crates/demo", &items);
         assert!(guide.contents.contains("`Authored`"));
         assert!(!guide.contents.contains("No declaration summary"));
+        assert!(guide.contents.contains(
+            "Re-exported from [`external::External`](/rust/crates/external/REFERENCE.md#external-external)."
+        ));
+    }
+
+    #[test]
+    fn rustdoc_reference_anchors_include_module_paths() {
+        let item = PublicItem {
+            name: "X".to_owned(),
+            module_path: Some("demo::a::X".to_owned()),
+            kind: "struct".to_owned(),
+            signature: Some(serde_json::json!({"kind": "plain"})),
+            signature_text: Some("pub struct X".to_owned()),
+            source_path: Some("rust/crates/demo/src/a.rs".to_owned()),
+            source_line: Some(1),
+            docs: Some("A X.".to_owned()),
+            conditional: false,
+            generated: false,
+            reexport: None,
+        };
+        let mut sibling = item.clone();
+        sibling.module_path = Some("demo::b::X".to_owned());
+        let guide = reference_guide("demo", "rust/crates/demo", &[item, sibling]);
+        assert!(guide.contents.contains("{#demo-a-x}"));
+        assert!(guide.contents.contains("{#demo-b-x}"));
     }
 
     #[test]

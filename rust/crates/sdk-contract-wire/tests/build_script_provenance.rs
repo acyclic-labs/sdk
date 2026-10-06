@@ -93,7 +93,7 @@ fn build_scripts_have_bounded_inputs_and_explicit_authority() {
             "const MODEL_DESCRIPTOR: &str = \"inference_model_descriptor.bin\"",
             "const DOC_DESCRIPTOR: &str = \"inference_model_descriptor_docs.bin\"",
             "const MODEL_DESCRIPTOR_ENV: &str = \"ACYCLIC_INFERENCE_MODEL_DESCRIPTOR\"",
-            "unwrap_or_else(|| std::path::PathBuf::from(DOC_DESCRIPTOR))",
+            "|| std::path::PathBuf::from(DOC_DESCRIPTOR)",
             "std::fs::read(&descriptor_path)",
         ],
     );
@@ -108,7 +108,7 @@ fn build_scripts_have_bounded_inputs_and_explicit_authority() {
         &[
             "const MODEL_DESCRIPTOR: &str = \"inference_model_descriptor.bin\"",
             "const MODEL_DESCRIPTOR_ENV: &str = \"ACYCLIC_INFERENCE_CONTRACT_MODEL_DESCRIPTOR\"",
-            "unwrap_or_else(|| std::path::PathBuf::from(MODEL_DESCRIPTOR))",
+            "|| std::path::PathBuf::from(MODEL_DESCRIPTOR)",
             "std::fs::read(&descriptor_path)",
         ],
     );

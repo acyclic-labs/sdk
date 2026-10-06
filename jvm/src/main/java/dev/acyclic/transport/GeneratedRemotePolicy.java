@@ -42,6 +42,10 @@ public final class GeneratedRemotePolicy {
   public static final String PROBE = "none";
   public static final String POST_FAILURE_FALLBACK = "none";
   public static final String REPLAY = "none";
+  public static final Map<String, String> SELECTION_POLICY = Map.of(
+      "probe", "none",
+      "postFailureFallback", "none",
+      "replay", "none");
   public static final Map<Runtime, Map<String, List<Option>>> OPTIONS = Map.of(
       Runtime.NATIVE, buildOptions(ClientRuntime.NATIVE),
       Runtime.BROWSER, buildOptions(ClientRuntime.BROWSER));

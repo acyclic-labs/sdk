@@ -76,11 +76,11 @@ impl Error {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Error {
-    fn from_grpc(status: tonic::Status) -> Self {
+    fn from_grpc(status: &tonic::Status) -> Self {
         Self::Service {
             grpc_code: Some(status.code() as i32),
             http_status: None,
-            detail: crate::grpc::error_detail(&status),
+            detail: crate::grpc::error_detail(status),
         }
     }
 

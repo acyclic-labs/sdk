@@ -9,9 +9,17 @@ from google.protobuf import json_format
 import pytest
 
 from acyclic_sdk.generated.actors.v1 import actors_pb2, actors_pb2_grpc
+from acyclic_sdk.generated.objects.v2 import objects_pb2
 from acyclic_sdk.generated.protocol.v1 import protocol_pb2
 from acyclic_sdk.generated.stream.v2 import stream_pb2, stream_pb2_grpc
-from acyclic_sdk.remote import Client, HANDSHAKE, HTTP_ROUTES, RustHttpError
+from acyclic_sdk.remote import (
+    Client,
+    HANDSHAKE,
+    HTTP_ROUTES,
+    MessageUnknown,
+    RustHttpError,
+    RustObjectsObjectsGetObjectResponse,
+)
 
 
 def test_wire_types_preserve_large_values_bytes_oneof_and_presence() -> None:
@@ -44,6 +52,14 @@ def test_wire_types_preserve_large_values_bytes_oneof_and_presence() -> None:
     )
     assert outcome.WhichOneof("outcome") == "committed"
     assert outcome.committed.start == large
+
+
+def test_unknown_wire_fields_remain_message_level_opaque_data() -> None:
+    message = objects_pb2.GetObjectResponse.FromString(b"\x28\x01")
+    decoded = RustObjectsObjectsGetObjectResponse.from_wire(message)
+    assert decoded.frame is None
+    assert isinstance(decoded.unknown, MessageUnknown)
+    assert decoded.unknown.raw == message.SerializeToString()
 
 
 class _Actors(actors_pb2_grpc.ActorsServiceServicer):
@@ -201,23 +217,26 @@ def _handshake_json(family: str) -> bytes:
 def test_http_handshake_fixture_is_bodyless_get_with_auth_and_contract_headers() -> None:
     client = _fixture_client()
     calls: list[object] = []
+    timeouts: list[object] = []
     response = _HttpFixtureResponse(
         _handshake_json("actors"),
         url=client._http_base + "/v1/sdk/actors/handshake",
     )
 
-    def open_http(request: object) -> _HttpFixtureResponse:
+    def open_http(request: object, *_args: object, **_kwargs: object) -> _HttpFixtureResponse:
         calls.append(request)
+        timeouts.append(_kwargs.get("timeout"))
         return response
 
     client._open_http = open_http
-    client._http_handshake("actors")
+    client._http_handshake("actors", timeout=1.25)
 
     request = calls[0]
     assert request.get_method() == "GET"
     assert request.data is None
     assert request.get_header("Authorization") == "Bearer fixture-token"
     assert request.get_header("Accept") == "application/json"
+    assert timeouts == [1.25]
     assert response.closed
 
 
@@ -228,7 +247,7 @@ def test_http_request_fixture_preserves_route_method_body_and_typed_error() -> N
     response = _HttpFixtureResponse(b"{}")
     calls: list[object] = []
 
-    def open_http(http_request: object) -> _HttpFixtureResponse:
+    def open_http(http_request: object, *_args: object, **_kwargs: object) -> _HttpFixtureResponse:
         calls.append(http_request)
         return response
 
@@ -248,7 +267,7 @@ def test_http_request_fixture_preserves_route_method_body_and_typed_error() -> N
         {"content-type": "application/json"},
         io.BytesIO(error_body),
     )
-    client._open_http = lambda _request: (_ for _ in ()).throw(error)
+    client._open_http = lambda _request, **_kwargs: (_ for _ in ()).throw(error)
     with pytest.raises(RustHttpError) as raised:
         client._http_request("actors", route["method"], route["path"], request)
     assert raised.value.status == 409
@@ -257,19 +276,35 @@ def test_http_request_fixture_preserves_route_method_body_and_typed_error() -> N
 
 def test_http_handshake_fixture_rejects_redirect_and_wrong_content_type() -> None:
     client = _fixture_client()
-    client._open_http = lambda _request: _HttpFixtureResponse(
+    client._open_http = lambda _request, **_kwargs: _HttpFixtureResponse(
         _handshake_json("actors"), url="http://other.test/v1/sdk/actors/handshake"
     )
     with pytest.raises(RuntimeError, match="redirected"):
         client._http_handshake("actors")
 
-    client._open_http = lambda _request: _HttpFixtureResponse(
+    invalid_content_response = _HttpFixtureResponse(
         _handshake_json("actors"),
         url=client._http_base + "/v1/sdk/actors/handshake",
         content_type="text/plain",
     )
+    client._open_http = lambda _request, **_kwargs: invalid_content_response
     with pytest.raises(RuntimeError, match="content type"):
         client._http_handshake("actors")
+    assert invalid_content_response.closed
+
+    invalid_identity_response = _HttpFixtureResponse(
+        _handshake_json("actors"),
+        url=client._http_base + "/v1/sdk/actors/handshake",
+    )
+    client._open_http = lambda _request, **_kwargs: invalid_identity_response
+    original_identity = HANDSHAKE["actors"]["descriptor_digest"]
+    HANDSHAKE["actors"]["descriptor_digest"] = "wrong"
+    try:
+        with pytest.raises(ValueError, match="identity mismatch"):
+            client._http_handshake("actors")
+    finally:
+        HANDSHAKE["actors"]["descriptor_digest"] = original_identity
+    assert invalid_identity_response.closed
 
 
 def test_http_stream_fixture_closes_response_when_cancelled() -> None:
@@ -282,7 +317,7 @@ def test_http_stream_fixture_closes_response_when_cancelled() -> None:
     )
     family = next(family for family, routes in HTTP_ROUTES.items() if route_name in routes)
     response = _HttpFixtureResponse(b"{}\n", url=client._http_base + route["path"])
-    client._open_http = lambda _request: response
+    client._open_http = lambda _request, **_kwargs: response
 
     async def run() -> None:
         stream = await client._http_stream(

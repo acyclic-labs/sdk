@@ -820,6 +820,10 @@ public final class GeneratedRemotePolicy {{
   public static final String PROBE = {probe:?};
   public static final String POST_FAILURE_FALLBACK = {fallback:?};
   public static final String REPLAY = {replay:?};
+  public static final Map<String, String> SELECTION_POLICY = Map.of(
+      "probe", {probe:?},
+      "postFailureFallback", {fallback:?},
+      "replay", {replay:?});
   public static final Map<Runtime, Map<String, List<Option>>> OPTIONS = Map.of(
       Runtime.NATIVE, buildOptions(ClientRuntime.NATIVE),
       Runtime.BROWSER, buildOptions(ClientRuntime.BROWSER));
@@ -2606,6 +2610,16 @@ mod tests {
                     .contains("acyclic.stream.v2.StreamService/Read")
             );
         }
+    }
+
+    #[test]
+    fn java_selection_policy_serializes_rust_fallback_value() {
+        let output = generate_remote_facade(FacadeLanguage::Java);
+        let expected = format!(
+            "\"postFailureFallback\", {:?}",
+            FACADE_SELECTION_POLICY.post_failure_fallback
+        );
+        assert!(output.source.contains(&expected));
     }
 
     #[test]

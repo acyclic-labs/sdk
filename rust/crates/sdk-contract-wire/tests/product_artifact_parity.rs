@@ -205,6 +205,12 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
                         && source.contains("validateBearer"),
                     "Java facade does not expose endpoint/token defaults"
                 );
+                assert!(
+                    source.contains("SELECTION_POLICY")
+                        && source.contains("\"postFailureFallback\"")
+                        && source.contains("POST_FAILURE_FALLBACK"),
+                    "Java facade does not serialize the Rust post-failure fallback policy"
+                );
             }
             "dotnet/GeneratedRemotePolicy.cs" => {
                 assert!(

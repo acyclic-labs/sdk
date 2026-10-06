@@ -69,4 +69,13 @@ class RemoteClientFactoryTest {
     assertEquals("call", watch.cancellation());
     assertEquals(true, watch.bearerAuth());
   }
+
+  @Test
+  void exposesRustSelectionPolicyMetadata() {
+    assertEquals("none", GeneratedRemotePolicy.SELECTION_POLICY.get("probe"));
+    assertEquals(
+        GeneratedRemotePolicy.POST_FAILURE_FALLBACK,
+        GeneratedRemotePolicy.SELECTION_POLICY.get("postFailureFallback"));
+    assertEquals("none", GeneratedRemotePolicy.SELECTION_POLICY.get("replay"));
+  }
 }

@@ -651,6 +651,7 @@ TRANSPORTS_BY_RUNTIME = {
 
 fn python_public_type_exports() -> String {
     let mut names = vec![
+        "MessageUnknown".to_owned(),
         "KnownOneof".to_owned(),
         "UnknownOneof".to_owned(),
         "WireChoice".to_owned(),
@@ -698,10 +699,6 @@ fn python_public_type_exports() -> String {
         fields.dedup_by(|left, right| left.field == right.field);
         for (oneof, members) in response_oneof_groups(fields.iter()) {
             names.push(python_rpc_oneof_choice_name(&response_name, &oneof));
-            names.push(format!(
-                "{}Unknown",
-                python_rpc_oneof_choice_name(&response_name, &oneof)
-            ));
             for field in members {
                 names.push(python_rpc_oneof_arm_name(
                     &response_name,
@@ -717,7 +714,6 @@ fn python_public_type_exports() -> String {
     names.push("ObjectsGetObjectFrameHeader".to_owned());
     names.push("ObjectsGetObjectFrameBody".to_owned());
     names.push("ObjectsGetObjectFrameError".to_owned());
-    names.push("ObjectsGetObjectFrameUnknown".to_owned());
     for binding in PUBLIC_FIELD_BINDINGS {
         if binding.direction != PublicFieldDirection::Request {
             continue;
@@ -887,16 +883,10 @@ fn python_rpc_oneof_definitions(
                 tag = field.json_name,
             ));
         }
-        let unknown = format!("{}Unknown", choice);
-        output.push_str(&format!(
-            "@dataclass(frozen=True)\nclass {unknown}:\n    raw: bytes\n    tag: Literal[\"unknown\"] = \"unknown\"\n\n",
-            unknown = unknown,
-        ));
         let mut variants = members
             .iter()
             .map(|field| python_rpc_oneof_arm_name(response_name, oneof, &field.json_name))
             .collect::<Vec<_>>();
-        variants.push(unknown);
         output.push_str(&format!(
             "{choice}: TypeAlias = {variants}\n\n",
             choice = choice,
@@ -947,12 +937,6 @@ fn go_rpc_oneof_definitions(
                 tag = field.json_name,
             ));
         }
-        let unknown = format!("{}Unknown", choice);
-        output.push_str(&format!(
-            "type {unknown} struct {{ Number int32; Raw []byte }}\n\nfunc (*{unknown}) is{choice}() {{}}\nfunc (*{unknown}) Tag() string {{ return \"unknown\" }}\n\n",
-            unknown = unknown,
-            choice = choice,
-        ));
     }
     output
 }
@@ -1228,7 +1212,32 @@ fn python_all_rpc_client_methods() -> String {
         let response = python_rpc_response_name(method);
         let method_name = python_rpc_operation_name(method);
         let client = python_rpc_client_expression(method);
-        if method.server_streaming {
+        if method.client_streaming {
+            let request_annotation = format!("AsyncIterator[{request}]");
+            if method.server_streaming {
+                output.push_str(&format!(
+                    "    async def {method_name}(\n        self,\n        request: {request_annotation},\n        timeout: float | None = None,\n    ) -> {stream}:\n        transport = await self._ensure_transport({family:?}, streaming=True, timeout=timeout)\n        if transport == \"http_json\":\n            raise RuntimeError(\"Rust-owned HTTP projection does not support bidirectional streaming\")\n        return {stream}({client}.{grpc_method}(_wire_request_iterator(request), timeout=timeout))\n\n",
+                    method_name = method_name,
+                    request_annotation = request_annotation,
+                    stream = python_rpc_stream_name(method),
+                    family = method.family,
+                    client = client,
+                    grpc_method = method.method,
+                ));
+            } else {
+                output.push_str(&format!(
+                    "    async def {method_name}(\n        self,\n        request: {request_annotation},\n        timeout: float | None = None,\n    ) -> {response}:\n        transport = await self._ensure_transport({family:?}, streaming=True, timeout=timeout)\n        if transport == \"http_json\":\n            value = await self._http_client_unary({family:?}, {rpc:?}, request, {wire_response}, timeout=timeout)\n        else:\n            value = await {client}.{grpc_method}(_wire_request_iterator(request), timeout=timeout)\n        return {response}.from_wire(value)\n\n",
+                    method_name = method_name,
+                    request_annotation = request_annotation,
+                    response = response,
+                    family = method.family,
+                    rpc = method.rpc,
+                    wire_response = python_wire_response_type(method),
+                    client = client,
+                    grpc_method = method.method,
+                ));
+            }
+        } else if method.server_streaming {
             output.push_str(&format!(
                 "    async def {method_name}(\n        self,\n        request: {request},\n        timeout: float | None = None,\n    ) -> {stream}:\n        wire_request = request.to_wire()\n        transport = await self._ensure_transport({family:?}, streaming=True, timeout=timeout)\n        if transport == \"http_json\":\n            return {stream}(await self._http_stream({family:?}, {rpc:?}, wire_request, {wire_response}, timeout=timeout))\n        return {stream}({client}.{grpc_method}(wire_request, timeout=timeout))\n\n",
                 method_name = method_name,
@@ -1357,7 +1366,6 @@ import (
     "google.golang.org/grpc/metadata"
     "google.golang.org/grpc/status"
     "google.golang.org/protobuf/encoding/protojson"
-    "google.golang.org/protobuf/encoding/protowire"
     "google.golang.org/protobuf/proto"
     "google.golang.org/protobuf/types/known/timestamppb"
     "unicode/utf8"
@@ -1372,11 +1380,6 @@ const PostFailureFallback = "#POST_FAILURE_FALLBACK#"
 const Replay = "#REPLAY#"
 var Handshake = #HANDSHAKE#
 var HTTPRoutes = #HTTP_ROUTES#
-
-func unknownFieldNumber(raw []byte) int32 {
-    number, _, _ := protowire.ConsumeField(raw)
-    return int32(number)
-}
 
 // Credentials configures the public facade. The zero value uses the platform
 // trust store. A client certificate enables mTLS without changing the client
@@ -1439,6 +1442,9 @@ type Client struct {
     httpClient *http.Client
     transportMu sync.Mutex
     transports map[string]string
+    httpStreamMu sync.Mutex
+    httpStreams map[httpStreamHandle]struct{}
+    closed bool
     Actors actorsv1.ActorsServiceClient
     Stream streamv2.StreamServiceClient
     Buckets objectsv2.BucketsServiceClient
@@ -1457,21 +1463,134 @@ type RustHTTPError struct { StatusCode int; Detail []byte }
 func (error *RustHTTPError) Error() string { return fmt.Sprintf("Rust-owned HTTP transport failed with status %d", error.StatusCode) }
 var errHTTPProjectionUnavailable = errors.New("Rust-owned HTTP projection is unavailable")
 
-type httpJSONStream struct { response *http.Response; scanner *bufio.Scanner; cancelled bool; bytes int }
+type httpStreamHandle interface { cancel() }
 
-func (stream *httpJSONStream) cancel() { stream.cancelled = true; if stream.response != nil { _ = stream.response.Body.Close() } }
+type httpJSONStream struct {
+    response *http.Response
+    scanner *bufio.Scanner
+    stateMu sync.Mutex
+    recvMu sync.Mutex
+    cancelled bool
+    bytes int
+    onClose func()
+}
+
+func (stream *httpJSONStream) cancel() {
+    stream.stateMu.Lock()
+    if stream.cancelled { stream.stateMu.Unlock(); return }
+    stream.cancelled = true
+    response := stream.response
+    onClose := stream.onClose
+    stream.stateMu.Unlock()
+    if response != nil { _ = response.Body.Close() }
+    if onClose != nil { onClose() }
+}
+
+func scanNDJSONRecord(data []byte, atEOF bool) (advance int, token []byte, err error) {
+    if index := bytes.IndexByte(data, '\n'); index >= 0 {
+        return index + 1, data[:index+1], nil
+    }
+    if atEOF && len(data) > 0 { return len(data), data, nil }
+    return 0, nil, nil
+}
 
 func (stream *httpJSONStream) recv(message proto.Message) error {
-    if stream.cancelled { return io.EOF }
-    if stream.scanner.Scan() {
+    stream.recvMu.Lock()
+    defer stream.recvMu.Unlock()
+    stream.stateMu.Lock()
+    cancelled := stream.cancelled
+    stream.stateMu.Unlock()
+    if cancelled { return io.EOF }
+    for stream.scanner.Scan() {
         line := stream.scanner.Bytes()
         stream.bytes += len(line)
         if stream.bytes > 64*1024 { stream.cancel(); return fmt.Errorf("Rust-owned HTTP response exceeds the generated bound") }
-        if len(bytes.TrimSpace(line)) == 0 { return stream.recv(message) }
-        return protojson.Unmarshal(line, message)
+        if len(bytes.TrimSpace(line)) == 0 { continue }
+        return protojson.Unmarshal(bytes.TrimSpace(line), message)
     }
-    if err := stream.scanner.Err(); err != nil { return err }
+    if err := stream.scanner.Err(); err != nil { stream.cancel(); return err }
+    stream.cancel()
     return io.EOF
+}
+
+type httpJSONClientResult struct { response *http.Response; err error }
+type httpJSONClientStream struct {
+    writer *io.PipeWriter
+    results <-chan httpJSONClientResult
+    cancelContext context.CancelFunc
+    stateMu sync.Mutex
+    sendMu sync.Mutex
+    recvMu sync.Mutex
+    cancelled bool
+    closed bool
+    onClose func()
+}
+
+func (stream *httpJSONClientStream) cancel() {
+    stream.stateMu.Lock()
+    if stream.cancelled { stream.stateMu.Unlock(); return }
+    stream.cancelled = true
+    cancelContext := stream.cancelContext
+    writer := stream.writer
+    onClose := stream.onClose
+    stream.stateMu.Unlock()
+    if cancelContext != nil { cancelContext() }
+    if writer != nil { _ = writer.CloseWithError(context.Canceled) }
+    if onClose != nil { onClose() }
+}
+
+func (stream *httpJSONClientStream) send(message proto.Message) error {
+    payload, err := protojson.Marshal(message)
+    if err != nil { return err }
+    payload = append(payload, '\n')
+    stream.sendMu.Lock()
+    defer stream.sendMu.Unlock()
+    stream.stateMu.Lock()
+    cancelled := stream.cancelled || stream.closed
+    stream.stateMu.Unlock()
+    if cancelled { return io.EOF }
+    _, err = stream.writer.Write(payload)
+    return err
+}
+
+func (stream *httpJSONClientStream) closeAndRecv(message proto.Message) error {
+    stream.recvMu.Lock()
+    defer stream.recvMu.Unlock()
+    stream.sendMu.Lock()
+    stream.stateMu.Lock()
+    if stream.cancelled { stream.stateMu.Unlock(); stream.sendMu.Unlock(); return io.EOF }
+    if !stream.closed { stream.closed = true; _ = stream.writer.Close() }
+    stream.stateMu.Unlock()
+    stream.sendMu.Unlock()
+    result := <-stream.results
+    if result.err != nil { stream.cancel(); return result.err }
+    if result.response == nil { stream.cancel(); return fmt.Errorf("Rust-owned HTTP stream returned no response") }
+    body, err := io.ReadAll(io.LimitReader(result.response.Body, 64*1024+1))
+    _ = result.response.Body.Close()
+    if err != nil { stream.cancel(); return err }
+    if len(body) > 64*1024 { stream.cancel(); return fmt.Errorf("Rust-owned HTTP response exceeds the generated bound") }
+    if result.response.StatusCode < 200 || result.response.StatusCode >= 300 {
+        stream.cancel()
+        return &RustHTTPError{StatusCode: result.response.StatusCode, Detail: body}
+    }
+    err = protojson.Unmarshal(body, message)
+    stream.cancel()
+    return err
+}
+
+func (client *Client) registerHTTPStream(stream httpStreamHandle) bool {
+    client.httpStreamMu.Lock()
+    if client.closed { client.httpStreamMu.Unlock(); stream.cancel(); return false }
+    if client.httpStreams == nil { client.httpStreams = make(map[httpStreamHandle]struct{}) }
+    client.httpStreams[stream] = struct{}{}
+    client.httpStreamMu.Unlock()
+    return true
+}
+
+func (client *Client) unregisterHTTPStream(stream httpStreamHandle) {
+    client.httpStreamMu.Lock()
+    delete(client.httpStreams, stream)
+    client.httpStreamMu.Unlock()
 }
 
 func validateHandshake(response *protocolv1.HandshakeResponse, family string) error {
@@ -1579,7 +1698,31 @@ func (client *Client) httpStream(ctx context.Context, family, method, path strin
 	if result.StatusCode < 200 || result.StatusCode >= 300 { body, _ := io.ReadAll(io.LimitReader(result.Body, 64*1024+1)); _ = result.Body.Close(); return nil, &RustHTTPError{StatusCode: result.StatusCode, Detail: body} }
     scanner := bufio.NewScanner(result.Body)
     scanner.Buffer(make([]byte, 4096), 64*1024)
-    return &httpJSONStream{response: result, scanner: scanner}, nil
+    scanner.Split(scanNDJSONRecord)
+    stream := &httpJSONStream{response: result, scanner: scanner}
+    stream.onClose = func() { client.unregisterHTTPStream(stream) }
+    if !client.registerHTTPStream(stream) { return nil, context.Canceled }
+    return stream, nil
+}
+
+func (client *Client) httpClientStream(ctx context.Context, family, method, path string) (*httpJSONClientStream, error) {
+    requestBody, requestWriter := io.Pipe()
+    streamContext, cancelContext := context.WithCancel(ctx)
+    httpRequest, err := http.NewRequestWithContext(streamContext, method, strings.TrimRight(client.endpoint, "/")+path, requestBody)
+    if err != nil { cancelContext(); _ = requestWriter.Close(); return nil, err }
+    httpRequest.Header.Set("content-type", "application/x-ndjson")
+    httpRequest.Header.Set("accept", "application/json")
+    httpRequest.Header.Set("acyclic-family", family)
+    if client.credentialsToken() != "" { httpRequest.Header.Set("authorization", "Bearer "+client.credentialsToken()) }
+    results := make(chan httpJSONClientResult, 1)
+    go func() {
+        response, requestErr := client.httpClient.Do(httpRequest)
+        results <- httpJSONClientResult{response: response, err: requestErr}
+    }()
+    stream := &httpJSONClientStream{writer: requestWriter, results: results, cancelContext: cancelContext}
+    stream.onClose = func() { client.unregisterHTTPStream(stream) }
+    if !client.registerHTTPStream(stream) { return nil, context.Canceled }
+    return stream, nil
 }
 
 func (client *Client) credentialsToken() string { return client.bearerToken }
@@ -1665,6 +1808,7 @@ func NewClient(ctx context.Context, endpoint string, c Credentials) (*Client, er
         secure: secure,
         bearerToken: c.BearerToken,
         httpClient: httpClient,
+        httpStreams: make(map[httpStreamHandle]struct{}),
         transports: make(map[string]string),
         Actors: actorsv1.NewActorsServiceClient(conn),
         Stream: streamv2.NewStreamServiceClient(conn),
@@ -1685,7 +1829,16 @@ func NewClient(ctx context.Context, endpoint string, c Credentials) (*Client, er
     }, nil
 }
 
-func (c *Client) Close() error { return c.conn.Close() }
+func (c *Client) Close() error {
+    c.httpStreamMu.Lock()
+    c.closed = true
+    streams := make([]httpStreamHandle, 0, len(c.httpStreams))
+    for stream := range c.httpStreams { streams = append(streams, stream) }
+    c.httpStreams = make(map[httpStreamHandle]struct{})
+    c.httpStreamMu.Unlock()
+    for _, stream := range streams { stream.cancel() }
+    return c.conn.Close()
+}
 
 type OperationPolicy struct {
     ClientStreaming, ServerStreaming, BearerAuth bool
@@ -1805,7 +1958,7 @@ fn python_type_projection() -> String {
         .find(|variant| variant.variant == "UnknownOneof")
         .expect("Rust policy must define UnknownOneof")
         .tag;
-    output.push_str("@dataclass(frozen=True)\nclass UnknownEnumValue:\n    raw_value: int\n\n\n");
+    output.push_str("@dataclass(frozen=True)\nclass UnknownEnumValue:\n    raw_value: int\n\n\n@dataclass(frozen=True)\nclass MessageUnknown:\n    raw: bytes\n\n\n");
     let enum_fields = resolved_enum_inventory();
     let mut enum_types = std::collections::BTreeMap::<String, Vec<(String, i32)>>::new();
     for entry in enum_fields {
@@ -2027,13 +2180,7 @@ class ObjectsGetObjectFrameError:
     tag: Literal["error"] = "error"
 
 
-@dataclass(frozen=True)
-class ObjectsGetObjectFrameUnknown:
-    raw: bytes
-    tag: Literal["unknown"] = "unknown"
-
-
-ObjectsGetObjectFrameChoice: TypeAlias = ObjectsGetObjectFrameHeader | ObjectsGetObjectFrameBody | ObjectsGetObjectFrameError | ObjectsGetObjectFrameUnknown
+ObjectsGetObjectFrameChoice: TypeAlias = ObjectsGetObjectFrameHeader | ObjectsGetObjectFrameBody | ObjectsGetObjectFrameError
 
 
 @dataclass(frozen=True)
@@ -2045,9 +2192,12 @@ class ObjectsGetObjectResponse:
     object: ObjectsObjectInfoEtag | None = None
     body: bytes | None = None
     error: objects_pb2.ErrorDetail | None = None
+    unknown: MessageUnknown | None = None
 
     @classmethod
     def from_wire(cls, message: objects_pb2.GetObjectResponse) -> "ObjectsGetObjectResponse":
+        raw_unknown = _message_unknown_wire_bytes(message)
+        opaque = MessageUnknown(raw=raw_unknown) if raw_unknown is not None else None
         frame = message.WhichOneof("frame")
         if frame == "header":
             header = message.header
@@ -2059,12 +2209,13 @@ class ObjectsGetObjectResponse:
             choice = ObjectsGetObjectFrameHeader(
                 value=ObjectsGetObjectHeaderView.from_wire(header)
             )
-            return cls(frame="header", frame_choice=choice, object=object_value)
+            return cls(frame="header", frame_choice=choice, object=object_value, unknown=opaque)
         if frame == "body":
             return cls(
                 frame="body",
                 frame_choice=ObjectsGetObjectFrameBody(value=bytes(message.body)),
                 body=bytes(message.body),
+                unknown=opaque,
             )
         if frame == "error":
             return cls(
@@ -2073,11 +2224,12 @@ class ObjectsGetObjectResponse:
                     value=ObjectsErrorDetailView.from_wire(message.error)
                 ),
                 error=message.error,
+                unknown=opaque,
             )
-        raw = _unknown_oneof_wire_bytes(message)
         return cls(
             frame="empty",
-            frame_choice=(ObjectsGetObjectFrameUnknown(raw=raw) if raw is not None else None),
+            frame_choice=None,
+            unknown=opaque,
         )
 
 
@@ -2305,7 +2457,7 @@ fn python_all_rpc_models() -> String {
         ));
         if fields.is_empty() {
             output.push_str(
-                "    @classmethod\n    def from_wire(cls, message):\n        return cls()\n\n",
+                "    unknown: MessageUnknown | None = None\n\n    @classmethod\n    def from_wire(cls, message):\n        raw_unknown = _message_unknown_wire_bytes(message)\n        return cls(unknown=MessageUnknown(raw=raw_unknown) if raw_unknown is not None else None)\n\n",
             );
             continue;
         }
@@ -2325,8 +2477,9 @@ fn python_all_rpc_models() -> String {
                 python_response_field_type(field)
             ));
         }
+        output.push_str("    unknown: MessageUnknown | None = None\n");
         output.push_str(
-            "\n    @classmethod\n    def from_wire(cls, message):\n",
+            "\n    @classmethod\n    def from_wire(cls, message):\n        raw_unknown = _message_unknown_wire_bytes(message)\n        opaque = MessageUnknown(raw=raw_unknown) if raw_unknown is not None else None\n",
         );
         for (oneof, members) in &oneof_groups {
             let tag = python_safe_identifier(oneof);
@@ -2348,18 +2501,13 @@ fn python_all_rpc_models() -> String {
                     expression = expression,
                 ));
             }
-            let unknown = format!("{}Unknown", choice);
-            output.push_str(&format!(
-                "        if {tag} is None:\n            raw_{tag} = _unknown_oneof_wire_bytes(message)\n            if raw_{tag} is not None:\n                {tag} = {unknown}(raw=raw_{tag})\n",
-                tag = tag,
-                unknown = unknown,
-            ));
         }
         output.push_str("        return cls(\n");
         for oneof in oneof_groups.keys() {
             let tag = python_safe_identifier(oneof);
             output.push_str(&format!("            {tag}={tag},\n", tag = tag));
         }
+        output.push_str("            unknown=opaque,\n");
         for field in &fields {
             let expression = python_response_field_expression(field, "message");
             let expression = if let Some(oneof) = field.oneof_name.as_deref()
@@ -3420,7 +3568,8 @@ const (
 )
 
 // ObjectsGetObjectFrameChoice is the open, descriptor-discriminated DTO for
-// the Rust-owned frame oneof. Unknown future arms retain their wire bytes.
+// the Rust-owned frame oneof. Unknown wire bytes remain message-level data
+// because protobuf cannot identify a future oneof's membership.
 type ObjectsGetObjectFrameChoice interface {
 	isObjectsGetObjectFrameChoice()
 	Tag() string
@@ -3438,15 +3587,12 @@ type ObjectsGetObjectFrameErrorChoice struct { Value *ObjectsErrorDetailView }
 func (*ObjectsGetObjectFrameErrorChoice) isObjectsGetObjectFrameChoice() {}
 func (*ObjectsGetObjectFrameErrorChoice) Tag() string { return "error" }
 
-type ObjectsGetObjectFrameUnknownChoice struct { Number int32; Raw []byte }
-func (*ObjectsGetObjectFrameUnknownChoice) isObjectsGetObjectFrameChoice() {}
-func (*ObjectsGetObjectFrameUnknownChoice) Tag() string { return "unknown" }
-
 // ObjectsGetObjectResponse preserves the Rust-owned oneof discriminant and
 // decodes the header's object metadata through the public semantic wrapper.
 type ObjectsGetObjectResponse struct {
 	Frame  ObjectsGetObjectFrame
 	FrameChoice ObjectsGetObjectFrameChoice
+	Unknown []byte
 	Object *ObjectsObjectInfoEtag
 	Body   []byte
 	Error  *objectsv2.ErrorDetail
@@ -3486,7 +3632,7 @@ func ObjectsGetObjectResponseFromWire(message *objectsv2.GetObjectResponse) (*Ob
 		}
 	default:
 		if raw := message.ProtoReflect().GetUnknown(); len(raw) > 0 {
-			result.FrameChoice = &ObjectsGetObjectFrameUnknownChoice{Number: unknownFieldNumber(raw), Raw: append([]byte(nil), raw...)}
+			result.Unknown = append([]byte(nil), raw...)
 		}
 	}
 	return result, nil
@@ -3500,6 +3646,7 @@ func (value *ObjectsGetObjectResponse) Choice() ObjectsGetObjectFrameChoice {
 // boundary, so callers never handle raw transport response messages.
 type ObjectsGetObjectStream struct {
 	inner grpc.ServerStreamingClient[objectsv2.GetObjectResponse]
+	cancel context.CancelFunc
 }
 
 func (stream *ObjectsGetObjectStream) Recv() (*ObjectsGetObjectResponse, error) {
@@ -3508,6 +3655,11 @@ func (stream *ObjectsGetObjectStream) Recv() (*ObjectsGetObjectResponse, error) 
 		return nil, err
 	}
 	return ObjectsGetObjectResponseFromWire(message)
+}
+
+func (stream *ObjectsGetObjectStream) Close() error {
+	if stream.cancel != nil { stream.cancel() }
+	return nil
 }
 
 "#,
@@ -3860,6 +4012,7 @@ fn go_all_rpc_models() -> String {
             output.push_str(&format!("func {response_name}FromWire(message {output_wire}) (*{response_name}, error) {{\n\tif message == nil {{ return nil, fmt.Errorf(\"response must be present\") }}\n\treturn &{response_name}{{wire: message}}, nil\n}}\n\n", response_name = response_name, output_wire = output_wire));
         } else {
             output.push_str(&format!("type {response_name} struct {{\n\twire {output_wire}\n", response_name = response_name, output_wire = output_wire));
+            output.push_str("\tunknown_fields []byte\n");
             for oneof in oneof_groups.keys() {
                 let variant = format!("{response_name}{}Variant", pascal_case(oneof));
                 output.push_str(&format!("\t{oneof} {variant}\n", oneof = snake_case(oneof), variant = variant));
@@ -3895,7 +4048,7 @@ fn go_all_rpc_models() -> String {
                 }
                 output.push_str(")\n\n");
             }
-            output.push_str(&format!("func {response_name}FromWire(message {output_wire}) (*{response_name}, error) {{\n\tif message == nil {{ return nil, fmt.Errorf(\"response must be present\") }}\n\tresult := &{response_name}{{wire: message}}\n", response_name = response_name, output_wire = output_wire));
+            output.push_str(&format!("func {response_name}FromWire(message {output_wire}) (*{response_name}, error) {{\n\tif message == nil {{ return nil, fmt.Errorf(\"response must be present\") }}\n\tresult := &{response_name}{{wire: message, unknown_fields: append([]byte(nil), message.ProtoReflect().GetUnknown()...)}}\n", response_name = response_name, output_wire = output_wire));
             for (oneof, members) in &oneof_groups {
                 let oneof_field = pascal_case(oneof);
                 let variant = format!("{response_name}{}Variant", pascal_case(oneof));
@@ -3921,9 +4074,7 @@ fn go_all_rpc_models() -> String {
                         arm = arm,
                     ));
                 }
-                let choice = go_rpc_oneof_choice_name(&response_name, oneof);
-                let unknown = format!("{}Unknown", choice);
-                output.push_str(&format!("\tdefault:\n\t\tresult.{storage_oneof} = {response_name}{constant_oneof}Empty\n\t\tif raw := message.ProtoReflect().GetUnknown(); len(raw) > 0 {{ result.{storage_oneof}_choice = &{unknown}{{Number: unknownFieldNumber(raw), Raw: append([]byte(nil), raw...)}} }}\n\t}}\n", storage_oneof = snake_case(oneof), constant_oneof = pascal_case(oneof), response_name = response_name, unknown = unknown));
+                output.push_str(&format!("\tdefault:\n\t\tresult.{storage_oneof} = {response_name}{constant_oneof}Empty\n\t}}\n", storage_oneof = snake_case(oneof), constant_oneof = pascal_case(oneof), response_name = response_name));
                 output.push_str(&format!("\t_ = {variant}(result.{oneof})\n", variant = variant, oneof = snake_case(oneof)));
             }
             output.push_str("\treturn result, nil\n}\n\n");
@@ -3932,6 +4083,7 @@ fn go_all_rpc_models() -> String {
                 let choice = go_rpc_oneof_choice_name(&response_name, oneof);
                 output.push_str(&format!("func (value *{response_name}) {oneof}Variant() {variant} {{ return value.{storage} }}\n\nfunc (value *{response_name}) {oneof}Choice() {choice} {{ return value.{storage}_choice }}\n\n", response_name = response_name, oneof = pascal_case(oneof), variant = variant, choice = choice, storage = snake_case(oneof)));
             }
+            output.push_str(&format!("func (value *{response_name}) UnknownFields() []byte {{ return append([]byte(nil), value.unknown_fields...) }}\n\n", response_name = response_name));
         }
         let mut emitted = std::collections::BTreeSet::new();
         for field in response_fields {
@@ -3949,13 +4101,10 @@ fn go_all_rpc_models() -> String {
         if method.server_streaming {
             let stream_name = format!("{response_name}Stream");
             let wire = output_wire.trim_start_matches('*');
-            output.push_str(&format!("type {stream_name} struct {{ inner grpc.ServerStreamingClient[{wire}]; http *httpJSONStream }}\n\nfunc (stream *{stream_name}) Recv() (*{response_name}, error) {{\n\tif stream.http != nil {{ message := new({wire}); if err := stream.http.recv(message); err != nil {{ return nil, err }}; return {response_name}FromWire(message) }}\n\tmessage, err := stream.inner.Recv()\n\tif err != nil {{ return nil, err }}\n\treturn {response_name}FromWire(message)\n}}\n\nfunc (stream *{stream_name}) Close() error {{ if stream.http != nil {{ stream.http.cancel() }}; return nil }}\n\n", stream_name = stream_name, wire = wire, response_name = response_name));
+            output.push_str(&format!("type {stream_name} struct {{ inner grpc.ServerStreamingClient[{wire}]; http *httpJSONStream; cancel context.CancelFunc }}\n\nfunc (stream *{stream_name}) Recv() (*{response_name}, error) {{\n\tif stream.http != nil {{ message := new({wire}); if err := stream.http.recv(message); err != nil {{ return nil, err }}; return {response_name}FromWire(message) }}\n\tmessage, err := stream.inner.Recv()\n\tif err != nil {{ return nil, err }}\n\treturn {response_name}FromWire(message)\n}}\n\nfunc (stream *{stream_name}) Close() error {{ if stream.cancel != nil {{ stream.cancel() }}; if stream.http != nil {{ stream.http.cancel() }}; return nil }}\n\n", stream_name = stream_name, wire = wire, response_name = response_name));
         }
     }
     for method in &methods {
-        if method.client_streaming {
-            continue;
-        }
         let request_name = go_rpc_request_name(method);
         let response_name = go_rpc_response_name(method);
         let client = go_rpc_client_expression_for_method(method);
@@ -3965,9 +4114,15 @@ fn go_all_rpc_models() -> String {
             pascal_case(method.service.trim_end_matches("Service")),
             pascal_case(&method.method)
         );
-        if method.server_streaming {
+        if method.client_streaming {
+            let stream_name = format!("{response_name}ClientStream");
+            let input_wire = input.trim_start_matches('*');
+            let output_wire = output_wire.trim_start_matches('*');
+            output.push_str(&format!("type {stream_name} struct {{ inner grpc.ClientStreamingClient[{input_wire}, {output_wire}]; http *httpJSONClientStream; cancel context.CancelFunc }}\n\nfunc (stream *{stream_name}) Send(request {request_name}) error {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return err }}\n\tif stream.http != nil {{ return stream.http.send(wireRequest) }}\n\treturn stream.inner.Send(wireRequest)\n}}\n\nfunc (stream *{stream_name}) CloseAndRecv() (*{response_name}, error) {{\n\tif stream.http != nil {{ message := new({output_wire}); if err := stream.http.closeAndRecv(message); err != nil {{ return nil, err }}; return {response_name}FromWire(message) }}\n\tmessage, err := stream.inner.CloseAndRecv()\n\tif err != nil {{ return nil, err }}\n\treturn {response_name}FromWire(message)\n}}\n\nfunc (stream *{stream_name}) Close() error {{ if stream.cancel != nil {{ stream.cancel() }}; if stream.http != nil {{ stream.http.cancel() }}; return nil }}\n\n", stream_name = stream_name, input_wire = input_wire, output_wire = output_wire, request_name = request_name, response_name = response_name));
+            output.push_str(&format!("func (client *Client) {method_name}(ctx context.Context, opts ...grpc.CallOption) (*{stream_name}, error) {{\n\ttransport, err := client.ensureTransport(ctx, {family:?}, true)\n\tif err != nil {{ return nil, err }}\n\tif transport == \"http_json\" {{ route, ok := HTTPRoutes[{family:?}][{route_rpc:?}]; if !ok || !route.Streaming {{ return nil, fmt.Errorf(\"Rust-owned HTTP streaming projection is unavailable for {route_rpc}\") }}; httpResponse, err := client.httpClientStream(ctx, {family:?}, route.Method, route.Path); if err != nil {{ return nil, err }}; return &{stream_name}{{http: httpResponse}}, nil }}\n\tstreamContext, cancel := context.WithCancel(ctx)\n\tstream, err := {client}.{grpc_method}(streamContext, opts...)\n\tif err != nil {{ cancel(); return nil, err }}\n\treturn &{stream_name}{{inner: stream, cancel: cancel}}, nil\n}}\n\n", method_name = method_name, stream_name = stream_name, client = client, grpc_method = method.method, route_rpc = method.rpc, family = method.family));
+        } else if method.server_streaming {
 
-            output.push_str(&format!("func (client *Client) {method_name}(ctx context.Context, request {request_name}, opts ...grpc.CallOption) (*{response_name}Stream, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\ttransport, err := client.ensureTransport(ctx, {family:?}, true)\n\tif err != nil {{ return nil, err }}\n\tif transport == \"http_json\" {{ route, ok := HTTPRoutes[{family:?}][{route_rpc:?}]; if !ok || !route.Streaming {{ return nil, fmt.Errorf(\"Rust-owned HTTP streaming projection is unavailable for {route_rpc}\") }}; httpResponse, err := client.httpStream(ctx, {family:?}, route.Method, route.Path, wireRequest); if err != nil {{ return nil, err }}; return &{response_name}Stream{{http: httpResponse}}, nil }}\n\tstream, err := {client}.{grpc_method}(ctx, wireRequest, opts...)\n\tif err != nil {{ return nil, err }}\n\treturn &{response_name}Stream{{inner: stream}}, nil\n}}\n\n", method_name = method_name, request_name = request_name, response_name = response_name, client = client, grpc_method = method.method, route_rpc = method.rpc, family = method.family));
+            output.push_str(&format!("func (client *Client) {method_name}(ctx context.Context, request {request_name}, opts ...grpc.CallOption) (*{response_name}Stream, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\ttransport, err := client.ensureTransport(ctx, {family:?}, true)\n\tif err != nil {{ return nil, err }}\n\tif transport == \"http_json\" {{ route, ok := HTTPRoutes[{family:?}][{route_rpc:?}]; if !ok || !route.Streaming {{ return nil, fmt.Errorf(\"Rust-owned HTTP streaming projection is unavailable for {route_rpc}\") }}; httpResponse, err := client.httpStream(ctx, {family:?}, route.Method, route.Path, wireRequest); if err != nil {{ return nil, err }}; return &{response_name}Stream{{http: httpResponse}}, nil }}\n\tstreamContext, cancel := context.WithCancel(ctx)\n\tstream, err := {client}.{grpc_method}(streamContext, wireRequest, opts...)\n\tif err != nil {{ cancel(); return nil, err }}\n\treturn &{response_name}Stream{{inner: stream, cancel: cancel}}, nil\n}}\n\n", method_name = method_name, request_name = request_name, response_name = response_name, client = client, grpc_method = method.method, route_rpc = method.rpc, family = method.family));
         } else {
 
             let wire_response = go_message_wire_type(&method.family, &method.output_message);
@@ -4184,7 +4339,8 @@ fn go_rpc_assignment(field: &ResolvedRequestField) -> String {
             .unwrap_or(&field.root_message);
         let wrapper = format!("{module}.{root}_{}", go_rpc_field_identifier(field));
         return format!(
-            "\twire.{oneof} = &{wrapper}{{{field}: {expression}}}\n",
+            "\tif {source} != nil {{ wire.{oneof} = &{wrapper}{{{field}: {expression}}} }}\n",
+            source = source,
             field = go_rpc_field_identifier(field)
         );
     }
@@ -4792,7 +4948,7 @@ fn go_public_response_models() -> String {
             }
             if emitted.insert(stream_model.clone()) {
                 output.push_str(&format!(
-                    "type {stream_model} struct {{ inner grpc.ServerStreamingClient[{wire}] }}\n\nfunc (stream *{stream_model}) Recv() (*{model}, error) {{\n\tmessage, err := stream.inner.Recv()\n\tif err != nil {{ return nil, err }}\n\treturn {model}FromWire(message)\n}}\n\n",
+                    "type {stream_model} struct {{ inner grpc.ServerStreamingClient[{wire}]; cancel context.CancelFunc }}\n\nfunc (stream *{stream_model}) Recv() (*{model}, error) {{\n\tmessage, err := stream.inner.Recv()\n\tif err != nil {{ return nil, err }}\n\treturn {model}FromWire(message)\n}}\n\nfunc (stream *{stream_model}) Close() error {{ if stream.cancel != nil {{ stream.cancel() }}; return nil }}\n\n",
                     stream_model = stream_model,
                     wire = wire,
                     model = model,

@@ -1535,7 +1535,7 @@ export function isRustOwnedTransportUnavailable(error: unknown): boolean {
         service.family.to_ascii_uppercase(),
     ));
     if !service.grpc_methods.is_empty() {
-        output.push_str("export interface RustOwnedGrpcInvoker {\n  invokeGrpc<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest): Promise<TResponse>;\n  invokeGrpcStream<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest): AsyncIterable<TResponse>;\n}\n\n");
+        output.push_str("export interface RustOwnedGrpcInvoker {\n  invokeGrpc<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest, signal?: AbortSignal): Promise<TResponse>;\n  invokeGrpcStream<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest, signal?: AbortSignal): AsyncIterable<TResponse>;\n}\n\n");
         output.push_str(&format!(
             "export function create{title}GrpcClient(invoker: RustOwnedGrpcInvoker) {{\n  return {{\n"
         ));
@@ -1544,13 +1544,13 @@ export function isRustOwnedTransportUnavailable(error: unknown): boolean {
             let response_type = local_type(&method.response_type);
             if method.server_streaming {
                 output.push_str(&format!(
-                    "    {operation}(request: {request_type}): AsyncIterable<{response_type}> {{\n      return invoker.invokeGrpcStream<{request_type}, {response_type}>({grpc_constant}.{rpc_name}, request);\n    }},\n",
+                    "    {operation}(request: {request_type}, signal?: AbortSignal): AsyncIterable<{response_type}> {{\n      return invoker.invokeGrpcStream<{request_type}, {response_type}>({grpc_constant}.{rpc_name}, request, signal);\n    }},\n",
                     grpc_constant = format!("{}_GRPC_METHODS", service.family.to_ascii_uppercase()),
                     rpc_name = operation,
                 ));
             } else {
                 output.push_str(&format!(
-                    "    {operation}(request: {request_type}): Promise<{response_type}> {{\n      return invoker.invokeGrpc<{request_type}, {response_type}>({grpc_constant}.{rpc_name}, request);\n    }},\n",
+                    "    {operation}(request: {request_type}, signal?: AbortSignal): Promise<{response_type}> {{\n      return invoker.invokeGrpc<{request_type}, {response_type}>({grpc_constant}.{rpc_name}, request, signal);\n    }},\n",
                     grpc_constant = format!("{}_GRPC_METHODS", service.family.to_ascii_uppercase()),
                     rpc_name = operation,
                 ));
