@@ -8,7 +8,7 @@ import {
 } from "../src/index.js";
 
 test("Rust-owned policy selects the best transport without consumer flags", () => {
-  expect(INFERENCE_REMOTE_POLICY.transport.native.map(option => option.kind)).toEqual(["http"]);
+  expect(INFERENCE_REMOTE_POLICY.transport.native.map(option => option.kind)).toEqual(["grpc", "http"]);
   expect(INFERENCE_REMOTE_POLICY.transport.browser.map(option => option.kind)).toEqual(["http"]);
   const client = fromEnv({ endpoint: "https://inference.example", token: "fixture" });
   expect(client).toBeInstanceOf(InferenceClient);

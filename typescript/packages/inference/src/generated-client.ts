@@ -15,16 +15,24 @@ export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonl
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
 
-export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedEvaluationId = RustOwnedSemanticBytes<"evaluation_id">;
 export function makeRustOwnedEvaluationId(value: Uint8Array): RustOwnedEvaluationId { if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedEvaluationId; }
+export type RustOwnedOpaqueBytes = RustOwnedSemanticBytes<"opaque_bytes">;
+export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes {  return value as RustOwnedOpaqueBytes; }
+export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
 export type RustOwnedRevisionDigest = RustOwnedSemanticBytes<"revision_digest">;
 export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
 export type RustOwnedRunId = RustOwnedSemanticBytes<"run_id">;
 export function makeRustOwnedRunId(value: Uint8Array): RustOwnedRunId { if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedRunId; }
+export type RustOwnedSequence = RustOwnedSemanticNumber<"sequence">;
+export function makeRustOwnedSequence(value: number): RustOwnedSequence { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
 export type RustOwnedSha256Digest = RustOwnedSemanticBytes<"sha256_digest">;
 export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
+export type RustOwnedTimestampMillis = RustOwnedSemanticNumber<"timestamp_millis">;
+export function makeRustOwnedTimestampMillis(value: number): RustOwnedTimestampMillis { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampMillis; }
 
 export const INFERENCE_PUBLIC_FIELD_BINDINGS = [
   { family: "inference", field: "run_id", semanticType: "run_id", module: "inference", message: "InspectRunRequest", wireField: "run_id", direction: "request", rules: ["FixedLength(16)"] },
@@ -32,14 +40,34 @@ export const INFERENCE_PUBLIC_FIELD_BINDINGS = [
   { family: "inference", field: "commitment", semanticType: "sha256_digest", module: "inference", message: "InspectWarmRequest", wireField: "commitment", direction: "request", rules: ["FixedLength(32)", "Sha256Digest"] },
   { family: "inference", field: "evaluation_id", semanticType: "evaluation_id", module: "inference", message: "InspectEvaluationRequest", wireField: "evaluation_id", direction: "request", rules: ["FixedLength(16)"] },
   { family: "inference", field: "spec_digest", semanticType: "sha256_digest", module: "inference", message: "EvaluationSpec", wireField: "spec_digest", direction: "nested_message", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "command_digest", semanticType: "sha256_digest", module: "inference", message: "MutationReceipt", wireField: "command_digest", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "sequence", semanticType: "sequence", module: "inference", message: "MutationReceipt", wireField: "sequence", direction: "response", rules: ["NonNegative"] },
+  { family: "inference", field: "parent", semanticType: "opaque_bytes", module: "inference", message: "ContextView", wireField: "parent", direction: "response", rules: [] },
+  { family: "inference", field: "lineage", semanticType: "opaque_bytes", module: "inference", message: "ContextView", wireField: "lineage", direction: "response", rules: [] },
+  { family: "inference", field: "execution_profile", semanticType: "opaque_bytes", module: "inference", message: "ContextView", wireField: "execution_profile", direction: "response", rules: [] },
+  { family: "inference", field: "content_digest", semanticType: "sha256_digest", module: "inference", message: "ContextView", wireField: "content_digest", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "model", semanticType: "opaque_text", module: "inference", message: "ContextView", wireField: "model", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "inference", field: "last_sequence", semanticType: "sequence", module: "inference", message: "RunView", wireField: "last_sequence", direction: "response", rules: ["NonNegative"] },
+  { family: "inference", field: "expires_at_ms", semanticType: "timestamp_millis", module: "inference", message: "WarmView", wireField: "expires_at_ms", direction: "response", rules: ["NonNegative"] },
+  { family: "inference", field: "context", semanticType: "sha256_digest", module: "inference", message: "WarmView", wireField: "context", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "model_profile", semanticType: "sha256_digest", module: "inference", message: "WarmView", wireField: "model_profile", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "evidence_digest", semanticType: "sha256_digest", module: "inference", message: "WarmView", wireField: "evidence_digest", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "admission_receipt_id", semanticType: "opaque_bytes", module: "inference", message: "WarmView", wireField: "admission_receipt_id", direction: "response", rules: [] },
+  { family: "inference", field: "sequence", semanticType: "sequence", module: "inference", message: "WarmView", wireField: "sequence", direction: "response", rules: ["NonNegative"] },
+  { family: "inference", field: "receipt_id", semanticType: "sha256_digest", module: "inference", message: "UsageReceipt", wireField: "receipt_id", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "model_profile", semanticType: "sha256_digest", module: "inference", message: "UsageReceipt", wireField: "model_profile", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "meter_revision", semanticType: "sha256_digest", module: "inference", message: "UsageReceipt", wireField: "meter_revision", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "inference", field: "rate_card_revision", semanticType: "sha256_digest", module: "inference", message: "UsageReceipt", wireField: "rate_card_revision", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
 ] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
 
 export const INFERENCE_PUBLIC_NESTED_ROUTES = [
   { operation: "create_evaluation", requestMessage: "CreateEvaluationRequest", nestedMessage: "EvaluationSpec", nestedField: "spec", semanticField: "spec_digest", clientAttribute: "inference.evaluations", rpc: "Create", response: "EvaluationView", fields: [{ field: "identity", kind: "message" }, { field: "spec", kind: "message" }] },
 ] as const;
 
+export type RustOwnedKnownWireMessage = ContextView | CreateContextRequest | CreateEvaluationRequest | EvaluationView | GenerateRunRequest | GenerateRunResponse | InspectContextRequest | InspectEvaluationRequest | InspectRunRequest | InspectWarmRequest | ListModelsRequest | ListModelsResponse | MutateContextRequest | MutationReceipt | ReleaseWarmRequest | RenewWarmRequest | RetainWarmRequest | RunEvent | RunView | WarmView | WatchRunRequest;
+
 export type RustOwnedWireChoice =
-  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "known"; readonly value: RustOwnedKnownWireMessage } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
 import type * as RustWire from "../generated/proto/inference/v1/inference_pb.js";
@@ -48,7 +76,13 @@ import type * as RustWire from "../generated/proto/inference/v1/inference_pb.js"
 
 export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
 
-export type RustOwnedPublicContextView = RustWire.ContextView;
+export type RustOwnedPublicContextView = Omit<RustWire.ContextView, "contentDigest" | "executionProfile" | "lineage" | "model" | "parent"> & {
+  readonly contentDigest: RustOwnedSha256Digest;
+  readonly executionProfile: RustOwnedOpaqueBytes;
+  readonly lineage: RustOwnedOpaqueBytes;
+  readonly model: RustOwnedOpaqueText;
+  readonly parent: RustOwnedOpaqueBytes;
+};
 export type RustOwnedPublicCreateContextRequest = RustWire.CreateContextRequest;
 export type RustOwnedPublicCreateEvaluationRequest = Omit<RustWire.CreateEvaluationRequest, "spec"> & {
   readonly spec: RustOwnedPublicEvaluationSpec;
@@ -74,13 +108,25 @@ export type RustOwnedPublicInspectWarmRequest = Omit<RustWire.InspectWarmRequest
 export type RustOwnedPublicListModelsRequest = RustWire.ListModelsRequest;
 export type RustOwnedPublicListModelsResponse = RustWire.ListModelsResponse;
 export type RustOwnedPublicMutateContextRequest = RustWire.MutateContextRequest;
-export type RustOwnedPublicMutationReceipt = RustWire.MutationReceipt;
+export type RustOwnedPublicMutationReceipt = Omit<RustWire.MutationReceipt, "commandDigest" | "sequence"> & {
+  readonly commandDigest: RustOwnedSha256Digest;
+  readonly sequence: RustOwnedSequence;
+};
 export type RustOwnedPublicReleaseWarmRequest = RustWire.ReleaseWarmRequest;
 export type RustOwnedPublicRenewWarmRequest = RustWire.RenewWarmRequest;
 export type RustOwnedPublicRetainWarmRequest = RustWire.RetainWarmRequest;
 export type RustOwnedPublicRunEvent = RustWire.RunEvent;
-export type RustOwnedPublicRunView = RustWire.RunView;
-export type RustOwnedPublicWarmView = RustWire.WarmView;
+export type RustOwnedPublicRunView = Omit<RustWire.RunView, "lastSequence"> & {
+  readonly lastSequence: RustOwnedSequence;
+};
+export type RustOwnedPublicWarmView = Omit<RustWire.WarmView, "admissionReceiptId" | "context" | "evidenceDigest" | "expiresAtMs" | "modelProfile" | "sequence"> & {
+  readonly admissionReceiptId: RustOwnedOpaqueBytes;
+  readonly context: RustOwnedSha256Digest;
+  readonly evidenceDigest: RustOwnedSha256Digest;
+  readonly expiresAtMs: RustOwnedTimestampMillis;
+  readonly modelProfile: RustOwnedSha256Digest;
+  readonly sequence: RustOwnedSequence;
+};
 export type RustOwnedPublicWatchRunRequest = RustWire.WatchRunRequest;
 
 export interface RustOwnedInferencePublicClient {
@@ -142,7 +188,7 @@ export interface RustOwnedTransportOption { readonly kind: RustOwnedTransportKin
 export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "bearer"; readonly credentialPolicy: "bearer-no-crlf"; readonly requestEncoding: "protobuf-json"; readonly responseEncoding: "protobuf-json"; readonly responseLimitPolicy: "bounded-cumulative-utf8"; readonly maximumMessageBytes: number; readonly maximumHttpRequestBytes: number; readonly maximumHttpResponseBytes: number; readonly requestTimeoutMillis: number; readonly behaviorBinding: "generated-client"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
 export type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKind, boolean>>;
 
-export const INFERENCE_REMOTE_POLICY = { protocol: "https", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", responseLimitPolicy: "bounded-cumulative-utf8", maximumMessageBytes: 8388608, maximumHttpRequestBytes: 16777216, maximumHttpResponseBytes: 16777216, requestTimeoutMillis: 60000, behaviorBinding: "generated-client", transport: { native: [{ kind: "http", streaming: true, bearerAuth: true }], browser: [{ kind: "http", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
+export const INFERENCE_REMOTE_POLICY = { protocol: "https", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", responseLimitPolicy: "bounded-cumulative-utf8", maximumMessageBytes: 8388608, maximumHttpRequestBytes: 16777216, maximumHttpResponseBytes: 16777216, requestTimeoutMillis: 60000, behaviorBinding: "generated-client", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }, { kind: "http", streaming: true, bearerAuth: true }], browser: [{ kind: "http", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
 
 /** Selects the first Rust-qualified transport that is installed for this runtime. */
 export function selectRustOwnedTransport(policy: RustOwnedRemotePolicy, runtime: RustOwnedRuntime, requested?: RustOwnedTransportKind, availability: RustOwnedTransportAvailability = {}): RustOwnedTransportKind {
@@ -184,7 +230,7 @@ export const INFERENCE_OPERATIONS = {
   "inference.customer.v1.EvaluationsService/Inspect": { rpc: "inference.customer.v1.EvaluationsService/Inspect", capabilities: ["inference.evaluations.read"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["evaluation_id.length_16"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const INFERENCE_SOURCE = { family: "inference", rustCrate: "acyclic-inference", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::inference::inference_descriptor", descriptorSha256: "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea", sourceContentSha256: "05174585961f7919f1c57093d2be85a6faac225495270c6dc2821ba744e6ae6b", sourceModelSha256: "05174585961f7919f1c57093d2be85a6faac225495270c6dc2821ba744e6ae6b", handshakeRoute: "/v1/sdk/inference/handshake", handshakeVersion: "inference.customer.v1", handshakeDescriptorDigest: "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15", modeledOperations: 14, httpProjection: true } as const;
+export const INFERENCE_SOURCE = { family: "inference", rustCrate: "acyclic-inference", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::inference::inference_descriptor", descriptorSha256: "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea", sourceContentSha256: "0494eff39a4c947603e9c217f1aabd4eac04301f2088c21fbc2d616e5bc6cac5", sourceModelSha256: "0494eff39a4c947603e9c217f1aabd4eac04301f2088c21fbc2d616e5bc6cac5", handshakeRoute: "/v1/sdk/inference/handshake", handshakeVersion: "inference.customer.v1", handshakeDescriptorDigest: "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15", modeledOperations: 14, httpProjection: true } as const;
 
 export const INFERENCE_HANDSHAKE = { family: "inference", route: "/v1/sdk/inference/handshake", version: "inference.customer.v1", descriptorDigest: "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15" } as const;
 

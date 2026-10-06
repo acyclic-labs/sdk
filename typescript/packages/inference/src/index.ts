@@ -335,8 +335,10 @@ export interface InferenceEnvironment {
 /**
  * Construct the Rust-qualified remote Inference facade.
  *
- * The published adapter is HTTP JSON/NDJSON in both runtimes. An explicit
- * unavailable override fails before endpoint parsing or a request is sent.
+ * Rust selects the best qualified transport for the runtime: native clients
+ * prefer authenticated gRPC and fall back to Rust-owned HTTP, while browser
+ * clients use the browser-safe HTTP projection. An explicit legacy override is
+ * compatibility input only and never changes the Rust-owned selection.
  */
 export function fromEnv(environment: InferenceEnvironment): InferenceClient {
   void environment.transport;
