@@ -304,12 +304,12 @@ describe("JSON-lines process bridge", () => {
     const invalidChild = new EventEmitter() as unknown as ChildProcess & {
       pid: number;
       stdin: null;
-      stdout: null;
+      stdout: null | undefined;
       stderr: null;
     };
     invalidChild.pid = 4182;
     invalidChild.stdin = null;
-    invalidChild.stdout = null;
+    invalidChild.stdout = undefined;
     invalidChild.stderr = null;
     let terminated = 0;
     const processOwner = {
@@ -328,6 +328,53 @@ describe("JSON-lines process bridge", () => {
     expect(thrown).toBeInstanceOf(GraphCoderProcessStartError);
     await expect((thrown as GraphCoderProcessStartError).cleanup).resolves.toEqual({ kind: "unknown", pid: 4182, reason: "invalid bridge stdio" });
     expect(terminated).toBe(1);
+  });
+
+  test("retains cleanup when bridge listener setup throws", async () => {
+    const invalidChild = new EventEmitter() as unknown as ChildProcess & {
+      pid: number;
+      stdin: { write: () => boolean };
+      stdout: { on: () => never };
+      stderr: { on: () => void };
+    };
+    invalidChild.pid = 4183;
+    invalidChild.stdin = { write: () => true };
+    invalidChild.stdout = { on: () => { throw new Error("listener setup failed"); } };
+    invalidChild.stderr = { on: () => undefined };
+    let terminated = 0;
+    const processOwner = {
+      spawn() { return invalidChild; },
+      terminate(_child: ChildProcess) {
+        terminated += 1;
+        return Promise.resolve<OwnedProcessTermination>({ kind: "unknown", pid: invalidChild.pid, reason: "listener setup cleanup" });
+      },
+    };
+    let thrown: unknown;
+    try {
+      new JsonLineGraphCoderBridge({ executable: "fixture", env: env(), processOwner });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GraphCoderProcessStartError);
+    await expect((thrown as GraphCoderProcessStartError).cleanup).resolves.toEqual({ kind: "unknown", pid: 4183, reason: "listener setup cleanup" });
+    expect(terminated).toBe(1);
+  });
+
+  test("keeps an undefined spawned child at the startup boundary", async () => {
+    const processOwner = {
+      spawn() { return undefined as never; },
+      terminate() {
+        throw new Error("must not receive an undefined child");
+      },
+    };
+    let thrown: unknown;
+    try {
+      new JsonLineGraphCoderBridge({ executable: "fixture", env: env(), processOwner });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GraphCoderProcessStartError);
+    await expect((thrown as GraphCoderProcessStartError).cleanup).resolves.toEqual({ kind: "unknown", pid: -1, reason: "process owner returned no child process" });
   });
 
   test("composes the process bridge with the public transport adapter", async () => {

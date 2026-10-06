@@ -101,28 +101,55 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     };
-    let child: ReturnType<OwnedProcessOwner["spawn"]>;
+    let spawned: ReturnType<OwnedProcessOwner["spawn"]> | undefined;
     try {
-      child = this.#processOwner.spawn(options.executable, options.args ?? [], spawnOptions);
+      spawned = this.#processOwner.spawn(options.executable, options.args ?? [], spawnOptions);
     } catch (error) {
       throw new GraphCoderError("transport", `failed to start bridge process: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (child.stdin === null || child.stdout === null || child.stderr === null) {
+    if (spawned === undefined || spawned === null || typeof spawned !== "object") {
+      throw new GraphCoderProcessStartError(
+        "bridge process owner returned no child process",
+        requestOwnedTermination(this.#processOwner, spawned),
+      );
+    }
+    const child = spawned;
+    let validTransport = false;
+    try {
+      validTransport = child.stdin !== null && child.stdin !== undefined && typeof child.stdin.write === "function" &&
+        child.stdout !== null && child.stdout !== undefined && typeof child.stdout.on === "function" &&
+        child.stderr !== null && child.stderr !== undefined && typeof child.stderr.on === "function" &&
+        typeof child.on === "function";
+    } catch (error) {
+      throw new GraphCoderProcessStartError(
+        `bridge process transport inspection failed: ${error instanceof Error ? error.message : String(error)}`,
+        requestOwnedTermination(this.#processOwner, child),
+      );
+    }
+    if (!validTransport) {
       throw new GraphCoderProcessStartError(
         "bridge process did not expose piped stdio",
         requestOwnedTermination(this.#processOwner, child),
       );
     }
-    this.#child = child as ChildProcessWithoutNullStreams;
-    this.#child.stdout.on("data", chunk => this.#consumeStdout(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-    this.#child.stderr.on("data", chunk => this.#emitDiagnostic({ kind: "stderr", text: Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk) }));
-    this.#child.on("error", error => this.#finish(new GraphCoderError("transport", `bridge process error: ${error.message}`)));
-    this.#child.on("exit", () => this.#requestTermination());
-    this.#child.on("close", (code, signal) => {
-      this.#emitDiagnostic({ kind: "exit", code, signal });
-      this.#finish(new GraphCoderError("transport", code === 0 ? "bridge process closed before replying" : `bridge process exited with code ${code ?? "unknown"}`));
-      this.#recordExit({ kind: "closed", code, signal });
-    });
+    const attachedChild = child as ChildProcessWithoutNullStreams;
+    try {
+      attachedChild.stdout.on("data", chunk => this.#consumeStdout(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      attachedChild.stderr.on("data", chunk => this.#emitDiagnostic({ kind: "stderr", text: Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk) }));
+      attachedChild.on("error", error => this.#finish(new GraphCoderError("transport", `bridge process error: ${error.message}`)));
+      attachedChild.on("exit", () => this.#requestTermination());
+      attachedChild.on("close", (code, signal) => {
+        this.#emitDiagnostic({ kind: "exit", code, signal });
+        this.#finish(new GraphCoderError("transport", code === 0 ? "bridge process closed before replying" : `bridge process exited with code ${code ?? "unknown"}`));
+        this.#recordExit({ kind: "closed", code, signal });
+      });
+    } catch (error) {
+      throw new GraphCoderProcessStartError(
+        `bridge process listener setup failed: ${error instanceof Error ? error.message : String(error)}`,
+        requestOwnedTermination(this.#processOwner, child),
+      );
+    }
+    this.#child = attachedChild;
   }
 
   /**
@@ -383,7 +410,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   }
 }
 
-function requestOwnedTermination(owner: OwnedProcessOwner, child: ReturnType<OwnedProcessOwner["spawn"]>): Promise<OwnedProcessTermination> {
+function requestOwnedTermination(owner: OwnedProcessOwner, child: ReturnType<OwnedProcessOwner["spawn"]> | null | undefined): Promise<OwnedProcessTermination> {
+  if (child === null || child === undefined || typeof child !== "object") {
+    return Promise.resolve({ kind: "unknown", pid: -1, reason: "process owner returned no child process" });
+  }
   return Promise.resolve().then(() => owner.terminate(child)).catch(error => {
     return {
       kind: "unknown",

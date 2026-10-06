@@ -32,21 +32,32 @@ async function run(): Promise<void> {
 
   // Do not inherit host credentials or ambient provider settings. The native
   // runtime receives only explicit command-line configuration.
-  const child = owner.spawn(executable, args, {
-    env: {},
-    shell: false,
-    stdio: "inherit",
-    windowsHide: true,
-  });
+  let spawned: unknown;
+  try {
+    spawned = owner.spawn(executable, args, {
+      env: {},
+      shell: false,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+  } catch (error) {
+    process.stderr.write(`failed to start graphcoder-runtime: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!isProcessHandle(spawned)) {
+    const outcome = await requestNativeTermination(owner, spawned);
+    process.stderr.write("failed to attach graphcoder-runtime process lifecycle\n");
+    if (outcome.kind !== "terminated") process.stderr.write(`runtime process cleanup ${outcome.kind}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const child = spawned;
   let finished = false;
   let cleanupPromise: Promise<NativeProcessTermination> | undefined;
   let cleanupReported = false;
   const cleanup = (): Promise<NativeProcessTermination> => {
-    cleanupPromise ??= Promise.resolve().then(() => owner.terminate(child)).catch(error => ({
-      kind: "unknown",
-      pid: child.pid ?? -1,
-      reason: error instanceof Error ? error.message : String(error),
-    } satisfies NativeProcessTermination));
+    cleanupPromise ??= requestNativeTermination(owner, child);
     return cleanupPromise;
   };
   const surfaceCleanup = (outcome: NativeProcessTermination): void => {
@@ -75,6 +86,26 @@ async function run(): Promise<void> {
     process.exitCode = code ?? (signal === null ? 1 : 1);
     surfaceCleanup(await cleanup());
   });
+}
+
+function isProcessHandle(value: unknown): value is ReturnType<NativeProcessOwner["spawn"]> {
+  try {
+    return typeof value === "object" && value !== null && typeof (value as { once?: unknown }).once === "function";
+  } catch {
+    return false;
+  }
+}
+
+function requestNativeTermination(owner: NativeProcessOwner, child: unknown): Promise<NativeProcessTermination> {
+  if (child === null || child === undefined || typeof child !== "object") {
+    return Promise.resolve({ kind: "unknown", pid: -1, reason: "process owner returned no child process" });
+  }
+  const process = child as ReturnType<NativeProcessOwner["spawn"]>;
+  return Promise.resolve().then(() => owner.terminate(process)).catch(error => ({
+    kind: "unknown",
+    pid: process.pid ?? -1,
+    reason: error instanceof Error ? error.message : String(error),
+  } satisfies NativeProcessTermination));
 }
 
 await run();
