@@ -1,7 +1,8 @@
 //! Executable acceptance check over generated public SDK type surfaces.
 use acyclic_sdk_contract_wire::type_policy::{
     audit_generated_type_features, audit_required_generated_descriptor_shape_coverage,
-    audit_required_generated_public_surfaces, REQUIRED_PRODUCT_SURFACES,
+    audit_required_generated_public_surfaces, resolved_enum_fields, resolved_oneof_members,
+    resolved_presence_fields, REQUIRED_PRODUCT_SURFACES,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -329,6 +330,33 @@ fn audit_with_source(
         errors.push(error);
     }
     let mut violations = Vec::new();
+    let descriptor_shape_inventory = match (
+        resolved_enum_fields(),
+        resolved_oneof_members(),
+        resolved_presence_fields(),
+    ) {
+        (Ok(enums), Ok(oneofs), Ok(presence)) => json!({
+            "rust_owned": true,
+            "enum_fields": enums.len(),
+            "oneof_members": oneofs.len(),
+            "presence_fields": presence.len(),
+            "known_message_oneof_arms": oneofs.iter().filter(|member| {
+                matches!(format!("{:?}", member.payload_kind).as_str(), "Message" | "Group")
+            }).count(),
+        }),
+        (enum_result, oneof_result, presence_result) => {
+            if let Err(error) = enum_result {
+                errors.push(error);
+            }
+            if let Err(error) = oneof_result {
+                errors.push(error);
+            }
+            if let Err(error) = presence_result {
+                errors.push(error);
+            }
+            Value::Null
+        }
+    };
     let surfaces_present = match audit_required_generated_public_surfaces(&root, &languages) {
         Ok(found) => {
             violations.extend(found);
@@ -376,6 +404,7 @@ fn audit_with_source(
             "verifier_sha256": verifier_hash, "artifact_sha256": before,
             "source_binding": source_binding,
             "language_registry": surface_registry(&before, expected_source_revision),
+            "descriptor_shape_inventory": descriptor_shape_inventory,
             "errors": errors, "violations": violations,
         }),
         passed,
