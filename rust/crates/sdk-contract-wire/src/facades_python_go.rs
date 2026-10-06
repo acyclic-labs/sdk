@@ -1021,6 +1021,11 @@ fn python_type_projection() -> String {
             names = names,
         ));
     }
+    output.push_str("ENUM_TYPES: dict[str, type[object]] = {\n");
+    for field in enum_fields {
+        output.push_str(&format!("    {enum_type:?}: {name},\n", enum_type = field.enum_type, name = descriptor_enum_projection_name(&field.enum_type)));
+    }
+    output.push_str("}\n\n");
     output.push_str(
         "@dataclass(frozen=True)\nclass EnumFieldMetadata:\n    enum_type: str\n    values: tuple[tuple[str, int], ...]\n    preserves_unknown_numeric: bool = True\n\n\nENUM_FIELDS: dict[tuple[str, str, str], EnumFieldMetadata] = {\n",
     );
@@ -1916,6 +1921,7 @@ from acyclic_sdk.remote import (
     ObjectsCreateBucketRequest,
     InferenceCreateEvaluationRequest,
     PRESENCE_FIELDS,
+    ENUM_TYPES,
     SemanticFieldValues,
     UnknownOneof,
     WorkersSelectDeploymentRequestAlias,
@@ -1948,6 +1954,12 @@ def test_rust_owned_refinements_accept_valid_values():
     assert oneof_arm(UnknownOneof(raw_payload=b"future")).tag == "unknown"
     assert decode_wire_choice(encode_wire_choice(UnknownOneof(raw_payload=b"future"))).raw_payload == b"future"
     assert ENUM_FIELDS and all(item.preserves_unknown_numeric for item in ENUM_FIELDS.values())
+    for metadata in ENUM_FIELDS.values():
+        enum_type = ENUM_TYPES[metadata.enum_type]
+        known = enum_type.from_wire(metadata.values[0][1])
+        unknown = enum_type.from_wire(2147483647)
+        assert known.is_known and not known.is_unknown
+        assert unknown.is_unknown and unknown.value == 2147483647
     unknown_enum = actors_pb2.ActorObservation(state=123)
     round_tripped_enum = actors_pb2.ActorObservation.FromString(unknown_enum.SerializeToString())
     assert round_tripped_enum.state == 123
@@ -2147,6 +2159,12 @@ fn go_type_projection() -> String {
             name_cases = values.iter().map(|(known, number)| format!("case {number}: return {known:?};")).collect::<String>(),
         ));
     }
+    output.push_str("type RustEnum interface { IsKnown() bool; IsUnknown() bool; Name() string }\n\nvar EnumTypeConstructors = map[string]func(int32) RustEnum{\n");
+    for field in enum_fields {
+        let name = descriptor_enum_projection_name(&field.enum_type);
+        output.push_str(&format!("\t{enum_type:?}: func(value int32) RustEnum {{ return New{name}(value) }},\n", enum_type = field.enum_type, name = name));
+    }
+    output.push_str("}\n\n");
     let presence_fields = resolved_presence_inventory();
     output.push_str("type PresenceKind string\n\nconst (\n\tPresenceMessage PresenceKind = \"Message\"\n\tPresenceOneof PresenceKind = \"Oneof\"\n\tPresenceExplicitOptional PresenceKind = \"ExplicitOptional\"\n)\n\nvar PresenceFields = map[string]PresenceKind{\n");
     let mut emitted_presence_keys = std::collections::BTreeSet::new();
@@ -3337,6 +3355,12 @@ func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
 	if _, err := NewWireChoice(NewKnownOneof(newKnownOneofPayloadForTest())); err != nil { t.Fatal(err) }
 	if len(EnumFields) == 0 || len(PresenceFields) == 0 { t.Fatal("Rust enum and presence inventories are empty") }
 	for _, field := range EnumFields { if !field.PreservesUnknownNumeric { t.Fatal("enum unknown values are not preserved") } }
+	for enumType, metadata := range EnumFields {
+		constructor, ok := EnumTypeConstructors[metadata.EnumType]; if !ok || len(metadata.Values) == 0 { t.Fatalf("missing Rust enum projection: %s", enumType) }
+		var first int32; for _, value := range metadata.Values { first = value; break }
+		known := constructor(first); unknown := constructor(2147483647)
+		if !known.IsKnown() || known.IsUnknown() || !unknown.IsUnknown() || unknown.IsKnown() { t.Fatalf("enum projection did not preserve known/unknown values: %s", metadata.EnumType) }
+	}
 	unknownEnum := &actorsv1.ActorObservation{State: actorsv1.ActorState(123)}
 	encodedEnum, err := proto.Marshal(unknownEnum); if err != nil { t.Fatal(err) }
 	decodedEnum := &actorsv1.ActorObservation{}; if err := proto.Unmarshal(encodedEnum, decodedEnum); err != nil { t.Fatal(err) }
