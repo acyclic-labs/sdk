@@ -1,0 +1,29 @@
+{
+  "Exit": -1073741571,
+  "Files": [
+    {
+      "Sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d",
+      "Name": "exit-code.txt"
+    },
+    {
+      "Sha256": "bdedb35815947fb5b32e85e372395e5ecc323cd950930fb166b7bf10101baf10",
+      "Name": "local_model_swarm-29a60d7efa158de8.exe"
+    },
+    {
+      "Sha256": "0819fa8ec9707a2f59a19bd178c4dc64bfea38167e016e502e11923277847cf2",
+      "Name": "native.log"
+    },
+    {
+      "Sha256": "857184577d8dc972640bca6ea8381acf770486eb1ee52531145a7be7ef662ce7",
+      "Name": "source.tar"
+    }
+  ],
+  "Source": "418486c7d142b7c7ac40a258513bcdf9e7f711b8",
+  "Outcome": "failed",
+  "Notes": [
+    "Native recursive test compiled and started, then STATUS_STACK_OVERFLOW after fork-physical-after-parent-authority.",
+    "Heap-owned context candidate does not resolve the failure. No stack allowance override. No required recursive gate passes."
+  ],
+  "Format": "graphcoder.scoped-checkpoint.v1",
+  "Evidence": "target/graphcoder-qualification/418486c7d-recursive-context"
+}
