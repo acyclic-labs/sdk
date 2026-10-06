@@ -172,12 +172,13 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
       try {
         return new StreamClient(await NativeStreamProvider.connect({ endpoints: [endpoint], token }));
       } catch (error) {
-        // Source checkouts may omit the optional platform companion. The
-        // generated Node gRPC adapter is the same full transport contract and
-        // remains the best available native implementation in that case.
+        // The Rust policy's next native option is HTTP when an optional
+        // platform companion is absent. Keep this fallback limited to module
+        // availability; endpoint, credential, and handshake failures remain
+        // terminal and are never replayed through another transport.
         if (!isMissingNativeCompanion(error)) throw error;
-        const { GrpcStreamProvider } = await import("./grpc.js");
-        return new StreamClient(new GrpcStreamProvider({ endpoint, token }));
+        if (typeof globalThis.fetch !== "function") throw new StreamError("unavailable", "Stream native transport is unavailable and HTTP fallback requires fetch in this runtime");
+        return new StreamClient(new HttpStreamProvider({ endpoint, token }));
       }
     } catch (error) {
       // The default Rust policy prefers native gRPC, but an installation may
