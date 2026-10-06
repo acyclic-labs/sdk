@@ -40,6 +40,76 @@ def digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def tree_hash(root: Path) -> tuple[str, dict[str, str]]:
+    """Return a deterministic digest and per-file hashes for an installed tree."""
+    files: dict[str, str] = {}
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        relative = path.relative_to(root).as_posix()
+        files[relative] = digest(path.read_bytes())
+    payload = "\n".join(f"{name}\0{files[name]}" for name in sorted(files)).encode()
+    return digest(payload), files
+
+
+def authority_binding(authority: dict[str, Any]) -> dict[str, Any]:
+    source_git_sha = authority.get("source_git_sha")
+    model = authority.get("source_revision")
+    source_hashes = authority.get("source_file_hashes")
+    if not isinstance(source_git_sha, str) or len(source_git_sha) != 40:
+        raise RuntimeError("Rust authority source_git_sha is required")
+    if not isinstance(model, str) or len(model) != 64:
+        raise RuntimeError("Rust authority source_revision model digest is required")
+    if not isinstance(source_hashes, dict) or not source_hashes:
+        raise RuntimeError("Rust authority source_file_hashes are required")
+    return {"source_git_sha": source_git_sha, "model_digest": model if model.startswith("sha256:") else "sha256:" + model, "source_file_hashes": source_hashes}
+
+
+def load_typed_manifest(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    plan = manifest.get("execution_plan")
+    if manifest.get("complete") is not True or not isinstance(plan, list) or not plan:
+        raise RuntimeError("Rust typed manifest must contain a complete non-empty execution_plan")
+    if manifest.get("execution_plan_count") != len(plan):
+        raise RuntimeError("Rust typed manifest execution_plan_count does not match execution_plan")
+    if not isinstance(manifest.get("source_revision"), str) or not manifest["source_revision"]:
+        raise RuntimeError("Rust typed manifest source_revision is required")
+    for index, record in enumerate(plan):
+        if record.get("execution_step") != index:
+            raise RuntimeError(f"Rust typed manifest execution_step {record.get('execution_step')} is not {index}")
+        if not isinstance(record.get("rpc"), str) or not record["rpc"]:
+            raise RuntimeError("Rust typed manifest RPC identity is missing")
+    return manifest, plan
+
+
+def validate_manifest_binding(manifest: dict[str, Any], authority: dict[str, Any]) -> None:
+    """Require the typed request plan and authority to come from one Rust revision."""
+    source_revision = manifest.get("source_revision")
+    authority_revision = authority.get("source_git_sha")
+    if source_revision != authority_revision:
+        raise RuntimeError(
+            "Rust typed manifest source_revision does not match authority source_git_sha"
+        )
+    authority_digest = manifest.get("authority_sha256")
+    if not isinstance(authority_digest, str) or not authority_digest.startswith("sha256:"):
+        raise RuntimeError("Rust typed manifest authority_sha256 is required")
+
+
+def request_messages(record: dict[str, Any], request_type: Any) -> list[Any]:
+    frames = record.get("request_frames") or []
+    if not frames:
+        frames = [{"request_base64": record.get("request_base64", ""), "sequence": 0}]
+    messages = []
+    for index, frame_record in enumerate(frames):
+        payload = base64.b64decode(frame_record.get("request_base64", frame_record.get("bytes_base64", "")), validate=True)
+        message = request_type()
+        message.ParseFromString(payload)
+        actual = digest(message.SerializeToString(deterministic=True))
+        expected = frame_record.get("request_sha256") or frame_record.get("sha256")
+        if expected and actual != expected:
+            raise RuntimeError(f"Rust request frame {record['rpc']}[{index}] differs from its declared digest")
+        messages.append(message)
+    return messages
+
+
 def frame(message: Any, message_type: str, sequence: int) -> dict[str, Any]:
     encoded = message.SerializeToString(deterministic=True)
     return {
@@ -127,15 +197,12 @@ def generated_services() -> dict[str, tuple[Any, Any]]:
     return services
 
 
-def call_rpc(stub: Any, method: Any, request: Any, timeout: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def call_rpc(stub: Any, method: Any, requests: list[Any], timeout: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     call = getattr(stub, method.name)
-    requests = [request]
     if method.client_streaming:
-        requests = [request, request.__class__()]
-        populate(requests[1], method.input_type, 97)
         result = call(iter(requests), timeout=timeout)
     else:
-        result = call(request, timeout=timeout)
+        result = call(requests[0], timeout=timeout)
     responses: list[dict[str, Any]] = []
     if method.server_streaming:
         for index, response in enumerate(result):
@@ -148,6 +215,7 @@ def call_rpc(stub: Any, method: Any, request: Any, timeout: float) -> tuple[list
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--authority", required=True, type=Path)
+    parser.add_argument("--manifest", required=False, type=Path, default=None, help="Rust typed-request manifest")
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--package-root", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
@@ -155,33 +223,46 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()
     sys.path.insert(0, str(args.package_root.resolve()))
-    authority, inventory = load_authority(args.authority)
+    authority, authority_inventory = load_authority(args.authority)
+    manifest = None
+    if args.manifest is not None:
+        manifest, plan = load_typed_manifest(args.manifest)
+        validate_manifest_binding(manifest, authority)
+        inventory = [(record.get("family", "unknown"), record["rpc"]) for record in plan]
+    else:
+        # Keep the legacy authority-only invocation available for local diagnostics;
+        # release qualification must pass --manifest so requests come exclusively
+        # from the Rust executable producer.
+        inventory = authority_inventory
     services = generated_services()
-    revision = args.source_revision or authority.get("source_revision") or "unknown"
+    revision = args.source_revision or (manifest or authority).get("source_revision") or "unknown"
     scenarios: list[dict[str, Any]] = []
     with grpc.insecure_channel(args.endpoint) as channel:
-        for family, rpc in inventory:
+        for index, (family, rpc) in enumerate(inventory):
             service_name, method_name = rpc.split("/", 1)
             service, stub_type = services[service_name]
             method = service.methods_by_name[method_name]
             stub = stub_type(channel)
             request_type = message_factory.GetMessageClass(method.input_type)
-            request = request_type()
-            populate(request, method.input_type, 17)
+            record = plan[index] if manifest is not None else None
+            requests = request_messages(record, request_type) if record is not None else [request_type()]
+            if record is None:
+                populate(requests[0], method.input_type, 17)
+                if method.client_streaming:
+                    second = request_type()
+                    populate(second, method.input_type, 97)
+                    requests.append(second)
             started = time.monotonic()
-            request_frames = [frame(request, method.input_type.full_name, 0)]
-            if method.client_streaming:
-                second = request_type()
-                populate(second, method.input_type, 97)
-                request_frames.append(frame(second, method.input_type.full_name, 1))
+            request_frames = [frame(request, method.input_type.full_name, frame_index) for frame_index, request in enumerate(requests)]
+            expected = (record or {}).get("expected_outcome") or {}
             try:
-                responses, terminal = call_rpc(stub, method, request, args.timeout)
-                status = "passed"
+                responses, terminal = call_rpc(stub, method, requests, args.timeout)
+                status = "passed" if expected.get("grpc_code", "OK") == "OK" else "failed"
                 error = None
             except grpc.RpcError as exc:
                 responses = []
                 terminal = {"code": exc.code().name, "details": exc.details() or ""}
-                status = "failed"
+                status = "passed" if exc.code().name == expected.get("grpc_code") else "failed"
                 error = str(exc)
             result = {
                 "schema": "acyclic.sdk.rpc-scenario-result.v2",
@@ -205,14 +286,30 @@ def main() -> int:
                 result["error"] = error
             scenarios.append(result)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps({
+    authority_id = authority_binding(authority)
+    package_tree, package_files = tree_hash(args.package_root)
+    package = {
+        "language": "python",
+        **authority_id,
+        "package_tree_sha256": package_tree,
+        "package_source_file_hashes": package_files,
+        "runtime_executable": sys.executable,
+        "runtime_executable_sha256": digest(Path(sys.executable).read_bytes()) if Path(sys.executable).is_file() else None,
+    }
+    manifest_bytes = args.manifest.read_bytes() if args.manifest else b""
+    payload = {
         "schema": "acyclic.sdk.rpc-scenario-log.v2",
         "consumer": "python-rust-authority-release",
         "source_revision": revision,
+        "rust_authority_manifest_sha256": digest(manifest_bytes) if manifest_bytes else None,
+        "authority": authority_id,
+        "executed_package": package,
         "execution_mode": "remote",
         "artifact_root": str(args.package_root),
         "scenarios": scenarios,
-    }, indent=2) + "\n", encoding="utf-8")
+        "observations": scenarios,
+    }
+    args.out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return 0
 
 
