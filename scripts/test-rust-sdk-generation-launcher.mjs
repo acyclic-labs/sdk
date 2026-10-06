@@ -73,8 +73,14 @@ test("contract launcher keeps its PowerShell and Node entrypoints source-indepen
   assert.match(powershell, /Contract output must be outside the Rust source root/);
   assert.doesNotMatch(powershell, /C:\\Users\\varun\\\.codex\\worktrees/);
   assert.match(node, /--bin/, "Node launcher must invoke the Rust-owned binary");
+  assert.match(node, /rust\/crates\/sdk-typescript\/Cargo\.toml/, "the launcher must use the Rust TypeScript generator crate");
+  assert.match(node, /sdk-contracts/, "the launcher must invoke the Rust contract binary");
+  assert.doesNotMatch(node, /typescript\/packages|generated-client\.ts/, "the launcher must not encode a TypeScript contract path");
   assert.match(node, /CARGO_TARGET_DIR/, "Node launcher must isolate Cargo output");
   assert.match(node, /invokedAsCli/, "PowerShell launcher must have a callable Node entrypoint");
+  const filesystemPackage = readFileSync(new URL("../typescript/packages/filesystem/package.json", import.meta.url), "utf8");
+  assert.match(filesystemPackage, /"build:proto"\s*:\s*"cd \.\.\/\.\.\/\.\. && bun run generate"/);
+  assert.doesNotMatch(filesystemPackage, /buf (?:format|lint)/, "package hooks must not treat the legacy proto tree as a generation authority");
 });
 
 test("Kotlin producer stages Maven output outside the Rust source checkout", () => {
