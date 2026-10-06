@@ -3245,6 +3245,232 @@ pub struct GeneratedSurfaceViolation {
 /// required list when it invokes the same audit.
 pub const REQUIRED_PRODUCT_SURFACES: &[&str] = &["python", "go", "jvm", "csharp", "swift", "cpp"];
 
+/// A source-binding defect found in a language-producer output tree.
+///
+/// Producer output lives below `language-producers/<target>/` and is allowed
+/// to contain arbitrary generator files.  It is still part of the public SDK
+/// closure: every discovered facade must be tied to the same Rust Git
+/// revision and Rust model digest as the generation run that produced it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LanguageProducerBindingViolation {
+    pub producer: String,
+    pub path: String,
+    pub reason: String,
+}
+
+/// Discover generated public facade files below the language-producer stage.
+///
+/// This deliberately does not search the repository or previously checked-in
+/// package trees.  Only the current generation output's
+/// `language-producers/<target>/` directories are eligible, which prevents a
+/// stale artifact elsewhere in an output root from satisfying the producer
+/// audit.
+pub fn discover_language_producer_surfaces(artifact_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let producer_root = artifact_root.join("language-producers");
+    if !producer_root.is_dir() {
+        return Err(format!(
+            "language-producer output root does not exist: {}",
+            producer_root.display()
+        ));
+    }
+    let mut surfaces = Vec::new();
+    for entry in fs::read_dir(&producer_root)
+        .map_err(|error| format!("read {}: {error}", producer_root.display()))?
+    {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if !path.is_dir()
+            || matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some("requests" | "logs")
+            )
+        {
+            continue;
+        }
+        collect_surface_files(&path, &mut surfaces);
+    }
+    surfaces.sort();
+    surfaces.dedup();
+    Ok(surfaces)
+}
+
+fn producer_authority_metadata_files(root: &Path) -> Vec<PathBuf> {
+    fn visit(directory: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, files);
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if matches!(
+                name,
+                "rust-authority.json"
+                    | "source-authority.json"
+                    | "rust-source-authority.json"
+                    | "authority.json"
+            ) {
+                files.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    visit(root, &mut files);
+    files.sort();
+    files
+}
+
+fn source_binding_value<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(serde_json::Value::as_str)
+}
+
+fn validate_producer_authority_document(
+    document: &serde_json::Value,
+    expected_git_revision: Option<&str>,
+    expected_model_digest: Option<&str>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let authority = source_binding_value(document, "authority");
+    let schema = source_binding_value(document, "schema");
+    if authority != Some("rust")
+        && !schema.is_some_and(|value| {
+            value.contains("rust-authority") || value.contains("source-authority")
+        })
+    {
+        errors.push("authority metadata is not Rust-owned".to_owned());
+    }
+
+    let git_revision = source_binding_value(document, "source_git_sha");
+    let model_digest = source_binding_value(document, "source_digest")
+        .or_else(|| source_binding_value(document, "rust_model_digest"));
+    let source_revision = source_binding_value(document, "source_revision");
+    if let Some(expected) = expected_git_revision {
+        let actual = git_revision.or(source_revision);
+        if actual != Some(expected) {
+            errors.push(format!(
+                "source Git revision differs from Rust generation: expected {expected}, got {}",
+                actual.unwrap_or("<missing>")
+            ));
+        }
+    }
+    if let Some(expected) = expected_model_digest {
+        let actual = model_digest.or_else(|| {
+            // A rust-authority.json uses source_revision for the model digest
+            // when source_git_sha is present.  A generation source-authority
+            // manifest instead uses source_digest for the same value.
+            git_revision.and_then(|_| source_revision)
+        });
+        if actual != Some(expected) {
+            errors.push(format!(
+                "Rust model digest differs from generation: expected {expected}, got {}",
+                actual.unwrap_or("<missing>")
+            ));
+        }
+    }
+    errors
+}
+
+/// Validate nested producer outputs against the current Rust source binding.
+///
+/// `expected_git_revision` is the generation checkout revision.  The model
+/// digest is the stronger contract identity and is checked independently when
+/// supplied.  A producer that emitted a public facade without an authority
+/// manifest fails closed; a stale producer cannot pass merely because another
+/// language has a current manifest.
+pub fn audit_language_producer_source_bindings(
+    artifact_root: &Path,
+    expected_git_revision: Option<&str>,
+    expected_model_digest: Option<&str>,
+) -> Result<Vec<LanguageProducerBindingViolation>, String> {
+    let producer_root = artifact_root.join("language-producers");
+    if !producer_root.is_dir() {
+        return Err(format!(
+            "language-producer output root does not exist: {}",
+            producer_root.display()
+        ));
+    }
+    let mut violations = Vec::new();
+    for entry in fs::read_dir(&producer_root)
+        .map_err(|error| format!("read {}: {error}", producer_root.display()))?
+    {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let target_root = entry.path();
+        let Some(producer) = target_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if !target_root.is_dir() || matches!(producer.as_str(), "requests" | "logs") {
+            continue;
+        }
+        let mut surfaces = Vec::new();
+        collect_surface_files(&target_root, &mut surfaces);
+        if surfaces.is_empty() {
+            continue;
+        }
+        let metadata = producer_authority_metadata_files(&target_root);
+        if metadata.is_empty() {
+            violations.push(LanguageProducerBindingViolation {
+                producer,
+                path: target_root
+                    .strip_prefix(artifact_root)
+                    .unwrap_or(&target_root)
+                    .display()
+                    .to_string(),
+                reason: "producer emitted public facades without Rust source authority metadata"
+                    .to_owned(),
+            });
+            continue;
+        }
+        for authority_path in metadata {
+            let relative = authority_path
+                .strip_prefix(artifact_root)
+                .unwrap_or(&authority_path)
+                .display()
+                .to_string();
+            let bytes = fs::read(&authority_path)
+                .map_err(|error| format!("read producer authority {relative}: {error}"))?;
+            let document = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(document) => document,
+                Err(error) => {
+                    violations.push(LanguageProducerBindingViolation {
+                        producer: producer.clone(),
+                        path: relative,
+                        reason: format!("producer authority metadata is invalid JSON: {error}"),
+                    });
+                    continue;
+                }
+            };
+            for reason in validate_producer_authority_document(
+                &document,
+                expected_git_revision,
+                expected_model_digest,
+            ) {
+                violations.push(LanguageProducerBindingViolation {
+                    producer: producer.clone(),
+                    path: relative.clone(),
+                    reason,
+                });
+            }
+        }
+    }
+    violations.sort_by(|left, right| {
+        (&left.producer, &left.path, &left.reason).cmp(&(
+            &right.producer,
+            &right.path,
+            &right.reason,
+        ))
+    });
+    Ok(violations)
+}
+
 /// Check generated public facades for known type-erasing shapes.
 ///
 /// This is intentionally source based: it runs immediately after generation,
@@ -3605,6 +3831,13 @@ fn descriptor_projection_aliases(language: &str, name: &str) -> Vec<String> {
         "jvm" => vec![format!("Rust{prefix}Enum")],
         "swift" | "cpp" => vec![format!("{prefix}Wire")],
         "csharp" => vec![format!("Rust{prefix}Enum")],
+        // The portable emitters intentionally retain the complete protobuf
+        // package/version identity in their class names (for example
+        // RustAcyclicObjectsV2ObjectState).  Derive that spelling directly
+        // from the descriptor instead of accepting a generic OpenEnumValue.
+        "ruby" | "php" | "dart" => {
+            vec![format!("Rust{}", descriptor_compact_identity(name))]
+        }
         // Haskell's generated semantic module uses nominal per-descriptor
         // enum wrappers; OpenEnumValue remains the private wire fallback for
         // values whose number was not present in the Rust descriptor.
@@ -3613,14 +3846,10 @@ fn descriptor_projection_aliases(language: &str, name: &str) -> Vec<String> {
     }
     .into_iter()
     .filter(|candidate| candidate != &simple)
-        .collect()
+    .collect()
 }
 
-fn source_contains_descriptor_enum_projection(
-    language: &str,
-    source: &str,
-    alias: &str,
-) -> bool {
+fn source_contains_descriptor_enum_projection(language: &str, source: &str, alias: &str) -> bool {
     if alias.is_empty() {
         return false;
     }
@@ -3645,7 +3874,9 @@ fn source_contains_descriptor_enum_projection(
                     .collect::<Vec<_>>();
                 body.iter().any(|candidate| candidate.contains("from_wire"))
                     && body.iter().any(|candidate| candidate.contains("is_known"))
-                    && body.iter().any(|candidate| candidate.contains("is_unknown"))
+                    && body
+                        .iter()
+                        .any(|candidate| candidate.contains("is_unknown"))
             })
         }
         "go" => {
@@ -3654,19 +3885,47 @@ fn source_contains_descriptor_enum_projection(
                 && source.contains(&format!("func (value {alias}) IsKnown"))
                 && source.contains(&format!("func (value {alias}) IsUnknown"))
         }
-        "jvm" => {
-            source.lines().any(|line| {
-                !is_source_comment(line)
-                    && line.contains(&format!("record {alias}("))
-                    && line.contains("UNRECOGNIZED")
-                    && line.contains("of(int value)")
-            })
-        }
+        "jvm" => source.lines().any(|line| {
+            !is_source_comment(line)
+                && line.contains(&format!("record {alias}("))
+                && line.contains("UNRECOGNIZED")
+                && line.contains("of(int value)")
+        }),
         "haskell" => source.lines().any(|line| {
             !is_source_comment(line)
                 && line.contains(&format!("data {alias} ="))
                 && line.contains("Unknown")
         }),
+        "ruby" => {
+            let declaration = format!("class {alias}");
+            source.lines().any(|line| {
+                !is_source_comment(line)
+                    && line.trim_start().starts_with(&declaration)
+                    && source.contains("def self.from_wire")
+                    && source.contains("def self.unknown")
+                    && source.contains("def to_wire")
+            })
+        }
+        "php" => {
+            let declaration = format!("final readonly class {alias}");
+            source.lines().any(|line| {
+                !is_source_comment(line)
+                    && line.trim_start().starts_with(&declaration)
+                    && source.contains("public static function fromWire")
+                    && source.contains("public static function unknown")
+                    && source.contains("public function toWire")
+            })
+        }
+        "dart" => {
+            let declaration = format!("final class {alias}");
+            source.lines().any(|line| {
+                !is_source_comment(line)
+                    && line.trim_start().starts_with(&declaration)
+                    && source.contains("static")
+                    && source.contains("unknown(int value)")
+                    && source.contains("toWire()")
+            })
+        }
         _ => source_contains_identifier(source, alias),
     }
 }
@@ -3703,7 +3962,10 @@ fn descriptor_payload_aliases(language: &str, name: &str) -> Vec<String> {
 }
 
 fn descriptor_haskell_payload_aliases(name: &str) -> Vec<String> {
-    let parts = name.split('.').filter(|part| !part.is_empty()).collect::<Vec<_>>();
+    let parts = name
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
     let Some(type_name) = parts.last().copied() else {
         return Vec::new();
     };
@@ -3721,7 +3983,12 @@ fn descriptor_haskell_payload_aliases(name: &str) -> Vec<String> {
         .copied()
         .unwrap_or("v1");
     vec![
-        format!("{}{}.{}", pascal_identifier(package), pascal_identifier(version), type_name),
+        format!(
+            "{}{}.{}",
+            pascal_identifier(package),
+            pascal_identifier(version),
+            type_name
+        ),
         type_name.to_owned(),
     ]
 }
@@ -3824,22 +4091,42 @@ fn source_contains_descriptor_oneof_arm(
                             .iter()
                             .any(|alias| source_contains_identifier_in_line(line, alias)))
                     && line.contains("Value")
-                })
+            })
         }
         "haskell" => {
             let message = descriptor_compact_identity(&entry.field.message_path);
             let arm = pascal_identifier(&entry.field.field);
-            let constructor = format!(
-                "Known{message}{arm}N{}",
-                entry.field.number
-            );
+            let constructor = format!("Known{message}{arm}N{}", entry.field.number);
             source.lines().any(|line| {
                 !is_source_comment(line)
                     && source_contains_identifier_in_line(line, &constructor)
                     && source_contains_identifier_in_line(line, "KnownOneofPayload")
-                    && payload_aliases.iter().any(|alias| {
-                        source_contains_qualified_identifier_in_line(line, alias)
-                    })
+                    && payload_aliases
+                        .iter()
+                        .any(|alias| source_contains_qualified_identifier_in_line(line, alias))
+            })
+        }
+        "ruby" | "php" | "dart" => {
+            let oneof = entry.field.oneof_name.as_deref().unwrap_or_default();
+            let portable_choice = format!(
+                "Rust{}{}Choice",
+                descriptor_compact_identity(&entry.field.message_path),
+                pascal_identifier(oneof.trim_start_matches('_'))
+            );
+            let variant = format!("{portable_choice}{arm}");
+            let declaration = match language {
+                "ruby" => format!("class {variant} < {portable_choice}"),
+                "php" => format!("final readonly class {variant} extends {portable_choice}"),
+                _ => format!("final class {variant} extends {portable_choice}"),
+            };
+            source.lines().any(|line| {
+                !is_source_comment(line)
+                    && line.trim_start().starts_with(&declaration)
+                    && (source_contains_identifier_in_line(line, &payload)
+                        || payload_aliases.iter().any(|alias| {
+                            source_contains_identifier_in_line(line, alias)
+                                || source_contains_identifier(source, alias)
+                        }))
             })
         }
         _ => false,
@@ -4488,6 +4775,141 @@ pub fn field_semantic_type(family: &str, field: &str) -> Option<&'static Semanti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn producer_audit_fixture_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-language-producer-audit-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("language-producers/python/generated"))
+            .expect("producer fixture directory");
+        fs::write(
+            root.join("language-producers/python/generated/remote.py"),
+            "class RustClient:\n    pass\n",
+        )
+        .expect("producer facade fixture");
+        root
+    }
+
+    #[test]
+    fn language_producer_audit_discovers_only_nested_current_surfaces() {
+        let root = producer_audit_fixture_root("discovery");
+        fs::create_dir_all(root.join("checked-in/python")).expect("stale fixture directory");
+        fs::write(
+            root.join("checked-in/python/remote.py"),
+            "class StaleClient:\n    pass\n",
+        )
+        .expect("stale facade fixture");
+        let surfaces = discover_language_producer_surfaces(&root).expect("producer surfaces");
+        assert_eq!(surfaces.len(), 1);
+        assert!(surfaces[0].ends_with("language-producers/python/generated/remote.py"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn language_producer_audit_requires_each_nested_surface_binding() {
+        let root = producer_audit_fixture_root("binding");
+        let authority = r#"{
+            "schema": "acyclic.sdk.rust-authority.v1",
+            "authority": "rust",
+            "source_git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source_revision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }"#;
+        fs::write(
+            root.join("language-producers/python/rust-authority.json"),
+            authority,
+        )
+        .expect("producer authority fixture");
+        let passed = audit_language_producer_source_bindings(
+            &root,
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        )
+        .expect("producer binding audit");
+        assert!(passed.is_empty(), "unexpected binding findings: {passed:?}");
+
+        fs::write(
+            root.join("language-producers/python/rust-authority.json"),
+            authority.replace(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "cccccccccccccccccccccccccccccccccccccccc",
+            ),
+        )
+        .expect("stale producer authority fixture");
+        let findings = audit_language_producer_source_bindings(
+            &root,
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        )
+        .expect("producer binding audit");
+        assert!(findings.iter().any(|finding| {
+            finding.producer == "python" && finding.reason.contains("source Git revision differs")
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn portable_descriptor_projections_require_concrete_enum_and_oneof_shapes() {
+        let enum_name = "acyclic.objects.v2.ObjectState";
+        let ruby_alias = descriptor_projection_aliases("ruby", enum_name)
+            .into_iter()
+            .next()
+            .expect("portable Ruby enum alias");
+        assert_eq!(ruby_alias, "RustAcyclicObjectsV2ObjectState");
+        assert!(source_contains_descriptor_enum_projection(
+            "ruby",
+            &format!(
+                "class {ruby_alias}\n  def self.unknown(value) = new(value)\n  def self.from_wire(value) = new(value)\n  def to_wire = @value\nend\n"
+            ),
+            &ruby_alias,
+        ));
+        assert!(!source_contains_descriptor_enum_projection(
+            "ruby",
+            "class OpenEnumValue\n  def self.unknown(value) = new(value)\nend\n",
+            &ruby_alias,
+        ));
+
+        let field = ResolvedRequestField {
+            family: "objects".into(),
+            rpc: "acyclic.objects.v2.ObjectsService/GetObject".into(),
+            root_message: "acyclic.objects.v2.GetObjectResponse".into(),
+            message_path: "acyclic.objects.v2.GetObjectResponse".into(),
+            field: "header".into(),
+            number: 1,
+            json_name: "header".into(),
+            type_name: Some("acyclic.objects.v2.GetObjectHeader".into()),
+            map_entry: false,
+            wire_type: Some(FieldType::Message as i32),
+            label: None,
+            oneof_index: Some(0),
+            oneof_name: Some("frame".into()),
+            proto3_optional: false,
+            semantic_type: None,
+            validation_rules: Vec::new(),
+            validation_constraints: Vec::new(),
+        };
+        let member = ResolvedOneofMember {
+            field,
+            payload_kind: FieldType::Message,
+            payload_type: Some("acyclic.objects.v2.GetObjectHeader".into()),
+            preserves_unknown_members: true,
+        };
+        let ruby_choice = "RustAcyclicObjectsV2GetObjectResponseFrameChoice";
+        let ruby_source = format!(
+            "class {ruby_choice}Header < {ruby_choice}\n  def initialize(value) = super(tag: \"header\", value: value)\nend\nclass RustAcyclicObjectsV2GetObjectHeader\nend\n"
+        );
+        assert!(source_contains_descriptor_oneof_arm(
+            "ruby",
+            &ruby_source,
+            &member,
+        ));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "ruby",
+            &ruby_source.replace("RustAcyclicObjectsV2GetObjectHeader", "OpenEnumValue"),
+            &member,
+        ));
+    }
 
     #[test]
     fn every_language_has_a_strong_projection_profile() {
@@ -5606,9 +6028,10 @@ mod tests {
             ))
         }));
         assert!(!findings.iter().any(|finding| {
-            finding
-                .path
-                .contains(&format!("missing Rust presence field {}", presence.field.field))
+            finding.path.contains(&format!(
+                "missing Rust presence field {}",
+                presence.field.field
+            ))
         }));
 
         let wrong_payload = format!(
