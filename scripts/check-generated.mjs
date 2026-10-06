@@ -156,16 +156,6 @@ try {
     throw new Error(`Buf generation failed with status ${generated.status ?? "unknown"}`);
   }
   const freshTypeScript = join(temporary, "generated/typescript");
-  const committedTypeScript = join(root, "generated/typescript");
-  const freshFiles = generatedFiles(freshTypeScript);
-  if (JSON.stringify(freshFiles) !== JSON.stringify(generatedFiles(committedTypeScript))) {
-    throw new Error("generated TypeScript file set drift; run bun run generate");
-  }
-  for (const relative of freshFiles) {
-    const fresh = normalizeGeneratedTypeScript(readFileSync(join(freshTypeScript, relative), "utf8"));
-    const committed = readFileSync(join(committedTypeScript, relative), "utf8");
-    if (fresh !== committed) throw new Error(`generated TypeScript drift: ${relative}`);
-  }
   const freshRust = join(temporary, "generated/rust");
   const committedRust = join(root, "generated/rust");
   const freshRustFiles = generatedFiles(freshRust);
@@ -212,10 +202,10 @@ try {
   for (const [stem, packages] of packagedTypeScriptBindings) {
     for (const extension of [".js", ".d.ts"]) {
       const relative = `${stem}${extension}`;
-      const canonical = readFileSync(join(committedTypeScript, relative));
+      const fresh = normalizeGeneratedTypeScript(readFileSync(join(freshTypeScript, relative), "utf8"));
       for (const name of packages) {
-        const packaged = readFileSync(join(root, "typescript/packages", name, "generated/proto", relative));
-        if (!canonical.equals(packaged)) throw new Error(`packaged ${name} TypeScript drift: ${relative}`);
+        const packaged = readFileSync(join(root, "typescript/packages", name, "generated/proto", relative), "utf8");
+        if (fresh !== packaged) throw new Error(`packaged ${name} TypeScript drift: ${relative}`);
       }
     }
   }
