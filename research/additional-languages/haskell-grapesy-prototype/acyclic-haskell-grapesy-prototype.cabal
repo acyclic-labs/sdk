@@ -79,6 +79,17 @@ executable acyclic-haskell-full-typed
   default-extensions: AllowAmbiguousTypes, DataKinds, FlexibleContexts, FlexibleInstances, ImportQualifiedPost, KindSignatures, ScopedTypeVariables, TypeApplications, TypeOperators, UndecidableInstances
   ghc-options: -Wall
 
+executable acyclic-haskell-semantic-types
+  hs-source-dirs: app
+  main-is: SemanticTypesMain.hs
+  build-depends:
+      base >= 4.16 && < 4.17
+    , acyclic-haskell-grapesy-prototype
+    , bytestring >= 0.11 && < 0.12
+    , proto-lens == 0.7.1.7
+  default-language: Haskell2010
+  ghc-options: -Wall
+
 executable acyclic-haskell-canonical-replay
   hs-source-dirs: app
   main-is: CanonicalReplayMain.hs

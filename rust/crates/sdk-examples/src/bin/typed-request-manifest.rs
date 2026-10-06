@@ -62,6 +62,28 @@ fn main() {
         }
         return;
     }
+    if args.iter().any(|arg| arg == "--haskell-semantics-test-output") {
+        let output = args
+            .iter()
+            .position(|arg| arg == "--haskell-semantics-test-output")
+            .and_then(|index| args.get(index + 1))
+            .cloned()
+            .ok_or_else(|| "--haskell-semantics-test-output requires a path".to_owned())
+            .and_then(|path| {
+                let source = acyclic_sdk_examples::fixtures::typed_request_manifest::haskell_semantic_types_test_source();
+                std::fs::write(&path, source)
+                    .map_err(|error| format!("write Haskell semantic smoke test: {error}"))?;
+                Ok::<_, String>(format!("generated Haskell semantic smoke test {}\n", path.to_string_lossy()))
+            });
+        match output {
+            Ok(message) => print!("{message}"),
+            Err(error) => {
+                eprintln!("typed request Haskell semantic test generation failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let result = args.get(1).map_or_else(
         || {
             tokio::runtime::Builder::new_current_thread()
