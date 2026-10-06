@@ -9,9 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
     OperationEnforcement, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
-    PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule, WIRE_UNION_VARIANTS,
-    WireValueKind, operation_enforcement, resolved_operation_rules, resolved_request_fields,
-    resolved_response_fields, resolved_rpc_methods, semantic_type,
+    PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule,
+    WireValueKind, operation_enforcement, resolved_enum_fields, resolved_operation_rules,
+    resolved_presence_fields, resolved_request_fields, resolved_response_fields,
+    resolved_rpc_methods, semantic_type,
 };
 
 pub const CSHARP_TYPED_PATH: &str = "dotnet/RustTypedClients.cs";
@@ -64,9 +65,9 @@ using Acyclic.Sdk.Transport;
 
 public static class RustTypedFacadeNegative
 {
-    // CS1503: empty strings cannot construct a validated semantic value at runtime.
+    // CS1503: a raw string cannot bypass the nominal id wrapper.
     public static ObjectsCreateBucketRequest EmptyKey() =>
-        new("bucket", new IdempotencyKeyText(""));
+        new("bucket", "");
 
     // CS1503: raw string is not assignable to the nominal request field.
     public static ObjectsCreateBucketRequest RawKey() =>
@@ -83,7 +84,7 @@ fn render() -> String {
     );
     render_semantic_types(&mut out);
     render_machine_image(&mut out);
-    render_unions(&mut out);
+    render_union_marker(&mut out);
     render_request_models(&mut out);
     render_full_semantic_request_models(&mut out);
     render_nested_models(&mut out);
@@ -91,6 +92,7 @@ fn render() -> String {
     render_object_info_response(&mut out);
     render_open_enum_models(&mut out);
     render_oneof_models(&mut out);
+    render_descriptor_shape_metadata(&mut out);
     render_nested_response_models(&mut out);
     render_response_models(&mut out);
     render_stream_models(&mut out);
@@ -152,7 +154,11 @@ fn render_semantic_types(out: &mut String) {
                     .rules
                     .iter()
                     .any(|rule| matches!(rule, SemanticRule::StrictlyPositive));
-                let check = positive.then(|| "        if (Value <= 0) throw new ArgumentOutOfRangeException(nameof(Value));\n").unwrap_or_default();
+                let check = if positive {
+                    "        if (Value <= 0) throw new ArgumentOutOfRangeException(nameof(Value));\n"
+                } else {
+                    ""
+                };
                 out.push_str(&format!("public readonly record struct {ty}(long Value)\n{{\n    internal long ToWire()\n    {{\n{check}        return Value;\n    }}\n}}\n\n"));
             }
             WireValueKind::Boolean => {
@@ -192,24 +198,16 @@ fn checks(rules: &[SemanticRule], parameter: &str) -> String {
     result
 }
 
-fn render_unions(out: &mut String) {
-    let mut emitted = BTreeSet::new();
-    for union in WIRE_UNION_VARIANTS {
-        if !emitted.insert(union.union) {
-            continue;
-        }
-        out.push_str(&format!(
-            "public abstract record {}(string Tag, ByteString Payload)\n{{\n",
-            union.union
-        ));
-        out.push_str(&format!(
-            "    public sealed record {}(string Tag, ByteString Payload) : {}(Tag, Payload);\n",
-            upper(union.variant),
-            union.union
-        ));
-        out.push_str(&format!("    public sealed record Unknown(int RawTag, ByteString Payload) : {}(\"unknown\", Payload);\n", union.union));
-        out.push_str("}\n\n");
-    }
+fn render_union_marker(out: &mut String) {
+    // `wire_choice` is the Rust policy identity. Concrete descriptor-bound
+    // choices are emitted by render_oneof_models below, where each known arm
+    // receives its resolved Rust message type and only the Unknown arm keeps
+    // raw bytes. A marker interface keeps generic request plumbing open
+    // without reintroducing an erased ByteString known arm.
+    out.push_str(
+        "// Rust wire_choice unions use descriptor-bound concrete ADTs below.\n"
+    );
+    out.push_str("public interface WireChoice { }\n\n");
 }
 
 fn render_request_models(out: &mut String) {
@@ -340,47 +338,37 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
             Some(kind) if kind == FieldType::String as i32 => "string".to_owned(),
             Some(kind) if kind == FieldType::Bytes as i32 => "ByteString".to_owned(),
             Some(kind) if kind == FieldType::Bool as i32 => "bool".to_owned(),
-            Some(kind)
-                if matches!(
-                    kind,
-                    x if x == FieldType::Uint32 as i32
-                        || x == FieldType::Fixed32 as i32
-                ) =>
+            Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 =>
             {
                 "uint".to_owned()
             }
-            Some(kind)
-                if matches!(
-                    kind,
-                    x if x == FieldType::Uint64 as i32
-                        || x == FieldType::Fixed64 as i32
-                ) =>
+            Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 =>
             {
                 "ulong".to_owned()
             }
             Some(kind)
-                if matches!(
-                    kind,
-                    x if x == FieldType::Int32 as i32
-                        || x == FieldType::Sint32 as i32
-                        || x == FieldType::Sfixed32 as i32
-                ) =>
+                if kind == FieldType::Int32 as i32
+                    || kind == FieldType::Sint32 as i32
+                    || kind == FieldType::Sfixed32 as i32 =>
             {
                 "int".to_owned()
             }
             Some(kind)
-                if matches!(
-                    kind,
-                    x if x == FieldType::Int64 as i32
-                        || x == FieldType::Sint64 as i32
-                        || x == FieldType::Sfixed64 as i32
-                ) =>
+                if kind == FieldType::Int64 as i32
+                    || kind == FieldType::Sint64 as i32
+                    || kind == FieldType::Sfixed64 as i32 =>
             {
                 "long".to_owned()
             }
             Some(kind) if kind == FieldType::Float as i32 => "float".to_owned(),
             Some(kind) if kind == FieldType::Double as i32 => "double".to_owned(),
-            Some(kind) if kind == FieldType::Enum as i32 => "int".to_owned(),
+            Some(kind) if kind == FieldType::Enum as i32 => response_open_enum_name(
+                field
+                    .type_name
+                    .as_deref()
+                    .unwrap_or("google.protobuf.NullValue"),
+                family,
+            ),
             Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
                 qualified_fq_message(
                     field
@@ -395,34 +383,75 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
     };
     if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
         base = format!("IReadOnlyList<{base}>");
-    } else if field.proto3_optional
-        && matches!(
-            field.wire_type,
-            Some(kind)
-                if kind != FieldType::Message as i32
-                    && kind != FieldType::Group as i32
-                    && kind != FieldType::String as i32
-                    && kind != FieldType::Bytes as i32
-        )
-    {
-        base.push('?');
+    } else if field.proto3_optional {
+        // C# nullable values plus the generated Has/Clear accessors preserve
+        // explicit proto3 optional presence for every scalar kind, including
+        // strings and bytes. Message references already carry nullability in
+        // their descriptor-bound projection.
+        if !base.ends_with('?') {
+            base.push('?');
+        }
     }
     base
 }
 
 fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> String {
     let property = response_field_property(field);
-    if let Some(binding) = PUBLIC_FIELD_BINDINGS.iter().find(|binding| {
+    if !field.proto3_optional
+        && let Some(binding) = PUBLIC_FIELD_BINDINGS.iter().find(|binding| {
         binding.family == family
             && binding.message == field.root_message.rsplit('.').next().unwrap_or_default()
             && binding.wire_field == field.field
             && binding.direction == PublicFieldDirection::Request
-    }) {
-        if upper(binding.field) == property {
-            if let Some(assignment) = csharp_wire_assignment(family, binding) {
-                return assignment;
-            }
+        }) && upper(binding.field) == property
+        && let Some(assignment) = csharp_wire_assignment(family, binding)
+    {
+        return assignment;
+    }
+    if field.proto3_optional
+        && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32)
+    {
+        let clear = format!("        wire.Clear{property}();\n");
+        if let Some(semantic_id) = field.semantic_type.as_deref() {
+            let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
+            let assignment = match semantic.wire_kind {
+                WireValueKind::UnsignedInteger => {
+                    format!("checked((ulong){property}.Value.ToWire())")
+                }
+                WireValueKind::SignedInteger
+                | WireValueKind::Boolean
+                | WireValueKind::String
+                | WireValueKind::Bytes
+                | WireValueKind::Timestamp => format!("{property}.Value.ToWire()"),
+                WireValueKind::Message => format!("{property}.Value.ToWire()"),
+                WireValueKind::Enum | WireValueKind::Oneof => format!("{property}.Value"),
+            };
+            return format!(
+                "        if ({property}.HasValue) wire.{property} = {assignment}; else\n{clear}"
+            );
         }
+        return match field.wire_type {
+            Some(kind) if kind == FieldType::Enum as i32 => {
+                format!(
+                    "        if ({property}.HasValue) wire.{property} = ({}){property}.Value.ToWire(); else\n{clear}",
+                    qualified_fq_message(
+                        field
+                            .type_name
+                            .as_deref()
+                            .unwrap_or("google.protobuf.NullValue"),
+                        family,
+                    )
+                )
+            }
+            Some(kind)
+                if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
+                    format!("        if ({property} is not null) wire.{property} = {property}; else\n{clear}")
+                }
+            Some(kind) if kind == FieldType::String as i32 || kind == FieldType::Bytes as i32 => {
+                format!("        if ({property} is not null) wire.{property} = {property}; else\n{clear}")
+            }
+            _ => format!("        if ({property}.HasValue) wire.{property} = {property}.Value; else\n{clear}"),
+        };
     }
     if let Some(semantic_id) = field.semantic_type.as_deref() {
         let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
@@ -479,6 +508,18 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
         };
     }
     let repeated = field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32);
+    if repeated && field.wire_type == Some(FieldType::Enum as i32) {
+        let enum_type = qualified_fq_message(
+            field
+                .type_name
+                .as_deref()
+                .unwrap_or("google.protobuf.NullValue"),
+            family,
+        );
+        return format!(
+            "        wire.{property}.AddRange({property}.Select(value => ({enum_type})value.ToWire()));\n"
+        );
+    }
     let message = matches!(
         field.wire_type,
         Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32
@@ -497,7 +538,7 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
                 .unwrap_or("google.protobuf.NullValue"),
             family,
         );
-        return format!("        wire.{property} = ({enum_type}){property};\n");
+        return format!("        wire.{property} = ({enum_type}){property}.ToWire();\n");
     }
     if field.proto3_optional
         && matches!(
@@ -621,6 +662,25 @@ fn response_module_for_name(name: &str, fallback_module: &str) -> String {
     }
 }
 
+/// Return the C# namespace-safe projection of a Rust descriptor identity.
+///
+/// The descriptor audit uses this same mechanical projection for C# enum
+/// identities.  In particular, inference.customer.v1 remains distinct from
+/// the shorter `inference` family label used by the transport facade.
+fn descriptor_csharp_prefix(name: &str) -> String {
+    name.trim_start_matches('.')
+        .split('.')
+        .filter(|part| !part.is_empty() && *part != "acyclic")
+        .filter(|part| {
+            let bytes = part.as_bytes();
+            !(bytes.len() >= 2
+                && bytes[0] == b'v'
+                && bytes[1..].iter().all(u8::is_ascii_digit))
+        })
+        .map(upper)
+        .collect::<String>()
+}
+
 fn response_nested_model_name(type_name: &str, fallback_module: &str) -> String {
     let trimmed = type_name.trim_start_matches('.');
     let module = response_module_for_name(trimmed, fallback_module);
@@ -630,9 +690,17 @@ fn response_nested_model_name(type_name: &str, fallback_module: &str) -> String 
 
 fn response_open_enum_name(type_name: &str, fallback_module: &str) -> String {
     let trimmed = type_name.trim_start_matches('.');
-    let module = response_module_for_name(trimmed, fallback_module);
     let short = trimmed.rsplit('.').next().unwrap_or(trimmed);
-    format!("Rust{}{}Enum", upper(&module), short)
+    let prefix = trimmed
+        .rsplitn(2, '.')
+        .nth(1)
+        .map(descriptor_csharp_prefix)
+        .unwrap_or_default();
+    if prefix.is_empty() {
+        let module = response_module_for_name(trimmed, fallback_module);
+        return format!("Rust{}{}Enum", upper(&module), short);
+    }
+    format!("Rust{}Enum", format!("{prefix}{short}"))
 }
 
 fn response_oneof_model_name(field: &ResolvedRequestField, family: &str) -> Option<String> {
@@ -807,13 +875,59 @@ fn response_field_accessor(field: &ResolvedRequestField) -> String {
                 format!("new {rust_name}(Wire.{property}.ToByteArray())")
             }
         }
-        WireValueKind::UnsignedInteger | WireValueKind::SignedInteger | WireValueKind::Boolean => format!("new {rust_name}(Wire.{property})"),
+        WireValueKind::UnsignedInteger => {
+            format!("new {rust_name}(checked((ulong)Wire.{property}))")
+        }
+        WireValueKind::SignedInteger | WireValueKind::Boolean => {
+            format!("new {rust_name}(Wire.{property})")
+        }
         _ => format!("Wire.{property}"),
     }
 }
 
+/// Merge request and response descriptor closures for shape projections.
+///
+/// A protobuf message can be used only as a request, only as a response, or
+/// in both directions.  The C# shape layer must preserve all three cases;
+/// limiting unions and presence metadata to response roots silently drops
+/// Rust-owned identities from request-only protocols.
+fn all_descriptor_fields() -> Vec<ResolvedRequestField> {
+    let mut fields = resolved_request_fields()
+        .expect("Rust request descriptors must resolve")
+        .into_iter()
+        .chain(
+            resolved_response_fields()
+                .expect("Rust response descriptors must resolve")
+                .into_iter(),
+        )
+        .collect::<Vec<_>>();
+    fields.sort_by(|left, right| {
+        (
+            left.family.as_str(),
+            left.message_path.as_str(),
+            left.field.as_str(),
+            left.number,
+            left.rpc.as_str(),
+        )
+            .cmp(&(
+                right.family.as_str(),
+                right.message_path.as_str(),
+                right.field.as_str(),
+                right.number,
+                right.rpc.as_str(),
+            ))
+    });
+    fields.dedup_by(|left, right| {
+        left.family == right.family
+            && left.message_path == right.message_path
+            && left.field == right.field
+            && left.number == right.number
+    });
+    fields
+}
+
 fn render_open_enum_models(out: &mut String) {
-    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    let fields = all_descriptor_fields();
     let mut enums = BTreeMap::<String, (String, String)>::new();
     for field in fields.iter().filter(|field| field.wire_type == Some(FieldType::Enum as i32)) {
         let Some(type_name) = field.type_name.as_deref() else { continue };
@@ -829,24 +943,28 @@ fn render_open_enum_models(out: &mut String) {
     }
     for (model, (wire_enum, _family)) in enums {
         out.push_str(&format!(
-            "public readonly record struct {model}(int Number)\n{{\n    public bool IsKnown => Enum.IsDefined(typeof({wire_enum}), Number);\n    public {wire_enum}? Known => IsKnown ? ({wire_enum})Number : null;\n}}\n\n"
+            "public readonly record struct {model}(int Number)\n{{\n    public bool IsKnown => Enum.IsDefined(typeof({wire_enum}), Number);\n    public {wire_enum}? Known => IsKnown ? ({wire_enum})Number : null;\n    internal int ToWire() => Number;\n    internal static {model} FromWire(int value) => new(value);\n}}\n\n"
         ));
     }
 }
 
 fn render_oneof_models(out: &mut String) {
-    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
-    let mut groups = BTreeMap::<(String, String), Vec<ResolvedRequestField>>::new();
+    let fields = all_descriptor_fields();
+    let mut groups = BTreeMap::<(String, String, String), Vec<ResolvedRequestField>>::new();
     for field in fields
         .iter()
         .filter(|field| field.oneof_name.is_some() && !field.proto3_optional)
     {
         groups
-            .entry((field.message_path.clone(), field.oneof_name.clone().unwrap()))
+            .entry((
+                field.family.clone(),
+                field.message_path.clone(),
+                field.oneof_name.clone().unwrap(),
+            ))
             .or_default()
             .push(field.clone());
     }
-    for ((message, oneof), mut members) in groups {
+    for ((_group_family, message, oneof), mut members) in groups {
         members.sort_by_key(|field| field.number);
         members.dedup_by(|left, right| left.field == right.field && left.number == right.number);
         let first = &members[0];
@@ -854,7 +972,7 @@ fn render_oneof_models(out: &mut String) {
         let Some(model) = response_oneof_model_name(first, family) else { continue };
         let wire = qualified_fq_message(&message, family);
         let case_property = format!("{}Case", upper(&oneof));
-        out.push_str(&format!("public abstract record {model}\n{{\n"));
+        out.push_str(&format!("public abstract record {model} : WireChoice\n{{\n"));
         for field in &members {
             let variant = response_field_property(field);
             let value_type = response_field_type(field, family);
@@ -876,6 +994,97 @@ fn render_oneof_models(out: &mut String) {
             "        {wire}.{case}.None => new None(),\n        _ => new Unknown((int)wire.{case_property}, ByteString.CopyFrom(wire.ToByteArray())),\n    }};\n}}\n\n"
         ));
     }
+}
+
+fn csharp_string_literal(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Emit the complete descriptor shape inventory consumed by the generated
+/// facade and its conformance probes.  This is intentionally data, rather
+/// than a second handwritten contract: field names, oneof payload identities,
+/// enum identities, and presence kinds all come from Rust descriptor
+/// resolution above.
+fn render_descriptor_shape_metadata(out: &mut String) {
+    let fields = all_descriptor_fields();
+    let presence = resolved_presence_fields().expect("Rust presence descriptors must resolve");
+    let enums = resolved_enum_fields().expect("Rust enum descriptors must resolve");
+
+    out.push_str(
+        "internal sealed record RustDescriptorPresenceShape(string Family, string Message, string Field, string JsonName, string Kind);\n\
+internal sealed record RustDescriptorEnumShape(string RustType, string CSharpType);\n\
+internal sealed record RustDescriptorOneofShape(string Family, string Message, string Oneof, string Arm, string PayloadType, string CSharpChoice);\n\
+internal static class RustDescriptorShapes\n{\n",
+    );
+
+    out.push_str("    internal static IReadOnlyList<RustDescriptorPresenceShape> Presence { get; } = new[] {\n");
+    let mut seen_presence = BTreeSet::new();
+    for entry in presence {
+        let key = (
+            entry.field.family.clone(),
+            entry.field.message_path.clone(),
+            entry.field.field.clone(),
+        );
+        if !seen_presence.insert(key) {
+            continue;
+        }
+        let kind = match entry.kind {
+            crate::type_policy::ResolvedPresenceKind::Message => "message",
+            crate::type_policy::ResolvedPresenceKind::Oneof => "oneof",
+            crate::type_policy::ResolvedPresenceKind::ExplicitOptional => "explicit_optional",
+        };
+        out.push_str(&format!(
+            "        new({},{},{},{},{}),\n",
+            csharp_string_literal(&entry.field.family),
+            csharp_string_literal(&entry.field.message_path),
+            csharp_string_literal(&entry.field.field),
+            csharp_string_literal(&entry.field.json_name),
+            csharp_string_literal(kind),
+        ));
+    }
+    out.push_str("    };\n\n");
+
+    out.push_str("    internal static IReadOnlyList<RustDescriptorEnumShape> Enums { get; } = new[] {\n");
+    let mut seen_enums = BTreeSet::new();
+    for entry in enums {
+        if !seen_enums.insert(entry.enum_type.clone()) {
+            continue;
+        }
+        out.push_str(&format!(
+            "        new({},{}) ,\n",
+            csharp_string_literal(&entry.enum_type),
+            csharp_string_literal(&response_open_enum_name(&entry.enum_type, &entry.field.family)),
+        ));
+    }
+    out.push_str("    };\n\n");
+
+    out.push_str("    internal static IReadOnlyList<RustDescriptorOneofShape> Oneofs { get; } = new[] {\n");
+    let mut seen_oneofs = BTreeSet::new();
+    for field in fields.iter().filter(|field| field.oneof_name.is_some() && !field.proto3_optional) {
+        let Some(oneof) = field.oneof_name.as_deref() else { continue };
+        let Some(payload_type) = field.type_name.as_deref() else { continue };
+        if !matches!(field.wire_type, Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32) {
+            continue;
+        }
+        let message = field.message_path.rsplit('.').next().unwrap_or("Message");
+        let package = field.message_path.rsplitn(2, '.').nth(1).unwrap_or_default();
+        let package_prefix = descriptor_csharp_prefix(package);
+        let alias = format!("{package_prefix}{message}{}Choice", upper(oneof));
+        let key = (field.family.clone(), field.message_path.clone(), oneof.to_owned(), field.field.clone());
+        if !seen_oneofs.insert(key) {
+            continue;
+        }
+        out.push_str(&format!(
+            "        new({},{},{},{},{},{}),\n",
+            csharp_string_literal(&field.family),
+            csharp_string_literal(&field.message_path),
+            csharp_string_literal(oneof),
+            csharp_string_literal(&field.field),
+            csharp_string_literal(payload_type.trim_start_matches('.')),
+            csharp_string_literal(&alias),
+        ));
+    }
+    out.push_str("    };\n}\n\n");
 }
 
 fn render_oneof_properties(
@@ -911,14 +1120,13 @@ fn render_nested_response_models(out: &mut String) {
     let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
     let mut nested_messages = BTreeSet::<String>::new();
     for field in &fields {
-        if let Some(type_name) = field.type_name.as_deref() {
-            if !field.map_entry && matches!(
+        if let Some(type_name) = field.type_name.as_deref()
+            && !field.map_entry && matches!(
                 field.wire_type,
                 Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32
             ) && !type_name.trim_start_matches('.').starts_with("google.protobuf.")
-            {
-                nested_messages.insert(type_name.trim_start_matches('.').to_owned());
-            }
+        {
+            nested_messages.insert(type_name.trim_start_matches('.').to_owned());
         }
     }
 
@@ -1012,8 +1220,7 @@ fn render_response_models(out: &mut String) {
             if field.wire_type == Some(FieldType::Enum as i32) && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
                 out.push_str(&format!("    public int {property}Number => (int)Wire.{property};\n"));
             }
-            if field.oneof_index.is_some() {
-                let oneof = field.oneof_index.unwrap();
+            if let Some(oneof) = field.oneof_index {
                 out.push_str(&format!("    public int {property}OneofIndex => {oneof};\n"));
             }
         }
@@ -1849,10 +2056,16 @@ mod tests {
         }
         assert!(source.contains("checked((uint)Limit.ToWire())"));
         assert!(source.contains("checked((uint)PageSize.ToWire())"));
-        assert!(source.contains("wire.IdleTimeoutMs = IdleTimeoutMs ?? 0;"));
-        assert!(source.contains("wire.IfTail = IfTail ?? 0;"));
-        assert!(source.contains("wire.AtTail = AtTail ?? 0;"));
-        assert!(source.contains("wire.ExpectedRevision = ExpectedRevision ?? 0;"));
+        for field in ["IdleTimeoutMs", "IfTail", "AtTail", "ExpectedRevision"] {
+            assert!(
+                source.contains(&format!("{field}.HasValue")),
+                "optional scalar {field} lost explicit presence"
+            );
+            assert!(
+                source.contains(&format!("wire.Clear{field}();")),
+                "optional scalar {field} lacks an absent-state projection"
+            );
+        }
     }
 
     #[test]
@@ -1905,10 +2118,25 @@ mod tests {
     }
 
     #[test]
+    fn csharp_negative_fixture_uses_compile_time_nominal_type_mismatches() {
+        let outputs = generate_csharp_type_policy_tests();
+        let (_, negative) = outputs
+            .iter()
+            .find(|(path, _)| path.ends_with("RustTypedFacadeNegative.cs.txt"))
+            .expect("generated C# negative fixture");
+        assert!(negative.contains("new(\"bucket\", \"\");"));
+        assert!(negative.contains("new(\"bucket\", \"raw\");"));
+        assert!(!negative.contains("new IdempotencyKeyText(\"\")"));
+    }
+
+    #[test]
     fn csharp_response_projection_retains_unknown_oneof_wire_bytes() {
         let (_, source) = generate_csharp_typed_facade();
         assert!(source.contains("record Unknown(int RawCase, ByteString WireBytes)"));
         assert!(source.contains("ObjectsGetObjectFrame.Unknown((int)message.FrameCase, ByteString.CopyFrom(message.ToByteArray()))"));
+        assert!(source.contains("public interface WireChoice"));
+        assert!(!source.contains("public sealed record KnownOneof(string Tag, ByteString Payload)"));
+        assert!(source.contains(": WireChoice"));
     }
 
     #[test]
@@ -1932,6 +2160,23 @@ mod tests {
         assert!(source.contains("record Custom(Sha256Digest Digest)"));
         assert!(source.contains("record Checkpoint(CheckpointId Id)"));
         assert!(source.contains("wire.Image = Image.ToWire();"));
+    }
+
+    #[test]
+    fn csharp_known_image_digest_variants_keep_nominal_digest_types() {
+        let (_, source) = generate_csharp_typed_facade();
+        assert!(source.contains(
+            "public sealed record ManagedDigest(Sha256Digest Value) : RustMachinesImageImmutableReferenceChoice;"
+        ));
+        assert!(source.contains(
+            "public sealed record CustomDigest(Sha256Digest Value) : RustMachinesImageImmutableReferenceChoice;"
+        ));
+        assert!(source.contains(
+            "new ManagedDigest(new Sha256Digest(wire.ManagedDigest.ToByteArray()))"
+        ));
+        assert!(source.contains(
+            "new CustomDigest(new Sha256Digest(wire.CustomDigest.ToByteArray()))"
+        ));
     }
 
     #[test]
