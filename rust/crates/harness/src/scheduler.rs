@@ -30,10 +30,16 @@ impl ResourceRequest {
     /// Returns whether this request fits within a capacity snapshot.
     #[must_use]
     pub fn fits(&self, capacity: &ResourceSnapshot) -> bool {
-        self.0
-            .iter()
-            .all(|(resource, requested)| capacity.0.get(resource).unwrap_or(&0) >= requested)
+        covers(&capacity.0, self)
     }
+}
+
+/// Whether `held` holds at least every quantity in `request`.
+fn covers(held: &BTreeMap<String, u64>, request: &ResourceRequest) -> bool {
+    request
+        .0
+        .iter()
+        .all(|(resource, requested)| held.get(resource).unwrap_or(&0) >= requested)
 }
 
 /// Available logical resources advertised to admission policy.
@@ -445,13 +451,28 @@ impl Scheduler {
                   clarifying any of them"
     )]
     pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
-        let primary = event_operation(&event);
+        let primary = event.operation_id();
         let declared_parent = match &event {
             SchedulerEvent::Declared { spec } => {
                 spec.parent.as_ref().map(|value| value.operation_id)
             }
             _ => None,
         };
+        // Check every revision this event advances before mutating anything,
+        // so a rejected event leaves the projection unchanged.
+        let mut advanced = vec![primary];
+        advanced.extend(declared_parent);
+        match &event {
+            SchedulerEvent::CancellationRequested {
+                operation_id,
+                recursive,
+            } => advanced.extend(self.cancellation_frontier(*operation_id, *recursive)),
+            SchedulerEvent::Orchestrated { cancel, .. } => advanced.extend(cancel),
+            _ => {}
+        }
+        for operation in advanced.iter().filter_map(|id| self.operations.get(id)) {
+            next_revision(operation.revision)?;
+        }
         match event {
             SchedulerEvent::Declared { spec } => {
                 let spec = *spec;
@@ -477,18 +498,7 @@ impl Scheduler {
                 );
             }
             SchedulerEvent::WaitingForCapacity { operation_id } => {
-                let dependencies_ready = {
-                    let operation = self
-                        .operations
-                        .get(&operation_id)
-                        .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
-                    self.dependencies_succeeded(operation)
-                };
-                if !dependencies_ready {
-                    return Err(Error::Conflict(
-                        "operation dependencies are not ready".into(),
-                    ));
-                }
+                self.require_dependencies_ready(operation_id)?;
                 let operation = self.mutable(operation_id)?;
                 require_phase(operation, OperationPhase::WaitingForDependencies)?;
                 operation.phase = OperationPhase::WaitingForCapacity;
@@ -497,18 +507,7 @@ impl Scheduler {
                 operation_id,
                 reservation,
             } => {
-                let dependencies_ready = {
-                    let operation = self
-                        .operations
-                        .get(&operation_id)
-                        .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
-                    self.dependencies_succeeded(operation)
-                };
-                if !dependencies_ready {
-                    return Err(Error::Conflict(
-                        "operation dependencies are not ready".into(),
-                    ));
-                }
+                self.require_dependencies_ready(operation_id)?;
                 let operation = self.mutable(operation_id)?;
                 if !matches!(
                     operation.phase,
@@ -523,15 +522,7 @@ impl Scheduler {
                         "cancelled operation cannot be admitted".into(),
                     ));
                 }
-                if !operation
-                    .spec
-                    .resources
-                    .0
-                    .iter()
-                    .all(|(resource, requested)| {
-                        reservation.admitted.0.get(resource).unwrap_or(&0) >= requested
-                    })
-                {
+                if !covers(&reservation.admitted.0, &operation.spec.resources) {
                     return Err(Error::Conflict(
                         "partial reservation cannot start an operation".into(),
                     ));
@@ -550,18 +541,7 @@ impl Scheduler {
                 operation_id,
                 reservation,
             } => {
-                let dependencies_ready = {
-                    let operation = self
-                        .operations
-                        .get(&operation_id)
-                        .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
-                    self.dependencies_succeeded(operation)
-                };
-                if !dependencies_ready {
-                    return Err(Error::Conflict(
-                        "operation dependencies are not ready".into(),
-                    ));
-                }
+                self.require_dependencies_ready(operation_id)?;
                 let operation = self.mutable(operation_id)?;
                 if !matches!(
                     operation.phase,
@@ -572,18 +552,8 @@ impl Scheduler {
                         "operation cannot be partially admitted in its current phase".into(),
                     ));
                 }
-                let within_request = reservation.admitted.0.iter().all(|(resource, admitted)| {
-                    operation.spec.resources.0.get(resource).unwrap_or(&0) >= admitted
-                });
-                if !within_request
-                    || operation
-                        .spec
-                        .resources
-                        .0
-                        .iter()
-                        .all(|(resource, requested)| {
-                            reservation.admitted.0.get(resource).unwrap_or(&0) >= requested
-                        })
+                if !covers(&operation.spec.resources.0, &reservation.admitted)
+                    || covers(&reservation.admitted.0, &operation.spec.resources)
                 {
                     return Err(Error::Invalid(
                         "partial admission must be non-excessive and incomplete".into(),
@@ -592,9 +562,7 @@ impl Scheduler {
                 if let Some(existing) = &operation.reservation
                     && (existing.id != reservation.id
                         || existing.placement != reservation.placement
-                        || existing.admitted.0.iter().any(|(resource, quantity)| {
-                            reservation.admitted.0.get(resource).unwrap_or(&0) < quantity
-                        }))
+                        || !covers(&reservation.admitted.0, &existing.admitted))
                 {
                     return Err(Error::Conflict(
                         "partial reservation must advance the same lease".into(),
@@ -1103,6 +1071,20 @@ impl Scheduler {
             .ok_or_else(|| Error::NotFound(format!("operation {id}")))
     }
 
+    fn require_dependencies_ready(&self, id: OperationId) -> Result<()> {
+        let operation = self
+            .operations
+            .get(&id)
+            .ok_or_else(|| Error::NotFound(format!("operation {id}")))?;
+        if self.dependencies_succeeded(operation) {
+            Ok(())
+        } else {
+            Err(Error::Conflict(
+                "operation dependencies are not ready".into(),
+            ))
+        }
+    }
+
     fn dependencies_succeeded(&self, operation: &OperationState) -> bool {
         operation.spec.dependencies.iter().all(|dependency| {
             matches!(
@@ -1258,20 +1240,23 @@ pub fn assembly_invocation_digest(
     crate::contract::canonical_json_digest(&(kind, values))
 }
 
-fn event_operation(event: &SchedulerEvent) -> OperationId {
-    match event {
-        SchedulerEvent::Declared { spec } => spec.operation_id,
-        SchedulerEvent::WaitingForCapacity { operation_id }
-        | SchedulerEvent::Admitted { operation_id, .. }
-        | SchedulerEvent::PartiallyAdmitted { operation_id, .. }
-        | SchedulerEvent::Rejected { operation_id, .. }
-        | SchedulerEvent::Started { operation_id, .. }
-        | SchedulerEvent::Checkpointed { operation_id, .. }
-        | SchedulerEvent::WaitingForChildren { operation_id, .. }
-        | SchedulerEvent::LeaseReleased { operation_id, .. }
-        | SchedulerEvent::CancellationRequested { operation_id, .. }
-        | SchedulerEvent::Completed { operation_id, .. }
-        | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
+impl SchedulerEvent {
+    /// The operation this event advances.
+    pub(crate) fn operation_id(&self) -> OperationId {
+        match self {
+            Self::Declared { spec } => spec.operation_id,
+            Self::WaitingForCapacity { operation_id }
+            | Self::Admitted { operation_id, .. }
+            | Self::PartiallyAdmitted { operation_id, .. }
+            | Self::Rejected { operation_id, .. }
+            | Self::Started { operation_id, .. }
+            | Self::Checkpointed { operation_id, .. }
+            | Self::WaitingForChildren { operation_id, .. }
+            | Self::LeaseReleased { operation_id, .. }
+            | Self::CancellationRequested { operation_id, .. }
+            | Self::Completed { operation_id, .. }
+            | Self::Orchestrated { operation_id, .. } => *operation_id,
+        }
     }
 }
 
@@ -1407,6 +1392,33 @@ mod tests {
             orchestration,
             state: state_ref()?,
         })
+    }
+
+    #[test]
+    fn exhausted_child_revision_rejects_cancellation_atomically() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
+        let mut child = spec(id(2), Orchestration::Leaf)?;
+        child.owner = spec(id(1), Orchestration::Leaf)?.owner;
+        child.parent = Some(ParentLink {
+            operation_id: id(1),
+            slot: "child".into(),
+        });
+        scheduler.apply(scheduler.declare(child)?)?;
+        if let Some(child) = scheduler.operations.get_mut(&id(2)) {
+            child.revision = u64::MAX;
+        }
+        let before = scheduler.clone();
+        assert!(
+            scheduler
+                .apply(SchedulerEvent::CancellationRequested {
+                    operation_id: id(1),
+                    recursive: true,
+                })
+                .is_err()
+        );
+        assert_eq!(scheduler, before);
+        Ok(())
     }
 
     #[test]

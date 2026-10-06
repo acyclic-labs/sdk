@@ -269,9 +269,7 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
         }
         let (revision, operation_id, _, event_digest, committed_at_ms, event) =
             decode(&record.value)?;
-        if revision != expected.saturating_add(1)
-            || scheduler_event_operation(&event) != operation_id
-        {
+        if revision != expected.saturating_add(1) || event.operation_id() != operation_id {
             return Err(Error::Storage(
                 "coordinator event page has invalid identity".into(),
             ));
@@ -630,7 +628,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.refresh().await?;
         IdempotencyKey::new(idempotency_key.0.clone())?;
         let key = idempotency_key.as_str();
-        if scheduler_event_operation(&event) != operation_id {
+        if event.operation_id() != operation_id {
             return Err(Error::Invalid(
                 "scheduler event belongs to another operation".into(),
             ));
@@ -1004,9 +1002,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         committed_at_ms: u64,
         event: SchedulerEvent,
     ) -> Result<()> {
-        if revision != next_revision(self.revision)?
-            || scheduler_event_operation(&event) != operation_id
-        {
+        if revision != next_revision(self.revision)? || event.operation_id() != operation_id {
             return Err(Error::Conflict(
                 "invalid committed coordinator event".into(),
             ));
@@ -1027,23 +1023,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.last_committed_at_ms = committed_at_ms;
         self.intents.insert(key, (digest, event));
         Ok(())
-    }
-}
-
-fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
-    match event {
-        SchedulerEvent::Declared { spec } => spec.operation_id,
-        SchedulerEvent::WaitingForCapacity { operation_id }
-        | SchedulerEvent::Admitted { operation_id, .. }
-        | SchedulerEvent::PartiallyAdmitted { operation_id, .. }
-        | SchedulerEvent::Rejected { operation_id, .. }
-        | SchedulerEvent::Started { operation_id, .. }
-        | SchedulerEvent::Checkpointed { operation_id, .. }
-        | SchedulerEvent::WaitingForChildren { operation_id, .. }
-        | SchedulerEvent::LeaseReleased { operation_id, .. }
-        | SchedulerEvent::CancellationRequested { operation_id, .. }
-        | SchedulerEvent::Completed { operation_id, .. }
-        | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
     }
 }
 
