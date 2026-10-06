@@ -420,12 +420,15 @@ export class HttpInferenceTransport implements InferenceTransport {
       throw new InferenceTransportError(0, "request exceeds configured bound");
     }
     const headers = new Headers(await this.authorization());
-    if ((headers.get("authorization") ?? "").trim().length === 0) {
-      throw new InferenceTransportError(0, "authorization header is required");
+    // Headers already rejects CR, LF, and NUL; also bound the credential size.
+    const authorization = headers.get("authorization") ?? "";
+    if (authorization.trim().length === 0 || utf8Length(authorization) > 8192) {
+      throw new InferenceTransportError(0, "authorization header must be non-empty and at most 8 KiB");
     }
     headers.set("content-type", "application/json");
     const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}/v1/inference/${path}`, {
       method: "POST",
+      redirect: "error",
       headers,
       body,
       signal,

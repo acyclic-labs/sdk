@@ -18,7 +18,7 @@ export class HttpStreamProvider implements StreamProvider {
   constructor(options: HttpStreamProviderOptions) {
     const endpoint = new URL(options.endpoint);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
-    if (!options.token.trim()) throw new TypeError("token is required");
+    if (!validBearerToken(options.token)) throw new TypeError("token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL");
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
@@ -109,7 +109,7 @@ export class HttpStreamProvider implements StreamProvider {
     return this.#request("tail", await encodeHttpRequest("tail", input), signal);
   }
   async #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<HttpResponseFor<Route>> {
-    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
+    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
     let text: string;
     try { text = await boundedText(response, this.#maximum); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
@@ -177,3 +177,8 @@ async function boundedText(response: Response, maximum: number): Promise<string>
 }
 async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> { if (signal?.aborted) return; await new Promise<void>(resolve => { const finish = () => { clearTimeout(timeout); signal?.removeEventListener("abort", finish); resolve(); }; const timeout = setTimeout(finish, milliseconds); signal?.addEventListener("abort", finish, { once: true }); }); }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
+
+/** Header-safe bearer token: non-blank, at most 8 KiB of UTF-8, and no CR, LF, or NUL. */
+function validBearerToken(token: string): boolean {
+  return token.trim().length > 0 && new TextEncoder().encode(token).byteLength <= 8192 && !/[\r\n\0]/.test(token);
+}

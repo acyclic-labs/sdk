@@ -183,46 +183,54 @@ export class WebSocketWireTransport implements WireTransport {
 }
 
 export class HttpSseWireTransport implements WireTransport {
+  readonly #endpoint: URL;
   constructor(
     readonly baseUrl: string,
     readonly negotiation: HandshakeRequest,
     readonly fetcher: HttpFetcher = fetch,
-  ) {}
+    /** Ceiling for each JSON response body and each buffered server-sent event. */
+    readonly maximumMessageBytes = 8 * 1024 * 1024,
+  ) {
+    let endpoint: URL;
+    try { endpoint = new URL(withSlash(baseUrl)); }
+    catch { throw new TypeError("Harness endpoint must be an absolute URL"); }
+    const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname);
+    if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) ||
+        endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+      throw new TypeError("Harness endpoint must be HTTPS or loopback HTTP without credentials, query, or fragment");
+    }
+    if (!Number.isSafeInteger(maximumMessageBytes) || maximumMessageBytes < 1) {
+      throw new RangeError("maximumMessageBytes must be a positive safe integer");
+    }
+    this.#endpoint = endpoint;
+  }
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
     await validateResume(resume);
-    const handshakeResponse = await this.fetcher(new URL("v2/harness/handshake", withSlash(this.baseUrl)), {
+    const maximum = this.maximumMessageBytes;
+    const post = (path: string, body: string, accept?: string) => this.fetcher(new URL(path, this.#endpoint), {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: toJsonString(HandshakeRequestSchema, this.negotiation),
+      redirect: "error",
+      headers: { ...(accept === undefined ? {} : { accept }), "content-type": "application/json" },
+      body,
       ...(signal === undefined ? {} : { signal }),
     });
+    const handshakeResponse = await post("v2/harness/handshake", toJsonString(HandshakeRequestSchema, this.negotiation));
     if (!handshakeResponse.ok) throw new WireError(ErrorCode.UNSUPPORTED, "handshake failed");
-    await validateHandshake(this.negotiation, fromJsonString(HandshakeResponseSchema, await handshakeResponse.text()));
-    const response = await this.fetcher(new URL("v2/harness/replay", withSlash(this.baseUrl)), {
-      method: "POST",
-      headers: { accept: "text/event-stream", "content-type": "application/json" },
-      body: toJsonString(ResumeRequestSchema, resume),
-      ...(signal === undefined ? {} : { signal }),
-    });
-    if (!response.ok || response.body === null) throw new Error(`replay failed: ${response.status}`);
-    const fetcher = this.fetcher;
-    const baseUrl = this.baseUrl;
+    await validateHandshake(this.negotiation, fromJsonString(HandshakeResponseSchema, await boundedText(handshakeResponse, maximum)));
+    const response = await post("v2/harness/replay", toJsonString(ResumeRequestSchema, resume), "text/event-stream");
+    const events = response.body;
+    if (!response.ok || events === null) throw new Error(`replay failed: ${response.status}`);
     const negotiation = this.negotiation;
     return {
       async send(command) {
         command = withProtocol(command, negotiation);
         await validateCommand(command);
-        const submitted = await fetcher(new URL("v2/harness/commands", withSlash(baseUrl)), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: toJsonString(CommandEnvelopeSchema, command),
-          ...(signal === undefined ? {} : { signal }),
-        });
+        const submitted = await post("v2/harness/commands", toJsonString(CommandEnvelopeSchema, command));
         if (!submitted.ok) {
           try {
-            const admission = fromJsonString(AdmissionSchema, await submitted.text());
+            const admission = fromJsonString(AdmissionSchema, await boundedText(submitted, maximum));
             await validateAdmissionIdentity(command, admission);
             if (admission.state === AdmissionState.REJECTED) {
               throw new TerminalAdmissionError(admission.error?.message ?? "command was rejected");
@@ -232,7 +240,7 @@ export class HttpSseWireTransport implements WireTransport {
           }
           throw new WireError(ErrorCode.INDETERMINATE, `command failed: ${submitted.status}`);
         }
-        const admission = fromJsonString(AdmissionSchema, await submitted.text());
+        const admission = fromJsonString(AdmissionSchema, await boundedText(submitted, maximum));
         await validateAdmissionIdentity(command, admission);
         if (admission.state === AdmissionState.REJECTED) {
           throw new TerminalAdmissionError(admission.error?.message ?? "command was rejected");
@@ -247,32 +255,22 @@ export class HttpSseWireTransport implements WireTransport {
       async observe(request) {
         request = withObserveProtocol(request, negotiation);
         await validateObserve(request);
-        const observed = await fetcher(new URL("v2/harness/operations/observe", withSlash(baseUrl)), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: toJsonString(ObserveRequestSchema, request),
-          ...(signal === undefined ? {} : { signal }),
-        });
-        if (!observed.ok) throw await httpWireError(observed, "observe");
-        return validateStatus(request, negotiation, fromJsonString(OperationStatusSchema, await observed.text()));
+        const observed = await post("v2/harness/operations/observe", toJsonString(ObserveRequestSchema, request));
+        if (!observed.ok) throw await httpWireError(observed, "observe", maximum);
+        return validateStatus(request, negotiation, fromJsonString(OperationStatusSchema, await boundedText(observed, maximum)));
       },
       async cancel(request) {
         request = withCancelProtocol(request, negotiation);
         await validateCancel(request);
-        const cancelled = await fetcher(new URL("v2/harness/operations/cancel", withSlash(baseUrl)), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: toJsonString(CancelRequestSchema, request),
-          ...(signal === undefined ? {} : { signal }),
-        });
-        if (!cancelled.ok) throw await httpWireError(cancelled, "cancel");
-        const response = fromJsonString(CancelResponseSchema, await cancelled.text());
+        const cancelled = await post("v2/harness/operations/cancel", toJsonString(CancelRequestSchema, request));
+        if (!cancelled.ok) throw await httpWireError(cancelled, "cancel", maximum);
+        const response = fromJsonString(CancelResponseSchema, await boundedText(cancelled, maximum));
         await validateCancelIdentity(request, negotiation, response);
         return response;
       },
       async close() {},
       async *[Symbol.asyncIterator]() {
-        for await (const data of sseData(response.body!)) {
+        for await (const data of sseData(events, maximum)) {
           const frame = parseServerFrame(data);
           if (frame.frame.case === "delivery") yield frame.frame.value;
           else if (frame.frame.case === "error") {
@@ -716,9 +714,9 @@ function withSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
 }
 
-async function httpWireError(response: Response, operation: string): Promise<WireError> {
+async function httpWireError(response: Response, operation: string, maximum: number): Promise<WireError> {
   try {
-    const error = fromJsonString(ErrorSchema, await response.text());
+    const error = fromJsonString(ErrorSchema, await boundedText(response, maximum));
     if (error.code !== ErrorCode.UNSPECIFIED && error.message.length > 0) {
       return new WireError(error.code, error.message);
     }
@@ -726,10 +724,37 @@ async function httpWireError(response: Response, operation: string): Promise<Wir
   return new WireError(ErrorCode.INDETERMINATE, `${operation} failed: ${response.status}`);
 }
 
-async function* sseData(stream: ReadableStream<Uint8Array>): AsyncIterable<string> {
+/** Read a whole response body, cancelling it once it exceeds `maximum` bytes. */
+async function boundedText(response: Response, maximum: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maximum) {
+        await reader.cancel().catch(() => undefined);
+        throw new WireError(ErrorCode.INDETERMINATE, "response exceeds configured bound");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(bytes);
+}
+
+async function* sseData(stream: ReadableStream<Uint8Array>, maximum: number): AsyncIterable<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffered = "";
+  let completed = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -742,9 +767,13 @@ async function* sseData(stream: ReadableStream<Uint8Array>): AsyncIterable<strin
           .map(line => line.slice(5).trimStart()).join("\n");
         if (data !== "") yield data;
       }
+      // A UTF-16 length never exceeds the UTF-8 byte length that produced it.
+      if (buffered.length > maximum) throw new WireError(ErrorCode.INDETERMINATE, "server event exceeds configured bound");
       if (done) break;
     }
+    completed = true;
   } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }

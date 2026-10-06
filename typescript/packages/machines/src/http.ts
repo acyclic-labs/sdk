@@ -14,7 +14,7 @@ export interface HttpMachinesOptions { readonly endpoint: string; readonly token
 export class HttpMachinesProvider implements MachinesProvider {
   readonly assurance = "managed-service" as const;
   readonly #endpoint: string; readonly #token: string; readonly #fetcher: typeof fetch; readonly #maximum: number;
-  constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); if (!options.token.trim()) throw new TypeError("token is required"); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new RangeError("maximumResponseBytes must be a positive safe integer"); this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; }
+  constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); if (!validBearerToken(options.token)) throw new TypeError("token must be a non-empty bearer token of at most 8 KiB without CR, LF, or NUL"); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new RangeError("maximumResponseBytes must be a positive safe integer"); this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; }
   qualifyImage(image: Image): Promise<ImageQualification> { return this.#call("IMAGES_QUALIFY", { image }).then(asPublic<QualificationOut, ImageQualification>); }
   create(request: CreateMachine): Promise<MutationOutcome> { return this.#call("MACHINES_CREATE", request).then(asPublic<MutationOut, MutationOutcome>); }
   inspectMachine(machineId: MachineId): Promise<MachineObservation> { return this.#call("MACHINES_INSPECT", { machineId }).then(asPublic<ObservationOut, MachineObservation>); }
@@ -39,7 +39,7 @@ export class HttpMachinesProvider implements MachinesProvider {
     await ensureMachinesWasm();
     const route = httpRoutes()[key];
     const payload = WasmSimulatedMachines.encodeHttpRequest(request);
-    const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: payload });
+    const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: payload });
     const bytes = await boundedBytes(response, this.#maximum);
     let body: string;
     try { body = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
@@ -73,4 +73,9 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
   const bytes = new Uint8Array(total); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return bytes;
+}
+
+/** Header-safe bearer token: non-blank, at most 8 KiB of UTF-8, and no CR, LF, or NUL. */
+function validBearerToken(token: string): boolean {
+  return token.trim().length > 0 && new TextEncoder().encode(token).byteLength <= 8192 && !/[\r\n\0]/.test(token);
 }

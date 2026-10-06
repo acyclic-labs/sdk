@@ -416,6 +416,7 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
   }));
   const fetcher: typeof fetch = async (input, init) => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test");
+    expect(init?.redirect).toBe("error");
     const url = String(input);
     if (url.endsWith("/models/list")) {
       return new Response(toJsonString(ListModelsResponseSchema, create(ListModelsResponseSchema)));
@@ -461,6 +462,8 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
 
   const unauthorized = new HttpInferenceTransport("https://example.test", () => ({}), fetcher);
   await expect(unauthorized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
+  const oversized = new HttpInferenceTransport("https://example.test", () => ({ authorization: `Bearer ${"x".repeat(8192)}` }), fetcher);
+  await expect(oversized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
 });
 
 test("HTTP transport applies one byte ceiling per message without conflating network chunks", async () => {

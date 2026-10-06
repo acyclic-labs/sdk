@@ -302,6 +302,19 @@ describe("Machines simulation", () => {
     await expect(invalidUtf8.inspectMachine("machine" as never)).rejects.toThrow("valid UTF-8");
   });
 
+  test("managed transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
+    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
+      expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
+    }
+    let redirect: RequestRedirect | undefined;
+    const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+      redirect = init?.redirect;
+      return new Response("{}", { status: 503 });
+    } });
+    await expect(provider.inspectMachine("machine" as never)).rejects.toBeInstanceOf(MachinesTransportError);
+    expect(redirect).toBe("error");
+  });
+
   test("managed transport rejects substituted identities and impossible machine evidence", async () => {
     const simulated = new SimulatedMachines();
     const created = await simulated.create(request("remote-shape"));

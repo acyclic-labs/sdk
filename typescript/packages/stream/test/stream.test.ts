@@ -778,6 +778,19 @@ describe("website Stream contract", () => {
     expect(cancelled).toBeTrue();
   });
 
+  test("HTTP transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
+    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
+      expect(() => new HttpStreamProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
+    }
+    let redirect: RequestRedirect | undefined;
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+      redirect = init?.redirect;
+      return new Response('"0"');
+    } });
+    expect(await provider.tail("events")).toBe(0n);
+    expect(redirect).toBe("error");
+  });
+
   test("round-trips full uint64 positions and opaque identities through the HTTP wire codec", async () => {
     const maximum = 0xffff_ffff_ffff_ffffn;
     const identity = idempotencyKey(new Uint8Array([0, 255, 128, 1]));

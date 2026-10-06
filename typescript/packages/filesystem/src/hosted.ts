@@ -110,7 +110,9 @@ interface HostedClient {
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
-  if (options.bearerToken.length === 0) throw new RangeError("bearer token must be non-empty");
+  if (!options.bearerToken.trim() || new TextEncoder().encode(options.bearerToken).byteLength > 8192 || /[\r\n\0]/.test(options.bearerToken)) {
+    throw new RangeError("bearer token must be non-empty, at most 8 KiB, and free of CR, LF, or NUL");
+  }
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
   if (maximumResponseBytes < DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes) {
@@ -1109,7 +1111,9 @@ async function call<T>(request: Promise<T>): Promise<T> {
 
 function boundedFetch(send: typeof globalThis.fetch, maximumBytes: number): typeof globalThis.fetch {
   return async (input, init) => {
-    const response = await send(input, init);
+    // Never forward the bearer token to a redirect target.
+    const response = await send(input, { ...init, redirect: "error" });
+
     const declared = response.headers.get("content-length");
     if (declared !== null && /^\d+$/.test(declared) && BigInt(declared) > BigInt(maximumBytes)) {
       await response.body?.cancel();
