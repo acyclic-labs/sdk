@@ -2,8 +2,16 @@ module Main where
 
 import qualified Acyclic.Semantics as Semantics
 import Data.ProtoLens (defMessage)
-import qualified Proto.Objects.V2.Objects as ObjectsV2
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
+import Data.Int (Int32, Int64)
+import Data.Word (Word32, Word64)
+import qualified Proto.Filesystem.V2.Filesystem as FilesystemV2
+import qualified Proto.Inference.V1.Inference as InferenceV1
+import qualified Proto.Machines.V1.Machines as MachinesV1
+import qualified Proto.Objects.V2.Objects as ObjectsV2
+import qualified Proto.Stream.V2.Stream as StreamV2
+import qualified Proto.Workers.V1.Workers as WorkersV1
 
 expectRight :: String -> Either String value -> IO value
 expectRight label result = case result of
@@ -24,8 +32,8 @@ main = do
   expectLeft "empty actor" (Semantics.mkActorId "")
   expectLeft "short operation" (Semantics.mkOperationId (BS8.pack "short"))
   expectLeft "short workspace" (Semantics.mkWorkspaceId (BS8.pack "short"))
-  let _known :: Semantics.WireChoice ObjectsV2.ObjectInfo
-      _known = Semantics.KnownOneof (defMessage :: ObjectsV2.ObjectInfo)
-      _unknown :: Semantics.WireChoice ObjectsV2.ObjectInfo
+  let _known :: Semantics.WireChoice
+      _known = Semantics.KnownOneof (Semantics.KnownAcyclicActorsV1SubscriptionStartCursorN1 (0 :: Word64))
+      _unknown :: Semantics.WireChoice
       _unknown = Semantics.UnknownOneof (Semantics.workspaceIdValue workspace)
   putStrLn ("PASS:rust-owned-haskell-semantic-types=" <> show (Semantics.actorIdValue actor))
