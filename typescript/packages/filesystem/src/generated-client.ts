@@ -15,20 +15,41 @@ export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonl
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
 
-export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
+export type RustOwnedNonNegativeCount = RustOwnedSemanticNumber<"non_negative_count">;
+export function makeRustOwnedNonNegativeCount(value: number): RustOwnedNonNegativeCount { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedNonNegativeCount; }
+export type RustOwnedOpaqueBytes = RustOwnedSemanticBytes<"opaque_bytes">;
+export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes {  return value as RustOwnedOpaqueBytes; }
+export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
 export type RustOwnedPath = RustOwnedSemanticString<"path">;
 export function makeRustOwnedPath(value: string): RustOwnedPath { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
+export type RustOwnedTimestampMillis = RustOwnedSemanticNumber<"timestamp_millis">;
+export function makeRustOwnedTimestampMillis(value: number): RustOwnedTimestampMillis { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampMillis; }
 
 export const FILESYSTEM_PUBLIC_FIELD_BINDINGS = [
   { family: "filesystem", field: "path", semanticType: "path", module: "filesystem", message: "ReadRequest", wireField: "path", direction: "request", rules: ["NonEmpty", "Utf8"] },
+  { family: "filesystem", field: "identity", semanticType: "opaque_text", module: "filesystem", message: "RetainGenerationResponse", wireField: "identity", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "filesystem", field: "cursor", semanticType: "opaque_bytes", module: "filesystem", message: "ExportChunk", wireField: "cursor", direction: "response", rules: [] },
+  { family: "filesystem", field: "object_id", semanticType: "opaque_bytes", module: "filesystem", message: "ExportChunk", wireField: "object_id", direction: "response", rules: [] },
+  { family: "filesystem", field: "endpoint", semanticType: "opaque_text", module: "filesystem", message: "CredentialResponse", wireField: "endpoint", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "filesystem", field: "expires_at_unix_seconds", semanticType: "timestamp_millis", module: "filesystem", message: "CredentialResponse", wireField: "expires_at_unix_seconds", direction: "response", rules: ["NonNegative"] },
+  { family: "filesystem", field: "bearer_token", semanticType: "opaque_text", module: "filesystem", message: "CredentialResponse", wireField: "bearer_token", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "filesystem", field: "state", semanticType: "opaque_text", module: "filesystem", message: "ObserveResponse", wireField: "state", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "filesystem", field: "plan_id", semanticType: "opaque_bytes", module: "filesystem", message: "JoinPlan", wireField: "plan_id", direction: "response", rules: [] },
+  { family: "filesystem", field: "maximum_generations", semanticType: "non_negative_count", module: "filesystem", message: "JoinPlan", wireField: "maximum_generations", direction: "response", rules: ["NonNegative"] },
+  { family: "filesystem", field: "maximum_changes", semanticType: "non_negative_count", module: "filesystem", message: "JoinPlan", wireField: "maximum_changes", direction: "response", rules: ["NonNegative"] },
+  { family: "filesystem", field: "maximum_conflicts", semanticType: "non_negative_count", module: "filesystem", message: "JoinPlan", wireField: "maximum_conflicts", direction: "response", rules: ["NonNegative"] },
 ] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
 
 export const FILESYSTEM_PUBLIC_NESTED_ROUTES = [
 ] as const;
 
+export type RustOwnedKnownWireMessage = ApplyJoinRequest | ApplyTransactionRequest | CancelRequest | CancelResponse | CreateWorkspaceRequest | CredentialRequest | CredentialResponse | DeleteWorkspaceRequest | DiffRequest | DiffResponse | ExportChunk | ExportRequest | ForkWorkspaceRequest | GenerationResponse | GetGenerationRequest | GetHeadRequest | HandshakeRequest | HandshakeResponse | ImportChunk | ImportResponse | JoinPlan | JoinResponse | ListDirectoryRequest | ListDirectoryResponse | MutationResponse | ObserveRequest | ObserveResponse | OpenWorkspaceRequest | PlanExtentsRequest | PlanExtentsResponse | PlanJoinRequest | ReadLinkRequest | ReadRequest | ReadResponse | RebaseRequest | RebaseResponse | RebaseTransactionRequest | RebaseTransactionResponse | RetainGenerationRequest | RetainGenerationResponse | SourceOperationRequest | SourceResponse | SourceStateRequest | StatRequest | StatResponse | WorkspaceResponse;
+
 export type RustOwnedWireChoice =
-  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "known"; readonly value: RustOwnedKnownWireMessage } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
 import type * as RustWire from "../generated/proto/filesystem/v2/filesystem_pb.js";
@@ -43,11 +64,18 @@ export type RustOwnedPublicCancelRequest = RustWire.CancelRequest;
 export type RustOwnedPublicCancelResponse = RustWire.CancelResponse;
 export type RustOwnedPublicCreateWorkspaceRequest = RustWire.CreateWorkspaceRequest;
 export type RustOwnedPublicCredentialRequest = RustWire.CredentialRequest;
-export type RustOwnedPublicCredentialResponse = RustWire.CredentialResponse;
+export type RustOwnedPublicCredentialResponse = Omit<RustWire.CredentialResponse, "bearerToken" | "endpoint" | "expiresAtUnixSeconds"> & {
+  readonly bearerToken: RustOwnedOpaqueText;
+  readonly endpoint: RustOwnedOpaqueText;
+  readonly expiresAtUnixSeconds: RustOwnedTimestampMillis;
+};
 export type RustOwnedPublicDeleteWorkspaceRequest = RustWire.DeleteWorkspaceRequest;
 export type RustOwnedPublicDiffRequest = RustWire.DiffRequest;
 export type RustOwnedPublicDiffResponse = RustWire.DiffResponse;
-export type RustOwnedPublicExportChunk = RustWire.ExportChunk;
+export type RustOwnedPublicExportChunk = Omit<RustWire.ExportChunk, "cursor" | "objectId"> & {
+  readonly cursor: RustOwnedOpaqueBytes;
+  readonly objectId: RustOwnedOpaqueBytes;
+};
 export type RustOwnedPublicExportRequest = RustWire.ExportRequest;
 export type RustOwnedPublicForkWorkspaceRequest = RustWire.ForkWorkspaceRequest;
 export type RustOwnedPublicGenerationResponse = RustWire.GenerationResponse;
@@ -55,13 +83,20 @@ export type RustOwnedPublicGetGenerationRequest = RustWire.GetGenerationRequest;
 export type RustOwnedPublicGetHeadRequest = RustWire.GetHeadRequest;
 export type RustOwnedPublicImportChunk = RustWire.ImportChunk;
 export type RustOwnedPublicImportResponse = RustWire.ImportResponse;
-export type RustOwnedPublicJoinPlan = RustWire.JoinPlan;
+export type RustOwnedPublicJoinPlan = Omit<RustWire.JoinPlan, "maximumChanges" | "maximumConflicts" | "maximumGenerations" | "planId"> & {
+  readonly maximumChanges: RustOwnedNonNegativeCount;
+  readonly maximumConflicts: RustOwnedNonNegativeCount;
+  readonly maximumGenerations: RustOwnedNonNegativeCount;
+  readonly planId: RustOwnedOpaqueBytes;
+};
 export type RustOwnedPublicJoinResponse = RustWire.JoinResponse;
 export type RustOwnedPublicListDirectoryRequest = RustWire.ListDirectoryRequest;
 export type RustOwnedPublicListDirectoryResponse = RustWire.ListDirectoryResponse;
 export type RustOwnedPublicMutationResponse = RustWire.MutationResponse;
 export type RustOwnedPublicObserveRequest = RustWire.ObserveRequest;
-export type RustOwnedPublicObserveResponse = RustWire.ObserveResponse;
+export type RustOwnedPublicObserveResponse = Omit<RustWire.ObserveResponse, "state"> & {
+  readonly state: RustOwnedOpaqueText;
+};
 export type RustOwnedPublicOpenWorkspaceRequest = RustWire.OpenWorkspaceRequest;
 export type RustOwnedPublicPlanExtentsRequest = RustWire.PlanExtentsRequest;
 export type RustOwnedPublicPlanExtentsResponse = RustWire.PlanExtentsResponse;
@@ -76,7 +111,9 @@ export type RustOwnedPublicRebaseResponse = RustWire.RebaseResponse;
 export type RustOwnedPublicRebaseTransactionRequest = RustWire.RebaseTransactionRequest;
 export type RustOwnedPublicRebaseTransactionResponse = RustWire.RebaseTransactionResponse;
 export type RustOwnedPublicRetainGenerationRequest = RustWire.RetainGenerationRequest;
-export type RustOwnedPublicRetainGenerationResponse = RustWire.RetainGenerationResponse;
+export type RustOwnedPublicRetainGenerationResponse = Omit<RustWire.RetainGenerationResponse, "identity"> & {
+  readonly identity: RustOwnedOpaqueText;
+};
 export type RustOwnedPublicSourceOperationRequest = RustWire.SourceOperationRequest;
 export type RustOwnedPublicSourceResponse = RustWire.SourceResponse;
 export type RustOwnedPublicSourceStateRequest = RustWire.SourceStateRequest;
@@ -146,6 +183,9 @@ export type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKi
 
 export const FILESYSTEM_REMOTE_POLICY = { protocol: "https", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", maximumMessageBytes: 16777216, maximumHttpRequestBytes: 16777216, maximumHttpResponseBytes: 16777216, requestTimeoutMillis: 30000, behaviorBinding: "generated-client", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }], browser: [{ kind: "grpc-web", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
 
+/** Rust-owned native companion targets present in the generated package. */
+export const FILESYSTEM_NATIVE_COMPANION_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64"] as const;
+
 /** Selects the first Rust-qualified transport that is installed for this runtime. */
 export function selectRustOwnedTransport(policy: RustOwnedRemotePolicy, runtime: RustOwnedRuntime, requested?: RustOwnedTransportKind, availability: RustOwnedTransportAvailability = {}): RustOwnedTransportKind {
   const options = policy.transport[runtime];
@@ -202,7 +242,7 @@ export const FILESYSTEM_OPERATIONS = {
   "acyclic.filesystem.v2.FilesystemService/Cancel": { rpc: "acyclic.filesystem.v2.FilesystemService/Cancel", capabilities: ["filesystem.operation"], errors: ["INVALID_ARGUMENT", "NOT_FOUND", "FAILED_PRECONDITION", "CANCELLED", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "UNIMPLEMENTED", "DATA_LOSS"], validations: ["operation_id.16_bytes", "operation.idempotency_key.16_bytes", "response.identity.matches"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const FILESYSTEM_SOURCE = { family: "filesystem", rustCrate: "acyclic-filesystem", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor", descriptorSha256: "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1", sourceContentSha256: "6585e0fb7bfa89788805f929ff5188587dcadee495d8bbcfa5a1cdff41e8eb3b", sourceModelSha256: "6585e0fb7bfa89788805f929ff5188587dcadee495d8bbcfa5a1cdff41e8eb3b", handshakeRoute: "/v1/sdk/filesystem/handshake", handshakeVersion: "1", handshakeDescriptorDigest: "ece4a6bb58779d216707a426a0ebc5375b5a7a99b14178ce2f9d4f9dd781df60", modeledOperations: 30, httpProjection: false } as const;
+export const FILESYSTEM_SOURCE = { family: "filesystem", rustCrate: "acyclic-filesystem", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor", descriptorSha256: "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1", sourceContentSha256: "6364ae237a09de45c69aa458a07886151c0ed412b9ab8a7eec741781ea7c12cc", sourceModelSha256: "6364ae237a09de45c69aa458a07886151c0ed412b9ab8a7eec741781ea7c12cc", handshakeRoute: "/v1/sdk/filesystem/handshake", handshakeVersion: "1", handshakeDescriptorDigest: "ece4a6bb58779d216707a426a0ebc5375b5a7a99b14178ce2f9d4f9dd781df60", modeledOperations: 30, httpProjection: false } as const;
 
 export const FILESYSTEM_HANDSHAKE = { family: "filesystem", route: "/v1/sdk/filesystem/handshake", version: "1", descriptorDigest: "ece4a6bb58779d216707a426a0ebc5375b5a7a99b14178ce2f9d4f9dd781df60" } as const;
 

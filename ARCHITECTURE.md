@@ -29,23 +29,29 @@ The dependency graph is one way:
    cross-family adapter boundaries. Provider-specific types remain feature-gated
    out of the pure/WASM harness core.
 
-The root `proto/` schemas and Stream's crate-local schema feed Buf.
-Actors and Workers have candidate v1 schemas under `proto/` and Rust contract
-crates. Their generated TypeScript bindings follow the same pipeline; their
-hosted services must qualify against those contracts before availability is
-claimed.
-`buf.gen.yaml` generates Rust bindings in `generated/rust/` and ESM-ready
-JavaScript plus declarations in `generated/typescript/`. `bun run generate`
-builds each family descriptor and copies the bindings needed by published
-TypeScript packages, using `scripts/generated-bindings.mjs` for descriptors,
-compatibility digests, and package copy paths. Filesystem carries Harness
-messages because its generated schema imports them.
-`bun run check:generated` compares fresh Buf Rust and TypeScript output and
-descriptors with the committed trees, then checks each packaged copy. Rust
-WASM exports are built from the Rust crates and packaged beside the TypeScript
-facades. Every family package's `./proto` export points directly to its
-generated module. Handwritten TypeScript should provide idiomatic APIs and
-runtime boundaries, not duplicate protobuf message definitions.
+Rust contract crates are the sole schema and SDK authority. The
+`sdk-generation` entrypoint captures the clean Rust source identity, emits wire
+descriptors and compatibility fixtures, invokes the Rust TypeScript producer,
+and stages installable packages plus their declarations outside the checkout.
+The same bundle contains Rustdoc JSON, API references, website projections,
+examples, provenance receipts, and the generated type audit. Use the pinned
+launcher with an explicit profile and external output root:
+
+```text
+node scripts/rust-sdk-generation.mjs generate --source-root <checkout> \
+  --output <external-bundle> --profile rust-typescript-docs
+node scripts/rust-sdk-generation.mjs check --source-root <checkout> \
+  --output <external-bundle> --profile rust-typescript-docs
+node scripts/rust-sdk-generation.mjs drift --source-root <checkout> \
+  --output <external-bundle> --profile rust-typescript-docs
+```
+
+`check` regenerates into a disposable comparison tree; `drift` verifies an
+existing bundle without running downstream generators. The source checkout is
+never used as the generation destination, so revision-bound artifacts remain
+reproducible from the exact Rust commit. Website publishing consumes the
+external `docs.json` and `website.json` projections, while TypeScript remains a
+thin presentation and runtime adapter around the staged Rust-owned package.
 
 ## Consumption rules
 

@@ -14,6 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use acyclic_sdk_contract_wire::embedded_family_table_json;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -472,6 +473,15 @@ pub struct DocsBundle {
     pub profiles: Vec<ProfileStatus>,
     /// Rust-owned landing navigation, categories, and install instructions.
     pub landing: LandingCatalog,
+    /// Rust-owned embedded capability matrix for this exact bundle revision.
+    /// The registry and rows are projected by `sdk-contract-wire`; the docs
+    /// bundle carries the projection inside its hashed payload.
+    ///
+    /// This field was added after the first serialized bundle format. Missing
+    /// data therefore remains `null` for old bundles, and is omitted again on
+    /// serialization instead of being filled from the current registry.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub embedded_family_table: serde_json::Value,
     /// Rust-owned executable language scenarios and their qualification
     /// receipts. This remains optional so older source exports can still be
     /// scanned, while strict preview bundles can require it explicitly.
@@ -744,6 +754,16 @@ fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Bind the Rust-owned embedded capability registry to the exact documentation
+/// bundle that carries its projection. The registry remains defined in
+/// `sdk-contract-wire`; this wrapper only adds the bundle identity at the docs
+/// boundary so website consumers cannot accidentally mix revisions.
+fn embedded_family_table_for_revision(source_revision: &str) -> serde_json::Value {
+    let mut table = embedded_family_table_json();
+    table["sourceRevision"] = serde_json::Value::String(source_revision.to_owned());
+    table
+}
+
 /// Build a deterministic bundle from all immediate crates under
 /// `repository_root/rust/crates`.
 pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
@@ -885,6 +905,7 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         .transpose()?;
 
     let landing = landing_catalog(&crates);
+    let embedded_family_table = embedded_family_table_for_revision(&source_revision);
     let payload = serde_json::json!({
         "schema_version": BUNDLE_SCHEMA_VERSION,
         "source_revision": source_revision,
@@ -892,6 +913,7 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         "diagnostics": diagnostics,
         "profiles": profiles,
         "landing": landing,
+        "embedded_family_table": embedded_family_table,
         "scenario_bundle": scenario_bundle,
         "release": release,
     });
@@ -906,6 +928,7 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         diagnostics: serde_json::from_value(payload["diagnostics"].clone())?,
         profiles: serde_json::from_value(payload["profiles"].clone())?,
         landing: serde_json::from_value(payload["landing"].clone())?,
+        embedded_family_table: payload["embedded_family_table"].clone(),
         scenario_bundle: serde_json::from_value(payload["scenario_bundle"].clone())?,
         release: serde_json::from_value(payload["release"].clone())?,
         bundle_blake3,
@@ -1709,6 +1732,7 @@ pub fn to_website_json(
             "categories": bundle.landing.categories,
             "packageInstructions": bundle.landing.package_instructions,
         },
+        "embeddedFamilyTable": bundle.embedded_family_table,
         "profiles": bundle.profiles,
         "scenarioBundle": bundle.scenario_bundle,
         "families": families,
@@ -5594,6 +5618,44 @@ mod tests {
     }
 
     #[test]
+    fn old_bundle_without_embedded_table_round_trips_without_registry_fallback() {
+        let mut old_payload = serde_json::json!({
+            "schema_version": BUNDLE_SCHEMA_VERSION,
+            "source_revision": "old-bundle-revision",
+            "crates": [],
+            "diagnostics": [],
+            "profiles": [],
+            "landing": {
+                "schema_version": 1,
+                "navigation": [],
+                "categories": [],
+                "package_instructions": []
+            }
+        });
+        let digest_payload = old_payload.clone();
+        let digest = digest_bytes(canonical_json(&digest_payload).as_bytes());
+        old_payload["bundle_blake3"] = serde_json::Value::String(digest.clone());
+
+        let serialized = serde_json::to_vec_pretty(&old_payload).expect("serialize old bundle");
+        let bundle: DocsBundle =
+            serde_json::from_slice(&serialized).expect("deserialize old bundle");
+        assert_eq!(bundle.embedded_family_table, serde_json::Value::Null);
+        assert_eq!(bundle.bundle_blake3, digest);
+
+        let mut round_trip = serde_json::to_value(&bundle).expect("serialize round trip");
+        assert!(round_trip.get("embedded_family_table").is_none());
+        let round_trip_object = round_trip
+            .as_object_mut()
+            .expect("round trip is an object");
+        round_trip_object.remove("bundle_blake3");
+        assert_eq!(
+            digest_bytes(canonical_json(&round_trip).as_bytes()),
+            bundle.bundle_blake3
+        );
+        assert_eq!(canonical_json(&round_trip), canonical_json(&digest_payload));
+    }
+
+    #[test]
     fn rustdoc_fixture_resolves_public_reexport_and_cfg_item() {
         let value = serde_json::json!({
             "format_version": 60,
@@ -6018,6 +6080,7 @@ mod tests {
                 categories: Vec::new(),
                 package_instructions: Vec::new(),
             },
+            embedded_family_table: embedded_family_table_for_revision(&release.revision),
             scenario_bundle: None,
             release: Some(release.clone()),
             bundle_blake3: "bundle-release-blake3".to_owned(),
@@ -6066,9 +6129,21 @@ mod tests {
         assert!(released_projection["landing"]["navigation"]
             .as_array()
             .is_some_and(Vec::is_empty));
+        assert_eq!(
+            released_projection["embeddedFamilyTable"]["schema"],
+            "acyclic.sdk.embedded-family-table.v1"
+        );
+        assert_eq!(released_projection["embeddedFamilyTable"]["authority"], "rust");
+        assert_eq!(
+            released_projection["embeddedFamilyTable"]["sourceRevision"],
+            release.revision.as_str()
+        );
 
         let preview = DocsBundle {
             source_revision: "fedcba9876543210fedcba9876543210fedcba98".to_owned(),
+            embedded_family_table: embedded_family_table_for_revision(
+                "fedcba9876543210fedcba9876543210fedcba98",
+            ),
             release: None,
             ..released
         };
@@ -6085,6 +6160,10 @@ mod tests {
         assert_eq!(preview_projection["source"]["channel"], "branch-preview");
         assert_eq!(
             preview_projection["source"]["revision"],
+            "fedcba9876543210fedcba9876543210fedcba98"
+        );
+        assert_eq!(
+            preview_projection["embeddedFamilyTable"]["sourceRevision"],
             "fedcba9876543210fedcba9876543210fedcba98"
         );
         assert!(preview_projection["source"].get("release").is_none());

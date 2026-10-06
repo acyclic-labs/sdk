@@ -80,6 +80,7 @@ import {
 } from "./compat.js";
 
 import { adaptWorkspaceContextRegistry } from "./workspace-context.js";
+import { FILESYSTEM_NATIVE_COMPANION_TARGETS } from "./generated-client.js";
 import { adaptTransaction } from "./transaction-adapter.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
@@ -139,14 +140,7 @@ export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
 const PACKAGE_VERSION = "0.2.0";
-const TARGETS = new Set([
-  "win32-x64",
-  "win32-arm64",
-  "linux-x64",
-  "linux-arm64",
-  "darwin-x64",
-  "darwin-arm64",
-]);
+const TARGETS = new Set<string>(FILESYSTEM_NATIVE_COMPANION_TARGETS);
 
 let bindingPromise: Promise<NativeBindings> | undefined;
 const requireNative = createRequire(import.meta.url);

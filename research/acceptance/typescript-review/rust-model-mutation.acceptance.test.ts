@@ -31,14 +31,6 @@ function runGenerator(manifestPath: string, output: string, cwd: string) {
   return runGeneratorMode(manifestPath, output, cwd, "write");
 }
 
-function runProductionGenerator(scratch: string) {
-  return spawnSync("bun", ["scripts/generate-typescript-packages.mjs", "write"], {
-    cwd: scratch,
-    encoding: "utf8",
-    env: { ...process.env, CARGO_TARGET_DIR: join(scratch, "target") },
-  });
-}
-
 function regenerateScratchLock(scratch: string) {
   return spawnSync("cargo", [
     "generate-lockfile", "--manifest-path", "rust/crates/sdk-typescript/Cargo.toml", "--offline",
@@ -63,13 +55,8 @@ async function stageGeneratorInputs(scratch: string) {
   await mkdir(join(scratch, "rust/crates/filesystem/src/generated"), { recursive: true });
   await mkdir(join(scratch, "rust/crates/harness/src/generated"), { recursive: true });
   await mkdir(join(scratch, "rust/crates/stream/proto/stream/v2"), { recursive: true });
-  await mkdir(join(scratch, "scripts"), { recursive: true });
   await mkdir(join(scratch, "typescript/packages/objects/src"), { recursive: true });
   await mkdir(join(scratch, "typescript/packages/stream/src"), { recursive: true });
-  await cp(
-    join(root, "scripts/generate-typescript-packages.mjs"),
-    join(scratch, "scripts/generate-typescript-packages.mjs"),
-  );
   await Promise.all([
     cp(
       join(root, "rust/crates/sdk-contract-wire/tests/fixtures/filesystem-v2.descriptor.bin"),
@@ -162,7 +149,6 @@ test("disposable Rust model and policy mutations reach installed TS packages onl
       mkdir(join(scratch, "rust/crates/machines/src/generated"), { recursive: true }),
       mkdir(join(scratch, "rust/crates/filesystem/src/generated"), { recursive: true }),
       mkdir(join(scratch, "rust/crates/harness/src/generated"), { recursive: true }),
-      mkdir(join(scratch, "scripts"), { recursive: true }),
       mkdir(join(scratch, "typescript/packages/actors/src"), { recursive: true }),
       mkdir(join(scratch, "typescript/packages/workers/src"), { recursive: true }),
       mkdir(join(scratch, "typescript/packages/filesystem/src"), { recursive: true }),
@@ -172,10 +158,6 @@ test("disposable Rust model and policy mutations reach installed TS packages onl
       mkdir(join(scratch, "typescript/packages/objects/src"), { recursive: true }),
       mkdir(join(scratch, "typescript/packages/stream/src"), { recursive: true }),
     ]);
-    await cp(
-      join(root, "scripts/generate-typescript-packages.mjs"),
-        join(scratch, "scripts/generate-typescript-packages.mjs"),
-      );
     await Promise.all([
       cp(
         join(root, "rust/crates/sdk-contract-wire/tests/fixtures/filesystem-v2.descriptor.bin"),
@@ -278,16 +260,18 @@ test("disposable Rust model and policy mutations reach installed TS packages onl
     expect(await readFile(join(mutatedOutput, "objects-metadata.ts"), "utf8")).toContain("MUTATED OBJECTS DOC.");
     expect(await readFile(join(mutatedOutput, "stream-metadata.ts"), "utf8")).toContain("MUTATED STREAM DOC.");
 
-    // Exercise the checked-in production package path from a disposable clone.
-    // The copied script resolves its root from import.meta.dirname, so this
-    // proves that a Rust model mutation reaches the package facade through the
-    // same generator used by the repository's package scripts.
-    const production = runProductionGenerator(scratch);
+    // Exercise the Rust package generator against a disposable external
+    // output tree. This proves that a Rust model mutation reaches staged
+    // package metadata through the repository's Rust generation path.
+    const productionOutput = join(scratch, "production-output");
+    const production = runGenerator(
+      join(scratch, "rust/crates/sdk-typescript/Cargo.toml"), productionOutput, scratch,
+    );
     if (production.status !== 0) {
-      throw new Error(`production package generator failed (${production.status}): ${production.stderr}`);
+      throw new Error(`Rust staged package generator failed (${production.status}): ${production.stderr}`);
     }
-    const productionObjects = join(scratch, "typescript/packages/objects/src/generated-client.ts");
-    const productionStream = join(scratch, "typescript/packages/stream/src/generated-client.ts");
+    const productionObjects = join(productionOutput, "objects-metadata.ts");
+    const productionStream = join(productionOutput, "stream-metadata.ts");
     const productionObjectsSource = await readFile(productionObjects, "utf8");
     const productionStreamSource = await readFile(productionStream, "utf8");
     expect(productionObjectsSource).toContain('path: "v2/objects/buckets/create-mutated"');
@@ -328,8 +312,8 @@ test("disposable Rust model and policy mutations reach installed TS packages onl
     expect(await readFile(join(root, "typescript/packages/objects/src/generated-client.ts"), "utf8")).toBe(checkedInObjectsFacade);
     expect(await readFile(join(root, "typescript/packages/stream/src/generated-client.ts"), "utf8")).toBe(checkedInStreamFacade);
 
-    // The consumer verifies the actual generated-client.ts artifacts after a
-    // clean package installation, including the route aliases and provenance.
+    // The consumer verifies the Rust-generated package metadata after a clean
+    // package installation, including the route aliases and provenance.
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

@@ -1,9 +1,11 @@
 //! Executable acceptance check over generated public SDK type surfaces.
 use acyclic_sdk_contract_wire::type_policy::{
-    REQUIRED_PRODUCT_SURFACES, audit_generated_type_features,
-    audit_language_producer_source_bindings, discover_language_producer_surfaces,
-    audit_required_generated_descriptor_shape_coverage, audit_required_generated_public_surfaces,
-    resolved_enum_fields, resolved_oneof_members, resolved_presence_fields,
+    GeneratedTypeAuditScope, PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES,
+    audit_generated_type_features_for_languages,
+    audit_language_producer_source_bindings_for_languages, discover_language_producer_surfaces,
+    audit_required_generated_descriptor_shape_coverage_for_languages,
+    audit_required_generated_public_surfaces_for_languages, resolved_enum_fields,
+    resolved_oneof_members, resolved_presence_fields,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -89,11 +91,19 @@ fn artifact_hashes(root: &Path) -> Result<BTreeMap<String, String>, String> {
     Ok(hashes)
 }
 
-fn parse_args(
-    args: impl IntoIterator<Item = String>,
-) -> Result<(PathBuf, Vec<String>, Option<String>, Option<String>), String> {
+struct AuditArgs {
+    root: PathBuf,
+    required: Vec<String>,
+    scope: GeneratedTypeAuditScope,
+    source_revision: Option<String>,
+    source_digest: Option<String>,
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<AuditArgs, String> {
     let mut root = None;
     let mut required = Vec::new();
+    let mut scope = GeneratedTypeAuditScope::Full;
+    let mut scope_seen = false;
     let mut source_revision = None;
     let mut source_digest = None;
     let mut args = args.into_iter();
@@ -115,6 +125,23 @@ fn parse_args(
                     return Err("required languages must be nonempty and distinct".into());
                 }
                 required.push(language);
+            }
+            "--scope" => {
+                if scope_seen {
+                    return Err("--scope must occur once".into());
+                }
+                scope_seen = true;
+                scope = match args
+                    .next()
+                    .ok_or("--scope requires rust-typescript or full")?
+                    .as_str()
+                {
+                    "rust-typescript" | "primary" => GeneratedTypeAuditScope::RustTypescript,
+                    "full" => GeneratedTypeAuditScope::Full,
+                    value => return Err(format!(
+                        "unknown generated type audit scope {value}; expected rust-typescript or full"
+                    )),
+                };
             }
             "--source-revision" => {
                 if source_revision.is_some() {
@@ -147,22 +174,38 @@ fn parse_args(
         }
     }
     if required.is_empty() {
-        required = REQUIRED_PRODUCT_SURFACES
+        required = scope
+            .default_required_languages()
             .iter()
             .map(|value| (*value).to_owned())
             .collect();
+    } else if scope == GeneratedTypeAuditScope::RustTypescript
+        && required
+            .iter()
+            .any(|language| !PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES.contains(&language.as_str()))
+    {
+        return Err(
+            "--scope rust-typescript only permits --required-language rust or typescript".into(),
+        );
     }
-    Ok((
-        root.ok_or("--artifact-root is required")?,
+    Ok(AuditArgs {
+        root: root.ok_or("--artifact-root is required")?,
         required,
+        scope,
         source_revision,
         source_digest,
-    ))
+    })
 }
 
 #[cfg(test)]
 fn audit(root: &Path, required: &[String]) -> Result<(Value, bool), String> {
-    audit_with_source(root, required, None, None)
+    audit_with_source(
+        root,
+        required,
+        GeneratedTypeAuditScope::Full,
+        None,
+        None,
+    )
 }
 
 fn source_revision_from_metadata(value: &Value) -> Option<String> {
@@ -230,11 +273,23 @@ fn source_revision_from_metadata(value: &Value) -> Option<String> {
 fn metadata_source_revisions(
     root: &Path,
     hashes: &BTreeMap<String, String>,
+    audit_languages: Option<&[&str]>,
 ) -> Vec<(String, String)> {
     let mut observations = Vec::new();
     for relative in hashes.keys() {
         let path = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
         if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        if audit_languages.is_some_and(|languages| {
+            match metadata_language(relative) {
+                Some(language) => !languages.contains(&language.as_str()),
+                // Root authority metadata is shared by the selected scope;
+                // an unclassified nested receipt belongs to a deferred
+                // producer and must not block the primary docs gate.
+                None => relative.contains('/'),
+            }
+        }) {
             continue;
         }
         let Ok(bytes) = fs::read(&path) else {
@@ -252,12 +307,37 @@ fn metadata_source_revisions(
     observations
 }
 
-fn source_binding_report(
+fn metadata_language(relative: &str) -> Option<String> {
+    let normalized = relative.replace('\\', "/");
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    if parts.first() == Some(&"generated") && parts.get(1) == Some(&"rust") {
+        return Some("rust".to_owned());
+    }
+    if parts.first() == Some(&"generated")
+        && parts.get(1) == Some(&"rust-source-authority.json")
+    {
+        return Some("rust".to_owned());
+    }
+    if parts.first() == Some(&"typescript") {
+        return Some("typescript".to_owned());
+    }
+    if parts.first() == Some(&"language-producers") {
+        return parts.get(1).map(|language| (*language).to_owned());
+    }
+    match parts.first().copied() {
+        Some("python" | "go" | "jvm" | "csharp" | "dotnet" | "swift" | "cpp" | "ruby"
+        | "php" | "dart" | "haskell") => parts.first().map(|language| (*language).to_owned()),
+        _ => None,
+    }
+}
+
+fn source_binding_report_for_languages(
     root: &Path,
     hashes: &BTreeMap<String, String>,
     expected: Option<&str>,
+    audit_languages: Option<&[&str]>,
 ) -> (Value, Option<String>) {
-    let observations = metadata_source_revisions(root, hashes);
+    let observations = metadata_source_revisions(root, hashes, audit_languages);
     let observed_revisions = observations
         .iter()
         .map(|(_, revision)| revision.as_str())
@@ -306,6 +386,16 @@ fn source_binding_report(
 }
 
 fn surface_language(relative: &str) -> Option<&'static str> {
+    let normalized = relative.replace('\\', "/");
+    if normalized.ends_with(".rs")
+        && normalized
+            .split('/')
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|parts| parts == ["generated", "rust"])
+    {
+        return Some("rust");
+    }
     let name = relative.rsplit('/').next()?;
     match name {
         name if name.ends_with("-metadata.ts") || name == "RustTypedClients.ts" => {
@@ -365,6 +455,7 @@ fn surface_registry(hashes: &BTreeMap<String, String>, source_revision: Option<&
 fn audit_with_source(
     root: &Path,
     required: &[String],
+    scope: GeneratedTypeAuditScope,
     expected_source_revision: Option<&str>,
     expected_model_digest: Option<&str>,
 ) -> Result<(Value, bool), String> {
@@ -375,8 +466,16 @@ fn audit_with_source(
         return Err("artifact root must be a directory".into());
     }
     let before = artifact_hashes(&root)?;
-    let (source_binding, source_binding_error) =
-        source_binding_report(&root, &before, expected_source_revision);
+    let audit_languages = match scope {
+        GeneratedTypeAuditScope::RustTypescript => Some(PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES),
+        GeneratedTypeAuditScope::Full => None,
+    };
+    let (source_binding, source_binding_error) = source_binding_report_for_languages(
+        &root,
+        &before,
+        expected_source_revision,
+        audit_languages,
+    );
     let languages = required.iter().map(String::as_str).collect::<Vec<_>>();
     let mut errors = Vec::new();
     if let Some(error) = source_binding_error {
@@ -384,10 +483,11 @@ fn audit_with_source(
     }
     let producer_source_binding = if root.join("language-producers").is_dir() {
         let surface_files = discover_language_producer_surfaces(&root)?;
-        let producer_findings = audit_language_producer_source_bindings(
+        let producer_findings = audit_language_producer_source_bindings_for_languages(
             &root,
             expected_source_revision,
             expected_model_digest,
+            audit_languages,
         )?;
         let findings = producer_findings
             .iter()
@@ -445,7 +545,11 @@ fn audit_with_source(
             Value::Null
         }
     };
-    let surfaces_present = match audit_required_generated_public_surfaces(&root, &languages) {
+    let surfaces_present = match audit_required_generated_public_surfaces_for_languages(
+        &root,
+        &languages,
+        audit_languages,
+    ) {
         Ok(found) => {
             violations.extend(found);
             true
@@ -456,12 +560,16 @@ fn audit_with_source(
         }
     };
     if surfaces_present {
-        match audit_required_generated_descriptor_shape_coverage(&root, &languages) {
+        match audit_required_generated_descriptor_shape_coverage_for_languages(
+            &root,
+            &languages,
+            audit_languages,
+        ) {
             Ok(found) => violations.extend(found),
             Err(error) => errors.push(error),
         }
     }
-    match audit_generated_type_features(&root) {
+    match audit_generated_type_features_for_languages(&root, audit_languages) {
         Ok(found) => violations.extend(found),
         Err(error) => errors.push(error),
     }
@@ -488,6 +596,7 @@ fn audit_with_source(
             "schema": "acyclic.sdk.generated-public-type-audit.v1",
             "artifact_closure_schema": ARTIFACT_CLOSURE_SCHEMA,
             "check": "generated public source types",
+            "scope": scope.id(),
             "passed": passed, "required_languages": required,
             "verifier_sha256": verifier_hash, "artifact_sha256": before,
             "source_binding": source_binding,
@@ -501,18 +610,18 @@ fn audit_with_source(
 }
 
 fn main() -> ExitCode {
-    let result =
-        parse_args(env::args().skip(1)).and_then(|(root, required, source_revision, source_digest)| {
-            let source_revision = source_revision.ok_or(
-                "--source-revision is required for executable audits; bind generated artifacts to the Rust checkout revision",
-            )?;
-            audit_with_source(
-                &root,
-                &required,
-                Some(&source_revision),
-                source_digest.as_deref(),
-            )
-        });
+    let result = parse_args(env::args().skip(1)).and_then(|arguments| {
+        let source_revision = arguments.source_revision.ok_or(
+            "--source-revision is required for executable audits; bind generated artifacts to the Rust checkout revision",
+        )?;
+        audit_with_source(
+            &arguments.root,
+            &arguments.required,
+            arguments.scope,
+            Some(&source_revision),
+            arguments.source_digest.as_deref(),
+        )
+    });
     match result {
         Ok((report, passed)) => {
             println!(
@@ -535,6 +644,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_sdk_contract_wire::type_policy::REQUIRED_PRODUCT_SURFACES;
     #[test]
     fn arguments_cannot_disable_required_surfaces() {
         assert!(parse_args(Vec::<String>::new()).is_err());
@@ -546,12 +656,12 @@ mod tests {
             parse_args(["--artifact-root", "x", "--artifact-root", "y"].map(str::to_owned))
                 .is_err()
         );
-        let (_, required, source_revision, source_digest) =
-            parse_args(["--artifact-root", "x"].map(str::to_owned)).unwrap();
-        assert_eq!(required, REQUIRED_PRODUCT_SURFACES);
-        assert_eq!(source_revision, None);
-        assert_eq!(source_digest, None);
-        let (_, _, revision, digest) = parse_args(
+        let arguments = parse_args(["--artifact-root", "x"].map(str::to_owned)).unwrap();
+        assert_eq!(arguments.required, REQUIRED_PRODUCT_SURFACES);
+        assert_eq!(arguments.scope, GeneratedTypeAuditScope::Full);
+        assert_eq!(arguments.source_revision, None);
+        assert_eq!(arguments.source_digest, None);
+        let arguments = parse_args(
             [
                 "--artifact-root",
                 "x",
@@ -564,14 +674,70 @@ mod tests {
             .map(str::to_owned),
         )
         .unwrap();
-        assert_eq!(revision, Some("a".repeat(40)));
-        assert_eq!(digest, Some("b".repeat(64)));
+        assert_eq!(arguments.scope, GeneratedTypeAuditScope::Full);
+        assert_eq!(arguments.source_revision, Some("a".repeat(40)));
+        assert_eq!(arguments.source_digest, Some("b".repeat(64)));
         assert!(parse_args(
             ["--artifact-root", "x", "--model-digest", "not-a-digest"]
                 .map(str::to_owned),
         )
         .is_err());
+        let arguments = parse_args(
+            ["--artifact-root", "x", "--scope", "rust-typescript"]
+                .map(str::to_owned),
+        )
+        .unwrap();
+        assert_eq!(arguments.scope, GeneratedTypeAuditScope::RustTypescript);
+        assert_eq!(arguments.required, PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES);
+        assert!(parse_args(
+            [
+                "--artifact-root",
+                "x",
+                "--scope",
+                "rust-typescript",
+                "--required-language",
+                "python",
+            ]
+            .map(str::to_owned),
+        )
+        .is_err());
     }
+
+    #[test]
+    fn primary_scope_requires_and_filters_rust_typescript_surfaces() {
+        let root = env::temp_dir().join(format!(
+            "acyclic-primary-type-audit-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("generated/rust")).unwrap();
+        fs::create_dir_all(root.join("typescript")).unwrap();
+        fs::create_dir_all(root.join("python")).unwrap();
+        fs::write(root.join("generated/rust/contract.rs"), "pub struct RustSurface;\n").unwrap();
+        fs::write(
+            root.join("typescript/actors-metadata.ts"),
+            "import { FooRequest, FooResponse } from \"./generated/proto/foo_pb\";\nraw(request: FooRequest): Promise<FooResponse> {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("python/remote.py"),
+            "IdempotencyKeyValue: TypeAlias = object\n",
+        )
+        .unwrap();
+
+        let required = PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES;
+        let findings = acyclic_sdk_contract_wire::type_policy::
+            audit_required_generated_public_surfaces_for_languages(&root, required, Some(required))
+            .unwrap();
+        assert!(findings.iter().any(|finding| finding.language == "typescript"));
+        assert!(findings.iter().all(|finding| finding.language != "python"));
+        let full_findings = acyclic_sdk_contract_wire::type_policy::
+            audit_required_generated_public_surfaces_for_languages(&root, &["python"], None)
+            .unwrap();
+        assert!(full_findings.iter().any(|finding| finding.language == "python"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn empty_artifact_directory_reports_missing_surface() {
         let unique = std::time::SystemTime::now()
@@ -654,10 +820,11 @@ mod tests {
         )
         .unwrap();
         let hashes = artifact_hashes(&root).unwrap();
-        let (_, error) = source_binding_report(
+        let (_, error) = source_binding_report_for_languages(
             &root,
             &hashes,
             Some("1111111111111111111111111111111111111111"),
+            None,
         );
         assert!(
             error
@@ -679,10 +846,11 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         let hashes = artifact_hashes(&root).unwrap();
-        let (report, error) = source_binding_report(
+        let (report, error) = source_binding_report_for_languages(
             &root,
             &hashes,
             Some("1111111111111111111111111111111111111111"),
+            None,
         );
         assert_eq!(report["status"], "missing");
         assert!(error.unwrap().contains("no source authority metadata"));
@@ -706,10 +874,11 @@ mod tests {
         )
         .unwrap();
         let hashes = artifact_hashes(&root).unwrap();
-        let (report, error) = source_binding_report(
+        let (report, error) = source_binding_report_for_languages(
             &root,
             &hashes,
             Some("1111111111111111111111111111111111111111"),
+            None,
         );
         assert_eq!(report["status"], "passed");
         assert!(error.is_none());
@@ -738,10 +907,11 @@ mod tests {
         )
         .unwrap();
         let hashes = artifact_hashes(&root).unwrap();
-        let (report, error) = source_binding_report(
+        let (report, error) = source_binding_report_for_languages(
             &root,
             &hashes,
             Some("1111111111111111111111111111111111111111"),
+            None,
         );
         assert_eq!(report["status"], "mismatch");
         assert!(
@@ -777,12 +947,25 @@ mod tests {
             format!(r#"{{"source_revision":"{digest}","source":{{"revision":"{git}"}}}}"#),
         )
         .unwrap();
+        fs::write(
+            root.join("nested/cache/python-receipt.json"),
+            r#"{"schema":"acyclic.sdk.qualification.receipt.v1","source_revision_kind":"git-oid","source_revision":"3333333333333333333333333333333333333333"}"#,
+        )
+        .unwrap();
         let hashes = artifact_hashes(&root).unwrap();
-        let (report, error) = source_binding_report(&root, &hashes, Some(git));
-        assert_eq!(report["status"], "passed");
-        assert!(error.is_none());
-        assert_eq!(report["observations"].as_array().unwrap().len(), 1);
-        assert_eq!(report["observations"][0]["source_revision"], git);
+        let (report, error) =
+            source_binding_report_for_languages(&root, &hashes, Some(git), None);
+        assert_eq!(report["status"], "mismatch");
+        assert!(error.is_some());
+        assert_eq!(report["observations"].as_array().unwrap().len(), 2);
+        let (primary_report, primary_error) = source_binding_report_for_languages(
+            &root,
+            &hashes,
+            Some(git),
+            Some(PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES),
+        );
+        assert_eq!(primary_report["status"], "passed");
+        assert!(primary_error.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -806,11 +989,13 @@ mod tests {
             fs::create_dir_all(root.join(directory)).unwrap();
             fs::write(root.join(directory).join(file), "generated").unwrap();
         }
+        fs::create_dir_all(root.join("generated/rust")).unwrap();
+        fs::write(root.join("generated/rust/contract.rs"), "generated").unwrap();
         let registry = surface_registry(
             &artifact_hashes(&root).unwrap(),
             Some("1111111111111111111111111111111111111111"),
         );
-        for language in ["haskell", "php", "dart", "ruby"] {
+        for language in ["rust", "haskell", "php", "dart", "ruby"] {
             let entry = registry
                 .as_array()
                 .unwrap()

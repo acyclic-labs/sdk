@@ -275,6 +275,19 @@ fn semantic_or_wire(field: &ResolvedRequestField) -> String {
     }
 }
 
+fn php_uint64(field: &ResolvedRequestField) -> bool {
+    matches!(
+        field
+            .wire_type
+            .and_then(|value| FieldType::try_from(value).ok()),
+        Some(FieldType::Uint64 | FieldType::Fixed64)
+    )
+}
+
+fn php_uint64_type() -> &'static str {
+    "\\Acyclic\\Runtime\\UInt64"
+}
+
 fn repeated(field: &ResolvedRequestField) -> bool {
     field.label == Some(3)
 }
@@ -464,6 +477,9 @@ fn oneof_dart_payload(member: &ResolvedOneofMember) -> String {
 }
 
 fn oneof_php_payload(member: &ResolvedOneofMember) -> String {
+    if php_uint64(&member.field) {
+        return php_uint64_type().to_owned();
+    }
     match oneof_dart_payload(member).as_str() {
         "bool" => "bool".to_owned(),
         "double" => "float".to_owned(),
@@ -512,6 +528,15 @@ fn ruby_default(field: &ResolvedRequestField) -> &'static str {
 }
 
 fn php_type(field: &ResolvedRequestField) -> String {
+    if php_uint64(field) {
+        return if repeated(field) {
+            "array".to_owned()
+        } else if optional(field) {
+            format!("?{}", php_uint64_type())
+        } else {
+            php_uint64_type().to_owned()
+        };
+    }
     let semantic = semantic_or_wire(field);
     let base = match semantic.as_str() {
         "bool" => "bool".to_owned(),
@@ -539,6 +564,9 @@ fn php_default(field: &ResolvedRequestField) -> String {
     if optional(field) {
         return " = null".to_owned();
     }
+    if php_uint64(field) {
+        return format!(" = {}::fromString('0')", php_uint64_type());
+    }
     if let Some(class) = enum_field(field) {
         return format!(" = new {class}(0)");
     }
@@ -553,6 +581,9 @@ fn php_default(field: &ResolvedRequestField) -> String {
 }
 
 fn php_scalar_default(field: &ResolvedRequestField) -> &'static str {
+    if php_uint64(field) {
+        return "0";
+    }
     if enum_field(field).is_some() {
         return "0";
     }
@@ -566,6 +597,9 @@ fn php_scalar_default(field: &ResolvedRequestField) -> &'static str {
 }
 
 fn php_decode_single(field: &ResolvedRequestField, value: &str) -> String {
+    if php_uint64(field) {
+        return format!("{}::fromWireScalar({value})", php_uint64_type());
+    }
     if let Some(semantic) = field.semantic_type.as_deref() {
         let class = semantic_class(semantic);
         let scalar = if semantic_value_type(semantic) == "Integer"
@@ -625,6 +659,16 @@ fn php_decode_value(field: &ResolvedRequestField) -> String {
 }
 
 fn php_doc_type(field: &ResolvedRequestField) -> String {
+    if php_uint64(field) {
+        let base = php_uint64_type();
+        return if repeated(field) {
+            format!("array<int, {base}>")
+        } else if optional(field) {
+            format!("?{base}")
+        } else {
+            base.to_owned()
+        };
+    }
     let base = match semantic_or_wire(field).as_str() {
         "bool" => "bool".to_owned(),
         "float" => "float".to_owned(),
@@ -976,14 +1020,16 @@ fn php_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     out.push_str("     */\n    public function __construct(\n");
     for field in fields.iter().filter(|field| php_default(field).is_empty()) {
         out.push_str(&format!(
-            "        mixed ${}{},\n",
+            "        {} ${}{},\n",
+            php_constructor_type(field),
             php_field(field),
             php_default(field)
         ));
     }
     for field in fields.iter().filter(|field| !php_default(field).is_empty()) {
         out.push_str(&format!(
-            "        mixed ${}{},\n",
+            "        {} ${}{},\n",
+            php_constructor_type(field),
             php_field(field),
             php_default(field)
         ));
@@ -1029,7 +1075,7 @@ fn php_oneof_group(message: &str, oneof: &str, members: &[ResolvedOneofMember]) 
     for member in members {
         let variant = format!("{base}{}", oneof_variant(member));
         let payload = oneof_php_payload(member);
-        out.push_str(&format!("final readonly class {variant} extends {base}\n{{\n    public readonly {payload} $value;\n    /** @param {payload} $value */\n    public function __construct(mixed $value) {{\n        if (!({})) {{ throw new \\InvalidArgumentException('invalid Rust-typed oneof payload for {variant}'); }}\n        $this->value = $value;\n        parent::__construct({:?});\n    }}\n}}\n", php_runtime_predicate_for_type(&payload, "$value"), member.field.field));
+        out.push_str(&format!("final readonly class {variant} extends {base}\n{{\n    public readonly {payload} $value;\n    /** @param {payload} $value */\n    public function __construct({} $value) {{\n        if (!({})) {{ throw new \\InvalidArgumentException('invalid Rust-typed oneof payload for {variant}'); }}\n        $this->value = $value;\n        parent::__construct({:?});\n    }}\n}}\n", php_constructor_type_for_type(&payload), php_runtime_predicate_for_type(&payload, "$value"), member.field.field));
     }
     out.push_str(&format!("final readonly class {base}Unknown extends {base}\n{{\n    public readonly int $unknownTag;\n    public readonly string $payload;\n    /** @param int $unknownTag @param string $payload */\n    public function __construct(mixed $unknownTag, mixed $payload) {{\n        if (!is_int($unknownTag) || !is_string($payload)) {{ throw new \\InvalidArgumentException('invalid Rust-typed unknown oneof payload'); }}\n        $this->unknownTag = $unknownTag;\n        $this->payload = $payload;\n        parent::__construct('unknown:' . (string) $unknownTag);\n    }}\n}}\n"));
     out
@@ -1048,7 +1094,21 @@ fn php_runtime_predicate(type_name: &str, value: &str) -> String {
 
 fn php_runtime_predicate_for_field(field: &ResolvedRequestField, value: &str) -> String {
     if repeated(field) {
+        if php_uint64(field) {
+            return format!(
+                "is_array({value}) && array_is_list({value}) && array_reduce({value}, static fn(bool $valid, mixed $item): bool => $valid && $item instanceof {}, true)",
+                php_uint64_type()
+            );
+        }
         return format!("is_array({value})");
+    }
+    if php_uint64(field) {
+        let predicate = format!("{value} instanceof {}", php_uint64_type());
+        return if optional(field) {
+            format!("{value} === null || ({predicate})")
+        } else {
+            predicate
+        };
     }
     let base = match semantic_or_wire(field).as_str() {
         "bool" => "bool",
@@ -1068,6 +1128,22 @@ fn php_runtime_predicate_for_field(field: &ResolvedRequestField, value: &str) ->
         format!("{value} === null || ({predicate})")
     } else {
         predicate
+    }
+}
+
+fn php_constructor_type(field: &ResolvedRequestField) -> String {
+    if repeated(field) {
+        return "array".to_owned();
+    }
+    php_constructor_type_for_type(&php_type(field))
+}
+
+fn php_constructor_type_for_type(type_name: &str) -> String {
+    let scalar = type_name.strip_prefix('?').unwrap_or(type_name);
+    if matches!(scalar, "bool" | "float" | "int" | "string") {
+        "mixed".to_owned()
+    } else {
+        type_name.to_owned()
     }
 }
 
@@ -1289,4 +1365,54 @@ fn render_dart() -> String {
     }
     out.push_str("}\n");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn php_projection_preserves_full_width_unsigned_scalars() {
+        let output = generate_portable_typed_facades()
+            .into_iter()
+            .find(|output| output.path == PHP_TYPED_PATH)
+            .expect("PHP typed facade");
+        let (_, requests, responses) = models();
+        let fields = requests.into_iter().chain(responses);
+        let mut count = 0;
+        for field in fields.filter(php_uint64) {
+            count += 1;
+            assert!(
+                output.source.contains(&format!(
+                    "public readonly {} ${};",
+                    php_type(&field),
+                    php_field(&field)
+                )),
+                "PHP projection lost the UInt64 property for {}",
+                field.field
+            );
+            assert!(
+                output.source.contains(&format!(
+                    "@param {} ${}",
+                    php_doc_type(&field),
+                    php_field(&field)
+                )),
+                "PHP projection lost the UInt64 documentation type for {}",
+                field.field
+            );
+            assert!(
+                output
+                    .source
+                    .contains(&format!("instanceof {}", php_uint64_type())),
+                "PHP projection lost the UInt64 constructor predicate for {}",
+                field.field
+            );
+        }
+        assert!(count > 0, "Rust descriptor model has no unsigned 64-bit fields");
+        assert!(output.source.contains("::fromWireScalar("));
+        assert!(output.source.contains("array_reduce("));
+        assert!(output
+            .source
+            .contains("function __construct(\\Acyclic\\Runtime\\UInt64 $"));
+    }
 }

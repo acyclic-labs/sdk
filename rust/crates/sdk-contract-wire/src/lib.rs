@@ -34,6 +34,7 @@ use prost::Message;
 pub mod bindings;
 pub mod credential;
 pub mod csharp_typed_facades;
+pub mod embedded_capabilities;
 pub mod embedded_facades;
 pub mod facades;
 pub mod family_registry;
@@ -42,6 +43,7 @@ pub mod harness;
 pub mod inference;
 pub mod machines;
 pub mod objects;
+pub mod php_runtime;
 pub mod product_paths;
 pub mod protocol;
 pub mod remote_limits;
@@ -60,6 +62,12 @@ pub use bindings::{
     generate_rust_bindings, native_binding_boundary,
 };
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
+pub use embedded_capabilities::{
+    EMBEDDED_CAPABILITIES, EmbeddedArtifact, EmbeddedArtifactKind, EmbeddedBinding,
+    EmbeddedCapability, EmbeddedCoverage, EmbeddedEvidence, EmbeddedFamily, EmbeddedLanguage,
+    EmbeddedQualification, embedded_capabilities, embedded_capabilities_json,
+    embedded_capability, embedded_family_table_json,
+};
 pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 
 pub use csharp_typed_facades::{
@@ -67,10 +75,12 @@ pub use csharp_typed_facades::{
 };
 pub use facades::{
     CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,
-    FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_jvm_semantic_types,
-    generate_jvm_typed_clients, generate_jvm_typed_requests, generate_jvm_typed_responses, generate_portable_typed_facades, PortableTypedOutput,
-    generate_remote_facade, generate_remote_facades, generate_type_policy_qualification_tests,
+    FacadeSelectionPolicy, PortableTypedOutput, all_facade_operations, facade_operations,
+    generate_jvm_semantic_types, generate_jvm_typed_clients, generate_jvm_typed_requests,
+    generate_jvm_typed_responses, generate_portable_typed_facades, generate_remote_facade,
+    generate_remote_facades, generate_type_policy_qualification_tests,
 };
+pub use php_runtime::{PHP_UINT64_PATH, generate_php_runtime_bundle};
 pub use family_registry::{
     FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,
     explicit_http_family_views, family_view, native_method_boundaries_for_family,
@@ -99,11 +109,10 @@ pub use transport::{
 pub use type_policy::{
     FIELD_SEMANTIC_TYPES, FieldSemanticType, MACHINE_EVENT_PAGE_LIMIT_MAX, MACHINE_PAGE_LIMIT_MAX,
     OBJECTS_MAX_MULTIPART_ITEMS, OperationEnforcement, OperationRule, OperationTarget,
-    PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection, ResolvedOperationRule,
-    ResolvedEnumField, ResolvedEnumValue, ResolvedOneofMember, ResolvedPresenceField,
+    PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection, ResolvedEnumField,
+    ResolvedEnumValue, ResolvedOneofMember, ResolvedOperationRule, ResolvedPresenceField,
     ResolvedPresenceKind, ResolvedRequestField, ResolvedRpcMethod, ResolvedValidationConstraint,
-    SEMANTIC_TYPES,
-    STREAM_MAX_COMMAND_BYTES, STREAM_MAX_RECORD_BYTES, SemanticRule, SemanticType,
+    SEMANTIC_TYPES, STREAM_MAX_COMMAND_BYTES, STREAM_MAX_RECORD_BYTES, SemanticRule, SemanticType,
     TYPE_PROJECTION_PROFILES, TypePolicyLanguage, TypeProjectionProfile, WIRE_UNION_VARIANTS,
     WireUnionVariant, WireValueKind, field_semantic_type, resolved_enum_fields,
     resolved_oneof_members, resolved_operation_rules, resolved_presence_fields,
@@ -2038,7 +2047,7 @@ pub(crate) fn inference_descriptor_with_options() -> Vec<u8> {
     // load the generated schema without reaching into the source tree.  The
     // archived bytes are dependency compatibility data only; the customer
     // file above is always emitted from the Rust model and patched options.
-    let archived_bytes = include_bytes!("../../inference/inference_descriptor.bin");
+    let archived_bytes = include_bytes!("archived_descriptors/inference-v1.bin");
     let archived = prost_types::FileDescriptorSet::decode(archived_bytes.as_slice())
         .expect("archived Inference descriptor closure");
     let archived_fields = wire_fields(archived_bytes).expect("archived descriptor wire fields");

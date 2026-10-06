@@ -4,12 +4,14 @@
 //! emitters and every handwritten runtime adapter as authored input.
 
 use crate::csharp_typed_facades::CSHARP_TYPED_PATH;
+use crate::embedded_facades::{DOTNET_EMBEDDED_STREAM_PATH, JAVA_EMBEDDED_STREAM_PATH};
 use crate::facades::{
     DART_TYPED_PATH, FacadeLanguage, JAVA_CLIENTS_PATH, JAVA_PATH, JAVA_REQUESTS_PATH,
     JAVA_RESPONSES_PATH, KOTLIN_CLIENTS_PATH, KOTLIN_PATH, KOTLIN_REQUESTS_PATH,
     KOTLIN_RESPONSES_PATH, PHP_TYPED_PATH, RUBY_RBS_PATH, RUBY_SORBET_PATH, RUBY_TYPED_PATH,
     SCALA_CLIENTS_PATH, SCALA_PATH, SCALA_REQUESTS_PATH, SCALA_RESPONSES_PATH,
 };
+use crate::php_runtime::PHP_UINT64_PATH;
 use crate::swift_cpp_typed_facades::{CPP_TYPED_PATH, SWIFT_TYPED_PATH};
 
 /// Exact public facade output paths, derived from the emitters' path constants.
@@ -41,6 +43,9 @@ pub const GENERATED_FACADE_PATHS: &[&str] = &[
     RUBY_SORBET_PATH,
     PHP_TYPED_PATH,
     DART_TYPED_PATH,
+    PHP_UINT64_PATH,
+    DOTNET_EMBEDDED_STREAM_PATH,
+    JAVA_EMBEDDED_STREAM_PATH,
 ];
 
 #[cfg(test)]
@@ -66,6 +71,16 @@ mod tests {
             assert!(
                 paths.contains(output.path),
                 "unregistered typed facade {}",
+                output.path
+            );
+        }
+        for (path, _) in crate::generate_php_runtime_bundle() {
+            assert!(paths.contains(path), "unregistered PHP runtime {path}");
+        }
+        for output in crate::generate_embedded_facades() {
+            assert!(
+                paths.contains(output.path),
+                "unregistered embedded facade {}",
                 output.path
             );
         }

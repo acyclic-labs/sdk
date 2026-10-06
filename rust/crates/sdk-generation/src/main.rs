@@ -146,6 +146,57 @@ enum Operation {
     TypescriptQualification,
 }
 
+/// A maintainer-side generation scope. This is deliberately a generator
+/// concern rather than a consumer feature: published packages never need to
+/// select a profile at runtime. Keeping the scope in the manifest makes it
+/// impossible to accidentally drift-check a Rust/TypeScript/docs bundle
+/// against an all-language bundle (or the reverse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum GenerationProfile {
+    RustTypescriptDocs,
+    AllLanguages,
+}
+
+impl GenerationProfile {
+    fn parse(value: &str) -> Result<Self, CliError> {
+        match value {
+            "rust-typescript-docs" => Ok(Self::RustTypescriptDocs),
+            "all-languages" => Ok(Self::AllLanguages),
+            other => Err(CliError::new(format!(
+                "unknown generation profile {other}; expected rust-typescript-docs or all-languages"
+            ))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RustTypescriptDocs => "rust-typescript-docs",
+            Self::AllLanguages => "all-languages",
+        }
+    }
+
+    fn includes_tool(self, id: &str) -> bool {
+        match self {
+            Self::AllLanguages => true,
+            Self::RustTypescriptDocs => matches!(
+                id,
+                "sdk-product-artifacts"
+                    | "sdk-contract-wire"
+                    | "sdk-contract-validation"
+                    | "sdk-openapi-prototype"
+                    | "sdk-typescript"
+                    | "sdk-typescript-contracts"
+                    | "sdk-typescript-rpc-contracts"
+                    | "sdk-examples"
+                    | "sdk-docs-rustdoc"
+                    | "sdk-docs"
+                    | "sdk-generated-type-audit"
+            ),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Args {
     operation: Operation,
@@ -158,6 +209,7 @@ struct Args {
     source_sha: Option<String>,
     qualification_action: Option<String>,
     asset: Option<String>,
+    profile: Option<GenerationProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +260,9 @@ struct Manifest {
     schema: String,
     operation: String,
     status: String,
+    /// Explicit maintainer generation scope. This is provenance, not a
+    /// consumer-facing feature flag.
+    profile: GenerationProfile,
     source: SourceIdentity,
     #[serde(default)]
     authoritative_source: Option<SourceIdentity>,
@@ -256,6 +311,7 @@ struct RequestEnvelope {
     source_root: String,
     output: String,
     source: SourceIdentity,
+    profile: GenerationProfile,
     contract_scope: &'static str,
     contract_inputs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -353,13 +409,17 @@ fn run() -> Result<(), CliError> {
     let output = absolute_path(output_arg)?;
     validate_output_path(&output)?;
     fs::create_dir_all(&output)?;
+    // Preserve the historical all-language default for existing local and
+    // release invocations, while recording the resolved profile explicitly in
+    // every generated manifest. New primary-lane callers pass the profile.
+    let profile = args.profile.unwrap_or(GenerationProfile::AllLanguages);
     match args.operation {
-        Operation::Generate => generate(&source_root, &output),
+        Operation::Generate => generate(&source_root, &output, profile),
         Operation::Catalog => emit_language_catalog(&source_root, &output),
-        Operation::Check => check(&source_root, &output),
-        Operation::Drift => drift(&source_root, &output),
-        Operation::Seal => seal(&source_root, &output),
-        Operation::Qualify => qualify(&source_root, &output, args.package_root.as_deref()),
+        Operation::Check => check(&source_root, &output, profile),
+        Operation::Drift => drift(&source_root, &output, profile),
+        Operation::Seal => seal(&source_root, &output, profile),
+        Operation::Qualify => qualify(&source_root, &output, args.package_root.as_deref(), profile),
         Operation::QualifyEmbedded => qualify_embedded(
             &source_root,
             &output,
@@ -421,6 +481,7 @@ fn parse_args() -> Result<Args, CliError> {
     let mut source_sha = None;
     let mut qualification_action = None;
     let mut asset = None;
+    let mut profile = None;
     while let Some(flag) = values.next() {
         match flag.as_str() {
             "--source-root" => {
@@ -482,9 +543,17 @@ fn parse_args() -> Result<Args, CliError> {
                         .ok_or_else(|| CliError::new("--asset requires a value"))?,
                 )
             }
+            "--profile" => {
+                profile = Some(GenerationProfile::parse(
+                    values
+                        .next()
+                        .ok_or_else(|| CliError::new("--profile requires a value"))?
+                        .as_str(),
+                )?)
+            }
             "--help" | "-h" => {
                 return Err(CliError::new(
-                    "usage: sdk-generation <generate|catalog|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                    "usage: sdk-generation <generate|catalog|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--profile rust-typescript-docs|all-languages] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
                 ));
             }
             other => return Err(CliError::new(format!("unknown argument {other}"))),
@@ -501,14 +570,19 @@ fn parse_args() -> Result<Args, CliError> {
         source_sha,
         qualification_action,
         asset,
+        profile,
     })
 }
 
-fn generate(source_root: &Path, output: &Path) -> Result<(), CliError> {
+fn generate(
+    source_root: &Path,
+    output: &Path,
+    profile: GenerationProfile,
+) -> Result<(), CliError> {
     synchronize_language_catalog(source_root)?;
     let source = source_identity(source_root)?;
     let authoritative_source = authoritative_source_identity(source_root)?;
-    let tools = run_tools(source_root, output, &source, Operation::Generate)?;
+    let tools = run_tools(source_root, output, &source, Operation::Generate, profile)?;
     let source_after_tools = source_identity(source_root)?;
     ensure_source_identity_unchanged(&source, &source_after_tools, "generation")?;
     let authoritative_after_tools = authoritative_source_identity(source_root)?;
@@ -535,6 +609,7 @@ fn generate(source_root: &Path, output: &Path) -> Result<(), CliError> {
         } else {
             "generated".into()
         },
+        profile,
         source,
         authoritative_source: Some(authoritative_source),
         generator: GeneratorIdentity {
@@ -580,7 +655,11 @@ fn generate(source_root: &Path, output: &Path) -> Result<(), CliError> {
 /// but its bytes still become Rust-owned evidence: this operation verifies the
 /// existing entries, re-collects the complete output tree, and recomputes the
 /// canonical artifact digest before a qualification receipt can consume it.
-fn seal(source_root: &Path, output: &Path) -> Result<(), CliError> {
+fn seal(
+    source_root: &Path,
+    output: &Path,
+    profile: GenerationProfile,
+) -> Result<(), CliError> {
     let manifest_path = output.join("sdk-generation-manifest.json");
     let mut manifest: Manifest = read_json(&manifest_path)?;
     if manifest.schema != GENERATION_SCHEMA {
@@ -588,6 +667,7 @@ fn seal(source_root: &Path, output: &Path) -> Result<(), CliError> {
             "cannot seal an unsupported generation manifest",
         ));
     }
+    verify_manifest_profile(&manifest, profile)?;
     verify_generator_identity(&manifest.generator)?;
     if manifest.status != "generated" {
         return Err(CliError::new(format!(
@@ -631,7 +711,7 @@ fn seal(source_root: &Path, output: &Path) -> Result<(), CliError> {
             "authoritative source identity does not match the generation manifest",
         ));
     }
-    verify_required_tools(&manifest.tools, source_root, output)?;
+    verify_required_tools_for_profile(&manifest.tools, source_root, output, profile)?;
     verify_authority_manifest(source_root, output)?;
     verify_manifest_entries(output, &manifest.artifacts)?;
     let artifacts = collect_artifacts(output)?;
@@ -660,7 +740,11 @@ fn seal(source_root: &Path, output: &Path) -> Result<(), CliError> {
     print_json(&manifest)
 }
 
-fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
+fn check(
+    source_root: &Path,
+    output: &Path,
+    profile: GenerationProfile,
+) -> Result<(), CliError> {
     verify_language_catalog_projection(source_root)?;
     let manifest_path = output.join("sdk-generation-manifest.json");
     let manifest: Manifest = read_json(&manifest_path)
@@ -668,6 +752,7 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
     if manifest.schema != GENERATION_SCHEMA {
         return Err(CliError::new("unsupported generation manifest schema"));
     }
+    verify_manifest_profile(&manifest, profile)?;
     verify_generator_identity(&manifest.generator)?;
     if manifest.status != "generated" {
         return Err(CliError::pending(format!(
@@ -675,7 +760,7 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
             manifest.status
         )));
     }
-    verify_required_tools(&manifest.tools, source_root, output)?;
+    verify_required_tools_for_profile(&manifest.tools, source_root, output, profile)?;
     let expected_artifact_digest = artifact_digest(&manifest.artifacts);
     if manifest.artifact_digest.as_deref() != Some(expected_artifact_digest.as_str()) {
         return Err(CliError::new(
@@ -713,7 +798,7 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
         fs::remove_dir_all(&check_root)?;
     }
     fs::create_dir_all(&check_root)?;
-    let fresh_tools = run_tools(source_root, &check_root, &source, Operation::Check)?;
+    let fresh_tools = run_tools(source_root, &check_root, &source, Operation::Check, profile)?;
     let source_after_tools = source_identity(source_root)?;
     ensure_source_identity_unchanged(&source, &source_after_tools, "drift check")?;
     let authoritative_after_tools = authoritative_source_identity(source_root)?;
@@ -725,7 +810,7 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
             "authoritative source changed during drift check; retry from a frozen checkout",
         ));
     }
-    verify_required_tools(&fresh_tools, source_root, &check_root)?;
+    verify_required_tools_for_profile(&fresh_tools, source_root, &check_root, profile)?;
     for result in &fresh_tools {
         if result.status == "failed" {
             return Err(CliError::new(format!(
@@ -764,7 +849,11 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
 /// invoking downstream generators. This is the cheap PR gate; `check` remains
 /// the deterministic regeneration gate and `qualify` remains the evidence
 /// gate.
-fn drift(source_root: &Path, output: &Path) -> Result<(), CliError> {
+fn drift(
+    source_root: &Path,
+    output: &Path,
+    profile: GenerationProfile,
+) -> Result<(), CliError> {
     verify_language_catalog_projection(source_root)?;
     let manifest_path = output.join("sdk-generation-manifest.json");
     let manifest: Manifest = read_json(&manifest_path)
@@ -772,6 +861,7 @@ fn drift(source_root: &Path, output: &Path) -> Result<(), CliError> {
     if manifest.schema != GENERATION_SCHEMA {
         return Err(CliError::new("unsupported generation manifest schema"));
     }
+    verify_manifest_profile(&manifest, profile)?;
     verify_generator_identity(&manifest.generator)?;
     if manifest.status != "generated" {
         return Err(CliError::pending(format!(
@@ -779,7 +869,7 @@ fn drift(source_root: &Path, output: &Path) -> Result<(), CliError> {
             manifest.status
         )));
     }
-    verify_required_tools(&manifest.tools, source_root, output)?;
+    verify_required_tools_for_profile(&manifest.tools, source_root, output, profile)?;
 
     let expected_artifact_digest = artifact_digest(&manifest.artifacts);
     if manifest.artifact_digest.as_deref() != Some(expected_artifact_digest.as_str()) {
@@ -825,8 +915,13 @@ fn drift(source_root: &Path, output: &Path) -> Result<(), CliError> {
     print_json(&report)
 }
 
-fn qualify(source_root: &Path, output: &Path, package_root: Option<&Path>) -> Result<(), CliError> {
-    check(source_root, output)?;
+fn qualify(
+    source_root: &Path,
+    output: &Path,
+    package_root: Option<&Path>,
+    profile: GenerationProfile,
+) -> Result<(), CliError> {
+    check(source_root, output, profile)?;
     let source = source_identity(source_root)?;
     let package_root =
         package_root.ok_or_else(|| CliError::new("qualify requires --package-root PATH"))?;
@@ -2036,6 +2131,20 @@ fn verify_generator_identity(generator: &GeneratorIdentity) -> Result<(), CliErr
     Ok(())
 }
 
+fn verify_manifest_profile(
+    manifest: &Manifest,
+    requested: GenerationProfile,
+) -> Result<(), CliError> {
+    if manifest.profile != requested {
+        return Err(CliError::new(format!(
+            "generation manifest profile {} cannot be used with requested profile {}",
+            manifest.profile.as_str(),
+            requested.as_str()
+        )));
+    }
+    Ok(())
+}
+
 fn authoritative_source_identity(root: &Path) -> Result<SourceIdentity, CliError> {
     source_identity_with_filter(root, |path| !is_generated_output_path(path))
 }
@@ -3010,21 +3119,32 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
     ]
 }
 
+fn tool_specs_for_profile(root: &Path, profile: GenerationProfile) -> Vec<ToolSpec> {
+    tool_specs(root)
+        .into_iter()
+        .filter(|spec| profile.includes_tool(spec.id))
+        .collect()
+}
+
 fn some_file(root: &Path, relative: &str) -> Option<PathBuf> {
     let path = root.join(relative);
     path.is_file().then_some(path)
 }
 
-fn generated_package_roots(output: &Path) -> BTreeMap<String, String> {
-    [
-        ("language-producers", output.join("language-producers")),
-        ("python", output.join("python")),
-        ("typescript", output.join("typescript")),
-    ]
-    .into_iter()
-    .filter(|(_, path)| path.is_dir())
-    .map(|(name, path)| (name.to_owned(), path.to_string_lossy().into_owned()))
-    .collect()
+fn generated_package_roots(
+    output: &Path,
+    profile: GenerationProfile,
+) -> BTreeMap<String, String> {
+    let names: &[&str] = match profile {
+        GenerationProfile::RustTypescriptDocs => &["typescript"],
+        GenerationProfile::AllLanguages => &["language-producers", "python", "typescript"],
+    };
+    names
+        .iter()
+        .map(|name| ((*name).to_owned(), output.join(*name)))
+        .filter(|(_, path)| path.is_dir())
+        .map(|(name, path)| (name, path.to_string_lossy().into_owned()))
+        .collect()
 }
 
 fn first_file(root: &Path, paths: &[&str]) -> Option<PathBuf> {
@@ -3286,12 +3406,13 @@ fn run_tools(
     output: &Path,
     source: &SourceIdentity,
     operation: Operation,
+    profile: GenerationProfile,
 ) -> Result<Vec<ToolResult>, CliError> {
     write_generation_source_authority_metadata(output, source)?;
     let request_directory = output.join("requests");
     fs::create_dir_all(&request_directory)?;
     let mut results = Vec::new();
-    for spec in tool_specs(root) {
+    for spec in tool_specs_for_profile(root, profile) {
         let request = RequestEnvelope {
             schema: REQUEST_SCHEMA,
             operation: operation_name(operation).into(),
@@ -3299,10 +3420,11 @@ fn run_tools(
             source_root: root.to_string_lossy().into_owned(),
             output: output.to_string_lossy().into_owned(),
             source: source.clone(),
+            profile,
             contract_scope: "explicit",
-            contract_inputs: contract_inputs(root, spec.id),
+            contract_inputs: contract_inputs(root, spec.id, profile),
             generated_package_roots: (spec.id == "sdk-examples")
-                .then(|| generated_package_roots(output))
+                .then(|| generated_package_roots(output, profile))
                 .filter(|roots| !roots.is_empty()),
         };
         let request_path = request_directory.join(format!("{}.json", spec.id));
@@ -3325,6 +3447,7 @@ fn run_tools(
                 &spec,
                 relative_request,
                 source,
+                profile,
             )?);
             continue;
         }
@@ -3352,8 +3475,9 @@ fn run_tools(
                 source_root: root.to_string_lossy().into_owned(),
                 output: output.to_string_lossy().into_owned(),
                 source: source.clone(),
+                profile,
                 contract_scope: "explicit",
-                contract_inputs: contract_inputs(root, "sdk-examples"),
+                contract_inputs: contract_inputs(root, "sdk-examples", profile),
                 generated_package_roots: None,
             };
             write_json(&bootstrap_request, &bootstrap_request_document)?;
@@ -3439,6 +3563,20 @@ fn run_tools(
             continue;
         }
         if spec.id == "sdk-docs" {
+            if let Err(error) = verify_source_authority_profile(output, profile) {
+                results.push(ToolResult {
+                    id: spec.id.into(),
+                    status: "failed".into(),
+                    required: spec.required,
+                    command: Vec::new(),
+                    request: relative_request,
+                    stdout_sha256: None,
+                    stderr_sha256: None,
+                    exit_code: Some(1),
+                    message: Some(error.to_string()),
+                });
+                continue;
+            }
             results.push(run_docs_rustdoc(root, output, relative_request.clone())?);
             if results
                 .last()
@@ -3981,7 +4119,10 @@ fn copy_type_audit_tree(source: &Path, destination: &Path) -> Result<(), CliErro
     Ok(())
 }
 
-fn prepare_type_audit_root(output: &Path) -> Result<PathBuf, CliError> {
+fn prepare_type_audit_root(
+    output: &Path,
+    profile: GenerationProfile,
+) -> Result<PathBuf, CliError> {
     let parent = output
         .parent()
         .ok_or_else(|| CliError::new("generated output has no parent for audit staging"))?;
@@ -3997,22 +4138,26 @@ fn prepare_type_audit_root(output: &Path) -> Result<PathBuf, CliError> {
     // Auditing only product roots misses public surfaces introduced by the
     // language-specific producers. Exclude the prior report to avoid hashing
     // an audit's own output on subsequent runs.
-    for relative in [
-        "generated",
-        "python",
-        "typescript",
-        "go",
-        "jvm",
-        "csharp",
-        "dotnet",
-        "swift",
-        "cpp",
-        "ruby",
-        "php",
-        "dart",
-        "haskell",
-        "language-producers",
-    ] {
+    let roots: &[&str] = match profile {
+        GenerationProfile::RustTypescriptDocs => &["generated", "typescript"],
+        GenerationProfile::AllLanguages => &[
+            "generated",
+            "python",
+            "typescript",
+            "go",
+            "jvm",
+            "csharp",
+            "dotnet",
+            "swift",
+            "cpp",
+            "ruby",
+            "php",
+            "dart",
+            "haskell",
+            "language-producers",
+        ],
+    };
+    for relative in roots {
         let source = output.join(relative);
         if source.exists() {
             copy_type_audit_tree(&source, &staging.join(relative))?;
@@ -4094,6 +4239,32 @@ fn require_language_producer_source_bindings(
     Ok(model_digest.to_owned())
 }
 
+fn require_rust_wire_model_digest(
+    output: &Path,
+    source_revision: &str,
+) -> Result<String, CliError> {
+    let authority_path = output.join("wire/rust-authority.json");
+    let authority: Value = serde_json::from_slice(&fs::read(&authority_path).map_err(|error| {
+        CliError::new(format!(
+            "Rust wire authority is required for the scoped type audit: {error}"
+        ))
+    })?)
+    .map_err(|error| CliError::new(format!("invalid Rust wire authority: {error}")))?;
+    if authority.get("authority").and_then(Value::as_str) != Some("rust")
+        || authority.get("source_git_sha").and_then(Value::as_str) != Some(source_revision)
+    {
+        return Err(CliError::new(
+            "scoped type audit requires Rust wire authority for the generation Git revision",
+        ));
+    }
+    let model_digest = authority
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| CliError::new("Rust wire authority is missing its model digest"))?;
+    Ok(model_digest.to_owned())
+}
+
 fn write_generation_source_authority_metadata(
     output: &Path,
     source: &SourceIdentity,
@@ -4114,8 +4285,9 @@ fn generated_type_audit_command(
     audit_root: &Path,
     source_revision: &str,
     model_digest: &str,
+    profile: GenerationProfile,
 ) -> Vec<OsString> {
-    vec![
+    let mut command = vec![
         cargo_program(),
         OsString::from("run"),
         OsString::from("--manifest-path"),
@@ -4130,7 +4302,12 @@ fn generated_type_audit_command(
         OsString::from(source_revision),
         OsString::from("--model-digest"),
         OsString::from(model_digest),
-    ]
+    ];
+    if profile == GenerationProfile::RustTypescriptDocs {
+        command.push(OsString::from("--scope"));
+        command.push(OsString::from("rust-typescript"));
+    }
+    command
 }
 
 fn run_generated_type_audit(
@@ -4139,6 +4316,7 @@ fn run_generated_type_audit(
     spec: &ToolSpec,
     request: String,
     source: &SourceIdentity,
+    profile: GenerationProfile,
 ) -> Result<ToolResult, CliError> {
     let Some(manifest) = spec.manifest.as_ref() else {
         return Ok(ToolResult {
@@ -4153,8 +4331,16 @@ fn run_generated_type_audit(
             message: Some("generated type audit manifest is not present in this checkout".into()),
         });
     };
-    let binding = require_type_audit_source_revision(output, &source.revision)
-        .and_then(|()| require_language_producer_source_bindings(output, &source.revision));
+    let binding = verify_source_authority_profile(output, profile)
+        .and_then(|()| require_type_audit_source_revision(output, &source.revision))
+        .and_then(|()| match profile {
+            GenerationProfile::RustTypescriptDocs => {
+                require_rust_wire_model_digest(output, &source.revision)
+            }
+            GenerationProfile::AllLanguages => {
+                require_language_producer_source_bindings(output, &source.revision)
+            }
+        });
     let model_digest = match binding {
         Ok(digest) => digest,
         Err(error) => {
@@ -4171,12 +4357,13 @@ fn run_generated_type_audit(
             });
         }
     };
-    let audit_root = prepare_type_audit_root(output)?;
+    let audit_root = prepare_type_audit_root(output, profile)?;
     let command = generated_type_audit_command(
         manifest,
         &audit_root,
         source.revision.as_str(),
         &model_digest,
+        profile,
     );
     let command_text = command
         .iter()
@@ -5379,7 +5566,7 @@ fn baseline_for_family(fixtures: &Path, family: &str) -> Option<PathBuf> {
     (matches.len() == 1).then(|| matches.remove(0))
 }
 
-fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
+fn contract_inputs(root: &Path, tool: &str, profile: GenerationProfile) -> Vec<String> {
     let mut inputs = Vec::new();
     match tool {
         "sdk-contract-wire" | "sdk-openapi-prototype" => {
@@ -5396,18 +5583,26 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
             }
         }
         "sdk-generated-type-audit" => {
-            for path in [
-                "rust/crates/sdk-contract-wire",
-                "generated",
-                "python",
-                "go",
-                "jvm",
-                "csharp",
-                "swift",
-                "cpp",
-            ] {
+            let paths: &[&str] = match profile {
+                GenerationProfile::RustTypescriptDocs => &[
+                    "rust/crates/sdk-contract-wire",
+                    "generated",
+                    "typescript",
+                ],
+                GenerationProfile::AllLanguages => &[
+                    "rust/crates/sdk-contract-wire",
+                    "generated",
+                    "python",
+                    "go",
+                    "jvm",
+                    "csharp",
+                    "swift",
+                    "cpp",
+                ],
+            };
+            for path in paths {
                 if root.join(path).exists() {
-                    inputs.push(path.into());
+                    inputs.push((*path).into());
                 }
             }
         }
@@ -5905,6 +6100,11 @@ fn write_source_authority_manifest(output: &Path, expected_revision: &str) -> Re
         .get("source_root")
         .and_then(Value::as_str)
         .ok_or_else(|| CliError::new("sdk-examples request has no source root"))?;
+    let profile = request
+        .get("profile")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("sdk-examples request has no generation profile"))?;
+    GenerationProfile::parse(profile)?;
     let mut source_file_hashes = serde_json::Map::new();
     for item in source_files {
         let relative = item
@@ -5923,10 +6123,37 @@ fn write_source_authority_manifest(output: &Path, expected_revision: &str) -> Re
         "source_revision": revision,
         "source_path": source_path,
         "source_sha256": source_sha256,
+        "profile": profile,
         "source_files": source_files,
         "source_file_hashes": source_file_hashes,
     });
     write_json_value(&output.join("source-authority.json"), &authority)
+}
+
+fn verify_source_authority_profile(
+    output: &Path,
+    expected: GenerationProfile,
+) -> Result<(), CliError> {
+    let authority_path = output.join("source-authority.json");
+    let authority: Value = read_json(&authority_path).map_err(|error| {
+        CliError::new(format!(
+            "cannot read source authority for {}: {error}",
+            expected.as_str()
+        ))
+    })?;
+    let actual = authority
+        .get("profile")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("source authority is missing generation profile"))?;
+    let actual = GenerationProfile::parse(actual)?;
+    if actual != expected {
+        return Err(CliError::new(format!(
+            "source authority profile {} cannot be consumed by requested profile {}",
+            actual.as_str(),
+            expected.as_str()
+        )));
+    }
+    Ok(())
 }
 
 fn canonicalize_language_families(
@@ -6298,9 +6525,27 @@ fn verify_required_tools(
     source_root: &Path,
     output: &Path,
 ) -> Result<(), CliError> {
+    verify_required_tools_for_profile(
+        tools,
+        source_root,
+        output,
+        GenerationProfile::AllLanguages,
+    )
+}
+
+fn verify_required_tools_for_profile(
+    tools: &[ToolResult],
+    source_root: &Path,
+    output: &Path,
+    profile: GenerationProfile,
+) -> Result<(), CliError> {
     let source_binding = source_root.to_string_lossy().replace('\\', "/");
     let output_binding = output.to_string_lossy().replace('\\', "/");
-    let expected = REQUIRED_TOOL_IDS.iter().copied().collect::<BTreeSet<_>>();
+    let expected = REQUIRED_TOOL_IDS
+        .iter()
+        .copied()
+        .filter(|id| profile.includes_tool(id))
+        .collect::<BTreeSet<_>>();
     let optional = OPTIONAL_TOOL_IDS.iter().copied().collect::<BTreeSet<_>>();
     let mut seen = BTreeSet::new();
     let mut invalid = BTreeSet::new();
@@ -6372,7 +6617,7 @@ fn verify_required_tools(
             invalid.insert(tool.id.as_str());
         }
     }
-    for id in REQUIRED_TOOL_IDS {
+    for id in REQUIRED_TOOL_IDS.iter().filter(|id| profile.includes_tool(id)) {
         if !seen.contains(id) {
             invalid.insert(id);
         }
@@ -8396,7 +8641,11 @@ mod tests {
             fs::create_dir_all(root.join(path)).expect("create product input fixture");
         }
 
-        let inputs = contract_inputs(&root, "sdk-product-artifacts");
+        let inputs = contract_inputs(
+            &root,
+            "sdk-product-artifacts",
+            GenerationProfile::AllLanguages,
+        );
         assert_eq!(
             inputs,
             vec![
@@ -8409,6 +8658,71 @@ mod tests {
             inputs.iter().all(|path| !path.contains("generated")),
             "product packaging must not declare checked-in generated copies as authority"
         );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn profile_scopes_audit_inputs_and_example_package_roots() {
+        let root = test_directory("profile-scoped-inputs");
+        for path in [
+            "rust/crates/sdk-contract-wire",
+            "generated",
+            "typescript",
+            "python",
+            "go",
+            "jvm",
+            "csharp",
+            "swift",
+            "cpp",
+        ] {
+            fs::create_dir_all(root.join(path)).expect("create profile input fixture");
+        }
+
+        assert_eq!(
+            contract_inputs(
+                &root,
+                "sdk-generated-type-audit",
+                GenerationProfile::RustTypescriptDocs,
+            ),
+            vec![
+                "rust/crates/sdk-contract-wire",
+                "generated",
+                "typescript",
+            ]
+        );
+        assert_eq!(
+            contract_inputs(
+                &root,
+                "sdk-generated-type-audit",
+                GenerationProfile::AllLanguages,
+            ),
+            vec![
+                "rust/crates/sdk-contract-wire",
+                "generated",
+                "python",
+                "go",
+                "jvm",
+                "csharp",
+                "swift",
+                "cpp",
+            ]
+        );
+
+        let output = test_directory("profile-scoped-roots");
+        for path in ["language-producers", "python", "typescript"] {
+            fs::create_dir_all(output.join(path)).expect("create package root fixture");
+        }
+        let primary = generated_package_roots(&output, GenerationProfile::RustTypescriptDocs);
+        assert_eq!(
+            primary.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["typescript"]
+        );
+        let all = generated_package_roots(&output, GenerationProfile::AllLanguages);
+        assert_eq!(
+            all.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["language-producers", "python", "typescript"]
+        );
+        cleanup(&output);
         cleanup(&root);
     }
 
@@ -8774,6 +9088,87 @@ mod tests {
     }
 
     #[test]
+    fn generation_profiles_are_explicit_and_disjoint_at_the_generator_boundary() {
+        assert_eq!(
+            GenerationProfile::parse("rust-typescript-docs").expect("primary profile"),
+            GenerationProfile::RustTypescriptDocs
+        );
+        assert_eq!(
+            GenerationProfile::parse("all-languages").expect("full profile"),
+            GenerationProfile::AllLanguages
+        );
+        assert!(GenerationProfile::parse("rust-typescript-docs").is_ok());
+        assert!(GenerationProfile::parse("unsupported").is_err());
+        assert_eq!(
+            GenerationProfile::RustTypescriptDocs.as_str(),
+            "rust-typescript-docs"
+        );
+    }
+
+    #[test]
+    fn primary_profile_keeps_rust_wire_openapi_typescript_examples_and_docs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let ids = tool_specs_for_profile(&root, GenerationProfile::RustTypescriptDocs)
+            .into_iter()
+            .map(|spec| spec.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "sdk-product-artifacts",
+                "sdk-contract-wire",
+                "sdk-contract-validation",
+                "sdk-openapi-prototype",
+                "sdk-typescript",
+                "sdk-typescript-contracts",
+                "sdk-typescript-rpc-contracts",
+                "sdk-examples",
+                "sdk-docs",
+                "sdk-generated-type-audit",
+            ]
+        );
+        for excluded in [
+            "sdk-language-producers",
+            "sdk-python",
+        ] {
+            assert!(!ids.contains(&excluded), "primary profile included {excluded}");
+        }
+        assert!(GenerationProfile::RustTypescriptDocs.includes_tool("sdk-docs-rustdoc"));
+        assert_eq!(
+            tool_specs_for_profile(&root, GenerationProfile::AllLanguages).len(),
+            tool_specs(&root).len()
+        );
+    }
+
+    #[test]
+    fn profile_mismatch_fails_closed_before_reusing_a_manifest() {
+        let manifest = Manifest {
+            schema: GENERATION_SCHEMA.into(),
+            operation: "generate".into(),
+            status: "generated".into(),
+            profile: GenerationProfile::RustTypescriptDocs,
+            source: SourceIdentity {
+                revision: "revision".into(),
+                digest: "digest".into(),
+                dirty: false,
+            },
+            authoritative_source: None,
+            generator: GeneratorIdentity {
+                name: "acyclic-sdk-generation".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            },
+            tools: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_digest: None,
+            languages: Vec::new(),
+        };
+        assert!(verify_manifest_profile(&manifest, GenerationProfile::RustTypescriptDocs).is_ok());
+        let error = verify_manifest_profile(&manifest, GenerationProfile::AllLanguages)
+            .expect_err("a profile cannot consume another profile's manifest");
+        assert!(error.message.contains("cannot be used with requested profile"));
+    }
+
+    #[test]
     fn package_producers_precede_examples_and_docs() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let ids = tool_specs(&root)
@@ -8834,7 +9229,8 @@ mod tests {
         )
         .expect("source authority fixture");
 
-        let first = prepare_type_audit_root(&output).expect("first audit staging");
+        let first = prepare_type_audit_root(&output, GenerationProfile::AllLanguages)
+            .expect("first audit staging");
         assert!(!first.join("generated/public-type-audit.json").exists());
         assert!(first.join("dotnet/RustTypedClients.cs").exists());
         assert!(first.join("haskell/generated_typed.hs").exists());
@@ -8846,7 +9242,8 @@ mod tests {
         assert!(first.join("typescript/src/index.ts").exists());
         assert!(first.join("source-authority.json").exists());
 
-        let second = prepare_type_audit_root(&output).expect("repeat audit staging");
+        let second = prepare_type_audit_root(&output, GenerationProfile::AllLanguages)
+            .expect("repeat audit staging");
         assert!(!second.join("generated/public-type-audit.json").exists());
         assert!(second.join("dotnet/RustTypedClients.cs").exists());
         assert!(second.join("haskell/generated_typed.hs").exists());
@@ -8867,6 +9264,7 @@ mod tests {
             Path::new("audit-root"),
             "1111111111111111111111111111111111111111",
             &"a".repeat(64),
+            GenerationProfile::AllLanguages,
         );
         let text = command
             .iter()
@@ -8883,6 +9281,46 @@ mod tests {
             text.windows(2)
                 .any(|pair| { pair[0] == "--model-digest" && pair[1] == "a".repeat(64) })
         );
+    }
+
+    #[test]
+    fn primary_type_audit_stages_only_rust_and_typescript_surfaces() {
+        let output = test_directory("primary-type-audit-staging");
+        for relative in [
+            "generated/rust-types.rs",
+            "typescript/src/index.ts",
+            "python/generated.py",
+            "go/generated.go",
+            "language-producers/haskell/generated_typed.hs",
+        ] {
+            let path = output.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).expect("create primary audit fixture");
+            fs::write(path, b"generated").expect("write primary audit fixture");
+        }
+        let staged = prepare_type_audit_root(&output, GenerationProfile::RustTypescriptDocs)
+            .expect("primary audit staging");
+        assert!(staged.join("generated/rust-types.rs").exists());
+        assert!(staged.join("typescript/src/index.ts").exists());
+        for excluded in ["python", "go", "language-producers"] {
+            assert!(!staged.join(excluded).exists(), "foreign surface {excluded} leaked");
+        }
+        cleanup(&staged);
+        cleanup(&output);
+
+        let command = generated_type_audit_command(
+            Path::new("rust/crates/sdk-contract-wire/Cargo.toml"),
+            Path::new("audit-root"),
+            "1111111111111111111111111111111111111111",
+            &"a".repeat(64),
+            GenerationProfile::RustTypescriptDocs,
+        );
+        let text = command
+            .iter()
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(text.windows(2).any(|pair| {
+            pair[0] == "--scope" && pair[1] == "rust-typescript"
+        }));
     }
 
     #[test]

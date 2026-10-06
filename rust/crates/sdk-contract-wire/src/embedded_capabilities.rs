@@ -5,6 +5,8 @@
 //! generators must not turn that absence into a generic `ffi-or-wasm` claim.
 //! Remote-web WASM is recorded separately from local embedded execution.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 /// A language with a first-class embedded binding model.
@@ -164,6 +166,9 @@ pub struct EmbeddedArtifact {
     pub kind: EmbeddedArtifactKind,
     pub identity: &'static str,
     pub installable: bool,
+    /// Exact package identities emitted for platform-specific artifacts.
+    /// An empty list means the artifact has no platform split.
+    pub target_identities: &'static [&'static str],
 }
 
 /// Typed artifact categories prevent docs from treating a source crate as an
@@ -213,23 +218,39 @@ pub struct EmbeddedCapability {
 
 const STREAM_NATIVE_SOURCES: &[&str] = &[
     "rust/crates/sdk-embedded-prototype/Cargo.toml",
+    "rust/crates/sdk-embedded-prototype/Cargo.lock",
+    "rust/crates/sdk-embedded-prototype/build.rs",
     "rust/crates/sdk-embedded-prototype/src/lib.rs",
+    "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
     "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+    "scripts/build-stream-native-package.mjs",
+    "rust/crates/sdk-stream-native/npm",
 ];
 const STREAM_PACKAGE_SOURCES: &[&str] = &[
     "rust/crates/stream-wasm/Cargo.toml",
+    "typescript/packages/stream/package.json",
+    "typescript/packages/stream/scripts/build-wasm.mjs",
+    "scripts/build-stream-native-package.mjs",
     "rust/crates/sdk-stream-native/npm",
     "dotnet/Acyclic.Sdk.Embedded.csproj",
+    "scripts/build-dotnet-embedded-package.ps1",
 ];
 const FILESYSTEM_SOURCES: &[&str] = &[
     "rust/crates/sdk-embedded-filesystem/Cargo.toml",
     "rust/crates/filesystem-wasm/Cargo.toml",
     "rust/crates/filesystem-napi/Cargo.toml",
+    "rust/crates/filesystem-napi/build.rs",
+    "rust/crates/filesystem-napi/src/lib.rs",
+    "rust/crates/sdk-filesystem-native/npm",
+    "scripts/build-filesystem-wasm.mjs",
+    "scripts/check-filesystem-napi.mjs",
+    "typescript/packages/filesystem/src/native.ts",
     "typescript/packages/filesystem/package.json",
 ];
 const HARNESS_SOURCES: &[&str] = &[
     "rust/crates/sdk-embedded-filesystem/Cargo.toml",
     "rust/crates/harness/src/wasm.rs",
+    "scripts/build-harness-wasm.mjs",
     "typescript/packages/harness/package.json",
 ];
 const OBJECTS_SOURCES: &[&str] = &[
@@ -250,6 +271,26 @@ const REMOTE_WEB_SOURCES: &[&str] = &[
     "scripts/build-remote-web-wasm.mjs",
 ];
 
+const NO_TARGET_IDENTITIES: &[&str] = &[];
+const STREAM_NATIVE_TARGET_IDENTITIES: &[&str] = &[
+    "@acyclic-labs/stream-darwin-arm64",
+    "@acyclic-labs/stream-darwin-x64",
+    "@acyclic-labs/stream-linux-arm64-gnu",
+    "@acyclic-labs/stream-linux-arm64-musl",
+    "@acyclic-labs/stream-linux-x64-gnu",
+    "@acyclic-labs/stream-linux-x64-musl",
+    "@acyclic-labs/stream-win32-arm64",
+    "@acyclic-labs/stream-win32-x64",
+];
+const FILESYSTEM_NAPI_TARGET_IDENTITIES: &[&str] = &[
+    "@acyclic-labs/fs-darwin-arm64",
+    "@acyclic-labs/fs-darwin-x64",
+    "@acyclic-labs/fs-linux-arm64",
+    "@acyclic-labs/fs-linux-x64",
+    "@acyclic-labs/fs-win32-arm64",
+    "@acyclic-labs/fs-win32-x64",
+];
+
 /// The current, deliberately conservative embedded capability registry.
 ///
 /// The list is a projection of Rust-owned source and package declarations. It
@@ -263,10 +304,11 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::CargoCrate,
             identity: "rust/crates/sdk-embedded-prototype",
             installable: false,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
-            qualification: EmbeddedQualification::Verified,
-            coverage: EmbeddedCoverage::InstalledConsumer,
+            qualification: EmbeddedQualification::SurfaceOnly,
+            coverage: EmbeddedCoverage::RustImplementation,
             source_evidence: STREAM_NATIVE_SOURCES,
             receipt: None,
         },
@@ -279,10 +321,11 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::NativeLibrary,
             identity: "acyclic_embedded_prototype.h + native library",
             installable: false,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
-            qualification: EmbeddedQualification::Verified,
-            coverage: EmbeddedCoverage::InstalledConsumer,
+            qualification: EmbeddedQualification::SurfaceOnly,
+            coverage: EmbeddedCoverage::NativeBoundary,
             source_evidence: STREAM_NATIVE_SOURCES,
             receipt: None,
         },
@@ -290,11 +333,12 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
     EmbeddedCapability {
         language: EmbeddedLanguage::Python,
         family: EmbeddedFamily::Stream,
-        binding: EmbeddedBinding::UniFfiProbe,
+        binding: EmbeddedBinding::CAbi,
         artifact: EmbeddedArtifact {
-            kind: EmbeddedArtifactKind::UniFfiModule,
-            identity: "rust/crates/sdk-embedded-prototype (uniffi feature)",
+            kind: EmbeddedArtifactKind::NativeLibrary,
+            identity: "acyclic_embedded_prototype shared library (ctypes C ABI)",
             installable: false,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -311,6 +355,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::WasmPackage,
             identity: "@acyclic-labs/stream",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -325,8 +370,9 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
         binding: EmbeddedBinding::TypeScriptNative,
         artifact: EmbeddedArtifact {
             kind: EmbeddedArtifactKind::TypeScriptNativePackage,
-            identity: "@acyclic-labs/stream-{platform}-{arch}",
+            identity: "@acyclic-labs/stream",
             installable: true,
+            target_identities: STREAM_NATIVE_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -343,6 +389,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::DotnetNuget,
             identity: "Acyclic.Sdk.Embedded",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -359,6 +406,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::CargoCrate,
             identity: "rust/crates/sdk-embedded-filesystem",
             installable: false,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -375,6 +423,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::WasmPackage,
             identity: "@acyclic-labs/fs",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -389,8 +438,9 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
         binding: EmbeddedBinding::Napi,
         artifact: EmbeddedArtifact {
             kind: EmbeddedArtifactKind::NapiPackage,
-            identity: "@acyclic-labs/fs-{platform}-{arch}",
+            identity: "@acyclic-labs/fs",
             installable: true,
+            target_identities: FILESYSTEM_NAPI_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -407,6 +457,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::CargoCrate,
             identity: "rust/crates/sdk-embedded-filesystem (harness feature)",
             installable: false,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -423,6 +474,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::WasmPackage,
             identity: "@acyclic-labs/harness",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -439,6 +491,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::WasmPackage,
             identity: "@acyclic-labs/objects",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -455,6 +508,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::WasmPackage,
             identity: "@acyclic-labs/inference",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -471,6 +525,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::WasmPackage,
             identity: "@acyclic-labs/machines",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -487,6 +542,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::RemoteWebWasmPackage,
             identity: "@acyclic-labs/actors remote-web WASM",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -503,6 +559,7 @@ pub const EMBEDDED_CAPABILITIES: &[EmbeddedCapability] = &[
             kind: EmbeddedArtifactKind::RemoteWebWasmPackage,
             identity: "@acyclic-labs/workers remote-web WASM",
             installable: true,
+            target_identities: NO_TARGET_IDENTITIES,
         },
         evidence: EmbeddedEvidence {
             qualification: EmbeddedQualification::SurfaceOnly,
@@ -540,6 +597,7 @@ pub fn embedded_capabilities_json() -> Value {
                 "kind": entry.artifact.kind.as_str(),
                 "identity": entry.artifact.identity,
                 "installable": entry.artifact.installable,
+                "target_identities": entry.artifact.target_identities,
             },
             "installable": entry.artifact.installable,
             "qualification": entry.evidence.qualification.as_str(),
@@ -547,6 +605,46 @@ pub fn embedded_capabilities_json() -> Value {
             "source_evidence": entry.evidence.source_evidence,
             "receipt": entry.evidence.receipt,
         })).collect::<Vec<_>>(),
+    })
+}
+
+/// Project the same typed registry into the family-oriented table consumed by
+/// generated reference pages.  The website can render this table directly:
+/// every row retains its Rust language, boundary, artifact identity,
+/// installability, coverage tier, and qualification evidence.  No family or
+/// package row is authored in a presentation language.
+pub fn embedded_family_table_json() -> Value {
+    let mut families = BTreeMap::<&str, Vec<Value>>::new();
+    for entry in EMBEDDED_CAPABILITIES {
+        families
+            .entry(entry.family.as_str())
+            .or_default()
+            .push(json!({
+                "language": entry.language.as_str(),
+                "binding": entry.binding.as_str(),
+                "local": entry.binding.is_local(),
+                "artifact": {
+                    "kind": entry.artifact.kind.as_str(),
+                    "identity": entry.artifact.identity,
+                    "installable": entry.artifact.installable,
+                    "targetIdentities": entry.artifact.target_identities,
+                },
+                "qualification": entry.evidence.qualification.as_str(),
+                "coverage": entry.evidence.coverage.as_str(),
+                "sourceEvidence": entry.evidence.source_evidence,
+                "receipt": entry.evidence.receipt,
+            }));
+    }
+
+    json!({
+        "schema": "acyclic.sdk.embedded-family-table.v1",
+        "authority": "rust",
+        "families": families.into_iter().map(|(family, capabilities)| {
+            json!({
+                "family": family,
+                "capabilities": capabilities,
+            })
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -595,7 +693,50 @@ mod tests {
         );
         assert_eq!(
             manifest["capabilities"][0]["coverage"],
-            "installed-consumer"
+            "rust-implementation"
+        );
+        assert_eq!(
+            manifest["capabilities"][4]["artifact"]["target_identities"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+    }
+
+    #[test]
+    fn family_table_is_grouped_and_preserves_package_evidence() {
+        let table = embedded_family_table_json();
+        assert_eq!(table["schema"], "acyclic.sdk.embedded-family-table.v1");
+        assert_eq!(table["authority"], "rust");
+        let families = table["families"].as_array().unwrap();
+        assert_eq!(families.len(), 8);
+        assert_eq!(families[0]["family"], "actors");
+        let stream = families
+            .iter()
+            .find(|family| family["family"] == "stream")
+            .unwrap();
+        assert!(
+            stream["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["artifact"]["identity"] == "@acyclic-labs/stream"
+                        && row["artifact"]["installable"] == true
+                        && row["coverage"] == "package-surface"
+                })
+        );
+        let actors = families
+            .iter()
+            .find(|family| family["family"] == "actors")
+            .unwrap();
+        assert!(
+            actors["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["local"] == false)
         );
     }
 
@@ -614,7 +755,28 @@ mod tests {
                     EmbeddedCoverage::InstalledConsumer,
                     "verified entries require an installed consumer receipt"
                 );
+                assert!(
+                    entry.evidence.receipt.is_some(),
+                    "verified entries require an exact checked-in receipt"
+                );
+            } else {
+                assert_ne!(
+                    entry.evidence.coverage,
+                    EmbeddedCoverage::InstalledConsumer,
+                    "installed consumer coverage requires verified receipt"
+                );
             }
         }
+
+        let stream_native = EMBEDDED_CAPABILITIES
+            .iter()
+            .find(|entry| entry.binding == EmbeddedBinding::TypeScriptNative)
+            .unwrap();
+        assert_eq!(stream_native.artifact.target_identities.len(), 8);
+        let filesystem_napi = EMBEDDED_CAPABILITIES
+            .iter()
+            .find(|entry| entry.binding == EmbeddedBinding::Napi)
+            .unwrap();
+        assert_eq!(filesystem_napi.artifact.target_identities.len(), 6);
     }
 }

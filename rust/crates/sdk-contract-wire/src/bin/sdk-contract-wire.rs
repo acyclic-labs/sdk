@@ -8,11 +8,13 @@ use std::process::Command;
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
     BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
+    embedded_capabilities_json, embedded_family_table_json,
     family_registry::family_view,
     filesystem::{filesystem_descriptor, filesystem_proto},
     generate_csharp_typed_facade, generate_embedded_facades, generate_jvm_semantic_types,
     generate_jvm_typed_clients, generate_jvm_typed_requests, generate_jvm_typed_responses,
     generate_portable_typed_facades, generate_product_bindings, generate_remote_facades,
+    generate_php_runtime_bundle,
     generate_swift_cpp_typed_facades, generate_type_policy_qualification_tests,
     harness::{harness_descriptor, harness_proto},
     inference::{inference_descriptor, inference_proto},
@@ -59,6 +61,8 @@ const VALIDATION_OPTIONS_PROTO_PATH: &str = "validation/v1/options.proto";
 const AUTHORITY_MANIFEST: &str = "rust-authority.json";
 const RUST_FAMILY_GOLDENS: &str = "rust-family-goldens.json";
 const TYPE_POLICY_PATH: &str = "type-policy.json";
+const EMBEDDED_CAPABILITIES_PATH: &str = "generated/sdk/embedded-capabilities.json";
+const EMBEDDED_FAMILY_TABLE_PATH: &str = "generated/sdk/embedded-family-table.json";
 const FILESYSTEM_PRODUCT_DESCRIPTOR: &str =
     "rust/crates/filesystem/src/generated/rust-model-filesystem-v2.bin";
 const HARNESS_PRODUCT_DESCRIPTOR: &str =
@@ -84,17 +88,19 @@ const INFERENCE_ARCHIVED_FIXTURE: &[u8] =
 const MACHINES_ARCHIVED_FIXTURE: &[u8] =
     include_bytes!("../../tests/fixtures/machines-v1.descriptor.bin");
 const ACTORS_ARCHIVED_DESCRIPTOR: &[u8] =
-    include_bytes!("../../../actors/src/generated/acyclic-actors-v1.bin");
+    include_bytes!("../archived_descriptors/actors-v1.bin");
 const WORKERS_ARCHIVED_DESCRIPTOR: &[u8] =
-    include_bytes!("../../../workers/src/generated/acyclic-workers-v1.bin");
+    include_bytes!("../archived_descriptors/workers-v1.bin");
 const OBJECTS_ARCHIVED_DESCRIPTOR: &[u8] =
-    include_bytes!("../../../objects/src/generated/acyclic-objects-v2.bin");
+    include_bytes!("../archived_descriptors/objects-v2.bin");
 const STREAM_ARCHIVED_DESCRIPTOR: &[u8] =
-    include_bytes!("../../../stream/proto/stream/v2/stream_descriptor.bin");
+    include_bytes!("../archived_descriptors/stream-v2.bin");
 const FILESYSTEM_ARCHIVED_DESCRIPTOR: &[u8] =
-    include_bytes!("../../../filesystem/src/generated/acyclic-filesystem-v2.bin");
+    include_bytes!("../archived_descriptors/filesystem-v2.bin");
 const PROTOCOL_ARCHIVED_FIXTURE: &[u8] =
     include_bytes!("../../tests/fixtures/protocol-v1.descriptor.bin");
+
+type GeneratedArtifact = (String, Vec<u8>);
 
 fn public_field_direction_name(direction: PublicFieldDirection) -> &'static str {
     match direction {
@@ -305,7 +311,10 @@ fn type_policy_json() -> Vec<u8> {
 
 // Keep the provenance revision tied to the Rust model itself.  A Git commit
 // can remain unchanged while a worktree is edited, so a commit-only marker is
-// not sufficient for generation or package input validation.
+// not sufficient for generation or package input validation.  The two
+// dependency packages are snapshotted under `src/provenance` so this binary
+// remains usable from a standalone crate archive; their logical source paths
+// stay repository-relative in the emitted manifest.
 const MODEL_SOURCES: &[(&str, &[u8])] = &[
     (
         "rust/crates/sdk-contract-wire/src/family_registry.rs",
@@ -377,27 +386,27 @@ const MODEL_SOURCES: &[(&str, &[u8])] = &[
     ),
     (
         "rust/crates/sdk-contract-options/src/lib.rs",
-        include_bytes!("../../../sdk-contract-options/src/lib.rs"),
+        include_bytes!("../provenance/sdk-contract-options/src/lib.rs"),
     ),
     (
         "rust/crates/sdk-contract-validation/src/lib.rs",
-        include_bytes!("../../../sdk-contract-validation/src/lib.rs"),
+        include_bytes!("../provenance/sdk-contract-validation/src/lib.rs"),
     ),
     (
         "rust/crates/sdk-contract-options/Cargo.toml",
-        include_bytes!("../../../sdk-contract-options/Cargo.toml"),
+        include_bytes!("../provenance/sdk-contract-options/Cargo.toml"),
     ),
     (
         "rust/crates/sdk-contract-options/Cargo.lock",
-        include_bytes!("../../../sdk-contract-options/Cargo.lock"),
+        include_bytes!("../provenance/sdk-contract-options/Cargo.lock"),
     ),
     (
         "rust/crates/sdk-contract-validation/Cargo.toml",
-        include_bytes!("../../../sdk-contract-validation/Cargo.toml"),
+        include_bytes!("../provenance/sdk-contract-validation/Cargo.toml"),
     ),
     (
         "rust/crates/sdk-contract-validation/Cargo.lock",
-        include_bytes!("../../../sdk-contract-validation/Cargo.lock"),
+        include_bytes!("../provenance/sdk-contract-validation/Cargo.lock"),
     ),
 ];
 
@@ -454,11 +463,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Error>> {
+fn product_artifacts(root: &Path) -> Result<Vec<GeneratedArtifact>, Box<dyn Error>> {
     let mut artifacts = vec![
         (
             "generated/sdk/type-policy.json".to_owned(),
             type_policy_json(),
+        ),
+        (
+            EMBEDDED_CAPABILITIES_PATH.to_owned(),
+            serde_json::to_vec_pretty(&embedded_capabilities_json())?,
+        ),
+        (
+            EMBEDDED_FAMILY_TABLE_PATH.to_owned(),
+            serde_json::to_vec_pretty(&embedded_family_table_json())?,
         ),
         (
             "python/src/acyclic_sdk/py.typed".to_owned(),
@@ -563,6 +580,9 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
     }
     for facade in generate_remote_facades() {
         artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
+    }
+    for (path, source) in generate_php_runtime_bundle() {
+        artifacts.push((path.to_owned(), source.into_bytes()));
     }
     for (path, source) in generate_jvm_semantic_types() {
         artifacts.push((path.to_owned(), source.into_bytes()));
@@ -914,6 +934,7 @@ fn authority_manifest(
     source_root: Option<&Path>,
     evidence_path: Option<&Path>,
 ) -> Result<String, Box<dyn Error>> {
+    verify_embedded_model_sources(source_root)?;
     let families = [
         (
             PROTO_PATH,
@@ -1303,7 +1324,7 @@ fn rpc_shapes_json(
                     }
                 }
                 let response_fields = message_fields(&descriptor, &response);
-                let validations = family_for_package(&package)
+                let validations = family_for_package(package)
                     .and_then(family_view)
                     .and_then(|family| {
                         family
@@ -1456,6 +1477,32 @@ fn model_source_revision() -> String {
     sha256_hex(&canonical)
 }
 
+/// Verify the package-local provenance snapshots against the checkout when a
+/// repository root is available.  The embedded bytes keep the generator
+/// usable from a standalone package; this check prevents a workspace run from
+/// silently generating an authority manifest from stale dependency snapshots.
+fn verify_embedded_model_sources(source_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    let Some(source_root) = source_root else {
+        return Ok(());
+    };
+    for (relative, embedded) in MODEL_SOURCES {
+        let checkout = source_root.join(relative);
+        let actual = fs::read(&checkout).map_err(|error| {
+            format!(
+                "Rust provenance source is missing at {}: {error}",
+                checkout.display()
+            )
+        })?;
+        if actual != *embedded {
+            return Err(format!(
+                "crate-local provenance snapshot differs from checkout source {relative}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn model_source_files_json() -> String {
     let files = MODEL_SOURCES
         .iter()
@@ -1594,6 +1641,31 @@ mod tests {
             public_field_direction_name(PublicFieldDirection::EmbeddedOnly),
             "embedded_only"
         );
+    }
+
+    #[test]
+    fn embedded_model_source_verifier_rejects_snapshot_mutation() {
+        let root = env::temp_dir().join(format!(
+            "sdk-contract-wire-provenance-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        for (relative, bytes) in MODEL_SOURCES {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().expect("provenance parent"))
+                .expect("create provenance parent");
+            fs::write(path, bytes).expect("write provenance snapshot");
+        }
+
+        let mutated = root.join("rust/crates/sdk-contract-options/src/lib.rs");
+        let mut bytes = fs::read(&mutated).expect("read provenance snapshot");
+        bytes[0] ^= 0xff;
+        fs::write(&mutated, bytes).expect("mutate provenance snapshot");
+
+        let error = verify_embedded_model_sources(Some(&root))
+            .expect_err("mutated provenance snapshot must fail closed");
+        assert!(error.to_string().contains("sdk-contract-options/src/lib.rs"));
+        let _ = fs::remove_dir_all(root);
     }
 
     fn evidence_item() -> Value {

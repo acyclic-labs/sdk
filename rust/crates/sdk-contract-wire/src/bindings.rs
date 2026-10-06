@@ -138,18 +138,18 @@ impl BindingFamily {
     /// deployed runtime still advertises an archived descriptor digest.
     pub const fn archived_runtime_descriptor(self) -> &'static [u8] {
         match self {
-            Self::Actors => include_bytes!("../../actors/src/generated/acyclic-actors-v1.bin"),
-            Self::Workers => include_bytes!("../../workers/src/generated/acyclic-workers-v1.bin"),
-            Self::Objects => include_bytes!("../../objects/src/generated/acyclic-objects-v2.bin"),
-            Self::Stream => include_bytes!("../../stream/proto/stream/v2/stream_descriptor.bin"),
-            Self::Inference => include_bytes!("../../inference/inference_descriptor.bin"),
+            Self::Actors => include_bytes!("archived_descriptors/actors-v1.bin"),
+            Self::Workers => include_bytes!("archived_descriptors/workers-v1.bin"),
+            Self::Objects => include_bytes!("archived_descriptors/objects-v2.bin"),
+            Self::Stream => include_bytes!("archived_descriptors/stream-v2.bin"),
+            Self::Inference => include_bytes!("archived_descriptors/inference-v1.bin"),
             Self::Machines => {
-                include_bytes!("../../machines/src/generated/acyclic-machines-v1.bin")
+                include_bytes!("archived_descriptors/machines-v1.bin")
             }
             Self::Filesystem => {
-                include_bytes!("../../filesystem/src/generated/acyclic-filesystem-v2.bin")
+                include_bytes!("archived_descriptors/filesystem-v2.bin")
             }
-            Self::Harness => include_bytes!("../../harness/src/generated/harness-archived-v2.bin"),
+            Self::Harness => include_bytes!("archived_descriptors/harness-v2.bin"),
         }
     }
 }
@@ -1100,6 +1100,7 @@ fn generation_descriptor_set(
 mod tests {
     use super::*;
     use prost_types::FileDescriptorSet;
+    use sha2::{Digest, Sha256};
     use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1133,6 +1134,50 @@ mod tests {
         let mut output = String::new();
         visit(root, &mut output);
         output
+    }
+
+    #[test]
+    fn archived_runtime_descriptors_have_stable_fixture_identity() {
+        const EXPECTED_SHA256: &[(&str, &str)] = &[
+            (
+                "actors",
+                "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c",
+            ),
+            (
+                "workers",
+                "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8",
+            ),
+            (
+                "objects",
+                "21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b",
+            ),
+            (
+                "stream",
+                "f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e",
+            ),
+            (
+                "inference",
+                "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15",
+            ),
+            (
+                "machines",
+                "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758",
+            ),
+            (
+                "filesystem",
+                "105e153060d229569836982527c91bd56a69891691007215fbc599115eca2093",
+            ),
+            (
+                "harness",
+                "b1d721a657f40f652a560769ff440b7a1ca44739765fd3114269b727de5474e4",
+            ),
+        ];
+
+        for (&family, &(name, expected)) in BindingFamily::ALL.iter().zip(EXPECTED_SHA256) {
+            let digest = hex::encode(Sha256::digest(family.archived_runtime_descriptor()));
+            assert_eq!(family.name(), name);
+            assert_eq!(digest, expected, "{} archived fixture changed", family.name());
+        }
     }
 
     fn has_rust_file(root: &Path) -> bool {
