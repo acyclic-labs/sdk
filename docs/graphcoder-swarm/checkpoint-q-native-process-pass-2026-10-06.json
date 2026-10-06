@@ -1,0 +1,33 @@
+{
+  "Format": "graphcoder.scoped-checkpoint.v1",
+  "Passed": 11,
+  "Failed": 0,
+  "Limits": [
+    "Focused native process tests, including helper/readiness cases; does not qualify Harness execution, installed terminal cleanup, Unix runtime or full matrix."
+  ],
+  "Suite": "cargo test -p acyclic-native-runtime --lib process_ -j1",
+  "Source": "bdd5ea0a44db66247c4c235ca91ef86b8cb0bd9b",
+  "Filtered": 42,
+  "Files": [
+    {
+      "Sha256": "30e67a8d8f148bbc73911aebd0d5c5ae30701766c48f26a1e6963874a4b7ec80",
+      "Name": "acyclic_native_runtime-5e729bbc9983afae.exe"
+    },
+    {
+      "Sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "Name": "exit-code.txt"
+    },
+    {
+      "Sha256": "d99ff0650b594a7779c69d41cca056c73ffabd4011fb5053248d383b988860e1",
+      "Name": "native.log"
+    },
+    {
+      "Sha256": "4e5b63798baf47f551c4d7d70ce1ee5381bb105a3b14251f95032b256b524503",
+      "Name": "source.tar"
+    }
+  ],
+  "Ignored": 0,
+  "Outcome": "passed",
+  "Platform": "Windows native",
+  "Evidence": "target/graphcoder-qualification/bdd5ea0a4-native-process"
+}
