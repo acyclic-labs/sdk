@@ -415,6 +415,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-sdk"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-fs",
+ "acyclic-harness",
+ "acyclic-inference",
+ "acyclic-machines",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-workers",
+]
+
+[[package]]
 name = "acyclic-sdk-contract-options"
 version = "0.1.0"
 dependencies = [
