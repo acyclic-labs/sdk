@@ -3251,18 +3251,6 @@ impl PersistentLocalSwarm {
             .filesystem
             .workspace_id(project.storage_name()?)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        self.project_children
-            .write()
-            .map_err(|_| Error::Storage("local project child registry was poisoned".into()))?
-            .insert(
-                workspace_id,
-                LocalProjectChildBinding {
-                    parent: parent.clone(),
-                    child: seed.child.clone(),
-                    project: project.clone(),
-                },
-            );
-
         // Publish the child workspace identity into the parent's typed Git
         // compatibility state as part of the same durable seed lifecycle.
         // The alias is deterministic and parent-authorized; it is not a
@@ -3291,6 +3279,17 @@ impl PersistentLocalSwarm {
                 )
                 .await?;
         }
+        self.project_children
+            .write()
+            .map_err(|_| Error::Storage("local project child registry was poisoned".into()))?
+            .insert(
+                workspace_id,
+                LocalProjectChildBinding {
+                    parent: parent.clone(),
+                    child: seed.child.clone(),
+                    project: project.clone(),
+                },
+            );
         Ok(())
     }
 
