@@ -20,7 +20,6 @@ members = [
   "rust/crates/objects-wasm",
   "rust/crates/proto-codegen",
   "rust/crates/stream",
-  "rust/crates/stream-wasm",
   "rust/crates/workers",
   "plugin",
 ]

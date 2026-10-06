@@ -430,20 +430,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-stream-wasm"
-version = "0.2.0"
-dependencies = [
- "acyclic-stream",
- "bytes",
- "futures",
- "js-sys",
- "prost",
- "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
-]
-
-[[package]]
 name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
