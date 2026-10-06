@@ -1,0 +1,25 @@
+{
+  "platform": "Windows native compilation",
+  "exit_code": 101,
+  "observation": "New alias recovery fixture has Arc<FixtureUsage> type mismatch and attempts private signing_key access. No runtime case executed; repair must preserve secret boundary.",
+  "result": "failed",
+  "artifacts": [
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\af72d0664-owned-seed-verification\\source.tar",
+      "sha256": "ea59db3cfdf0f04e06ce73618362cc59e196fd86260cd1841fd30f6209d4f61f"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\af72d0664-owned-seed-verification\\native.log",
+      "sha256": "753396b0823c873125dde2ed3611731e5bb71f86eafdb0748f541d9e099689b8"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\af72d0664-owned-seed-verification\\exit-code",
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95"
+    }
+  ],
+  "runtime_executed": false,
+  "command": "cargo test -p acyclic-harness --features test-support,native-process-tree --test local_model_swarm -j1 default_local_composition_runs_recursive_models_and_reopens_without_dispatch -- --exact --nocapture",
+  "protocol": "acyclic.graphcoder.checkpoint.v1",
+  "qualification": "Compilation failure; no acceptance requirement closed.",
+  "source": "af72d0664cade1d5de6bc25f94199c3af03f2c58"
+}
