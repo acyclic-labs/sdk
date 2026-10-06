@@ -18,7 +18,11 @@
 //! target may expose a closed, exhaustive convenience view only in addition
 //! to the open wire representation; it must never discard an unknown value.
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use prost::Message;
 use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto::Type as FieldType};
@@ -109,6 +113,21 @@ pub struct ResolvedPresenceField {
     pub field: ResolvedRequestField,
     pub kind: ResolvedPresenceKind,
 }
+
+// Descriptor-derived inventories are immutable for the lifetime of this
+// process.  Generators ask for them repeatedly while rendering language
+// projections; caching the resolved Rust values avoids reparsing the same
+// descriptor closure for every field without introducing a second contract
+// or changing the clone-returning public API.
+static DESCRIPTOR_FILES_CACHE: OnceLock<
+    Result<Vec<prost_types::FileDescriptorProto>, String>,
+> = OnceLock::new();
+static REQUEST_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedRequestField>, String>> = OnceLock::new();
+static RESPONSE_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedRequestField>, String>> = OnceLock::new();
+static ENUM_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedEnumField>, String>> = OnceLock::new();
+static ONEOF_MEMBERS_CACHE: OnceLock<Result<Vec<ResolvedOneofMember>, String>> = OnceLock::new();
+static PRESENCE_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedPresenceField>, String>> = OnceLock::new();
+static RPC_METHODS_CACHE: OnceLock<Result<Vec<ResolvedRpcMethod>, String>> = OnceLock::new();
 
 /// Rust-owned operation identity retained alongside the field inventory.
 ///
@@ -212,7 +231,9 @@ pub struct ResolvedOperationRule {
 /// registered families because request fields commonly use protocol messages
 /// declared in a dependency file.
 pub fn resolved_request_fields() -> Result<Vec<ResolvedRequestField>, String> {
-    resolve_rpc_fields(true)
+    REQUEST_FIELDS_CACHE
+        .get_or_init(|| resolve_rpc_fields(true))
+        .clone()
 }
 
 /// Resolve every reachable response field from the same Rust contract model.
@@ -220,7 +241,9 @@ pub fn resolved_request_fields() -> Result<Vec<ResolvedRequestField>, String> {
 /// The output uses the same record as request fields so language emitters can
 /// share one renderer while selecting the direction they are projecting.
 pub fn resolved_response_fields() -> Result<Vec<ResolvedRequestField>, String> {
-    resolve_rpc_fields(false)
+    RESPONSE_FIELDS_CACHE
+        .get_or_init(|| resolve_rpc_fields(false))
+        .clone()
 }
 
 /// Resolve every reachable enum field, including the complete descriptor
@@ -228,6 +251,12 @@ pub fn resolved_response_fields() -> Result<Vec<ResolvedRequestField>, String> {
 /// generator can project the same enum with the correct request/response
 /// surface while preserving numeric unknown values.
 pub fn resolved_enum_fields() -> Result<Vec<ResolvedEnumField>, String> {
+    ENUM_FIELDS_CACHE
+        .get_or_init(resolve_enum_fields)
+        .clone()
+}
+
+fn resolve_enum_fields() -> Result<Vec<ResolvedEnumField>, String> {
     let files = rust_descriptor_files()?;
     let mut enums = std::collections::BTreeMap::new();
     for file in &files {
@@ -312,6 +341,12 @@ pub fn resolved_enum_fields() -> Result<Vec<ResolvedEnumField>, String> {
 /// compatibility union, while this function describes every actual Rust
 /// protobuf oneof reached by an RPC.
 pub fn resolved_oneof_members() -> Result<Vec<ResolvedOneofMember>, String> {
+    ONEOF_MEMBERS_CACHE
+        .get_or_init(resolve_oneof_members)
+        .clone()
+}
+
+fn resolve_oneof_members() -> Result<Vec<ResolvedOneofMember>, String> {
     let mut output = Vec::new();
     for field in resolved_request_fields()?
         .into_iter()
@@ -374,6 +409,12 @@ pub fn resolved_oneof_members() -> Result<Vec<ResolvedOneofMember>, String> {
 /// state.  Repeated/map fields are intentionally omitted because protobuf
 /// defines their empty value as the absence-equivalent wire state.
 pub fn resolved_presence_fields() -> Result<Vec<ResolvedPresenceField>, String> {
+    PRESENCE_FIELDS_CACHE
+        .get_or_init(resolve_presence_fields)
+        .clone()
+}
+
+fn resolve_presence_fields() -> Result<Vec<ResolvedPresenceField>, String> {
     let mut output = Vec::new();
     for field in resolved_request_fields()?
         .into_iter()
@@ -414,6 +455,12 @@ pub fn resolved_presence_fields() -> Result<Vec<ResolvedPresenceField>, String> 
 
 /// Resolve every RPC identity, including methods with empty request messages.
 pub fn resolved_rpc_methods() -> Result<Vec<ResolvedRpcMethod>, String> {
+    RPC_METHODS_CACHE
+        .get_or_init(resolve_rpc_methods)
+        .clone()
+}
+
+fn resolve_rpc_methods() -> Result<Vec<ResolvedRpcMethod>, String> {
     let files = rust_descriptor_files()?;
     let mut methods = Vec::new();
     for family in FAMILY_VIEWS {
@@ -575,6 +622,12 @@ fn resolve_rpc_fields(request: bool) -> Result<Vec<ResolvedRequestField>, String
 }
 
 fn rust_descriptor_files() -> Result<Vec<prost_types::FileDescriptorProto>, String> {
+    DESCRIPTOR_FILES_CACHE
+        .get_or_init(load_rust_descriptor_files)
+        .clone()
+}
+
+fn load_rust_descriptor_files() -> Result<Vec<prost_types::FileDescriptorProto>, String> {
     let mut files = Vec::new();
     for family in FAMILY_VIEWS {
         let descriptor = match family.model {
@@ -2997,8 +3050,10 @@ pub fn audit_generated_descriptor_shape_coverage(
             enum_types.insert(entry.enum_type.clone());
         }
         for enum_type in enum_types {
-            let simple_name = descriptor_simple_name(&enum_type);
-            if !source_contains_identifier(&source, &simple_name) {
+            let covered = descriptor_projection_aliases(language, &enum_type)
+                    .iter()
+                    .any(|alias| source_contains_identifier(&source, alias));
+            if !covered {
                 violations.push(GeneratedSurfaceViolation {
                     language,
                     path: format!("{report_path} (missing Rust enum {enum_type})"),
@@ -3018,8 +3073,14 @@ pub fn audit_generated_descriptor_shape_coverage(
             }
         }
         for payload_type in message_oneof_types {
-            let simple_name = descriptor_simple_name(&payload_type);
-            if !source_contains_identifier(&source, &simple_name) {
+            let matching_members = oneofs.iter().filter(|entry| {
+                entry.payload_type.as_deref() == Some(payload_type.as_str())
+                    && matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
+            });
+            let covered = matching_members
+                .clone()
+                .any(|entry| source_contains_descriptor_oneof_arm(language, &source, entry));
+            if !covered {
                 violations.push(GeneratedSurfaceViolation {
                     language,
                     path: format!("{report_path} (missing Rust oneof payload {payload_type})"),
@@ -3086,6 +3147,189 @@ pub fn audit_required_generated_descriptor_shape_coverage(
 
 fn descriptor_simple_name(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).to_owned()
+}
+
+/// Return the stable Rust-derived prefix used by generators that cannot use a
+/// protobuf simple name without risking collisions.  This is intentionally
+/// derived from the descriptor identity rather than a target-language table:
+/// `acyclic.filesystem.v2.CloneRange` becomes `FilesystemCloneRange` and
+/// `acyclic.actors.v1.ActorState` becomes `ActorsActorState`.
+fn descriptor_projection_prefix(name: &str) -> String {
+    name.split('.')
+        .filter(|part| !part.is_empty() && *part != "acyclic")
+        .filter(|part| {
+            let bytes = part.as_bytes();
+            !(bytes.len() >= 2
+                && bytes[0] == b'v'
+                && bytes[1..].iter().all(u8::is_ascii_digit))
+        })
+        .map(pascal_identifier)
+        .collect()
+}
+
+fn descriptor_package_prefix(name: &str) -> String {
+    let mut parts = name.rsplitn(2, '.');
+    let _type_name = parts.next();
+    parts.next().map(descriptor_projection_prefix).unwrap_or_default()
+}
+
+fn descriptor_compact_identity(name: &str) -> String {
+    name.split('.').map(pascal_identifier).collect()
+}
+
+fn pascal_identifier(name: &str) -> String {
+    name.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            first.to_uppercase().chain(chars).collect()
+        })
+        .collect()
+}
+
+/// Candidate nominal names emitted by language renderers.  The aliases are
+/// accepted only when the generated source contains the concrete declaration;
+/// generic `WireEnum`/`WireMessage` markers never satisfy this check.  Keeping
+/// this derivation in Rust lets Swift/C++ namespace choices remain projections
+/// of the same descriptor identity instead of becoming a second contract.
+fn descriptor_projection_aliases(language: &str, name: &str) -> Vec<String> {
+    let prefix = descriptor_projection_prefix(name);
+    let simple = descriptor_simple_name(name);
+    match language {
+        "swift" | "cpp" => vec![format!("{prefix}Wire")],
+        "csharp" => vec![format!("Rust{prefix}Enum")],
+        _ => Vec::new(),
+    }
+    .into_iter()
+    .filter(|candidate| candidate != &simple)
+    .collect()
+}
+
+fn descriptor_oneof_choice_alias(entry: &ResolvedOneofMember) -> Option<String> {
+    let oneof = entry.field.oneof_name.as_deref()?;
+    let message = descriptor_simple_name(&entry.field.message_path);
+    let prefix = descriptor_package_prefix(&entry.field.message_path);
+    Some(format!(
+        "{prefix}{}{}Choice",
+        pascal_identifier(message.trim()),
+        pascal_identifier(oneof)
+    ))
+}
+
+fn descriptor_payload_aliases(language: &str, name: &str) -> Vec<String> {
+    let mut aliases = descriptor_projection_aliases(language, name);
+    if language == "go" {
+        // Go's public semantic wrappers use the conventional initialism ID,
+        // while protobuf descriptors retain the wire spelling Id. This is
+        // still a Rust-derived identity: it is a mechanical projection of the
+        // descriptor name, never an independently authored contract alias.
+        let simple = descriptor_simple_name(name);
+        if let Some(prefix) = simple.strip_suffix("Id") {
+            aliases.push(format!("{prefix}ID"));
+        }
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
+/// Check an actual language-specific union arm, rather than accepting a
+/// detached payload DTO.  A payload wrapper alone does not preserve the
+/// protobuf discriminant; the choice type and its concrete arm must both be
+/// present.  The generated shapes below are intentionally structural and are
+/// still derived from the Rust field/message/oneof identities.
+fn source_contains_descriptor_oneof_arm(
+    language: &str,
+    source: &str,
+    entry: &ResolvedOneofMember,
+) -> bool {
+    let Some(choice) = descriptor_oneof_choice_alias(entry) else {
+        return false;
+    };
+    let arm = pascal_identifier(&entry.field.field);
+    let payload = entry
+        .payload_type
+        .as_deref()
+        .map(descriptor_simple_name)
+        .unwrap_or_default();
+    let payload_aliases = entry
+        .payload_type
+        .as_deref()
+        .map(|name| descriptor_payload_aliases(language, name))
+        .unwrap_or_default();
+    match language {
+        "cpp" => source.lines().any(|line| {
+            !is_source_comment(line)
+                && line.contains(&format!("{choice}{arm}"))
+                && (line.contains(&payload)
+                    || payload_aliases.iter().any(|alias| line.contains(alias)))
+        }),
+        "csharp" => {
+            source_contains_identifier(source, &choice)
+                && source.lines().any(|line| {
+                    !is_source_comment(line)
+                        && line.contains(&format!("record {arm}"))
+                        && (line.contains(&payload)
+                            || payload_aliases.iter().any(|alias| line.contains(alias)))
+                })
+        }
+        "swift" => {
+            source_contains_identifier(source, &choice)
+                && source.lines().any(|line| {
+                    !is_source_comment(line)
+                        && line.contains(&format!("case {arm}("))
+                        && (line.contains(&payload)
+                            || payload_aliases.iter().any(|alias| line.contains(alias)))
+                })
+        }
+        "python" => {
+            let message = descriptor_compact_identity(&entry.field.message_path);
+            let arm = pascal_identifier(&entry.field.field);
+            let lines = source.lines().collect::<Vec<_>>();
+            lines.iter().enumerate().any(|(index, line)| {
+                if is_source_comment(line)
+                    || !line.contains("class OneofArm")
+                    || !line.contains(&message)
+                    || !line.contains(&arm)
+                {
+                    return false;
+                }
+                lines
+                    .iter()
+                    .skip(index + 1)
+                    .take(8)
+                    .take_while(|candidate| {
+                        let trimmed = candidate.trim_start();
+                        !trimmed.starts_with("class ") && !trimmed.starts_with("@dataclass")
+                    })
+                    .any(|candidate| {
+                        !is_source_comment(candidate)
+                            && candidate.contains("value:")
+                            && (candidate.contains(&payload)
+                                || payload_aliases
+                                    .iter()
+                                    .any(|alias| candidate.contains(alias)))
+                    })
+            })
+        }
+        "go" => {
+            let message = descriptor_compact_identity(&entry.field.message_path);
+            let arm = pascal_identifier(&entry.field.field);
+            source.lines().any(|line| {
+                !is_source_comment(line)
+                    && line.contains("type OneofArm")
+                    && line.contains(&message)
+                    && line.contains(&arm)
+                    && (line.contains(&payload)
+                        || payload_aliases.iter().any(|alias| line.contains(alias)))
+                    && line.contains("Value")
+            })
+        }
+        _ => false,
+    }
 }
 
 fn snake_to_camel(name: &str) -> String {
@@ -4333,6 +4577,267 @@ mod tests {
             "comments must not satisfy descriptor shape coverage"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn descriptor_shape_audit_accepts_resolved_enum_union_and_presence_identities() {
+        let enums = resolved_enum_fields().expect("Rust enum inventory");
+        let message_arm = resolved_oneof_members()
+            .expect("Rust oneof inventory")
+            .into_iter()
+            .find(|entry| {
+                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
+            })
+            .expect("at least one message-valued oneof arm");
+        let presence = resolved_presence_fields()
+            .expect("Rust presence inventory")
+            .into_iter()
+            .next()
+            .expect("at least one presence-bearing field");
+        let enum_alias = descriptor_projection_aliases("cpp", &enums[0].enum_type)
+            .into_iter()
+            .next()
+            .expect("C++ enum alias");
+        let choice_alias = descriptor_oneof_choice_alias(&message_arm)
+            .expect("C++ oneof choice alias");
+        let arm_alias = format!(
+            "{choice_alias}{}",
+            pascal_identifier(&message_arm.field.field)
+        );
+        let payload_alias = descriptor_projection_aliases(
+            "cpp",
+            message_arm
+                .payload_type
+                .as_deref()
+                .expect("message oneof payload identity"),
+        )
+        .into_iter()
+        .next()
+        .expect("C++ payload alias");
+        let field_name = &presence.field.field;
+        let camel_name = snake_to_camel(field_name);
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-descriptor-shape-audit-positive-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("cpp")).expect("audit fixture directory");
+        fs::write(
+            root.join("cpp").join("rust_typed_clients.hpp"),
+            format!(
+                "struct {enum_alias} {{ std::int32_t raw; }};\n\
+                 struct {arm_alias} {{ {payload_alias} value; }};\n\
+                 struct PresenceProjection {{ std::optional<int> {field_name}; bool has_{camel_name}() const; }};\n"
+            ),
+        )
+        .expect("descriptor-bound JVM fixture");
+
+        let findings = audit_generated_descriptor_shape_coverage(&root)
+            .expect("descriptor shape audit fixture");
+        assert!(!findings.iter().any(|finding| {
+            finding.path.contains(&format!("missing Rust enum {}", enums[0].enum_type))
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding.path.contains(&format!(
+                "missing Rust oneof payload {}",
+                message_arm.payload_type.as_deref().unwrap()
+            ))
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding.path.contains(&format!("missing Rust presence field {field_name}"))
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn descriptor_shape_audit_rejects_raw_aliases_without_typed_payloads() {
+        let enum_entry = resolved_enum_fields()
+            .expect("Rust enum inventory")
+            .into_iter()
+            .next()
+            .expect("enum field");
+        let member = resolved_oneof_members()
+            .expect("Rust oneof inventory")
+            .into_iter()
+            .find(|entry| {
+                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
+            })
+            .expect("message-valued oneof");
+        let enum_name = descriptor_simple_name(&enum_entry.enum_type);
+        let payload_name = descriptor_simple_name(
+            member.payload_type.as_deref().expect("message payload"),
+        );
+        let choice = descriptor_oneof_choice_alias(&member).expect("choice identity");
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-descriptor-shape-audit-raw-alias-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("cpp")).expect("audit fixture directory");
+        fs::write(
+            root.join("cpp").join("rust_typed_clients.hpp"),
+            format!(
+                "// {enum_name}, {payload_name}, {choice}\n\
+                 struct {enum_name} {{ int raw; }};\n\
+                 struct {payload_name} {{ RustWireMessage raw; }};\n\
+                 struct WireChoice {{ int tag; RustWireMessage payload; }};\n"
+            ),
+        )
+        .expect("raw alias fixture");
+        let findings = audit_generated_descriptor_shape_coverage(&root)
+            .expect("descriptor shape audit fixture");
+        assert!(findings.iter().any(|finding| {
+            finding.path.contains(&format!("missing Rust enum {}", enum_entry.enum_type))
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.path.contains(&format!(
+                "missing Rust oneof payload {}",
+                member.payload_type.as_deref().unwrap()
+            ))
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn descriptor_oneof_alias_requires_target_payload_type() {
+        let member = resolved_oneof_members()
+            .expect("Rust oneof inventory")
+            .into_iter()
+            .find(|entry| {
+                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
+            })
+            .expect("message-valued oneof");
+        let compact_message = descriptor_compact_identity(&member.field.message_path);
+        let arm = pascal_identifier(&member.field.field);
+        let payload = descriptor_simple_name(member.payload_type.as_deref().unwrap());
+        let valid_python = format!(
+            "class OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}:\n    value: actors_pb2.{payload}\n"
+        );
+        assert!(source_contains_descriptor_oneof_arm("python", &valid_python, &member));
+        let erased_python = format!(
+            "class OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}:\n    value: Any\n"
+        );
+        assert!(!source_contains_descriptor_oneof_arm("python", &erased_python, &member));
+        let comment_only = format!(
+            "# class OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}:\n\
+             #     value: actors_pb2.{payload}\n"
+        );
+        assert!(!source_contains_descriptor_oneof_arm("python", &comment_only, &member));
+        let type_alias_only = format!(
+            "OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}: TypeAlias = tuple[str, {payload}]\n"
+        );
+        assert!(!source_contains_descriptor_oneof_arm("python", &type_alias_only, &member));
+
+        let valid_go = format!(
+            "type OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm} struct {{ Arm string; Value {payload} }}\n"
+        );
+        assert!(source_contains_descriptor_oneof_arm("go", &valid_go, &member));
+        let raw_go = format!(
+            "// type OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm} struct {{ Arm string; Value []byte }}\n"
+        );
+        assert!(!source_contains_descriptor_oneof_arm("go", &raw_go, &member));
+    }
+
+    #[test]
+    fn descriptor_projection_aliases_are_derived_from_rust_identities() {
+        assert_eq!(
+            descriptor_projection_prefix("acyclic.actors.v1.ActorState"),
+            "ActorsActorState"
+        );
+        assert_eq!(
+            descriptor_projection_prefix("acyclic.filesystem.v2.CloneRange"),
+            "FilesystemCloneRange"
+        );
+        assert_eq!(
+            descriptor_projection_aliases("swift", "acyclic.actors.v1.ActorState"),
+            vec!["ActorsActorStateWire"]
+        );
+
+        let member = resolved_oneof_members()
+            .expect("Rust oneof inventory")
+            .into_iter()
+            .find(|entry| {
+                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
+            })
+            .expect("message-valued oneof");
+        let choice = descriptor_oneof_choice_alias(&member).expect("oneof choice identity");
+        assert!(
+            choice.ends_with("Choice"),
+            "choice projection must retain its discriminant identity"
+        );
+    }
+
+    #[test]
+    fn descriptor_shape_audit_accepts_concrete_swift_aliases_but_not_generic_markers() {
+        let enum_entry = resolved_enum_fields()
+            .expect("Rust enum inventory")
+            .into_iter()
+            .next()
+            .expect("enum field");
+        let member = resolved_oneof_members()
+            .expect("Rust oneof inventory")
+            .into_iter()
+            .find(|entry| {
+                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
+            })
+            .expect("message-valued oneof");
+        let presence = resolved_presence_fields()
+            .expect("Rust presence inventory")
+            .into_iter()
+            .next()
+            .expect("presence field");
+        let enum_alias = descriptor_projection_aliases("swift", &enum_entry.enum_type)
+            .into_iter()
+            .next()
+            .expect("Swift enum alias");
+        let choice = descriptor_oneof_choice_alias(&member).expect("Swift choice alias");
+        let arm = pascal_identifier(&member.field.field);
+        let payload = member
+            .payload_type
+            .as_deref()
+            .map(descriptor_simple_name)
+            .expect("message payload");
+        let payload_alias = descriptor_projection_aliases(
+            "swift",
+            member.payload_type.as_deref().expect("message payload"),
+        )
+        .into_iter()
+        .next()
+        .expect("Swift payload alias");
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-descriptor-shape-audit-swift-alias-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("swift")).expect("audit fixture directory");
+        fs::write(
+            root.join("swift").join("RustTypedClients.swift"),
+            format!(
+                "public struct {enum_alias}: Sendable {{ public let raw: Int32 }}\n\
+                 public struct {payload_alias}: Sendable {{ public let raw: Data }}\n\
+                 public enum {choice}: Sendable {{ case {arm}({payload_alias}); case unknown(rawTag: Int32, payload: Data) }}\n\
+                 public struct Presence: Sendable {{ public let {field}; public var hasValue: Bool {{ true }} }}\n",
+                field = presence.field.field,
+            ),
+        )
+        .expect("descriptor-bound Swift fixture");
+        let findings = audit_generated_descriptor_shape_coverage(&root)
+            .expect("descriptor shape audit fixture");
+        assert!(!findings.iter().any(|finding| {
+            finding.path.contains(&format!("missing Rust enum {}", enum_entry.enum_type))
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding.path.contains(&format!(
+                "missing Rust oneof payload {}",
+                member.payload_type.as_deref().unwrap()
+            ))
+        }));
+        let _ = fs::remove_dir_all(root);
+
+        // A generic marker with a comment containing the alias cannot satisfy
+        // the source-bound check; this prevents language emitters from hiding
+        // missing concrete declarations behind documentation text.
+        let _ = payload;
     }
 
     #[test]
