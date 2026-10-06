@@ -75,7 +75,7 @@ export class MemoryOutbox implements OutboxStore {
   readonly #commands = new Map<OperationId, ClientCommand>();
 
   async load(): Promise<readonly ClientCommand[]> {
-    return [...this.#commands.values()].map(command => cloneStructuredValue(command, new Set()) as ClientCommand);
+    return Promise.all([...this.#commands.values()].map(command => assertOutboxSafe(command)));
   }
 
   async put(command: ClientCommand): Promise<void> {
@@ -514,102 +514,18 @@ function positiveBound(value: number, name: string): number {
 
 /** An offline retry record may carry refs and routing metadata, never a bearer or inline body. */
 async function assertOutboxSafe(command: ClientCommand): Promise<ClientCommand> {
-  const admitted = cloneStructuredValue(command, new Set()) as ClientCommand;
   const contracts = await NativeContracts.create();
-  return contracts.validateOfflineCommand(admitted);
+  // Rust snapshots and validates the complete structured value at the ABI
+  // boundary.  The returned value is detached, so the host never needs a
+  // second JavaScript implementation of canonical cloning or accessor rules.
+  return contracts.validateOfflineCommand(command);
 }
 
 async function structuredSize(value: unknown): Promise<number> {
-  const transportSafe = canonicalStructuredValue(value, new Set());
-  return (await NativeContracts.create()).encodeCanonicalJson(transportSafe).byteLength;
-}
-
-function cloneStructuredValue(value: unknown, ancestors: Set<object>): unknown {
-  if (
-    value === null || typeof value === "string" || typeof value === "boolean" ||
-    typeof value === "bigint"
-  ) return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new TypeError("command contains a non-finite number or inexact integer");
-    }
-    return value;
-  }
-  if (typeof value !== "object") throw new TypeError("command contains a non-data value");
-  if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (value instanceof Uint8Array) return value.slice();
-  if (ArrayBuffer.isView(value)) {
-    throw new TypeError("command contains an unsupported binary view");
-  }
-  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    throw new TypeError("command contains a non-canonical structured value");
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors);
-  if (keys.some(key => typeof key !== "string")) {
-    throw new TypeError("command contains symbol properties");
-  }
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      const cloned = new Array<unknown>(value.length);
-      for (const key of keys as string[]) {
-        if (key === "length" || descriptors[key]?.enumerable !== true) continue;
-        const index = Number(key);
-        if (!Number.isSafeInteger(index) || index < 0 || index >= value.length || String(index) !== key) {
-          throw new TypeError("command array contains custom properties");
-        }
-        const descriptor = descriptors[key];
-        if (descriptor === undefined || !("value" in descriptor)) {
-          throw new TypeError("command contains an accessor");
-        }
-        cloned[index] = cloneStructuredValue(descriptor.value, ancestors);
-      }
-      return cloned;
-    }
-    const cloned: Record<string, unknown> = {};
-    for (const key of keys as string[]) {
-      const descriptor = descriptors[key];
-      if (descriptor?.enumerable !== true) continue;
-      if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-      Object.defineProperty(cloned, key, { value: cloneStructuredValue(descriptor.value, ancestors),
-        enumerable: true, configurable: true, writable: true });
-    }
-    return cloned;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
-function canonicalStructuredValue(value: unknown, ancestors: Set<object>): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new TypeError("command contains a non-finite number or inexact integer");
-    }
-    return value;
-  }
-  if (typeof value === "bigint") return { $bigint: value.toString() };
-  if (typeof value !== "object") throw new TypeError("command contains a non-data value");
-  if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return { $bytes: [...new Uint8Array(value)] };
-  if (ArrayBuffer.isView(value)) {
-    return { $bytes: [...new Uint8Array(value.buffer, value.byteOffset, value.byteLength)] };
-  }
-  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    throw new TypeError("command contains a non-canonical structured value");
-  }
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) return value.map(child => canonicalStructuredValue(child, ancestors));
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-      key,
-      canonicalStructuredValue(child, ancestors),
-    ]));
-  } finally {
-    ancestors.delete(value);
-  }
+  // Measure the exact canonical bytes emitted by Rust.  This keeps IndexedDB
+  // capacity accounting aligned with the wire representation, including
+  // BigInt and binary values.
+  return (await NativeContracts.create()).encodeCanonicalJson(value).byteLength;
 }
 
 function openClientDatabase(

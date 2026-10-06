@@ -3,8 +3,11 @@
 
 This module performs schema adaptation only. The Rust sdk-generation verifier
 remains the authority for RPC identity, protobuf semantics, frame order, and
-terminal status. Missing bytes, frame sequences, or numeric status codes are
-rejected here so the adapter cannot manufacture qualification evidence.
+terminal status. Missing bytes, frame sequences, numeric status codes, or an
+installed package whose bytes do not match the Rust inventory are rejected
+here so the adapter cannot manufacture qualification evidence. Platform
+provenance is copied from the generated package and the actual consumer
+runtime probe; native target and runtime triples must agree.
 """
 from __future__ import annotations
 
@@ -57,6 +60,47 @@ def normalized_digest(value: Any, label: str) -> str:
     return digest
 
 
+def validate_platform_provenance(
+    expected_package: dict[str, Any],
+    binding: dict[str, Any],
+    language: str,
+) -> None:
+    expected_provenance = expected_package.get("provenance")
+    if not isinstance(expected_provenance, dict):
+        expected_provenance = expected_package
+    observed_provenance = binding.get("provenance")
+    if not isinstance(observed_provenance, dict):
+        observed_provenance = binding
+    expected_platform = expected_provenance.get("platform")
+    observed_platform = observed_provenance.get("platform")
+    if not isinstance(expected_platform, dict):
+        raise ValueError(f"{language}: Rust package platform provenance is missing")
+    if not isinstance(observed_platform, dict):
+        raise ValueError(f"{language}: executed package platform provenance is missing")
+    fields = ("execution_scope", "target_triple", "build_host_triple")
+    for field in fields:
+        expected_value = expected_platform.get(field)
+        observed_value = observed_platform.get(field)
+        if not isinstance(expected_value, str) or not expected_value:
+            raise ValueError(f"{language}: platform provenance field {field} is missing")
+        if not isinstance(observed_value, str) or not observed_value:
+            raise ValueError(f"{language}: platform provenance field {field} is missing")
+        if observed_value != expected_value:
+            raise ValueError(
+                f"{language}: executed package platform field {field} differs from the Rust producer"
+            )
+    for field in ("runtime_triple", "runtime_os", "runtime_arch"):
+        if not isinstance(observed_platform.get(field), str) or not observed_platform[field]:
+            raise ValueError(f"{language}: observed platform provenance field {field} is missing")
+    if observed_platform.get("observed") is not True:
+        raise ValueError(f"{language}: platform provenance is not backed by an observed runtime probe")
+    scope = observed_platform["execution_scope"]
+    if scope not in {"native", "portable"}:
+        raise ValueError(f"{language}: platform execution_scope must be native or portable")
+    if scope == "native" and observed_platform["target_triple"] != observed_platform["runtime_triple"]:
+        raise ValueError(f"{language}: native package target triple differs from the runtime triple")
+
+
 def authority_binding(inventory: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
     expected = inventory.get("authority")
     actual = receipt.get("authority")
@@ -84,7 +128,12 @@ def authority_binding(inventory: dict[str, Any], receipt: dict[str, Any]) -> dic
     return expected
 
 
-def executed_package_binding(receipt: dict[str, Any], language: str, authority: dict[str, Any]) -> dict[str, Any]:
+def executed_package_binding(
+    receipt: dict[str, Any],
+    language: str,
+    authority: dict[str, Any],
+    expected_package: dict[str, Any],
+) -> dict[str, Any]:
     binding = receipt.get("executed_package")
     if binding is None:
         binding = receipt.get("package_binding")
@@ -125,6 +174,50 @@ def executed_package_binding(receipt: dict[str, Any], language: str, authority: 
     for field in ("artifact_sha256", "package_artifact_sha256", "provenance_sha256"):
         if field in binding and binding[field] is not None:
             normalized_digest(binding[field], f"{language}: executed package {field}")
+    expected_digest = next(
+        (
+            expected_package.get(field)
+            for field in ("sha256", "artifact_sha256", "package_artifact_sha256")
+            if expected_package.get(field) is not None
+        ),
+        None,
+    )
+    if not isinstance(expected_digest, str):
+        raise ValueError(f"{language}: Rust inventory package archive digest is missing")
+    expected_digest = normalized_digest(expected_digest, f"{language}: Rust inventory package archive digest")
+    provenance = binding.get("provenance") if isinstance(binding.get("provenance"), dict) else binding
+    declared = next(
+        (
+            provenance.get(field)
+            for field in ("artifact_sha256", "package_artifact_sha256")
+            if provenance.get(field) is not None
+        ),
+        None,
+    )
+    if declared is None:
+        raise ValueError(f"{language}: executed package artifact_sha256 is missing")
+    declared_digest = normalized_digest(declared, f"{language}: executed package artifact_sha256")
+    if declared_digest != expected_digest:
+        raise ValueError(f"{language}: executed package artifact digest differs from the Rust inventory")
+    artifact_path = next(
+        (
+            binding.get(field) or provenance.get(field)
+            for field in ("artifact_path", "package_artifact_path", "archive_path")
+            if binding.get(field) or provenance.get(field)
+        ),
+        None,
+    )
+    if not isinstance(artifact_path, str) or not artifact_path:
+        raise ValueError(
+            f"{language}: executed package artifact_path is missing; declared provenance cannot prove installed bytes"
+        )
+    path = Path(artifact_path)
+    if not path.is_file():
+        raise ValueError(f"{language}: executed package artifact {artifact_path!r} cannot be read")
+    actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual_digest != declared_digest:
+        raise ValueError(f"{language}: executed package artifact bytes do not match artifact_sha256")
+    validate_platform_provenance(expected_package, binding, language)
     return binding
 
 
@@ -169,7 +262,10 @@ def normalize(inventory: dict[str, Any], receipt: dict[str, Any], language: str)
     if not isinstance(observations, list):
         raise ValueError("runtime receipt observations are missing")
     authority = authority_binding(inventory, receipt)
-    package_binding = executed_package_binding(receipt, language, authority)
+    packages = inventory.get("packages")
+    if not isinstance(packages, dict) or not isinstance(packages.get(language), dict):
+        raise ValueError(f"Rust RPD inventory packages.{language} is missing")
+    package_binding = executed_package_binding(receipt, language, authority, packages[language])
     observed = {}
     for item in observations:
         if not isinstance(item, dict):

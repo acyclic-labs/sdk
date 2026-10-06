@@ -21,14 +21,14 @@ class RustSemanticTypesTest {
   }
   @Test void presenceAndUnknownUnionRemainExplicit() {
     assertEquals(Optional.empty(), RustSemanticTypes.present("x", false));
-    RustSemanticTypes.WireChoice unknown = new RustSemanticTypes.Unknown(99, ByteString.EMPTY);
+    RustSemanticTypes.WireChoice unknown = new RustSemanticTypes.Unknown(99, RustSemanticTypes.WireBytes.of(ByteString.EMPTY));
     assertEquals(99, ((RustSemanticTypes.Unknown) unknown).tag());
   }
   @Test void publicRequestFactoriesConvertNominalValuesToWireFields() {
     var invoke = RustTypedRequests.actorsInvokeActor(RustSemanticTypes.ActorId.of("actor-1"), RustSemanticTypes.MethodName.of("GET"));
     assertEquals("actor-1", invoke.getActorId());
     assertEquals("GET", invoke.getMethod());
-    var read = RustTypedRequests.streamRead(RustSemanticTypes.PageLimit.of(5));
+    var read = RustTypedRequests.streamRead(RustSemanticTypes.StreamPageLimit.of(5));
     assertEquals(5, read.getLimit());
   }
 }

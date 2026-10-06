@@ -32,6 +32,10 @@ pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 pub const MAX_LIMIT_RENDER_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 /// Maximum number of attachments in one message.
 pub const MAX_LIMIT_ATTACHMENTS: usize = 65_536;
+/// Maximum number of attachments encoded inline before a canonical manifest is used.
+pub const MAX_INLINE_ATTACHMENTS: usize = 128;
+/// Canonical media type for the Rust-owned attachment manifest representation.
+pub const ATTACHMENT_MANIFEST_MEDIA_TYPE: &str = "application/vnd.acyclic.harness.attachments+json";
 /// Maximum model steps, events, and context messages under the wire contract.
 pub const MAX_LIMIT_MODEL_STEPS: usize = 1_000_000;
 /// Maximum streamed model events per step.

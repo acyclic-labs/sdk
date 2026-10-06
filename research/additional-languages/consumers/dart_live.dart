@@ -594,10 +594,33 @@ Future<Object?> invoke(String key, ClientChannel channel, List<List<int>> frameB
 
 Future<void> main(List<String> args) async {
   final manifestPath = arg(args, '--manifest', 'rust-typed-request-manifest.json');
+  final packageRoot = arg(args, '--package-root', Directory.current.path);
+  final artifactPath = arg(args, '--artifact-path', '');
   final endpoint = arg(args, '--endpoint', '127.0.0.1:50051');
   final output = arg(args, '--output', 'dart-live-receipt.json');
   final timeoutMs = int.parse(arg(args, '--timeout-ms', '5000'));
   final manifest = jsonDecode(await File(manifestPath).readAsString()) as Map<String, dynamic>;
+  final provenancePath = File('${packageRoot}${Platform.pathSeparator}lib${Platform.pathSeparator}src${Platform.pathSeparator}generated${Platform.pathSeparator}provenance.json');
+  final packageProvenance = provenancePath.existsSync()
+      ? jsonDecode(await provenancePath.readAsString()) as Map<String, dynamic>
+      : <String, dynamic>{};
+  final artifactSha256 = artifactPath.isEmpty ? null : crypto.sha256.convert(await File(artifactPath).readAsBytes()).toString();
+  final version = Platform.version;
+  final buildHost = RegExp(r'on "([^"]+)"').firstMatch(version)?.group(1) ?? Platform.operatingSystem;
+  final runtimePlatform = <String, dynamic>{
+    ...((packageProvenance['platform'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{}),
+    'runtime_triple': buildHost,
+    'runtime_os': Platform.operatingSystem,
+    'runtime_arch': buildHost.split('_').last,
+    'observed': true,
+  };
+  final executedPackage = <String, dynamic>{
+    ...packageProvenance,
+    'artifact_path': artifactPath.isEmpty ? null : File(artifactPath).absolute.path,
+    'artifact_sha256': artifactSha256,
+    'platform': runtimePlatform,
+    'provenance': <String, dynamic>{...packageProvenance, 'platform': runtimePlatform},
+  };
   final split = endpoint.split(':');
   final channel = ClientChannel(split.first, port: int.parse(split.last), options: const ChannelOptions(credentials: ChannelCredentials.insecure()));
   final results = <Map<String, dynamic>>[];
@@ -691,11 +714,10 @@ Future<void> main(List<String> args) async {
     results.add(result);
   }
   await channel.shutdown();
-  final receipt = <String, dynamic>{'schema': 'acyclic.sdk.rpd.dart-live-receipt.v1', 'authority': manifest['authority'], 'endpoint': endpoint, 'method_count': results.length, 'passed': results.where((r) => r['status'] == 'semantic_passed').length, 'transport_succeeded': results.where((r) => r['status'] == 'transport_success_pending_semantics').length, 'pending': results.where((r) => r['status'] == 'pending_missing_typed_request').length, 'methods': results};
+  final receipt = <String, dynamic>{'schema': 'acyclic.sdk.rpd.dart-live-receipt.v1', 'authority': manifest['authority'], 'endpoint': endpoint, 'method_count': results.length, 'passed': results.where((r) => r['status'] == 'semantic_passed').length, 'transport_succeeded': results.where((r) => r['status'] == 'transport_success_pending_semantics').length, 'pending': results.where((r) => r['status'] == 'pending_missing_typed_request').length, 'executed_package': executedPackage, 'methods': results};
   await File(output).writeAsString(const JsonEncoder.withIndent('  ').convert(receipt) + '\n');
   stdout.writeln(jsonEncode({'method_count': results.length, 'passed': receipt['passed'], 'transport_succeeded': receipt['transport_succeeded'], 'pending': receipt['pending']}));
 }
-
 
 
 

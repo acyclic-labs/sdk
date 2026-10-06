@@ -39,6 +39,28 @@ $schemaRoots = $schemaRootOption === null
     : [realpath($schemaRootOption) ?: throw new RuntimeException('schema root does not exist: ' . $schemaRootOption)];
 $manifestPath = $manifestOption === null ? null : (realpath($manifestOption) ?: throw new RuntimeException('authority manifest does not exist: ' . $manifestOption));
 $authority = $manifestPath === null ? null : json_decode((string) file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+$authoritySourceGitSha = is_array($authority) ? ($authority['source_git_sha'] ?? null) : null;
+$authorityModelDigest = is_array($authority) ? ($authority['source_revision'] ?? null) : null;
+$sourceGitSha = is_string($authoritySourceGitSha) && $authoritySourceGitSha !== ''
+    ? $authoritySourceGitSha
+    : (getenv('GIT_COMMIT') ?: null);
+$rustModelDigest = is_string($authorityModelDigest) && $authorityModelDigest !== ''
+    ? $authorityModelDigest
+    : (getenv('ACYCLIC_RUST_MODEL_DIGEST') ?: null);
+if (!is_string($sourceGitSha) || !preg_match('/\\A[0-9a-f]{40}\\z/i', $sourceGitSha)) {
+    throw new RuntimeException('Rust authority must provide a 40-character source_git_sha');
+}
+if (!is_string($rustModelDigest) || !preg_match('/\\A[0-9a-f]{64}\\z/i', $rustModelDigest)) {
+    throw new RuntimeException('Rust authority must provide a 64-character source_revision model digest');
+}
+$environmentSourceGitSha = getenv('GIT_COMMIT');
+if ($environmentSourceGitSha !== false && $environmentSourceGitSha !== '' && strcasecmp($environmentSourceGitSha, $sourceGitSha) !== 0) {
+    throw new RuntimeException('GIT_COMMIT does not match the Rust authority source_git_sha');
+}
+$environmentModelDigest = getenv('ACYCLIC_RUST_MODEL_DIGEST');
+if ($environmentModelDigest !== false && $environmentModelDigest !== '' && strcasecmp($environmentModelDigest, $rustModelDigest) !== 0) {
+    throw new RuntimeException('ACYCLIC_RUST_MODEL_DIGEST does not match the Rust authority source_revision');
+}
 $families = is_array($authority['families'] ?? null) ? $authority['families'] : [];
 $schemaNames = array_values(array_filter(array_map(
     static fn (mixed $family): ?string => is_array($family) && is_string($family['source'] ?? null) ? $family['source'] : null,
@@ -193,7 +215,9 @@ foreach ($iterator as $path) {
 sort($generated);
 $provenance = [
     'generator' => $lock,
-    'source_revision' => getenv('GIT_COMMIT') ?: 'unknown',
+    'source_revision' => $sourceGitSha,
+    'source_git_sha' => $sourceGitSha,
+    'rust_model_digest' => $rustModelDigest,
     'generator_lock_sha256' => sha256File($root . '/generator.lock.json'),
     'schema_inputs_sha256' => array_map('sha256File', $schemaFiles),
     'schema_root' => $schemaRootOption === null ? 'diagnostic repository proto roots' : str_replace('\\', '/', $schemaRoots[0]),
@@ -202,6 +226,11 @@ $provenance = [
     'authority_manifest_schema' => $authority['schema'] ?? null,
     'authority_source_revision' => $authority['source_revision'] ?? null,
     'authority_exporter' => $authority['exporter'] ?? null,
+    'platform' => [
+        'execution_scope' => 'portable',
+        'target_triple' => 'portable',
+        'build_host_triple' => strtolower(PHP_OS_FAMILY . '-' . php_uname('m')),
+    ],
     'generated_files' => $generated,
 ];
 file_put_contents($output . '/provenance.json', json_encode($provenance, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . PHP_EOL);

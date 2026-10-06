@@ -89,6 +89,26 @@ jobs:
             -NativeOnly
           if ($LASTEXITCODE -ne 0) { throw "Native producer failed for $target" }
 
+      - name: Stage the generated ABI header and Windows import library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $target = '${{ matrix.rust_target }}'
+          $rid = '${{ matrix.rid }}'
+          $release = Join-Path $env:RUNNER_TEMP "embedded-native-output/rust-target/$target/release"
+          $header = @(Get-ChildItem -LiteralPath (Join-Path $release 'build') -Recurse -File -Filter 'acyclic_embedded_prototype.h' | Select-Object -First 1)
+          if ($header.Count -ne 1) { throw "Expected one generated embedded ABI header for $target" }
+          $nativeRoot = Join-Path $env:RUNNER_TEMP 'embedded-native-output/native'
+          $abiRoot = Join-Path $nativeRoot 'abi'
+          New-Item -ItemType Directory -Force -Path $abiRoot | Out-Null
+          Copy-Item -LiteralPath $header[0].FullName -Destination (Join-Path $abiRoot 'acyclic_embedded_prototype.h') -Force
+          if ($target -like '*-pc-windows-msvc') {
+            $import = Join-Path $release 'acyclic_sdk_embedded_prototype.dll.lib'
+            if (-not (Test-Path -LiteralPath $import -PathType Leaf)) { throw "Rust Windows import library is missing for $target" }
+            Copy-Item -LiteralPath $import -Destination (Join-Path (Join-Path $nativeRoot $rid) 'acyclic_sdk_embedded_prototype.dll.lib') -Force
+          }
+
       - name: Upload one verified RID artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -188,6 +208,59 @@ jobs:
             -OutputRoot "$env:RUNNER_TEMP/embedded-native-merged"
           if ($LASTEXITCODE -ne 0) { throw 'Strict native manifest merge failed.' }
 
+      - name: Merge and verify the shared C ABI inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $merged = Join-Path $env:RUNNER_TEMP 'embedded-native-merged'
+          $abiDestination = Join-Path $merged 'abi'
+          New-Item -ItemType Directory -Force -Path $abiDestination | Out-Null
+          $expectedHeaderName = 'acyclic_embedded_prototype.h'
+          $headerCandidates = @()
+          $importRecords = @()
+          foreach ($input in @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/embedded-native-inputs" -Directory)) {
+            $manifest = @(Get-ChildItem -LiteralPath $input.FullName -Recurse -File -Filter 'native-manifest.json')
+            if ($manifest.Count -ne 1) { throw "Expected one native manifest under $($input.FullName)" }
+            $nativeRoot = $manifest[0].Directory.FullName
+            $header = Join-Path $nativeRoot "abi/$expectedHeaderName"
+            if (-not (Test-Path -LiteralPath $header -PathType Leaf)) { throw "Generated ABI header is missing from $nativeRoot" }
+            $headerCandidates += [pscustomobject]@{
+              Path = $header
+              Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $header).Hash.ToLowerInvariant()
+              Bytes = (Get-Item -LiteralPath $header).Length
+            }
+            $records = @((Get-Content -LiteralPath $manifest[0].FullName -Raw | ConvertFrom-Json).assets)
+            foreach ($record in $records) {
+              if ([string]$record.rid -like 'win-*') {
+                $import = Join-Path (Join-Path $nativeRoot ([string]$record.rid)) 'acyclic_sdk_embedded_prototype.dll.lib'
+                if (-not (Test-Path -LiteralPath $import -PathType Leaf)) { throw "Windows import library is missing for $($record.rid)" }
+                $importRecords += [pscustomobject]@{
+                  Rid = [string]$record.rid
+                  Path = $import
+                  Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $import).Hash.ToLowerInvariant()
+                  Bytes = (Get-Item -LiteralPath $import).Length
+                }
+              }
+            }
+          }
+          if ($headerCandidates.Count -ne 8) { throw "Expected eight ABI header copies, found $($headerCandidates.Count)" }
+          $headerHashes = @($headerCandidates | Select-Object -ExpandProperty Sha256 -Unique)
+          if ($headerHashes.Count -ne 1) { throw 'ABI headers differ across native producer jobs.' }
+          Copy-Item -LiteralPath $headerCandidates[0].Path -Destination (Join-Path $abiDestination $expectedHeaderName) -Force
+          if ($importRecords.Count -ne 2) { throw "Expected two Windows import libraries, found $($importRecords.Count)" }
+          foreach ($record in $importRecords) {
+            $destination = Join-Path (Join-Path $merged $record.Rid) 'acyclic_sdk_embedded_prototype.dll.lib'
+            Copy-Item -LiteralPath $record.Path -Destination $destination -Force
+          }
+          $abiManifest = [ordered]@{
+            schema = 'acyclic.sdk.embedded.abi-inputs.v1'
+            source_revision = (git rev-parse HEAD).Trim()
+            header = [ordered]@{ path = 'abi/acyclic_embedded_prototype.h'; sha256 = $headerHashes[0]; bytes = [int64]$headerCandidates[0].Bytes }
+            windows_import_libraries = @($importRecords | ForEach-Object { [ordered]@{ rid = $_.Rid; path = "$($_.Rid)/acyclic_sdk_embedded_prototype.dll.lib"; sha256 = $_.Sha256; bytes = [int64]$_.Bytes } })
+          }
+          $abiManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $merged 'abi-manifest.json') -Encoding utf8NoBOM
+
       - name: Build the .NET package from the aggregate only
         shell: pwsh
         run: |
@@ -217,6 +290,147 @@ jobs:
             ${{ runner.temp }}/embedded-native-merged
             ${{ runner.temp }}/dotnet-embedded
             ${{ github.workspace }}/target/jvm-embedded
+          if-no-files-found: error
+          retention-days: 14
+
+  abi-installed-consumer:
+    name: Installed C/C++/Python ABI consumer ${{ matrix.rid }}
+    needs: aggregate-and-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: blacksmith-4vcpu-windows-2025
+            os: windows
+          - rid: win-arm64
+            runner: windows-11-vs2026-arm
+            os: windows
+          - rid: linux-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+            os: unix
+          - rid: linux-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            os: unix
+          - rid: osx-x64
+            runner: macos-15-intel
+            os: unix
+            osx_arch: x86_64
+          - rid: osx-arm64
+            runner: macos-15
+            os: unix
+            osx_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_revision || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download aggregate native package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: embedded-native-packages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embedded-native-packages
+      - name: Install pinned CMake and Ninja
+        if: matrix.os == 'unix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --version
+          ninja --version
+      - name: Qualify installed C/C++/Python consumers on Windows
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/embedded-native-packages
+          RID: ${{ matrix.rid }}
+          BUILD_DIRECTORY: ${{ runner.temp }}/embedded-abi-installed
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $merged = @(Get-ChildItem -LiteralPath $env:PACKAGE_ROOT -Recurse -File -Filter 'abi-manifest.json' | Select-Object -First 1)
+          if ($merged.Count -ne 1) { throw 'Aggregate ABI manifest is missing.' }
+          $env:PACKAGE_ROOT = $merged[0].Directory.FullName
+          & "$env:GITHUB_WORKSPACE/scripts/qualify-embedded-abi-installed.ps1" `
+            -PackageRoot $env:PACKAGE_ROOT -Rid $env:RID -BuildDirectory $env:BUILD_DIRECTORY
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Windows ABI consumer qualification failed.' }
+      - name: Qualify installed C/C++/Python consumers on Unix and Darwin
+        if: matrix.os == 'unix'
+        shell: bash
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/embedded-native-packages
+          RID: ${{ matrix.rid }}
+          BUILD_DIRECTORY: ${{ runner.temp }}/embedded-abi-installed
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.osx_arch }}
+        run: |
+          set -euo pipefail
+          manifest="$(find "$PACKAGE_ROOT" -type f -name abi-manifest.json -print -quit)"
+          merged="$(dirname "$manifest")"
+          test -n "$merged"
+          export PACKAGE_ROOT="$merged"
+          bash "$GITHUB_WORKSPACE/scripts/qualify-embedded-abi-installed.sh"
+      - name: Upload installed ABI receipt
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: embedded-abi-installed-${{ matrix.rid }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embedded-abi-installed/abi-installed-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  abi-installed-consumer-musl:
+    name: Installed C/C++/Python ABI consumer ${{ matrix.rid }}
+    needs: aggregate-and-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-musl-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+            image: rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452
+          - rid: linux-musl-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            image: rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_revision || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download aggregate native package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: embedded-native-packages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embedded-native-packages
+      - name: Qualify installed musl C/C++/Python consumers
+        shell: bash
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/embedded-native-packages
+          RID: ${{ matrix.rid }}
+          BUILD_DIRECTORY: ${{ runner.temp }}/embedded-abi-installed
+          MUSL_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          manifest="$(find "$PACKAGE_ROOT" -type f -name abi-manifest.json -print -quit)"
+          merged="$(dirname "$manifest")"
+          test -n "$merged"
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$merged:/pkg:ro" \
+            --volume "$BUILD_DIRECTORY:/out" \
+            --env RID="$RID" \
+            "$MUSL_IMAGE" sh -euxc '
+              apk add --no-cache bash build-base cmake ninja python3
+              export ROOT=/src PACKAGE_ROOT=/pkg BUILD_DIRECTORY=/out
+              bash /src/scripts/qualify-embedded-abi-installed.sh
+            '
+      - name: Upload installed ABI receipt
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: embedded-abi-installed-${{ matrix.rid }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embedded-abi-installed/abi-installed-receipt.json
           if-no-files-found: error
           retention-days: 14
 
@@ -490,6 +704,8 @@ jobs:
       - dotnet-installed-consumer-musl
       - jvm-installed-consumer
       - jvm-installed-consumer-musl
+      - abi-installed-consumer
+      - abi-installed-consumer-musl
     runs-on: blacksmith-4vcpu-windows-2025
     steps:
       - name: Require every installed consumer matrix to pass
@@ -501,6 +717,8 @@ jobs:
             dotnet_musl = '${{ needs.dotnet-installed-consumer-musl.result }}'
             jvm = '${{ needs.jvm-installed-consumer.result }}'
             jvm_musl = '${{ needs.jvm-installed-consumer-musl.result }}'
+            abi = '${{ needs.abi-installed-consumer.result }}'
+            abi_musl = '${{ needs.abi-installed-consumer-musl.result }}'
           }
           foreach ($entry in $results.GetEnumerator()) {
             if ($entry.Value -ne 'success') { throw "Installed consumer lane $($entry.Key) finished with $($entry.Value)." }

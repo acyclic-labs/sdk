@@ -145,21 +145,21 @@ mod tests {
         fn authorize_operation_control<'a>(
             &'a self,
             _: &'a crate::wire_api::OperationControlRequest,
-        ) -> futures::future::BoxFuture<'a, Result<()>> {
+        ) -> crate::BoxFuture<'a, Result<()>> {
             async { Ok(()) }.boxed()
         }
 
         fn handshake<'a>(
             &'a self,
             request: wire::HandshakeRequest,
-        ) -> futures::future::BoxFuture<'a, Result<wire::HandshakeResponse>> {
+        ) -> crate::BoxFuture<'a, Result<wire::HandshakeResponse>> {
             async move { negotiate(&request, &wire::CapabilitySet::default()) }.boxed()
         }
 
         fn submit<'a>(
             &'a self,
             command: wire::CommandEnvelope,
-        ) -> futures::future::BoxFuture<'a, Result<wire::Admission>> {
+        ) -> crate::BoxFuture<'a, Result<wire::Admission>> {
             async move {
                 Ok(wire::Admission {
                     operation: command.operation,
@@ -173,7 +173,7 @@ mod tests {
         fn replay<'a>(
             &'a self,
             _: wire::ResumeRequest,
-        ) -> futures::future::BoxFuture<
+        ) -> crate::BoxFuture<
             'a,
             Result<futures::stream::BoxStream<'static, Result<wire::Delivery>>>,
         > {
@@ -195,7 +195,7 @@ mod tests {
         fn observe<'a>(
             &'a self,
             request: wire::ObserveRequest,
-        ) -> futures::future::BoxFuture<'a, Result<wire::OperationStatus>> {
+        ) -> crate::BoxFuture<'a, Result<wire::OperationStatus>> {
             async move {
                 Ok(wire::OperationStatus {
                     operation: Some(wire::OperationIdentity {
@@ -216,7 +216,7 @@ mod tests {
         fn cancel<'a>(
             &'a self,
             request: wire::CancelRequest,
-        ) -> futures::future::BoxFuture<'a, Result<wire::CancelResponse>> {
+        ) -> crate::BoxFuture<'a, Result<wire::CancelResponse>> {
             async move {
                 let operation = Some(wire::OperationIdentity {
                     operation_id: request.operation_id,

@@ -10,7 +10,7 @@ use crate::{
     fork::{ForkSeed, ResourceRevision},
     resources::{GenerationRef, ProviderRef},
 };
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
 

@@ -13,7 +13,7 @@ use crate::resources::{
     ArtifactRef, CheckpointRef, ContextRef, GenerationRef, ProviderRef, ResourceRef, StreamRef,
 };
 use crate::{AgentId, Capabilities, Error, OperationId, Result};
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::{future::Future, pin::Pin};

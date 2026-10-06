@@ -1708,7 +1708,9 @@ fn snapshot_js_json(
         let ordinary: JsValue =
             js_sys::Object::get_prototype_of(&js_sys::Object::new().into()).into();
         if !prototype.is_null() && !js_sys::Object::is(&prototype, &ordinary) {
-            return Err(JsValue::from_str("only plain objects are canonical JSON"));
+            return Err(JsValue::from_str(
+                "command contains a non-canonical structured value",
+            ));
         }
     }
     ancestors.push(value.clone());
@@ -1750,7 +1752,7 @@ fn snapshot_js_json(
             let key_text = key
                 .as_string()
                 .ok_or_else(|| JsValue::from_str("JSON object key is invalid"))?;
-            let child = js_sys::Reflect::get(value, &key)?;
+            let child = snapshot_data_property(object, &key)?;
             let admitted = snapshot_js_json(&child, depth + 1, ancestors, nodes)?;
             if snapshot.insert(key_text, admitted).is_some() {
                 return Err(JsValue::from_str("duplicate JSON object key"));
@@ -1760,6 +1762,25 @@ fn snapshot_js_json(
     };
     ancestors.pop();
     Ok(snapshot)
+}
+
+/// Read only data properties at the Rust boundary.  A getter is executable
+/// policy supplied by the host and can change between validation and storage;
+/// requiring a detached data property keeps canonical admission reproducible.
+fn snapshot_data_property(
+    object: &js_sys::Object,
+    key: &JsValue,
+) -> Result<JsValue, JsValue> {
+    let descriptor = js_sys::Reflect::get_own_property_descriptor(object, key)?;
+    if descriptor.is_undefined() {
+        return Err(JsValue::from_str("canonical JSON property is unavailable"));
+    }
+    let getter = js_sys::Reflect::has(&descriptor, &JsValue::from_str("get"))?;
+    let setter = js_sys::Reflect::has(&descriptor, &JsValue::from_str("set"))?;
+    if getter || setter {
+        return Err(JsValue::from_str("command contains an accessor property"));
+    }
+    js_sys::Reflect::get(object, key)
 }
 
 /// Opaque synchronous reducer hosted in WebAssembly.

@@ -30,8 +30,10 @@ export const ACTORS_PUBLIC_FIELD_BINDINGS = [
 export const ACTORS_PUBLIC_NESTED_ROUTES = [
 ] as const;
 
+export type RustOwnedKnownWireMessage = AddSubscriptionRequest | AddSubscriptionResponse | CheckpointActorRequest | CheckpointActorResponse | CreateActorRequest | CreateActorResponse | InspectActorRequest | InspectActorResponse | InvokeActorRequest | InvokeActorResponse | RemoveSubscriptionRequest | RemoveSubscriptionResponse | ResumeSubscriptionRequest | ResumeSubscriptionResponse | UpdateActorRequest | UpdateActorResponse;
+
 export type RustOwnedWireChoice =
-  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "known"; readonly value: RustOwnedKnownWireMessage } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
 import type * as RustWire from "../generated/proto/actors/v1/actors_pb.js";

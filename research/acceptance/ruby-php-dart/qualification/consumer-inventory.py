@@ -112,6 +112,18 @@ def package_check(path: Path) -> dict[str, Any]:
     }
 
 
+def require_platform_artifact_metadata(details: dict[str, Any], language: str) -> None:
+    provenance = details.get("provenance")
+    platform = provenance.get("platform") if isinstance(provenance, dict) else None
+    if not isinstance(platform, dict):
+        raise ValueError(f"{language}: generated package provenance is missing platform metadata")
+    for field in ("execution_scope", "target_triple", "build_host_triple"):
+        if not isinstance(platform.get(field), str) or not platform[field]:
+            raise ValueError(f"{language}: generated package platform field {field} is missing")
+    if platform.get("execution_scope") not in {"native", "portable"}:
+        raise ValueError(f"{language}: generated package platform execution_scope is invalid")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--authority-dir", type=Path, required=True)
@@ -131,6 +143,7 @@ def main() -> int:
         if not sep or not lang or not value:
             raise SystemExit(f"invalid --archive {item!r}; expected LANG=ZIP")
         package_artifacts[lang] = package_check(Path(value))
+        require_platform_artifact_metadata(package_artifacts[lang], lang)
 
     inventory: list[dict[str, Any]] = []
     for method in methods:

@@ -39,8 +39,10 @@ export const WORKERS_PUBLIC_FIELD_BINDINGS = [
 export const WORKERS_PUBLIC_NESTED_ROUTES = [
 ] as const;
 
+export type RustOwnedKnownWireMessage = CancelJobRequest | CancelJobResponse | InspectJobRequest | InspectJobResponse | InvokeDeploymentRequest | InvokeResponse | InvokeVersionRequest | PublishVersionRequest | PublishVersionResponse | SelectDeploymentRequest | SelectDeploymentResponse | SubmitJobRequest | SubmitJobResponse;
+
 export type RustOwnedWireChoice =
-  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "known"; readonly value: RustOwnedKnownWireMessage } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
 import type * as RustWire from "../generated/proto/workers/v1/workers_pb.js";

@@ -30,15 +30,24 @@ CC="${CC:-cc}"
 MUSL_DYNAMIC=0
 if [[ "$RUST_TARGET" == *-unknown-linux-musl ]]; then
   MUSL_DYNAMIC=1
+  musl_compiler_for_target() {
+    local candidate machine
+    for candidate in "$@"; do
+      [[ -n "$candidate" ]] || continue
+      command -v "$candidate" >/dev/null 2>&1 || continue
+      machine="$($candidate -dumpmachine 2>/dev/null || true)"
+      [[ "$machine" == *musl* ]] || continue
+      printf '%s' "$(command -v "$candidate")"
+      return 0
+    done
+    return 1
+  }
   case "$RUST_TARGET" in
     x86_64-unknown-linux-musl)
-      MUSL_CC="${MUSL_CC:-$(command -v x86_64-linux-musl-gcc || command -v musl-gcc || true)}"
+      MUSL_CC="${MUSL_CC:-$(musl_compiler_for_target x86_64-linux-musl-gcc musl-gcc gcc || true)}"
       ;;
     aarch64-unknown-linux-musl)
-      MUSL_CC="${MUSL_CC:-$(command -v aarch64-linux-musl-gcc || true)}"
-      if [[ -z "$MUSL_CC" && "$(uname -m)" == "aarch64" ]]; then
-        MUSL_CC="$(command -v musl-gcc || true)"
-      fi
+      MUSL_CC="${MUSL_CC:-$(musl_compiler_for_target aarch64-linux-musl-gcc musl-gcc gcc || true)}"
       ;;
     *)
       echo "unsupported musl target: $RUST_TARGET" >&2
@@ -108,6 +117,16 @@ command -v ninja >/dev/null
 command -v "$CXX" >/dev/null
 command -v "$CC" >/dev/null
 command -v python3 >/dev/null
+
+# The x64 macOS package is intentionally built on the shared ARM64 runner.
+# Run its Python consumer through Rosetta so the process architecture matches
+# the dylib being tested; loading an x86_64 dylib in host ARM64 Python fails
+# before any ABI checks execute.
+PYTHON_RUNNER=(python3)
+if [[ "$(uname -s)" == "Darwin" && "${CMAKE_OSX_ARCHITECTURES:-}" == "x86_64" && "$(uname -m)" == "arm64" ]]; then
+  command -v arch >/dev/null
+  PYTHON_RUNNER=(arch -x86_64 python3)
+fi
 if command -v rustup >/dev/null 2>&1; then
   rustup target list --installed | grep -Fx "$RUST_TARGET" >/dev/null || {
     echo "Rust target is not installed: $RUST_TARGET" >&2
@@ -159,7 +178,7 @@ INSTALLED_HEADER="$PREFIX/include/acyclic_embedded_prototype.h"
 test -f "$INSTALLED_RUNTIME"
 test -f "$INSTALLED_HEADER"
 assert_darwin_architecture "$INSTALLED_RUNTIME"
-python3 - "$PREFIX" "$RUNTIME_NAME" <<'PY'
+"${PYTHON_RUNNER[@]}" - "$PREFIX" "$RUNTIME_NAME" <<'PY'
 import pathlib
 import sys
 
@@ -190,7 +209,7 @@ C_CONSUMER="$BUILD_DIRECTORY/c-consumer"
 assert_musl_executable "$C_CONSUMER"
 env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" "$C_CONSUMER"
 env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" \
-  python3 "$ROOT/rust/crates/sdk-embedded-prototype/tests/python_consumer.py" "$INSTALLED_RUNTIME"
+    "${PYTHON_RUNNER[@]}" "$ROOT/rust/crates/sdk-embedded-prototype/tests/python_consumer.py" "$INSTALLED_RUNTIME"
 
 cmake -S "$CONSUMER_SOURCE/install-consumer" -B "$INSTALLED_BUILD" -G Ninja \
   -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_PREFIX_PATH="$PREFIX" \
@@ -199,7 +218,7 @@ cmake --build "$INSTALLED_BUILD"
 assert_musl_executable "$INSTALLED_BUILD/acyclic_cpp_installed_consumer"
 env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" "$INSTALLED_BUILD/acyclic_cpp_installed_consumer"
 
-python3 - "$BUILD_DIRECTORY/platform-package.json" "$PREFIX" "$RUST_TARGET" "$RUNTIME_NAME" "$ROOT" "$INSTALLED_RUNTIME" <<'PY'
+"${PYTHON_RUNNER[@]}" - "$BUILD_DIRECTORY/platform-package.json" "$PREFIX" "$RUST_TARGET" "$RUNTIME_NAME" "$ROOT" "$INSTALLED_RUNTIME" <<'PY'
 import hashlib
 import json
 import pathlib
