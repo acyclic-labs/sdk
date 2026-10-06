@@ -2061,4 +2061,97 @@ mod tests {
         }
         Ok(())
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x5eed),
+            failure_persistence: None,
+            ..proptest::prelude::ProptestConfig::with_cases(64)
+        })]
+
+        /// Record and child pages concatenate to exactly the full, ordered
+        /// set: no page skips or repeats an entry, whatever its bound.
+        #[test]
+        fn pages_neither_skip_nor_repeat(
+            names in proptest::collection::btree_set("[a-c]{1,2}(/[a-c])?", 1..12),
+            records in 1..40_usize,
+            limit in 1..6_u32,
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+            let provider = MemoryStream::default();
+            runtime.block_on(async {
+                for name in &names {
+                    provider
+                        .append(AppendRequest {
+                            path: path(&format!("root/{name}"))?,
+                            records: vec![Bytes::from_static(b"x")],
+                            if_tail: None,
+                            idempotency_key: None,
+                        })
+                        .await?;
+                }
+                let log = path("log")?;
+                let values: Vec<_> = (0..records).map(|value| Bytes::from(value.to_string())).collect();
+                for chunk in values.chunks(7) {
+                    provider
+                        .append(AppendRequest {
+                            path: log.clone(),
+                            records: chunk.to_vec(),
+                            if_tail: None,
+                            idempotency_key: None,
+                        })
+                        .await?;
+                }
+
+                let mut read = Vec::new();
+                loop {
+                    let page: Vec<_> = provider
+                        .read(ReadRequest {
+                            path: log.clone(),
+                            from: read.len() as u64,
+                            limit,
+                        })
+                        .await?
+                        .collect::<Vec<_>>()
+                        .await
+                        .into_iter()
+                        .collect::<Result<_, _>>()?;
+                    if page.is_empty() {
+                        break;
+                    }
+                    proptest::prop_assert!(page.len() <= limit as usize);
+                    read.extend(page);
+                }
+                proptest::prop_assert!(read.iter().enumerate().all(|(index, record)| record.sequence == index as u64));
+                proptest::prop_assert_eq!(read.into_iter().map(|record| record.value).collect::<Vec<_>>(), values);
+
+                // Only first segments are direct children; deeper paths imply them.
+                let expected: std::collections::BTreeSet<_> = names
+                    .iter()
+                    .map(|name| name.split('/').next().unwrap_or_default().to_owned())
+                    .collect();
+                let (mut found, mut after, mut version) = (Vec::new(), None, None);
+                loop {
+                    let page = provider
+                        .children_page(ChildrenPageRequest {
+                            parent: Some(path("root")?),
+                            after,
+                            hierarchy_version: version,
+                            limit,
+                        })
+                        .await?;
+                    proptest::prop_assert!(page.children.len() <= limit as usize);
+                    version = Some(page.hierarchy_version);
+                    found.extend(page.children.into_iter().map(|child| child.path.to_string()));
+                    after = page.next_after;
+                    if after.is_none() {
+                        break;
+                    }
+                }
+                let expected: Vec<_> = expected.into_iter().map(|name| format!("root/{name}")).collect();
+                proptest::prop_assert_eq!(found, expected);
+                Ok(())
+            })?;
+        }
+    }
 }
