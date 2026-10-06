@@ -7451,6 +7451,130 @@ mod tests {
     }
 
     #[test]
+    fn request_bindings_resolve_against_rust_descriptors() {
+        let fields = resolved_request_fields().expect("all request descriptors resolve");
+        let mut missing = Vec::new();
+        for binding in PUBLIC_FIELD_BINDINGS
+            .iter()
+            .filter(|binding| binding.direction == PublicFieldDirection::Request)
+        {
+            let resolved = fields.iter().find(|field| {
+                field.family == binding.family
+                    && field.field == binding.wire_field
+                    && field.message_path.rsplit('.').next() == Some(binding.message)
+            });
+            let Some(resolved) = resolved else {
+                missing.push(format!(
+                    "{}::{}::{} (available={:?})",
+                    binding.family,
+                    binding.message,
+                    binding.wire_field,
+                    fields
+                        .iter()
+                        .filter(|field| field.family == binding.family
+                            && field.field == binding.wire_field)
+                        .map(|field| field.message_path.as_str())
+                        .collect::<Vec<_>>()
+                ));
+                continue;
+            };
+            assert!(
+                resolved.number > 0,
+                "request binding {}::{}::{} has an invalid field number",
+                binding.family,
+                binding.message,
+                binding.wire_field
+            );
+            assert_eq!(
+                resolved.semantic_type.as_deref(),
+                Some(binding.semantic_type),
+                "request binding {}::{}::{} lost its semantic type",
+                binding.family,
+                binding.message,
+                binding.wire_field
+            );
+            assert!(
+                semantic_binding_compatible(
+                    binding.semantic_type,
+                    resolved.wire_type,
+                    resolved.type_name.as_deref(),
+                ),
+                "request binding {}::{}::{} is incompatible with its descriptor wire type",
+                binding.family,
+                binding.message,
+                binding.wire_field
+            );
+        }
+        assert!(
+            missing.is_empty(),
+            "unresolved request bindings: {missing:#?}"
+        );
+    }
+
+    #[test]
+    fn descriptor_field_resolution_rejects_missing_field_number() {
+        let message = DescriptorProto {
+            name: Some("Fixture".to_owned()),
+            field: vec![prost_types::FieldDescriptorProto {
+                name: Some("value".to_owned()),
+                r#type: Some(FieldType::Bool as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut fields = Vec::new();
+        let mut active = std::collections::BTreeSet::from(["fixture.Fixture".to_owned()]);
+        let error = collect_reachable_fields(
+            "fixture",
+            "fixture.Service/Call",
+            "fixture.Fixture",
+            "fixture.Fixture",
+            &message,
+            &std::collections::BTreeMap::new(),
+            &mut fields,
+            &mut active,
+        )
+        .expect_err("descriptor fields without numbers must fail closed");
+        assert!(error.contains("has no field number"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn descriptor_field_resolution_rejects_invalid_oneof_index() {
+        let message = DescriptorProto {
+            name: Some("Fixture".to_owned()),
+            field: vec![prost_types::FieldDescriptorProto {
+                name: Some("value".to_owned()),
+                number: Some(1),
+                r#type: Some(FieldType::Bool as i32),
+                oneof_index: Some(1),
+                ..Default::default()
+            }],
+            oneof_decl: vec![prost_types::OneofDescriptorProto {
+                name: Some("choice".to_owned()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut fields = Vec::new();
+        let mut active = std::collections::BTreeSet::from(["fixture.Fixture".to_owned()]);
+        let error = collect_reachable_fields(
+            "fixture",
+            "fixture.Service/Call",
+            "fixture.Fixture",
+            "fixture.Fixture",
+            &message,
+            &std::collections::BTreeMap::new(),
+            &mut fields,
+            &mut active,
+        )
+        .expect_err("descriptor fields with invalid oneof indexes must fail closed");
+        assert!(
+            error.contains("has invalid oneof index 1"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn response_payload_bytes_are_not_branded_as_identity_metadata() {
         assert!(!PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
             binding.direction == PublicFieldDirection::Response

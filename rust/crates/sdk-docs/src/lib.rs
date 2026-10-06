@@ -298,6 +298,29 @@ pub struct ProfileStatus {
     pub unresolved_packages: Vec<String>,
 }
 
+/// Metadata for one fenced block in an authored Markdown guide.
+///
+/// The producer records this same shape in each guide scenario entry.  The
+/// source bundle keeps every fence (including unmarked prose/configuration
+/// fences) so consumers can verify that a scenario points at the authored
+/// block rather than merely trusting its ordinal.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuideFence {
+    /// Repository-relative Markdown path containing the fence.
+    pub path: String,
+    /// One-based ordinal among all fenced blocks in the file.
+    pub fence_ordinal: u32,
+    /// Info string for the fence, such as `rust` or `sh`.
+    pub fence_language: String,
+    /// Scenario marker immediately preceding this fence, when authored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+    /// SHA-256 of the complete authored Markdown file.
+    pub guide_file_sha256: String,
+    /// SHA-256 of the canonical fence body.
+    pub guide_fence_sha256: String,
+}
+
 /// A Markdown source that becomes a website guide or README page.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GuideSource {
@@ -309,6 +332,9 @@ pub struct GuideSource {
     pub contents: String,
     /// `readme` or `guide`.
     pub kind: String,
+    /// Fence metadata extracted from the exact authored Markdown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fences: Vec<GuideFence>,
     /// Rust-owned publication audience. Source-only packages retain private
     /// guides in the full provenance bundle but do not project them publicly.
     #[serde(default)]
@@ -2120,6 +2146,14 @@ fn load_scenario_bundle_with_authority(
                 "SDK examples receipt for {relative} is not bound to source sha256"
             )));
         }
+        if object.contains_key("guide") {
+            validate_guide_fence_binding(
+                object,
+                repository_root,
+                &contents,
+                relative,
+            )?;
+        }
         validate_qualified_receipt(
             object,
             bundle_root,
@@ -2573,6 +2607,147 @@ fn is_portable_relative_path(path: &Path) -> bool {
         && !path.to_string_lossy().contains(':')
 }
 
+/// Bind a producer's guide scenario to the exact authored Markdown fence. A
+/// path, ordinal, and language alone are insufficient: the marker, file hash,
+/// fence hash, and (for Rust) exact executable body must all agree.
+fn validate_guide_fence_binding(
+    snippet: &serde_json::Map<String, serde_json::Value>,
+    repository_root: &Path,
+    snippet_contents: &str,
+    relative_snippet: &str,
+) -> Result<(), Error> {
+    let guide = snippet
+        .get("guide")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "SDK examples guide binding for {relative_snippet} is not an object"
+            ))
+        })?;
+    let guide_path = guide
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "SDK examples guide binding for {relative_snippet} has no path"
+            ))
+        })?;
+    let guide_relative = Path::new(guide_path);
+    if !is_portable_relative_path(guide_relative) {
+        return Err(Error::Strict(format!(
+            "SDK examples guide binding for {relative_snippet} escapes the repository: {guide_path}"
+        )));
+    }
+    let repository_root_canonical = repository_root.canonicalize()?;
+    let guide_file = repository_root.join(guide_relative);
+    let guide_file_canonical = guide_file.canonicalize().map_err(|error| {
+        Error::Strict(format!(
+            "SDK examples guide source {guide_path} is unavailable: {error}"
+        ))
+    })?;
+    if !guide_file_canonical.starts_with(&repository_root_canonical) {
+        return Err(Error::Strict(format!(
+            "SDK examples guide source escapes the repository: {guide_path}"
+        )));
+    }
+    let guide_bytes = fs::read(&guide_file).map_err(|error| {
+        Error::Strict(format!(
+            "SDK examples guide source {guide_path} is unavailable: {error}"
+        ))
+    })?;
+    let guide_contents = String::from_utf8(guide_bytes.clone()).map_err(|error| {
+        Error::Strict(format!(
+            "SDK examples guide source {guide_path} is not UTF-8: {error}"
+        ))
+    })?;
+    let ordinal = guide
+        .get("fence_ordinal")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "SDK examples guide binding for {relative_snippet} has no valid fence ordinal"
+            ))
+        })?;
+    let language = guide
+        .get("fence_language")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "SDK examples guide binding for {relative_snippet} has no fence language"
+            ))
+        })?;
+    let marker = guide
+        .get("marker")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "SDK examples guide binding for {relative_snippet} has no fence marker"
+            ))
+        })?;
+    let file_hash = guide
+        .get("guide_file_sha256")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "SDK examples guide binding for {relative_snippet} has no guide file hash"
+            ))
+        })?;
+    let fence_hash = guide
+        .get("guide_fence_sha256")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "SDK examples guide binding for {relative_snippet} has no guide fence hash"
+            ))
+        })?;
+    let fences = parse_guide_fences_with_bodies(guide_path, &guide_contents)?;
+    let (fence, body) = fences
+        .iter()
+        .find(|(fence, _)| fence.fence_ordinal == ordinal)
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "SDK examples guide binding for {relative_snippet} points at absent fence {guide_path}#{ordinal}"
+            ))
+        })?;
+    if guide_path != fence.path
+        || language != fence.fence_language
+        || fence.marker.as_deref() != Some(marker)
+    {
+        return Err(Error::Strict(format!(
+            "SDK examples guide binding for {relative_snippet} does not match authored fence {guide_path}#{ordinal}"
+        )));
+    }
+    let actual_file_hash = sha256_digest(&guide_bytes);
+    if file_hash != actual_file_hash || file_hash != fence.guide_file_sha256 {
+        return Err(Error::Strict(format!(
+            "SDK examples guide file hash mismatch for {relative_snippet}: expected {actual_file_hash}, got {file_hash}"
+        )));
+    }
+    if fence_hash != fence.guide_fence_sha256 {
+        return Err(Error::Strict(format!(
+            "SDK examples guide fence hash mismatch for {relative_snippet}: expected {}, got {fence_hash}",
+            fence.guide_fence_sha256
+        )));
+    }
+    let snippet_language = snippet
+        .get("language")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if snippet_language == "rust" && canonical_guide_fence_body(snippet_contents) != body.as_str() {
+        return Err(Error::Strict(format!(
+            "SDK examples Rust guide snippet {relative_snippet} differs from authored fence {guide_path}#{ordinal}"
+        )));
+    }
+    Ok(())
+}
+
 /// A qualified execution claim must be backed by bytes that this importer can
 /// inspect. Hash strings alone are not evidence: a producer can write a hash
 /// for a path that does not exist without running the scenario. Empty output is
@@ -2966,6 +3141,7 @@ fn scan_crate(
             guides.push(GuideSource {
                 path: relative.clone(),
                 title,
+                fences: parse_guide_fences(&relative, &contents)?,
                 contents,
                 kind: kind.to_owned(),
                 audience: guide_audience(publish),
@@ -3428,6 +3604,7 @@ fn reference_guide(package_name: &str, crate_path: &str, items: &[PublicItem]) -
         title: format!("{package_name} API reference"),
         contents,
         kind: "reference".to_owned(),
+        fences: Vec::new(),
         audience: GuideAudience::Public,
     }
 }
@@ -3671,6 +3848,67 @@ fn markdown_title(contents: &str) -> Option<String> {
         let title = line.trim().strip_prefix("# ")?.trim();
         (!title.is_empty()).then(|| title.to_owned())
     })
+}
+
+/// Normalize a Markdown fence body the same way the examples producer does:
+/// line endings are stable and the closing fence's trailing newline is not a
+/// second semantic byte.
+fn canonical_guide_fence_body(body: &str) -> String {
+    let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
+    format!("{}\n", normalized.trim_end_matches('\n'))
+}
+
+fn parse_guide_fences(path: &str, contents: &str) -> Result<Vec<GuideFence>, Error> {
+    Ok(parse_guide_fences_with_bodies(path, contents)?
+        .into_iter()
+        .map(|(fence, _)| fence)
+        .collect())
+}
+
+fn parse_guide_fences_with_bodies(
+    path: &str,
+    contents: &str,
+) -> Result<Vec<(GuideFence, String)>, Error> {
+    let normalized = contents.replace("\r\n", "\n").replace('\r', "\n");
+    let lines = normalized.split('\n').collect::<Vec<_>>();
+    let guide_file_sha256 = sha256_digest(contents.as_bytes());
+    let mut fences = Vec::new();
+    let mut ordinal = 0_u32;
+    let mut index = 0;
+    while index < lines.len() {
+        let opening = lines[index];
+        let (delimiter, info) = if opening.starts_with("```") && !opening.starts_with("````") {
+            ("```", opening[3..].trim())
+        } else if opening.starts_with("~~~") && !opening.starts_with("~~~~") {
+            ("~~~", opening[3..].trim())
+        } else {
+            index += 1;
+            continue;
+        };
+        let close = (index + 1..lines.len())
+            .find(|candidate| lines[*candidate] == delimiter)
+            .ok_or_else(|| Error::Strict(format!("guide fence is unclosed: {path}")))?;
+        ordinal = ordinal.saturating_add(1);
+        let body = canonical_guide_fence_body(&lines[index + 1..close].join("\n"));
+        let marker = (index > 0)
+            .then(|| lines[index - 1].trim())
+            .filter(|line| line.starts_with("<!-- acyclic-guide-scenario:") && line.ends_with("-->")
+            )
+            .map(ToOwned::to_owned);
+        fences.push((
+            GuideFence {
+                path: path.to_owned(),
+                fence_ordinal: ordinal,
+                fence_language: info.to_owned(),
+                marker,
+                guide_file_sha256: guide_file_sha256.clone(),
+                guide_fence_sha256: sha256_digest(body.as_bytes()),
+            },
+            body,
+        ));
+        index = close + 1;
+    }
+    Ok(fences)
 }
 
 fn load_profile_manifest(path: &Path) -> Result<Vec<AnalysisProfile>, Error> {
@@ -5246,6 +5484,8 @@ fn merge_compiler_public_items(graphs: &[RustdocGraph]) -> Vec<PublicItem> {
             .cmp(&right.source_path)
             .then(left.source_line.cmp(&right.source_line))
             .then(left.name.cmp(&right.name))
+            .then(left.kind.cmp(&right.kind))
+            .then(left.module_path.cmp(&right.module_path))
             .then_with(|| {
                 let left_documented = left
                     .docs
@@ -5264,21 +5504,22 @@ fn merge_compiler_public_items(graphs: &[RustdocGraph]) -> Vec<PublicItem> {
             && left.module_path == right.module_path
             && left.source_path == right.source_path
             && left.source_line == right.source_line;
-        if same_identity
-            && left
+        if same_identity {
+            let left_documented = left
                 .docs
                 .as_deref()
-                .is_none_or(|docs| docs.trim().is_empty())
-            && right
+                .is_some_and(|docs| !docs.trim().is_empty());
+            let right_documented = right
                 .docs
                 .as_deref()
-                .is_some_and(|docs| !docs.trim().is_empty())
-        {
-            let mut replacement = right.clone();
-            merge_item_availability(&mut replacement.availability, &left.availability);
-            *left = replacement;
-        } else if same_identity {
-            merge_item_availability(&mut left.availability, &right.availability);
+                .is_some_and(|docs| !docs.trim().is_empty());
+            if left_documented && !right_documented {
+                let mut replacement = left.clone();
+                merge_item_availability(&mut replacement.availability, &right.availability);
+                *right = replacement;
+            } else {
+                merge_item_availability(&mut right.availability, &left.availability);
+            }
         }
         same_identity
     });
@@ -6600,9 +6841,9 @@ mod tests {
                 "working-tree",
                 "preview",
             )
-            .expect("website projection with availability"),
-        )
-        .expect("valid website JSON");
+            .expect("website projection with availability");
+        let website: serde_json::Value =
+            serde_json::from_str(&website_json).expect("valid website JSON");
         assert_eq!(
             website["families"][0]["items"][0]["availability"][0]["target"],
             "x86_64-pc-windows-msvc"
@@ -7389,6 +7630,7 @@ mod tests {
             title: "Demo".to_owned(),
             contents: "[`item`](../src/lib.rs#L12)\n".to_owned(),
             kind: "guide".to_owned(),
+            fences: Vec::new(),
             audience: GuideAudience::Public,
         };
         let error = validate_guide_links("demo", &[guide], &[], false, false)
@@ -7404,6 +7646,7 @@ mod tests {
             contents: "[`validate_create`](/rust/crates/actors/REFERENCE.md#acyclic_actors-validate_create)\n"
                 .to_owned(),
             kind: "guide".to_owned(),
+            fences: Vec::new(),
             audience: GuideAudience::Public,
         };
         let item = PublicItem {
@@ -7431,6 +7674,7 @@ mod tests {
             title: "Demo".to_owned(),
             contents: "[`item`](/rust/crates/demo/REFERENCE.md#demo-item)\n".to_owned(),
             kind: "guide".to_owned(),
+            fences: Vec::new(),
             audience: GuideAudience::Public,
         };
         let error = validate_guide_links("demo", &[guide], &[], false, true)
@@ -7447,6 +7691,7 @@ mod tests {
             title: "Filesystem".to_owned(),
             contents: "Public guide".to_owned(),
             kind: "guide".to_owned(),
+            fences: Vec::new(),
             audience: GuideAudience::Public,
         };
         let private = GuideSource {
@@ -7454,6 +7699,7 @@ mod tests {
             title: "Conformance".to_owned(),
             contents: "Private qualification guide".to_owned(),
             kind: "readme".to_owned(),
+            fences: Vec::new(),
             audience: GuideAudience::Private,
         };
         let public_path = public.path.clone();
@@ -7488,8 +7734,7 @@ mod tests {
                 },
             }
         };
-        let website: serde_json::Value = serde_json::from_str(
-            &to_website_json(
+        let website_json = to_website_json(
                 &DocsBundle {
                     schema_version: BUNDLE_SCHEMA_VERSION,
                     source_revision: "revision".to_owned(),
@@ -7839,6 +8084,63 @@ mod tests {
         )
         .expect("write scenario manifest");
         root
+    }
+
+    #[test]
+    fn guide_source_records_all_fences_and_immediate_scenario_marker() {
+        let contents = "# Demo\n\n```toml\nname = \"demo\"\n```\n\n<!-- acyclic-guide-scenario: demo-run -->\n```rust\nfn main() {}\n```\n";
+        let fences = parse_guide_fences("docs/guide.md", contents).expect("parse guide fences");
+        assert_eq!(fences.len(), 2);
+        assert_eq!(fences[0].fence_ordinal, 1);
+        assert_eq!(fences[0].fence_language, "toml");
+        assert_eq!(fences[0].marker, None);
+        assert_eq!(fences[1].fence_ordinal, 2);
+        assert_eq!(
+            fences[1].marker.as_deref(),
+            Some("<!-- acyclic-guide-scenario: demo-run -->")
+        );
+        assert_eq!(
+            fences[1].guide_fence_sha256,
+            sha256_digest(b"fn main() {}\n")
+        );
+    }
+
+    #[test]
+    fn guide_binding_requires_the_exact_authored_rust_fence() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-guide-binding-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("docs")).expect("create guide fixture");
+        let guide_contents =
+            "<!-- acyclic-guide-scenario: demo-run -->\n```rust\nfn main() {}\n```\n";
+        fs::write(root.join("docs/guide.md"), guide_contents).expect("write guide fixture");
+        let fence = parse_guide_fences("docs/guide.md", guide_contents)
+            .expect("parse guide fixture")
+            .pop()
+            .expect("guide fence");
+        let mut snippet = serde_json::Map::new();
+        snippet.insert("language".to_owned(), serde_json::json!("rust"));
+        snippet.insert("guide".to_owned(), serde_json::json!({
+            "path": fence.path,
+            "fence_ordinal": fence.fence_ordinal,
+            "fence_language": fence.fence_language,
+            "marker": fence.marker,
+            "guide_file_sha256": fence.guide_file_sha256,
+            "guide_fence_sha256": fence.guide_fence_sha256,
+        }));
+        validate_guide_fence_binding(&snippet, &root, "fn main() {}\n", "snippets/demo.rs")
+            .expect("exact authored fence qualifies");
+        let error = validate_guide_fence_binding(
+            &snippet,
+            &root,
+            "fn different() {}\n",
+            "snippets/demo.rs",
+        )
+        .expect_err("substituted Rust fence must fail closed");
+        assert!(error.to_string().contains("differs from authored fence"));
+        fs::remove_dir_all(root).expect("remove guide fixture");
     }
 
     #[test]

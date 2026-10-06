@@ -22,6 +22,30 @@ export function invokeWithAbort<Output>(operation: () => PromiseLike<Output>, si
   });
 }
 
+/**
+ * Rust-owned cancellation boundary for an operation that has already started.
+ *
+ * The rejection observer is attached before checking an already-aborted signal.
+ * This preserves the caller-facing abort result while observing a late native
+ * rejection, which keeps a failed operation from becoming an unhandled promise.
+ */
+export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: AbortSignal): Promise<Output> {
+  if (signal === undefined) return Promise.resolve(operation);
+  const reason = () => signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  return new Promise<Output>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const resolveOnce = (value: Output) => { if (settled) return; settled = true; cleanup(); resolve(value); };
+    const rejectOnce = (error: unknown) => { if (settled) return; settled = true; cleanup(); reject(error); };
+    const onAbort = () => rejectOnce(reason());
+    // Attach this observer before the pre-abort check. The operation is already
+    // in flight, so its eventual rejection must always be observed.
+    Promise.resolve(operation).then(resolveOnce, rejectOnce);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
 /** Identifies a native adapter load failure that is safe for the Rust-qualified fallback. */
 export function isRustOwnedNativeLoadError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
@@ -40,23 +64,31 @@ import type { ApplyJoinRequest, ApplyTransactionRequest, CancelRequest, CancelRe
 // Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
 
 declare const rustOwnedSemanticBrand: unique symbol;
+function assertRustOwnedString(value: unknown): asserts value is string { if (typeof value !== "string") throw new TypeError("value must be a string"); }
+function assertRustOwnedUint8Array(value: unknown): asserts value is Uint8Array { if (!ArrayBuffer.isView(value) || Object.prototype.toString.call(value) !== "[object Uint8Array]") throw new TypeError("value must be a Uint8Array"); try { Reflect.apply(Uint8Array.prototype.slice, value, [0, 0]); } catch { throw new TypeError("value must be a Uint8Array"); } }
+function assertRustOwnedInteger(value: unknown): asserts value is number { if (typeof value !== "number" || !Number.isFinite(value) || !Number.isSafeInteger(value)) throw new TypeError("value must be a finite safe integer"); }
+function assertRustOwnedBigInt(value: unknown): asserts value is bigint { if (typeof value !== "bigint") throw new TypeError("value must be a bigint"); }
+function assertRustOwnedUint64(value: unknown): asserts value is bigint { assertRustOwnedBigInt(value); if (value < 0n || value > 18446744073709551615n) throw new RangeError("value must fit an unsigned 64-bit wire field"); }
 export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
-export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBigInt<Name extends string> = bigint & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string, Value extends object> = Value & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedOpenEnumValue<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticOneof<Name extends string, Value> = Value & { readonly [rustOwnedSemanticBrand]: Name };
 
 export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedNonNegativeCount = RustOwnedSemanticNumber<"non_negative_count">;
-export function makeRustOwnedNonNegativeCount(value: number): RustOwnedNonNegativeCount { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedNonNegativeCount; }
+export function makeRustOwnedNonNegativeCount(value: number): RustOwnedNonNegativeCount { assertRustOwnedInteger(value);if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedNonNegativeCount; }
 export type RustOwnedOpaqueBytes = RustOwnedSemanticBytes<"opaque_bytes">;
-export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes {  return value as RustOwnedOpaqueBytes; }
+export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes { assertRustOwnedUint8Array(value); return value as RustOwnedOpaqueBytes; }
 export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
-export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
 export type RustOwnedPath = RustOwnedSemanticString<"path">;
-export function makeRustOwnedPath(value: string): RustOwnedPath { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
-export type RustOwnedTimestampSeconds = RustOwnedSemanticNumber<"timestamp_seconds">;
-export function makeRustOwnedTimestampSeconds(value: number): RustOwnedTimestampSeconds { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampSeconds; }
+export function makeRustOwnedPath(value: string): RustOwnedPath { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
+export type RustOwnedTimestampSeconds = RustOwnedSemanticBigInt<"timestamp_seconds">;
+export function makeRustOwnedTimestampSeconds(value: bigint): RustOwnedTimestampSeconds { assertRustOwnedUint64(value);if (value < 0n) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampSeconds; }
 
 export const FILESYSTEM_PUBLIC_FIELD_BINDINGS = [
   { family: "filesystem", field: "path", semanticType: "path", module: "filesystem", message: "ReadRequest", wireField: "path", direction: "request", rules: ["NonEmpty", "Utf8"] },
@@ -95,7 +127,7 @@ export type RustOwnedPublicCancelResponse = RustWire.CancelResponse;
 export type RustOwnedPublicCreateWorkspaceRequest = RustWire.CreateWorkspaceRequest;
 export type RustOwnedPublicCredentialRequest = RustWire.CredentialRequest;
 export type RustOwnedPublicCredentialResponse = Omit<RustWire.CredentialResponse, "bearerToken" | "endpoint" | "expiresAtUnixSeconds"> & {
-  readonly bearerToken: RustOwnedOpaqueText;
+  readonly bearerToken?: RustOwnedOpaqueText | undefined;
   readonly endpoint: RustOwnedOpaqueText;
   readonly expiresAtUnixSeconds: RustOwnedTimestampSeconds;
 };
@@ -278,7 +310,7 @@ export const FILESYSTEM_OPERATIONS = {
   "acyclic.filesystem.v2.FilesystemService/Cancel": { rpc: "acyclic.filesystem.v2.FilesystemService/Cancel", capabilities: ["filesystem.operation"], errors: ["INVALID_ARGUMENT", "NOT_FOUND", "FAILED_PRECONDITION", "CANCELLED", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "UNIMPLEMENTED", "DATA_LOSS"], validations: ["operation_id.16_bytes", "operation.idempotency_key.16_bytes", "response.identity.matches"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const FILESYSTEM_SOURCE = { family: "filesystem", rustCrate: "acyclic-filesystem", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor", descriptorSha256: "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1", sourceContentSha256: "88d1dd90ca02e81baaa2e6bf5dad5769dcd13be2bd811a8d82b098e6527329bc", sourceModelSha256: "88d1dd90ca02e81baaa2e6bf5dad5769dcd13be2bd811a8d82b098e6527329bc", handshakeRoute: "/v1/sdk/filesystem/handshake", handshakeVersion: "1", handshakeDescriptorDigest: "ece4a6bb58779d216707a426a0ebc5375b5a7a99b14178ce2f9d4f9dd781df60", modeledOperations: 30, httpProjection: false } as const;
+export const FILESYSTEM_SOURCE = { family: "filesystem", rustCrate: "acyclic-filesystem", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor", descriptorSha256: "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1", sourceContentSha256: "0651ff787103af1194a11620681f6bb5aa28aac3f799a91662a40e55b082dadc", sourceModelSha256: "0651ff787103af1194a11620681f6bb5aa28aac3f799a91662a40e55b082dadc", handshakeRoute: "/v1/sdk/filesystem/handshake", handshakeVersion: "1", handshakeDescriptorDigest: "ece4a6bb58779d216707a426a0ebc5375b5a7a99b14178ce2f9d4f9dd781df60", modeledOperations: 30, httpProjection: false } as const;
 
 export const FILESYSTEM_HANDSHAKE = { family: "filesystem", route: "/v1/sdk/filesystem/handshake", version: "1", descriptorDigest: "ece4a6bb58779d216707a426a0ebc5375b5a7a99b14178ce2f9d4f9dd781df60" } as const;
 

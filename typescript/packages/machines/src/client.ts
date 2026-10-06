@@ -5,7 +5,9 @@ import type {
 } from "./index.js";
 import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
 import type { NativeMachinesOptions } from "./native.js";
-import { MACHINES_REMOTE_POLICY, selectRustOwnedTransport, type RustOwnedRuntime } from "./generated-client.js";
+import { HttpMachinesProvider } from "./http.js";
+import { MACHINES_REMOTE_POLICY, isRustOwnedTransportUnavailable, selectRustOwnedTransport, validateRustOwnedCredentialPolicy, type RustOwnedRuntime } from "./generated-client.js";
+import { ensureMachinesWasm } from "./wasm-runtime.js";
 
 export interface MachinesEnvironment {
   readonly endpoint?: string;
@@ -33,12 +35,14 @@ export class Machines {
   static async fromEnv(environment: Partial<MachinesEnvironment> = {}): Promise<Machines> {
     const runtime: RustOwnedRuntime = isNativeRuntime() ? "native" : "browser";
     const selected = selectRustOwnedTransport(MACHINES_REMOTE_POLICY, runtime);
+    await ensureMachinesWasm();
     if (selected === "grpc-web") {
       if (environment.endpoint === undefined || environment.token === undefined) {
         throw new TypeError("Machines browser transport requires endpoint and token");
       }
+      validateRustOwnedCredentialPolicy(environment.token);
       const { RemoteMachines } = await import("./remote.js");
-      return new Machines(new RemoteMachines(environment.endpoint, environment.token));
+      return new Machines(await RemoteMachines.connect(environment.endpoint, environment.token));
     }
     if (selected !== "grpc" || runtime !== "native") throw new TypeError("Machines transport is unavailable for this runtime");
     // Keep the native companion outside browser bundles; this path is reached only
@@ -49,14 +53,32 @@ export class Machines {
     const caCertificate = environment.caCertificate;
     const certificate = environment.certificate;
     const privateKey = environment.privateKey;
+    const hasMutualTls = caCertificate !== undefined || certificate !== undefined || privateKey !== undefined;
+    if (environment.token !== undefined) {
+      if (hasMutualTls) throw new TypeError("Machines native transport accepts either token or complete mutual-TLS credentials");
+      if (endpoint === undefined) throw new TypeError("Machines native bearer transport requires endpoint and token");
+      validateRustOwnedCredentialPolicy(environment.token);
+      const options: NativeMachinesOptions = { endpoint, token: environment.token };
+      try {
+        return new Machines(await NativeMachinesProvider.connect(options));
+      } catch (error) {
+        if (!isRustOwnedTransportUnavailable(error)) throw error;
+        return new Machines(new HttpMachinesProvider({ endpoint, token: environment.token }));
+      }
+    }
     if (endpoint === undefined && caCertificate === undefined && certificate === undefined && privateKey === undefined) {
       return new Machines(await NativeMachinesProvider.connectFromEnv());
     }
     if (endpoint === undefined || caCertificate === undefined || certificate === undefined || privateKey === undefined) {
-      throw new TypeError("Machines native transport requires endpoint, caCertificate, certificate, and privateKey");
+      throw new TypeError("Machines native transport requires endpoint and either token or complete mutual-TLS credentials");
     }
     const options: NativeMachinesOptions = { endpoint, caCertificate, certificate, privateKey };
-    return new Machines(await NativeMachinesProvider.connect(options));
+    try {
+      return new Machines(await NativeMachinesProvider.connect(options));
+    } catch (error) {
+      if (!isRustOwnedTransportUnavailable(error)) throw error;
+      throw new TypeError("Machines mutual-TLS transport is unavailable because its native companion is not installed", { cause: error });
+    }
   }
   qualifyImage(image: import("./index.js").Image, signal?: AbortSignal): Promise<import("./index.js").ImageQualification> { return this.provider.qualifyImage(image, signal); }
   async create(request: CreateMachine, signal?: AbortSignal): Promise<Machine> { const outcome = await this.provider.create(request, signal); return new Machine(this.provider, expectOutcome(outcome, "created").machine.id); }

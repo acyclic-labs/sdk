@@ -22,6 +22,30 @@ export function invokeWithAbort<Output>(operation: () => PromiseLike<Output>, si
   });
 }
 
+/**
+ * Rust-owned cancellation boundary for an operation that has already started.
+ *
+ * The rejection observer is attached before checking an already-aborted signal.
+ * This preserves the caller-facing abort result while observing a late native
+ * rejection, which keeps a failed operation from becoming an unhandled promise.
+ */
+export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: AbortSignal): Promise<Output> {
+  if (signal === undefined) return Promise.resolve(operation);
+  const reason = () => signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  return new Promise<Output>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const resolveOnce = (value: Output) => { if (settled) return; settled = true; cleanup(); resolve(value); };
+    const rejectOnce = (error: unknown) => { if (settled) return; settled = true; cleanup(); reject(error); };
+    const onAbort = () => rejectOnce(reason());
+    // Attach this observer before the pre-abort check. The operation is already
+    // in flight, so its eventual rejection must always be observed.
+    Promise.resolve(operation).then(resolveOnce, rejectOnce);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
 /** Identifies a native adapter load failure that is safe for the Rust-qualified fallback. */
 export function isRustOwnedNativeLoadError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
@@ -40,27 +64,34 @@ import type { CancelJobRequest, CancelJobResponse, InspectJobRequest, InspectJob
 // Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
 
 declare const rustOwnedSemanticBrand: unique symbol;
+function assertRustOwnedString(value: unknown): asserts value is string { if (typeof value !== "string") throw new TypeError("value must be a string"); }
+function assertRustOwnedUint8Array(value: unknown): asserts value is Uint8Array { if (!ArrayBuffer.isView(value) || Object.prototype.toString.call(value) !== "[object Uint8Array]") throw new TypeError("value must be a Uint8Array"); try { Reflect.apply(Uint8Array.prototype.slice, value, [0, 0]); } catch { throw new TypeError("value must be a Uint8Array"); } }
+function assertRustOwnedBigInt(value: unknown): asserts value is bigint { if (typeof value !== "bigint") throw new TypeError("value must be a bigint"); }
+function assertRustOwnedUint64(value: unknown): asserts value is bigint { assertRustOwnedBigInt(value); if (value < 0n || value > 18446744073709551615n) throw new RangeError("value must fit an unsigned 64-bit wire field"); }
 export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
-export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBigInt<Name extends string> = bigint & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string, Value extends object> = Value & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedOpenEnumValue<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticOneof<Name extends string, Value> = Value & { readonly [rustOwnedSemanticBrand]: Name };
 
 export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedAlias = RustOwnedSemanticString<"alias">;
-export function makeRustOwnedAlias(value: string): RustOwnedAlias { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedAlias; }
+export function makeRustOwnedAlias(value: string): RustOwnedAlias { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedAlias; }
 export type RustOwnedIdempotencyKeyText = RustOwnedSemanticString<"idempotency_key_text">;
-export function makeRustOwnedIdempotencyKeyText(value: string): RustOwnedIdempotencyKeyText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyText; }
+export function makeRustOwnedIdempotencyKeyText(value: string): RustOwnedIdempotencyKeyText { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyText; }
 export type RustOwnedJobId = RustOwnedSemanticString<"job_id">;
-export function makeRustOwnedJobId(value: string): RustOwnedJobId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedJobId; }
+export function makeRustOwnedJobId(value: string): RustOwnedJobId { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedJobId; }
 export type RustOwnedMethod = RustOwnedSemanticString<"method">;
-export function makeRustOwnedMethod(value: string): RustOwnedMethod { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedMethod; }
-export type RustOwnedRevision = RustOwnedSemanticNumber<"revision">;
-export function makeRustOwnedRevision(value: number): RustOwnedRevision { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedRevision; }
+export function makeRustOwnedMethod(value: string): RustOwnedMethod { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedMethod; }
+export type RustOwnedRevision = RustOwnedSemanticBigInt<"revision">;
+export function makeRustOwnedRevision(value: bigint): RustOwnedRevision { assertRustOwnedUint64(value);if (value < 0n) throw new RangeError("value must be non-negative"); return value as RustOwnedRevision; }
 export type RustOwnedSha256Digest = RustOwnedSemanticBytes<"sha256_digest">;
-export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
+export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { assertRustOwnedUint8Array(value);if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
 export type RustOwnedVersionSha256 = RustOwnedSemanticBytes<"version_sha256">;
-export function makeRustOwnedVersionSha256(value: Uint8Array): RustOwnedVersionSha256 { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedVersionSha256; }
+export function makeRustOwnedVersionSha256(value: Uint8Array): RustOwnedVersionSha256 { assertRustOwnedUint8Array(value);if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedVersionSha256; }
 
 export const WORKERS_PUBLIC_FIELD_BINDINGS = [
   { family: "workers", field: "alias", semanticType: "alias", module: "workers", message: "SelectDeploymentRequest", wireField: "alias", direction: "request", rules: ["NonEmpty", "Utf8"] },
@@ -95,7 +126,7 @@ export type RustOwnedPublicInspectJobRequest = Omit<RustWire.InspectJobRequest, 
 export type RustOwnedPublicInspectJobResponse = RustWire.InspectJobResponse;
 export type RustOwnedPublicInvokeDeploymentRequest = RustWire.InvokeDeploymentRequest;
 export type RustOwnedPublicInvokeResponse = Omit<RustWire.InvokeResponse, "resolvedRevision" | "resolvedSha256"> & {
-  readonly resolvedRevision: RustOwnedRevision;
+  readonly resolvedRevision?: RustOwnedRevision | undefined;
   readonly resolvedSha256: RustOwnedSha256Digest;
 };
 export type RustOwnedPublicInvokeVersionRequest = Omit<RustWire.InvokeVersionRequest, "method"> & {

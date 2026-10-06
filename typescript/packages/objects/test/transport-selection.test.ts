@@ -14,4 +14,5 @@ test("Objects HTTP override remains available", async () => {
 
 test("Objects HTTP factory awaits Rust WASM before validating credentials", async () => {
   await expect(fromEnv({ endpoint: "https://objects.example", token: "bad\r\n", transport: "http" })).rejects.toThrow("invalid bearer credential");
+  await expect(fromEnv({ endpoint: "http://objects.example", token: "fixture", transport: "http" })).rejects.toThrow();
 });

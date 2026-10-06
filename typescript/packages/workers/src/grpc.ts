@@ -4,7 +4,7 @@ import { createGrpcTransport } from "@connectrpc/connect-node";
 import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
 import { WorkersService } from "../generated/proto/workers/v1/workers_pb.js";
 import { WORKERS_HANDSHAKE, WORKERS_REMOTE_POLICY, rustOwnedGrpcHandshakeRequest, validateRustOwnedGrpcHandshake, type RustOwnedWorkersPublicClient } from "./generated-client.js";
-import { validateWorkersCaCertificate, validateWorkersCredential, validateWorkersGrpcEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersMessageLimit } from "./wasm-runtime.js";
+import { ensureWorkersWasm, validateWorkersCaCertificate, validateWorkersCredential, validateWorkersGrpcEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersMessageLimit } from "./wasm-runtime.js";
 
 export interface WorkersGrpcOptions {
   readonly endpoint: string;
@@ -16,11 +16,20 @@ export interface WorkersGrpcOptions {
 /** Complete Workers v1 gRPC client for Node and Bun over authenticated HTTP/2. */
 export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
   const endpoint = new URL(options.endpoint);
-  validateWorkersGrpcEndpoint(options.endpoint);
-  validateWorkersCredential(options.token);
   const maximum = options.maximumMessageBytes ?? WORKERS_REMOTE_POLICY.maximumMessageBytes;
-  validateWorkersMessageLimit(maximum);
-  if (options.caCertificate !== undefined) validateWorkersCaCertificate(options.caCertificate);
+  let optionsReady: Promise<void> | undefined;
+  const ensureReady = (): Promise<void> => {
+    if (optionsReady === undefined) {
+      optionsReady = (async () => {
+        await ensureWorkersWasm();
+        validateWorkersGrpcEndpoint(options.endpoint);
+        validateWorkersCredential(options.token);
+        validateWorkersMessageLimit(maximum);
+        if (options.caCertificate !== undefined) validateWorkersCaCertificate(options.caCertificate);
+      })().catch(error => { optionsReady = undefined; throw error; });
+    }
+    return optionsReady;
+  };
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
     request.header.set("acyclic-family", "workers");
@@ -30,6 +39,7 @@ export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
   const control = createClient(ProtocolService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: WORKERS_REMOTE_POLICY.maximumMessageBytes, writeMaxBytes: WORKERS_REMOTE_POLICY.maximumMessageBytes, ...tls }));
   let handshake: Promise<void> | undefined;
   const applicationAuthenticate: Interceptor = next => async request => {
+    await ensureReady();
     request.header.set("authorization", `Bearer ${options.token}`);
     request.header.set("acyclic-family", "workers");
     if (handshake === undefined) {
@@ -46,13 +56,15 @@ export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
   const invokeDeployment = client.invokeDeployment.bind(client);
   return {
     ...client,
-    invokeVersion(request: Parameters<RustOwnedWorkersPublicClient["invokeVersion"]>[0], signal?: AbortSignal) {
+    async invokeVersion(request: Parameters<RustOwnedWorkersPublicClient["invokeVersion"]>[0], signal?: AbortSignal) {
+      await ensureReady();
       validateWorkersInvokeVersion(request.versionSha256, request.method);
-      return invokeVersion(request, signal);
+      return await invokeVersion(request, signal);
     },
-    invokeDeployment(request: Parameters<RustOwnedWorkersPublicClient["invokeDeployment"]>[0], signal?: AbortSignal) {
+    async invokeDeployment(request: Parameters<RustOwnedWorkersPublicClient["invokeDeployment"]>[0], signal?: AbortSignal) {
+      await ensureReady();
       validateWorkersInvokeDeployment(request.alias, request.method);
-      return invokeDeployment(request, signal);
+      return await invokeDeployment(request, signal);
     },
   } as RustOwnedWorkersPublicClient;
 }

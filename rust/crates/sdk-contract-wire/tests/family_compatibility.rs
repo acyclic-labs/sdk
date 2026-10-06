@@ -84,6 +84,96 @@ fn without_source_info(bytes: &[u8]) -> FileDescriptorSet {
     set
 }
 
+fn assert_enum_alias_policy(name: &str, enum_: &prost_types::EnumDescriptorProto) {
+    let mut seen = Vec::new();
+    for number in enum_.value.iter().map(|value| value.number) {
+        if seen.contains(&number) {
+            assert_eq!(
+                enum_
+                    .options
+                    .as_ref()
+                    .and_then(|options| options.allow_alias),
+                Some(true),
+                "{name} enum {} has an undeclared alias",
+                enum_.name.as_deref().unwrap_or_default()
+            );
+        }
+        seen.push(number);
+    }
+}
+
+fn assert_message_descriptor_invariants(
+    name: &str,
+    message: &prost_types::DescriptorProto,
+) {
+    for field in &message.field {
+        assert!(
+            field.json_name.is_some(),
+            "{name} field {} lacks json_name",
+            field.name.as_deref().unwrap_or_default()
+        );
+        if field.proto3_optional == Some(true) {
+            let oneof_index = usize::try_from(field.oneof_index.expect("synthetic oneof index"))
+                .expect("synthetic oneof index is non-negative");
+            let oneof = message
+                .oneof_decl
+                .get(oneof_index)
+                .expect("synthetic oneof index resolves");
+            assert!(
+                oneof
+                    .name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .starts_with('_'),
+                "{name} optional field {} has non-synthetic oneof",
+                field.name.as_deref().unwrap_or_default()
+            );
+        }
+    }
+    for enum_ in &message.enum_type {
+        assert_enum_alias_policy(name, enum_);
+    }
+    for nested in &message.nested_type {
+        assert_message_descriptor_invariants(name, nested);
+    }
+}
+
+fn assert_file_descriptor_invariants(name: &str, file: &prost_types::FileDescriptorProto) {
+    for enum_ in &file.enum_type {
+        assert_enum_alias_policy(name, enum_);
+    }
+    for message in &file.message_type {
+        assert_message_descriptor_invariants(name, message);
+    }
+}
+
+fn first_nested_message_with_field(
+    message: &mut prost_types::DescriptorProto,
+) -> Option<&mut prost_types::DescriptorProto> {
+    for nested in &mut message.nested_type {
+        if !nested.field.is_empty() {
+            return Some(nested);
+        }
+        if let Some(found) = first_nested_message_with_field(nested) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn first_nested_message_with_field_in_set(
+    set: &mut FileDescriptorSet,
+) -> Option<&mut prost_types::DescriptorProto> {
+    for file in &mut set.file {
+        for message in &mut file.message_type {
+            if let Some(found) = first_nested_message_with_field(message) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 fn assert_routes_cover_services(contract: &ContractSpec) {
     let method_count: usize = contract
         .services
@@ -379,41 +469,7 @@ fn emitted_descriptors_preserve_presence_json_names_and_enum_alias_policy() {
     for (name, bytes) in cases {
         let set = FileDescriptorSet::decode(bytes.as_slice()).expect("emitted descriptor");
         for file in &set.file {
-            for enum_ in &file.enum_type {
-                let numbers = enum_.value.iter().map(|value| value.number);
-                let mut seen = Vec::new();
-                for number in numbers {
-                    if seen.contains(&number) {
-                        assert_eq!(
-                            enum_
-                                .options
-                                .as_ref()
-                                .and_then(|options| options.allow_alias),
-                            Some(true),
-                            "{name} enum {} has an undeclared alias",
-                            enum_.name.as_deref().unwrap_or_default()
-                        );
-                    }
-                    seen.push(number);
-                }
-            }
-            for message in &file.message_type {
-                for field in &message.field {
-                    assert!(field.json_name.is_some(), "{name} field lacks json_name");
-                    if field.proto3_optional == Some(true) {
-                        let oneof_index =
-                            field.oneof_index.expect("synthetic oneof index") as usize;
-                        assert!(
-                            message.oneof_decl[oneof_index]
-                                .name
-                                .as_deref()
-                                .unwrap_or_default()
-                                .starts_with('_'),
-                            "{name} optional field has non-synthetic oneof"
-                        );
-                    }
-                }
-            }
+            assert_file_descriptor_invariants(name, file);
         }
     }
 }
@@ -574,6 +630,29 @@ fn semantic_validation_rejects_wire_and_handshake_identity_mutations() {
             .iter()
             .any(|difference| { difference.kind == DifferenceKind::ServiceStreaming })
     );
+}
+
+#[test]
+fn semantic_validation_rejects_nested_field_identity_mutations_without_mutating_archive() {
+    let archive = without_source_info(fixture("objects"));
+    let canonical = objects_descriptor();
+    let mut mutated =
+        FileDescriptorSet::decode(canonical.as_slice()).expect("Objects descriptor");
+    let nested = first_nested_message_with_field_in_set(&mut mutated)
+        .expect("Objects descriptor has a nested map-entry message");
+    nested.field[0].number =
+        Some(nested.field[0].number.expect("nested field number") + 1000);
+
+    let report =
+        compare_bytes(&canonical, &mutated.encode_to_vec()).expect("nested field report");
+    assert!(
+        !report.semantic_compatible,
+        "nested field-tag drift was accepted"
+    );
+    assert!(report.differences.iter().any(|difference| {
+        difference.kind == DifferenceKind::FieldTag
+    }));
+    assert_eq!(archive, without_source_info(fixture("objects")));
 }
 
 #[test]

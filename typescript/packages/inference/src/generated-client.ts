@@ -22,6 +22,30 @@ export function invokeWithAbort<Output>(operation: () => PromiseLike<Output>, si
   });
 }
 
+/**
+ * Rust-owned cancellation boundary for an operation that has already started.
+ *
+ * The rejection observer is attached before checking an already-aborted signal.
+ * This preserves the caller-facing abort result while observing a late native
+ * rejection, which keeps a failed operation from becoming an unhandled promise.
+ */
+export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: AbortSignal): Promise<Output> {
+  if (signal === undefined) return Promise.resolve(operation);
+  const reason = () => signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  return new Promise<Output>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const resolveOnce = (value: Output) => { if (settled) return; settled = true; cleanup(); resolve(value); };
+    const rejectOnce = (error: unknown) => { if (settled) return; settled = true; cleanup(); reject(error); };
+    const onAbort = () => rejectOnce(reason());
+    // Attach this observer before the pre-abort check. The operation is already
+    // in flight, so its eventual rejection must always be observed.
+    Promise.resolve(operation).then(resolveOnce, rejectOnce);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
 /** Identifies a native adapter load failure that is safe for the Rust-qualified fallback. */
 export function isRustOwnedNativeLoadError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
@@ -40,29 +64,36 @@ import type { ContextView, CreateContextRequest, CreateEvaluationRequest, Evalua
 // Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
 
 declare const rustOwnedSemanticBrand: unique symbol;
+function assertRustOwnedString(value: unknown): asserts value is string { if (typeof value !== "string") throw new TypeError("value must be a string"); }
+function assertRustOwnedUint8Array(value: unknown): asserts value is Uint8Array { if (!ArrayBuffer.isView(value) || Object.prototype.toString.call(value) !== "[object Uint8Array]") throw new TypeError("value must be a Uint8Array"); try { Reflect.apply(Uint8Array.prototype.slice, value, [0, 0]); } catch { throw new TypeError("value must be a Uint8Array"); } }
+function assertRustOwnedBigInt(value: unknown): asserts value is bigint { if (typeof value !== "bigint") throw new TypeError("value must be a bigint"); }
+function assertRustOwnedUint64(value: unknown): asserts value is bigint { assertRustOwnedBigInt(value); if (value < 0n || value > 18446744073709551615n) throw new RangeError("value must fit an unsigned 64-bit wire field"); }
 export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
-export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBigInt<Name extends string> = bigint & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string, Value extends object> = Value & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedOpenEnumValue<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticOneof<Name extends string, Value> = Value & { readonly [rustOwnedSemanticBrand]: Name };
 
 export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedEvaluationId = RustOwnedSemanticBytes<"evaluation_id">;
-export function makeRustOwnedEvaluationId(value: Uint8Array): RustOwnedEvaluationId { if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedEvaluationId; }
+export function makeRustOwnedEvaluationId(value: Uint8Array): RustOwnedEvaluationId { assertRustOwnedUint8Array(value);if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedEvaluationId; }
 export type RustOwnedOpaqueBytes = RustOwnedSemanticBytes<"opaque_bytes">;
-export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes {  return value as RustOwnedOpaqueBytes; }
+export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes { assertRustOwnedUint8Array(value); return value as RustOwnedOpaqueBytes; }
 export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
-export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
 export type RustOwnedRevisionDigest = RustOwnedSemanticBytes<"revision_digest">;
-export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
+export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { assertRustOwnedUint8Array(value);if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
 export type RustOwnedRunId = RustOwnedSemanticBytes<"run_id">;
-export function makeRustOwnedRunId(value: Uint8Array): RustOwnedRunId { if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedRunId; }
-export type RustOwnedSequence = RustOwnedSemanticNumber<"sequence">;
-export function makeRustOwnedSequence(value: number): RustOwnedSequence { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
+export function makeRustOwnedRunId(value: Uint8Array): RustOwnedRunId { assertRustOwnedUint8Array(value);if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedRunId; }
+export type RustOwnedSequence = RustOwnedSemanticBigInt<"sequence">;
+export function makeRustOwnedSequence(value: bigint): RustOwnedSequence { assertRustOwnedUint64(value);if (value < 0n) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
 export type RustOwnedSha256Digest = RustOwnedSemanticBytes<"sha256_digest">;
-export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
-export type RustOwnedTimestampMillis = RustOwnedSemanticNumber<"timestamp_millis">;
-export function makeRustOwnedTimestampMillis(value: number): RustOwnedTimestampMillis { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampMillis; }
+export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { assertRustOwnedUint8Array(value);if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
+export type RustOwnedTimestampMillis = RustOwnedSemanticBigInt<"timestamp_millis">;
+export function makeRustOwnedTimestampMillis(value: bigint): RustOwnedTimestampMillis { assertRustOwnedUint64(value);if (value < 0n) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampMillis; }
 
 export const INFERENCE_PUBLIC_FIELD_BINDINGS = [
   { family: "inference", field: "run_id", semanticType: "run_id", module: "inference", message: "InspectRunRequest", wireField: "run_id", direction: "request", rules: ["FixedLength(16)"] },
@@ -111,7 +142,7 @@ export type RustOwnedPublicContextView = Omit<RustWire.ContextView, "contentDige
   readonly executionProfile: RustOwnedOpaqueBytes;
   readonly lineage: RustOwnedOpaqueBytes;
   readonly model: RustOwnedOpaqueText;
-  readonly parent: RustOwnedOpaqueBytes;
+  readonly parent?: RustOwnedOpaqueBytes | undefined;
 };
 export type RustOwnedPublicCreateContextRequest = RustWire.CreateContextRequest;
 export type RustOwnedPublicCreateEvaluationRequest = Omit<RustWire.CreateEvaluationRequest, "spec"> & {
@@ -218,9 +249,12 @@ export interface RustOwnedTransportOption { readonly kind: RustOwnedTransportKin
 export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "bearer"; readonly credentialPolicy: "bearer-no-crlf"; readonly requestEncoding: "protobuf-json"; readonly responseEncoding: "protobuf-json"; readonly responseLimitPolicy: "bounded-cumulative-utf8"; readonly maximumMessageBytes: number; readonly maximumHttpRequestBytes: number; readonly maximumHttpResponseBytes: number; readonly requestTimeoutMillis: number; readonly behaviorBinding: "generated-client"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
 export type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKind, boolean>>;
 
-export const INFERENCE_REMOTE_POLICY = { protocol: "https", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", responseLimitPolicy: "bounded-cumulative-utf8", maximumMessageBytes: 8388608, maximumHttpRequestBytes: 16777216, maximumHttpResponseBytes: 16777216, requestTimeoutMillis: 60000, behaviorBinding: "generated-client", transport: { native: [{ kind: "http", streaming: true, bearerAuth: true }], browser: [{ kind: "http", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
+export const INFERENCE_REMOTE_POLICY = { protocol: "https", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", responseLimitPolicy: "bounded-cumulative-utf8", maximumMessageBytes: 8388608, maximumHttpRequestBytes: 16777216, maximumHttpResponseBytes: 16777216, requestTimeoutMillis: 60000, behaviorBinding: "generated-client", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }, { kind: "http", streaming: true, bearerAuth: true }], browser: [{ kind: "http", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
 
-const RUST_OWNED_NATIVE_COMPANIONS = [] as const;
+/** Rust-owned native companion targets present in the generated package. */
+export const INFERENCE_NATIVE_COMPANION_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-arm64-musl", "linux-x64-gnu", "linux-x64-musl", "win32-arm64", "win32-x64"] as const;
+
+const RUST_OWNED_NATIVE_COMPANIONS = ["@acyclic-labs/inference-darwin-arm64", "@acyclic-labs/inference-darwin-x64", "@acyclic-labs/inference-linux-arm64-gnu", "@acyclic-labs/inference-linux-arm64-musl", "@acyclic-labs/inference-linux-x64-gnu", "@acyclic-labs/inference-linux-x64-musl", "@acyclic-labs/inference-win32-arm64", "@acyclic-labs/inference-win32-x64"] as const;
 
 /** Selects the first Rust-qualified transport that is installed for this runtime. */
 export function selectRustOwnedTransport(policy: RustOwnedRemotePolicy, runtime: RustOwnedRuntime, requested?: RustOwnedTransportKind, availability: RustOwnedTransportAvailability = {}): RustOwnedTransportKind {

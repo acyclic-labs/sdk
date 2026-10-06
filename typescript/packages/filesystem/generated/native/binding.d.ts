@@ -874,6 +874,8 @@ export declare class NativeResolvedFile {
   get logicalBytes(): bigint
   /** Complete canonical metadata authenticated by the pinned generation. */
   get metadataCanonicalBytes(): Buffer
+  /** Cooperatively cancels this resolved file's in-flight and future reads. */
+  cancel(): void
   /** Reads one exact logical range without another namespace lookup. */
   readRange(offset: bigint, length: bigint): Promise<NativeFileRead>
   /** Reads opaque symbolic-link target bytes without another namespace lookup. */
@@ -981,6 +983,8 @@ export declare class NativeVolume {
    * Returns a JavaScript error if the canonical JSON receipt cannot be encoded.
    */
   get acquisitionWorkJson(): string
+  /** Cooperatively cancels this volume's in-flight and future operations. */
+  cancel(): void
   /**
    * Computes one bounded Merkle-aware semantic generation diff.
    *
@@ -1003,6 +1007,8 @@ export declare class NativeVolume {
 
 /** One process-owned exact native watcher over a materialized checkout root. */
 export declare class NativeWatcher {
+  /** Cooperatively cancels this watcher's in-flight and future operations. */
+  cancel(): void
   /**
    * Establishes an authenticated baseline while preserving events that
    * arrive during the scan. The watcher owns both checkout and source-root

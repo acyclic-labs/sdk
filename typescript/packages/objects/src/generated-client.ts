@@ -22,6 +22,30 @@ export function invokeWithAbort<Output>(operation: () => PromiseLike<Output>, si
   });
 }
 
+/**
+ * Rust-owned cancellation boundary for an operation that has already started.
+ *
+ * The rejection observer is attached before checking an already-aborted signal.
+ * This preserves the caller-facing abort result while observing a late native
+ * rejection, which keeps a failed operation from becoming an unhandled promise.
+ */
+export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: AbortSignal): Promise<Output> {
+  if (signal === undefined) return Promise.resolve(operation);
+  const reason = () => signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  return new Promise<Output>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const resolveOnce = (value: Output) => { if (settled) return; settled = true; cleanup(); resolve(value); };
+    const rejectOnce = (error: unknown) => { if (settled) return; settled = true; cleanup(); reject(error); };
+    const onAbort = () => rejectOnce(reason());
+    // Attach this observer before the pre-abort check. The operation is already
+    // in flight, so its eventual rejection must always be observed.
+    Promise.resolve(operation).then(resolveOnce, rejectOnce);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
 /** Identifies a native adapter load failure that is safe for the Rust-qualified fallback. */
 export function isRustOwnedNativeLoadError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
@@ -42,25 +66,30 @@ import type { AbortMultipartRequest, AbortMultipartResponse, Bucket, CompleteMul
 // Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
 
 declare const rustOwnedSemanticBrand: unique symbol;
+function assertRustOwnedString(value: unknown): asserts value is string { if (typeof value !== "string") throw new TypeError("value must be a string"); }
+function assertRustOwnedInteger(value: unknown): asserts value is number { if (typeof value !== "number" || !Number.isFinite(value) || !Number.isSafeInteger(value)) throw new TypeError("value must be a finite safe integer"); }
 export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
-export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBigInt<Name extends string> = bigint & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string, Value extends object> = Value & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedOpenEnumValue<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticOneof<Name extends string, Value> = Value & { readonly [rustOwnedSemanticBrand]: Name };
 
 export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedIdempotencyKeyText = RustOwnedSemanticString<"idempotency_key_text">;
-export function makeRustOwnedIdempotencyKeyText(value: string): RustOwnedIdempotencyKeyText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyText; }
+export function makeRustOwnedIdempotencyKeyText(value: string): RustOwnedIdempotencyKeyText { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyText; }
 export type RustOwnedObjectKey = RustOwnedSemanticString<"object_key">;
-export function makeRustOwnedObjectKey(value: string): RustOwnedObjectKey { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedObjectKey; }
+export function makeRustOwnedObjectKey(value: string): RustOwnedObjectKey { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedObjectKey; }
 export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
-export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
 export type RustOwnedPageLimit = RustOwnedSemanticNumber<"page_limit">;
-export function makeRustOwnedPageLimit(value: number): RustOwnedPageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 1000) throw new RangeError("value exceeds its item limit"); return value as RustOwnedPageLimit; }
+export function makeRustOwnedPageLimit(value: number): RustOwnedPageLimit { assertRustOwnedInteger(value);if (value <= 0) throw new RangeError("value must be positive");if (value > 1000) throw new RangeError("value exceeds its item limit"); return value as RustOwnedPageLimit; }
 export type RustOwnedPositiveCount = RustOwnedSemanticNumber<"positive_count">;
-export function makeRustOwnedPositiveCount(value: number): RustOwnedPositiveCount { if (value <= 0) throw new RangeError("value must be positive"); return value as RustOwnedPositiveCount; }
+export function makeRustOwnedPositiveCount(value: number): RustOwnedPositiveCount { assertRustOwnedInteger(value);if (value <= 0) throw new RangeError("value must be positive"); return value as RustOwnedPositiveCount; }
 export type RustOwnedUploadId = RustOwnedSemanticString<"upload_id">;
-export function makeRustOwnedUploadId(value: string): RustOwnedUploadId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedUploadId; }
+export function makeRustOwnedUploadId(value: string): RustOwnedUploadId { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedUploadId; }
 
 export const OBJECTS_PUBLIC_FIELD_BINDINGS = [
   { family: "objects", field: "key", semanticType: "object_key", module: "objects", message: "GetObjectRequest", wireField: "object_key", direction: "request", rules: ["NonEmpty", "Utf8"] },

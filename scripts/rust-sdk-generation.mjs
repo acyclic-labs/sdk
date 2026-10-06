@@ -1,19 +1,70 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-function sourceCacheKey(sourceRoot) {
-  let canonicalRoot = sourceRoot;
+function canonicalSourceRoot(sourceRoot) {
   try {
-    canonicalRoot = realpathSync.native(sourceRoot);
+    return realpathSync.native(sourceRoot);
   } catch {
     // Unit tests and callers may describe a source root before creating it.
+    return sourceRoot;
   }
-  return createHash("sha256").update(canonicalRoot, "utf8").digest("hex").slice(0, 16);
+}
+
+function sourceCacheKey(sourceRoot) {
+  return createHash("sha256").update(canonicalSourceRoot(sourceRoot), "utf8").digest("hex").slice(0, 16);
+}
+
+const sourceOwnerReceipt = ".acyclic-sdk-source-owner.json";
+
+function readSourceOwner(receiptPath) {
+  try {
+    return JSON.parse(readFileSync(receiptPath, "utf8"));
+  } catch (error) {
+    throw new Error(`Generation cache source ownership receipt is unreadable: ${receiptPath}`, { cause: error });
+  }
+}
+
+function ensureCacheOwnership(cacheDirectory, sourceRoot, sourceKey, explicit, label) {
+  mkdirSync(cacheDirectory, { recursive: true });
+  const receiptPath = join(cacheDirectory, sourceOwnerReceipt);
+  const canonicalRoot = canonicalSourceRoot(sourceRoot);
+  const matches = (owner) => owner?.schema_version === 1
+    && owner.source_key === sourceKey
+    && owner.canonical_source_root === canonicalRoot;
+  if (existsSync(receiptPath)) {
+    if (!matches(readSourceOwner(receiptPath))) {
+      throw new Error(`${label} is owned by a different Rust source: ${cacheDirectory}`);
+    }
+    return;
+  }
+  if (explicit && readdirSync(cacheDirectory).length > 0) {
+    throw new Error(`Explicit ${label} has no source ownership receipt; refusing reuse: ${cacheDirectory}`);
+  }
+  const owner = JSON.stringify({
+    schema_version: 1,
+    source_key: sourceKey,
+    canonical_source_root: canonicalRoot,
+  }) + "\n";
+  try {
+    writeFileSync(receiptPath, owner, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    if (!matches(readSourceOwner(receiptPath))) {
+      throw new Error(`${label} is owned by a different Rust source: ${cacheDirectory}`);
+    }
+  }
 }
 
 function optionValue(args, option) {
@@ -124,7 +175,31 @@ export function generationInvocation(operation, rawArgs = [], options = {}) {
         CARGO_TARGET_DIR: target,
       },
     },
+    ownership: {
+      sourceRoot,
+      sourceKey,
+      targetExplicit: environment.CARGO_TARGET_DIR !== undefined,
+      docsCacheExplicit: environment.SDK_DOCS_RUSTDOC_CACHE_DIR !== undefined,
+    },
   };
+}
+
+export function ensureGenerationCacheOwnership(plan) {
+  const { sourceRoot, sourceKey, targetExplicit, docsCacheExplicit } = plan.ownership;
+  ensureCacheOwnership(
+    plan.options.env.CARGO_TARGET_DIR,
+    sourceRoot,
+    sourceKey,
+    targetExplicit,
+    "Cargo target directory",
+  );
+  ensureCacheOwnership(
+    plan.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR,
+    sourceRoot,
+    sourceKey,
+    docsCacheExplicit,
+    "Rustdoc cache directory",
+  );
 }
 
 const invokedAsCli = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
@@ -132,6 +207,7 @@ const [operation, ...rawArgs] = process.argv.slice(2);
 if (invokedAsCli && operation) {
   try {
     const plan = generationInvocation(operation, rawArgs, { repositoryRoot });
+    ensureGenerationCacheOwnership(plan);
     const result = spawnSync(plan.program, plan.args, {
       cwd: plan.options.cwd,
       env: { ...process.env, ...plan.options.env },

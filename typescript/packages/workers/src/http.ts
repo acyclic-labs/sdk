@@ -23,8 +23,8 @@ import type {
   RustOwnedPublicSelectDeploymentRequest, RustOwnedPublicSelectDeploymentResponse,
   RustOwnedPublicSubmitJobRequest, RustOwnedPublicSubmitJobResponse,
 } from "./generated-client.js";
-import { WORKERS_HANDSHAKE, WORKERS_METHODS, WORKERS_REMOTE_POLICY, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
-import { validateWorkersContentLength, validateWorkersCredential, validateWorkersEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersResponseChunk, validateWorkersResponseLimit } from "./wasm-runtime.js";
+import { WORKERS_HANDSHAKE, WORKERS_METHODS, WORKERS_REMOTE_POLICY, awaitWithAbort, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { ensureWorkersWasm, validateWorkersContentLength, validateWorkersCredential, validateWorkersEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersResponseChunk, validateWorkersResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpWorkersOptions {
   readonly endpoint: string;
@@ -40,6 +40,7 @@ export class WorkersTransportError extends Error {
 /** Authenticated transport. Mutations are retried only by caller intent and key. */
 export class HttpWorkersClient {
   readonly #endpoint: URL;
+  readonly #endpointInput: string;
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
@@ -47,14 +48,11 @@ export class HttpWorkersClient {
 
   constructor(options: HttpWorkersOptions) {
     const endpoint = new URL(options.endpoint);
-    validateWorkersEndpoint(options.endpoint);
-    validateRustOwnedCredential(WORKERS_METHODS.invokeDeployment, options.token);
-    validateWorkersCredential(options.token);
     this.#endpoint = endpoint;
+    this.#endpointInput = options.endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#maximum = options.maximumResponseBytes ?? WORKERS_REMOTE_POLICY.maximumHttpResponseBytes;
-    validateWorkersResponseLimit(this.#maximum);
   }
 
   async publishVersion(request: RustOwnedPublicPublishVersionRequest, signal?: AbortSignal): Promise<RustOwnedPublicPublishVersionResponse> {
@@ -74,16 +72,23 @@ export class HttpWorkersClient {
   }
   /** Invokes exact immutable code bytes with ordinary HTTP request ambiguity. */
   async invokeVersion(request: RustOwnedPublicInvokeVersionRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeResponse> {
+    await ensureWorkersWasm();
     validateWorkersInvokeVersion(request.versionSha256, request.method);
     return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeVersion, request, toJsonString(InvokeVersionRequestSchema, request), signal)) as unknown as RustOwnedPublicInvokeResponse;
   }
   /** Resolves the alias once at ingress and reports the resolved digest/revision. */
   async invokeDeployment(request: RustOwnedPublicInvokeDeploymentRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeResponse> {
+    await ensureWorkersWasm();
     validateWorkersInvokeDeployment(request.alias, request.method);
     return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeDeployment, request, toJsonString(InvokeDeploymentRequestSchema, request), signal)) as unknown as RustOwnedPublicInvokeResponse;
   }
 
   async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {
+    await ensureWorkersWasm();
+    validateWorkersEndpoint(this.#endpointInput);
+    validateRustOwnedCredential(method, this.#token);
+    validateWorkersCredential(this.#token);
+    validateWorkersResponseLimit(this.#maximum);
     const headers = { authorization: `Bearer ${this.#token}`, "content-type": "application/json" };
     await this.#ensureHandshake(headers, signal);
     const response = await this.#fetcher(new URL(interpolateRustOwnedPath(method, request), `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
@@ -109,11 +114,11 @@ export class HttpWorkersClient {
   }
 
   async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
-    if (this.#handshake !== undefined) return this.#handshake;
-    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, WORKERS_HANDSHAKE, this.#maximum, signal)
+    if (this.#handshake !== undefined) return awaitWithAbort(this.#handshake, signal);
+    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, WORKERS_HANDSHAKE, this.#maximum)
       .catch(error => { this.#handshake = undefined; throw error; });
     this.#handshake = pending;
-    return pending;
+    return awaitWithAbort(pending, signal);
   }
 }
 

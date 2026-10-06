@@ -22,6 +22,30 @@ export function invokeWithAbort<Output>(operation: () => PromiseLike<Output>, si
   });
 }
 
+/**
+ * Rust-owned cancellation boundary for an operation that has already started.
+ *
+ * The rejection observer is attached before checking an already-aborted signal.
+ * This preserves the caller-facing abort result while observing a late native
+ * rejection, which keeps a failed operation from becoming an unhandled promise.
+ */
+export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: AbortSignal): Promise<Output> {
+  if (signal === undefined) return Promise.resolve(operation);
+  const reason = () => signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  return new Promise<Output>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const resolveOnce = (value: Output) => { if (settled) return; settled = true; cleanup(); resolve(value); };
+    const rejectOnce = (error: unknown) => { if (settled) return; settled = true; cleanup(); reject(error); };
+    const onAbort = () => rejectOnce(reason());
+    // Attach this observer before the pre-abort check. The operation is already
+    // in flight, so its eventual rejection must always be observed.
+    Promise.resolve(operation).then(resolveOnce, rejectOnce);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
 /** Identifies a native adapter load failure that is safe for the Rust-qualified fallback. */
 export function isRustOwnedNativeLoadError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
@@ -38,37 +62,45 @@ import type { CheckpointAdmission, CheckpointMachineRequest, CheckpointMutationR
 // Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
 
 declare const rustOwnedSemanticBrand: unique symbol;
+function assertRustOwnedUint8Array(value: unknown): asserts value is Uint8Array { if (!ArrayBuffer.isView(value) || Object.prototype.toString.call(value) !== "[object Uint8Array]") throw new TypeError("value must be a Uint8Array"); try { Reflect.apply(Uint8Array.prototype.slice, value, [0, 0]); } catch { throw new TypeError("value must be a Uint8Array"); } }
+function assertRustOwnedInteger(value: unknown): asserts value is number { if (typeof value !== "number" || !Number.isFinite(value) || !Number.isSafeInteger(value)) throw new TypeError("value must be a finite safe integer"); }
+function assertRustOwnedBigInt(value: unknown): asserts value is bigint { if (typeof value !== "bigint") throw new TypeError("value must be a bigint"); }
+function assertRustOwnedUint64(value: unknown): asserts value is bigint { assertRustOwnedBigInt(value); if (value < 0n || value > 18446744073709551615n) throw new RangeError("value must fit an unsigned 64-bit wire field"); }
+function assertRustOwnedMessage(value: unknown): asserts value is object { if (value === null || typeof value !== "object") throw new TypeError("value must be an object"); }
 export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
-export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBigInt<Name extends string> = bigint & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string, Value extends object> = Value & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedOpenEnumValue<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticOneof<Name extends string, Value> = Value & { readonly [rustOwnedSemanticBrand]: Name };
 
 export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedCheckpointId = RustOwnedSemanticBytes<"checkpoint_id">;
-export function makeRustOwnedCheckpointId(value: Uint8Array): RustOwnedCheckpointId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedCheckpointId; }
-export type RustOwnedIdempotencyKeyMessage = RustOwnedSemanticMessage<"idempotency_key_message">;
-export function makeRustOwnedIdempotencyKeyMessage(value: object): RustOwnedIdempotencyKeyMessage {  return value as RustOwnedIdempotencyKeyMessage; }
-export type RustOwnedImmutableImage = RustOwnedSemanticMessage<"immutable_image">;
-export function makeRustOwnedImmutableImage(value: object): RustOwnedImmutableImage {  return value as RustOwnedImmutableImage; }
+export function makeRustOwnedCheckpointId(value: Uint8Array): RustOwnedCheckpointId { assertRustOwnedUint8Array(value);if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedCheckpointId; }
+export type RustOwnedIdempotencyKeyMessage<Value extends object> = RustOwnedSemanticMessage<"idempotency_key_message", Value>;
+export function makeRustOwnedIdempotencyKeyMessage<Value extends object>(value: Value): RustOwnedIdempotencyKeyMessage<Value> { assertRustOwnedMessage(value); return value as RustOwnedIdempotencyKeyMessage<Value>; }
+export type RustOwnedImmutableImage<Value extends object> = RustOwnedSemanticMessage<"immutable_image", Value>;
+export function makeRustOwnedImmutableImage<Value extends object>(value: Value): RustOwnedImmutableImage<Value> { assertRustOwnedMessage(value); return value as RustOwnedImmutableImage<Value>; }
 export type RustOwnedMachineEventPageLimit = RustOwnedSemanticNumber<"machine_event_page_limit">;
-export function makeRustOwnedMachineEventPageLimit(value: number): RustOwnedMachineEventPageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 1024) throw new RangeError("value exceeds its item limit"); return value as RustOwnedMachineEventPageLimit; }
+export function makeRustOwnedMachineEventPageLimit(value: number): RustOwnedMachineEventPageLimit { assertRustOwnedInteger(value);if (value <= 0) throw new RangeError("value must be positive");if (value > 1024) throw new RangeError("value exceeds its item limit"); return value as RustOwnedMachineEventPageLimit; }
 export type RustOwnedMachineId = RustOwnedSemanticBytes<"machine_id">;
-export function makeRustOwnedMachineId(value: Uint8Array): RustOwnedMachineId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedMachineId; }
+export function makeRustOwnedMachineId(value: Uint8Array): RustOwnedMachineId { assertRustOwnedUint8Array(value);if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedMachineId; }
 export type RustOwnedMachinePageLimit = RustOwnedSemanticNumber<"machine_page_limit">;
-export function makeRustOwnedMachinePageLimit(value: number): RustOwnedMachinePageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 256) throw new RangeError("value exceeds its item limit"); return value as RustOwnedMachinePageLimit; }
+export function makeRustOwnedMachinePageLimit(value: number): RustOwnedMachinePageLimit { assertRustOwnedInteger(value);if (value <= 0) throw new RangeError("value must be positive");if (value > 256) throw new RangeError("value exceeds its item limit"); return value as RustOwnedMachinePageLimit; }
 export type RustOwnedOpaqueBytes = RustOwnedSemanticBytes<"opaque_bytes">;
-export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes {  return value as RustOwnedOpaqueBytes; }
+export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes { assertRustOwnedUint8Array(value); return value as RustOwnedOpaqueBytes; }
 export type RustOwnedOperationId = RustOwnedSemanticBytes<"operation_id">;
-export function makeRustOwnedOperationId(value: Uint8Array): RustOwnedOperationId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedOperationId; }
+export function makeRustOwnedOperationId(value: Uint8Array): RustOwnedOperationId { assertRustOwnedUint8Array(value);if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedOperationId; }
 export type RustOwnedRevisionDigest = RustOwnedSemanticBytes<"revision_digest">;
-export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
-export type RustOwnedSequence = RustOwnedSemanticNumber<"sequence">;
-export function makeRustOwnedSequence(value: number): RustOwnedSequence { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
+export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { assertRustOwnedUint8Array(value);if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
+export type RustOwnedSequence = RustOwnedSemanticBigInt<"sequence">;
+export function makeRustOwnedSequence(value: bigint): RustOwnedSequence { assertRustOwnedUint64(value);if (value < 0n) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
 export type RustOwnedSha256Digest = RustOwnedSemanticBytes<"sha256_digest">;
-export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
-export type RustOwnedTimestampMillis = RustOwnedSemanticNumber<"timestamp_millis">;
-export function makeRustOwnedTimestampMillis(value: number): RustOwnedTimestampMillis { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampMillis; }
+export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { assertRustOwnedUint8Array(value);if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
+export type RustOwnedTimestampMillis = RustOwnedSemanticBigInt<"timestamp_millis">;
+export function makeRustOwnedTimestampMillis(value: bigint): RustOwnedTimestampMillis { assertRustOwnedUint64(value);if (value < 0n) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampMillis; }
 
 export const MACHINES_PUBLIC_FIELD_BINDINGS = [
   { family: "machines", field: "image", semanticType: "immutable_image", module: "machines", message: "CreateMachineRequest", wireField: "image", direction: "request", rules: ["Immutable"] },
@@ -114,8 +146,8 @@ export type RustOwnedPublicCheckpointState = Omit<RustWire.CheckpointState, "cre
   readonly createdAtUnixMs: RustOwnedTimestampMillis;
 };
 export type RustOwnedPublicCreateMachineRequest = Omit<RustWire.CreateMachineRequest, "idempotencyKey" | "image"> & {
-  readonly idempotencyKey: RustOwnedSemanticMessage<"idempotency_key_message">;
-  readonly image: RustOwnedSemanticMessage<"immutable_image">;
+  readonly idempotencyKey: RustOwnedSemanticMessage<"idempotency_key_message", RustWire.IdempotencyKey>;
+  readonly image: RustOwnedPublicImage;
 };
 export type RustOwnedPublicEventPage = Omit<RustWire.EventPage, "nextSequence"> & {
   readonly nextSequence: RustOwnedSequence;
@@ -127,10 +159,9 @@ export type RustOwnedPublicForkAdmission = RustWire.ForkAdmission;
 export type RustOwnedPublicForkCheckpointRequest = RustWire.ForkCheckpointRequest;
 export type RustOwnedPublicForkMachineAdmission = RustWire.ForkMachineAdmission;
 export type RustOwnedPublicForkMachineRequest = RustWire.ForkMachineRequest;
-export type RustOwnedPublicImage = Omit<RustWire.Image, "customDigest" | "managedDigest"> & {
-  readonly customDigest: RustOwnedSha256Digest;
-  readonly managedDigest: RustOwnedSha256Digest;
-};
+export type RustOwnedPublicImage = Omit<RustWire.Image, "immutableReference"> & {
+  readonly immutableReference: { readonly value: RustOwnedSha256Digest; readonly case: "managedDigest" } | { readonly value: RustOwnedSha256Digest; readonly case: "customDigest" } | { readonly value: RustWire.CheckpointId; readonly case: "checkpoint" } | { readonly case: undefined; readonly value?: undefined };
+} & { readonly [rustOwnedSemanticBrand]: "immutable_image" };
 export type RustOwnedPublicImageQualification = Omit<RustWire.ImageQualification, "compatibilityRevision"> & {
   readonly compatibilityRevision: RustOwnedRevisionDigest;
 };
@@ -157,7 +188,7 @@ export type RustOwnedPublicOperationRequest = Omit<RustWire.OperationRequest, "o
 export type RustOwnedPublicOperationState = RustWire.OperationState;
 export type RustOwnedPublicPolicyAdmission = RustWire.PolicyAdmission;
 export type RustOwnedPublicQualifyImageRequest = Omit<RustWire.QualifyImageRequest, "image"> & {
-  readonly image: RustOwnedSemanticMessage<"immutable_image">;
+  readonly image: RustOwnedPublicImage;
 };
 export type RustOwnedPublicRecoverRequest = RustWire.RecoverRequest;
 export type RustOwnedPublicRecoveredAdmission = RustWire.RecoveredAdmission;
@@ -217,10 +248,10 @@ export interface RustOwnedMethodMetadata {
 export type RustOwnedTransportKind = "grpc" | "grpc-web" | "http";
 export type RustOwnedRuntime = "native" | "browser";
 export interface RustOwnedTransportOption { readonly kind: RustOwnedTransportKind; readonly streaming: boolean; readonly bearerAuth: boolean; }
-export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "mtls"; readonly credentialPolicy: "mtls-files"; readonly requestEncoding: "protobuf"; readonly responseEncoding: "protobuf"; readonly responseLimitPolicy: "bounded-cumulative-protobuf"; readonly maximumMessageBytes: number; readonly maximumHttpRequestBytes: number; readonly maximumHttpResponseBytes: number; readonly requestTimeoutMillis: number; readonly behaviorBinding: "rust-native-grpc"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
+export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "bearer"; readonly credentialPolicy: "bearer-no-crlf"; readonly requestEncoding: "protobuf"; readonly responseEncoding: "protobuf"; readonly responseLimitPolicy: "bounded-cumulative-protobuf"; readonly maximumMessageBytes: number; readonly maximumHttpRequestBytes: number; readonly maximumHttpResponseBytes: number; readonly requestTimeoutMillis: number; readonly behaviorBinding: "rust-native-grpc"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
 export type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKind, boolean>>;
 
-export const MACHINES_REMOTE_POLICY = { protocol: "https", auth: "mtls", credentialPolicy: "mtls-files", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", maximumMessageBytes: 67108864, maximumHttpRequestBytes: 67108864, maximumHttpResponseBytes: 67108864, requestTimeoutMillis: 30000, behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }], browser: [{ kind: "grpc-web", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
+export const MACHINES_REMOTE_POLICY = { protocol: "https", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", maximumMessageBytes: 67108864, maximumHttpRequestBytes: 67108864, maximumHttpResponseBytes: 67108864, requestTimeoutMillis: 30000, behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }], browser: [{ kind: "grpc-web", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
 
 /** Rust-owned native companion targets present in the generated package. */
 export const MACHINES_NATIVE_COMPANION_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-arm64-musl", "linux-x64-gnu", "linux-x64-musl", "win32-arm64", "win32-x64"] as const;
@@ -429,9 +460,11 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
-export const RUST_OWNED_CREDENTIAL_POLICY = "mtls-files" as const;
+export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
 
-export function validateRustOwnedCredentialPolicy(_token: string): void {}
+export function validateRustOwnedCredentialPolicy(token: string): void {
+  if (typeof token !== "string" || token.trim().length === 0 || /[\r\n]/.test(token)) throw new TypeError("invalid bearer credential");
+}
 
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
   if ((method.credentialPolicy as string) === (RUST_OWNED_CREDENTIAL_POLICY as string)) validateRustOwnedCredentialPolicy(token);

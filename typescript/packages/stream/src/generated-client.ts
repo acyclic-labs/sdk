@@ -22,6 +22,30 @@ export function invokeWithAbort<Output>(operation: () => PromiseLike<Output>, si
   });
 }
 
+/**
+ * Rust-owned cancellation boundary for an operation that has already started.
+ *
+ * The rejection observer is attached before checking an already-aborted signal.
+ * This preserves the caller-facing abort result while observing a late native
+ * rejection, which keeps a failed operation from becoming an unhandled promise.
+ */
+export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: AbortSignal): Promise<Output> {
+  if (signal === undefined) return Promise.resolve(operation);
+  const reason = () => signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  return new Promise<Output>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const resolveOnce = (value: Output) => { if (settled) return; settled = true; cleanup(); resolve(value); };
+    const rejectOnce = (error: unknown) => { if (settled) return; settled = true; cleanup(); reject(error); };
+    const onAbort = () => rejectOnce(reason());
+    // Attach this observer before the pre-abort check. The operation is already
+    // in flight, so its eventual rejection must always be observed.
+    Promise.resolve(operation).then(resolveOnce, rejectOnce);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
 /** Identifies a native adapter load failure that is safe for the Rust-qualified fallback. */
 export function isRustOwnedNativeLoadError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;
@@ -42,31 +66,39 @@ import type { AppendRequest, AppendResponse, ChildrenPageRequest, ChildrenPageRe
 // Rust-owned semantic projections. Generated from type_policy.rs; do not edit.
 
 declare const rustOwnedSemanticBrand: unique symbol;
+function assertRustOwnedString(value: unknown): asserts value is string { if (typeof value !== "string") throw new TypeError("value must be a string"); }
+function assertRustOwnedUint8Array(value: unknown): asserts value is Uint8Array { if (!ArrayBuffer.isView(value) || Object.prototype.toString.call(value) !== "[object Uint8Array]") throw new TypeError("value must be a Uint8Array"); try { Reflect.apply(Uint8Array.prototype.slice, value, [0, 0]); } catch { throw new TypeError("value must be a Uint8Array"); } }
+function assertRustOwnedInteger(value: unknown): asserts value is number { if (typeof value !== "number" || !Number.isFinite(value) || !Number.isSafeInteger(value)) throw new TypeError("value must be a finite safe integer"); }
+function assertRustOwnedBigInt(value: unknown): asserts value is bigint { if (typeof value !== "bigint") throw new TypeError("value must be a bigint"); }
+function assertRustOwnedUint64(value: unknown): asserts value is bigint { assertRustOwnedBigInt(value); if (value < 0n || value > 18446744073709551615n) throw new RangeError("value must fit an unsigned 64-bit wire field"); }
 export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
-export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticBigInt<Name extends string> = bigint & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticMessage<Name extends string, Value extends object> = Value & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedOpenEnumValue<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
+export type RustOwnedSemanticOneof<Name extends string, Value> = Value & { readonly [rustOwnedSemanticBrand]: Name };
 
 export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedCommitId = RustOwnedSemanticBytes<"commit_id">;
-export function makeRustOwnedCommitId(value: Uint8Array): RustOwnedCommitId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedCommitId; }
+export function makeRustOwnedCommitId(value: Uint8Array): RustOwnedCommitId { assertRustOwnedUint8Array(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedCommitId; }
 export type RustOwnedDestination = RustOwnedSemanticString<"destination">;
-export function makeRustOwnedDestination(value: string): RustOwnedDestination { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedDestination; }
+export function makeRustOwnedDestination(value: string): RustOwnedDestination { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedDestination; }
 export type RustOwnedIdempotencyKeyBytes = RustOwnedSemanticBytes<"idempotency_key_bytes">;
-export function makeRustOwnedIdempotencyKeyBytes(value: Uint8Array): RustOwnedIdempotencyKeyBytes { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyBytes; }
+export function makeRustOwnedIdempotencyKeyBytes(value: Uint8Array): RustOwnedIdempotencyKeyBytes { assertRustOwnedUint8Array(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyBytes; }
 export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
-export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
 export type RustOwnedPath = RustOwnedSemanticString<"path">;
-export function makeRustOwnedPath(value: string): RustOwnedPath { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
+export function makeRustOwnedPath(value: string): RustOwnedPath { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
 export type RustOwnedRevisionDigest = RustOwnedSemanticBytes<"revision_digest">;
-export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
-export type RustOwnedSequence = RustOwnedSemanticNumber<"sequence">;
-export function makeRustOwnedSequence(value: number): RustOwnedSequence { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
+export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { assertRustOwnedUint8Array(value);if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
+export type RustOwnedSequence = RustOwnedSemanticBigInt<"sequence">;
+export function makeRustOwnedSequence(value: bigint): RustOwnedSequence { assertRustOwnedUint64(value);if (value < 0n) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
 export type RustOwnedSource = RustOwnedSemanticString<"source">;
-export function makeRustOwnedSource(value: string): RustOwnedSource { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedSource; }
+export function makeRustOwnedSource(value: string): RustOwnedSource { assertRustOwnedString(value);if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedSource; }
 export type RustOwnedStreamPageLimit = RustOwnedSemanticNumber<"stream_page_limit">;
-export function makeRustOwnedStreamPageLimit(value: number): RustOwnedStreamPageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 1024) throw new RangeError("value exceeds its item limit"); return value as RustOwnedStreamPageLimit; }
+export function makeRustOwnedStreamPageLimit(value: number): RustOwnedStreamPageLimit { assertRustOwnedInteger(value);if (value <= 0) throw new RangeError("value must be positive");if (value > 1024) throw new RangeError("value exceeds its item limit"); return value as RustOwnedStreamPageLimit; }
 
 export const STREAM_PUBLIC_FIELD_BINDINGS = [
   { family: "stream", field: "idempotency_key", semanticType: "idempotency_key_bytes", module: "stream", message: "AppendRequest", wireField: "idempotency_key", direction: "request", rules: ["NonEmpty"] },
@@ -97,14 +129,14 @@ import type * as RustWire from "../generated/proto/stream/v2/stream_pb.js";
 export type RustOwnedPublicField<Name extends string, Value> = Value & { readonly __rustOwnedSemantic?: Name };
 
 export type RustOwnedPublicAppendRequest = Omit<RustWire.AppendRequest, "idempotencyKey" | "path"> & {
-  readonly idempotencyKey: RustOwnedIdempotencyKeyBytes;
+  readonly idempotencyKey?: RustOwnedIdempotencyKeyBytes | undefined;
   readonly path: RustOwnedPath;
 };
 export type RustOwnedPublicAppendResponse = RustWire.AppendResponse;
 export type RustOwnedPublicChildrenPageRequest = RustWire.ChildrenPageRequest;
 export type RustOwnedPublicChildrenPageResponse = Omit<RustWire.ChildrenPageResponse, "hierarchyVersion" | "nextAfter"> & {
   readonly hierarchyVersion: RustOwnedRevisionDigest;
-  readonly nextAfter: RustOwnedOpaqueText;
+  readonly nextAfter?: RustOwnedOpaqueText | undefined;
 };
 export type RustOwnedPublicChildrenRequest = RustWire.ChildrenRequest;
 export type RustOwnedPublicChildrenResponse = RustWire.ChildrenResponse;

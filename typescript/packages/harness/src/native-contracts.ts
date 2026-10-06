@@ -571,15 +571,19 @@ function publicModelEvent(event: WasmModelEvent): ModelEvent {
 
 /** Keep the public camelCase event boundary explicit when entering generated WASM. */
 function wasmModelEventInput(event: ModelEvent): WasmModelEventInput {
-  switch (event.kind) {
+  // Capture only the event's own fields here. Rust's `from_js` performs the
+  // recursive bounded JSON snapshot and owns all nested validation; this
+  // shallow capture only prevents a provider getter from being read again.
+  const detached = { ...event };
+  switch (detached.kind) {
     case "tool_call":
-      return { ...event, callId: event.callId };
+      return { ...detached, callId: detached.callId };
     case "completed":
-      return event;
+      return detached;
     case "content":
-      return event;
+      return detached;
     case "reasoning":
-      return event;
+      return detached;
   }
 }
 
@@ -606,8 +610,19 @@ function normalizeNativeValue(value: unknown, safeJsonNumbers = false, preserveL
     return Object.fromEntries(entries);
   }
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key,
-      normalizeNativeValue(child, safeJsonNumbers, preserveLargeBigInts)] as const));
+    const entries = Object.entries(value).map(([key, child]) => [key,
+      normalizeNativeValue(child, safeJsonNumbers, preserveLargeBigInts)] as const);
+    // The generated serde glue assigns object keys with ordinary property
+    // writes.  A native `__proto__` key therefore becomes the returned
+    // object's prototype instead of an own data property.  Recover that
+    // payload before creating the public plain object.
+    const prototype = Object.getPrototypeOf(value);
+    if (!Object.prototype.hasOwnProperty.call(value, "__proto__")
+      && prototype !== null && prototype !== Object.prototype
+      && typeof prototype === "object") {
+      entries.push(["__proto__", normalizeNativeValue(prototype, safeJsonNumbers, preserveLargeBigInts)]);
+    }
+    return Object.fromEntries(entries);
   }
   return value;
 }

@@ -1,0 +1,26 @@
+[package]
+name = "acyclic-inference-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "N-API native remote Inference transport over the canonical Rust client"
+publish = false
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+acyclic-inference = { version = "=0.2.0", path = "../inference", default-features = true }
+napi = { workspace = true, features = ["tokio_rt"] }
+napi-derive.workspace = true
+prost.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+napi-build = "2.3.1"
+
+[lints]
+workspace = true

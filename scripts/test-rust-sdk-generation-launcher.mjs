@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
-import { generationInvocation } from "./rust-sdk-generation.mjs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { ensureGenerationCacheOwnership, generationInvocation } from "./rust-sdk-generation.mjs";
 
 const options = {
   repositoryRoot: resolve("/frozen/sdk"), callerDirectory: resolve("/caller"),
@@ -105,6 +113,67 @@ test("explicit target and docs cache remain caller-owned under SDK_BUILD_ROOT", 
   assert.equal(plan.options.env.CARGO_TARGET_DIR, resolve(options.callerDirectory, "retained/cargo-target"));
   assert.equal(plan.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, resolve(options.callerDirectory, "retained/rustdoc-cache"));
   assert.equal(plan.options.env.SDK_BUILD_ROOT, resolve(options.callerDirectory, "/configured/sdk-build"));
+});
+
+test("explicit Cargo and rustdoc caches require matching source ownership receipts", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "acyclic-sdk-generation-"));
+  try {
+    const source = join(workspace, "source");
+    const otherSource = join(workspace, "other-source");
+    const target = join(workspace, "cargo-target");
+    const docsCache = join(workspace, "rustdoc-cache");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(otherSource, { recursive: true });
+    const environment = {
+      CARGO_TARGET_DIR: target,
+      SDK_DOCS_RUSTDOC_CACHE_DIR: docsCache,
+    };
+    const first = generationInvocation("generate", ["--source-root", source], {
+      ...options,
+      temporaryRoot: workspace,
+      environment,
+    });
+    ensureGenerationCacheOwnership(first);
+    assert.equal(existsSync(join(target, ".acyclic-sdk-source-owner.json")), true);
+    assert.equal(existsSync(join(docsCache, ".acyclic-sdk-source-owner.json")), true);
+    ensureGenerationCacheOwnership(first);
+
+    const other = generationInvocation("generate", ["--source-root", otherSource], {
+      ...options,
+      temporaryRoot: workspace,
+      environment,
+    });
+    assert.throws(
+      () => ensureGenerationCacheOwnership(other),
+      /Cargo target directory is owned by a different Rust source/,
+    );
+
+    const otherTarget = join(workspace, "other-cargo-target");
+    const docsConflict = generationInvocation("generate", ["--source-root", otherSource], {
+      ...options,
+      temporaryRoot: workspace,
+      environment: { CARGO_TARGET_DIR: otherTarget, SDK_DOCS_RUSTDOC_CACHE_DIR: docsCache },
+    });
+    assert.throws(
+      () => ensureGenerationCacheOwnership(docsConflict),
+      /Rustdoc cache directory is owned by a different Rust source/,
+    );
+
+    const staleTarget = join(workspace, "stale-target");
+    mkdirSync(staleTarget, { recursive: true });
+    writeFileSync(join(staleTarget, "stale.bin"), "stale");
+    const stale = generationInvocation("generate", ["--source-root", source], {
+      ...options,
+      temporaryRoot: workspace,
+      environment: { CARGO_TARGET_DIR: staleTarget, SDK_DOCS_RUSTDOC_CACHE_DIR: join(workspace, "stale-docs") },
+    });
+    assert.throws(
+      () => ensureGenerationCacheOwnership(stale),
+      /Explicit Cargo target directory has no source ownership receipt/,
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
 });
 
 test("explicit rustdoc cache directories cannot write inside the frozen source", () => {

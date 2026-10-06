@@ -2,12 +2,21 @@
   "acyclicGenerated": {
     "defaultTransports": {
       "browser": "http",
-      "native": "http"
+      "native": "grpc"
     },
     "family": "inference",
     "generator": "sdk-typescript",
     "generatorVersion": "0.1.0",
-    "nativeCompanions": {},
+    "nativeCompanions": {
+      "@acyclic-labs/inference-darwin-arm64": "0.2.0",
+      "@acyclic-labs/inference-darwin-x64": "0.2.0",
+      "@acyclic-labs/inference-linux-arm64-gnu": "0.2.0",
+      "@acyclic-labs/inference-linux-arm64-musl": "0.2.0",
+      "@acyclic-labs/inference-linux-x64-gnu": "0.2.0",
+      "@acyclic-labs/inference-linux-x64-musl": "0.2.0",
+      "@acyclic-labs/inference-win32-arm64": "0.2.0",
+      "@acyclic-labs/inference-win32-x64": "0.2.0"
+    },
     "sourceContentSha256": "cd3150aae552a750620b93e88b15faa2c09e5eeaf88dedfe892c7ebfa95a37dc",
     "sourceGitSha": null,
     "sourceGitShaKind": null,
@@ -32,6 +41,10 @@
       "default": "./dist/generated-client.js",
       "types": "./dist/generated-client.d.ts"
     },
+    "./native": {
+      "default": "./dist/native.js",
+      "types": "./dist/native.d.ts"
+    },
     "./proto": {
       "default": "./generated/proto/inference/v1/inference_pb.js",
       "types": "./generated/proto/inference/v1/inference_pb.d.ts"
@@ -52,6 +65,16 @@
   ],
   "license": "Apache-2.0",
   "name": "@acyclic-labs/inference",
+  "optionalDependencies": {
+    "@acyclic-labs/inference-darwin-arm64": "0.2.0",
+    "@acyclic-labs/inference-darwin-x64": "0.2.0",
+    "@acyclic-labs/inference-linux-arm64-gnu": "0.2.0",
+    "@acyclic-labs/inference-linux-arm64-musl": "0.2.0",
+    "@acyclic-labs/inference-linux-x64-gnu": "0.2.0",
+    "@acyclic-labs/inference-linux-x64-musl": "0.2.0",
+    "@acyclic-labs/inference-win32-arm64": "0.2.0",
+    "@acyclic-labs/inference-win32-x64": "0.2.0"
+  },
   "private": false,
   "repository": {
     "directory": "typescript/packages/inference",

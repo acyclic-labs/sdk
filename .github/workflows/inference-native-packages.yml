@@ -1,0 +1,264 @@
+name: Inference native package qualification
+
+on:
+  workflow_call:
+    inputs:
+      source_revision:
+        description: Exact Rust source revision to bind to the package receipts
+        required: false
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inference-native-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  typescript_identity:
+    name: Generate Rust-bound Inference package identity
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      source_model_revision: ${{ steps.identity.outputs.source_model_revision }}
+      source_content_sha256: ${{ steps.identity.outputs.source_content_sha256 }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Generate Rust wire and installable Inference package identity
+        shell: bash
+        env:
+          SDK_RELEASE: '1'
+          CARGO_TARGET_DIR: ${{ runner.temp }}/inference-typescript-identity-target
+        run: |
+          set -euo pipefail
+          wire="$RUNNER_TEMP/inference-rust-wire"
+          out="$RUNNER_TEMP/inference-rust-typescript"
+          cargo run --locked --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --bin sdk-contract-wire -- generate --out "$wire"
+          cargo run --locked --manifest-path rust/crates/sdk-typescript/Cargo.toml --bin sdk-typescript -- packages-write "$GITHUB_WORKSPACE" "$out" "$wire"
+
+      - name: Export immutable Inference package identities
+        id: identity
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          provenance="$RUNNER_TEMP/inference-rust-typescript/typescript/packages/inference/generated/rust-provenance.json"
+          node --input-type=module -e 'const p=JSON.parse(await (await import("node:fs/promises")).readFile(process.argv[1],"utf8")); const family=p.acyclicGenerated ?? p; if(family.family!=="inference") throw new Error("generated provenance is not the Inference family"); if(family.sourceGitSha !== process.env.SOURCE_REVISION) throw new Error(`package Git identity ${family.sourceGitSha} differs from ${process.env.SOURCE_REVISION}`); if(!/^[0-9a-f]{64}$/.test(family.sourceModelRevision ?? "")) throw new Error("missing model identity"); if(!/^[0-9a-f]{64}$/.test(family.sourceContentSha256 ?? "")) throw new Error("missing content identity"); console.log(`source_model_revision=${family.sourceModelRevision}`); console.log(`source_content_sha256=${family.sourceContentSha256}`);' "$provenance" >> "$GITHUB_OUTPUT"
+
+      - name: Upload generated Inference package identity
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: inference-typescript-generated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/inference-rust-typescript
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: typescript_identity
+    name: ${{ matrix.package_target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_target: linux-x64-gnu
+            rust_target: x86_64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404
+            native_arch: X64
+            musl: false
+            llvm: false
+          - package_target: linux-x64-musl
+            rust_target: x86_64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404
+            native_arch: X64
+            musl: true
+            llvm: false
+          - package_target: linux-arm64-gnu
+            rust_target: aarch64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            native_arch: ARM64
+            musl: false
+            llvm: false
+          - package_target: linux-arm64-musl
+            rust_target: aarch64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            native_arch: ARM64
+            musl: true
+            llvm: false
+          - package_target: darwin-x64
+            rust_target: x86_64-apple-darwin
+            runner: macos-15-intel
+            native_arch: X64
+            musl: false
+            llvm: false
+          - package_target: darwin-arm64
+            rust_target: aarch64-apple-darwin
+            runner: macos-15
+            native_arch: ARM64
+            musl: false
+            llvm: false
+          - package_target: win32-x64
+            rust_target: x86_64-pc-windows-msvc
+            runner: blacksmith-4vcpu-windows-2025
+            native_arch: X64
+            musl: false
+            llvm: false
+          - package_target: win32-arm64
+            rust_target: aarch64-pc-windows-msvc
+            runner: windows-11-vs2026-arm
+            native_arch: ARM64
+            musl: false
+            llvm: true
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust and target
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Provision the pinned musl linker
+        if: matrix.musl
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          command -v musl-gcc
+
+      - name: Provision the Windows ARM linker
+        if: matrix.llvm
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 20.1.8
+          arch: arm64
+          directory: ${{ runner.temp }}/llvm
+          env: false
+
+      - name: Select the native Windows ARM linker
+        if: matrix.llvm
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "CC_aarch64_pc_windows_msvc=$env:RUNNER_TEMP\llvm\bin\clang.exe"
+
+      - name: Record compiler identity
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: "\"RUSTC_VERSION=$((rustc -V) -join ' ')\" >> $env:GITHUB_ENV"
+
+      - name: Record compiler identity
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "RUSTC_VERSION=$(rustc -V)" >> "$GITHUB_ENV"
+
+      - name: Require a native runner for cancellation qualification
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.native_arch }}
+          ACTUAL_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          test "$ACTUAL_ARCH" = "$EXPECTED_ARCH"
+
+      - name: Build and package the Rust native Inference bridge
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/inference-native-target
+          INFERENCE_NATIVE_OUTPUT: ${{ runner.temp }}/inference-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+          SOURCE_MODEL_REVISION: ${{ needs.typescript_identity.outputs.source_model_revision }}
+          SOURCE_CONTENT_SHA256: ${{ needs.typescript_identity.outputs.source_content_sha256 }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.musl }}" == 'true' ]]; then
+            target_env=$(printf '%s' "${{ matrix.rust_target }}" | tr '[:lower:]-' '[:upper:]_')
+            export "CARGO_TARGET_${target_env}_LINKER=musl-gcc"
+            command -v musl-gcc
+          fi
+          node scripts/build-inference-native-package.mjs \
+            --target "${{ matrix.package_target }}" \
+            --target-dir "$CARGO_TARGET_DIR" \
+            --output "$INFERENCE_NATIVE_OUTPUT" \
+            --provenance "$INFERENCE_NATIVE_OUTPUT/${{ matrix.package_target }}.provenance.json" \
+            --verify-install
+
+      - name: Pack the installable Inference companion archive
+        shell: bash
+        env:
+          INFERENCE_NATIVE_OUTPUT: ${{ runner.temp }}/inference-native-packages
+          NPM_CACHE: ${{ runner.temp }}/inference-native-npm-cache
+        run: |
+          set -euo pipefail
+          mkdir -p "$NPM_CACHE"
+          cd "$INFERENCE_NATIVE_OUTPUT/${{ matrix.package_target }}"
+          npm pack --ignore-scripts --offline --cache "$NPM_CACHE" --pack-destination "$INFERENCE_NATIVE_OUTPUT"
+
+      - name: Verify the packed archive in a clean consumer
+        shell: bash
+        env:
+          INFERENCE_NATIVE_OUTPUT: ${{ runner.temp }}/inference-native-packages
+          NPM_CACHE: ${{ runner.temp }}/inference-native-npm-cache
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+          PACKAGE_TARGET: ${{ matrix.package_target }}
+        run: |
+          set -euo pipefail
+          archive=$(find "$INFERENCE_NATIVE_OUTPUT" -maxdepth 1 -name '*.tgz' -type f | head -n 1)
+          test -n "$archive"
+          package_root="$INFERENCE_NATIVE_OUTPUT/$PACKAGE_TARGET"
+          package_name=$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1])).name)' "$package_root/package.json")
+          consumer="$RUNNER_TEMP/inference-native-packed-consumer"
+          rm -rf "$consumer"
+          mkdir -p "$consumer"
+          npm install --ignore-scripts --offline --cache "$NPM_CACHE" --prefix "$consumer" "$archive"
+          node --input-type=module -e 'import {createRequire} from "node:module"; import {createHash} from "node:crypto"; import {readFileSync,writeFileSync} from "node:fs"; const root=process.argv[1]; const archive=process.argv[2]; const pkg=process.argv[3]; const binding=createRequire(`${root}/package.json`)(pkg); if(typeof binding.NativeInferenceClient!=="function") throw new Error(`installed ${pkg} did not expose NativeInferenceClient`); if(typeof binding.NativeInferenceCancellation!=="function") throw new Error(`installed ${pkg} did not expose NativeInferenceCancellation`); const cancellation=new binding.NativeInferenceCancellation(); if(cancellation.cancelled!==false) throw new Error("cancellation handle did not start active"); cancellation.cancel(); if(cancellation.cancelled!==true) throw new Error("cancellation handle did not transition to cancelled"); const sha256=p=>"sha256:"+createHash("sha256").update(readFileSync(p)).digest("hex"); writeFileSync(`${process.env.INFERENCE_NATIVE_OUTPUT}/${process.env.PACKAGE_TARGET}.install.json`,JSON.stringify({schema:"acyclic.sdk.inference.native.installed-consumer.v1",source_revision:process.env.SOURCE_REVISION,status:"passed",package:pkg,package_target:process.env.PACKAGE_TARGET,archive_sha256:sha256(archive),resolver:"npm install archive then node_modules package name",checks:["npm-install","napi-loader","NativeInferenceClient-export","NativeInferenceCancellation-export","cancellation-transition"]},null,2)+"\n");' "$consumer" "$archive" "$package_name"
+
+      - name: Collect Rust-owned Inference package proof
+        shell: bash
+        env:
+          INFERENCE_NATIVE_OUTPUT: ${{ runner.temp }}/inference-native-packages
+          SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+        run: |
+          set -euo pipefail
+          package_root="$INFERENCE_NATIVE_OUTPUT/${{ matrix.package_target }}"
+          archive=$(find "$INFERENCE_NATIVE_OUTPUT" -maxdepth 1 -name '*.tgz' -type f | head -n 1)
+          test -n "$archive"
+          node scripts/collect-inference-native-proof.mjs \
+            --package-root "$package_root" \
+            --archive "$archive" \
+            --target "${{ matrix.package_target }}" \
+            --source-revision "$SOURCE_REVISION" \
+            --installed-consumer "$INFERENCE_NATIVE_OUTPUT/${{ matrix.package_target }}.install.json" \
+            --output "$INFERENCE_NATIVE_OUTPUT/${{ matrix.package_target }}.package-proof.json"
+
+      - name: Upload installable Inference package artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: inference-native-${{ matrix.package_target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/inference-native-packages
+          if-no-files-found: error
+          retention-days: 90

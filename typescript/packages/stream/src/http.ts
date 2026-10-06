@@ -5,7 +5,7 @@ import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateHttpEndpointValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { STREAM_HANDSHAKE, negotiateRustOwnedEndpoint, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { STREAM_HANDSHAKE, awaitWithAbort, negotiateRustOwnedEndpoint, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 
 export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -116,14 +116,14 @@ export class HttpStreamProvider implements StreamProvider {
     return text;
   }
   async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
-    if (this.#handshake !== undefined) return this.#handshake;
+    if (this.#handshake !== undefined) return awaitWithAbort(this.#handshake, signal);
     // The control response has the Rust-generated handshake bound. A caller's
     // application response limit may be smaller than that fixed control
     // envelope and must not make negotiation impossible.
-    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, STREAM_HANDSHAKE, undefined, signal)
+    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, STREAM_HANDSHAKE, undefined)
       .catch(error => { this.#handshake = undefined; throw error; });
     this.#handshake = pending;
-    return pending;
+    return awaitWithAbort(pending, signal);
   }
 }
 

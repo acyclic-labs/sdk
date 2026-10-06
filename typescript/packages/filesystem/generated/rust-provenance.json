@@ -7,7 +7,7 @@
   "descriptorSha256": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1",
   "family": "filesystem",
   "generatedClientSha256": null,
-  "generatedSourceSha256": "4a96acee3ffa35a81afb84dadf660ac5a3c064ae09af6a958ad9585f1bb335ce",
+  "generatedSourceSha256": "9ea542f1a79a96e7671c19205d692e3097c5f32bb422f70b28338b23f3c89b96",
   "generator": "sdk-typescript",
   "generatorVersion": "0.1.0",
   "nativeCompanions": {
@@ -21,9 +21,9 @@
   "rustCrate": "acyclic-filesystem",
   "schema": "acyclic.sdk.typescript.package.provenance.v1",
   "sourceArtifact": "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor",
-  "sourceContentSha256": "88d1dd90ca02e81baaa2e6bf5dad5769dcd13be2bd811a8d82b098e6527329bc",
+  "sourceContentSha256": "0651ff787103af1194a11620681f6bb5aa28aac3f799a91662a40e55b082dadc",
   "sourceGitSha": null,
   "sourceGitShaKind": null,
   "sourceModelRevision": "working-tree",
-  "sourceModelSha256": "88d1dd90ca02e81baaa2e6bf5dad5769dcd13be2bd811a8d82b098e6527329bc"
+  "sourceModelSha256": "0651ff787103af1194a11620681f6bb5aa28aac3f799a91662a40e55b082dadc"
 }

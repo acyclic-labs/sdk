@@ -224,7 +224,7 @@ test("full hosted qualification requires release or explicit force", () => {
 });
 
 test("reusable package qualification does not duplicate central release runs", () => {
-  const names = ["rust-source-qualification.yml", "stream-native-packages.yml"];
+  const names = ["rust-source-qualification.yml", "stream-native-packages.yml", "inference-native-packages.yml"];
   for (const name of names) {
     const workflow = readFileSync(`.github/workflows/${name}`, "utf8").replaceAll("\r\n", "\n");
     assert.doesNotMatch(workflow, /^  (release|push):/m, name);
@@ -240,6 +240,7 @@ test("the primary release profile keeps deferred language and embedded hooks out
   const downstream = workflow.slice(workflow.indexOf("\n  rust_source:"));
   assert.equal((downstream.match(/uses: \.\/\.github\/workflows\/rust-source-qualification\.yml/g) ?? []).length, 1);
   assert.equal((downstream.match(/uses: \.\/\.github\/workflows\/stream-native-packages\.yml/g) ?? []).length, 1);
+  assert.equal((downstream.match(/uses: \.\/\.github\/workflows\/inference-native-packages\.yml/g) ?? []).length, 1);
   assert.doesNotMatch(downstream, /additional-language-qualification|python-go-release|http-target-release|dotnet-native-rid|embedded-native-packaging/);
 });
 

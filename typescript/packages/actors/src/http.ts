@@ -31,8 +31,8 @@ import type {
   RustOwnedPublicResumeSubscriptionRequest, RustOwnedPublicResumeSubscriptionResponse,
   RustOwnedPublicUpdateActorRequest, RustOwnedPublicUpdateActorResponse,
 } from "./generated-client.js";
-import { ACTORS_HANDSHAKE, ACTORS_METHODS, ACTORS_REMOTE_POLICY, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
-import { validateActorsContentLength, validateActorsCredential, validateActorsEndpoint, validateActorsInvoke, validateActorsResponseChunk, validateActorsResponseLimit } from "./wasm-runtime.js";
+import { ACTORS_HANDSHAKE, ACTORS_METHODS, ACTORS_REMOTE_POLICY, awaitWithAbort, interpolateRustOwnedPath, negotiateRustOwnedEndpoint, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { ensureActorsWasm, validateActorsContentLength, validateActorsCredential, validateActorsEndpoint, validateActorsInvoke, validateActorsResponseChunk, validateActorsResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpActorsOptions {
   readonly endpoint: string;
@@ -48,6 +48,7 @@ export class ActorsTransportError extends Error {
 /** Authenticated transport for the generated Actors v1 contract. */
 export class HttpActorsClient {
   readonly #endpoint: URL;
+  readonly #endpointInput: string;
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
@@ -55,14 +56,11 @@ export class HttpActorsClient {
 
   constructor(options: HttpActorsOptions) {
     const endpoint = new URL(options.endpoint);
-    validateActorsEndpoint(options.endpoint);
-    validateRustOwnedCredential(ACTORS_METHODS.createActor, options.token);
-    validateActorsCredential(options.token);
     this.#endpoint = endpoint;
+    this.#endpointInput = options.endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#maximum = options.maximumResponseBytes ?? ACTORS_REMOTE_POLICY.maximumHttpResponseBytes;
-    validateActorsResponseLimit(this.#maximum);
   }
 
   async createActor(request: RustOwnedPublicCreateActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicCreateActorResponse> {
@@ -88,11 +86,17 @@ export class HttpActorsClient {
   }
   /** Invocation is not a Stream append or a durable checkpoint. */
   async invokeActor(request: RustOwnedPublicInvokeActorRequest, signal?: AbortSignal): Promise<RustOwnedPublicInvokeActorResponse> {
+    await ensureActorsWasm();
     validateActorsInvoke(request.actorId, request.method);
     return fromJsonString(InvokeActorResponseSchema, await this.#post(ACTORS_METHODS.invokeActor, request, toJsonString(InvokeActorRequestSchema, request), signal)) as unknown as RustOwnedPublicInvokeActorResponse;
   }
 
   async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {
+    await ensureActorsWasm();
+    validateActorsEndpoint(this.#endpointInput);
+    validateRustOwnedCredential(method, this.#token);
+    validateActorsCredential(this.#token);
+    validateActorsResponseLimit(this.#maximum);
     const headers = { authorization: `Bearer ${this.#token}`, "content-type": "application/json" };
     await this.#ensureHandshake(headers, signal);
     const response = await this.#fetcher(new URL(interpolateRustOwnedPath(method, request), `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
@@ -118,11 +122,11 @@ export class HttpActorsClient {
   }
 
   async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
-    if (this.#handshake !== undefined) return this.#handshake;
-    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, ACTORS_HANDSHAKE, this.#maximum, signal)
+    if (this.#handshake !== undefined) return awaitWithAbort(this.#handshake, signal);
+    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, ACTORS_HANDSHAKE, this.#maximum)
       .catch(error => { this.#handshake = undefined; throw error; });
     this.#handshake = pending;
-    return pending;
+    return awaitWithAbort(pending, signal);
   }
 }
 

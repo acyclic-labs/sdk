@@ -4,7 +4,7 @@
   "descriptorSha256": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e",
   "family": "harness",
   "generatedClientSha256": null,
-  "generatedSourceSha256": "a1661fb4baffc21bcaa88a7116bbb37e29618113ed1905de70c12a2f33cc0442",
+  "generatedSourceSha256": "2468c86d14d7ca3be6d2af6898763c7e852c6cffb464e8b5a925018a0482828e",
   "generator": "sdk-typescript",
   "generatorVersion": "0.1.0",
   "nativeCompanions": {},

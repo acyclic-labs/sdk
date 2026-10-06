@@ -15,11 +15,11 @@
       "@acyclic-labs/fs-win32-arm64": "0.2.0",
       "@acyclic-labs/fs-win32-x64": "0.2.0"
     },
-    "sourceContentSha256": "88d1dd90ca02e81baaa2e6bf5dad5769dcd13be2bd811a8d82b098e6527329bc",
+    "sourceContentSha256": "0651ff787103af1194a11620681f6bb5aa28aac3f799a91662a40e55b082dadc",
     "sourceGitSha": null,
     "sourceGitShaKind": null,
     "sourceModelRevision": "working-tree",
-    "sourceModelSha256": "88d1dd90ca02e81baaa2e6bf5dad5769dcd13be2bd811a8d82b098e6527329bc"
+    "sourceModelSha256": "0651ff787103af1194a11620681f6bb5aa28aac3f799a91662a40e55b082dadc"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",

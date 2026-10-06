@@ -36,12 +36,56 @@ pub struct HttpStream {
     endpoint: Url,
     authorization: String,
     maximum: usize,
-    handshake: Arc<Mutex<Option<SharedHandshake>>>,
+    handshake: Arc<Mutex<HandshakeSlot>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 type SharedHandshake = futures::future::Shared<
-    futures::future::LocalBoxFuture<'static, Option<bool>>,
+    futures::future::BoxFuture<'static, Result<bool, Arc<crate::client::ConnectError>>>,
 >;
+#[cfg(target_arch = "wasm32")]
+type SharedHandshake = futures::future::Shared<
+    futures::future::LocalBoxFuture<'static, Result<bool, Arc<crate::client::ConnectError>>>,
+>;
+
+#[derive(Default)]
+struct HandshakeSlot {
+    next_generation: u64,
+    current: Option<(u64, SharedHandshake)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn share_handshake<F>(future: F) -> SharedHandshake
+where
+    F: std::future::Future<Output = Result<bool, Arc<crate::client::ConnectError>>> + Send + 'static,
+{
+    future.boxed().shared()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn share_handshake<F>(future: F) -> SharedHandshake
+where
+    F: std::future::Future<Output = Result<bool, Arc<crate::client::ConnectError>>> + 'static,
+{
+    future.boxed_local().shared()
+}
+
+fn clone_handshake_error(error: &crate::client::ConnectError) -> crate::client::ConnectError {
+    match error {
+        crate::client::ConnectError::Configuration(message) => {
+            crate::client::ConnectError::Configuration(message.clone())
+        }
+        crate::client::ConnectError::Transport(message) => {
+            crate::client::ConnectError::Transport(message.clone())
+        }
+        crate::client::ConnectError::HttpStatus(status) => {
+            crate::client::ConnectError::HttpStatus(*status)
+        }
+        crate::client::ConnectError::Negotiation(message) => {
+            crate::client::ConnectError::Negotiation(message.clone())
+        }
+    }
+}
 
 #[cfg(target_arch = "wasm32")]
 struct BrowserResponse {
@@ -158,7 +202,7 @@ impl HttpStream {
             endpoint,
             authorization,
             maximum,
-            handshake: Arc::new(Mutex::new(None)),
+            handshake: Arc::new(Mutex::new(HandshakeSlot::default())),
         })
     }
 
@@ -350,27 +394,41 @@ impl HttpStream {
     /// # Errors
     /// Rejects authentication failures, redirects, malformed responses, and identity mismatches.
     pub async fn verify_handshake(&self) -> Result<bool, crate::client::ConnectError> {
-        let shared = {
-            let mut slot = self.handshake.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(shared) = slot.as_ref() {
-                shared.clone()
+        let (generation, shared) = {
+            let mut slot = self
+                .handshake
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((generation, shared)) = slot.current.as_ref() {
+                (*generation, shared.clone())
             } else {
+                let generation = slot.next_generation;
+                slot.next_generation = slot.next_generation.wrapping_add(1);
                 let client = self.clone();
-                let shared = async move { client.perform_handshake().await.ok() }
-                    .boxed_local()
-                    .shared();
-                *slot = Some(shared.clone());
-                shared
+                let shared = share_handshake(async move {
+                    client.perform_handshake().await.map_err(Arc::new)
+                });
+                slot.current = Some((generation, shared.clone()));
+                (generation, shared)
             }
         };
-        if let Some(result) = shared.await {
-            return Ok(result);
+        match shared.await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let mut slot = self
+                    .handshake
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if slot
+                    .current
+                    .as_ref()
+                    .is_some_and(|(current, _)| *current == generation)
+                {
+                    slot.current = None;
+                }
+                Err(clone_handshake_error(error.as_ref()))
+            }
         }
-        self.handshake
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        self.perform_handshake().await
     }
 
     async fn perform_handshake(&self) -> Result<bool, crate::client::ConnectError> {

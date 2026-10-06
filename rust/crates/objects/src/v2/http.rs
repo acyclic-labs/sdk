@@ -4,13 +4,14 @@ use super::{
     request, response, upload, wire,
 };
 use bytes::Bytes;
-use futures::{StreamExt, stream};
+use futures::{FutureExt, StreamExt, stream};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{
     Body, Client, Response, Url,
     header::{AUTHORIZATION, HeaderValue},
 };
+use std::sync::{Arc, Mutex};
 
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
@@ -21,6 +22,37 @@ pub struct HttpObjects {
     endpoint: Url,
     authorization: HeaderValue,
     maximum: usize,
+    handshake: Arc<Mutex<HandshakeSlot>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type SharedHandshake =
+    futures::future::Shared<futures::future::BoxFuture<'static, Result<bool, Arc<Error>>>>;
+#[cfg(target_arch = "wasm32")]
+type SharedHandshake = futures::future::Shared<
+    futures::future::LocalBoxFuture<'static, Result<bool, Arc<Error>>>,
+>;
+
+#[derive(Default)]
+struct HandshakeSlot {
+    next_generation: u64,
+    current: Option<(u64, SharedHandshake)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn share_handshake<F>(future: F) -> SharedHandshake
+where
+    F: std::future::Future<Output = Result<bool, Arc<Error>>> + Send + 'static,
+{
+    future.boxed().shared()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn share_handshake<F>(future: F) -> SharedHandshake
+where
+    F: std::future::Future<Output = Result<bool, Arc<Error>>> + 'static,
+{
+    future.boxed_local().shared()
 }
 impl HttpObjects {
     /// Publishes a header-first streamed value. Source failure aborts the HTTP request.
@@ -220,11 +252,50 @@ impl HttpObjects {
             endpoint,
             authorization,
             maximum: maximum_response_bytes,
+            handshake: Arc::new(Mutex::new(HandshakeSlot::default())),
         })
     }
 
     /// Verify the authenticated Rust-owned Objects identity using the HTTP control route.
     pub async fn verify_handshake(&self) -> Result<bool, Error> {
+        let (generation, shared) = {
+            let mut slot = self
+                .handshake
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((generation, shared)) = slot.current.as_ref() {
+                (*generation, shared.clone())
+            } else {
+                let generation = slot.next_generation;
+                slot.next_generation = slot.next_generation.wrapping_add(1);
+                let client = self.clone();
+                let shared = share_handshake(async move {
+                    client.perform_handshake().await.map_err(Arc::new)
+                });
+                slot.current = Some((generation, shared.clone()));
+                (generation, shared)
+            }
+        };
+        match shared.await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let mut slot = self
+                    .handshake
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if slot
+                    .current
+                    .as_ref()
+                    .is_some_and(|(current, _)| *current == generation)
+                {
+                    slot.current = None;
+                }
+                Err(*error)
+            }
+        }
+    }
+
+    async fn perform_handshake(&self) -> Result<bool, Error> {
         use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
         let family = BindingFamily::Objects;
         let version = control::control_protocol_version(family);

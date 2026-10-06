@@ -247,6 +247,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-inference-native"
+version = "0.2.0"
+dependencies = [
+ "acyclic-inference",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "prost",
+ "tokio",
+]
+
+[[package]]
 name = "acyclic-inference-wasm"
 version = "0.2.0"
 dependencies = [

@@ -4964,6 +4964,20 @@ fn run_language_producers(
                                 "exit_code": process.status.code(),
                             });
                         } else {
+                            if language_catalog::target_requires_typed_consumer(id) {
+                                language_catalog::typed_consumer_receipt::verify_file(
+                                    &target_output.join("typed-consumer-receipt.json"),
+                                    &target_output,
+                                    id,
+                                    &source.revision,
+                                    rust_model_digest,
+                                )
+                                .map_err(|error| {
+                                    CliError::new(format!(
+                                        "typed consumer receipt verification failed for {id}: {error}"
+                                    ))
+                                })?;
+                            }
                             let package_policy = if let Some(policy) =
                                 target_packaging::target_package_policy(id)
                             {

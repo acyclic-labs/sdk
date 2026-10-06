@@ -2,15 +2,24 @@
   "artifactKind": "source-projection",
   "defaultTransports": {
     "browser": "http",
-    "native": "http"
+    "native": "grpc"
   },
   "descriptorSha256": "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea",
   "family": "inference",
   "generatedClientSha256": null,
-  "generatedSourceSha256": "93243aecde3dc16e7e22d07e2fc82c8bac0c0310018b014a6cacaf6b1c399d37",
+  "generatedSourceSha256": "c1c3a9bda52a86b0307f6a23b5325d7c07065d3f35177f20ab4d226796f293d1",
   "generator": "sdk-typescript",
   "generatorVersion": "0.1.0",
-  "nativeCompanions": {},
+  "nativeCompanions": {
+    "@acyclic-labs/inference-darwin-arm64": "0.2.0",
+    "@acyclic-labs/inference-darwin-x64": "0.2.0",
+    "@acyclic-labs/inference-linux-arm64-gnu": "0.2.0",
+    "@acyclic-labs/inference-linux-arm64-musl": "0.2.0",
+    "@acyclic-labs/inference-linux-x64-gnu": "0.2.0",
+    "@acyclic-labs/inference-linux-x64-musl": "0.2.0",
+    "@acyclic-labs/inference-win32-arm64": "0.2.0",
+    "@acyclic-labs/inference-win32-x64": "0.2.0"
+  },
   "rustCrate": "acyclic-inference",
   "schema": "acyclic.sdk.typescript.package.provenance.v1",
   "sourceArtifact": "acyclic_sdk_contract_wire::inference::inference_descriptor",
