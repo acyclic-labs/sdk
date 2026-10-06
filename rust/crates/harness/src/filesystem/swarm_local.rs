@@ -1058,7 +1058,7 @@ impl LocalFilesystemForkResolver {
         intent: LocalForkIntent,
         publication: ModelBatchPublication,
         swarm: Arc<PersistentLocalSwarm>,
-        context: LocalForkResolveContext,
+        context: Box<LocalForkResolveContext>,
     ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
         Box::pin(async move {
             let storage = context.parent_harness.storage();
@@ -1238,6 +1238,34 @@ impl LocalFilesystemForkResolver {
             })
         })
     }
+
+    /// Crosses the physical-resolution boundary on a heap-owned context.
+    /// Keeping the verified boundary out of the caller's recursive future
+    /// frame prevents the parent resolver from retaining its large aggregate
+    /// state while the restart/fresh branch is polled.
+    fn resolve_after_parent_authority<'a>(
+        &'a self,
+        intent: LocalForkIntent,
+        publication: ModelBatchPublication,
+        swarm: Arc<PersistentLocalSwarm>,
+        context: Box<LocalForkResolveContext>,
+    ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
+        Box::pin(async move {
+            if let Some(plan) = self
+                .resolve_existing_child(
+                    intent.clone(),
+                    publication.clone(),
+                    swarm.clone(),
+                    context.as_ref(),
+                )
+                .await?
+            {
+                return Ok(plan);
+            }
+            self.resolve_fresh_child(intent, publication, swarm, context)
+                .await
+        })
+    }
 }
 
 impl LocalModelForkResolver for LocalFilesystemForkResolver {
@@ -1347,26 +1375,15 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             }
             crate::stack_diagnostics::marker("fork-physical-after-parent-authority");
 
-            let context = LocalForkResolveContext {
+            let context = Box::new(LocalForkResolveContext {
                 parent_harness,
                 parent_session,
                 verified,
                 boundary,
                 parent_revision,
                 issuer_secret,
-            };
-            if let Some(plan) = self
-                .resolve_existing_child(
-                    intent.clone(),
-                    publication.clone(),
-                    swarm.clone(),
-                    &context,
-                )
-                .await?
-            {
-                return Ok(plan);
-            }
-            self.resolve_fresh_child(intent, publication, swarm, context)
+            });
+            self.resolve_after_parent_authority(intent, publication, swarm, context)
                 .await
         })
     }
