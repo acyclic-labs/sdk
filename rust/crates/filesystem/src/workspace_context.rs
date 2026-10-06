@@ -6,78 +6,26 @@
 //! small control-plane facts; filesystem contents remain immutable SDK
 //! generations and are never enumerated here.
 
+use crate::WorkspaceId;
 use crate::record_store::stored_revision;
-use crate::{OperationId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
+use uuid::Uuid;
 
 const WORKSPACE_CONTEXT_VERSION: u32 = 1;
 
-/// Stable opaque identity of one multi-root workspace context.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WorkspaceContextId(OperationId);
-
-impl WorkspaceContextId {
-    /// Creates a fresh time-ordered context identity.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(OperationId::new())
-    }
-
-    /// Restores an identity from its canonical bytes.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(OperationId::from_bytes(bytes))
-    }
-
-    /// Returns the canonical bytes.
-    #[must_use]
-    pub const fn into_bytes(self) -> [u8; 16] {
-        self.0.into_bytes()
-    }
-}
-
-impl Default for WorkspaceContextId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Stable identity of one physical root across recursively forked contexts.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WorkspaceRootId(OperationId);
-
-impl WorkspaceRootId {
-    /// Creates a fresh root-binding identity.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(OperationId::new())
-    }
-
-    /// Restores an identity from its canonical bytes.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(OperationId::from_bytes(bytes))
-    }
-
-    /// Returns the canonical bytes.
-    #[must_use]
-    pub const fn into_bytes(self) -> [u8; 16] {
-        self.0.into_bytes()
-    }
-}
-
-impl Default for WorkspaceRootId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+uuid_identity!(
+    WorkspaceContextId,
+    "Stable opaque identity of one multi-root workspace context."
+);
+uuid_identity!(
+    WorkspaceRootId,
+    "Stable identity of one physical root across recursively forked contexts."
+);
 
 /// Lifecycle state retained independently from whether a native mount is loaded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

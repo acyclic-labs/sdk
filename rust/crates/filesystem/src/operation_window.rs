@@ -16,42 +16,14 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use thiserror::Error;
+use uuid::Uuid;
 
 #[cfg(feature = "distributed")]
 use futures::StreamExt as _;
 
 const STATE_VERSION: u32 = 1;
 
-/// Stable identity of one tool lease.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct OperationLeaseId(OperationId);
-
-impl OperationLeaseId {
-    /// Creates a fresh time-ordered lease identity.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(OperationId::new())
-    }
-
-    /// Restores a lease identity from its canonical bytes.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(OperationId::from_bytes(bytes))
-    }
-
-    /// Returns the canonical bytes.
-    #[must_use]
-    pub const fn into_bytes(self) -> [u8; 16] {
-        self.0.into_bytes()
-    }
-}
-
-impl Default for OperationLeaseId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+uuid_identity!(OperationLeaseId, "Stable identity of one tool lease.");
 
 /// One active durable tool lease.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

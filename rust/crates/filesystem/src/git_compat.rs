@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use thiserror::Error;
+use uuid::Uuid;
 
 const STATE_VERSION: u32 = 9;
 const COMMIT_DOMAIN: &[u8] = b"acyclic-fs-git-compat-commit-v1\0";
@@ -517,34 +518,16 @@ impl GitCompatState {
     }
 }
 
-/// Stable identity for one prepared compatibility filesystem transition.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct GitTransitionId(OperationId);
+uuid_identity!(
+    GitTransitionId,
+    "Stable identity for one prepared compatibility filesystem transition."
+);
 
 impl GitTransitionId {
-    /// Creates a fresh transition identity.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(OperationId::new())
-    }
-
-    /// Restores a transition identity from canonical bytes.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(OperationId::from_bytes(bytes))
-    }
-
-    /// Returns canonical bytes.
-    #[must_use]
-    pub const fn into_bytes(self) -> [u8; 16] {
-        self.0.into_bytes()
-    }
-
     /// Returns the underlying operation identity.
     #[must_use]
     pub const fn operation_id(self) -> OperationId {
-        self.0
+        OperationId::from_bytes(self.into_bytes())
     }
 }
 
@@ -607,12 +590,6 @@ pub const GIT_COMPAT_PENDING_WIRE_FIELDS: &[&str] = &["id", "action", "mutation"
 
 /// Width of the UUID encoded by `GitTransitionId` in compatibility JSON.
 pub const GIT_COMPAT_TRANSITION_ID_BYTES: usize = std::mem::size_of::<GitTransitionId>();
-
-impl Default for GitTransitionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// State mutation committed only after its filesystem action succeeds.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -6629,7 +6606,8 @@ mod tests {
         })));
         let tree = GitTreeRef::exact(WorkspaceId::from_bytes(operation.into_bytes()), generation);
         assert_eq!(
-            serde_json::to_value(GitTransitionId(operation)).expect("transition JSON"),
+            serde_json::to_value(GitTransitionId::from_bytes(operation.into_bytes()))
+                .expect("transition JSON"),
             serde_json::json!("00010203-0405-0607-0809-0a0b0c0d0e0f")
         );
         assert_eq!(

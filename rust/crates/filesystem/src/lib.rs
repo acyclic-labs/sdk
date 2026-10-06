@@ -82,6 +82,7 @@ pub use logical_objects::LogicalObjectStore;
 #[cfg(feature = "distributed")]
 mod distributed_fs;
 pub mod facade;
+#[macro_use]
 pub mod foundation;
 #[cfg(all(feature = "native-watch", target_os = "macos"))]
 mod fsevents;
