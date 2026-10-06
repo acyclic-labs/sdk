@@ -12,11 +12,111 @@ use acyclic_harness::{
     model::{ModelEvent, ProviderDispatchContext},
     swarm_budget::{SwarmUsage, SwarmUsageSource},
 };
+#[cfg(feature = "test-support")]
+use acyclic_harness::{
+    filesystem::PersistentLocalSwarm,
+    TaskId,
+};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Instant,
 };
+#[cfg(feature = "test-support")]
+use tempfile::TempDir;
+
+/// The bounded provider facts that are safe to retain when a fixture fails.
+///
+/// Failure evidence must identify the run without copying model requests,
+/// tool arguments, or host credentials into an artifact.  Callers can add
+/// the task/operation pairs whose durable journals should be replayed.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug)]
+pub struct FixtureFailureSummary {
+    pub dispatches: usize,
+    pub serialized_request_count: usize,
+}
+
+/// Preserve durable failure evidence for recursive fixtures and return the
+/// original error.  The temp directory is kept only on this explicit failure
+/// path; successful tests retain their normal cleanup behavior.
+#[cfg(feature = "test-support")]
+pub async fn preserve_failure_evidence(
+    directory: TempDir,
+    swarm: &PersistentLocalSwarm,
+    operation: OperationId,
+    task_operations: Vec<(TaskId, OperationId)>,
+    summary: FixtureFailureSummary,
+    error: Error,
+) -> Error {
+    let sessions = match swarm.sessions().await {
+        Ok(sessions) => serde_json::to_value(
+            sessions
+                .iter()
+                .map(|session| {
+                    serde_json::json!({
+                        "task": session.task,
+                        "parent": session.parent,
+                        "depth": session.depth,
+                        "operation": session.operation,
+                        "phase": format!("{:?}", session.phase),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|serialization| serde_json::json!({"error": serialization.to_string()})),
+        Err(session_error) => serde_json::json!({"error": session_error.to_string()}),
+    };
+
+    let mut journals = Vec::with_capacity(task_operations.len());
+    for (task, operation_id) in task_operations {
+        let records = match swarm.read_execution_journal(task, operation_id).await {
+            Ok(records) => serde_json::to_value(records)
+                .unwrap_or_else(|serialization| serde_json::json!({"error": serialization.to_string()})),
+            Err(journal_error) => serde_json::json!({"error": journal_error.to_string()}),
+        };
+        journals.push(serde_json::json!({
+            "task": task,
+            "operation": operation_id,
+            "records": records,
+        }));
+    }
+
+    let evidence = serde_json::json!({
+        "format": "acyclic.local-swarm.failure.v2",
+        "error": {
+            "display": error.to_string(),
+            "debug": format!("{error:?}"),
+        },
+        "operation": operation,
+        "provider": {
+            "dispatches": summary.dispatches,
+            "serialized_request_count": summary.serialized_request_count,
+        },
+        "sessions": sessions,
+        "journals": journals,
+    });
+    let evidence_path = directory.path().join("recursive-failure-evidence.json");
+    if let Err(write_error) = std::fs::write(
+        &evidence_path,
+        serde_json::to_vec_pretty(&evidence).unwrap_or_else(|serialization| {
+            let message = serde_json::to_string(&serialization.to_string()).unwrap_or_default();
+            format!("{{\"error\":{message}}}").into_bytes()
+        }),
+    ) {
+        eprintln!(
+            "recursive fixture evidence write failed at {}: {}",
+            evidence_path.display(),
+            write_error
+        );
+    }
+    let preserved_path = directory.keep();
+    eprintln!(
+        "recursive fixture failure evidence preserved at {}",
+        preserved_path.display()
+    );
+    error
+}
 
 #[derive(Default)]
 pub struct FixtureUsage {
