@@ -1568,6 +1568,14 @@ impl StockExecutor {
         let Some(publisher) = &self.batch_publisher else {
             return Ok(());
         };
+        if budget
+            .as_ref()
+            .is_some_and(|admission| !admission.supports_harness_effect_time())
+        {
+            return Err(Error::Unsupported(
+                "budgeted publication requires an authenticated Harness effect recorder".into(),
+            ));
+        }
         self.validate_batch_publisher(publisher.as_ref())?;
         let identity = publisher.identity();
         let guarantee = publisher.guarantee();
@@ -1632,7 +1640,8 @@ impl StockExecutor {
                     &*publish,
                 );
                 let effect_id = IdempotencyKey::new(format!(
-                    "model:{step}:publication:retry"
+                    "model:{step}:publication:retry:{}",
+                    OperationId::new()
                 ))?;
                 await_publication(
                     publish,
@@ -1667,7 +1676,8 @@ impl StockExecutor {
             crate::stack_diagnostics::future_size("fork-publication-handle", &publish);
             crate::stack_diagnostics::future_size("fork-publication-inner", &*publish);
             let effect_id = IdempotencyKey::new(format!(
-                "model:{step}:publication:initial"
+                "model:{step}:publication:initial:{}",
+                OperationId::new()
             ))?;
             await_publication(
                 publish,
@@ -1899,6 +1909,14 @@ impl StockExecutor {
             .await?;
             return Err(Error::NotFound(format!("tool {}", invocation.name)));
         };
+        if budget
+            .as_ref()
+            .is_some_and(|admission| !admission.supports_harness_effect_time())
+        {
+            return Err(Error::Unsupported(
+                "budgeted tool effects require an authenticated Harness effect recorder".into(),
+            ));
+        }
         if let Some((result_ref, projection_ref, invocation_digest)) = completed_tool {
             if invocation_digest != crate::contract::canonical_json_digest(&invocation)? {
                 return Err(Error::Conflict(
@@ -2124,9 +2142,10 @@ impl StockExecutor {
             };
             tool_context.validate_invocation(&invocation)?;
             let effect_id = IdempotencyKey::new(format!(
-                "tool:{step}:{}:{}",
+                "tool:{step}:{}:{}:{}",
                 invocation.call_id,
-                if claimed { "execute" } else { "reconcile" }
+                if claimed { "execute" } else { "reconcile" },
+                OperationId::new()
             ))?;
             let result = if claimed {
                 let effect = tool
@@ -3738,14 +3757,18 @@ where
         effect.await
     };
     let elapsed = elapsed_provider_time(clock, started_at, operation)?;
-    if elapsed > 0 {
-        if let Some(admission) = budget.as_deref_mut() {
-            if admission.supports_harness_effect_time() {
-                admission.record_harness_effect_async(effect_id, elapsed).await?;
+        if elapsed > 0 {
+            if let Some(admission) = budget.as_deref_mut() {
+                if admission.record_harness_effect_async(effect_id, elapsed).await.is_err()
+                    || admission.admit_execution_time_ms(elapsed).is_err()
+                {
+                    // The physical effect already crossed its boundary. The
+                    // caller must recover/reconcile it rather than recording
+                    // an ordinary tool or publication failure.
+                    return Err(Error::Indeterminate(operation));
+                }
             }
-            admission.admit_execution_time_ms(elapsed)?;
         }
-    }
     outcome
 }
 
