@@ -2392,8 +2392,13 @@ fn normalize_descriptor_lengths(js: &JsValue, value: &serde_json::Value) -> Resu
     Ok(())
 }
 
+/// Throws a JS `Error` whose `code` is the wire [`crate::wire::ErrorCode`].
 fn js_error(error: crate::Error) -> JsValue {
-    JsValue::from_str(&error.to_string())
+    let js = js_sys::Error::new(&error.to_string());
+    match js_sys::Reflect::set(&js, &"code".into(), &(error.code() as i32).into()) {
+        Ok(_) => js.into(),
+        Err(_) => JsValue::from_str(&error.to_string()),
+    }
 }
 
 /// Decodes one canonical event payload using the native event union.

@@ -193,30 +193,13 @@ pub(crate) fn protocol_identity() -> wire::ProtocolIdentity {
 /// Converts a semantic error without losing storage or indeterminate state.
 #[must_use]
 pub fn encode_error(error: &Error) -> wire::Error {
-    let (code, operation_id) = match error {
-        Error::NotFound(_) => (wire::ErrorCode::NotFound, String::new()),
-        Error::Conflict(_) => (wire::ErrorCode::Conflict, String::new()),
-        Error::Unsupported(_) => (wire::ErrorCode::Unsupported, String::new()),
-        Error::Invalid(_) => (wire::ErrorCode::Invalid, String::new()),
-        Error::Unauthorized(_) => (wire::ErrorCode::Unauthorized, String::new()),
-        Error::InteractionRejected(reason) => (
-            match reason {
-                crate::InteractionRejection::Declined => wire::ErrorCode::InteractionDeclined,
-                crate::InteractionRejection::Cancelled => wire::ErrorCode::InteractionCancelled,
-                crate::InteractionRejection::Expired => wire::ErrorCode::InteractionExpired,
-                crate::InteractionRejection::Denied => wire::ErrorCode::InteractionDenied,
-            },
-            String::new(),
-        ),
-        Error::Storage(_) => (wire::ErrorCode::Storage, String::new()),
-        Error::Indeterminate(operation_id) => {
-            (wire::ErrorCode::Indeterminate, operation_id.to_string())
-        }
-    };
     wire::Error {
-        code: code as i32,
+        code: error.code() as i32,
         message: error.to_string(),
-        operation_id,
+        operation_id: match error {
+            Error::Indeterminate(operation_id) => operation_id.to_string(),
+            _ => String::new(),
+        },
     }
 }
 

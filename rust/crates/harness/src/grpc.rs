@@ -109,25 +109,24 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
     }
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "a `map_err` adapter")]
 fn status(error: Error) -> Status {
-    match error {
-        Error::NotFound(message) => Status::not_found(message),
-        Error::Conflict(message) => Status::aborted(message),
-        Error::Unsupported(message) => Status::unimplemented(message),
-        Error::Invalid(message) => Status::invalid_argument(message),
-        Error::Unauthorized(message) => Status::permission_denied(message),
-        Error::InteractionRejected(reason) => match reason {
-            crate::InteractionRejection::Declined | crate::InteractionRejection::Denied => {
-                Status::permission_denied(reason.to_string())
-            }
-            crate::InteractionRejection::Cancelled => Status::cancelled(reason.to_string()),
-            crate::InteractionRejection::Expired => Status::deadline_exceeded(reason.to_string()),
-        },
-        Error::Storage(message) => Status::unavailable(message),
-        Error::Indeterminate(operation) => {
-            Status::unavailable(format!("operation outcome is indeterminate: {operation}"))
-        }
-    }
+    use tonic::Code;
+    let code = match error.code() {
+        wire::ErrorCode::NotFound => Code::NotFound,
+        wire::ErrorCode::Conflict => Code::Aborted,
+        wire::ErrorCode::Unsupported => Code::Unimplemented,
+        wire::ErrorCode::Invalid => Code::InvalidArgument,
+        wire::ErrorCode::Unauthorized
+        | wire::ErrorCode::InteractionDeclined
+        | wire::ErrorCode::InteractionDenied => Code::PermissionDenied,
+        wire::ErrorCode::InteractionCancelled => Code::Cancelled,
+        wire::ErrorCode::InteractionExpired => Code::DeadlineExceeded,
+        wire::ErrorCode::Storage
+        | wire::ErrorCode::Indeterminate
+        | wire::ErrorCode::Unspecified => Code::Unavailable,
+    };
+    Status::new(code, error.to_string())
 }
 
 #[cfg(test)]
@@ -241,6 +240,26 @@ mod tests {
                 })
             }
             .boxed()
+        }
+    }
+
+    #[test]
+    fn statuses_follow_the_wire_error_code() {
+        let operation = crate::OperationId::from_bytes([1; 16]);
+        for (error, code) in [
+            (Error::Invalid("x".into()), tonic::Code::InvalidArgument),
+            (Error::Storage("x".into()), tonic::Code::Unavailable),
+            (Error::Indeterminate(operation), tonic::Code::Unavailable),
+            (
+                Error::InteractionRejected(crate::InteractionRejection::Expired),
+                tonic::Code::DeadlineExceeded,
+            ),
+        ] {
+            let status = status(error.clone());
+            assert_eq!(
+                (status.code(), status.message()),
+                (code, error.to_string().as_str())
+            );
         }
     }
 

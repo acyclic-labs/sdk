@@ -417,6 +417,33 @@ pub enum Error {
     Indeterminate(OperationId),
 }
 
+impl Error {
+    /// Stable wire classification from which every adapter derives its status.
+    #[must_use]
+    pub fn code(&self) -> crate::wire::ErrorCode {
+        use crate::wire::ErrorCode;
+        match self {
+            Self::NotFound(_) => ErrorCode::NotFound,
+            Self::Conflict(_) => ErrorCode::Conflict,
+            Self::Unsupported(_) => ErrorCode::Unsupported,
+            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::InteractionRejected(InteractionRejection::Declined) => {
+                ErrorCode::InteractionDeclined
+            }
+            Self::InteractionRejected(InteractionRejection::Cancelled) => {
+                ErrorCode::InteractionCancelled
+            }
+            Self::InteractionRejected(InteractionRejection::Expired) => {
+                ErrorCode::InteractionExpired
+            }
+            Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
+            Self::Storage(_) => ErrorCode::Storage,
+            Self::Indeterminate(_) => ErrorCode::Indeterminate,
+        }
+    }
+}
+
 /// A Stream failure below the harness is a durable-storage failure.
 impl From<acyclic_stream::StreamError> for Error {
     fn from(error: acyclic_stream::StreamError) -> Self {
