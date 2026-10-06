@@ -215,14 +215,11 @@ async fn copy_content_span<S: AsyncObjectStore>(
     )
     .await
     .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-    let simultaneous = initial_peak
-        .checked_add(nested.work.peak_allocation_bytes)
-        .ok_or_else(|| failed(FileRangeReadError::Work(WorkError::Overflow), work))?;
     let mut nested_work = nested.work;
-    nested_work.peak_allocation_bytes = 0;
     nested_work.output_bytes = 0;
-    work = add(work, nested_work)?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous);
+    work = work
+        .with_backend(nested_work, initial_peak)
+        .map_err(|error| failed(error.into(), work))?;
     let destination = usize::try_from(span.offset - request.range.offset)
         .map_err(|_| failed(FileRangeReadError::InvalidRange, work))?;
     let end = destination

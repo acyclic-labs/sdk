@@ -269,18 +269,13 @@ fn budget_after_resident(
 
 fn merge_backend_peak(
     prior: WorkCounters,
-    mut backend: WorkCounters,
+    backend: WorkCounters,
     resident: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, ObjectFailure> {
-    let simultaneous_peak = resident
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), prior))?;
-    backend.peak_allocation_bytes = 0;
-    let mut work = prior
-        .checked_add(backend)
+    let work = prior
+        .with_backend(backend, resident)
         .map_err(|error| ObjectFailure::new(error.into(), prior))?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous_peak);
     work.verify(budget)
         .map_err(|error| ObjectFailure::new(error.into(), work))?;
     Ok(work)
@@ -288,19 +283,14 @@ fn merge_backend_peak(
 
 fn merge_backend_failure(
     prior: WorkCounters,
-    mut backend: WorkCounters,
+    backend: WorkCounters,
     resident: u64,
     error: ObjectStoreError,
 ) -> ObjectFailure {
-    let Some(simultaneous_peak) = resident.checked_add(backend.peak_allocation_bytes) else {
-        return ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), prior);
-    };
-    backend.peak_allocation_bytes = 0;
-    let Ok(mut work) = prior.checked_add(backend) else {
-        return ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), prior);
-    };
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous_peak);
-    ObjectFailure::new(error, work)
+    match prior.with_backend(backend, resident) {
+        Ok(work) => ObjectFailure::new(error, work),
+        Err(overflow) => ObjectFailure::new(overflow.into(), prior),
+    }
 }
 
 impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
@@ -1778,18 +1768,13 @@ fn batch_sub_budget(
 
 fn merge_batch_work(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     orchestration_live: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, PathLookupFailure> {
-    let simultaneous_peak = orchestration_live
-        .checked_add(nested.peak_allocation_bytes)
-        .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), prior))?;
-    nested.peak_allocation_bytes = 0;
-    let mut merged = prior
-        .checked_add(nested)
+    let merged = prior
+        .with_backend(nested, orchestration_live)
         .map_err(|error| OperationFailure::new(error.into(), prior))?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
     merged
         .verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), merged))?;
@@ -1798,20 +1783,14 @@ fn merge_batch_work(
 
 fn merge_batch_failure(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     orchestration_live: u64,
     error: PathLookupError,
 ) -> PathLookupFailure {
-    let Some(simultaneous_peak) = orchestration_live.checked_add(nested.peak_allocation_bytes)
-    else {
-        return OperationFailure::new(PathLookupError::Work(WorkError::Overflow), prior);
-    };
-    nested.peak_allocation_bytes = 0;
-    let Ok(mut merged) = prior.checked_add(nested) else {
-        return OperationFailure::new(PathLookupError::Work(WorkError::Overflow), prior);
-    };
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    OperationFailure::new(error, merged)
+    match prior.with_backend(nested, orchestration_live) {
+        Ok(merged) => OperationFailure::new(error, merged),
+        Err(overflow) => OperationFailure::new(overflow.into(), prior),
+    }
 }
 
 fn maximum_cache_entries(

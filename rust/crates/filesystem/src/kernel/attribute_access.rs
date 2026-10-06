@@ -351,12 +351,13 @@ async fn read_page<S: AsyncObjectStore>(
     )
     .await
     .map_err(|failure| {
-        match merge_backend_work(prospective, *failure.work, allocations.live_bytes()) {
+        match prospective.with_backend(*failure.work, allocations.live_bytes()) {
             Ok(spent) => failed(map_storage(failure.error), spent),
             Err(error) => failed(error.into(), prospective),
         }
     })?;
-    *work = merge_backend_work(prospective, receipt.work, allocations.live_bytes())
+    *work = prospective
+        .with_backend(receipt.work, allocations.live_bytes())
         .map_err(|error| failed(error.into(), prospective))?;
     work.verify(budget)
         .map_err(|error| failed(error.into(), *work))?;
@@ -453,20 +454,6 @@ fn charge_items(
 ) -> Result<(), AttributeLookupFailure> {
     work.charge_items(count, &budget)
         .map_err(|error| failed(error.into(), *work))
-}
-
-fn merge_backend_work(
-    prior: WorkCounters,
-    mut backend: WorkCounters,
-    live_bytes: u64,
-) -> Result<WorkCounters, WorkError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    backend.peak_allocation_bytes = 0;
-    let mut merged = prior.checked_add(backend)?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    Ok(merged)
 }
 
 fn map_allocation(error: AllocationError) -> AttributeLookupError {

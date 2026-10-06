@@ -2189,18 +2189,13 @@ fn nested_budget(
 #[inline]
 fn merge_nested(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     live_bytes: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, GenerationMutationFailure> {
-    let peak = live_bytes
-        .checked_add(nested.peak_allocation_bytes)
-        .ok_or_else(|| failed(WorkError::Overflow.into(), prior))?;
-    nested.peak_allocation_bytes = 0;
-    let mut work = prior
-        .checked_add(nested)
+    let work = prior
+        .with_backend(nested, live_bytes)
         .map_err(|error| failed(error.into(), prior))?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(peak);
     work.verify(budget)
         .map_err(|error| failed(error.into(), work))?;
     Ok(work)
@@ -2208,19 +2203,14 @@ fn merge_nested(
 
 fn nested_failure(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     live_bytes: u64,
     error: GenerationMutationError,
 ) -> GenerationMutationFailure {
-    let Some(peak) = live_bytes.checked_add(nested.peak_allocation_bytes) else {
-        return failed(WorkError::Overflow.into(), prior);
-    };
-    nested.peak_allocation_bytes = 0;
-    let Ok(mut work) = prior.checked_add(nested) else {
-        return failed(WorkError::Overflow.into(), prior);
-    };
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(peak);
-    failed(error, work)
+    match prior.with_backend(nested, live_bytes) {
+        Ok(work) => failed(error, work),
+        Err(overflow) => failed(overflow.into(), prior),
+    }
 }
 
 #[inline]

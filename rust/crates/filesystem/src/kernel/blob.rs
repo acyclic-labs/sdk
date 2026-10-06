@@ -692,14 +692,9 @@ async fn finish_blob_batch<S: AsyncObjectStore>(
             .finish(remaining, cancellation)
             .await
             .map_err(|failure| failure.map_with_prior_work(work, BlobBuildError::Storage))?;
-        let backend_peak = receipt.work.peak_allocation_bytes;
-        let mut backend_work = receipt.work;
-        backend_work.peak_allocation_bytes = 0;
-        let mut combined = build_add(work, backend_work)?;
-        let simultaneous = retained
-            .checked_add(backend_peak)
-            .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
-        combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous);
+        let combined = work
+            .with_backend(receipt.work, retained)
+            .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
         build_verify(combined, budget)?;
         Ok(combined)
     })
@@ -1249,14 +1244,9 @@ async fn build_put<S: AsyncObjectStore>(
         .await
     {
         Ok(receipt) => {
-            let backend_peak = allocation
-                .live
-                .checked_add(receipt.work.peak_allocation_bytes)
-                .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
-            let mut backend_work = receipt.work;
-            backend_work.peak_allocation_bytes = 0;
-            let mut combined = build_add(work, backend_work)?;
-            combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(backend_peak);
+            let combined = work
+                .with_backend(receipt.work, allocation.live)
+                .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
             build_verify(combined, budget)?;
             Ok(combined)
         }
@@ -1667,12 +1657,10 @@ impl BlobRangeMachine {
             return Err(failed(BlobReadError::TraversalState, batch.prospective));
         }
         self.pending.truncate(retained);
-        self.work = merge_blob_backend_work(
-            batch.prospective,
-            receipt.work,
-            self.allocations.live_bytes(),
-        )
-        .map_err(|error| failed(error.into(), batch.prospective))?;
+        self.work = batch
+            .prospective
+            .with_backend(receipt.work, self.allocations.live_bytes())
+            .map_err(|error| failed(error.into(), batch.prospective))?;
         let retained_bytes = receipt.value.iter().try_fold(0_u64, |total, value| {
             total.checked_add(match value.retention {
                 ObjectReadRetention::Shared => 0,
@@ -1706,7 +1694,7 @@ impl BlobRangeMachine {
         prospective: WorkCounters,
         failure: crate::storage::ObjectFailure,
     ) -> BlobReadFailure {
-        match merge_blob_backend_work(prospective, *failure.work, self.allocations.live_bytes()) {
+        match prospective.with_backend(*failure.work, self.allocations.live_bytes()) {
             Ok(combined) => failed(failure.error.into(), combined),
             Err(error) => failed(error.into(), prospective),
         }
@@ -1721,9 +1709,9 @@ impl BlobRangeMachine {
             .awaiting
             .take()
             .ok_or_else(|| failed(BlobReadError::TraversalState, self.work))?;
-        self.work =
-            merge_blob_backend_work(prospective, receipt.work, self.allocations.live_bytes())
-                .map_err(|error| failed(error.into(), prospective))?;
+        self.work = prospective
+            .with_backend(receipt.work, self.allocations.live_bytes())
+            .map_err(|error| failed(error.into(), prospective))?;
         match pending {
             PendingBlobRead::Page {
                 expected_first,
@@ -1747,9 +1735,9 @@ impl BlobRangeMachine {
             .awaiting
             .take()
             .ok_or_else(|| failed(BlobReadError::TraversalState, self.work))?;
-        self.work =
-            merge_blob_backend_work(prospective, receipt.work, self.allocations.live_bytes())
-                .map_err(|error| failed(error.into(), prospective))?;
+        self.work = prospective
+            .with_backend(receipt.work, self.allocations.live_bytes())
+            .map_err(|error| failed(error.into(), prospective))?;
         match pending {
             PendingBlobRead::Page {
                 expected_first,
@@ -2116,7 +2104,7 @@ impl frontier::Machine for BlobRangeMachine {
         prospective: WorkCounters,
         failure: crate::storage::ObjectFailure,
     ) -> Self::Failure {
-        match merge_blob_backend_work(prospective, *failure.work, self.allocations.live_bytes()) {
+        match prospective.with_backend(*failure.work, self.allocations.live_bytes()) {
             Ok(combined) => failed(failure.error.into(), combined),
             Err(error) => failed(error.into(), prospective),
         }
@@ -2135,20 +2123,6 @@ fn add_work(left: WorkCounters, right: WorkCounters) -> Result<WorkCounters, Blo
 fn verify_work(work: WorkCounters, budget: WorkBudget) -> Result<(), BlobReadFailure> {
     work.verify(budget)
         .map_err(|error| failed(BlobReadError::Work(error), work))
-}
-
-fn merge_blob_backend_work(
-    prior: WorkCounters,
-    mut backend: WorkCounters,
-    live_bytes: u64,
-) -> Result<WorkCounters, WorkError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    backend.peak_allocation_bytes = 0;
-    let mut merged = prior.checked_add(backend)?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    Ok(merged)
 }
 
 /// Authenticated blob-read failure with exact work retained on every path.

@@ -1157,11 +1157,11 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             Ok(receipt) => receipt,
             Err(failure) => {
                 self.work =
-                    merge_backend_work(prospective, *failure.work, self.allocations.live_bytes())?;
+                    prospective.with_backend(*failure.work, self.allocations.live_bytes())?;
                 return Err(ExtentMutationError::Storage(failure.error));
             }
         };
-        self.work = merge_backend_work(prospective, receipt.work, self.allocations.live_bytes())?;
+        self.work = prospective.with_backend(receipt.work, self.allocations.live_bytes())?;
         self.work.verify(self.budget)?;
         let retained_bytes = match receipt.value.retention {
             ObjectReadRetention::Shared => 0,
@@ -1264,7 +1264,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             Err(failure) => {
                 self.allocations.release(encoded_bytes)?;
                 self.work =
-                    merge_backend_work(prospective, *failure.work, self.allocations.live_bytes())?;
+                    prospective.with_backend(*failure.work, self.allocations.live_bytes())?;
                 return Err(ExtentMutationError::Storage(failure.error));
             }
         };
@@ -1273,20 +1273,6 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
         self.allocations.release(encoded_bytes)?;
         Ok(object)
     }
-}
-
-fn merge_backend_work(
-    prior: WorkCounters,
-    mut backend: WorkCounters,
-    live_bytes: u64,
-) -> Result<WorkCounters, WorkError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    backend.peak_allocation_bytes = 0;
-    let mut merged = prior.checked_add(backend)?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    Ok(merged)
 }
 
 fn clip_and_grow(

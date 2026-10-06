@@ -204,12 +204,11 @@ where
         Ok(receipt) => receipt,
         Err(failure) => {
             *context.work =
-                merge_backend_work(prospective, *failure.work, context.allocations.live_bytes())?;
+                prospective.with_backend(*failure.work, context.allocations.live_bytes())?;
             return Err(Error::Storage(failure.error));
         }
     };
-    *context.work =
-        merge_backend_work(prospective, receipt.work, context.allocations.live_bytes())?;
+    *context.work = prospective.with_backend(receipt.work, context.allocations.live_bytes())?;
     context.work.verify(context.budget)?;
 
     let retained_bytes = retained_bytes(&receipt.value);
@@ -484,19 +483,15 @@ async fn read_cold_pages<S: AsyncObjectStore>(
     {
         Ok(receipt) => receipt,
         Err(failure) => {
-            *context.work = merge_backend_work(
-                context.prospective,
-                *failure.work,
-                context.allocations.live_bytes(),
-            )?;
+            *context.work = context
+                .prospective
+                .with_backend(*failure.work, context.allocations.live_bytes())?;
             return Err(Error::Storage(failure.error));
         }
     };
-    *context.work = merge_backend_work(
-        context.prospective,
-        receipt.work,
-        context.allocations.live_bytes(),
-    )?;
+    *context.work = context
+        .prospective
+        .with_backend(receipt.work, context.allocations.live_bytes())?;
     context.work.verify(context.budget)?;
     if receipt.value.len() != requests.len() {
         return Err(invalid_batch_result());
@@ -787,20 +782,6 @@ fn charge_copy(
 
 fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), WorkError> {
     work.charge_items(count, &budget)
-}
-
-pub(crate) fn merge_backend_work(
-    prior: WorkCounters,
-    mut backend: WorkCounters,
-    live_bytes: u64,
-) -> Result<WorkCounters, WorkError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    backend.peak_allocation_bytes = 0;
-    let mut merged = prior.checked_add(backend)?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    Ok(merged)
 }
 
 #[cfg(all(test, feature = "memory"))]

@@ -472,7 +472,8 @@ impl RangeMachine {
             .awaiting
             .take()
             .ok_or_else(|| failed(ExtentReadError::TraversalState, self.work))?;
-        self.work = merge_backend_work(prospective, receipt.work, self.allocations.live_bytes())
+        self.work = prospective
+            .with_backend(receipt.work, self.allocations.live_bytes())
             .map_err(|error| failed(error.into(), prospective))?;
         self.work
             .verify(self.budget)
@@ -556,7 +557,8 @@ impl RangeMachine {
             .awaiting
             .take()
             .ok_or_else(|| failed(ExtentReadError::TraversalState, self.work))?;
-        self.work = merge_backend_work(prospective, receipt.work, self.allocations.live_bytes())
+        self.work = prospective
+            .with_backend(receipt.work, self.allocations.live_bytes())
             .map_err(|error| failed(error.into(), prospective))?;
         self.work
             .verify(self.budget)
@@ -920,20 +922,6 @@ impl From<AllocationError> for ExtentReadError {
             | AllocationError::AllocationFailed => Self::AllocationFailed,
         }
     }
-}
-
-fn merge_backend_work(
-    prior: WorkCounters,
-    mut backend: WorkCounters,
-    live_bytes: u64,
-) -> Result<WorkCounters, WorkError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    backend.peak_allocation_bytes = 0;
-    let mut merged = prior.checked_add(backend)?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    Ok(merged)
 }
 
 /// Sparse extent-plan failure retaining exact spent work.

@@ -166,15 +166,9 @@ pub async fn clone_extent_range_async<S: crate::AsyncObjectStore>(
     )
     .await
     .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-    let destination_peak = allocation_bytes
-        .checked_add(receipt.work.peak_allocation_bytes)
-        .ok_or_else(|| OperationFailure::new(ExtentCloneError::Work(WorkError::Overflow), work))?;
-    let mut destination_work = receipt.work;
-    destination_work.peak_allocation_bytes = 0;
     work = work
-        .checked_add(destination_work)
+        .with_backend(receipt.work, allocation_bytes)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(destination_peak);
     work.verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
     Ok(ExtentCloneReceipt {
