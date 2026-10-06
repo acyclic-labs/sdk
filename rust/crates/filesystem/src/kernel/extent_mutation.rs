@@ -1541,15 +1541,7 @@ pub enum ExtentMutationError {
 
 impl From<AllocationError> for ExtentMutationError {
     fn from(error: AllocationError) -> Self {
-        match error {
-            AllocationError::Work(error) => Self::Work(error),
-            AllocationError::Overflow | AllocationError::ReleaseInvariant => {
-                Self::Work(WorkError::Overflow)
-            }
-            AllocationError::InvalidCapacity
-            | AllocationError::CapacityExceeded
-            | AllocationError::AllocationFailed => Self::AllocationFailed,
-        }
+        error.into_work_or(Self::AllocationFailed)
     }
 }
 

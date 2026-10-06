@@ -1702,17 +1702,7 @@ fn copy_observation_name<S>(
 }
 
 fn allocation_failure(error: AllocationError, work: WorkCounters) -> PathLookupFailure {
-    match error {
-        AllocationError::Work(error) => OperationFailure::new(error.into(), work),
-        AllocationError::Overflow | AllocationError::ReleaseInvariant => {
-            OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work)
-        }
-        AllocationError::InvalidCapacity
-        | AllocationError::CapacityExceeded
-        | AllocationError::AllocationFailed => {
-            OperationFailure::new(PathLookupError::AllocationFailed, work)
-        }
-    }
+    OperationFailure::new(error.into_work_or(PathLookupError::AllocationFailed), work)
 }
 
 fn map_cache_error(error: ObjectStoreError) -> PathLookupError {

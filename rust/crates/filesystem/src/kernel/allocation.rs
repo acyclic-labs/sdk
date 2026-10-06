@@ -325,6 +325,18 @@ pub(crate) enum AllocationError {
     Work(#[from] WorkError),
 }
 
+impl AllocationError {
+    /// Maps onto an operation error: budget failures and accounting overflow
+    /// stay work errors, and every failed allocation becomes `failed`.
+    pub(crate) fn into_work_or<E: From<WorkError>>(self, failed: E) -> E {
+        match self {
+            Self::Work(error) => error.into(),
+            Self::Overflow | Self::ReleaseInvariant => WorkError::Overflow.into(),
+            Self::InvalidCapacity | Self::CapacityExceeded | Self::AllocationFailed => failed,
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/allocation.rs"]
 mod tests;

@@ -2212,17 +2212,10 @@ fn charge_items(
 }
 
 fn allocation_failure(error: AllocationError, work: WorkCounters) -> GenerationMutationFailure {
-    match error {
-        AllocationError::Work(error) => failed(error.into(), work),
-        AllocationError::Overflow | AllocationError::ReleaseInvariant => {
-            failed(WorkError::Overflow.into(), work)
-        }
-        AllocationError::InvalidCapacity
-        | AllocationError::CapacityExceeded
-        | AllocationError::AllocationFailed => {
-            failed(GenerationMutationError::AllocationFailed, work)
-        }
-    }
+    OperationFailure::new(
+        error.into_work_or(GenerationMutationError::AllocationFailed),
+        work,
+    )
 }
 
 fn path_cancelled() -> GenerationMutationError {
