@@ -1,6 +1,7 @@
 //! One Filesystem/Stream bridge for the conversation-owned interaction ledger.
 
 use super::{FilesystemContentVerifier, FilesystemHost, InternalContentClass};
+use crate::contract::capability;
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
@@ -309,7 +310,10 @@ where
         expected_version: u64,
     ) -> Result<InteractionTicket> {
         self.verifier.verify(scope)?;
-        if !scope.capabilities().contains("interaction:resolve") {
+        if !scope
+            .capabilities()
+            .contains(capability::INTERACTION_RESOLVE)
+        {
             return Err(Error::Unauthorized(
                 "scope lacks interaction:resolve".into(),
             ));

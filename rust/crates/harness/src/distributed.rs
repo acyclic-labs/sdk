@@ -1,5 +1,6 @@
 //! Customer-hostable Stream-backed coordinator and pull-worker admission.
 
+use crate::contract::capability;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentResidencyVerifier, FileRef},
@@ -418,8 +419,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         verifier: &AuthorityVerifier,
         operation_id: OperationId,
     ) -> Result<OperationState> {
-        self.authorize_operation(owner, scope, verifier, operation_id, "operation:observe")
-            .cloned()
+        self.authorize_operation(
+            owner,
+            scope,
+            verifier,
+            operation_id,
+            capability::OPERATION_OBSERVE,
+        )
+        .cloned()
     }
 
     /// Discovers direct children without fork lineage or an arbitrary graph
@@ -434,7 +441,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<ChildOperationPage> {
         validate_child_page_request(parent, request.after_slot, request.maximum)?;
         self.refresh().await?;
-        self.authorize_operation(owner, scope, verifier, parent, "operation:observe")?;
+        self.authorize_operation(
+            owner,
+            scope,
+            verifier,
+            parent,
+            capability::OPERATION_OBSERVE,
+        )?;
         if request
             .expected_revision
             .is_some_and(|revision| revision != self.revision)
@@ -488,7 +501,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         recursive: bool,
     ) -> Result<(CoordinatorApply, OperationState)> {
         self.refresh().await?;
-        self.authorize_operation(owner, scope, verifier, operation_id, "operation:cancel")?;
+        self.authorize_operation(
+            owner,
+            scope,
+            verifier,
+            operation_id,
+            capability::OPERATION_CANCEL,
+        )?;
         let applied = self
             .apply(
                 operation_id,
@@ -570,7 +589,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<CoordinatorApply> {
         verifier.verify_audience(owner)?;
         verifier.verify(scope)?;
-        if !scope.capabilities().contains("operation:declare") {
+        if !scope.capabilities().contains(capability::OPERATION_DECLARE) {
             return Err(Error::Unauthorized("scope lacks operation:declare".into()));
         }
         let declared_owner = match &spec.owner {
@@ -590,7 +609,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 scope,
                 verifier,
                 parent.operation_id,
-                "operation:declare",
+                capability::OPERATION_DECLARE,
             )?;
         }
         let operation_id = spec.operation_id;

@@ -1,5 +1,6 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
+use crate::contract::capability;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
     Outcome, Result, TaskId,
@@ -2039,7 +2040,7 @@ impl Bindings {
 
     /// Validates all dependency edges and seals the runtime composition.
     pub fn build(self) -> Result<Arc<AgentHarness>> {
-        if self.fork_preparer.is_some() && !self.scope.grants().contains("fork:publish") {
+        if self.fork_preparer.is_some() && !self.scope.grants().contains(capability::FORK_PUBLISH) {
             return Err(Error::Unauthorized(
                 "fork preparer requires fork:publish in the root scope".into(),
             ));
@@ -2368,8 +2369,8 @@ impl AgentHarness {
         self: &Arc<Self>,
         workspaces: Arc<dyn crate::merge::ProjectWorkspaceProvider>,
     ) -> Result<Arc<Self>> {
-        if !self.scope.grants().contains("fork:publish")
-            && !self.scope.grants().contains("project:merge")
+        if !self.scope.grants().contains(capability::FORK_PUBLISH)
+            && !self.scope.grants().contains(capability::PROJECT_MERGE)
         {
             return Err(Error::Unauthorized(
                 "project workspaces require fork:publish or project:merge".into(),
@@ -2390,8 +2391,8 @@ impl AgentHarness {
     /// Returns the parent-authorized workspace boundary only while this
     /// immutable runtime scope retains project fork or merge authority.
     pub fn workspaces(&self) -> Result<Arc<dyn crate::merge::ProjectWorkspaceProvider>> {
-        if !self.scope.grants().contains("fork:publish")
-            && !self.scope.grants().contains("project:merge")
+        if !self.scope.grants().contains(capability::FORK_PUBLISH)
+            && !self.scope.grants().contains(capability::PROJECT_MERGE)
         {
             return Err(Error::Unauthorized(
                 "runtime scope lacks project authority".into(),
@@ -2409,7 +2410,7 @@ impl AgentHarness {
         self: &Arc<Self>,
         preparer: Arc<dyn crate::fork::ForkPreparer>,
     ) -> Result<Arc<Self>> {
-        if !self.scope.grants().contains("fork:publish") {
+        if !self.scope.grants().contains(capability::FORK_PUBLISH) {
             return Err(Error::Unauthorized(
                 "runtime scope lacks fork:publish".into(),
             ));
@@ -2767,7 +2768,7 @@ impl AgentHarness {
     }
 
     fn fork_binding(&self, request: &crate::fork::ForkRequest) -> Result<&ForkBinding> {
-        if !self.scope.grants().contains("fork:publish") {
+        if !self.scope.grants().contains(capability::FORK_PUBLISH) {
             return Err(Error::Unauthorized(
                 "runtime scope lacks fork:publish".into(),
             ));
@@ -3329,9 +3330,10 @@ fn validate_task_dependencies(
         })
         .unwrap_or_default();
     let environment = TaskDependencyEnvironment {
-        model: scope.grants.contains("model:generate"),
-        context: scope.grants.contains("context:build"),
-        interactions: (has_interactions || has_host) && scope.grants.contains("interaction:route"),
+        model: scope.grants.contains(capability::MODEL_GENERATE),
+        context: scope.grants.contains(capability::CONTEXT_BUILD),
+        interactions: (has_interactions || has_host)
+            && scope.grants.contains(capability::INTERACTION_ROUTE),
         policy: has_policy,
         host: has_host,
         state: has_state,
@@ -3507,7 +3509,7 @@ impl TaskContext {
                 "durable model request requires a recorded effect".into(),
             ));
         }
-        if !self.scope.grants().contains("model:generate") {
+        if !self.scope.grants().contains(capability::MODEL_GENERATE) {
             return Err(Error::Unauthorized(
                 "task scope lacks model:generate".into(),
             ));
@@ -3536,7 +3538,7 @@ impl TaskContext {
             .filter(|tool| {
                 self.scope
                     .grants()
-                    .contains(&format!("tool:call:{}", tool.name))
+                    .contains(&capability::tool_call(&tool.name))
             })
             .collect();
         let step_bound = self
@@ -3899,7 +3901,7 @@ impl TaskContext {
                 "tool definition changed after lookup".into(),
             ));
         }
-        let required = format!("tool:call:{}", tool.definition.name);
+        let required = capability::tool_call(&tool.definition.name);
         if !self.scope.grants.contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
@@ -3953,7 +3955,7 @@ impl TaskContext {
                 "tool definition changed after lookup".into(),
             ));
         }
-        let required = format!("tool:call:{}", tool.definition.name);
+        let required = capability::tool_call(&tool.definition.name);
         if !self.scope.grants.contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
@@ -4188,7 +4190,7 @@ impl TaskContext {
         interaction: Interaction,
     ) -> Result<InteractionOutcome> {
         interaction.validate()?;
-        if !self.scope.grants.contains("interaction:route") {
+        if !self.scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::Unauthorized("scope lacks interaction:route".into()));
         }
         if let Some(task) = self.durable_task {
@@ -4229,7 +4231,7 @@ impl TaskContext {
         payload: FileRef,
     ) -> Result<()> {
         payload.validate()?;
-        if !self.scope.grants.contains("mail:send") {
+        if !self.scope.grants.contains(capability::MAIL_SEND) {
             return Err(Error::Unauthorized("task scope lacks mail:send".into()));
         }
         let sender = self
@@ -4248,7 +4250,7 @@ impl TaskContext {
         if limit == 0 || limit > 1_024 {
             return Err(Error::Invalid("inbox page bound is invalid".into()));
         }
-        if !self.scope.grants.contains("mail:read") {
+        if !self.scope.grants.contains(capability::MAIL_READ) {
             return Err(Error::Unauthorized("task scope lacks mail:read".into()));
         }
         let task = self
@@ -4271,7 +4273,7 @@ impl TaskContext {
         if deadline_unix_ms == 0 {
             return Err(Error::Invalid("timer deadline is invalid".into()));
         }
-        if !self.scope.grants.contains("timer:wait") {
+        if !self.scope.grants.contains(capability::TIMER_WAIT) {
             return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
         }
         if let Some(task) = self.durable_task {

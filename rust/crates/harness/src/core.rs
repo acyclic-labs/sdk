@@ -1,5 +1,6 @@
 //! Deterministic, host-neutral durable substrate semantics.
 
+use crate::contract::capability;
 use crate::{
     AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId,
     PolicyLayer, Result,
@@ -1515,7 +1516,7 @@ impl Reducer {
     ) -> Result<()> {
         self.authority_verifier.verify_audience(&self.authority)?;
         self.authority_verifier.verify(scope)?;
-        require_capability(scope, "extension:migrate")?;
+        require_capability(scope, capability::EXTENSION_MIGRATE)?;
         ContentGrant::verify(
             &self.authority_verifier,
             scope,
@@ -1764,7 +1765,9 @@ impl Reducer {
             ));
         }
         match &command.action {
-            Action::PlanEffect { .. } => require_capability(&command.scope, "effect:plan")?,
+            Action::PlanEffect { .. } => {
+                require_capability(&command.scope, capability::EFFECT_PLAN)?;
+            }
             Action::MarkEffectDispatched { effect_id, .. } => {
                 let effect = self
                     .effects
@@ -1772,7 +1775,7 @@ impl Reducer {
                     .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
                 require_capability(
                     &command.scope,
-                    &format!("effect:provider:{}", effect.provider),
+                    &capability::effect_provider(&effect.provider),
                 )?;
             }
             Action::ResolveEffect { observation } => {
@@ -1782,7 +1785,7 @@ impl Reducer {
                     .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
                 require_capability(
                     &command.scope,
-                    &format!("effect:provider:{}", effect.provider),
+                    &capability::effect_provider(&effect.provider),
                 )?;
             }
             Action::ResolveInteraction { resolution } => {
@@ -1872,7 +1875,7 @@ impl Reducer {
         require_recorded_capability(&event.scope, event.payload.required_capability())?;
         match &event.payload {
             EventPayload::EffectPlanned { .. } => {
-                require_recorded_capability(&event.scope, "effect:plan")?;
+                require_recorded_capability(&event.scope, capability::EFFECT_PLAN)?;
             }
             EventPayload::EffectDispatched { effect_id, .. } => {
                 let effect = self
@@ -1881,7 +1884,7 @@ impl Reducer {
                     .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
                 require_recorded_capability(
                     &event.scope,
-                    &format!("effect:provider:{}", effect.provider),
+                    &capability::effect_provider(&effect.provider),
                 )?;
             }
             EventPayload::EffectResolved { observation } => {
@@ -1891,7 +1894,7 @@ impl Reducer {
                     .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
                 require_recorded_capability(
                     &event.scope,
-                    &format!("effect:provider:{}", effect.provider),
+                    &capability::effect_provider(&effect.provider),
                 )?;
             }
             EventPayload::InteractionResolved { resolution } => {
@@ -2846,21 +2849,21 @@ impl Reducer {
 impl Action {
     fn required_capability(&self) -> &'static str {
         match self {
-            Self::TransitionLifecycle { .. } => "lifecycle:manage",
-            Self::AppendCustom { .. } => "event:append",
-            Self::MigrateExtensionState { .. } => "extension:migrate",
-            Self::SelectExtensions { .. } => "extension:activate",
-            Self::ConfigureExtension { .. } => "extension:configure",
+            Self::TransitionLifecycle { .. } => capability::LIFECYCLE_MANAGE,
+            Self::AppendCustom { .. } => capability::EVENT_APPEND,
+            Self::MigrateExtensionState { .. } => capability::EXTENSION_MIGRATE,
+            Self::SelectExtensions { .. } => capability::EXTENSION_ACTIVATE,
+            Self::ConfigureExtension { .. } => capability::EXTENSION_CONFIGURE,
             Self::PlanEffect { .. }
             | Self::MarkEffectDispatched { .. }
-            | Self::ResolveEffect { .. } => "effect:run",
-            Self::PublishFork { .. } => "fork:publish",
-            Self::PublishProjectMerge { .. } => "project:merge",
-            Self::BindConversation { .. } => "conversation:bind",
-            Self::AppendConversationMessage { .. } => "conversation:append",
-            Self::SelectModelContext { .. } => "conversation:select_context",
-            Self::OpenInteraction { .. } => "interaction:open",
-            Self::ResolveInteraction { .. } => "interaction:resolve",
+            | Self::ResolveEffect { .. } => capability::EFFECT_RUN,
+            Self::PublishFork { .. } => capability::FORK_PUBLISH,
+            Self::PublishProjectMerge { .. } => capability::PROJECT_MERGE,
+            Self::BindConversation { .. } => capability::CONVERSATION_BIND,
+            Self::AppendConversationMessage { .. } => capability::CONVERSATION_APPEND,
+            Self::SelectModelContext { .. } => capability::CONVERSATION_SELECT_CONTEXT,
+            Self::OpenInteraction { .. } => capability::INTERACTION_OPEN,
+            Self::ResolveInteraction { .. } => capability::INTERACTION_RESOLVE,
         }
     }
 }
@@ -2868,21 +2871,21 @@ impl Action {
 impl EventPayload {
     fn required_capability(&self) -> &'static str {
         match self {
-            Self::LifecycleTransitioned { .. } => "lifecycle:manage",
-            Self::Custom { .. } => "event:append",
-            Self::ExtensionStateMigrated { .. } => "extension:migrate",
-            Self::ExtensionsSelected { .. } => "extension:activate",
-            Self::ExtensionConfigured { .. } => "extension:configure",
+            Self::LifecycleTransitioned { .. } => capability::LIFECYCLE_MANAGE,
+            Self::Custom { .. } => capability::EVENT_APPEND,
+            Self::ExtensionStateMigrated { .. } => capability::EXTENSION_MIGRATE,
+            Self::ExtensionsSelected { .. } => capability::EXTENSION_ACTIVATE,
+            Self::ExtensionConfigured { .. } => capability::EXTENSION_CONFIGURE,
             Self::EffectPlanned { .. }
             | Self::EffectDispatched { .. }
-            | Self::EffectResolved { .. } => "effect:run",
-            Self::ForkPublished { .. } => "fork:publish",
-            Self::ProjectMergePublished { .. } => "project:merge",
-            Self::ConversationBound { .. } => "conversation:bind",
-            Self::ConversationMessageAppended { .. } => "conversation:append",
-            Self::ModelContextSelected { .. } => "conversation:select_context",
-            Self::InteractionOpened { .. } => "interaction:open",
-            Self::InteractionResolved { .. } => "interaction:resolve",
+            | Self::EffectResolved { .. } => capability::EFFECT_RUN,
+            Self::ForkPublished { .. } => capability::FORK_PUBLISH,
+            Self::ProjectMergePublished { .. } => capability::PROJECT_MERGE,
+            Self::ConversationBound { .. } => capability::CONVERSATION_BIND,
+            Self::ConversationMessageAppended { .. } => capability::CONVERSATION_APPEND,
+            Self::ModelContextSelected { .. } => capability::CONVERSATION_SELECT_CONTEXT,
+            Self::InteractionOpened { .. } => capability::INTERACTION_OPEN,
+            Self::InteractionResolved { .. } => capability::INTERACTION_RESOLVE,
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Typed, durable, executor-neutral open interactions.
 
+use crate::contract::capability;
 use crate::{Error, OperationId, Result, conversation::FileRef};
 use serde::{Deserialize, Serialize, de::Error as _};
 use serde_json::Value;
@@ -69,7 +70,7 @@ impl InteractionTicket {
     /// The one exact capability that may resolve this request.
     #[must_use]
     pub fn responder_grant(&self) -> String {
-        format!("interaction:respond:{}", self.id)
+        capability::interaction_respond(self.id)
     }
 
     /// Checks the ref-only envelope before provider byte admission.

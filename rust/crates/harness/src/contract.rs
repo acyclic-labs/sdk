@@ -12,6 +12,47 @@ pub const COMPONENT_LABEL_FORBIDDEN_EXACT: [&str; 2] = [".", ".."];
 /// Separators rejected by every component registry.
 pub const COMPONENT_LABEL_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 
+/// Capability names the substrate checks; scopes grant them as plain strings.
+pub(crate) mod capability {
+    use std::fmt::Display;
+
+    pub(crate) const LIFECYCLE_MANAGE: &str = "lifecycle:manage";
+    pub(crate) const EVENT_APPEND: &str = "event:append";
+    pub(crate) const EXTENSION_MIGRATE: &str = "extension:migrate";
+    pub(crate) const EXTENSION_ACTIVATE: &str = "extension:activate";
+    pub(crate) const EXTENSION_CONFIGURE: &str = "extension:configure";
+    pub(crate) const EFFECT_RUN: &str = "effect:run";
+    pub(crate) const EFFECT_PLAN: &str = "effect:plan";
+    pub(crate) const FORK_PUBLISH: &str = "fork:publish";
+    pub(crate) const PROJECT_MERGE: &str = "project:merge";
+    pub(crate) const CONVERSATION_BIND: &str = "conversation:bind";
+    pub(crate) const CONVERSATION_APPEND: &str = "conversation:append";
+    pub(crate) const CONVERSATION_SELECT_CONTEXT: &str = "conversation:select_context";
+    pub(crate) const INTERACTION_OPEN: &str = "interaction:open";
+    pub(crate) const INTERACTION_RESOLVE: &str = "interaction:resolve";
+    pub(crate) const INTERACTION_ROUTE: &str = "interaction:route";
+    pub(crate) const OPERATION_OBSERVE: &str = "operation:observe";
+    pub(crate) const OPERATION_CANCEL: &str = "operation:cancel";
+    pub(crate) const OPERATION_DECLARE: &str = "operation:declare";
+    pub(crate) const MAIL_SEND: &str = "mail:send";
+    pub(crate) const MAIL_READ: &str = "mail:read";
+    pub(crate) const TIMER_WAIT: &str = "timer:wait";
+    pub(crate) const MODEL_GENERATE: &str = "model:generate";
+    pub(crate) const CONTEXT_BUILD: &str = "context:build";
+
+    pub(crate) fn effect_provider(provider: impl Display) -> String {
+        format!("effect:provider:{provider}")
+    }
+
+    pub(crate) fn tool_call(tool: impl Display) -> String {
+        format!("tool:call:{tool}")
+    }
+
+    pub(crate) fn interaction_respond(id: impl Display) -> String {
+        format!("interaction:respond:{id}")
+    }
+}
+
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// Conversion through Value preserves full-width serde integer values while
 /// avoiding struct declaration order as an accidental wire contract.

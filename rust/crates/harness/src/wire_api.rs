@@ -1,5 +1,6 @@
 //! Transport-neutral server port implemented identically by every wire adapter.
 
+use crate::contract::capability;
 pub use crate::wire_validation::{
     current_protocol, negotiate, validate_admission, validate_cancel_response,
     validate_operation_status,
@@ -96,7 +97,7 @@ pub fn validate_observe_request(request: &wire::ObserveRequest) -> Result<Operat
         request.owner.clone(),
         &request.operation_id,
         request.scope.clone(),
-        "operation:observe",
+        capability::OPERATION_OBSERVE,
     )
 }
 
@@ -110,7 +111,7 @@ pub fn validate_cancel_request(
         request.owner.clone(),
         &request.operation_id,
         request.scope.clone(),
-        "operation:cancel",
+        capability::OPERATION_CANCEL,
     )?;
     Ok((control, key, request.recursive))
 }

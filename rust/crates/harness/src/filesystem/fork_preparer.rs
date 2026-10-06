@@ -4,6 +4,7 @@
 //! project volume would leak implementation metadata into the published fork.
 
 use super::{FilesystemHost, ParentProjectController, WorkspaceMutation, map_error, workspace_ref};
+use crate::contract::capability;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentGrant, ContentResidencyVerifier, VolumeOperation, VolumeRef},
@@ -686,7 +687,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
             ParentProjectController::new(self, parent, verifier, scope, source_project.clone())?;
-        controller.require("fork:publish", VolumeOperation::Read)?;
+        controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         let parent_agent = scope
             .agent()
             .ok_or_else(|| Error::Unauthorized("fork allocation requires a parent agent".into()))?;

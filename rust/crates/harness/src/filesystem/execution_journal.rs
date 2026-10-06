@@ -1,6 +1,7 @@
 //! Stream-backed execution observations with private Filesystem payloads.
 
 use super::{FilesystemHost, FilesystemInteractionHost, InternalContentClass};
+use crate::contract::capability;
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
@@ -152,10 +153,12 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         self.verifier.verify(responder)?;
-        if !responder.capabilities().contains("interaction:resolve")
+        if !responder
+            .capabilities()
+            .contains(capability::INTERACTION_RESOLVE)
             || !responder
                 .capabilities()
-                .contains(&format!("interaction:respond:{id}"))
+                .contains(&capability::interaction_respond(id))
         {
             return Err(Error::Unauthorized(
                 "responder lacks the exact interaction grant".into(),
