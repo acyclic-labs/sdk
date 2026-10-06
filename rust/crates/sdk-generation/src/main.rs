@@ -81,6 +81,11 @@ struct PinnedToolchain {
     rustdoc: PathBuf,
 }
 
+struct RustdocInput {
+    path: PathBuf,
+    markdown_dependencies: Vec<PathBuf>,
+}
+
 fn digest(bytes: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update(bytes);
@@ -225,7 +230,7 @@ fn collect_dir(
     Ok(())
 }
 
-fn collect_sources(root: &Path) -> io::Result<Vec<FileHash>> {
+fn collect_sources(root: &Path, markdown_dependencies: &[PathBuf]) -> io::Result<Vec<FileHash>> {
     let root_metadata = fs::symlink_metadata(root)?;
     if root_metadata.file_type().is_symlink() || is_reparse_point(&root_metadata) {
         return Err(io::Error::other(
@@ -268,10 +273,61 @@ fn collect_sources(root: &Path) -> io::Result<Vec<FileHash>> {
             )));
         }
     }
+    for dependency in markdown_dependencies {
+        let metadata = fs::symlink_metadata(dependency)?;
+        if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+            return Err(io::Error::other(format!(
+                "source symlink is not allowed: {}",
+                dependency.display()
+            )));
+        }
+        let path = canonical(dependency)?;
+        if !path.starts_with(&root) || path.extension().is_none_or(|extension| extension != "md") {
+            return Err(io::Error::other(format!(
+                "rustdoc dependency is outside the Markdown source closure: {}",
+                dependency.display()
+            )));
+        }
+        let relative = path
+            .strip_prefix(&root)
+            .map_err(|_| io::Error::other("rustdoc dependency escapes checkout"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file = hash_file(&path, relative.clone())?;
+        if let Some(existing) = files.get(&relative) {
+            if existing != &file {
+                return Err(io::Error::other(format!(
+                    "source path changed while collecting: {relative}"
+                )));
+            }
+        } else {
+            files.insert(relative, file);
+        }
+    }
     if files.is_empty() {
         return Err(io::Error::other("source closure is empty"));
     }
     Ok(files.into_values().collect())
+}
+
+fn tracked_markdown_paths(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .args(["ls-files", "-z", "--", "*.md"])
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("git ls-files for Markdown failed"));
+    }
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            String::from_utf8(path.to_vec())
+                .map(PathBuf::from)
+                .map_err(io::Error::other)
+        })
+        .collect()
 }
 
 fn collect_json(
@@ -341,6 +397,103 @@ fn collect_rustdoc(path: &Path) -> io::Result<(Vec<FileHash>, Vec<PathBuf>)> {
         return Err(io::Error::other("rustdoc input contains no JSON files"));
     }
     Ok((files.into_values().collect(), paths))
+}
+
+fn parse_dep_info(contents: &str) -> io::Result<Vec<PathBuf>> {
+    let mut logical = String::new();
+    for line in contents.lines() {
+        if let Some(prefix) = line.strip_suffix('\\') {
+            logical.push_str(prefix);
+            logical.push(' ');
+        } else {
+            logical.push_str(line);
+            logical.push(' ');
+        }
+    }
+    let separator = logical
+        .char_indices()
+        .find(|(index, character)| {
+            *character == ':'
+                && logical[*index + character.len_utf8()..]
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_whitespace)
+        })
+        .map(|(index, _)| index)
+        .ok_or_else(|| io::Error::other("rustdoc dep-info has no target separator"))?;
+    let mut dependencies = Vec::new();
+    let mut token = String::new();
+    let mut escaped = false;
+    let mut characters = logical[separator + 1..].chars().peekable();
+    while let Some(character) = characters.next() {
+        if escaped {
+            token.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            if characters
+                .peek()
+                .is_some_and(|next| next.is_whitespace() || *next == '\\')
+            {
+                escaped = true;
+            } else {
+                token.push(character);
+            }
+        } else if character.is_whitespace() {
+            if !token.is_empty() {
+                dependencies.push(PathBuf::from(std::mem::take(&mut token)));
+            }
+        } else {
+            token.push(character);
+        }
+    }
+    if escaped {
+        token.push('\\');
+    }
+    if !token.is_empty() {
+        dependencies.push(PathBuf::from(token));
+    }
+    if dependencies.is_empty() {
+        return Err(io::Error::other("rustdoc dep-info has no dependencies"));
+    }
+    Ok(dependencies)
+}
+
+fn rustdoc_markdown_dependencies(
+    dep_info: &Path,
+    checkout: &Path,
+    dependency_root: &Path,
+) -> io::Result<Vec<PathBuf>> {
+    let checkout = canonical(checkout)?;
+    let dependency_root = canonical(dependency_root)?;
+    let contents = String::from_utf8(fs::read(dep_info)?).map_err(io::Error::other)?;
+    let mut paths = Vec::new();
+    for dependency in parse_dep_info(&contents)? {
+        let path = if dependency.is_absolute() {
+            dependency
+        } else {
+            dependency_root.join(dependency)
+        };
+        if path.extension().is_none_or(|extension| extension != "md") {
+            continue;
+        }
+        if !path.is_file() {
+            return Err(io::Error::other(format!(
+                "rustdoc dep-info references missing Markdown: {}",
+                path.display()
+            )));
+        }
+        let path = canonical(&path)?;
+        if !path.starts_with(&checkout) {
+            return Err(io::Error::other(format!(
+                "rustdoc dep-info references Markdown outside checkout: {}",
+                path.display()
+            )));
+        }
+        paths.push(path);
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 fn git_revision(root: &Path) -> io::Result<String> {
@@ -516,17 +669,27 @@ fn rustdoc_target(config: &Config) -> io::Result<PathBuf> {
     Ok(target)
 }
 
-fn generate_rustdoc(config: &Config) -> io::Result<PathBuf> {
+fn generate_rustdoc(config: &Config) -> io::Result<RustdocInput> {
     let target = rustdoc_target(config)?;
     let manifest = config.root.join("Cargo.toml");
     let tools = pinned_toolchain()?;
+    let actors_root = config.root.join("rust/crates/actors");
     let mut cargo = Command::new(&tools.cargo);
     cargo
+        .current_dir(&actors_root)
         .args(["rustdoc", "--locked", "--manifest-path"])
         .arg(&manifest)
         .args(["--package", ACTORS_PACKAGE, "--lib", "--target-dir"])
         .arg(&target)
-        .args(["--", "-Z", "unstable-options", "--output-format", "json"]);
+        .args([
+            "--",
+            "-Z",
+            "unstable-options",
+            "--output-format",
+            "json",
+            "--emit",
+            "dep-info",
+        ]);
     sanitize_compiler_environment(&mut cargo, &tools);
     let status = cargo
         .status()
@@ -543,16 +706,32 @@ fn generate_rustdoc(config: &Config) -> io::Result<PathBuf> {
             json.display()
         )));
     }
-    canonical(&json)
+    let json = canonical(&json)?;
+    let dep_info = target.join("doc").join(format!("{ACTORS_CRATE}.d"));
+    if !dep_info.is_file() {
+        return Err(io::Error::other(format!(
+            "pinned rustdoc did not produce {}",
+            dep_info.display()
+        )));
+    }
+    let markdown_dependencies =
+        rustdoc_markdown_dependencies(&dep_info, &config.root, &actors_root)?;
+    Ok(RustdocInput {
+        path: json,
+        markdown_dependencies,
+    })
 }
 
-fn resolve_rustdoc(config: &Config) -> io::Result<PathBuf> {
+fn resolve_rustdoc(config: &Config) -> io::Result<RustdocInput> {
     match (&config.channel[..], &config.rustdoc_json) {
         ("release", Some(_)) => Err(io::Error::other(
             "release generation owns rustdoc input; omit --rustdoc-json",
         )),
         ("release", None) => generate_rustdoc(config),
-        (_, Some(path)) => Ok(path.clone()),
+        (_, Some(path)) => Ok(RustdocInput {
+            path: path.clone(),
+            markdown_dependencies: Vec::new(),
+        }),
         (_, None) => Err(io::Error::other(
             "preview generation requires --rustdoc-json",
         )),
@@ -607,9 +786,19 @@ fn generate(config: &Config) -> io::Result<()> {
     }
     let revision = git_revision(&config.root)?;
     require_clean_release(&config.root, &config.channel)?;
-    let source = collect_sources(&config.root)?;
+    let tracked_markdown_before = tracked_markdown_paths(&config.root)?;
+    let source_before_stage = collect_sources(&config.root, &tracked_markdown_before)?;
     let rustdoc_input = resolve_rustdoc(config)?;
-    let (rustdoc, rustdoc_paths) = collect_rustdoc(&rustdoc_input)?;
+    let tracked_markdown_after = tracked_markdown_paths(&config.root)?;
+    if collect_sources(&config.root, &tracked_markdown_after)? != source_before_stage {
+        return Err(io::Error::other(
+            "source changed during pinned rustdoc generation",
+        ));
+    }
+    let mut markdown_dependencies = tracked_markdown_after;
+    markdown_dependencies.extend(rustdoc_input.markdown_dependencies.iter().cloned());
+    let source = collect_sources(&config.root, &markdown_dependencies)?;
+    let (rustdoc, rustdoc_paths) = collect_rustdoc(&rustdoc_input.path)?;
     let tool_sha256 = current_tool_hash()?;
     let source_sha256 = tree_digest(&source);
     let input = BuildInput {
@@ -639,8 +828,10 @@ fn generate(config: &Config) -> io::Result<()> {
         ));
     }
     require_clean_release(&config.root, &config.channel)?;
-    let source_after = collect_sources(&config.root)?;
-    let (rustdoc_after, _) = collect_rustdoc(&rustdoc_input)?;
+    let mut markdown_after = tracked_markdown_paths(&config.root)?;
+    markdown_after.extend(rustdoc_input.markdown_dependencies.iter().cloned());
+    let source_after = collect_sources(&config.root, &markdown_after)?;
+    let (rustdoc_after, _) = collect_rustdoc(&rustdoc_input.path)?;
     if source_after != source {
         return Err(io::Error::other(
             "source changed during documentation generation",
@@ -687,12 +878,12 @@ fn drift(config: &Config) -> io::Result<()> {
             "generation identity differs from manifest",
         ));
     }
-    let source = collect_sources(&config.root)?;
+    let rustdoc_input = resolve_rustdoc(config)?;
+    let source = collect_sources(&config.root, &rustdoc_input.markdown_dependencies)?;
     if manifest.source != source || manifest.source_sha256 != tree_digest(&source) {
         return Err(io::Error::other("source drift detected"));
     }
-    let rustdoc_input = resolve_rustdoc(config)?;
-    let (rustdoc, _) = collect_rustdoc(&rustdoc_input)?;
+    let (rustdoc, _) = collect_rustdoc(&rustdoc_input.path)?;
     if manifest.rustdoc != rustdoc || manifest.rustdoc_sha256 != tree_digest(&rustdoc) {
         return Err(io::Error::other("rustdoc input drift detected"));
     }

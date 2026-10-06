@@ -133,6 +133,11 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         "generation guide\n",
     )
     .unwrap();
+    fs::write(
+        root.join("docs/unlisted-tracked-guide.md"),
+        "tracked guide discovered from the source closure\n",
+    )
+    .unwrap();
     fs::write(root.join(".gitignore"), "rust/crates/sdk-docs/target/\n").unwrap();
     fs::create_dir_all(&rustdoc).unwrap();
     let fixture = json!({
@@ -288,6 +293,15 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         .status
         .success()
     );
+    let tracked_guide_path = root.join("docs/unlisted-tracked-guide.md");
+    let tracked_guide = fs::read(&tracked_guide_path).unwrap();
+    fs::write(&tracked_guide_path, b"tampered tracked guide\n").unwrap();
+    assert!(
+        !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
+            .status
+            .success()
+    );
+    fs::write(&tracked_guide_path, tracked_guide).unwrap();
     fs::write(
         rustdoc.join("actors.json"),
         serde_json::to_vec(&fixture).unwrap(),

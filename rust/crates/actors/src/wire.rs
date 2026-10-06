@@ -7,12 +7,17 @@
 use protify::*;
 use ts_rs::TS;
 
-proto_package!(ACTORS_PACKAGE, name = "acyclic.actors.v1", files = [ACTORS_FILE]);
+proto_package!(
+    ACTORS_PACKAGE,
+    name = "acyclic.actors.v1",
+    files = [ACTORS_FILE]
+);
 define_proto_file!(
     ACTORS_FILE,
     name = "actors/v1/actors.proto",
     package = ACTORS_PACKAGE,
-    options = [proto_option!("go_package" => "github.com/acyclic-labs/sdk/go/gen/actors/v1;actorsv1")],
+    options =
+        [proto_option!("go_package" => "github.com/acyclic-labs/sdk/go/gen/actors/v1;actorsv1")],
     messages = [
         Binding,
         ActorLimits,
@@ -92,7 +97,7 @@ pub mod subscription_start {
         /// Start at the supplied stream cursor.
         Cursor(u64),
         #[proto(tag = 2)]
-        /// Start at the current stream head.
+        /// Boolean selector for starting at the current stream head.
         CurrentHead(bool),
     }
 }

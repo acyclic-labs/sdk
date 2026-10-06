@@ -115,13 +115,27 @@ mod tests {
     #[test]
     fn error_details_preserve_unknown_and_unspecified_codes() {
         for code in [0, 99] {
-            let detail = wire::Error { code, message: "service detail".into() };
-            let status = Status::with_details(tonic::Code::Unknown, "operation failed", detail.encode_to_vec().into());
+            let detail = wire::Error {
+                code,
+                message: "service detail".into(),
+            };
+            let status = Status::with_details(
+                tonic::Code::Unknown,
+                "operation failed",
+                detail.encode_to_vec().into(),
+            );
             let decoded = error_detail(&status).expect("valid wire detail");
             assert_eq!(decoded.code, code);
             assert_eq!(decoded.message, detail.message);
         }
         assert!(error_detail(&Status::unknown("no detail")).is_none());
-        assert!(error_detail(&Status::with_details(tonic::Code::Unknown, "malformed", vec![0xff].into())).is_none());
+        assert!(
+            error_detail(&Status::with_details(
+                tonic::Code::Unknown,
+                "malformed",
+                vec![0xff].into()
+            ))
+            .is_none()
+        );
     }
 }

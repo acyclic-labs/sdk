@@ -142,8 +142,8 @@ fn status_error(status: Status) -> JsValue {
         &JsValue::from_str("grpcCode"),
         &JsValue::from_str(grpc_code(status.code())),
     );
-    if let Ok(detail) = wire::Error::decode(status.details()) {
-        if detail.code != wire::ErrorCode::Unspecified as i32 {
+    if !status.details().is_empty() {
+        if let Ok(detail) = wire::Error::decode(status.details()) {
             let _ = js_sys::Reflect::set(
                 &error,
                 &JsValue::from_str("serviceCode"),
@@ -159,6 +159,7 @@ fn status_error(status: Status) -> JsValue {
 #[wasm_bindgen]
 pub struct CancellationHandle {
     sender: Rc<RefCell<Option<oneshot::Sender<()>>>>,
+    active: Rc<Cell<bool>>,
     requested: Rc<Cell<bool>>,
 }
 
@@ -169,6 +170,7 @@ impl CancellationHandle {
     pub fn new() -> Self {
         Self {
             sender: Rc::new(RefCell::new(None)),
+            active: Rc::new(Cell::new(false)),
             requested: Rc::new(Cell::new(false)),
         }
     }
@@ -193,15 +195,16 @@ impl CancellationHandle {
     fn begin(&self) -> Result<oneshot::Receiver<()>, JsValue> {
         let (sender, receiver) = oneshot::channel();
         let mut current = self.sender.try_borrow_mut().map_err(|_| busy())?;
-        if current.is_some() {
+        if self.active.get() {
             return Err(js_error(
                 "client_busy",
                 "cancellation handle is already in use",
             ));
         }
         // A handle can be reused after an operation completes. Reset its
-        // per-operation state only once ownership of the sender is available.
+        // per-operation state only once the previous operation has completed.
         self.requested.set(false);
+        self.active.set(true);
         *current = Some(sender);
         Ok(receiver)
     }
@@ -209,6 +212,7 @@ impl CancellationHandle {
     fn finish(&self) {
         if let Ok(mut sender) = self.sender.try_borrow_mut() {
             sender.take();
+            self.active.set(false);
         }
     }
 }
@@ -315,11 +319,8 @@ impl ActorsClient {
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CreateActorRequest>(&request_bytes(request)?)?;
         validate_create(&request)?;
-        let response = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .create_actor(Request::new(request));
+        let mut client = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let response = client.create_actor(Request::new(request));
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
@@ -335,11 +336,8 @@ impl ActorsClient {
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::UpdateActorRequest>(&request_bytes(request)?)?;
         validate_update(&request)?;
-        let response = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .update_actor(Request::new(request));
+        let mut client = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let response = client.update_actor(Request::new(request));
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
@@ -354,11 +352,8 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InspectActorRequest>(&request_bytes(request)?)?;
-        let response = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .inspect_actor(Request::new(request));
+        let mut client = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let response = client.inspect_actor(Request::new(request));
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
@@ -374,11 +369,8 @@ impl ActorsClient {
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::AddSubscriptionRequest>(&request_bytes(request)?)?;
         validate_add(&request)?;
-        let response = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .add_subscription(Request::new(request));
+        let mut client = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let response = client.add_subscription(Request::new(request));
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
@@ -393,11 +385,8 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::RemoveSubscriptionRequest>(&request_bytes(request)?)?;
-        let response = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .remove_subscription(Request::new(request));
+        let mut client = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let response = client.remove_subscription(Request::new(request));
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
@@ -412,11 +401,8 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::ResumeSubscriptionRequest>(&request_bytes(request)?)?;
-        let response = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .resume_subscription(Request::new(request));
+        let mut client = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let response = client.resume_subscription(Request::new(request));
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
@@ -431,11 +417,8 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CheckpointActorRequest>(&request_bytes(request)?)?;
-        let response = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .checkpoint_actor(Request::new(request));
+        let mut client = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let response = client.checkpoint_actor(Request::new(request));
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
@@ -450,14 +433,100 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InvokeActorRequest>(&request_bytes(request)?)?;
-        let response = self
-            .inner
-            .try_borrow_mut()
-            .map_err(|_| busy())?
-            .invoke_actor(Request::new(request));
+        let mut client = self.inner.try_borrow_mut().map_err(|_| busy())?;
+        let response = client.invoke_actor(Request::new(request));
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 }
 
 #[allow(dead_code)]
 const _CONTRACT_LIMITS: (usize, usize) = (MAX_SUBSCRIPTIONS, MAX_BINDINGS);
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn handle_starts_idle_and_cancel_is_explicit() {
+        let handle = CancellationHandle::new();
+        assert!(!handle.cancelled());
+
+        handle.cancel();
+
+        assert!(handle.cancelled());
+    }
+
+    #[test]
+    fn begin_resets_request_state_for_reuse() {
+        let handle = CancellationHandle::new();
+        handle.cancel();
+        assert!(handle.cancelled());
+
+        let first = handle.begin();
+        assert!(first.is_ok());
+        assert!(!handle.cancelled());
+        handle.finish();
+
+        let second = handle.begin();
+        assert!(second.is_ok());
+        assert!(!handle.cancelled());
+        handle.finish();
+    }
+
+    #[test]
+    fn begin_rejects_concurrent_use_until_finished() {
+        let handle = CancellationHandle::new();
+        let active = handle.begin();
+        assert!(active.is_ok());
+        assert!(handle.begin().is_err());
+
+        handle.finish();
+        assert!(handle.begin().is_ok());
+        handle.finish();
+    }
+
+    #[test]
+    fn cancel_notifies_receiver_and_releases_sender() {
+        let handle = CancellationHandle::new();
+        let mut receiver = match handle.begin() {
+            Ok(receiver) => receiver,
+            Err(_) => return,
+        };
+
+        handle.cancel();
+        assert!(handle.cancelled());
+        assert!(matches!(receiver.try_recv(), Ok(Some(()))));
+
+        // Cancellation wakes the operation but does not permit reuse until
+        // its cleanup has run, so the old operation cannot clear a new one.
+        assert!(handle.begin().is_err());
+        handle.finish();
+        assert!(handle.begin().is_ok());
+        handle.finish();
+    }
+
+    #[test]
+    fn inflight_cancellation_terminates_without_replaying_operation() {
+        let handle = CancellationHandle::new();
+        let mut polls = 0;
+        let operation = futures::future::poll_fn(
+            |_| -> std::task::Poll<Result<tonic::Response<()>, Status>> {
+                polls += 1;
+                if polls == 1 {
+                    handle.cancel();
+                }
+                std::task::Poll::Pending
+            },
+        );
+
+        let result = futures::executor::block_on(await_response(operation, Some(&handle)));
+        assert!(result.is_err());
+        assert_eq!(polls, 1);
+
+        // Cancellation is terminal for this operation. The sender was
+        // consumed and cleanup leaves the handle available for a new one.
+        assert!(handle.cancelled());
+        assert!(handle.begin().is_ok());
+        handle.finish();
+    }
+}

@@ -895,7 +895,7 @@ mod tests {
             actor_id: "actor-1".into(),
             method: String::new(),
             url: String::new(),
-            body: vec![0, 1, 2],
+            body: vec![0, 1, 2].into(),
             headers: vec![wire::Header {
                 name: "x-test".into(),
                 value: "ok".into(),
@@ -916,7 +916,7 @@ mod tests {
             actor_id: String::new(),
             method: String::new(),
             url: String::new(),
-            body: Vec::new(),
+            body: Vec::new().into(),
             headers: Vec::new(),
         };
         assert_eq!(
@@ -929,7 +929,7 @@ mod tests {
     fn response_enum_unknown_values_are_not_normalized() {
         let observation = wire::ActorObservation {
             actor_id: "actor-1".into(),
-            code_sha256: vec![1; 32],
+            code_sha256: vec![1; 32].into(),
             home_region: "eu".into(),
             state: 99,
             subscriptions: Vec::new(),
@@ -955,7 +955,7 @@ mod tests {
     fn response_digest_keeps_the_nonzero_admission_rule() {
         let observation = wire::ActorObservation {
             actor_id: "actor-1".into(),
-            code_sha256: vec![0; 32],
+            code_sha256: vec![0; 32].into(),
             home_region: "eu".into(),
             state: 1,
             subscriptions: Vec::new(),

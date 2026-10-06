@@ -17,7 +17,9 @@ itself, hashes that source closure and the external rustdoc JSON, calls the
 existing `sdk-docs` library, and writes a versioned manifest. Release
 generation requires a clean checkout; preview generation binds the working-tree
 digest. Release drift reruns the pinned Rustdoc stage, while preview drift uses
-the supplied JSON input.
+the supplied JSON input. Release Rustdoc also emits its exact dep-info file;
+checkout Markdown named there is added to the source digest, and missing or
+escaping Markdown dependencies fail the stage.
 
 ```text
 cargo +1.98.1 test --offline --locked
