@@ -67,6 +67,10 @@ impl<K: Ord + Clone, V: Clone + Revisioned> MemoryRecords<K, V> {
         self.locked(|records| records.get(key).cloned())
     }
 
+    pub(crate) fn keys(&self) -> Result<Vec<K>, Poisoned> {
+        self.locked(|records| records.keys().cloned().collect())
+    }
+
     /// Replaces `key` only at `expected` (zero means absent).
     pub(crate) fn compare_and_swap(
         &self,
