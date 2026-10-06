@@ -323,6 +323,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
     }
     validate_source_info(&data.source, &data.channel)?;
     reject_reparse_ancestors(output_dir)?;
+    let index = load_version_index(output_dir)?;
     fs::create_dir_all(output_dir)?;
     let channel_dir = match data.channel {
         Channel::Release => "releases",
@@ -354,8 +355,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
         data_file,
         data_sha256: digest,
     };
-    let index = load_version_index(output_dir)?;
-    let updated_index = merge_version_index(index, &entry, mark_latest)?;
+    let updated_index = merge_version_index(index, &entry, output_dir, mark_latest)?;
     reject_reparse_ancestors(&version_dir)?;
     fs::create_dir_all(&version_dir)?;
     atomic_write(&data_path, &data_bytes, true)?;
@@ -396,30 +396,133 @@ fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
             index.schema
         )));
     }
+    validate_version_index(&index, output_dir)?;
     Ok(index)
+}
+
+fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(), Error> {
+    let mut release_versions = HashSet::new();
+    for entry in &index.releases {
+        validate_version_entry(entry, &Channel::Release, output_dir)?;
+        if !release_versions.insert(entry.version.as_str()) {
+            return Err(Error::Invalid(format!(
+                "version index contains duplicate release {}",
+                entry.version
+            )));
+        }
+    }
+    if let Some(preview) = &index.preview {
+        validate_version_entry(preview, &Channel::Preview, output_dir)?;
+    }
+    if let Some(latest) = &index.latest {
+        validate_version_entry(latest, &Channel::Release, output_dir)?;
+        let Some(release) = index
+            .releases
+            .iter()
+            .find(|entry| entry.version == latest.version)
+        else {
+            return Err(Error::Invalid(format!(
+                "version index latest release {} is absent from releases",
+                latest.version
+            )));
+        };
+        if release != latest {
+            return Err(Error::Invalid(format!(
+                "version index latest release {} differs from its release entry",
+                latest.version
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_version_entry(
+    entry: &VersionEntry,
+    expected_channel: &Channel,
+    output_dir: &Path,
+) -> Result<(), Error> {
+    if &entry.channel != expected_channel {
+        return Err(Error::Invalid(format!(
+            "version index entry {} has the wrong channel",
+            entry.version
+        )));
+    }
+    match entry.channel {
+        Channel::Release => {
+            stable_version(&entry.version)?;
+        }
+        Channel::Preview => {
+            safe_version(&entry.version)?;
+        }
+    }
+    if entry.revision.len() < 40
+        || entry.revision.len() > 64
+        || !entry.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(Error::Invalid(format!(
+            "version index entry {} has an invalid source revision",
+            entry.version
+        )));
+    }
+    if entry.data_sha256.len() != 64
+        || !entry
+            .data_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(Error::Invalid(format!(
+            "version index entry {} has an invalid data digest",
+            entry.version
+        )));
+    }
+    let channel_dir = match entry.channel {
+        Channel::Release => "releases",
+        Channel::Preview => "preview",
+    };
+    let expected_data_file = format!(
+        "{channel_dir}/{}/sdk-docs-data.v1.json",
+        safe_version(&entry.version)?
+    );
+    if entry.data_file != expected_data_file {
+        return Err(Error::Invalid(format!(
+            "version index entry {} has unexpected data file {}",
+            entry.version, entry.data_file
+        )));
+    }
+    let data_path = output_dir.join(&entry.data_file);
+    reject_reparse_ancestors(&data_path)?;
+    let metadata = fs::symlink_metadata(&data_path).map_err(|_| {
+        Error::Invalid(format!(
+            "version index entry {} refers to a missing data file {}",
+            entry.version,
+            data_path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::Invalid(format!(
+            "version index entry {} data path is not a regular file {}",
+            entry.version,
+            data_path.display()
+        )));
+    }
+    let data_bytes = fs::read(&data_path)?;
+    if sha256_hex(&data_bytes) != entry.data_sha256 {
+        return Err(Error::Invalid(format!(
+            "version index entry {} data digest does not match {}",
+            entry.version,
+            data_path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn merge_version_index(
     mut index: VersionIndex,
     entry: &VersionEntry,
+    output_dir: &Path,
     mark_latest: bool,
 ) -> Result<VersionIndex, Error> {
-    for release in &index.releases {
-        if release.channel != Channel::Release {
-            return Err(Error::Invalid(
-                "version index contains a non-release entry in releases".into(),
-            ));
-        }
-        stable_version(&release.version)?;
-    }
-    if let Some(latest) = &index.latest {
-        if latest.channel != Channel::Release {
-            return Err(Error::Invalid(
-                "version index latest entry must be a release".into(),
-            ));
-        }
-        stable_version(&latest.version)?;
-    }
+    validate_version_index(&index, output_dir)?;
     if entry.channel == Channel::Release {
         if let Some(existing) = index
             .releases
@@ -1093,6 +1196,77 @@ mod tests {
         let error =
             write_bundle(&conflicting, &output, true).expect_err("release rewrite must fail");
         assert!(error.to_string().contains("refusing to rewrite"));
+        fs::remove_dir_all(output).expect("test output should be removable");
+    }
+
+    #[test]
+    fn malformed_prior_version_index_is_rejected_without_mutation() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-malformed-index-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        fs::create_dir_all(&output).expect("output directory should be creatable");
+        let malformed = VersionIndex {
+            schema: VERSION_INDEX_SCHEMA_VERSION.into(),
+            latest: None,
+            releases: vec![VersionEntry {
+                version: "1.0.0".into(),
+                channel: Channel::Release,
+                revision: "a".repeat(40),
+                data_file: "releases/1.0.0/sdk-docs-data.v1.json".into(),
+                data_sha256: "0".repeat(64),
+            }],
+            preview: None,
+        };
+        let index_path = output.join("sdk-docs-versions.v1.json");
+        fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&malformed).expect("malformed index should serialize"),
+        )
+        .expect("malformed index should write");
+        let before = fs::read(&index_path).expect("malformed index should remain readable");
+        let data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "2.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "b".repeat(40),
+                source_state: "captured-snapshot".into(),
+                source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
+                input_sha256: "b".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            families: Vec::new(),
+        };
+        let error = write_bundle(&data, &output, true)
+            .expect_err("malformed prior index must block publication");
+        assert!(error.to_string().contains("missing data file"));
+        assert_eq!(
+            before,
+            fs::read(&index_path).expect("malformed index should be unchanged")
+        );
+        assert!(!output.join("releases").exists());
+
+        let data_path = output.join("releases/1.0.0/sdk-docs-data.v1.json");
+        fs::create_dir_all(data_path.parent().expect("data file should have a parent"))
+            .expect("prior data directory should be creatable");
+        fs::write(&data_path, b"prior data").expect("prior data should be writable");
+        let prior_data = fs::read(&data_path).expect("prior data should remain readable");
+        let error = write_bundle(&data, &output, true)
+            .expect_err("wrong prior data hash must block publication");
+        assert!(error.to_string().contains("data digest does not match"));
+        assert_eq!(
+            before,
+            fs::read(&index_path).expect("malformed index should remain unchanged")
+        );
+        assert_eq!(
+            prior_data,
+            fs::read(&data_path).expect("prior data should remain unchanged")
+        );
         fs::remove_dir_all(output).expect("test output should be removable");
     }
 
