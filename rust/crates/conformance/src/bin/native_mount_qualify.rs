@@ -564,8 +564,7 @@ fn wait_for_child(
     let deadline = Instant::now() + timeout;
     loop {
         if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate_descendants()?;
-            let _ = child.process.wait();
+            child.process.terminate()?;
             return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
         }
         if let Some(status) = child.process.try_wait()? {
@@ -573,7 +572,7 @@ fn wait_for_child(
         }
         if Instant::now() >= deadline {
             child.process.terminate_descendants()?;
-            let status = child.process.wait()?;
+            let status = child.process.wait(Duration::from_secs(5))?;
             let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
             return Err(format!(
                 "child process exceeded {} ms: stdout={} stderr={}",
@@ -704,7 +703,7 @@ fn rename_hydration_child(mount: &Path) -> Result<(), Failure> {
 }
 
 fn release_identity(executable: &Path) -> Result<(String, String), Failure> {
-    let output = Command::new(executable).arg("--version").output()?;
+    let output = tool_output(Command::new(executable).arg("--version"))?;
     if !output.status.success() {
         return Err("release executable did not report its version".into());
     }
@@ -1097,10 +1096,11 @@ fn verify_large_windows_directory(mount: &Path) -> Result<(), Failure> {
     {
         return Err("large projected directory was incomplete or corrupt".into());
     }
-    let wildcard = Command::new("cmd")
-        .current_dir(&large)
-        .args(["/D", "/Q", "/C", "dir", "/B", "/A:-D", "/ON", "*.rs"])
-        .output()?;
+    let wildcard = tool_output(
+        Command::new("cmd")
+            .current_dir(&large)
+            .args(["/D", "/Q", "/C", "dir", "/B", "/A:-D", "/ON", "*.rs"]),
+    )?;
     let wildcard_output = String::from_utf8_lossy(&wildcard.stdout);
     let wildcard_count = wildcard_output.lines().count();
     if !wildcard.status.success() || wildcard_count != 30 {
@@ -1394,10 +1394,11 @@ fn retryable_nfs_directory_error(error: &std::io::Error) -> bool {
 fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), Failure> {
     #[cfg(target_os = "macos")]
     {
-        let write = Command::new("/usr/bin/xattr")
-            .args(["-w", "com.acyclic.qualifier", "xattr-value"])
-            .arg(metadata)
-            .output()?;
+        let write = tool_output(
+            Command::new("/usr/bin/xattr")
+                .args(["-w", "com.acyclic.qualifier", "xattr-value"])
+                .arg(metadata),
+        )?;
         if !write.status.success() {
             return Err(format!(
                 "xattr write failed: {}",
@@ -1405,10 +1406,11 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
             )
             .into());
         }
-        let read = Command::new("/usr/bin/xattr")
-            .args(["-px", "com.acyclic.qualifier"])
-            .arg(metadata)
-            .output()?;
+        let read = tool_output(
+            Command::new("/usr/bin/xattr")
+                .args(["-px", "com.acyclic.qualifier"])
+                .arg(metadata),
+        )?;
         let encoded = String::from_utf8_lossy(&read.stdout)
             .replace([' ', '\n'], "")
             .to_ascii_lowercase();
@@ -1420,14 +1422,15 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
             )
             .into());
         }
-        let resource = Command::new("/usr/bin/xattr")
-            .args([
-                "-wx",
-                "com.apple.ResourceFork",
-                "7265736f757263652d666f726b",
-            ])
-            .arg(metadata)
-            .output()?;
+        let resource = tool_output(
+            Command::new("/usr/bin/xattr")
+                .args([
+                    "-wx",
+                    "com.apple.ResourceFork",
+                    "7265736f757263652d666f726b",
+                ])
+                .arg(metadata),
+        )?;
         if !resource.status.success() {
             return Err(format!(
                 "resource fork write failed: {}",
@@ -1435,18 +1438,16 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
             )
             .into());
         }
-        let read = Command::new("/usr/bin/xattr")
-            .args(["-px", "com.apple.ResourceFork"])
-            .arg(metadata)
-            .output()?;
+        let read = tool_output(
+            Command::new("/usr/bin/xattr")
+                .args(["-px", "com.apple.ResourceFork"])
+                .arg(metadata),
+        )?;
         let encoded = String::from_utf8_lossy(&read.stdout)
             .replace([' ', '\n'], "")
             .to_ascii_lowercase();
         if !read.status.success() || encoded != "7265736f757263652d666f726b" {
-            let listed = Command::new("/usr/bin/xattr")
-                .args(["-l"])
-                .arg(metadata)
-                .output()?;
+            let listed = tool_output(Command::new("/usr/bin/xattr").args(["-l"]).arg(metadata))?;
             let sidecar = metadata.with_file_name("._metadata.txt");
             let sidecar_bytes = fs::read(&sidecar).ok();
             let sidecar_payload_offset = sidecar_bytes.as_ref().and_then(|bytes| {
@@ -1464,24 +1465,7 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
             )
             .into());
         }
-        let source = mount.join("nested/toolchain.c");
-        let binary = mount.join("nested/toolchain");
-        fs::write(&source, b"int main(void) { return 0; }\n")?;
-        let compiled = Command::new("/usr/bin/clang")
-            .arg(&source)
-            .arg("-o")
-            .arg(&binary)
-            .output()?;
-        if !compiled.status.success() {
-            return Err(format!(
-                "clang over NFS failed: {}",
-                String::from_utf8_lossy(&compiled.stderr)
-            )
-            .into());
-        }
-        if !Command::new(&binary).status()?.success() {
-            return Err("compiled NFS subprocess failed".into());
-        }
+        macos_nfs_toolchain(mount)?;
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1510,10 +1494,7 @@ where
     }
     #[cfg(target_os = "macos")]
     {
-        let detached = Command::new("/sbin/umount")
-            .arg("-f")
-            .arg(&destination)
-            .output()?;
+        let detached = tool_output(Command::new("/sbin/umount").arg("-f").arg(&destination))?;
         if !detached.status.success() {
             return Err(format!(
                 "forced mount-loss detach failed: {}",
@@ -1828,7 +1809,7 @@ fn resolve_git_dir(root: &Path) -> Result<PathBuf, Failure> {
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Result<Vec<u8>, Failure> {
-    let output = Command::new("git").args(args).current_dir(root).output()?;
+    let output = tool_output(Command::new("git").args(args).current_dir(root))?;
     if !output.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -2077,4 +2058,38 @@ mod parallel_io_tests {
         assert_eq!(attempts, 1);
         assert!(matches!(result, Err(error) if error.kind() == ErrorKind::PermissionDenied));
     }
+}
+
+/// Qualification tool policy; process ownership and capture live in native-runtime.
+fn tool_output(command: &mut Command) -> std::io::Result<std::process::Output> {
+    acyclic_native_runtime::process_output(command, Duration::from_secs(120), 8 * 1024 * 1024)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_nfs_toolchain(mount: &Path) -> Result<(), Failure> {
+    let source = mount.join("nested/toolchain.c");
+    let binary = mount.join("nested/toolchain");
+    fs::write(&source, b"int main(void) { return 0; }\n")?;
+    let compiled = tool_output(
+        Command::new("/usr/bin/clang")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary),
+    )?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "clang over NFS failed: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        )
+        .into());
+    }
+    if !acyclic_native_runtime::process_status(
+        &mut Command::new(&binary),
+        std::time::Duration::from_secs(120),
+    )?
+    .success()
+    {
+        return Err("compiled NFS subprocess failed".into());
+    }
+    Ok(())
 }

@@ -3071,33 +3071,26 @@ mod tests {
 
     #[test]
     fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::error::Error>> {
-        struct KillOnDrop(std::process::Child);
-
-        impl Drop for KillOnDrop {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-
         let directory = tempfile::tempdir()?;
         let root = directory.path().join("core-state");
         let owner = LocalCoreStateStore::open_owned(&root)?;
         assert!(
-            ownership_child(&root)?.status()?.success(),
+            acyclic_native_runtime::process_status(
+                &mut ownership_child(&root)?,
+                std::time::Duration::from_secs(120)
+            )?
+            .success(),
             "another process entered an owned namespace"
         );
         drop(owner);
 
         let ready = directory.path().join("ready");
-        let mut child = KillOnDrop(
-            ownership_child(&root)?
-                .env("ACYCLIC_CORE_STATE_CHILD_READY", &ready)
-                .spawn()?,
-        );
+        let mut child = acyclic_native_runtime::spawn_process_tree(
+            ownership_child(&root)?.env("ACYCLIC_CORE_STATE_CHILD_READY", &ready),
+        )?;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.is_file() {
-            if let Some(status) = child.0.try_wait()? {
+            if let Some(status) = child.try_wait()? {
                 return Err(format!("owner child exited before readiness: {status}").into());
             }
             if Instant::now() >= deadline {
@@ -3111,8 +3104,8 @@ mod tests {
         assert!(is_ownership_conflict(&LocalCoreStateStore::open_owned(
             &root
         )));
-        child.0.kill()?;
-        child.0.wait()?;
+        child.terminate_descendants()?;
+        child.wait(Duration::from_secs(5))?;
         LocalCoreStateStore::open_owned(&root)?;
         Ok(())
     }
@@ -3632,7 +3625,11 @@ mod tests {
             if owned {
                 child.env("ACYCLIC_CORE_STATE_CRASH_OWNED", "1");
             }
-            let status = child.status().expect("crash child");
+            let status = acyclic_native_runtime::process_status(
+                &mut child,
+                std::time::Duration::from_secs(120),
+            )
+            .expect("crash child");
             if status.success() {
                 assert!(
                     !report.exists(),

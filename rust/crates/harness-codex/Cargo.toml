@@ -14,6 +14,7 @@ categories = ["development-tools"]
 
 [dependencies]
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 axum.workspace = true
 blake3.workspace = true
 futures.workspace = true
@@ -26,9 +27,6 @@ tokio = { workspace = true, features = ["process"] }
 toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

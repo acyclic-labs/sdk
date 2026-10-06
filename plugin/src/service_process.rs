@@ -362,10 +362,12 @@ pub(crate) fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -
 }
 
 pub(crate) fn codex_json(arguments: &[&str]) -> Result<Value, String> {
-    let output = std::process::Command::new("codex")
-        .args(arguments)
-        .output()
-        .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;
+    let output = acyclic_native_runtime::process_output(
+        std::process::Command::new("codex").args(arguments),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;
     if !output.status.success() {
         return Err(format!(
             "Codex plugin manager exited with {}: {}",

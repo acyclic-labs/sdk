@@ -377,7 +377,12 @@ fn workload_files() -> Vec<(String, Vec<u8>)> {
 }
 
 fn installed_lean_toolchain() -> Option<String> {
-    let output = command("elan").args(["toolchain", "list"]).output().ok()?;
+    let output = acyclic_native_runtime::process_output(
+        command("elan").args(["toolchain", "list"]),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }

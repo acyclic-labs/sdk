@@ -185,12 +185,12 @@ name = "acyclic-harness-codex"
 version = "0.2.0"
 dependencies = [
  "acyclic-harness",
+ "acyclic-native-runtime",
  "axum",
  "blake3",
  "futures",
  "jsonschema",
  "reqwest",
- "rustix",
  "serde",
  "serde_json",
  "tempfile",
@@ -273,6 +273,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-conformance",
  "acyclic-machines",
+ "acyclic-native-runtime",
  "async-trait",
  "futures",
  "reqwest",

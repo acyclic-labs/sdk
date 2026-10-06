@@ -797,14 +797,19 @@ fn sqlite_verify_child(path: &Path) -> Result<(), String> {
 }
 
 async fn run_sqlite_child(mode: &str, path: &Path) -> Result<(), String> {
-    let output =
-        tokio::process::Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
-            .arg(mode)
-            .arg(path)
-            .kill_on_drop(true)
-            .output()
-            .await
-            .map_err(|error| error.to_string())?;
+    let mut command =
+        std::process::Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
+    command.arg(mode).arg(path);
+    let output = acyclic_native_runtime::run_blocking_io(move || {
+        acyclic_native_runtime::process_output(
+            &mut command,
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(format!(
             "SQLite child {mode} failed: {}",

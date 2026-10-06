@@ -4536,17 +4536,19 @@ mod windows_clone_tests {
     #[test]
     fn a_process_dying_mid_copy_leaves_nothing() -> std::io::Result<()> {
         let temporary = tempfile::tempdir()?;
-        let status = std::process::Command::new(std::env::current_exe()?)
-            .args([
-                "--ignored",
-                "--exact",
-                "native_host::windows_clone_tests::staged_copy_crash_child",
-                "--test-threads=1",
-            ])
-            .env(CRASH_DIRECTORY, temporary.path())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()?;
+        let status = acyclic_native_runtime::process_status(
+            std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "native_host::windows_clone_tests::staged_copy_crash_child",
+                    "--test-threads=1",
+                ])
+                .env(CRASH_DIRECTORY, temporary.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+            std::time::Duration::from_secs(120),
+        )?;
         assert!(!status.success(), "the child must die mid-copy");
         let names = std::fs::read_dir(temporary.path())?
             .map(|entry| entry.map(|entry| entry.file_name()))

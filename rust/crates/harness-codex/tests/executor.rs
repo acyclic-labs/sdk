@@ -508,6 +508,34 @@ async fn selected_context_reaches_a_new_codex_thread() {
     assert!(argv.contains("now compare fee schedules"), "{argv}");
 }
 
+#[tokio::test]
+async fn invalid_output_awaits_explicit_cleanup_and_ends_background_descendants() {
+    let turn = Turn::new().await;
+    let executor = turn.executor(
+        &FakeCodex::default(),
+        Some(Instant::now() + Duration::from_secs(20)),
+    );
+    // The TERM marker distinguishes awaited graceful cleanup from best-effort
+    // Drop's immediate SIGKILL. The background member ignores TERM so successful
+    // cleanup must also perform the mandatory final group termination.
+    std::fs::write(
+        turn.dir.path().join("bin/codex"),
+        "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo 'codex 0.155.1'; exit 0; fi\n\
+         trap 'echo terminated > graceful; exit 143' TERM\n\
+         (trap '' TERM; sleep 1; touch escaped) >/dev/null 2>&1 &\n\
+         printf '\\377\\n'\nwait\n",
+    )
+    .expect("write invalid-stream executable");
+    let error = executor
+        .execute(input(OperationId::new(), "task"), &Journal::default())
+        .await
+        .expect_err("invalid UTF-8 output must fail");
+    assert!(error.to_string().contains("codex output failed"), "{error}");
+    assert_eq!(read(&turn.workspace.join("graceful")).trim(), "terminated");
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(!turn.workspace.join("escaped").exists());
+}
+
 // ------------------------------------------------------- the fake itself
 
 #[test]
@@ -519,25 +547,32 @@ fn the_fake_codex_replays_its_fixture_and_rejects_an_open_stdin() {
         ..FakeCodex::default()
     }
     .install(dir.path());
-    let output = std::process::Command::new(&fake)
-        .args(["exec", "--json", "-C", "/tmp", "task"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("run fake");
+    let output = acyclic_native_runtime::process_output(
+        std::process::Command::new(&fake)
+            .args(["exec", "--json", "-C", "/tmp", "task"])
+            .stdin(std::process::Stdio::null()),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("run fake");
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         read(&support::fixture_dir().join("shell.stdout.jsonl"))
     );
-    let mut child = std::process::Command::new(&fake)
-        .arg("exec")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn fake");
-    let _held = child.stdin.take();
+    let mut child = acyclic_native_runtime::spawn_process_tree(
+        std::process::Command::new(&fake)
+            .arg("exec")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null()),
+    )
+    .expect("spawn fake");
+    let _held = child.take_stdin();
     assert_eq!(
-        child.wait().expect("wait").code(),
+        child
+            .wait(std::time::Duration::from_secs(5))
+            .expect("wait")
+            .code(),
         Some(97),
         "an open stdin is caught"
     );
