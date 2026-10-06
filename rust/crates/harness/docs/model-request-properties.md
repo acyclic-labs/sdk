@@ -39,6 +39,13 @@ options and explicit caller content remain caller-owned inputs.
 
 The default `acyclic.read_file` contract advances to revision 2: raw and projected
 outputs both satisfy its pinned string schema, without a redundant file echo.
+The TypeScript default loop preserves exact admitted tool values; values above
+the explicit render limit fail closed rather than becoming schema-incompatible
+omission objects. Before inherited dispatch, fresh local file references are
+authenticated and read through the bound content host into a per-request capture.
+This capture does not mutate the inherited prefix snapshot. Regression tests cover
+the exact tool-result byte boundary, new pinned versions after harness construction,
+missing signed grants and corrupt local bytes before provider dispatch.
 
 ## Verification records
 

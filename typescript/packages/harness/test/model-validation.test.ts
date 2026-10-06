@@ -115,6 +115,94 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
   } finally { core.free(); }
 });
 
+test("tool results retain their pinned string schema and enforce the exact render bound", async () => {
+  for (const length of [62, 63]) {
+    const value = "x".repeat(length);
+    let calls = 0;
+    const runtime = Harness.builder(contracts).limits({ render_bytes: 64 })
+      .model({ provider: "mock", name: "bounded", revision: "1", options: {} }, {
+        async *generate(request) {
+          calls++;
+          if (calls === 1) yield { kind: "tool_call" as const, callId: "read", name: "read", arguments: "go" };
+          else {
+            expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "read", name: "read", value });
+            expect((contracts.decodeModelJson(request.serializedInput) as unknown as WasmModelRequestWire).messages.at(-1)?.content)
+              .toEqual({ kind: "tool_result", call_id: "read", name: "read", value });
+          }
+          yield { kind: "completed" as const, metadata: {} };
+        }, async reconcile() { return undefined; },
+      }).tool({ name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
+        outputSchema: { type: "string" }, parseInput: value => value, parseOutput: value => value,
+        handler: async () => value }).grant("tool:call:read").build();
+    if (length === 62) {
+      const result = await runtime.run("go");
+      expect(result.receipts.find(receipt => receipt.kind === "tool")).toMatchObject({ value, projection: value });
+      expect(calls).toBe(2);
+    } else {
+      await expect(runtime.run("go")).rejects.toThrow("render limit");
+      expect(calls).toBe(1);
+    }
+  }
+});
+
+test("inherited dispatch captures fresh pinned local files after builder construction", async () => {
+  const core = new WasmReducer({ kind: "conversation", id: "fresh-prefix" }, "fresh-prefix", new Uint8Array(32).fill(23), []);
+  const model = { provider: "mock", name: "fresh", revision: "1", options: {} };
+  const volume = contracts.validate("volume_ref", { provider: { namespace: "test", family: "filesystem", version: "2" },
+    id: "child-scratch", class: "agent_private", owner: { kind: "agent", id: agent } });
+  const resident = new Map<string, Uint8Array>();
+  const key = (file: FileRef) => new TextDecoder().decode(contracts.encodeCanonicalJson(file));
+  const stage = async (path: string, version: string, bytes: Uint8Array, mediaType: string) => {
+    const file = contracts.validate("file_ref", { volume, path, version, descriptor: await descriptorFor(bytes, mediaType), display_name: path });
+    resident.set(key(file), bytes.slice());
+    return file;
+  };
+  try {
+    const parent = prepareModelRequest({ model, messages: [{ role: "user", content: "parent" }], tools: [], maxOutputTokens: 4096 }, DEFAULT_LIMITS);
+    const head = await stage("prefix.json", "prefix-1", encodeModelPrefix(parent, null, undefined, DEFAULT_LIMITS),
+      "application/vnd.acyclic.harness.model-prefix+json");
+    const files = new Map([[key(head), resident.get(key(head))!]]);
+    const volumeGrant = core.volumeCapability(volume, "read");
+    const scope = core.issueScopeForAgent(agent, "local-reader", [volumeGrant]);
+    let fresh: FileRef;
+    let calls = 0;
+    let reads = 0;
+    const content = {
+      validate(file: FileRef) { validateModelContent({ kind: "file", file, policy: "reference" }, DEFAULT_LIMITS); },
+      verify(file: FileRef, bytes: Uint8Array) { contracts.verifyFileBytes(file, bytes); },
+      async read(file: FileRef) { reads++; return resident.get(key(file))!.slice(); },
+      fileReadCapability: (file: FileRef) => core.fileReadCapability(file),
+      volumeReadCapability: (volume: FileRef["volume"]) => core.volumeCapability(volume, "read"),
+      directoryReadCapability: (volume: FileRef["volume"], prefix: string) => core.directoryReadCapability(volume, prefix),
+    };
+    const context = { async build() { return [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }]; } };
+    const provider = { async *generate(request: import("../src/model.js").ModelRequest & { serializedInput: Uint8Array }) {
+      calls++;
+      expect(request.serializedInput).toEqual(prepareModelRequest({ model, tools: [], maxOutputTokens: 4096,
+        messages: [{ role: "user", content: "parent" }, { role: "user", content: { kind: "file", file: fresh, policy: "reference" } }] }, DEFAULT_LIMITS));
+      yield { kind: "completed" as const, metadata: {} };
+    }, async reconcile() { return undefined; } };
+    const runtime = Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
+      .content(content).context(context).model(model, provider).grant(volumeGrant).build();
+    for (const version of ["first", "later"]) {
+      fresh = await stage("current.txt", version, new TextEncoder().encode(`${version} é\0🦀\r\n`), "text/plain");
+      await runtime.run("go");
+      expect(files.has(key(fresh))).toBe(false);
+    }
+    expect(calls).toBe(2);
+    expect(reads).toBe(2);
+    const denied = core.issueScopeForAgent(agent, "head-only", [core.fileReadCapability(head)]);
+    const deniedRuntime = Harness.builder(contracts).inheritedModelPrefix({ core, scope: denied, head, files })
+      .content(content).context(context).model(model, provider).grant(volumeGrant).build();
+    await expect(deniedRuntime.run("go")).rejects.toThrow();
+    expect(calls).toBe(2);
+    expect(reads).toBe(2);
+    resident.set(key(fresh!), new TextEncoder().encode("corrupt"));
+    await expect(runtime.run("go")).rejects.toThrow();
+    expect(calls).toBe(2);
+  } finally { core.free(); }
+});
+
 test("stale WASM modules fail compatibility checks before model dispatch", () => {
   expect(() => assertHarnessWasmExports(harnessWasm)).not.toThrow();
   expect(() => assertHarnessWasmExports({ ...harnessWasm, validateModelContent: undefined })).toThrow("required validators");

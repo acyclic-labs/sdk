@@ -308,10 +308,6 @@ function validateModelContent(content: ModelContent, limits: Limits): void {
   validateModelContentWasm(content, limits);
 }
 
-async function boundedToolValue(value: unknown, renderLimit: number, contracts: NativeContracts): Promise<unknown> {
-  const bytes = contracts.encodeCanonicalJson(value).byteLength;
-  return bytes <= renderLimit ? value : { omitted: true, byteLength: bytes };
-}
 export interface AgentHarnessHost { connect(): Promise<AgentHarness> }
 /** Exact ref-valued Rust effect status; recovered values never acquire a caller-chosen type. */
 export type EffectStatus =
@@ -2345,10 +2341,24 @@ export class AgentHarness {
       for (let step = 0; step < maxSteps; step += 1) {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
-        const request = { model: model.identity, messages, tools: this.#modelToolDefinitions(), maxOutputTokens: 4_096 };
+        const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), maxOutputTokens: 4_096 });
         const prefix = this.components.inheritedModelPrefix;
-        const bytes = prefix === undefined ? prepareModelRequestWasm(request, nativeLimits(this.limits))
-          : await prefix.core.prepareInheritedModelRequest(prefix.scope, request, prefix.head, prefix.files, nativeLimits(this.limits));
+        let bytes = prepareModelRequestWasm(request, nativeLimits(this.limits));
+        if (prefix !== undefined) {
+          const files = new Map(prefix.files);
+          for (const message of request.messages) {
+            const parts = typeof message.content === "string" ? []
+              : Array.isArray(message.content) ? message.content : [message.content];
+            for (const part of parts) {
+              if (part.kind !== "file") continue;
+              const key = new TextDecoder().decode(this.contracts.encodeCanonicalJson(part.file));
+              if (files.has(key)) continue;
+              prefix.core.verifyContentRead(prefix.scope, part.file);
+              files.set(key, await context.readFile(part.file));
+            }
+          }
+          bytes = await prefix.core.prepareInheritedModelRequest(prefix.scope, request, prefix.head, files, nativeLimits(this.limits));
+        }
         const wire = this.contracts.decodeModelJson(bytes) as unknown as WasmModelRequestWire;
         const admittedRequest = {
           serializedInput: bytes,
@@ -2386,7 +2396,8 @@ export class AgentHarness {
             call_id: call.callId,
           }), "operation");
           const value = await context.call(this.tool(call.name), call.arguments, toolOperationId, call.callId);
-          const projection = await boundedToolValue(value, this.limits.render_bytes, this.contracts);
+          const projection = value;
+          validateModelContent({ kind: "tool_result", callId: call.callId, name: call.name, value: projection }, this.limits);
           receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, arguments: call.arguments, value, projection });
           messages.push({ role: "assistant", content: call }, { role: "tool", content: { kind: "tool_result", callId: call.callId, name: call.name, value: projection } });
         }
