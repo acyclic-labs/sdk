@@ -672,3 +672,184 @@ fn definition(
         model_output_schema: output_schema,
     }
 }
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::conversation::{VolumeClass, VolumeOwner};
+    use crate::resources::ProviderRef;
+    use crate::tool::ModelToolContext;
+    use acyclic_fs::{Fs, LocalOptions};
+    use tempfile::tempdir;
+
+    fn project(provider: ProviderRef) -> Result<VolumeRef> {
+        VolumeRef::new(
+            provider,
+            "workspace-tool-test",
+            VolumeClass::Project,
+            VolumeOwner::Project("workspace-tool-test-owner".into()),
+        )
+    }
+
+    fn invocation(operation: crate::OperationId, name: &str, arguments: Value) -> ToolInvocation {
+        ToolInvocation::for_model_call(
+            operation,
+            0,
+            "workspace-tool-call".into(),
+            name.into(),
+            arguments,
+        )
+    }
+
+    #[tokio::test]
+    async fn model_workspace_tools_reject_missing_or_mismatched_task_before_effect() -> Result<()> {
+        let provider = ProviderRef::new("test", "filesystem", "workspace-tools")?;
+        let project = project(provider.clone())?;
+        let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let filesystem = Fs::local(LocalOptions::new(root.path()))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let host = Arc::new(FilesystemHost::new(filesystem, provider)?);
+        let initial = host.create_volume(&project).await?;
+        let workspace = project_workspace(&project)?;
+        let seeded = host
+            .apply(
+                &workspace,
+                Some(&initial.generation),
+                &[WorkspaceMutation::PutFile {
+                    path: "/seed.txt".into(),
+                    bytes: b"before".to_vec(),
+                }],
+                &IdempotencyKey::new("workspace-tool-seed")?,
+            )
+            .await?;
+        let task = TaskId::from_bytes([0x31; 16]);
+        let other_task = TaskId::from_bytes([0x32; 16]);
+        let operation = crate::OperationId::from_bytes([0x33; 16]);
+        let edit = EditExecutor {
+            host: host.clone(),
+            project: project.clone(),
+            task,
+            maximum_bytes: Limits::default().file_bytes,
+        };
+        let args = json!({
+            "path": "/seed.txt",
+            "content": "must not write",
+            "expected_generation": serde_json::to_value(&seeded.generation)
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        });
+        let edit_invocation = invocation(operation, WORKSPACE_EDIT, args);
+        let before = host.resolve(&workspace).await?;
+
+        let missing = edit
+            .execute_in_model_batch(
+                ModelToolContext {
+                    parent_operation: operation,
+                    step: 0,
+                    task_id: None,
+                },
+                edit_invocation.clone(),
+            )
+            .await;
+        assert!(matches!(missing, Err(Error::Unauthorized(_))));
+
+        let mismatched = edit
+            .execute_in_model_batch(
+                ModelToolContext {
+                    parent_operation: operation,
+                    step: 0,
+                    task_id: Some(other_task),
+                },
+                edit_invocation,
+            )
+            .await;
+        assert!(matches!(mismatched, Err(Error::Unauthorized(_))));
+        let after = host.resolve(&workspace).await?;
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(
+            host.read(&workspace, Some(&after.generation), "/seed.txt", 64)
+                .await?,
+            b"before"[..]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn edit_reconcile_rejects_wrong_task_and_wrong_cas_parent_without_mutation() -> Result<()>
+    {
+        let provider = ProviderRef::new("test", "filesystem", "workspace-tools-reconcile")?;
+        let project = project(provider.clone())?;
+        let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let filesystem = Fs::local(LocalOptions::new(root.path()))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let host = Arc::new(FilesystemHost::new(filesystem, provider)?);
+        let initial = host.create_volume(&project).await?;
+        let workspace = project_workspace(&project)?;
+        let task = TaskId::from_bytes([0x41; 16]);
+        let other_task = TaskId::from_bytes([0x42; 16]);
+        let operation = crate::OperationId::from_bytes([0x43; 16]);
+        let edit = EditExecutor {
+            host: host.clone(),
+            project,
+            task,
+            maximum_bytes: Limits::default().file_bytes,
+        };
+        let valid_args = json!({
+            "path": "/result.txt",
+            "content": "committed",
+            "expected_generation": serde_json::to_value(&initial.generation)
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        });
+        let valid_invocation = invocation(operation, WORKSPACE_EDIT, valid_args);
+        let context = ModelToolContext {
+            parent_operation: operation,
+            step: 0,
+            task_id: Some(task),
+        };
+        edit.execute_in_model_batch(context, valid_invocation.clone())
+            .await?;
+        let committed = host.resolve(&workspace).await?;
+        assert_ne!(committed.generation, initial.generation);
+        assert_eq!(
+            host.read(&workspace, Some(&committed.generation), "/result.txt", 64)
+                .await?,
+            b"committed"[..]
+        );
+
+        let wrong_task = edit
+            .reconcile_in_model_batch(
+                ModelToolContext {
+                    parent_operation: operation,
+                    step: 0,
+                    task_id: Some(other_task),
+                },
+                valid_invocation.clone(),
+            )
+            .await;
+        assert!(matches!(wrong_task, Err(Error::Unauthorized(_))));
+
+        let wrong_parent_invocation = invocation(
+            operation,
+            WORKSPACE_EDIT,
+            json!({
+                "path": "/result.txt",
+                "content": "committed",
+                "expected_generation": serde_json::to_value(&committed.generation)
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            }),
+        );
+        let wrong_parent = edit
+            .reconcile_in_model_batch(context, wrong_parent_invocation)
+            .await;
+        assert!(matches!(wrong_parent, Err(Error::Conflict(_))));
+        let after = host.resolve(&workspace).await?;
+        assert_eq!(after.generation, committed.generation);
+        assert_eq!(
+            host.read(&workspace, Some(&after.generation), "/result.txt", 64)
+                .await?,
+            b"committed"[..]
+        );
+        Ok(())
+    }
+}
