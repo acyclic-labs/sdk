@@ -95,6 +95,10 @@ if (build.runtime_source_closure_sha256 !== `sha256:${runtimeIdentity.closureSha
     build.runtime_build_recipe_sha256 !== `sha256:${runtimeIdentity.recipeSha256}`) {
   throw new Error("Inference native BUILD.json runtime source closure differs from the checkout");
 }
+if (JSON.stringify(build.runtime_descriptor) !== JSON.stringify(runtimeIdentity.descriptor) ||
+    JSON.stringify(build.runtime_toolchain) !== JSON.stringify(runtimeIdentity.toolchain)) {
+  throw new Error("Inference native BUILD.json selected descriptor or toolchain differs from the checkout");
+}
 if (!Array.isArray(build.runtime_source_files) || build.runtime_source_files.length !== runtimeIdentity.files.length ||
     build.runtime_source_files.some((entry, index) => entry.path !== runtimeIdentity.files[index].path ||
       entry.sha256 !== runtimeIdentity.files[index].sha256)) {
@@ -102,12 +106,19 @@ if (!Array.isArray(build.runtime_source_files) || build.runtime_source_files.len
 }
 for (const requiredPath of [
   "Cargo.lock",
+  "Cargo.toml",
+  "rust-toolchain.toml",
+  ".cargo/config.toml",
   "rust/crates/sdk-inference-native/src/lib.rs",
   "rust/crates/inference/src/client.rs",
 ]) {
   if (!runtimeIdentity.files.some((entry) => entry.path === requiredPath)) {
     throw new Error(`Inference native runtime closure omits ${requiredPath}`);
   }
+}
+if (!runtimeIdentity.files.some((entry) => entry.path === runtimeIdentity.descriptor.path &&
+    entry.sha256 === runtimeIdentity.descriptor.sha256)) {
+  throw new Error("Inference native runtime closure omits the selected model descriptor bytes");
 }
 
 const proof = {

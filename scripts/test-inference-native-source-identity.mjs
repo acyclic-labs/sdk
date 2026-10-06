@@ -67,6 +67,7 @@ test("runtime source identity covers runtime sources, workspace inputs, descript
     assert.equal(first.descriptor.path, "rust/crates/inference/inference_model_descriptor_docs.bin");
     assert.equal(first.descriptor.environment, null);
     assert.match(first.toolchain.rustc_verbose, /release|commit-hash|host/);
+    assert.ok(first.toolchain.executables.some((entry) => entry.label === "rustc" && /^[0-9a-f]{64}$/.test(entry.sha256)));
 
     writeFileSync(join(value.native, "src", "lib.rs"), "native-v2\n");
     assert.notEqual(runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", options).closureSha256, first.closureSha256);
@@ -82,6 +83,16 @@ test("runtime source identity covers runtime sources, workspace inputs, descript
     assert.notEqual(runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", options).closureSha256, first.closureSha256);
     writeFileSync(join(value.root, ".cargo", "config.toml"), "[build]\ntarget-dir=\"other-target\"\n");
     assert.notEqual(runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", options).closureSha256, first.closureSha256);
+    const flagged = { ...value.environment, RUSTFLAGS: "-C debuginfo=1" };
+    assert.notEqual(runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", { environment: flagged }).closureSha256, first.closureSha256);
+    const wrapped = { ...value.environment, RUSTC_WRAPPER: "rustc" };
+    const wrappedIdentity = runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", { environment: wrapped });
+    assert.ok(wrappedIdentity.toolchain.executables.some((entry) => entry.label === "rustc-wrapper"));
+    assert.notEqual(wrappedIdentity.closureSha256, first.closureSha256);
+    const linked = { ...value.environment, CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: "rustc" };
+    const linkedIdentity = runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", { environment: linked });
+    assert.ok(linkedIdentity.toolchain.executables.some((entry) => entry.label === "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"));
+    assert.notEqual(linkedIdentity.closureSha256, first.closureSha256);
     const selected = { ...value.environment, ACYCLIC_INFERENCE_MODEL_DESCRIPTOR: "inference_model_descriptor.bin" };
     const selectedIdentity = runtimeSourceIdentityFromMetadata(value.root, value.metadata, "x86_64-unknown-linux-gnu", { environment: selected });
     assert.equal(selectedIdentity.descriptor.path, "rust/crates/inference/inference_model_descriptor.bin");

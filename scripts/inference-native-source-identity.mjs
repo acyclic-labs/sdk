@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { delimiter, isAbsolute, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -48,6 +48,11 @@ const REQUIRED_WORKSPACE_INPUTS = [
   ".cargo/config.toml",
 ];
 
+function environmentValue(environment, name) {
+  const entry = Object.entries(environment).find(([key]) => key.toUpperCase() === name.toUpperCase());
+  return entry?.[1];
+}
+
 function workspaceInputs(root) {
   return REQUIRED_WORKSPACE_INPUTS.map((path) => {
     const absolute = resolve(root, path);
@@ -70,8 +75,44 @@ function selectedDescriptor(root, environment) {
   };
 }
 
+function executablePath(command, environment) {
+  const token = command.trim().replace(/^['"]|['"]$/g, "");
+  if (!token || /\s/.test(token)) {
+    throw new Error(`toolchain executable command is ambiguous: ${command}`);
+  }
+  const candidates = isAbsolute(token) || token.includes("/") || token.includes("\\")
+    ? [token]
+    : (environmentValue(environment, "PATH") ?? "").split(delimiter).filter(Boolean).flatMap((directory) => [
+        resolve(directory, token),
+        ...(process.platform === "win32" && !token.toLowerCase().endsWith(".exe")
+          ? [resolve(directory, `${token}.exe`)] : []),
+      ]);
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return realpathSync(candidate);
+  }
+  throw new Error(`toolchain executable is not available on PATH: ${token}`);
+}
+
+function executableIdentity(label, command, environment) {
+  if (!command?.trim()) return null;
+  const path = executablePath(command, environment);
+  return {
+    label,
+    command: command.trim(),
+    path,
+    sha256: sha256(readFileSync(path)),
+  };
+}
+
+function buildEnvironment(environment) {
+  return Object.entries(environment)
+    .filter(([key]) => /^(?:RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|CARGO_TARGET_.+_RUSTFLAGS|CARGO_PROFILE_.+|CARGO_BUILD_TARGET|CARGO_INCREMENTAL|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CFLAGS|CXXFLAGS|CPPFLAGS|ARFLAGS)(?:_.+)?$/i.test(key))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => [key, value]);
+}
+
 function toolchainIdentity(environment) {
-  const rustcCommand = environment.RUSTC?.trim() || "rustc";
+  const rustcCommand = environmentValue(environment, "RUSTC")?.trim() || "rustc";
   const rustc = spawnSync(rustcCommand, ["-Vv"], {
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
   });
@@ -82,10 +123,17 @@ function toolchainIdentity(environment) {
     .filter(([key]) => /^(?:CARGO_TARGET_.+_LINKER|(?:CC|CXX|AR)(?:_.+)?)$/i.test(key))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => [key, value]);
+  const executableInputs = [
+    executableIdentity("rustc", rustcCommand, environment),
+    executableIdentity("rustc-wrapper", environmentValue(environment, "RUSTC_WRAPPER"), environment),
+    executableIdentity("rustc-workspace-wrapper", environmentValue(environment, "RUSTC_WORKSPACE_WRAPPER"), environment),
+    ...linkerEnvironment.map(([key, value]) => executableIdentity(key, value, environment)),
+  ].filter(Boolean);
   return {
     rustc_command: rustcCommand,
     rustc_verbose: rustc.stdout.trim(),
     linker_environment: linkerEnvironment,
+    executables: executableInputs,
   };
 }
 
@@ -159,6 +207,7 @@ export function runtimeSourceIdentityFromMetadata(rootDirectory, metadata, targe
   const inputs = {
     workspace_files: workspaceInputs(root),
     descriptor,
+    environment: buildEnvironment(environment),
     toolchain: options.toolchain ?? toolchainIdentity(environment),
   };
   const nodes = new Map(metadata.resolve.nodes.map((item) => [item.id, item]));

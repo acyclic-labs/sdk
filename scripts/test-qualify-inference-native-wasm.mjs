@@ -13,12 +13,17 @@ test("optional dependency mapping requires Rust-generated companion metadata", (
     name: "@acyclic-labs/inference",
     version: "0.2.0",
     optionalDependencies: { "@acyclic-labs/inference-win32-x64": "0.2.0" },
-    acyclicGenerated: { family: "inference", nativeCompanions: { "@acyclic-labs/inference-win32-x64": "0.2.0" } },
+    acyclicGenerated: {
+      family: "inference",
+      nativeCompanions: { "@acyclic-labs/inference-win32-x64": "0.2.0" },
+      nativeRuntime: { runtime_source_closure_sha256: `sha256:${"a".repeat(64)}`, runtime_build_recipe_sha256: `sha256:${"b".repeat(64)}` },
+    },
   };
   const companion = { name: "@acyclic-labs/inference-win32-x64", version: "0.2.0", main: "index.js", files: ["index.js", "acyclic_inference_native.node", "BUILD.json"] };
   assert.deepEqual(validateOptionalCompanion(facade, companion, "win32-x64"), { expectedName: companion.name, facadeVersion: "0.2.0", companionVersion: "0.2.0" });
   assert.throws(() => validateOptionalCompanion(facade, { ...companion, version: "0.3.0" }, "win32-x64"), /optional dependency/);
   assert.throws(() => validateOptionalCompanion({ ...facade, acyclicGenerated: undefined }, companion, "win32-x64"), /generation metadata/);
+  assert.throws(() => validateOptionalCompanion({ ...facade, acyclicGenerated: { ...facade.acyclicGenerated, nativeRuntime: undefined } }, companion, "win32-x64"), /runtime identity/);
 });
 
 test("source identity validator requires exact facade and native Rust identities", () => {

@@ -91,6 +91,8 @@ export function validateOptionalCompanion(facade, companion, target) {
   requireInput(generated?.family === "inference", "facade package is missing Rust Inference generation metadata");
   requireInput(generated?.nativeCompanions?.[expectedName] === companion.version,
     `Rust generation metadata does not map ${expectedName} to ${companion.version}`);
+  requireInput(generated?.nativeRuntime !== undefined,
+    "facade package is missing its Rust native runtime identity");
   const packageFiles = new Set(companion.files ?? []);
   requireInput(companion.main === "index.js" && packageFiles.has("index.js"), "native companion does not expose its Rust loader");
   requireInput(packageFiles.has("acyclic_inference_native.node") && packageFiles.has("BUILD.json"),
@@ -206,6 +208,8 @@ async function runFromEnvProbe(consumer, target) {
   const probePath = join(consumer, "inference-native-probe.mjs");
   writeFileSync(probePath, `
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fromEnv } from "@acyclic-labs/inference";
 const client = fromEnv({ endpoint: "http://127.0.0.1:1", token: "qualification" });
 if (client.transport.constructor.name !== "DeferredNativeInferenceTransport") {
@@ -220,7 +224,15 @@ try {
   if (error?.name !== "AbortError") throw error;
 }
 const require = createRequire(import.meta.url);
-const native = require("@acyclic-labs/inference-${target}");
+const facadeEntry = require.resolve("@acyclic-labs/inference");
+const facadeRoot = join(dirname(facadeEntry), "..");
+const facadeManifest = JSON.parse(readFileSync(join(facadeRoot, "package.json"), "utf8"));
+const companionName = "@acyclic-labs/inference-${target}";
+if (facadeManifest.optionalDependencies?.[companionName] === undefined) {
+  throw new Error("installed facade does not declare the selected companion as an optional dependency");
+}
+const facadeRequire = createRequire(facadeEntry);
+const native = facadeRequire(companionName);
 if (typeof native.NativeInferenceClient !== "function" || typeof native.NativeInferenceCancellation !== "function") {
   throw new Error("installed native companion does not expose the Rust Inference bridge");
 }
@@ -228,7 +240,7 @@ const cancellation = new native.NativeInferenceCancellation();
 if (cancellation.cancelled !== false) throw new Error("native cancellation did not start active");
 cancellation.cancel();
 if (cancellation.cancelled !== true) throw new Error("native cancellation did not become cancelled");
-console.log(JSON.stringify({ transport: client.transport.constructor.name, cancellation: "passed", companion: "passed" }));
+console.log(JSON.stringify({ transport: client.transport.constructor.name, cancellation: "passed", companion: companionName }));
 `, "utf8");
   const result = spawnSync(process.execPath, [probePath], {
     cwd: consumer,
@@ -287,9 +299,11 @@ export async function qualify(options) {
     const provenance = readJson(join(installedFacade, "generated", "rust-provenance.json"));
     const build = readJson(join(installedCompanion, "BUILD.json"));
     const identity = validateSourceIdentity(provenance, build);
-    const runtimeIdentity = validateRuntimeIdentity(build, facadeManifest.acyclicGenerated?.nativeRuntime);
+    const runtimeIdentity = validateRuntimeIdentity(build, facadeManifest.acyclicGenerated.nativeRuntime);
     const wasm = await verifyWasm(installedFacade);
     const probe = await runFromEnvProbe(consumer, target);
+    requireInput(probe.companion === mapping.expectedName,
+      "installed facade did not resolve the Rust companion declared by its optional dependency mapping");
     receipt = {
       schema: QUALIFICATION_SCHEMA,
       status: "passed",

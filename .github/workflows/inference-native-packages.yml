@@ -23,6 +23,8 @@ jobs:
     outputs:
       source_model_revision: ${{ steps.identity.outputs.source_model_revision }}
       source_content_sha256: ${{ steps.identity.outputs.source_content_sha256 }}
+      runtime_source_closure_sha256: ${{ steps.identity.outputs.runtime_source_closure_sha256 }}
+      runtime_build_recipe_sha256: ${{ steps.identity.outputs.runtime_build_recipe_sha256 }}
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -85,7 +87,7 @@ jobs:
         run: |
           set -euo pipefail
           provenance="$RUNNER_TEMP/inference-rust-typescript/typescript/packages/inference/generated/rust-provenance.json"
-          node --input-type=module -e 'const p=JSON.parse(await (await import("node:fs/promises")).readFile(process.argv[1],"utf8")); const family=p.acyclicGenerated ?? p; if(family.family!=="inference") throw new Error("generated provenance is not the Inference family"); if(family.sourceGitSha !== process.env.SOURCE_REVISION) throw new Error(`package Git identity ${family.sourceGitSha} differs from ${process.env.SOURCE_REVISION}`); if(!/^[0-9a-f]{64}$/.test(family.sourceModelRevision ?? "")) throw new Error("missing model identity"); if(!/^[0-9a-f]{64}$/.test(family.sourceContentSha256 ?? "")) throw new Error("missing content identity"); console.log(`source_model_revision=${family.sourceModelRevision}`); console.log(`source_content_sha256=${family.sourceContentSha256}`);' "$provenance" >> "$GITHUB_OUTPUT"
+          node --input-type=module -e 'const p=JSON.parse(await (await import("node:fs/promises")).readFile(process.argv[1],"utf8")); const family=p.acyclicGenerated ?? p; const runtime=family.nativeRuntime; if(family.family!=="inference") throw new Error("generated provenance is not the Inference family"); if(family.sourceGitSha !== process.env.SOURCE_REVISION) throw new Error(`package Git identity ${family.sourceGitSha} differs from ${process.env.SOURCE_REVISION}`); if(!/^[0-9a-f]{64}$/.test(family.sourceModelRevision ?? "")) throw new Error("missing model identity"); if(!/^[0-9a-f]{64}$/.test(family.sourceContentSha256 ?? "")) throw new Error("missing content identity"); if(!/^sha256:[0-9a-f]{64}$/.test(runtime?.runtime_source_closure_sha256 ?? "") || !/^sha256:[0-9a-f]{64}$/.test(runtime?.runtime_build_recipe_sha256 ?? "")) throw new Error("missing runtime closure identity"); console.log(`source_model_revision=${family.sourceModelRevision}`); console.log(`source_content_sha256=${family.sourceContentSha256}`); console.log(`runtime_source_closure_sha256=${runtime.runtime_source_closure_sha256.slice(7)}`); console.log(`runtime_build_recipe_sha256=${runtime.runtime_build_recipe_sha256.slice(7)}`);' "$provenance" >> "$GITHUB_OUTPUT"
 
       - name: Pack the generated Inference facade
         shell: bash
@@ -229,12 +231,17 @@ jobs:
           SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
           SOURCE_MODEL_REVISION: ${{ needs.typescript_identity.outputs.source_model_revision }}
           SOURCE_CONTENT_SHA256: ${{ needs.typescript_identity.outputs.source_content_sha256 }}
+          SOURCE_RUNTIME_CLOSURE_SHA256: ${{ needs.typescript_identity.outputs.runtime_source_closure_sha256 }}
+          SOURCE_RUNTIME_RECIPE_SHA256: ${{ needs.typescript_identity.outputs.runtime_build_recipe_sha256 }}
         run: |
           set -euo pipefail
           if [[ "${{ matrix.musl }}" == 'true' ]]; then
             target_env=$(printf '%s' "${{ matrix.rust_target }}" | tr '[:lower:]-' '[:upper:]_')
             export "CARGO_TARGET_${target_env}_LINKER=musl-gcc"
             command -v musl-gcc
+          fi
+          if [[ "${{ matrix.package_target }}" != 'linux-x64-gnu' ]]; then
+            unset SOURCE_RUNTIME_CLOSURE_SHA256 SOURCE_RUNTIME_RECIPE_SHA256
           fi
           node scripts/build-inference-native-package.mjs \
             --target "${{ matrix.package_target }}" \

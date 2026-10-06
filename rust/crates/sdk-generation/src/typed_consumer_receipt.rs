@@ -9,8 +9,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub const SCHEMA: &str = "acyclic.sdk.typed-consumer-receipt.v1";
 
@@ -108,7 +111,7 @@ pub fn supervise_file(
         .iter()
         .map(|part| part.as_str().expect("checked above").to_owned())
         .collect::<Vec<_>>();
-    super::approve_typed_consumer_program(expected_target, &argv[0])?;
+    let approved_program = super::resolve_typed_consumer_program(expected_target, &argv[0])?;
     if argv.iter().skip(1).any(|part| {
         matches!(
             part.to_ascii_lowercase().as_str(),
@@ -117,23 +120,46 @@ pub fn supervise_file(
     }) {
         return Err("typed-consumer command may not use inline shell or evaluator flags".into());
     }
+    let tool_version = if let Some(expected_version) =
+        super::typed_consumer_toolchain_version(expected_target)
+    {
+        let version_args = vec!["version".to_owned()];
+        let (status, stdout, _) = run_bounded_command(&approved_program, &version_args, output_root)?;
+        let version = String::from_utf8_lossy(&stdout).into_owned();
+        if !status.success() || !version.contains(expected_version) {
+            return Err(format!(
+                "approved typed-consumer runner version is not pinned to {expected_version}"
+            ));
+        }
+        version.trim().to_owned()
+    } else {
+        String::from("catalogue-approved")
+    };
+    let tool_sha256 = format!(
+        "sha256:{:x}",
+        Sha256::digest(
+            &fs::read(&approved_program)
+                .map_err(|error| format!("read approved typed-consumer runner: {error}"))?,
+        )
+    );
+    if !super::typed_consumer_source_matches_target(expected_target, &generated_path) {
+        return Err("generated consumer source type is not approved for the target".into());
+    }
     let source_marker = generated_path.to_string_lossy().replace('\\', "/");
-    if !argv.iter().skip(1).any(|part| {
-        part.replace('\\', "/") == source_marker
-            || part.replace('\\', "/").ends_with(&format!("/{source_marker}"))
-    }) {
-        return Err("typed-consumer command does not execute the declared generated source".into());
+    let source_index = super::typed_consumer_source_argument_index(expected_target, &argv[1..])
+        .ok_or_else(|| "typed-consumer command has no approved source invocation form".to_owned())?
+        + 1;
+    let source_argument = argv.get(source_index).map(|part| part.replace('\\', "/"));
+    if source_argument.as_deref() != Some(source_marker.as_str())
+        && !source_argument
+            .as_deref()
+            .is_some_and(|part| part.ends_with(&format!("/{source_marker}")))
+    {
+        return Err("typed-consumer command must directly invoke the declared generated source".into());
     }
     let stdout_path = PathBuf::from("typed-consumer-supervisor.stdout");
     let stderr_path = PathBuf::from("typed-consumer-supervisor.stderr");
-    let process = Command::new(&argv[0])
-        .args(&argv[1..])
-        .current_dir(output_root)
-        .env("ACYCLIC_RUST_GENERATION_ENTRYPOINT", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| format!("start typed-consumer command: {error}"))?;
+    let (status, stdout, stderr) = run_bounded_command(&approved_program, &argv[1..], output_root)?;
     for path in [&stdout_path, &stderr_path] {
         if let Ok(metadata) = fs::symlink_metadata(output_root.join(path)) {
             if metadata.file_type().is_symlink() {
@@ -144,19 +170,19 @@ pub fn supervise_file(
             }
         }
     }
-    fs::write(output_root.join(&stdout_path), &process.stdout)
+    fs::write(output_root.join(&stdout_path), &stdout)
         .map_err(|error| format!("write supervised typed-consumer stdout: {error}"))?;
-    fs::write(output_root.join(&stderr_path), &process.stderr)
+    fs::write(output_root.join(&stderr_path), &stderr)
         .map_err(|error| format!("write supervised typed-consumer stderr: {error}"))?;
-    if !process.status.success() {
+    if !status.success() {
         return Err(format!(
             "typed-consumer command failed under Rust supervision with exit code {:?}",
-            process.status.code()
+            status.code()
         ));
     }
-    verify_runtime_assertion_output(&process.stdout, &generated_hash)?;
-    let stdout_sha256 = format!("sha256:{:x}", Sha256::digest(&process.stdout));
-    let stderr_sha256 = format!("sha256:{:x}", Sha256::digest(&process.stderr));
+    verify_runtime_assertion_output(&stdout, &generated_hash)?;
+    let stdout_sha256 = format!("sha256:{:x}", Sha256::digest(&stdout));
+    let stderr_sha256 = format!("sha256:{:x}", Sha256::digest(&stderr));
     let command = receipt
         .get_mut("command")
         .and_then(Value::as_object_mut)
@@ -169,6 +195,9 @@ pub fn supervise_file(
     command.insert("stdout_sha256".into(), Value::String(stdout_sha256.clone()));
     command.insert("stderr_path".into(), Value::String(stderr_path.to_string_lossy().into_owned()));
     command.insert("stderr_sha256".into(), Value::String(stderr_sha256.clone()));
+    command.insert("tool_path".into(), Value::String(approved_program.to_string_lossy().into_owned()));
+    command.insert("tool_sha256".into(), Value::String(tool_sha256));
+    command.insert("tool_version".into(), Value::String(tool_version));
     if let Some(assertions) = receipt.get_mut("assertions").and_then(Value::as_array_mut) {
         for assertion in assertions {
             if let Some(evidence) = assertion
@@ -402,6 +431,79 @@ fn required_sha256<'a>(
         return Err(format!("{label} {key} is not a SHA-256 digest"));
     }
     Ok(digest)
+}
+
+const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(120);
+const SUPERVISOR_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
+
+fn run_bounded_command(
+    program: &Path,
+    args: &[String],
+    current_dir: &Path,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(current_dir)
+        .env("ACYCLIC_RUST_GENERATION_ENTRYPOINT", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("start typed-consumer command: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "typed-consumer stdout pipe was not created".to_owned())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "typed-consumer stderr pipe was not created".to_owned())?;
+    let stdout_thread = thread::spawn(move || read_bounded(stdout));
+    let stderr_thread = thread::spawn(move || read_bounded(stderr));
+    let deadline = Instant::now() + SUPERVISOR_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("poll typed-consumer command: {error}"))?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "typed-consumer command exceeded {} second deadline",
+                SUPERVISOR_TIMEOUT.as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    let stdout = stdout_thread
+        .join()
+        .map_err(|_| "typed-consumer stdout capture thread panicked".to_owned())??;
+    let stderr = stderr_thread
+        .join()
+        .map_err(|_| "typed-consumer stderr capture thread panicked".to_owned())??;
+    Ok((status, stdout, stderr))
+}
+
+fn read_bounded(mut reader: impl Read) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        let count = reader
+            .read(&mut chunk)
+            .map_err(|error| format!("read typed-consumer output: {error}"))?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        if bytes.len().saturating_add(count) > SUPERVISOR_OUTPUT_LIMIT {
+            return Err(format!(
+                "typed-consumer output exceeded {} byte limit",
+                SUPERVISOR_OUTPUT_LIMIT
+            ));
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
 }
 
 fn verify_file_hash(

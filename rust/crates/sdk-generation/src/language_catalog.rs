@@ -2407,6 +2407,79 @@ pub fn approve_typed_consumer_program(target_id: &str, program: &str) -> Result<
     }
 }
 
+pub fn resolve_typed_consumer_program(target_id: &str, program: &str) -> Result<std::path::PathBuf, String> {
+    approve_typed_consumer_program(target_id, program)?;
+    let path = std::path::Path::new(program);
+    if path.components().count() != 1 {
+        return Err(format!("typed-consumer runner must be a bare approved tool name: {program}"));
+    }
+    let path_var = std::env::var_os("PATH")
+        .ok_or_else(|| "typed-consumer runner PATH is unavailable".to_owned())?;
+    for directory in std::env::split_paths(&path_var) {
+        let candidate = directory.join(path);
+        if candidate.is_file() {
+            return std::fs::canonicalize(&candidate)
+                .map_err(|error| format!("canonicalize approved typed-consumer runner: {error}"));
+        }
+        #[cfg(windows)]
+        for extension in [".exe", ".cmd", ".bat"] {
+            let candidate = directory.join(format!("{program}{extension}"));
+            if candidate.is_file() {
+                return std::fs::canonicalize(&candidate).map_err(|error| {
+                    format!("canonicalize approved typed-consumer runner: {error}")
+                });
+            }
+        }
+    }
+    Err(format!("approved typed-consumer runner is not on PATH: {program}"))
+}
+
+pub fn typed_consumer_source_matches_target(target_id: &str, source: &std::path::Path) -> bool {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    match target_id {
+        "python" => matches!(extension.as_deref(), Some("py")),
+        "go" => matches!(extension.as_deref(), Some("go")),
+        "java" | "kotlin" | "scala" => {
+            matches!(extension.as_deref(), Some("java" | "kt" | "scala"))
+        }
+        "csharp" => matches!(extension.as_deref(), Some("cs")),
+        "swift" => matches!(extension.as_deref(), Some("swift")),
+        "cpp" => matches!(extension.as_deref(), Some("cc" | "cpp" | "cxx")),
+        "ruby" => matches!(extension.as_deref(), Some("rb")),
+        "php" => matches!(extension.as_deref(), Some("php")),
+        "dart" => matches!(extension.as_deref(), Some("dart")),
+        "haskell" => matches!(extension.as_deref(), Some("hs")),
+        "bash" => matches!(extension.as_deref(), Some("sh")),
+        "perl" => matches!(extension.as_deref(), Some("pl")),
+        "powershell" => matches!(extension.as_deref(), Some("ps1")),
+        "ada" => matches!(extension.as_deref(), Some("adb" | "ads")),
+        "crystal" => matches!(extension.as_deref(), Some("cr")),
+        "nim" => matches!(extension.as_deref(), Some("nim")),
+        "r" => matches!(extension.as_deref(), Some("r")),
+        "typescript" => matches!(extension.as_deref(), Some("ts" | "js" | "mjs")),
+        "rust" => matches!(extension.as_deref(), Some("rs")),
+        _ => false,
+    }
+}
+
+pub fn typed_consumer_source_argument_index(target_id: &str, args: &[String]) -> Option<usize> {
+    match target_id {
+        "go" if args.first().is_some_and(|arg| arg == "run") => Some(1),
+        "csharp" if args.first().is_some_and(|arg| arg == "script") => Some(1),
+        _ => Some(0),
+    }
+}
+
+pub fn typed_consumer_toolchain_version(target_id: &str) -> Option<&'static str> {
+    match target_id {
+        "go" => Some("go1.27.1"),
+        _ => None,
+    }
+}
+
 /// Compatibility projection for consumers of the former package inventory.
 /// Installation qualification remains receipt-driven; this metadata describes
 /// Rust-owned package identities and whether a producer is implemented.
