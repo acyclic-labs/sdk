@@ -3,6 +3,7 @@
 require "fileutils"
 require "json"
 require "digest"
+require "rbconfig"
 
 ROOT = File.expand_path("..", __dir__)
 OUT = File.join(__dir__, "generated")
@@ -215,8 +216,9 @@ if manifest_path
   semantic_types.each do |item|
     class_name = pascal_identifier(item.fetch("id"))
     value_type = ruby_value_type(item.fetch("wire_kind"))
+    rbi_value_type = value_type == "untyped" ? "T.untyped" : value_type
     rbs += ["    class #{class_name}", "      attr_reader value: #{value_type}", "      def self.from: (#{value_type} value) -> #{class_name}", "    end"]
-    rbi += ["    class #{class_name}", "      extend T::Sig", "      sig { returns(#{value_type}) }", "      def value; end", "      sig { params(value: #{value_type}).returns(#{class_name}) }", "      def self.from(value); end", "    end"]
+    rbi += ["    class #{class_name}", "      extend T::Sig", "      sig { returns(#{rbi_value_type}) }", "      def value; end", "      sig { params(value: #{rbi_value_type}).returns(#{class_name}) }", "      def self.from(value); end", "    end"]
   end
   rbs += [
     "    module Wire",
@@ -316,6 +318,7 @@ end
 
 root_prefix = "#{ROOT.tr('\\', '/')}/"
 lock_path = File.join(__dir__, "generator.lock.json")
+runtime_triple = RbConfig::CONFIG.fetch("host", RUBY_PLATFORM)
 provenance = {
   "generator" => lock,
   "source_revision" => ENV.fetch("GIT_COMMIT", "unknown"),
@@ -329,6 +332,11 @@ provenance = {
   "authority_manifest_schema" => authority && authority["schema"],
   "authority_source_revision" => authority && authority["source_revision"],
   "authority_exporter" => authority && authority["exporter"],
+  "platform" => {
+    "execution_scope" => "portable",
+    "target_triple" => "portable",
+    "build_host_triple" => runtime_triple
+  },
   "rust_family_goldens" => rust_family_goldens,
   "type_policy" => type_policy_metadata,
   "generated_files" => Dir[File.join(OUT, "**", "*.rb")].sort.map { |path| path.tr('\\', '/').delete_prefix(root_prefix) }
