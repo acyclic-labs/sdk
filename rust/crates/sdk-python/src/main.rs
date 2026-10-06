@@ -570,4 +570,46 @@ mod tests {
         let _ = fs::remove_dir_all(left);
         let _ = fs::remove_dir_all(right);
     }
+
+    #[test]
+    fn generated_subtree_replacement_preserves_rust_facade_files() {
+        let source = temporary_directory("sdk-python-test-generated-source");
+        let package = temporary_directory("sdk-python-test-package");
+        fs::create_dir_all(&source).expect("create generated source");
+        fs::create_dir_all(package.join("src/acyclic_sdk/generated"))
+            .expect("create generated package");
+        fs::write(package.join("src/acyclic_sdk/remote.py"), b"rust facade\n")
+            .expect("write facade");
+        fs::write(package.join("src/acyclic_sdk/py.typed"), b"typed\n")
+            .expect("write package marker");
+        fs::write(
+            package.join("src/acyclic_sdk/generated/stale_pb2.py"),
+            b"stale\n",
+        )
+        .expect("write stale generated file");
+        fs::write(source.join("fresh_pb2.py"), b"fresh\n").expect("write fresh generated file");
+
+        replace_output(&source, &package.join("src/acyclic_sdk/generated"))
+            .expect("replace generated subtree");
+
+        assert_eq!(
+            fs::read(package.join("src/acyclic_sdk/remote.py")).expect("read facade"),
+            b"rust facade\n"
+        );
+        assert_eq!(
+            fs::read(package.join("src/acyclic_sdk/py.typed")).expect("read package marker"),
+            b"typed\n"
+        );
+        assert!(!package
+            .join("src/acyclic_sdk/generated/stale_pb2.py")
+            .exists());
+        assert_eq!(
+            fs::read(package.join("src/acyclic_sdk/generated/fresh_pb2.py"))
+                .expect("read fresh generated file"),
+            b"fresh\n"
+        );
+
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(package);
+    }
 }
