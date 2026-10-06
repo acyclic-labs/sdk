@@ -2042,7 +2042,10 @@ impl StockExecutor {
                     .execute_in_model_batch(tool_context, invocation.clone())
                     .await
                 {
-                    Ok(result) => result,
+                    Ok(result) => {
+                        crate::stack_diagnostics::marker("tool-call-after-execute");
+                        result
+                    }
                     Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
                     }
@@ -2109,6 +2112,7 @@ impl StockExecutor {
                     ToolFailureKind::InvalidOutput.message().into(),
                 ));
             }
+            crate::stack_diagnostics::marker("tool-call-after-output-validation");
             let Ok(projection) = tool
                 .projection
                 .project(&invocation, &result)
@@ -2140,6 +2144,7 @@ impl StockExecutor {
                     ToolFailureKind::ProjectionRejected.message().into(),
                 ));
             };
+            crate::stack_diagnostics::marker("tool-call-after-projection");
             let result_ref = stage_json(
                 journal,
                 operation_id,
@@ -2166,6 +2171,7 @@ impl StockExecutor {
                     ));
                 }
             };
+            crate::stack_diagnostics::marker("tool-call-after-result-stage");
             let projection_ref = stage_json(
                 journal,
                 operation_id,
@@ -2192,7 +2198,9 @@ impl StockExecutor {
                     ));
                 }
             };
+            crate::stack_diagnostics::marker("tool-call-after-projection-stage");
             let current = journal.replay(operation_id).await?;
+            crate::stack_diagnostics::marker("tool-call-after-replay-before-complete");
             if current.iter().any(|record| {
                 matches!(&record.event,
                 ExecutionEvent::ToolCompleted { step: event_step, call_id, .. }
@@ -2227,6 +2235,7 @@ impl StockExecutor {
                 }
                 Err(error) => return Err(error),
             }
+            crate::stack_diagnostics::marker("tool-call-after-complete-append");
             (result, projection)
         };
         validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
@@ -2240,6 +2249,7 @@ impl StockExecutor {
         };
         message.content.validate_limits(self.limits)?;
         prior_messages.push(message);
+        crate::stack_diagnostics::marker("tool-call-after-message-push");
         Ok(None)
     }
 
