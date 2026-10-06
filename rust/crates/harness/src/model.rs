@@ -735,11 +735,11 @@ mod tests {
         let prepared = PreparedModelRequest::prepare(original.clone(), Limits::default())?;
         assert_eq!(
             prepared.bytes(),
-            include_bytes!("../../../../fixtures/harness/v2/model-request.json")
+            include_bytes!("../fixtures/model-request.json")
         );
         assert_eq!(
             ModelPrefix::select(&prepared, None)?.canonical_bytes()?,
-            include_bytes!("../../../../fixtures/harness/v2/model-prefix.json")
+            include_bytes!("../fixtures/model-prefix.json")
         );
         assert_eq!(
             serde_json::from_slice::<ModelRequest>(prepared.bytes())

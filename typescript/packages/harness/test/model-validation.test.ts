@@ -16,7 +16,7 @@ const rawWasmExports = await initWasm();
 const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
 
 test("native and WASM request construction preserve exact Unicode and paired tool bytes", async () => {
-  const fixture = await readFile(new URL("../../../../fixtures/harness/v2/model-request.json", import.meta.url));
+  const fixture = await readFile(new URL("../../../../rust/crates/harness/fixtures/model-request.json", import.meta.url));
   const wire = contracts.decodeModelJson(fixture) as unknown as WasmModelRequestWire;
   const request = {
     model: wire.model,
@@ -29,7 +29,7 @@ test("native and WASM request construction preserve exact Unicode and paired too
   };
   const bytes = prepareModelRequest(request, DEFAULT_LIMITS);
   expect(bytes).toEqual(Uint8Array.from(fixture));
-  const prefix = await readFile(new URL("../../../../fixtures/harness/v2/model-prefix.json", import.meta.url));
+  const prefix = await readFile(new URL("../../../../rust/crates/harness/fixtures/model-prefix.json", import.meta.url));
   expect(encodeModelPrefix(bytes, null, undefined, DEFAULT_LIMITS)).toEqual(Uint8Array.from(prefix));
   expect(() => prepareModelRequest({ ...request, maxOutputTokens: 0 }, DEFAULT_LIMITS)).toThrow();
   expect(() => prepareModelRequest({ ...request, messages: request.messages.slice(0, 2) }, DEFAULT_LIMITS)).toThrow("incomplete");
@@ -56,7 +56,7 @@ test("the actual task provider receives the admitted serialized input", async ()
 });
 
 test("WASM direct-parent prefixes preserve exact provider bytes across depth three and siblings", async () => {
-  const fixture = await readFile(new URL("../../../../fixtures/harness/v2/model-request.json", import.meta.url));
+  const fixture = await readFile(new URL("../../../../rust/crates/harness/fixtures/model-request.json", import.meta.url));
   const root = contracts.decodeModelJson(fixture) as unknown as WasmModelRequestWire;
   const core = new WasmReducer({ kind: "conversation", id: "model-prefix" }, "model-prefix", new Uint8Array(32).fill(19), []);
   const files = new Map<string, Uint8Array>();
