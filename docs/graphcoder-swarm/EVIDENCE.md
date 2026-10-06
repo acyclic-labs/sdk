@@ -9,6 +9,7 @@ source; see `q-cutover-2026-10-05.json` and the evidence-loss checkpoint.
 - [Recursive activation failure](checkpoint-q-recursive-activation-2026-10-06.json): child activation passed but root returned Indeterminate.
 - [Unified compilation failures](checkpoint-q-unified-compilation-2026-10-06.json): neither attempt executed a test.
 - [Recursive diagnostic stack failure](checkpoint-q-recursive-diagnostic-stack-2026-10-06.json): build succeeded but the test process overflowed before recording its journal.
+- [Executed runtime failures](checkpoint-q-runtime-failures-2026-10-06.json): unified scenario compiles but returns Indeterminate; the copied recursive executable's stack trace reaches fork allocation after parent authorization and boundary verification.
 
 Final source, installed artifacts, process cleanup, runtime integration and the
 locked 68-entry matrix remain unqualified.

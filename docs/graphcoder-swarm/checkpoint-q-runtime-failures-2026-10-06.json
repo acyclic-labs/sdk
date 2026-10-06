@@ -1,0 +1,34 @@
+{
+  "kind": "failed-native-runtime-checkpoint",
+  "source_commit": "49db3c40a54597c0b1df434925d05c7979445968",
+  "platform": "Windows native",
+  "features": ["test-support", "native-process-tree"],
+  "build_jobs": 1,
+  "stack_override": false,
+  "source_archive_sha256": "c38cb47011cb04787d7502f5d3814fbf431c80b0a9c7b1ee6d3cb51ac2a3c474",
+  "unified_runtime_swarm": {
+    "evidence_directory": "target/graphcoder-qualification/49db3c40a-unified-swarm",
+    "exit_code": 101,
+    "tests": {"passed": 1, "failed": 1, "ignored": 0, "filtered": 0},
+    "failure": "Main recursive edit/integration scenario returns Indeterminate for root operation a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0; only the provider-dispatch fixture support test passes.",
+    "native_log_sha256": "ffe4616d0c8a4f897f128a4751fea269f975b942cfbdc3153b7b0d1dfebb8145",
+    "executable_sha256": "9aaaf451f6a34e38ad46403ba9a8477b84c7408677c38bba95716c4d09e0d67c"
+  },
+  "recursive_diagnostic": {
+    "evidence_directory": "target/graphcoder-qualification/49db3c40a-recursive-diagnostic",
+    "observed_exit_code": -1073741571,
+    "test_process_exit": "0xc00000fd STATUS_STACK_OVERFLOW",
+    "tests_completed": 0,
+    "native_log_sha256": "5f7355b5b4e3a31f8c4715801aaa4e1582cf54c7693ede794e29d3bccedbe4fb",
+    "executable_sha256": "b0a325fec4fcb630d23df5410b1a45b066891f14e81eb4087243cc4f72fbcec8",
+    "diagnostic_replay": {
+      "environment": {"ACYCLIC_STACK_DIAGNOSTICS": "1"},
+      "observed_exit_code": -1073741571,
+      "log_sha256": "4d276acb7d9d0baf628f92d44c165ccd2792f2f95aed21672066a924b4d65f79",
+      "last_phase": "fork-physical-after-parent-authority",
+      "observation": "The unchanged copied executable reaches fork allocation after exact boundary verification; no failure-capture journal is produced. The boxed diagnostic helper alone did not repair this failure."
+    }
+  },
+  "qualification": "failed",
+  "remaining_gate": "Repair the actual recursive allocation frames and capture the unified scenario's original unresolved effect; rerun both suites before any runtime qualification."
+}
