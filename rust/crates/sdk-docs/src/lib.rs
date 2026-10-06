@@ -67,6 +67,9 @@ pub struct SourceSpan {
 #[serde(rename_all = "camelCase")]
 pub struct ApiItem {
     pub id: String,
+    /// Rustdoc parent identity retained when public-api reports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     pub name: String,
     pub kind: String,
     pub path: String,
@@ -293,7 +296,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         navigation,
         families,
     };
-    validate_source_info(&data.source)?;
+    validate_source_info(&data.source, &input.channel)?;
     Ok(data)
 }
 
@@ -310,7 +313,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
     if mark_latest && data.channel != Channel::Release {
         return Err(Error::Invalid("only a release can be marked latest".into()));
     }
-    validate_source_info(&data.source)?;
+    validate_source_info(&data.source, &data.channel)?;
     reject_reparse_ancestors(output_dir)?;
     fs::create_dir_all(output_dir)?;
     let channel_dir = match data.channel {
@@ -478,7 +481,8 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         .ok_or_else(|| Error::Invalid(format!("{} has no crate name", json_path.display())))?;
     let slug = slugify(&crate_name);
     let title = titleize(&crate_name);
-    let public_items = public_api::extract(json_path)?;
+    let mut public_items = public_api::extract(json_path)?;
+    deduplicate_public_items(&mut public_items);
     let use_occurrences = public_use_occurrences(krate, &crate_name)?;
     let mut items = Vec::new();
     for public_item in &public_items {
@@ -531,6 +535,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         };
         items.push(ApiItem {
             id: format_id(item_id),
+            parent_id: public_item.parent_id.map(format_id),
             name,
             kind: kind_name(item.inner.item_kind()).into(),
             path: path.join("::"),
@@ -554,6 +559,22 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         items,
         guides,
     })
+}
+
+fn deduplicate_public_items(items: &mut Vec<public_api::PublicItemSignature>) {
+    items.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then(left.path.cmp(&right.path))
+            .then(left.display.cmp(&right.display))
+            .then(left.parent_id.cmp(&right.parent_id))
+    });
+    items.dedup_by(|left, right| {
+        left.id == right.id
+            && left.path == right.path
+            && left.display == right.display
+            && left.parent_id == right.parent_id
+    });
 }
 
 fn public_use_occurrences(
@@ -819,7 +840,7 @@ fn validate_source_digest(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_source_info(source: &SourceInfo) -> Result<(), Error> {
+fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Result<(), Error> {
     if source.revision.len() < 40
         || source.revision.len() > 64
         || !source.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -833,6 +854,11 @@ fn validate_source_info(source: &SourceInfo) -> Result<(), Error> {
         "captured-snapshot" | "working-tree" | "release-tag"
     ) {
         return Err(Error::Invalid("unsupported source state".into()));
+    }
+    if matches!(channel, Channel::Release) && source.source_state == "working-tree" {
+        return Err(Error::Invalid(
+            "release data requires captured-snapshot or release-tag source state".into(),
+        ));
     }
     if let Some(source_sha256) = &source.source_sha256 {
         validate_source_digest(source_sha256)?;
@@ -849,6 +875,11 @@ fn validate_source_info(source: &SourceInfo) -> Result<(), Error> {
     {
         return Err(Error::Invalid(
             "rustdoc input digest must be 64 hexadecimal characters".into(),
+        ));
+    }
+    if source.rustdoc_format_versions.is_empty() {
+        return Err(Error::Invalid(
+            "rustdoc format metadata must contain at least one version".into(),
         ));
     }
     if source
@@ -918,6 +949,68 @@ mod tests {
     fn slug_and_title_are_deterministic() {
         assert_eq!(slugify("sdk_stream"), "sdk-stream");
         assert_eq!(titleize("sdk-stream"), "Sdk Stream");
+    }
+
+    #[test]
+    fn duplicate_public_occurrences_collapse_without_losing_aliases() {
+        let item = public_api::PublicItemSignature {
+            id: Id(1),
+            parent_id: None,
+            display: "pub struct Thing".into(),
+            path: vec!["demo".into(), "Thing".into()],
+        };
+        let nested_occurrence = public_api::PublicItemSignature {
+            parent_id: Some(Id(9)),
+            ..item.clone()
+        };
+        let alias = public_api::PublicItemSignature {
+            id: Id(2),
+            parent_id: Some(Id(3)),
+            display: "pub use demo::Thing as Alias".into(),
+            path: vec!["demo".into(), "Alias".into()],
+        };
+        let mut items = vec![item.clone(), alias.clone(), nested_occurrence.clone(), item];
+        deduplicate_public_items(&mut items);
+        assert_eq!(items.len(), 3);
+        assert!(items.contains(&nested_occurrence));
+        assert!(items.contains(&alias));
+    }
+
+    #[test]
+    fn release_publication_rejects_unbound_source_before_creating_output() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-provenance-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let mut data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "a".repeat(40),
+                source_state: "working-tree".into(),
+                source_sha256: None,
+                input_sha256: "b".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            families: Vec::new(),
+        };
+        let error = write_bundle(&data, &output, true)
+            .expect_err("a release cannot publish an unbound working tree");
+        assert!(error.to_string().contains("requires captured-snapshot"));
+        assert!(!output.exists());
+
+        data.source.source_state = "captured-snapshot".into();
+        data.source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
+        data.source.rustdoc_format_versions.clear();
+        let error = write_bundle(&data, &output, true)
+            .expect_err("publication must include Rustdoc format metadata");
+        assert!(error.to_string().contains("format metadata"));
+        assert!(!output.exists());
     }
 
     #[test]
@@ -1058,11 +1151,15 @@ mod tests {
         let changed = build_data(&changed_source).expect("source identity should be retained");
         assert_ne!(first.source.source_sha256, changed.source.source_sha256);
         let family = &first.families[0];
-        assert!(family
+        let alias = family
             .items
             .iter()
-            .any(|item| item.reexport.as_deref() == Some("hidden::Visible")
-                && item.reexport_target.as_deref() == Some("demo::hidden::private_function")));
+            .find(|item| {
+                item.reexport.as_deref() == Some("hidden::Visible")
+                    && item.reexport_target.as_deref() == Some("demo::hidden::private_function")
+            })
+            .expect("the public alias should be projected");
+        assert!(alias.parent_id.is_some());
         let mismatched_path = root.join("mismatched.json");
         let mut mismatched = fixture.clone();
         mismatched["crate_version"] = serde_json::json!("9.9.9");
