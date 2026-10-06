@@ -49,3 +49,21 @@ Shared constructor WASM generation and native lint passed. Linux-only
 The default `acyclic.read_file` tool is revision 2: its raw and projected
 outputs both follow the pinned string schema. This removes the redundant
 file echo and keeps schema validation at both dispatch and replay boundaries.
+
+## Shared-prefix foundation in progress
+
+`ModelPrefix::select` retains only local added messages and a pinned direct
+parent reference. `PreparedModelRequest::inherit` authenticates each referenced
+version, checks canonical bytes, bindings and message counts, walks iteratively,
+and validates the full inherited exchange before appending explicit local input.
+Inherited attachment references pass through the same verifier.
+
+The mock reader regression exercises depth three and two children, Unicode,
+a completed tool pair, attachment grants, changed bindings, missing grants,
+corrupt retained bytes, lower count limits and byte equality after reopening
+the mock store. Its scratch/notification/task/identity/workspace strings are
+synthetic explicit messages; this does not test actual environment composition
+or a real provider invocation. Publication integration, replacing the copied
+conversation prefix, WASM parity and durable Filesystem restart tests for this
+new contract remain pending. The earlier checkpoint test counts do not include
+this later foundation.

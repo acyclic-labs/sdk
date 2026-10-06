@@ -439,6 +439,169 @@ impl PreparedModelRequest {
     }
 }
 
+/// One immutable, append-only model prefix segment. Persist using the existing
+/// content host and retain its pinned `FileRef` in the authoritative fork.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPrefix {
+    version: u32,
+    parent: Option<FileRef>,
+    binding_digest: [u8; 32],
+    total_messages: usize,
+    messages: Vec<ModelMessage>,
+}
+
+impl ModelPrefix {
+    /// Media type distinguishing shared model segments from request artifacts.
+    pub const MEDIA_TYPE: &'static str = "application/vnd.acyclic.harness.model-prefix+json";
+
+    /// Selects all admitted messages, or just the exact suffix after a pinned
+    /// parent. Publication must authenticate the parent reference against its
+    /// authoritative fork; supplying a `FileRef` alone does not establish that.
+    pub fn select(
+        request: &PreparedModelRequest,
+        parent: Option<(&FileRef, &PreparedModelRequest)>,
+    ) -> Result<Self> {
+        let (parent, offset) = if let Some((reference, prior)) = parent {
+            reference.validate()?;
+            if reference.descriptor().media_type() != Self::MEDIA_TYPE
+                || prior.manifest.binding_digest != request.manifest.binding_digest
+                || !request
+                    .request
+                    .messages
+                    .starts_with(&prior.request.messages)
+            {
+                return Err(Error::Invalid(
+                    "model prefix changed its parent or binding".into(),
+                ));
+            }
+            (Some(reference.clone()), prior.request.messages.len())
+        } else {
+            (None, 0)
+        };
+        let messages = request
+            .request
+            .messages
+            .get(offset..)
+            .ok_or_else(|| Error::Invalid("model prefix offset is invalid".into()))?;
+        if messages.is_empty() {
+            return Err(Error::Invalid(
+                "model prefix must advance its parent".into(),
+            ));
+        }
+        Ok(Self {
+            version: 1,
+            parent,
+            binding_digest: request.manifest.binding_digest,
+            total_messages: request.request.messages.len(),
+            messages: messages.to_vec(),
+        })
+    }
+
+    /// Exact bytes staged once and shared by children through pinned references.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        let bytes = crate::contract::canonical_json_bytes(self)?;
+        if bytes.len() as u64 > MAX_MODEL_REQUEST_BYTES {
+            return Err(Error::Invalid("model prefix exceeds byte limit".into()));
+        }
+        Ok(bytes)
+    }
+}
+
+impl PreparedModelRequest {
+    /// Resolves only the direct-parent chain, in order, then appends explicit
+    /// local messages. No retrieval, summarization, history scan or truncation.
+    /// The verifier must enforce the reader's exact generation-pinned grants.
+    pub async fn inherit(
+        mut local: ModelRequest,
+        prefix: &FileRef,
+        verifier: &dyn crate::conversation::ContentResidencyVerifier,
+        limits: crate::conversation::Limits,
+    ) -> Result<Self> {
+        limits.validate()?;
+        let binding = crate::contract::canonical_json_digest(&(&local.model, &local.tools))?;
+        let mut next = Some(prefix.clone());
+        let mut segments = Vec::new();
+        let mut visited = std::collections::BTreeSet::new();
+        let mut expected_count = None;
+        let mut total_bytes = 0_u64;
+        let mut total_messages = local.messages.len();
+        while let Some(reference) = next {
+            reference.validate()?;
+            if reference.descriptor().media_type() != ModelPrefix::MEDIA_TYPE
+                || !visited.insert(reference.read_capability()?)
+            {
+                return Err(Error::Invalid(
+                    "model prefix identity or cycle is invalid".into(),
+                ));
+            }
+            total_bytes = total_bytes
+                .checked_add(reference.descriptor().byte_length())
+                .ok_or_else(|| Error::Invalid("model prefix byte count overflow".into()))?;
+            if total_bytes > MAX_MODEL_REQUEST_BYTES || visited.len() > limits.context_messages {
+                return Err(Error::Invalid(
+                    "model prefix traversal exceeds limit".into(),
+                ));
+            }
+            verifier.verify(&reference).await?;
+            let bytes = verifier.read(&reference).await?;
+            reference.descriptor().verify(&bytes)?;
+            let segment: ModelPrefix = serde_json::from_slice(&bytes)
+                .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?;
+            if segment.version != 1
+                || segment.binding_digest != binding
+                || segment.messages.is_empty()
+                || expected_count.is_some_and(|count| count != segment.total_messages)
+                || segment.canonical_bytes()? != bytes
+            {
+                return Err(Error::Invalid(
+                    "model prefix contract differs from request".into(),
+                ));
+            }
+            let remaining = segment
+                .total_messages
+                .checked_sub(segment.messages.len())
+                .ok_or_else(|| Error::Invalid("model prefix message count is invalid".into()))?;
+            if (segment.parent.is_none()) != (remaining == 0) {
+                return Err(Error::Invalid(
+                    "model prefix parent count is invalid".into(),
+                ));
+            }
+            total_messages = total_messages
+                .checked_add(segment.messages.len())
+                .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
+            if total_messages > limits.context_messages {
+                return Err(Error::Invalid(
+                    "inherited model context exceeds message limit".into(),
+                ));
+            }
+            expected_count = Some(remaining);
+            next = segment.parent;
+            segments.push(segment.messages);
+        }
+        let mut messages = Vec::with_capacity(total_messages);
+        for segment in segments.into_iter().rev() {
+            messages.extend(segment);
+        }
+        let inherited = ModelRequest {
+            model: local.model.clone(),
+            tools: local.tools.clone(),
+            max_output_tokens: local.max_output_tokens,
+            messages,
+        };
+        inherited.validate(limits)?;
+        let mut messages = inherited.messages;
+        messages.append(&mut local.messages);
+        local.messages = messages;
+        for message in &local.messages {
+            for file in message.content.file_refs() {
+                verifier.verify(file).await?;
+            }
+        }
+        Self::prepare(local, limits)
+    }
+}
+
 /// Ordered event emitted by a model run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -577,6 +740,166 @@ mod tests {
                 .binding_digest,
             prepared.manifest().binding_digest
         );
+        Ok(())
+    }
+
+    #[derive(Clone, Default)]
+    struct PrefixReader(std::collections::BTreeMap<String, Vec<u8>>);
+
+    impl crate::conversation::ContentResidencyVerifier for PrefixReader {
+        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                if self.0.contains_key(&file.read_capability()?) {
+                    Ok(())
+                } else {
+                    Err(Error::Unauthorized("prefix read is not granted".into()))
+                }
+            })
+        }
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            Box::pin(async move {
+                self.0
+                    .get(&file.read_capability()?)
+                    .cloned()
+                    .ok_or_else(|| Error::NotFound("prefix version is missing".into()))
+            })
+        }
+    }
+
+    fn store_prefix(reader: &mut PrefixReader, prefix: &ModelPrefix, index: u8) -> Result<FileRef> {
+        store_prefix_bytes(
+            reader,
+            prefix.canonical_bytes()?,
+            ModelPrefix::MEDIA_TYPE,
+            index,
+        )
+    }
+
+    fn store_prefix_bytes(
+        reader: &mut PrefixReader,
+        bytes: Vec<u8>,
+        media_type: &str,
+        index: u8,
+    ) -> Result<FileRef> {
+        use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
+        let file = FileRef::new(
+            VolumeRef::new(
+                crate::resources::ProviderRef::new("test", "filesystem", "2")?,
+                "private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
+            )?,
+            format!(".system/inherited-conversation/model-prefix/{index}.json"),
+            format!("generation-{index}"),
+            FileDescriptor::from_bytes(&bytes, media_type)?,
+            "model-prefix.json",
+        )?;
+        reader.0.insert(file.read_capability()?, bytes);
+        Ok(file)
+    }
+
+    #[tokio::test]
+    async fn shared_prefix_depth_three_reopens_and_rejects_mutation_or_missing_grants() -> Result<()>
+    {
+        let limits = Limits::default();
+        let mut reader = PrefixReader::default();
+        let attachment = store_prefix_bytes(
+            &mut reader,
+            "attachment é".as_bytes().to_vec(),
+            "text/plain",
+            77,
+        )?;
+        let mut root = request()?;
+        root.messages[0].content = ModelContent::Parts(vec![
+            ModelContentPart::Text {
+                text: "é\0🦀\r\n".into(),
+            },
+            ModelContentPart::File {
+                file: attachment.clone(),
+                policy: FileProjectionPolicy::Reference,
+            },
+        ]);
+        exchange(&mut root);
+        let mut prepared = PreparedModelRequest::prepare(root, limits)?;
+        let mut head = store_prefix(&mut reader, &ModelPrefix::select(&prepared, None)?, 0)?;
+        for depth in 1..=3 {
+            let mut next = prepared.request().clone();
+            next.messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!(
+                    "child {depth}: é\0🦀; parent scratch retained"
+                )),
+            });
+            let next = PreparedModelRequest::prepare(next, limits)?;
+            let segment = ModelPrefix::select(&next, Some((&head, &prepared)))?;
+            assert_eq!(segment.messages.len(), 1);
+            assert_eq!(segment.parent.as_ref(), Some(&head));
+            head = store_prefix(&mut reader, &segment, depth)?;
+            prepared = next;
+        }
+        let reopened = reader.clone();
+        for child in ["a", "b"] {
+            let mut local = request()?;
+            local.messages = vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!(
+                    "notification; task {child}; identity; workspace; fresh scratch"
+                )),
+            }];
+            let inherited =
+                PreparedModelRequest::inherit(local.clone(), &head, &reopened, limits).await?;
+            let mut expected = prepared.request().clone();
+            expected.messages.extend(local.messages.clone());
+            assert_eq!(
+                inherited.bytes(),
+                PreparedModelRequest::prepare(expected, limits)?.bytes()
+            );
+            let mut changed = local.clone();
+            changed.model.revision = "changed".into();
+            assert!(
+                PreparedModelRequest::inherit(changed, &head, &reader, limits)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                PreparedModelRequest::inherit(
+                    local.clone(),
+                    &head,
+                    &PrefixReader::default(),
+                    limits
+                )
+                .await
+                .is_err()
+            );
+            let mut missing_attachment = reader.clone();
+            missing_attachment.0.remove(&attachment.read_capability()?);
+            assert!(
+                PreparedModelRequest::inherit(local.clone(), &head, &missing_attachment, limits)
+                    .await
+                    .is_err()
+            );
+            let lower_limits = Limits {
+                context_messages: prepared.request().messages.len(),
+                ..limits
+            };
+            assert!(
+                PreparedModelRequest::inherit(local.clone(), &head, &reader, lower_limits)
+                    .await
+                    .is_err()
+            );
+            let mut corrupt = reader.clone();
+            corrupt.0.insert(head.read_capability()?, b"{}".to_vec());
+            assert!(
+                PreparedModelRequest::inherit(local, &head, &corrupt, limits)
+                    .await
+                    .is_err()
+            );
+        }
+        let mut changed_parent = prepared.request().clone();
+        changed_parent.messages[0].content = ModelContent::Text("later parent mutation".into());
+        let changed_parent = PreparedModelRequest::prepare(changed_parent, limits)?;
+        assert!(ModelPrefix::select(&changed_parent, Some((&head, &prepared))).is_err());
+        assert_eq!(reopened.0, reader.0);
         Ok(())
     }
 
