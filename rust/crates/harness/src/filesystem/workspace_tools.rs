@@ -196,6 +196,7 @@ struct EditExecutor {
 
 impl EditExecutor {
     async fn execute_workspace(&self, invocation: ToolInvocation) -> Result<ToolResult> {
+        crate::stack_diagnostics::marker("workspace-edit-body-enter");
         let input: EditInput = parse(&invocation)?;
         validate_path(&input.path, false)?;
         let bytes = input.content.into_bytes();
@@ -208,6 +209,7 @@ impl EditExecutor {
         let expected = input.expected_generation.ok_or_else(|| {
             Error::Invalid("workspace edit requires an expected generation".into())
         })?;
+        crate::stack_diagnostics::marker("workspace-edit-before-host-apply");
         let generation = self
             .host
             .apply(
@@ -220,6 +222,8 @@ impl EditExecutor {
                 &operation_key(&invocation)?,
             )
             .await?;
+        crate::stack_diagnostics::marker("workspace-edit-after-host-apply");
+        crate::stack_diagnostics::marker("workspace-edit-final-success");
         Ok(ToolResult {
             value: json!({
                 "path": input.path,
@@ -255,12 +259,17 @@ impl ToolExecutor for EditExecutor {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        crate::stack_diagnostics::marker("workspace-edit-runtime-validation");
         if let Err(error) = require_runtime_task(&context, self.task, "edit")
             .and_then(|()| require_project(context.scope(), &self.project, VolumeOperation::Write))
         {
+            crate::stack_diagnostics::marker("workspace-edit-runtime-validation-failed");
             return Box::pin(async move { Err(error) });
         }
-        Box::pin(self.execute_workspace(invocation))
+        crate::stack_diagnostics::marker("workspace-edit-runtime-validation-passed");
+        let body = self.execute_workspace(invocation);
+        crate::stack_diagnostics::future_size("workspace-edit-runtime-body", &body);
+        Box::pin(body)
     }
 
     fn execute_in_model_batch<'a>(
@@ -268,10 +277,15 @@ impl ToolExecutor for EditExecutor {
         context: crate::tool::ModelToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        crate::stack_diagnostics::marker("workspace-edit-model-validation");
         if let Err(error) = require_model_task(&context, &invocation, self.task, "edit") {
+            crate::stack_diagnostics::marker("workspace-edit-model-validation-failed");
             return Box::pin(async move { Err(error) });
         }
-        Box::pin(self.execute_workspace(invocation))
+        crate::stack_diagnostics::marker("workspace-edit-model-validation-passed");
+        let body = self.execute_workspace(invocation);
+        crate::stack_diagnostics::future_size("workspace-edit-model-body", &body);
+        Box::pin(body)
     }
 
     fn reconcile_in_model_batch<'a>(
@@ -282,7 +296,9 @@ impl ToolExecutor for EditExecutor {
         if let Err(error) = require_model_task(&context, &invocation, self.task, "edit") {
             return Box::pin(async move { Err(error) });
         }
-        Box::pin(self.reconcile_workspace(invocation))
+        let body = self.reconcile_workspace(invocation);
+        crate::stack_diagnostics::future_size("workspace-edit-model-reconcile-body", &body);
+        Box::pin(body)
     }
 
     fn reconcile<'a>(
@@ -301,7 +317,9 @@ impl ToolExecutor for EditExecutor {
         {
             return Box::pin(async move { Err(error) });
         }
-        Box::pin(self.reconcile_workspace(invocation))
+        let body = self.reconcile_workspace(invocation);
+        crate::stack_diagnostics::future_size("workspace-edit-runtime-reconcile-body", &body);
+        Box::pin(body)
     }
 }
 
@@ -354,6 +372,7 @@ struct ReadExecutor {
 
 impl ReadExecutor {
     async fn execute_workspace(&self, invocation: ToolInvocation) -> Result<ToolResult> {
+        crate::stack_diagnostics::marker("workspace-read-body-enter");
         let input: ReadInput = parse(&invocation)?;
         validate_path(&input.path, false)?;
         let workspace = project_workspace(&self.project)?;
@@ -361,6 +380,7 @@ impl ReadExecutor {
             Some(generation) => generation,
             None => self.host.resolve(&workspace).await?.generation,
         };
+        crate::stack_diagnostics::marker("workspace-read-before-host-read");
         let bytes = self
             .host
             .read(
@@ -370,8 +390,10 @@ impl ReadExecutor {
                 self.maximum_bytes,
             )
             .await?;
+        crate::stack_diagnostics::marker("workspace-read-after-host-read");
         let text = String::from_utf8(bytes.to_vec())
             .map_err(|_| Error::Invalid("workspace read is not UTF-8".into()))?;
+        crate::stack_diagnostics::marker("workspace-read-final-success");
         Ok(ToolResult {
             value: json!({
                 "path": input.path,
@@ -408,12 +430,17 @@ impl ToolExecutor for ReadExecutor {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        crate::stack_diagnostics::marker("workspace-read-runtime-validation");
         if let Err(error) = require_runtime_task(&context, self.task, "read")
             .and_then(|()| require_project(context.scope(), &self.project, VolumeOperation::Read))
         {
+            crate::stack_diagnostics::marker("workspace-read-runtime-validation-failed");
             return Box::pin(async move { Err(error) });
         }
-        Box::pin(self.execute_workspace(invocation))
+        crate::stack_diagnostics::marker("workspace-read-runtime-validation-passed");
+        let body = self.execute_workspace(invocation);
+        crate::stack_diagnostics::future_size("workspace-read-runtime-body", &body);
+        Box::pin(body)
     }
 
     fn execute_in_model_batch<'a>(
@@ -421,10 +448,15 @@ impl ToolExecutor for ReadExecutor {
         context: crate::tool::ModelToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        crate::stack_diagnostics::marker("workspace-read-model-validation");
         if let Err(error) = require_model_task(&context, &invocation, self.task, "read") {
+            crate::stack_diagnostics::marker("workspace-read-model-validation-failed");
             return Box::pin(async move { Err(error) });
         }
-        Box::pin(self.execute_workspace(invocation))
+        crate::stack_diagnostics::marker("workspace-read-model-validation-passed");
+        let body = self.execute_workspace(invocation);
+        crate::stack_diagnostics::future_size("workspace-read-model-body", &body);
+        Box::pin(body)
     }
 
     fn reconcile<'a>(
@@ -446,6 +478,7 @@ struct SearchExecutor {
 
 impl SearchExecutor {
     async fn execute_workspace(&self, invocation: ToolInvocation) -> Result<ToolResult> {
+        crate::stack_diagnostics::marker("workspace-search-body-enter");
         let input: SearchInput = parse(&invocation)?;
         validate_path(&input.path, true)?;
         if input.query.is_empty() || input.max_matches == 0 || input.max_matches > 256 {
@@ -464,11 +497,13 @@ impl SearchExecutor {
         } else {
             input.query.to_lowercase()
         };
+        crate::stack_diagnostics::marker("workspace-search-before-host-list");
         while let Some(directory) = directories.pop() {
             let page = self
                 .host
                 .list(&workspace, Some(&generation), &directory, 64)
                 .await?;
+            crate::stack_diagnostics::marker("workspace-search-after-host-list");
             for entry in page.entries {
                 let name = String::from_utf8(entry.name.as_bytes().to_vec())
                     .map_err(|_| Error::Invalid("workspace entry is not UTF-8".into()))?;
@@ -490,6 +525,7 @@ impl SearchExecutor {
                             .host
                             .read(&workspace, Some(&generation), &child, self.maximum_bytes)
                             .await?;
+                        crate::stack_diagnostics::marker("workspace-search-after-host-read");
                         bytes_seen = bytes_seen.saturating_add(bytes.len() as u64);
                         if bytes_seen > self.maximum_search_bytes {
                             return Err(Error::Invalid(
@@ -507,6 +543,7 @@ impl SearchExecutor {
                         if haystack.contains(&needle) {
                             matches.push(json!({"path": child}));
                             if matches.len() >= input.max_matches as usize {
+                                crate::stack_diagnostics::marker("workspace-search-final-success");
                                 return Ok(ToolResult {
                                     value: json!({"generation": serde_json::to_value(generation).map_err(|error| Error::Storage(error.to_string()))?, "matches": matches, "bounded": true}),
                                 });
@@ -522,6 +559,7 @@ impl SearchExecutor {
                 ));
             }
         }
+        crate::stack_diagnostics::marker("workspace-search-final-success");
         Ok(ToolResult {
             value: json!({"generation": serde_json::to_value(generation).map_err(|error| Error::Storage(error.to_string()))?, "matches": matches, "bounded": false}),
         })
@@ -553,12 +591,17 @@ impl ToolExecutor for SearchExecutor {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        crate::stack_diagnostics::marker("workspace-search-runtime-validation");
         if let Err(error) = require_runtime_task(&context, self.task, "search")
             .and_then(|()| require_project(context.scope(), &self.project, VolumeOperation::Read))
         {
+            crate::stack_diagnostics::marker("workspace-search-runtime-validation-failed");
             return Box::pin(async move { Err(error) });
         }
-        Box::pin(self.execute_workspace(invocation))
+        crate::stack_diagnostics::marker("workspace-search-runtime-validation-passed");
+        let body = self.execute_workspace(invocation);
+        crate::stack_diagnostics::future_size("workspace-search-runtime-body", &body);
+        Box::pin(body)
     }
 
     fn execute_in_model_batch<'a>(
@@ -566,10 +609,15 @@ impl ToolExecutor for SearchExecutor {
         context: crate::tool::ModelToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        crate::stack_diagnostics::marker("workspace-search-model-validation");
         if let Err(error) = require_model_task(&context, &invocation, self.task, "search") {
+            crate::stack_diagnostics::marker("workspace-search-model-validation-failed");
             return Box::pin(async move { Err(error) });
         }
-        Box::pin(self.execute_workspace(invocation))
+        crate::stack_diagnostics::marker("workspace-search-model-validation-passed");
+        let body = self.execute_workspace(invocation);
+        crate::stack_diagnostics::future_size("workspace-search-model-body", &body);
+        Box::pin(body)
     }
 
     fn reconcile<'a>(
