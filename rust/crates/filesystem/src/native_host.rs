@@ -2799,6 +2799,115 @@ impl HostDirectory {
             .rename(name, &destination.directory, destination_name)
     }
 
+    /// Opens a regular restore target with no write or delete sharing. The
+    /// handle is used as the identity witness for the handle-relative native
+    /// publication path; a path replacement cannot silently redirect it.
+    #[cfg(windows)]
+    pub(crate) fn open_restore_handle(&self, name: &Path) -> io::Result<File> {
+        use cap_std::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{
+            DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ, GENERIC_READ, SYNCHRONIZE,
+        };
+
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .access_mode(GENERIC_READ.0 | DELETE.0 | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0);
+        let file = self.directory.open_with(name, &options)?.into_std();
+        // The share mode fences future opens; the byte-range lock also fences
+        // already-open writers that did not opt into a restrictive share
+        // mode. Keep it for the complete handle-relative publication.
+        fs2::FileExt::try_lock_exclusive(&file)?;
+        Ok(file)
+    }
+
+    /// Creates a hard-link publication from a held source handle into this
+    /// directory. NTFS performs the replacement relative to the held parent
+    /// handle, so the operation does not reopen or re-resolve the destination
+    /// path by name.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    pub(crate) fn link_restore_file(
+        &self,
+        source: &File,
+        name: &Path,
+        replace: bool,
+    ) -> io::Result<()> {
+        use std::mem::{offset_of, size_of};
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_INFORMATION_CLASS, FILE_LINK_INFORMATION, FileLinkInformation,
+            NtSetInformationFile,
+        };
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
+        const FILE_LINK_INFORMATION_EX: FILE_INFORMATION_CLASS = FILE_INFORMATION_CLASS(72);
+        const REPLACE_WITH_POSIX_SEMANTICS: u32 = 0x1 | 0x2 | 0x40;
+        let units = name.as_os_str().encode_wide().collect::<Vec<_>>();
+        let name_bytes = units
+            .len()
+            .checked_mul(size_of::<u16>())
+            .ok_or_else(|| io::Error::other("restore link name overflow"))?;
+        let name_offset = offset_of!(FILE_LINK_INFORMATION, FileName);
+        let total = name_offset
+            .checked_add(name_bytes)
+            .ok_or_else(|| io::Error::other("restore link buffer overflow"))?
+            .max(size_of::<FILE_LINK_INFORMATION>());
+        let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+        let information = storage.as_mut_ptr().cast::<FILE_LINK_INFORMATION>();
+        // SAFETY: storage is aligned for FILE_LINK_INFORMATION and spans the
+        // complete variable-length name buffer used by this call.
+        unsafe {
+            if replace {
+                (*information).Anonymous.Flags = REPLACE_WITH_POSIX_SEMANTICS;
+            } else {
+                (*information).Anonymous.ReplaceIfExists = false;
+            }
+            (*information).RootDirectory = HANDLE(self.directory.as_handle().as_raw_handle());
+            (*information).FileNameLength = u32::try_from(name_bytes)
+                .map_err(|_| io::Error::other("restore link name too long"))?;
+            std::ptr::copy_nonoverlapping(
+                units.as_ptr(),
+                information.cast::<u8>().add(name_offset).cast::<u16>(),
+                units.len(),
+            );
+        }
+        let mut status = IO_STATUS_BLOCK::default();
+        // SAFETY: source, parent, status, and variable-length input remain
+        // live for this synchronous native call.
+        let result = unsafe {
+            NtSetInformationFile(
+                HANDLE(source.as_raw_handle()),
+                &raw mut status,
+                information.cast(),
+                u32::try_from(total)
+                    .map_err(|_| io::Error::other("restore link buffer too large"))?,
+                if replace {
+                    FILE_LINK_INFORMATION_EX
+                } else {
+                    FileLinkInformation
+                },
+            )
+        };
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(status_error(result))
+        }
+    }
+
+    /// Applies the existing handle-relative Windows delete primitive to a
+    /// restore target after its identity has been authenticated.
+    #[cfg(windows)]
+    pub(crate) fn delete_restore_file(&self, file: &File) -> io::Result<()> {
+        delete_through(file)
+    }
+
     /// Creates one child directory and retains a capability for it.
     pub fn create_dir_held(&self, name: &Path) -> io::Result<Self> {
         self.directory.create_dir(name)?;

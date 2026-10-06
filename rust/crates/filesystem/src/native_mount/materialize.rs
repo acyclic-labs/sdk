@@ -664,7 +664,7 @@ pub async fn restore_checkout_host_path_if_unchanged_with_operation<
     let expected = expected.cloned();
     let destination_root = options.destination.clone();
     let relative = relative.to_path_buf();
-    let (destination, stage_root, _restore_lock, _host_guard) = tokio::task::spawn_blocking({
+    let (destination, stage_root, _restore_lock, host_guard) = tokio::task::spawn_blocking({
         let destination_root = destination_root.clone();
         let relative = relative.clone();
         let expected = expected.clone();
@@ -714,6 +714,7 @@ pub async fn restore_checkout_host_path_if_unchanged_with_operation<
                     &relative,
                     expected.as_ref(),
                     operation,
+                    host_guard,
                 )
             })
             .await
@@ -742,6 +743,7 @@ pub async fn restore_checkout_host_path_if_unchanged_with_operation<
             replacement,
             expected.as_ref(),
             operation,
+            host_guard,
         )
     })
     .await;
@@ -796,23 +798,34 @@ fn prepare_restore(
     } else {
         cleanup_removed_restore(&destination_parent, relative, &destination)?;
     }
-    let host_guard = acquire_conditional_host_guard(&destination, expected)?;
+    let host_guard =
+        acquire_conditional_host_guard(&destination_parent, destination_name, expected)?;
     if let Some(expected) = expected {
-        if !host_path_matches(&destination, expected)? {
+        let matches = if expected.present {
+            host_guard
+                .as_ref()
+                .ok_or(MaterializeError::UnsupportedConditionalRestore)
+                .and_then(|guard| host_file_matches(guard, expected))?
+        } else {
+            host_path_matches(&destination, expected)?
+        };
+        if !matches {
             return Err(MaterializeError::ConcurrentHostEdit);
         }
     }
-    match replacement {
-        HostPathReplacement::Atomic => {
-            crate::native_exchange::recover_native_entry_exchange(&destination)
-                .map_err(|error| MaterializeError::Engine(error.to_string()))?;
+    if expected.is_none() {
+        match replacement {
+            HostPathReplacement::Atomic => {
+                crate::native_exchange::recover_native_entry_exchange(&destination)
+                    .map_err(|error| MaterializeError::Engine(error.to_string()))?;
+            }
+            HostPathReplacement::LiveMount => recover_live_mount_replacement(
+                &destination_parent,
+                Path::new(destination_name),
+                relative,
+                &destination,
+            )?,
         }
-        HostPathReplacement::LiveMount => recover_live_mount_replacement(
-            &destination_parent,
-            Path::new(destination_name),
-            relative,
-            &destination,
-        )?,
     }
     let stage_parent = match replacement {
         HostPathReplacement::Atomic => destination_root
@@ -833,7 +846,8 @@ fn prepare_restore(
 }
 
 fn acquire_conditional_host_guard(
-    destination: &Path,
+    destination_parent: &HostDirectory,
+    destination_name: &Path,
     expected: Option<&HostPathExpectation>,
 ) -> Result<Option<File>, MaterializeError> {
     let Some(expected) = expected else {
@@ -844,19 +858,8 @@ fn acquire_conditional_host_guard(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        use windows::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-            FILE_SHARE_READ,
-        };
-
-        let mut options = std::fs::OpenOptions::new();
-        options
-            .read(true)
-            .share_mode((FILE_SHARE_READ | FILE_SHARE_DELETE).0);
-        options.custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0);
-        return options
-            .open(destination)
+        return destination_parent
+            .open_restore_handle(destination_name)
             .map(Some)
             .map_err(|error| match error.kind() {
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
@@ -867,7 +870,7 @@ fn acquire_conditional_host_guard(
     }
     #[cfg(not(windows))]
     {
-        let _ = (destination, expected);
+        let _ = (destination_parent, destination_name, expected);
         Err(MaterializeError::UnsupportedConditionalRestore)
     }
 }
@@ -881,27 +884,57 @@ fn publish_restore(
     replacement: HostPathReplacement,
     expected: Option<&HostPathExpectation>,
     operation: Option<IdempotencyKey>,
+    host_guard: Option<File>,
 ) -> Result<(), MaterializeError> {
     let destination_parent = held_parent(destination_root, relative)?;
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative)?;
     let staged_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
+    let witness = expected
+        .map(|_| restore_witness_path(".acyclic-restore-publish-witness-", relative, destination));
     if let Some(expected) = expected {
-        let witness =
-            restore_witness_path(".acyclic-restore-publish-witness-", relative, destination);
-        let witness_contents = restore_phase_witness(b"publish", operation);
-        match validate_restore_witness(&witness, &witness_contents)? {
+        let witness = witness.as_ref().expect("conditional witness");
+        let target_identity = restore_target_identity(destination_root, host_guard.as_ref())?;
+        let witness_contents =
+            restore_phase_witness(b"publish", operation, Some(expected), target_identity);
+        match validate_restore_witness(witness, &witness_contents)? {
             true => return Err(MaterializeError::UncertainPublication),
-            false => create_restore_witness(&witness, &witness_contents)?,
+            false => create_restore_witness(witness, &witness_contents)?,
         }
         // The Windows guard is held by the caller for the complete exchange.
         // Check the approved witness immediately before the first mutation;
         // a mismatch is a pre-publication conflict and leaves the stage
         // available for inspection.
-        if !host_path_matches(destination, expected)? {
-            remove_restore_witness(&witness)?;
+        if expected.present {
+            let Some(host_guard) = host_guard.as_ref() else {
+                remove_restore_witness(witness)?;
+                return Err(MaterializeError::UnsupportedConditionalRestore);
+            };
+            if !host_file_matches(host_guard, expected)? {
+                remove_restore_witness(witness)?;
+                return Err(MaterializeError::ConcurrentHostEdit);
+            }
+        } else if destination_parent
+            .symlink_metadata(Path::new(destination_name))
+            .is_ok()
+        {
+            remove_restore_witness(witness)?;
             return Err(MaterializeError::ConcurrentHostEdit);
         }
+    }
+    #[cfg(windows)]
+    if let Some(expected) = expected {
+        return publish_windows_restore(
+            destination,
+            stage_root,
+            &destination_parent,
+            Path::new(destination_name),
+            &stage_parent,
+            Path::new(staged_name),
+            witness.as_deref().expect("conditional witness"),
+            expected,
+            host_guard,
+        );
     }
     match destination_parent.symlink_metadata(Path::new(destination_name)) {
         Ok(_) if expected.is_some_and(|expected| !expected.present) => {
@@ -956,19 +989,96 @@ fn publish_restore(
         Err(error) => return Err(error.into()),
     }
     if let Some(expected) = expected {
-        let witness =
-            restore_witness_path(".acyclic-restore-publish-witness-", relative, destination);
+        let witness = witness.as_ref().expect("conditional witness");
         if !host_path_matches(staged, expected)? {
             // The exchange may already have reached the host. Never exchange
             // back or remove the displaced stage: either action can destroy a
             // racing user write or erase the only recovery witness.
             return Err(MaterializeError::UncertainPublication);
         }
-        remove_restore_witness(&witness)?;
+        stage_parent.close();
+        drop(destination_parent);
+        remove_any(stage_root)?;
+        remove_restore_witness(witness)?;
+        return Ok(());
     }
     stage_parent.close();
     drop(destination_parent);
     remove_any(stage_root)?;
+    Ok(())
+}
+
+fn host_file_matches(
+    file: &File,
+    expected: &HostPathExpectation,
+) -> Result<bool, MaterializeError> {
+    if !expected.present || expected.kind != Some(FileKind::Regular) {
+        return Ok(!expected.present);
+    }
+    let Some(expected_digest) = expected.content_digest else {
+        return Ok(false);
+    };
+    let mut file = file.try_clone()?;
+    use std::io::{Read as _, Seek as _};
+    file.rewind()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(*blake3::hash(&bytes).as_bytes() == expected_digest)
+}
+
+#[cfg(windows)]
+fn publish_windows_restore(
+    destination: &Path,
+    stage_root: &Path,
+    destination_parent: &HostDirectory,
+    destination_name: &Path,
+    stage_parent: &HostDirectory,
+    staged_name: &Path,
+    witness: &Path,
+    expected: &HostPathExpectation,
+    host_guard: Option<File>,
+) -> Result<(), MaterializeError> {
+    let source = stage_parent
+        .open_restore_handle(staged_name)
+        .map_err(MaterializeError::Io)?;
+    let displaced = restore_artifact_name(".acyclic-restore-displaced-", destination);
+    if expected.present {
+        let host_guard = host_guard.ok_or(MaterializeError::UnsupportedConditionalRestore)?;
+        if destination_parent.symlink_metadata(&displaced).is_ok() {
+            return Err(MaterializeError::UncertainPublication);
+        }
+        // Preserve the exact inode authenticated by the held target handle.
+        // The backup and replacement are both relative to the held directory
+        // capability, so a path rename cannot redirect either operation.
+        destination_parent
+            .link_restore_file(&host_guard, &displaced, false)
+            .map_err(MaterializeError::Io)?;
+        if destination_parent
+            .link_restore_file(&source, destination_name, true)
+            .is_err()
+        {
+            return Err(MaterializeError::UncertainPublication);
+        }
+        if !host_file_matches(&host_guard, expected)? {
+            return Err(MaterializeError::UncertainPublication);
+        }
+        destination_parent
+            .remove(&displaced)
+            .map_err(MaterializeError::Io)?;
+        sync_restore_parent(destination)?;
+    } else if let Err(error) =
+        destination_parent.link_restore_file(&source, destination_name, false)
+    {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            return Err(MaterializeError::ConcurrentHostEdit);
+        }
+        return Err(error.into());
+    }
+    drop(source);
+    stage_parent.close();
+    drop(destination_parent);
+    remove_any(stage_root)?;
+    remove_restore_witness(witness)?;
     Ok(())
 }
 
@@ -1108,14 +1218,38 @@ pub(crate) fn host_path_matches_expectation(
 const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
 const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
 
-fn restore_phase_witness(phase: &[u8], operation: Option<IdempotencyKey>) -> Vec<u8> {
+fn restore_phase_witness(
+    phase: &[u8],
+    operation: Option<IdempotencyKey>,
+    expected: Option<&HostPathExpectation>,
+    target_identity: [u8; 16],
+) -> Vec<u8> {
     let mut contents = b"acyclic-restore-phase-v1\n".to_vec();
     contents.extend_from_slice(phase);
     contents.push(b'\n');
-    if let Some(operation) = operation {
-        contents.extend_from_slice(&operation.into_bytes());
-    }
+    contents.extend_from_slice(&operation.map(IdempotencyKey::into_bytes).unwrap_or([0; 16]));
+    contents.extend_from_slice(&target_identity);
+    contents.extend_from_slice(
+        &expected
+            .and_then(|value| value.content_digest)
+            .unwrap_or([0; 32]),
+    );
+    contents.push(u8::from(expected.is_some_and(|value| value.present)));
     contents
+}
+
+fn restore_target_identity(
+    destination_root: &Path,
+    host_guard: Option<&File>,
+) -> Result<[u8; 16], MaterializeError> {
+    if let Some(host_guard) = host_guard {
+        return crate::NativeRootIdentity::from_file(host_guard)
+            .map(|identity| identity.to_bytes())
+            .map_err(Into::into);
+    }
+    HostRoot::open(destination_root)
+        .map(|root| root.identity().to_bytes())
+        .map_err(Into::into)
 }
 
 fn restore_witness_path(prefix: &str, relative: &Path, destination: &Path) -> PathBuf {
@@ -1170,6 +1304,13 @@ fn cleanup_removed_restore(
     relative: &Path,
     destination: &Path,
 ) -> Result<(), MaterializeError> {
+    let publish_witness =
+        restore_witness_path(".acyclic-restore-publish-witness-", relative, destination);
+    match std::fs::symlink_metadata(&publish_witness) {
+        Ok(_) => return Err(MaterializeError::UncertainPublication),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     let removed = restore_artifact_name(".acyclic-restore-removed-", relative);
     let witness = restore_witness_path(".acyclic-restore-remove-witness-", relative, destination);
     match destination_parent.symlink_metadata(&removed) {
@@ -1242,6 +1383,7 @@ fn remove_restored_path(
         relative,
         None,
         None,
+        None,
     )
     .map_err(materialize_io_error)
 }
@@ -1253,16 +1395,63 @@ fn remove_restored_path_if_unchanged(
     relative: &Path,
     expected: Option<&HostPathExpectation>,
     operation: Option<IdempotencyKey>,
+    host_guard: Option<File>,
 ) -> Result<(), MaterializeError> {
     let destination = destination_root.join(relative);
     let removed = restore_artifact_name(".acyclic-restore-removed-", relative);
     let witness = restore_witness_path(".acyclic-restore-remove-witness-", relative, &destination);
     let witness_contents = if expected.is_some() {
-        restore_phase_witness(b"remove", operation)
+        restore_phase_witness(
+            b"remove",
+            operation,
+            expected,
+            restore_target_identity(destination_root, host_guard.as_ref())?,
+        )
     } else {
         REMOVE_RESTORE_WITNESS.to_vec()
     };
     create_restore_witness(&witness, &witness_contents)?;
+    #[cfg(windows)]
+    if let Some(expected) = expected {
+        if !expected.present {
+            if destination_parent
+                .symlink_metadata(destination_name)
+                .is_ok()
+            {
+                remove_restore_witness(&witness)?;
+                return Err(MaterializeError::ConcurrentHostEdit);
+            }
+            remove_restore_witness(&witness)?;
+            return Ok(());
+        }
+        let Some(host_guard) = host_guard else {
+            remove_restore_witness(&witness)?;
+            return Err(MaterializeError::UnsupportedConditionalRestore);
+        };
+        if !host_file_matches(&host_guard, expected)? {
+            remove_restore_witness(&witness)?;
+            return Err(MaterializeError::ConcurrentHostEdit);
+        }
+        // Keep the displaced inode under an owned name while the handle-based
+        // delete is reconciled. A crash leaves the witness and backup for the
+        // next opener instead of inviting a path-based rollback.
+        destination_parent
+            .link_restore_file(&host_guard, &removed, false)
+            .map_err(MaterializeError::Io)?;
+        destination_parent
+            .delete_restore_file(&host_guard)
+            .map_err(MaterializeError::Io)?;
+        sync_restore_parent(&destination)?;
+        if !host_file_matches(&host_guard, expected)? {
+            return Err(MaterializeError::UncertainPublication);
+        }
+        destination_parent
+            .remove(&removed)
+            .map_err(MaterializeError::Io)?;
+        sync_restore_parent(&destination)?;
+        remove_restore_witness(&witness)?;
+        return Ok(());
+    }
     match destination_parent.symlink_metadata(destination_name) {
         Ok(_) => {
             destination_parent.rename_to(destination_name, destination_parent, &removed)?;
@@ -2441,6 +2630,7 @@ mod restore_recovery_tests {
     use super::*;
 
     #[test]
+    #[cfg(not(windows))]
     fn conditional_atomic_publication_fences_a_racing_user_edit()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -2457,6 +2647,7 @@ mod restore_recovery_tests {
         // publication. The operation must fence before mutation and retain its
         // staged artifact for reconciliation.
         std::fs::write(&destination, b"user-edit")?;
+        let host_guard = Some(File::open(&destination)?);
         let result = publish_restore(
             root.path(),
             relative,
@@ -2466,6 +2657,7 @@ mod restore_recovery_tests {
             HostPathReplacement::Atomic,
             Some(&expected),
             None,
+            host_guard,
         );
         assert!(matches!(result, Err(MaterializeError::ConcurrentHostEdit)));
         assert_eq!(std::fs::read(&destination)?, b"user-edit");

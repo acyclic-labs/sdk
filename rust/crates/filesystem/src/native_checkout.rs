@@ -281,17 +281,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         }
         let mut work = WorkCounters::default();
         let mut outcomes = Vec::with_capacity(paths.len());
-        for (index, path) in paths.iter().enumerate() {
+        for path in paths {
             cancellation
                 .check()
                 .map_err(|error| HostCheckoutError::Workspace(WorkspaceError::from(error)))?;
             let before = self
-                .revalidate_with_key(path_reconciliation_key(
-                    reconciliation_key,
-                    index,
-                    path,
-                    b"before",
-                ))
+                .revalidate_with_key(path_reconciliation_key(reconciliation_key, path, b"before"))
                 .await?;
             if before.workspace_id != expected.workspace_id
                 || before.root_identity != expected.root_identity
@@ -323,7 +318,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
                 let observed = self
                     .revalidate_with_key(path_reconciliation_key(
                         reconciliation_key,
-                        index,
                         path,
                         b"already-published",
                     ))
@@ -346,7 +340,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
                     replacement,
                     options,
                     Some(&expectation),
-                    path_reconciliation_key(reconciliation_key, index, path, b"publish"),
+                    path_reconciliation_key(reconciliation_key, path, b"publish"),
                     budget.remaining(work)?,
                     cancellation,
                 )
@@ -370,12 +364,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
                 })?;
             work = work.checked_add(receipt.work)?;
             let after = self
-                .revalidate_with_key(path_reconciliation_key(
-                    reconciliation_key,
-                    index,
-                    path,
-                    b"after",
-                ))
+                .revalidate_with_key(path_reconciliation_key(reconciliation_key, path, b"after"))
                 .await?;
             let after_generation = self.workspace.generation(after.generation_id).await?;
             if Self::path_state(&after_generation, path).await? != target_state {
@@ -425,16 +414,10 @@ fn host_path_expectation(
     }
 }
 
-fn path_reconciliation_key(
-    key: IdempotencyKey,
-    index: usize,
-    path: &Path,
-    phase: &[u8],
-) -> IdempotencyKey {
+fn path_reconciliation_key(key: IdempotencyKey, path: &Path, phase: &[u8]) -> IdempotencyKey {
     let mut input = Vec::with_capacity(96);
     input.extend_from_slice(b"acyclic.native-checkout.path-reconcile.v1\0");
     input.extend_from_slice(&key.into_bytes());
-    input.extend_from_slice(&(index as u64).to_le_bytes());
     input.extend_from_slice(phase);
     #[cfg(unix)]
     {
@@ -564,7 +547,10 @@ mod tests {
             .await
             .expect_err("a stale physical edit must fence restore");
         assert!(matches!(error, HostCheckoutError::StaleSource { .. }));
-        assert_eq!(std::fs::read(root.path().join("tracked.txt"))?, b"user-edit");
+        assert_eq!(
+            std::fs::read(root.path().join("tracked.txt"))?,
+            b"user-edit"
+        );
         Ok(())
     }
 
