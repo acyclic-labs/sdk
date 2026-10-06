@@ -9,6 +9,11 @@ mkdir -p "$SDK_TEMP_DIR" "$SDK_ARTIFACT_DIR" "$TOOLS_DIR"
 export PATH="$TOOLS_DIR/cargo/bin:$PATH"
 target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
 
+full_qualification="${FORCE:-false}"
+case "${GITHUB_EVENT_NAME:-}" in
+  release|workflow_dispatch|schedule) full_qualification=true ;;
+esac
+
 # Independent builds run beside the main test build in their own target
 # directories so Cargo's build lock never serializes them; the shared compiler
 # cache still deduplicates identical crates across them.
@@ -62,6 +67,13 @@ fork_join_conformance() {
 
 case "$lane" in
   gate)
+    if [[ "$full_qualification" != true ]]; then
+      cargo test --workspace --locked --lib
+      cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
+      mkdir -p "$SDK_ARTIFACT_DIR/coverage"
+      printf '%s\n' '{"scope":"rust-contract-tests","coverage_instrumented":false}' >"$SDK_ARTIFACT_DIR/coverage/core-check.json"
+      exit 0
+    fi
     if ! rustup component list --installed | grep -Eq '^llvm-tools-'; then
       component_log="$(mktemp "${SDK_TEMP_DIR}/rustup-component.XXXXXXXX")"
       trap 'rm -f -- "${component_log:-}"' EXIT
@@ -262,6 +274,12 @@ case "$lane" in
     test "$("$binary" --version)" = "$expected"
     ;;
   policy)
+    if [[ "$full_qualification" != true ]]; then
+      cargo clippy --workspace --lib --locked -- -D warnings
+      node --test scripts/test-plan-qualification.mjs
+      cargo fmt --all -- --check
+      exit 0
+    fi
     bash scripts/test-ensure-rust-target.sh
     bash scripts/test-qualify-gate-rustup.sh
     node scripts/check-workflow-runners.mjs
