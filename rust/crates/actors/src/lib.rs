@@ -4,6 +4,8 @@ use std::collections::HashSet;
 
 pub mod grpc;
 pub mod http;
+/// Rust-owned semantic projections for generated SDK metadata.
+pub mod domain;
 
 /// Rust-owned Actors v1 wire types and schema metadata.
 pub mod wire;
@@ -41,10 +43,6 @@ pub enum ContractError {
     DuplicateName,
 }
 
-fn digest(value: &[u8]) -> bool {
-    value.len() == 32 && value.iter().any(|byte| *byte != 0)
-}
-
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
     !value.subscription_id.is_empty()
         && !value.stream_path.is_empty()
@@ -57,7 +55,7 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
 
 /// Validates a customer-authored Actor creation request before admission.
 pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
-    if !digest(&request.code_sha256)
+    if !domain::valid_code_sha256(&request.code_sha256)
         || request.home_region.is_empty()
         || request.idempotency_key.is_empty()
         || !request.limits.as_ref().is_some_and(|limits| {
@@ -101,7 +99,7 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
 /// The service checks checkpoint compatibility or migration before activation.
 pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
-        || !digest(&request.code_sha256)
+        || !domain::valid_code_sha256(&request.code_sha256)
         || request.idempotency_key.is_empty()
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0

@@ -15,6 +15,7 @@ protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 prost-reflect = { workspace = true, features = ["serde"] }
 reqwest.workspace = true
 serde_json.workspace = true
+ts-rs = "=12.0.1"
 thiserror.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true

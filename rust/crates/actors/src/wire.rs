@@ -5,12 +5,14 @@
 //! generated transport adapter and consumes these same message types.
 
 use protify::*;
+use ts_rs::TS;
 
 proto_package!(ACTORS_PACKAGE, name = "acyclic.actors.v1", files = [ACTORS_FILE]);
 define_proto_file!(
     ACTORS_FILE,
     name = "actors/v1/actors.proto",
     package = ACTORS_PACKAGE,
+    options = [proto_option!("go_package" => "github.com/acyclic-labs/sdk/go/gen/actors/v1;actorsv1")],
     messages = [
         Binding,
         ActorLimits,
@@ -272,6 +274,7 @@ pub struct CheckpointActorResponse {
     pub actor: Option<ActorObservation>,
 }
 
+#[derive(TS)]
 #[proto_message]
 pub struct Header {
     #[proto(tag = 1)]

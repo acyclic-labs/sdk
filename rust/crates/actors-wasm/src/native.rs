@@ -56,8 +56,7 @@ pub async fn connect(
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
     let valid_endpoint = endpoint.strip_prefix("https://").is_some_and(|authority| {
-        !authority.is_empty()
-            && !authority.contains(['@', '?', '#', '\r', '\n'])
+        !authority.is_empty() && !authority.contains(['@', '?', '#', '\r', '\n'])
     });
     if !valid_endpoint {
         return Err(ConnectError::InsecureEndpoint);
@@ -80,10 +79,12 @@ pub async fn connect(
         .tls_config(tls)?
         .connect()
         .await?;
-    Ok(wire::actors_service_client::ActorsServiceClient::with_interceptor(
-        channel,
-        BearerAuth(authorization),
+    Ok(
+        wire::actors_service_client::ActorsServiceClient::with_interceptor(
+            channel,
+            BearerAuth(authorization),
+        )
+        .max_decoding_message_size(crate::MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(crate::MAX_MESSAGE_BYTES),
     )
-    .max_decoding_message_size(crate::MAX_MESSAGE_BYTES)
-    .max_encoding_message_size(crate::MAX_MESSAGE_BYTES))
 }

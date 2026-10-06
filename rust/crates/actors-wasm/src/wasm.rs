@@ -1,11 +1,24 @@
 //! Browser gRPC-Web client and generated operation bindings.
 
-use std::{cell::RefCell, future::Future, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    future::Future,
+    rc::Rc,
+};
 
 use acyclic_actors::{ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS};
-use futures::{channel::oneshot, future::{Either, select}, pin_mut};
+use futures::{
+    channel::oneshot,
+    future::{Either, select},
+    pin_mut,
+};
 use prost::Message;
-use tonic::{Request, Status, codegen::InterceptedService, metadata::{Ascii, MetadataValue}, service::Interceptor};
+use tonic::{
+    Request, Status,
+    codegen::InterceptedService,
+    metadata::{Ascii, MetadataValue},
+    service::Interceptor,
+};
 use wasm_bindgen::{JsValue, prelude::*};
 
 use crate::wire;
@@ -14,22 +27,6 @@ use crate::wire;
 #[wasm_bindgen(typescript_custom_section)]
 const ACTORS_TYPES: &'static str = r#"
 export type ActorsWireBytes = Uint8Array;
-export type CreateActorRequest = ActorsWireBytes;
-export type CreateActorResponse = ActorsWireBytes;
-export type UpdateActorRequest = ActorsWireBytes;
-export type UpdateActorResponse = ActorsWireBytes;
-export type InspectActorRequest = ActorsWireBytes;
-export type InspectActorResponse = ActorsWireBytes;
-export type AddSubscriptionRequest = ActorsWireBytes;
-export type AddSubscriptionResponse = ActorsWireBytes;
-export type RemoveSubscriptionRequest = ActorsWireBytes;
-export type RemoveSubscriptionResponse = ActorsWireBytes;
-export type ResumeSubscriptionRequest = ActorsWireBytes;
-export type ResumeSubscriptionResponse = ActorsWireBytes;
-export type CheckpointActorRequest = ActorsWireBytes;
-export type CheckpointActorResponse = ActorsWireBytes;
-export type InvokeActorRequest = ActorsWireBytes;
-export type InvokeActorResponse = ActorsWireBytes;
 
 export interface ActorsError extends Error {
   readonly code: string;
@@ -37,9 +34,9 @@ export interface ActorsError extends Error {
   readonly serviceCode?: number;
 }
 
-export function validateCreateActor(request: CreateActorRequest): void;
-export function validateUpdateActor(request: UpdateActorRequest): void;
-export function validateAddSubscription(request: AddSubscriptionRequest): void;
+export function validateCreateActor(request: ActorsWireBytes): void;
+export function validateUpdateActor(request: ActorsWireBytes): void;
+export function validateAddSubscription(request: ActorsWireBytes): void;
 "#;
 
 #[derive(Clone)]
@@ -55,17 +52,12 @@ impl Interceptor for BearerAuth {
 }
 
 type Transport = tonic_web_wasm_client::Client;
-type GeneratedClient = wire::actors_service_client::ActorsServiceClient<
-    InterceptedService<Transport, BearerAuth>,
->;
+type GeneratedClient =
+    wire::actors_service_client::ActorsServiceClient<InterceptedService<Transport, BearerAuth>>;
 
 fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {
     let error = js_sys::Error::new(message.as_ref());
-    let _ = js_sys::Reflect::set(
-        &error,
-        &JsValue::from_str("code"),
-        &JsValue::from_str(code),
-    );
+    let _ = js_sys::Reflect::set(&error, &JsValue::from_str("code"), &JsValue::from_str(code));
     error.into()
 }
 
@@ -74,12 +66,18 @@ fn invalid(message: impl AsRef<str>) -> JsValue {
 }
 
 fn busy() -> JsValue {
-    js_error("client_busy", "the Actors client is already executing an operation")
+    js_error(
+        "client_busy",
+        "the Actors client is already executing an operation",
+    )
 }
 
 fn decode<M: Message + Default>(bytes: &[u8]) -> Result<M, JsValue> {
     if bytes.len() > crate::MAX_MESSAGE_BYTES {
-        return Err(js_error("message_too_large", "Actors message exceeds the configured bound"));
+        return Err(js_error(
+            "message_too_large",
+            "Actors message exceeds the configured bound",
+        ));
     }
     M::decode(bytes).map_err(|_| invalid("malformed Actors protobuf request"))
 }
@@ -87,7 +85,10 @@ fn decode<M: Message + Default>(bytes: &[u8]) -> Result<M, JsValue> {
 fn encoded<M: Message>(message: &M) -> Result<JsValue, JsValue> {
     let bytes = message.encode_to_vec();
     if bytes.len() > crate::MAX_MESSAGE_BYTES {
-        return Err(js_error("message_too_large", "Actors message exceeds the configured bound"));
+        return Err(js_error(
+            "message_too_large",
+            "Actors message exceeds the configured bound",
+        ));
     }
     Ok(js_sys::Uint8Array::from(bytes.as_slice()).into())
 }
@@ -110,52 +111,6 @@ fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), JsValue> {
 
 fn validate_add(request: &wire::AddSubscriptionRequest) -> Result<(), JsValue> {
     acyclic_actors::validate_add_subscription(request).map_err(contract_error)
-}
-
-fn validate_inspect(request: &wire::InspectActorRequest) -> Result<(), JsValue> {
-    if request.actor_id.is_empty() {
-        Err(invalid("actor_id is required"))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_remove(request: &wire::RemoveSubscriptionRequest) -> Result<(), JsValue> {
-    if request.actor_id.is_empty()
-        || request.subscription_id.is_empty()
-        || request.idempotency_key.is_empty()
-    {
-        Err(invalid("actor_id, subscription_id, and idempotency_key are required"))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_resume(request: &wire::ResumeSubscriptionRequest) -> Result<(), JsValue> {
-    if request.actor_id.is_empty()
-        || request.subscription_id.is_empty()
-        || request.idempotency_key.is_empty()
-    {
-        Err(invalid("actor_id, subscription_id, and idempotency_key are required"))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_checkpoint(request: &wire::CheckpointActorRequest) -> Result<(), JsValue> {
-    if request.actor_id.is_empty() || request.idempotency_key.is_empty() {
-        Err(invalid("actor_id and idempotency_key are required"))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_invoke(request: &wire::InvokeActorRequest) -> Result<(), JsValue> {
-    if request.actor_id.is_empty() || request.method.is_empty() || request.url.is_empty() {
-        Err(invalid("actor_id, method, and url are required"))
-    } else {
-        Ok(())
-    }
 }
 
 fn grpc_code(code: tonic::Code) -> &'static str {
@@ -204,6 +159,7 @@ fn status_error(status: Status) -> JsValue {
 #[wasm_bindgen]
 pub struct CancellationHandle {
     sender: Rc<RefCell<Option<oneshot::Sender<()>>>>,
+    requested: Rc<Cell<bool>>,
 }
 
 #[wasm_bindgen]
@@ -213,11 +169,13 @@ impl CancellationHandle {
     pub fn new() -> Self {
         Self {
             sender: Rc::new(RefCell::new(None)),
+            requested: Rc::new(Cell::new(false)),
         }
     }
 
     /// Requests cancellation of the associated operation.
     pub fn cancel(&self) {
+        self.requested.set(true);
         if let Ok(mut sender) = self.sender.try_borrow_mut() {
             if let Some(sender) = sender.take() {
                 let _ = sender.send(());
@@ -227,10 +185,7 @@ impl CancellationHandle {
 
     /// Returns whether cancellation has already been requested.
     pub fn cancelled(&self) -> bool {
-        self.sender
-            .try_borrow()
-            .map(|sender| sender.is_none())
-            .unwrap_or(false)
+        self.requested.get()
     }
 }
 
@@ -239,8 +194,14 @@ impl CancellationHandle {
         let (sender, receiver) = oneshot::channel();
         let mut current = self.sender.try_borrow_mut().map_err(|_| busy())?;
         if current.is_some() {
-            return Err(js_error("client_busy", "cancellation handle is already in use"));
+            return Err(js_error(
+                "client_busy",
+                "cancellation handle is already in use",
+            ));
         }
+        // A handle can be reused after an operation completes. Reset its
+        // per-operation state only once ownership of the sender is available.
+        self.requested.set(false);
         *current = Some(sender);
         Ok(receiver)
     }
@@ -300,8 +261,10 @@ impl ActorsClient {
     #[wasm_bindgen(constructor)]
     pub fn new(endpoint: String, token: String) -> Result<Self, JsValue> {
         let is_http = endpoint.starts_with("http://") || endpoint.starts_with("https://");
-        if !is_http || endpoint.contains(['\r', '\n', '#', '?']) {
-            return Err(invalid("endpoint must be an HTTP(S) URL without query or fragment"));
+        if !is_http || endpoint.contains(['@', '\r', '\n', '#', '?']) {
+            return Err(invalid(
+                "endpoint must be an HTTP(S) URL without userinfo, query, or fragment",
+            ));
         }
         if token.trim().is_empty() || token.contains(['\r', '\n']) {
             return Err(invalid("bearer token is required"));
@@ -340,7 +303,11 @@ impl ActorsClient {
         validate_add(&decode(&request_bytes(request)?)?)
     }
 
-    #[wasm_bindgen(js_name = createActor, unchecked_param_type = "CreateActorRequest")]
+    #[wasm_bindgen(
+        js_name = createActor,
+        unchecked_param_type = "ActorsWireBytes",
+        unchecked_return_type = "ActorsWireBytes"
+    )]
     pub async fn create_actor(
         &self,
         request: JsValue,
@@ -356,7 +323,11 @@ impl ActorsClient {
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
-    #[wasm_bindgen(js_name = updateActor, unchecked_param_type = "UpdateActorRequest")]
+    #[wasm_bindgen(
+        js_name = updateActor,
+        unchecked_param_type = "ActorsWireBytes",
+        unchecked_return_type = "ActorsWireBytes"
+    )]
     pub async fn update_actor(
         &self,
         request: JsValue,
@@ -372,14 +343,17 @@ impl ActorsClient {
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
-    #[wasm_bindgen(js_name = inspectActor, unchecked_param_type = "InspectActorRequest")]
+    #[wasm_bindgen(
+        js_name = inspectActor,
+        unchecked_param_type = "ActorsWireBytes",
+        unchecked_return_type = "ActorsWireBytes"
+    )]
     pub async fn inspect_actor(
         &self,
         request: JsValue,
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InspectActorRequest>(&request_bytes(request)?)?;
-        validate_inspect(&request)?;
         let response = self
             .inner
             .try_borrow_mut()
@@ -388,7 +362,11 @@ impl ActorsClient {
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
-    #[wasm_bindgen(js_name = addSubscription, unchecked_param_type = "AddSubscriptionRequest")]
+    #[wasm_bindgen(
+        js_name = addSubscription,
+        unchecked_param_type = "ActorsWireBytes",
+        unchecked_return_type = "ActorsWireBytes"
+    )]
     pub async fn add_subscription(
         &self,
         request: JsValue,
@@ -404,14 +382,17 @@ impl ActorsClient {
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
-    #[wasm_bindgen(js_name = removeSubscription, unchecked_param_type = "RemoveSubscriptionRequest")]
+    #[wasm_bindgen(
+        js_name = removeSubscription,
+        unchecked_param_type = "ActorsWireBytes",
+        unchecked_return_type = "ActorsWireBytes"
+    )]
     pub async fn remove_subscription(
         &self,
         request: JsValue,
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::RemoveSubscriptionRequest>(&request_bytes(request)?)?;
-        validate_remove(&request)?;
         let response = self
             .inner
             .try_borrow_mut()
@@ -420,14 +401,17 @@ impl ActorsClient {
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
-    #[wasm_bindgen(js_name = resumeSubscription, unchecked_param_type = "ResumeSubscriptionRequest")]
+    #[wasm_bindgen(
+        js_name = resumeSubscription,
+        unchecked_param_type = "ActorsWireBytes",
+        unchecked_return_type = "ActorsWireBytes"
+    )]
     pub async fn resume_subscription(
         &self,
         request: JsValue,
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::ResumeSubscriptionRequest>(&request_bytes(request)?)?;
-        validate_resume(&request)?;
         let response = self
             .inner
             .try_borrow_mut()
@@ -436,14 +420,17 @@ impl ActorsClient {
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
-    #[wasm_bindgen(js_name = checkpointActor, unchecked_param_type = "CheckpointActorRequest")]
+    #[wasm_bindgen(
+        js_name = checkpointActor,
+        unchecked_param_type = "ActorsWireBytes",
+        unchecked_return_type = "ActorsWireBytes"
+    )]
     pub async fn checkpoint_actor(
         &self,
         request: JsValue,
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CheckpointActorRequest>(&request_bytes(request)?)?;
-        validate_checkpoint(&request)?;
         let response = self
             .inner
             .try_borrow_mut()
@@ -452,14 +439,17 @@ impl ActorsClient {
         encoded(&await_response(response, cancellation).await?.into_inner())
     }
 
-    #[wasm_bindgen(js_name = invokeActor, unchecked_param_type = "InvokeActorRequest")]
+    #[wasm_bindgen(
+        js_name = invokeActor,
+        unchecked_param_type = "ActorsWireBytes",
+        unchecked_return_type = "ActorsWireBytes"
+    )]
     pub async fn invoke_actor(
         &self,
         request: JsValue,
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InvokeActorRequest>(&request_bytes(request)?)?;
-        validate_invoke(&request)?;
         let response = self
             .inner
             .try_borrow_mut()

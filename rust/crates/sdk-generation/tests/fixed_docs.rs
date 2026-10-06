@@ -35,25 +35,26 @@ fn run(
     binary: &Path,
     operation: &str,
     root: &Path,
-    rustdoc: &Path,
+    rustdoc: Option<&Path>,
     output: &Path,
+    channel: &str,
 ) -> std::process::Output {
-    Command::new(binary)
-        .args([
-            operation,
-            "--root",
-            root.to_str().unwrap(),
-            "--rustdoc-json",
-            rustdoc.to_str().unwrap(),
-            "--output",
-            output.to_str().unwrap(),
-            "--version",
-            "0.2.0",
-            "--channel",
-            "release",
-        ])
-        .output()
-        .unwrap()
+    let mut command = Command::new(binary);
+    command.args([
+        operation,
+        "--root",
+        root.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--version",
+        "0.2.0",
+        "--channel",
+        channel,
+    ]);
+    if let Some(rustdoc) = rustdoc {
+        command.args(["--rustdoc-json", rustdoc.to_str().unwrap()]);
+    }
+    command.output().unwrap()
 }
 
 #[test]
@@ -62,6 +63,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     let rustdoc = temp("sdk-generation-rustdoc");
     let first = temp("sdk-generation-first");
     let second = temp("sdk-generation-second");
+    let foreign = temp("sdk-generation-foreign");
     for path in [
         "rust/crates/actors/src",
         "rust/crates/actors/examples",
@@ -126,10 +128,10 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         "crate_version": null,
         "includes_private": false,
         "index": {
-            "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [1], "is_stripped": false}}},
+            "0": {"id": 0, "crate_id": 0, "name": "acyclic_actors", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [1], "is_stripped": false}}},
             "1": {"id": 1, "crate_id": 0, "name": "visible", "span": null, "visibility": "public", "docs": "visible", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}}
         },
-        "paths": {"1": {"crate_id": 0, "path": ["demo", "visible"], "kind": "function"}},
+        "paths": {"1": {"crate_id": 0, "path": ["acyclic_actors", "visible"], "kind": "function"}},
         "external_crates": {},
         "target": {"triple": "x86_64-pc-windows-msvc", "target_features": []},
         "format_version": 60
@@ -151,7 +153,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     .unwrap();
     let binary = Path::new(env!("CARGO_BIN_EXE_sdk-generation"));
     assert!(
-        !run(binary, "generate", &root, &rustdoc, &first)
+        !run(binary, "generate", &root, Some(&rustdoc), &first, "release")
             .status
             .success()
     );
@@ -172,15 +174,15 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             "--version",
             "0.2.0",
             "--channel",
-            "release",
+            "preview",
             "--channel",
-            "release",
+            "preview",
         ])
         .output()
         .unwrap();
     assert!(!duplicate.status.success());
     for output in [&first, &second] {
-        let result = run(binary, "generate", &root, &rustdoc, output);
+        let result = run(binary, "generate", &root, Some(&rustdoc), output, "preview");
         assert!(
             result.status.success(),
             "{}",
@@ -191,11 +193,10 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         fs::read(first.join("generation-manifest.json")).unwrap(),
         fs::read(second.join("generation-manifest.json")).unwrap()
     );
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &fs::read(first.join("generation-manifest.json")).unwrap(),
-    )
-    .unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(first.join("generation-manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["tool"]["id"], "sdk-docs-library");
+    assert_eq!(manifest["family"], "acyclic_actors");
     assert_eq!(manifest["tool"]["version"], "0.2.0");
     assert_eq!(manifest["tool"]["channel"], "release");
     assert!(manifest["tool"].get("args").is_none());
@@ -217,13 +218,13 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     let guide = fs::read(&guide_path).unwrap();
     fs::write(&guide_path, b"tampered guide\n").unwrap();
     assert!(
-        !run(binary, "drift", &root, &rustdoc, &first)
+        !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
     fs::write(&guide_path, guide).unwrap();
     assert!(
-        run(binary, "drift", &root, &rustdoc, &first)
+        run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
@@ -231,13 +232,13 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     let data_bytes = fs::read(&data_path).unwrap();
     fs::write(&data_path, b"tampered generated data\n").unwrap();
     assert!(
-        !run(binary, "drift", &root, &rustdoc, &first)
+        !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
     fs::write(&data_path, data_bytes).unwrap();
     assert!(
-        run(binary, "drift", &root, &rustdoc, &first)
+        run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
@@ -245,13 +246,13 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     let schema_bytes = fs::read(&schema_path).unwrap();
     fs::write(&schema_path, b"tampered generated schema\n").unwrap();
     assert!(
-        !run(binary, "drift", &root, &rustdoc, &first)
+        !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
     fs::write(&schema_path, schema_bytes).unwrap();
     assert!(
-        run(binary, "drift", &root, &rustdoc, &first)
+        run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
@@ -259,7 +260,8 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         version: "0.3.0".into(),
         channel: Channel::Release,
         revision: "0123456789abcdef0123456789abcdef01234567".into(),
-        source_state: "captured-snapshot".into(),
+        source_state: "working-tree".into(),
+        source_sha256: None,
         repository_root: root.clone(),
         rustdoc_files: vec![rustdoc.join("actors.json")],
         mark_latest: true,
@@ -275,7 +277,8 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         version: "0.3.0".into(),
         channel: Channel::Release,
         revision: "fedcba9876543210fedcba9876543210fedcba98".into(),
-        source_state: "captured-snapshot".into(),
+        source_state: "working-tree".into(),
+        source_sha256: None,
         repository_root: root.clone(),
         rustdoc_files: vec![rustdoc.join("actors.json")],
         mark_latest: true,
@@ -287,9 +290,27 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             .unwrap();
     assert_eq!(guarded_index["releases"].as_array().unwrap().len(), 2);
     assert_eq!(guarded_index["latest"]["version"], "0.3.0");
+    let mut foreign_fixture = fixture.clone();
+    foreign_fixture["index"]["0"]["name"] = json!("foreign_crate");
+    foreign_fixture["paths"]["1"]["path"] = json!(["foreign_crate", "visible"]);
+    fs::write(
+        rustdoc.join("actors.json"),
+        serde_json::to_vec(&foreign_fixture).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !run(binary, "generate", &root, Some(&rustdoc), &foreign, "preview")
+            .status
+            .success()
+    );
+    fs::write(
+        rustdoc.join("actors.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
     fs::write(root.join("rust/crates/actors/src/lib.rs"), "tampered\n").unwrap();
     assert!(
-        !run(binary, "drift", &root, &rustdoc, &first)
+        !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
@@ -300,7 +321,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     .unwrap();
     fs::write(rustdoc.join("actors.json"), b"tampered\n").unwrap();
     assert!(
-        !run(binary, "drift", &root, &rustdoc, &first)
+        !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
@@ -308,4 +329,96 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     let _ = fs::remove_dir_all(rustdoc);
     let _ = fs::remove_dir_all(first);
     let _ = fs::remove_dir_all(second);
+    let _ = fs::remove_dir_all(foreign);
+}
+
+#[test]
+fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
+    let sandbox = temp("sdk-generation-rustdoc-stage");
+    let root = sandbox.join("root");
+    let output = sandbox.join("bundle");
+    fs::create_dir_all(root.join("rust/crates/actors/src")).unwrap();
+    fs::create_dir_all(root.join("rust/crates/actors/examples")).unwrap();
+    fs::create_dir_all(root.join("rust/crates/sdk-docs/src")).unwrap();
+    fs::create_dir_all(root.join("rust/crates/sdk-generation/src")).unwrap();
+    fs::create_dir_all(root.join("rust/crates/sdk-generation/tests")).unwrap();
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"rust/crates/actors\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.2.0\"\nedition = \"2024\"\nrust-version = \"1.98.1\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("rust/crates/actors/Cargo.toml"),
+        "[package]\nname = \"acyclic-actors\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\npublish = false\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("rust/crates/actors/src/lib.rs"),
+        "//! The executable Rust source for the Actors family.\n\npub fn visible() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("rust/crates/actors/examples/example.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
+    for (path, contents) in [
+        ("rust/crates/actors/README.md", "Actors\n"),
+        ("rust/crates/sdk-docs/Cargo.toml", "[package]\nname = \"sdk-docs\"\nversion = \"0.2.0\"\nedition = \"2024\"\n"),
+        ("rust/crates/sdk-docs/Cargo.lock", "docs lock\n"),
+        ("rust/crates/sdk-docs/src/lib.rs", "pub fn docs() {}\n"),
+        ("rust/crates/sdk-generation/Cargo.toml", "[package]\nname = \"sdk-generation\"\nversion = \"0.2.0\"\nedition = \"2024\"\n"),
+        ("rust/crates/sdk-generation/Cargo.lock", "generation lock\n"),
+        ("rust/crates/sdk-generation/README.md", "generation launcher\n"),
+        ("rust/crates/sdk-generation/rust-toolchain.toml", "[toolchain]\nchannel = \"1.98.1\"\n"),
+        ("rust/crates/sdk-generation/src/main.rs", "fn main() {}\n"),
+        ("rust/crates/sdk-generation/tests/fixed_docs.rs", "fixture test\n"),
+        ("docs/objects-v2-http.md", "objects guide\n"),
+        ("docs/rust-source-generation.md", "generation guide\n"),
+        ("rust-toolchain.toml", "[toolchain]\nchannel = \"1.98.1\"\n"),
+        (".gitignore", "target/\n"),
+    ] {
+        fs::write(root.join(path), contents).unwrap();
+    }
+    let lock = Command::new("cargo")
+        .args([
+            "+1.98.1",
+            "generate-lockfile",
+            "--manifest-path",
+            root.join("Cargo.toml").to_str().unwrap(),
+            "--offline",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        lock.status.success(),
+        "cargo generate-lockfile: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    git(&root, &["init", "--quiet"]);
+    git(&root, &["config", "user.email", "fixture@example.invalid"]);
+    git(&root, &["config", "user.name", "fixture"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "--quiet", "-m", "fixture"]);
+
+    let binary = Path::new(env!("CARGO_BIN_EXE_sdk-generation"));
+    let result = run(binary, "generate", &root, None, &output, "release");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let index: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("sdk-docs-versions.v1.json")).unwrap())
+            .unwrap();
+    assert_eq!(index["latest"]["version"], "0.2.0");
+    let drift = run(binary, "drift", &root, None, &output, "release");
+    assert!(
+        drift.status.success(),
+        "{}",
+        String::from_utf8_lossy(&drift.stderr)
+    );
+
+    let _ = fs::remove_dir_all(sandbox);
 }

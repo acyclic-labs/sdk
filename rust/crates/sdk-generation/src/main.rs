@@ -1,4 +1,4 @@
-use sdk_docs::{BuildInput, Channel, build_data, write_bundle};
+use sdk_docs::{BuildInput, Channel, DocsData, build_data, write_bundle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -12,6 +12,7 @@ use std::{
 
 const MANIFEST: &str = "generation-manifest.json";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const ACTORS_CRATE: &str = "acyclic_actors";
 const SOURCE_PATHS: &[&str] = &[
     "Cargo.toml",
     "docs/objects-v2-http.md",
@@ -52,6 +53,7 @@ struct ToolRecord {
 struct Manifest {
     schema: String,
     generator_version: String,
+    family: String,
     revision: String,
     source: Vec<FileHash>,
     source_sha256: String,
@@ -66,7 +68,7 @@ struct Manifest {
 struct Config {
     operation: String,
     root: PathBuf,
-    rustdoc_json: PathBuf,
+    rustdoc_json: Option<PathBuf>,
     output: PathBuf,
     version: String,
     channel: String,
@@ -128,6 +130,50 @@ fn canonical(path: &Path) -> io::Result<PathBuf> {
     fs::canonicalize(path).map_err(|error| {
         io::Error::other(format!("cannot canonicalize {}: {error}", path.display()))
     })
+}
+
+fn absolute_without_resolving(path: &Path) -> io::Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_owned())
+    } else {
+        Ok(env::current_dir()?.join(path))
+    }
+}
+
+fn reject_reparse_ancestors(path: &Path, require_leaf: bool) -> io::Result<()> {
+    let absolute = absolute_without_resolving(path)?;
+    let mut current = absolute.as_path();
+    let mut checked_leaf = false;
+    loop {
+        match fs::symlink_metadata(current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+                    return Err(io::Error::other(format!(
+                        "symlink or reparse point is not allowed: {}",
+                        current.display()
+                    )));
+                }
+                checked_leaf = true;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if !checked_leaf && require_leaf {
+                    return Err(io::Error::other(format!(
+                        "required path does not exist: {}",
+                        path.display()
+                    )));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Ok(())
 }
 
 fn collect_dir(
@@ -339,9 +385,93 @@ fn docs_channel(channel: &str) -> Channel {
     }
 }
 
+fn validate_actors_data(data: &DocsData) -> io::Result<()> {
+    if data.families.len() != 1 || data.families[0].crate_name != ACTORS_CRATE {
+        return Err(io::Error::other(format!(
+            "rustdoc input must contain exactly the {ACTORS_CRATE} family"
+        )));
+    }
+    Ok(())
+}
+
 fn current_tool_hash() -> io::Result<String> {
     let path = canonical(&env::current_exe()?)?;
     Ok(hash_file(&path, "sdk-generation".into())?.sha256)
+}
+
+fn rustdoc_target(config: &Config) -> io::Result<PathBuf> {
+    let parent = config
+        .output
+        .parent()
+        .ok_or_else(|| io::Error::other("output has no parent directory"))?;
+    let target = parent.join("sdk-generation-rustdoc-target");
+    reject_reparse_ancestors(&target, false)?;
+    fs::create_dir_all(&target)?;
+    reject_reparse_ancestors(&target, true)?;
+    let target = canonical(&target)?;
+    disjoint(&config.root, &target)?;
+    if target == config.output || target.starts_with(&config.output) {
+        return Err(io::Error::other(
+            "rustdoc target must be disjoint from generation output",
+        ));
+    }
+    Ok(target)
+}
+
+fn generate_rustdoc(config: &Config) -> io::Result<PathBuf> {
+    let target = rustdoc_target(config)?;
+    let manifest = config.root.join("Cargo.toml");
+    let status = Command::new("cargo")
+        .arg("+1.98.1")
+        .args([
+            "rustdoc",
+            "--locked",
+            "--manifest-path",
+        ])
+        .arg(&manifest)
+        .args([
+            "--package",
+            ACTORS_CRATE,
+            "--lib",
+            "--target-dir",
+        ])
+        .arg(&target)
+        .args([
+            "--",
+            "-Z",
+            "unstable-options",
+            "--output-format",
+            "json",
+        ])
+        .env("RUSTC_BOOTSTRAP", "1")
+        .status()
+        .map_err(|error| io::Error::other(format!("failed to run pinned rustdoc: {error}")))?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "pinned rustdoc exited with {status}"
+        )));
+    }
+    let json = target.join("doc").join(format!("{ACTORS_CRATE}.json"));
+    if !json.is_file() {
+        return Err(io::Error::other(format!(
+            "pinned rustdoc did not produce {}",
+            json.display()
+        )));
+    }
+    canonical(&json)
+}
+
+fn resolve_rustdoc(config: &Config) -> io::Result<PathBuf> {
+    match (&config.channel[..], &config.rustdoc_json) {
+        ("release", Some(_)) => Err(io::Error::other(
+            "release generation owns rustdoc input; omit --rustdoc-json",
+        )),
+        ("release", None) => generate_rustdoc(config),
+        (_, Some(path)) => Ok(path.clone()),
+        (_, None) => Err(io::Error::other(
+            "preview generation requires --rustdoc-json",
+        )),
+    }
 }
 
 fn write_manifest(path: &Path, value: &impl Serialize) -> io::Result<()> {
@@ -393,7 +523,8 @@ fn generate(config: &Config) -> io::Result<()> {
     let revision = git_revision(&config.root)?;
     require_clean_release(&config.root, &config.channel)?;
     let source = collect_sources(&config.root)?;
-    let (rustdoc, rustdoc_paths) = collect_rustdoc(&config.rustdoc_json)?;
+    let rustdoc_input = resolve_rustdoc(config)?;
+    let (rustdoc, rustdoc_paths) = collect_rustdoc(&rustdoc_input)?;
     let tool_sha256 = current_tool_hash()?;
     let source_sha256 = tree_digest(&source);
     let input = BuildInput {
@@ -411,6 +542,7 @@ fn generate(config: &Config) -> io::Result<()> {
         mark_latest: false,
     };
     let data = build_data(&input).map_err(io::Error::other)?;
+    validate_actors_data(&data)?;
     if current_tool_hash()? != tool_sha256 {
         return Err(io::Error::other(
             "generation tool changed during generation",
@@ -423,7 +555,7 @@ fn generate(config: &Config) -> io::Result<()> {
     }
     require_clean_release(&config.root, &config.channel)?;
     let source_after = collect_sources(&config.root)?;
-    let (rustdoc_after, _) = collect_rustdoc(&config.rustdoc_json)?;
+    let (rustdoc_after, _) = collect_rustdoc(&rustdoc_input)?;
     if source_after != source {
         return Err(io::Error::other(
             "source changed during documentation generation",
@@ -434,11 +566,13 @@ fn generate(config: &Config) -> io::Result<()> {
             "rustdoc input changed during documentation generation",
         ));
     }
-    write_bundle(&data, &config.output, false).map_err(io::Error::other)?;
+    write_bundle(&data, &config.output, config.channel == "release")
+        .map_err(io::Error::other)?;
     let artifacts = collect_outputs(&config.output)?;
     let manifest = Manifest {
         schema: "acyclic.sdk.generation.v1".into(),
         generator_version: VERSION.into(),
+        family: ACTORS_CRATE.into(),
         revision,
         source_sha256: tree_digest(&source),
         source,
@@ -462,6 +596,7 @@ fn drift(config: &Config) -> io::Result<()> {
     let revision = git_revision(&config.root)?;
     if manifest.schema != "acyclic.sdk.generation.v1"
         || manifest.generator_version != VERSION
+        || manifest.family != ACTORS_CRATE
         || manifest.revision != revision
     {
         return Err(io::Error::other(
@@ -472,7 +607,8 @@ fn drift(config: &Config) -> io::Result<()> {
     if manifest.source != source || manifest.source_sha256 != tree_digest(&source) {
         return Err(io::Error::other("source drift detected"));
     }
-    let (rustdoc, _) = collect_rustdoc(&config.rustdoc_json)?;
+    let rustdoc_input = resolve_rustdoc(config)?;
+    let (rustdoc, _) = collect_rustdoc(&rustdoc_input)?;
     if manifest.rustdoc != rustdoc || manifest.rustdoc_sha256 != tree_digest(&rustdoc) {
         return Err(io::Error::other("rustdoc input drift detected"));
     }
@@ -538,7 +674,12 @@ fn parse(args: &[String]) -> io::Result<Config> {
     Ok(Config {
         operation,
         root: value(args, "--root")?.into(),
-        rustdoc_json: value(args, "--rustdoc-json")?.into(),
+        rustdoc_json: args
+            .iter()
+            .position(|arg| arg == "--rustdoc-json")
+            .map(|_| value(args, "--rustdoc-json"))
+            .transpose()?
+            .map(Into::into),
         output: value(args, "--output")?.into(),
         version: value(args, "--version")?,
         channel,
@@ -546,9 +687,15 @@ fn parse(args: &[String]) -> io::Result<Config> {
 }
 
 fn normalize(mut config: Config) -> io::Result<Config> {
+    reject_reparse_ancestors(&config.root, true)?;
     config.root = canonical(&config.root)?;
-    config.rustdoc_json = canonical(&config.rustdoc_json)?;
+    if let Some(rustdoc_json) = &config.rustdoc_json {
+        reject_reparse_ancestors(rustdoc_json, true)?;
+        config.rustdoc_json = Some(canonical(rustdoc_json)?);
+    }
+    reject_reparse_ancestors(&config.output, false)?;
     fs::create_dir_all(&config.output)?;
+    reject_reparse_ancestors(&config.output, true)?;
     config.output = canonical(&config.output)?;
     Ok(config)
 }
