@@ -16,25 +16,28 @@ $mavenLocal = Join-Path $output '.m2'
 $pom = Join-Path $workspaceJvm 'pom.xml'
 $plugin = Join-Path $sourceJvm 'grpc-kotlin-plugin.cmd'
 foreach ($path in @($authority, $request, (Join-Path $sourceJvm 'pom.xml'))) {
-  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required Kotlin producer input is missing: $path" }
+  $kind = if ($path -eq $authority) { 'Container' } else { 'Leaf' }
+  if (-not (Test-Path -LiteralPath $path -PathType $kind)) { throw "Required Kotlin producer input is missing: $path" }
 }
 
 # Keep Maven's generated target and antrun files outside the Rust checkout.
 # The adapter is deliberately a staging boundary: producer execution must not
 # make the source tree dirty or turn compiler output into source authority.
 $null = New-Item -ItemType Directory -Force -Path $output, $workspace, $workspaceJvm, $mavenLocal
-Get-ChildItem -LiteralPath $sourceJvm -Force | Copy-Item -Destination $workspaceJvm -Recurse -Force
-foreach ($directory in Get-ChildItem -LiteralPath $workspaceJvm -Directory -Recurse -Force |
-    Where-Object { $_.Name -in @('target', 'obj', 'bin') } |
-    Sort-Object FullName -Descending) {
-  Remove-Item -LiteralPath $directory.FullName -Recurse -Force
+# Use PowerShell's portable file primitives so the same recipe works under
+# Windows PowerShell and PowerShell Core on Unix.  A Windows-only copy utility
+# and previously made the Rust-owned recipe depend on a disposable shim.
+$excludedDirectories = @('target', 'obj', 'bin')
+Get-ChildItem -LiteralPath $sourceJvm -Force | ForEach-Object {
+  if ($_.PSIsContainer -and $excludedDirectories -contains $_.Name) { return }
+  Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $workspaceJvm $_.Name) -Recurse -Force
 }
 
 $maven = Get-Command mvn -ErrorAction SilentlyContinue
 if ($null -eq $maven) { throw 'Maven is required for the pinned Kotlin producer.' }
 
 $mavenArgs = @(
-  '-B', '-ntp', '-f', $pom, '-DgenerateKotlin=true', '-DskipTests',
+  '-B', '-ntp', '-f', $pom, '-DgenerateKotlin=true', '-DskipTests', '-Dmaven.test.skip=true',
   "-Dacyclic.schema.root=$authority", "-Dmaven.repo.local=$mavenLocal"
 )
 $isWindowsPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
@@ -51,6 +54,7 @@ if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw "Kotlin producer 
 $artifact = Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar'
 Copy-Item -LiteralPath $jar -Destination $artifact -Force
 $manifest = Join-Path $authority 'rust-authority.json'
+if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw "Rust authority manifest is missing: $manifest" }
 @{
   schema = 'acyclic.sdk.kotlin.producer-output.v1'
   authority_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash

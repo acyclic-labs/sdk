@@ -82,5 +82,7 @@ test("Kotlin producer stages Maven output outside the Rust source checkout", () 
   assert.match(adapter, /workspaceJvm/);
   assert.match(adapter, /maven\.repo\.local/);
   assert.match(adapter, /RuntimeInformation/);
+  assert.match(adapter, /Copy-Item/);
+  assert.doesNotMatch(adapter, /robocopy/i, "Kotlin staging must work under PowerShell Core on Unix");
   assert.doesNotMatch(adapter, /Join-Path \$root ['"]jvm[\\/]target/);
 });
