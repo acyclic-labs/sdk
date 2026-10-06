@@ -8928,6 +8928,15 @@ mod tests {
             .expect("consumer directory");
         fs::write(&consumer, b"compiled-consumer-v1").expect("write consumer");
         let consumer_digest = hash_bytes(b"compiled-consumer-v1");
+        let fixture_binary = root.join("qualification/fixtures/fixture-server.bin");
+        fs::create_dir_all(fixture_binary.parent().expect("fixture parent"))
+            .expect("fixture directory");
+        fs::write(&fixture_binary, b"rust-fixture-server-v1").expect("write fixture binary");
+        let fixture_binary_digest = hash_bytes(b"rust-fixture-server-v1");
+        let fixture_source_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let fixture_manifest_digest =
+            "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
         let scenario = root.join("qualification/consumers/remote-scenario.json");
         let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"0000000000000000000000000000000000000000","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"/acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"remote","execution_step":0,"request_bytes_hex":"","request_sha256":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","response_bytes_hex":"","terminal_status":"ok","terminal_code":0,"checks":["invocation","transport","serialization"]}"#;
         fs::write(&scenario, scenario_bytes).expect("write scenario result");
@@ -8938,18 +8947,83 @@ mod tests {
             consumer_digest
         )
         .into_bytes();
+        let runtime_triple = match (env::consts::ARCH, env::consts::OS) {
+            ("x86_64", "windows") => "x86_64-pc-windows-msvc".to_owned(),
+            ("aarch64", "windows") => "aarch64-pc-windows-msvc".to_owned(),
+            ("x86_64", "linux") => "x86_64-unknown-linux-gnu".to_owned(),
+            ("aarch64", "linux") => "aarch64-unknown-linux-gnu".to_owned(),
+            ("x86_64", "macos") => "x86_64-apple-darwin".to_owned(),
+            ("aarch64", "macos") => "aarch64-apple-darwin".to_owned(),
+            (arch, os) => format!("{arch}-unknown-{os}"),
+        };
+        let platform = json!({
+            "execution_scope": "native",
+            "target_triple": runtime_triple,
+            "build_host_triple": runtime_triple,
+            "runtime_triple": runtime_triple,
+            "runtime_os": env::consts::OS,
+            "runtime_arch": env::consts::ARCH,
+            "observed": true,
+        });
+        let mut runtime_value: Value =
+            serde_json::from_slice(&runtime_bytes).expect("decode runtime fixture");
+        runtime_value["executed_package"]["artifact_path"] = json!(consumer.to_string_lossy());
+        runtime_value["executed_package"]["platform"] = platform.clone();
+        runtime_value["fixture_provenance"] = json!({
+            "source_revision": "0000000000000000000000000000000000000000",
+            "source_sha256": fixture_source_digest,
+            "binary_sha256": fixture_binary_digest,
+            "manifest_sha256": fixture_manifest_digest,
+            "build_receipt": {
+                "source_revision": "0000000000000000000000000000000000000000",
+                "binary_sha256": fixture_binary_digest,
+            },
+            "readiness": {
+                "source_sha256": fixture_source_digest,
+                "binary_sha256": fixture_binary_digest,
+            },
+        });
+        let runtime_bytes = serde_json::to_vec(&runtime_value).expect("encode runtime fixture");
         fs::write(&runtime_receipt, &runtime_bytes).expect("write runtime receipt");
         let runtime_digest = hash_bytes(&runtime_bytes);
         let semantic_expected = root.join("qualification/consumers/rust-expected.json");
         let semantic_expected_bytes = br#"{"schema":"acyclic.sdk.rpd.rust-authority-consumer-inventory.v1","complete":true,"method_count":1,"authority":{"source_git_sha":"0000000000000000000000000000000000000000","model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_file_hashes":{"rust/crates/actors/src/lib.rs":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},"packages":{"rust":{"provenance":{"source_git_sha":"0000000000000000000000000000000000000000","rust_model_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","generator":{"name":"fixture","version":"1"},"generator_lock_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema_inputs_sha256":{"fixture":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}},"methods":[{"family":"actors","package":"acyclic.actors.v1","service":"ActorsService","method":"CreateActor","path":"/acyclic.actors.v1.ActorsService/CreateActor","client_streaming":false,"server_streaming":false,"typed_request":{"empty_serialized_hex":"","response_base64":""},"terminal_status":"ok","terminal_code":0}],"execution_plan":[{"rpc":"/acyclic.actors.v1.ActorsService/CreateActor"}]}"#;
-        fs::write(&semantic_expected, semantic_expected_bytes)
+        let mut semantic_expected_value: Value =
+            serde_json::from_slice(semantic_expected_bytes).expect("decode expected fixture");
+        semantic_expected_value["packages"]["rust"]["sha256"] = json!(consumer_digest);
+        semantic_expected_value["packages"]["rust"]["platform"] = platform;
+        semantic_expected_value["fixture_provenance"] = json!({
+            "source_revision": "0000000000000000000000000000000000000000",
+            "source_sha256": fixture_source_digest,
+            "binary_sha256": fixture_binary_digest,
+            "manifest_sha256": fixture_manifest_digest,
+            "build_receipt": {
+                "source_revision": "0000000000000000000000000000000000000000",
+                "binary_sha256": fixture_binary_digest,
+            },
+            "readiness": {
+                "source_sha256": fixture_source_digest,
+                "binary_sha256": fixture_binary_digest,
+            },
+        });
+        let semantic_expected_bytes =
+            serde_json::to_vec(&semantic_expected_value).expect("encode expected fixture");
+        fs::write(&semantic_expected, &semantic_expected_bytes)
             .expect("write semantic expected input");
-        let semantic_expected_digest = hash_bytes(semantic_expected_bytes);
+        let semantic_expected_digest = hash_bytes(&semantic_expected_bytes);
         let semantic_verifier = root.join("qualification/consumers/rust-semantic-verifier.json");
-        let semantic_verifier_bytes = format!(
-            r#"{{"schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1","status":"passed","qualification":"qualified","source_git_sha":"0000000000000000000000000000000000000000","verifier_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","expected_input_sha256":"{}","observed_input_sha256":"{}","method_count":1,"semantic_comparisons":2,"failures":[]}}"#,
-            semantic_expected_digest, runtime_digest
-        ).into_bytes();
+        let verifier_sha = generation_executable_sha256().expect("generation executable hash");
+        let verifier_result = canonical_rust_verifier::verify_paths(
+            &semantic_expected,
+            &runtime_receipt,
+            "0000000000000000000000000000000000000000",
+            &verifier_sha,
+            false,
+        )
+        .expect("verify bound fixture bytes");
+        assert_eq!(verifier_result["status"], "passed", "{verifier_result:#}");
+        let semantic_verifier_bytes =
+            serde_json::to_vec(&verifier_result).expect("encode actual semantic verifier result");
         fs::write(&semantic_verifier, &semantic_verifier_bytes)
             .expect("write semantic verifier result");
         let semantic_verifier_digest = hash_bytes(&semantic_verifier_bytes);
@@ -9000,6 +9074,57 @@ mod tests {
         );
         fs::write(&receipt, receipt_bytes.as_bytes()).expect("write receipt");
         let digest = hash_bytes(receipt_bytes.as_bytes());
+        let receipt_value: Value = serde_json::from_str(&receipt_bytes).expect("decode receipt");
+        assert!(
+            validate_runtime_receipt(
+                &root,
+                &receipt_value["consumer"],
+                &expected,
+                &consumer_digest,
+            )
+            .is_some(),
+            "runtime fixture must pass the production validator"
+        );
+        assert!(
+            consumer_scenario_inventory(&root, &receipt_value, &expected).is_some(),
+            "scenario fixture must pass the production validator"
+        );
+        for (reported_hash, accepted) in [
+            (verifier_sha.clone(), true),
+            (format!("sha256:{}", "e".repeat(64)), false),
+        ] {
+            let mut changed_verifier = verifier_result.clone();
+            changed_verifier["verifier_sha256"] = json!(reported_hash);
+            let changed_bytes =
+                serde_json::to_vec(&changed_verifier).expect("encode verifier identity variant");
+            let changed_digest = hash_bytes(&changed_bytes);
+            fs::write(&semantic_verifier, &changed_bytes).expect("write verifier identity variant");
+            let mut changed_expected = expected.clone();
+            let artifact = changed_expected
+                .artifacts
+                .iter_mut()
+                .find(|artifact| {
+                    artifact.path == "qualification/consumers/rust-semantic-verifier.json"
+                })
+                .expect("verifier artifact");
+            artifact.sha256 = changed_digest.clone();
+            artifact.bytes = changed_bytes.len() as u64;
+            let mut changed_consumer = receipt_value["consumer"].clone();
+            changed_consumer["semantic_verifier"]["sha256"] = json!(changed_digest);
+            assert_eq!(
+                validate_runtime_receipt(
+                    &root,
+                    &changed_consumer,
+                    &changed_expected,
+                    &consumer_digest,
+                )
+                .is_some(),
+                accepted,
+                "verifier identity {reported_hash}"
+            );
+        }
+        fs::write(&semantic_verifier, &semantic_verifier_bytes)
+            .expect("restore genuine verifier receipt");
         assert!(evidence_test_receipt(
             &root,
             "rust",
@@ -9040,6 +9165,31 @@ mod tests {
                 false,
             )
             .is_err()
+        );
+        let wrong_fixture_runtime = root.join("qualification/consumers/wrong-fixture-receipt.json");
+        let mut wrong_fixture_value: Value = serde_json::from_slice(&runtime_bytes)
+            .expect("decode runtime fixture for substitution");
+        wrong_fixture_value["fixture_provenance"]["binary_sha256"] =
+            json!("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+        wrong_fixture_value["fixture_provenance"]["build_receipt"]["binary_sha256"] =
+            json!("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+        wrong_fixture_value["fixture_provenance"]["readiness"]["binary_sha256"] =
+            json!("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+        fs::write(
+            &wrong_fixture_runtime,
+            serde_json::to_vec(&wrong_fixture_value).expect("encode wrong fixture receipt"),
+        )
+        .expect("write wrong fixture receipt");
+        assert!(
+            canonical_rust_verifier::verify_paths(
+                &semantic_expected,
+                &wrong_fixture_runtime,
+                "0000000000000000000000000000000000000000",
+                verifier_sha,
+                false,
+            )
+            .is_err(),
+            "a different fixture binary must not qualify the same Rust plan"
         );
         let relabeled_scenario = receipt_bytes.replace(&scenario_digest, &consumer_digest);
         fs::write(&receipt, relabeled_scenario.as_bytes())
