@@ -2931,12 +2931,6 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
             script: None,
         },
         ToolSpec {
-            id: "sdk-generated-type-audit",
-            required: true,
-            manifest: some_file(root, "rust/crates/sdk-contract-wire/Cargo.toml"),
-            script: None,
-        },
-        ToolSpec {
             id: "sdk-contract-wire",
             required: true,
             manifest: some_file(root, "rust/crates/sdk-contract-wire/Cargo.toml"),
@@ -3004,6 +2998,14 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
             required: true,
             manifest: some_file(root, "rust/crates/sdk-docs/Cargo.toml"),
             script: first_file(root, &["docs/sdk-docs.py", "scripts/sdk-docs.py"]),
+        },
+        // Audit the final public surface after every producer and consumer
+        // stage. No downstream tool may overwrite a facade after it passes.
+        ToolSpec {
+            id: "sdk-generated-type-audit",
+            required: true,
+            manifest: some_file(root, "rust/crates/sdk-contract-wire/Cargo.toml"),
+            script: None,
         },
     ]
 }
@@ -3991,12 +3993,14 @@ fn prepare_type_audit_root(output: &Path) -> Result<PathBuf, CliError> {
         fs::remove_dir_all(&staging)?;
     }
     fs::create_dir_all(&staging)?;
-    // These roots are the Rust product generator's public facade closure. The
-    // audit intentionally receives no logs, requests, wire descriptors, or
-    // prior audit report, so its artifact hash map is stable across reruns.
+    // Include both Rust product facades and the later package producer trees.
+    // Auditing only product roots misses public surfaces introduced by the
+    // language-specific producers. Exclude the prior report to avoid hashing
+    // an audit's own output on subsequent runs.
     for relative in [
         "generated",
         "python",
+        "typescript",
         "go",
         "jvm",
         "csharp",
@@ -4007,6 +4011,7 @@ fn prepare_type_audit_root(output: &Path) -> Result<PathBuf, CliError> {
         "php",
         "dart",
         "haskell",
+        "language-producers",
     ] {
         let source = output.join(relative);
         if source.exists() {
@@ -5544,7 +5549,17 @@ fn tool_command(
             // exported schemas emitted by the preceding wire stage.
             output.join("wire").as_os_str().to_os_string(),
             OsString::from("--output"),
-            output.join("python").as_os_str().to_os_string(),
+            // The Rust facade producer owns the package root.  Keep the
+            // grpcio-tools stage scoped to its generated subtree so replacing
+            // protobuf output cannot delete remote.py, py.typed, or facade
+            // package metadata emitted earlier in this same run.
+            output
+                .join("python")
+                .join("src")
+                .join("acyclic_sdk")
+                .join("generated")
+                .as_os_str()
+                .to_os_string(),
         ];
         if let Some(script) = &spec.script {
             command.extend([
@@ -8720,8 +8735,7 @@ mod tests {
             .map(|spec| spec.id)
             .collect::<Vec<_>>();
         let index = |id: &str| ids.iter().position(|candidate| *candidate == id).unwrap();
-        assert!(index("sdk-product-artifacts") < index("sdk-generated-type-audit"));
-        assert!(index("sdk-generated-type-audit") < index("sdk-contract-wire"));
+        assert!(index("sdk-product-artifacts") < index("sdk-contract-wire"));
         assert!(index("sdk-contract-wire") < index("sdk-language-producers"));
         assert!(index("sdk-openapi-prototype") < index("sdk-language-producers"));
         assert!(index("sdk-language-producers") < index("sdk-python"));
@@ -8731,6 +8745,7 @@ mod tests {
         assert!(index("sdk-typescript-rpc-contracts") < index("sdk-examples"));
         assert!(index("sdk-typescript") < index("sdk-examples"));
         assert!(index("sdk-examples") < index("sdk-docs"));
+        assert_eq!(index("sdk-generated-type-audit"), ids.len() - 1);
     }
 
     #[test]
@@ -8754,6 +8769,19 @@ mod tests {
             b"module GeneratedTyped where\n",
         )
         .expect("Haskell facade fixture");
+        fs::create_dir_all(output.join("language-producers/haskell/src"))
+            .expect("late Haskell producer fixture");
+        fs::write(
+            output.join("language-producers/haskell/src/Semantics.hs"),
+            b"module Semantics where\ndata UnsafePublicEnum = Raw Int\n",
+        )
+        .expect("write late producer public surface");
+        fs::create_dir_all(output.join("typescript/src")).expect("TypeScript producer fixture");
+        fs::write(
+            output.join("typescript/src/index.ts"),
+            b"export type LatePublicId = string;\n",
+        )
+        .expect("write TypeScript public surface");
         fs::write(
             output.join("source-authority.json"),
             br#"{"source_revision":"1111111111111111111111111111111111111111"}"#,
@@ -8764,12 +8792,23 @@ mod tests {
         assert!(!first.join("generated/public-type-audit.json").exists());
         assert!(first.join("dotnet/RustTypedClients.cs").exists());
         assert!(first.join("haskell/generated_typed.hs").exists());
+        assert!(
+            first
+                .join("language-producers/haskell/src/Semantics.hs")
+                .exists()
+        );
+        assert!(first.join("typescript/src/index.ts").exists());
         assert!(first.join("source-authority.json").exists());
 
         let second = prepare_type_audit_root(&output).expect("repeat audit staging");
         assert!(!second.join("generated/public-type-audit.json").exists());
         assert!(second.join("dotnet/RustTypedClients.cs").exists());
         assert!(second.join("haskell/generated_typed.hs").exists());
+        assert_eq!(
+            fs::read(second.join("language-producers/haskell/src/Semantics.hs")).unwrap(),
+            b"module Semantics where\ndata UnsafePublicEnum = Raw Int\n"
+        );
+        assert!(second.join("typescript/src/index.ts").exists());
         assert!(second.join("source-authority.json").exists());
         cleanup(&second);
         cleanup(&output);
@@ -9131,6 +9170,51 @@ mod tests {
             args[registry_index + 1],
             root.join("release/cargo-registry-metadata.json")
                 .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn python_protobuf_stage_targets_generated_subtree() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let output = root.join("target/sdk-generation-python-stage-test");
+        let spec = tool_specs(&root)
+            .into_iter()
+            .find(|spec| spec.id == "sdk-python")
+            .expect("Python producer is registered");
+        let source = SourceIdentity {
+            revision: "0123456789012345678901234567890123456789".into(),
+            dirty: false,
+            digest: "sha256:test".into(),
+        };
+        let command = tool_command(
+            &root,
+            &spec,
+            Operation::Generate,
+            &output.join("request.json"),
+            &output,
+            &source,
+        )
+        .expect("Python producer is configured");
+        let args = command
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let output_index = args
+            .iter()
+            .position(|argument| argument == "--output")
+            .expect("Python producer receives an output path");
+        assert_eq!(
+            args[output_index + 1],
+            output
+                .join("python")
+                .join("src")
+                .join("acyclic_sdk")
+                .join("generated")
+                .to_string_lossy()
+        );
+        assert!(
+            args[output_index + 1].ends_with("acyclic_sdk\\generated")
+                || args[output_index + 1].ends_with("acyclic_sdk/generated")
         );
     }
 
