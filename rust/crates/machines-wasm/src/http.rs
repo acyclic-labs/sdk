@@ -4,6 +4,7 @@
 //! codec.  This module owns the response contract so the TypeScript adapter
 //! does not maintain a second, subtly different schema implementation.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use js_sys::{Array, BigInt, Map as JsMap, Object, Reflect, Uint8Array};
 use serde_json::Value;
 use wasm_bindgen::{JsCast, prelude::*};
@@ -41,7 +42,7 @@ const OPERATION_PHASES: &[&str] = &[
 ];
 
 fn error(message: impl Into<String>) -> JsValue {
-    JsValue::from_str(&message.into())
+    crate::js_error("invalid", message.into())
 }
 fn object<'a>(value: &'a Value, name: &str) -> Result<&'a serde_json::Map<String, Value>, JsValue> {
     value
@@ -70,13 +71,10 @@ fn integer(value: &Value, name: &str) -> Result<u64, JsValue> {
     let value = value
         .as_u64()
         .ok_or_else(|| error(format!("{name} must be a safe integer")))?;
-    if !safe_u64(value) {
+    if value > crate::MAX_SAFE_INTEGER {
         return Err(error(format!("{name} must be a safe integer")));
     }
     Ok(value)
-}
-fn safe_u64(value: u64) -> bool {
-    value <= 9_007_199_254_740_991
 }
 fn big(value: &Value, name: &str) -> Result<u64, JsValue> {
     if value
@@ -146,48 +144,7 @@ fn bytes_payload(value: &Value) -> Option<Vec<u8>> {
     decode_base64(value.as_object()?.get("$bytes")?.as_str()?)
 }
 fn decode_base64(value: &str) -> Option<Vec<u8>> {
-    if !value.len().is_multiple_of(4)
-        || value
-            .bytes()
-            .any(|byte| !byte.is_ascii_alphanumeric() && !b"+/=".contains(&byte))
-    {
-        return None;
-    }
-    let mut output = Vec::new();
-    let bytes = value.as_bytes();
-    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-        let padding = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
-        if padding > 2
-            || (padding > 0 && index + 1 != bytes.len() / 4)
-            || chunk.iter().take(4 - padding).any(|byte| *byte == b'=')
-        {
-            return None;
-        }
-        let mut n = 0_u32;
-        for byte in chunk {
-            n <<= 6;
-            n |= match *byte {
-                b'A'..=b'Z' => u32::from(byte - b'A'),
-                b'a'..=b'z' => u32::from(byte - b'a' + 26),
-                b'0'..=b'9' => u32::from(byte - b'0' + 52),
-                b'+' => 62,
-                b'/' => 63,
-                b'=' => 0,
-                _ => return None,
-            };
-        }
-        if (padding == 1 && n & 0xc0 != 0) || (padding == 2 && n & 0xf000 != 0) {
-            return None;
-        }
-        output.push(u8::try_from(n >> 16).ok()?);
-        if padding < 2 {
-            output.push(u8::try_from((n >> 8) & 0xff).ok()?);
-        }
-        if padding == 0 {
-            output.push(u8::try_from(n & 0xff).ok()?);
-        }
-    }
-    Some(output)
+    STANDARD.decode(value).ok()
 }
 
 fn image(value: &Value) -> Result<(), JsValue> {
@@ -860,7 +817,7 @@ fn encode_js(value: &JsValue, seen: &JsMap) -> Result<Value, String> {
     if Uint8Array::is_type_of(value) {
         let value = Uint8Array::new(value).to_vec();
         let mut wrapper = serde_json::Map::new();
-        wrapper.insert("$bytes".to_owned(), Value::String(encode_base64(&value)));
+        wrapper.insert("$bytes".to_owned(), Value::String(STANDARD.encode(&value)));
         return Ok(Value::Object(wrapper));
     }
     if !value.is_object() {
@@ -911,32 +868,6 @@ fn descriptor_value(object: &Object, key: &JsValue) -> Result<Option<JsValue>, S
     Reflect::get(descriptor.as_ref(), &JsValue::from_str("value"))
         .map(Some)
         .map_err(|_| "could not inspect request property".to_owned())
-}
-
-fn encode_base64(value: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity(value.len().div_ceil(3) * 4);
-    for chunk in value.chunks(3) {
-        let first = chunk[0];
-        result.push(ALPHABET[(first >> 2) as usize] as char);
-        if chunk.len() == 1 {
-            result.push(ALPHABET[((first & 0x03) << 4) as usize] as char);
-            result.push('=');
-            result.push('=');
-            continue;
-        }
-        let second = chunk[1];
-        result.push(ALPHABET[((first & 0x03) << 4 | second >> 4) as usize] as char);
-        if chunk.len() == 2 {
-            result.push(ALPHABET[((second & 0x0f) << 2) as usize] as char);
-            result.push('=');
-            continue;
-        }
-        let third = chunk[2];
-        result.push(ALPHABET[((second & 0x0f) << 2 | third >> 6) as usize] as char);
-        result.push(ALPHABET[(third & 0x3f) as usize] as char);
-    }
-    result
 }
 
 #[cfg(test)]
@@ -1071,8 +1002,6 @@ mod tests {
         assert!(decode_base64("AQ==AQID").is_none());
         assert!(decode_base64("AR==").is_none());
         assert!(decode_base64("not base64!").is_none());
-        assert!(safe_u64(9_007_199_254_740_991));
-        assert!(!safe_u64(9_007_199_254_740_992));
         assert_eq!(
             bytes_payload(&serde_json::json!({"$bytes": "AQID"})),
             Some(vec![1, 2, 3])

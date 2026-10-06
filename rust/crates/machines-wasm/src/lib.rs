@@ -16,13 +16,26 @@ use wasm_bindgen::prelude::*;
 mod http;
 mod public;
 
+/// Largest integer a JavaScript number represents exactly.
+pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+/// Builds every error thrown across the JavaScript boundary: an `Error` named
+/// `MachinesError` whose string `code` names a stable failure category.
+pub(crate) fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {
+    let error = js_sys::Error::new(message.as_ref());
+    error.set_name("MachinesError");
+    // Defining a data property on a fresh, unfrozen `Error` cannot fail.
+    let _ = js_sys::Reflect::set(&error, &JsValue::from_str("code"), &JsValue::from_str(code));
+    error.into()
+}
+
 // Keep the hosted transport route/output relationship in one Rust declaration.
 // The macro emits the runtime route table and the TypeScript declarations from
 // the same entries, so a route cannot silently drift between those boundaries.
 macro_rules! define_http_routes {
     ($( $name:ident => $route:literal => $request:literal => $response:literal ),+ $(,)?) => {
         pub(crate) mod http_route {
-            use super::JsValue;
+            use super::{JsValue, js_error};
 
             $(pub const $name: &str = $route;)+
 
@@ -32,7 +45,7 @@ macro_rules! define_http_routes {
                 ALL.iter()
                     .copied()
                     .find(|candidate| *candidate == value)
-                    .ok_or_else(|| JsValue::from_str("unknown Machines HTTP route"))
+                    .ok_or_else(|| js_error("invalid", "unknown Machines HTTP route"))
             }
         }
 
@@ -117,7 +130,7 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
         return Ok(parsed.to_string());
     }
     if value.is_empty() {
-        return Err(JsValue::from_str("identity value is required"));
+        return Err(js_error("invalid", "identity value is required"));
     }
     let mut digest = Sha256::new();
     digest.update(b"acyclic-machines-identity-v1\0");
@@ -373,7 +386,7 @@ impl WasmSimulatedMachines {
         let value = public::dispatch(&self.inner, operation_name, payload).await?;
         value
             .as_string()
-            .ok_or_else(|| JsValue::from_str("Machines operation returned a non-string result"))
+            .ok_or_else(|| js_error("invalid", "Machines operation returned a non-string result"))
     }
 
     async fn public_call_raw(

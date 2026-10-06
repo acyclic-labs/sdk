@@ -291,6 +291,7 @@ name = "acyclic-machines-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-machines",
+ "base64 0.22.1",
  "futures",
  "hex",
  "js-sys",
