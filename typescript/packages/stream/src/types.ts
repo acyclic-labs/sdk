@@ -17,6 +17,7 @@ import type {
 } from "../generated/proto/stream/v2/stream_pb.js";
 import { validateIdempotencyKey as validateIdempotencyKeyRust } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { TokenOperation } from "./token-operations.js";
+import type { RustOwnedTransportKind } from "./generated-client.js";
 export { TOKEN_OPERATIONS } from "./token-operations.js";
 export type { TokenOperation } from "./token-operations.js";
 
@@ -123,7 +124,12 @@ export interface StreamProvider {
   createToken?(request: CreateTokenRequest, signal?: AbortSignal): Promise<AccessToken>;
 }
 
-export interface StreamEnvironment { readonly endpoint: string; readonly token: string }
+export interface StreamEnvironment {
+  readonly endpoint: string;
+  readonly token: string;
+  /** Optional Rust-qualified transport override; omission selects the best installed transport. */
+  readonly transport?: RustOwnedTransportKind;
+}
 export class StreamError extends Error {
   constructor(readonly code: string, message: string, readonly status?: number) { super(message); }
 }

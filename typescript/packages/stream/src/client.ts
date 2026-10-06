@@ -190,7 +190,7 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
       throw new StreamError("unavailable", `Stream native transport is unavailable in this runtime${reason}`);
     }
   }
-  throw new StreamError("unsupported", `Stream transport ${selected.kind} is unavailable in the ${runtime} runtime`);
+  throw new StreamError("unsupported", `Selected Rust-qualified Stream transport is unavailable in the ${runtime} runtime`);
 }
 
 function isNativeRuntime(): boolean {
