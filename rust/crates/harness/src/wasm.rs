@@ -2450,6 +2450,31 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
 }
 
+/// Public facade input for the shared request constructor.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmModelRequestInput {
+    model: crate::model::Model,
+    messages: Vec<ModelMessage>,
+    tools: Vec<WasmToolDefinitionInput>,
+    max_output_tokens: Option<u32>,
+}
+
+/// Constructs the same canonical request bytes used by native providers.
+#[wasm_bindgen(js_name = prepareModelRequest)]
+pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8>, JsValue> {
+    let input: WasmModelRequestInput = from_js(request)?;
+    let request = crate::model::ModelRequest {
+        model: input.model,
+        messages: input.messages,
+        tools: input.tools.into_iter().map(ToolDefinition::from).collect(),
+        max_output_tokens: input.max_output_tokens,
+    };
+    let prepared =
+        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?).map_err(js_error)?;
+    Ok(prepared.bytes().to_vec())
+}
+
 /// Validates provider-neutral model content under the exact native limits.
 #[wasm_bindgen(
     js_name = validateModelContent,

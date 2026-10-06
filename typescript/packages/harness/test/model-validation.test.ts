@@ -1,17 +1,57 @@
 import { expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
 import {
-  DEFAULT_LIMITS, NativeContracts, descriptorFor, type AgentId, type FileRef,
+  DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef,
 } from "../src/index.js";
 import {
-  validateModelContent, validateUserInput,
+  prepareModelRequest, validateModelContent, validateUserInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime.js";
 
 const contracts = await NativeContracts.create();
 const rawWasmExports = await initWasm();
 const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
+
+test("native and WASM request construction preserve exact Unicode and paired tool bytes", async () => {
+  const fixture = await readFile(new URL("../../../../fixtures/harness/v2/model-request.json", import.meta.url));
+  const wire = contracts.decodeModelJson(fixture) as unknown as WasmModelRequestWire;
+  const request = {
+    model: wire.model,
+    messages: wire.messages,
+    tools: wire.tools.map((tool) => ({
+      name: tool.name, revision: tool.revision, description: tool.description,
+      inputSchema: tool.input_schema, outputSchema: tool.output_schema,
+    })),
+    maxOutputTokens: wire.max_output_tokens,
+  };
+  const bytes = prepareModelRequest(request, DEFAULT_LIMITS);
+  expect(bytes).toEqual(Uint8Array.from(fixture));
+  expect(() => prepareModelRequest({ ...request, maxOutputTokens: 0 }, DEFAULT_LIMITS)).toThrow();
+  expect(() => prepareModelRequest({ ...request, messages: request.messages.slice(0, 2) }, DEFAULT_LIMITS)).toThrow("incomplete");
+  expect(() => prepareModelRequest({ ...request, tools: [...request.tools, ...request.tools] }, DEFAULT_LIMITS)).toThrow("repeated");
+});
+
+test("the actual task provider receives the admitted serialized input", async () => {
+  const prompt = "é\0🦀\r\n";
+  let calls = 0;
+  const runtime = Harness.builder(contracts).model({ provider: "mock", name: "exact", revision: "pinned", options: {} }, {
+    async *generate(request) {
+      calls += 1;
+      expect(contracts.decodeModelJson(request.serializedInput)).toEqual({
+        model: request.model, messages: [{ role: "user", content: prompt }],
+        tools: [], max_output_tokens: 4_096,
+      });
+      expect(request.messages).toEqual([{ role: "user", content: prompt }]);
+      yield { kind: "completed" as const, metadata: {} };
+    },
+    async reconcile() { return undefined; },
+  }).build();
+  await runtime.run(prompt);
+  expect(calls).toBe(1);
+});
 
 test("stale WASM modules fail compatibility checks before model dispatch", () => {
   expect(() => assertHarnessWasmExports(harnessWasm)).not.toThrow();

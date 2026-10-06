@@ -422,7 +422,7 @@ impl ToolExecutor for LocalReadFileTool {
             let text = String::from_utf8(bytes)
                 .map_err(|_| Error::Unsupported("read_file requires UTF-8 content".into()))?;
             Ok(ToolResult {
-                value: json!({"file": input.file, "text": text}),
+                value: Value::String(text),
             })
         })
     }
@@ -441,8 +441,7 @@ impl ToolProjection for LocalReadFileTool {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let text = result
             .value
-            .get("text")
-            .and_then(Value::as_str)
+            .as_str()
             .ok_or_else(|| Error::Invalid("read_file result has no text".into()))?;
         let projection = Value::String(text.into());
         if serde_json::to_vec(&projection)
@@ -608,7 +607,7 @@ impl MemoryHarnessStorage {
         Tool {
             definition: ToolDefinition {
                 name: "acyclic.read_file".into(),
-                revision: "1".into(),
+                revision: "2".into(),
                 description: "Read bounded UTF-8 bytes from an authorized immutable FileRef".into(),
                 input_schema: json!({
                     "type": "object",
@@ -616,12 +615,7 @@ impl MemoryHarnessStorage {
                     "required": ["file"],
                     "additionalProperties": false
                 }),
-                output_schema: json!({
-                    "type": "object",
-                    "properties": {"file": {"type": "object"}, "text": {"type": "string"}},
-                    "required": ["file", "text"],
-                    "additionalProperties": false
-                }),
+                output_schema: json!({"type": "string"}),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -1396,11 +1390,14 @@ mod tests {
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     impl ModelProvider for TextModel {
-        fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            request: crate::model::PreparedModelRequest,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             self.0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(request);
+                .push(request.request().clone());
             Box::pin(stream::iter(vec![
                 Ok(ModelEvent::Content {
                     delta: "local response".into(),
@@ -1449,7 +1446,7 @@ mod tests {
             arguments: json!({"file": file}),
         };
         let result = tool.executor.execute(invocation.clone()).await?;
-        assert_eq!(result.value["text"], "pinned text");
+        assert_eq!(result.value, json!("pinned text"));
         assert_eq!(
             tool.projection.project(&invocation, &result)?,
             json!("pinned text")
@@ -1686,7 +1683,11 @@ mod tests {
     }
 
     impl ModelProvider for ReadFileModel {
-        fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            request: crate::model::PreparedModelRequest,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            let request = request.request();
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 let Some(file) = self
                     .file

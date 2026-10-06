@@ -264,14 +264,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         let refs: Vec<&FileRef> = match event {
+            ExecutionEvent::ModelStarted { request, .. } => vec![request],
             ExecutionEvent::Model { event, .. } => vec![event],
             ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
             ExecutionEvent::ToolCompleted {
                 result, projection, ..
             } => vec![result, projection],
-            ExecutionEvent::Started { .. }
-            | ExecutionEvent::ModelStarted { .. }
-            | ExecutionEvent::ToolFailed { .. } => Vec::new(),
+            ExecutionEvent::Started { .. } | ExecutionEvent::ToolFailed { .. } => Vec::new(),
         };
         for reference in refs {
             if reference.volume() != &self.volume {

@@ -11,7 +11,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
-  "validateModelContent", "validateModelMessages", "validateUserInput", "admitModelEvent", "selectModelContext",
+  "validateModelContent", "prepareModelRequest", "validateModelMessages", "validateUserInput", "admitModelEvent", "selectModelContext",
   "validateModelContextSelection", "validateSelectedModelContext",
   "prepareConversationTurn",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",

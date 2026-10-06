@@ -51,8 +51,8 @@ pub enum ProxyCall {
     Started {
         /// The step number.
         step: u32,
-        /// BLAKE3 of the request body as forwarded.
-        request_digest: [u8; 32],
+        /// Exact request body as forwarded, excluding transport credentials.
+        request: Vec<u8>,
     },
     /// The call's response completed with this usage.
     Completed {
@@ -309,7 +309,7 @@ async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: 
     let forwarded = request.to_string();
     shared.report(ProxyCall::Started {
         step,
-        request_digest: *blake3::hash(forwarded.as_bytes()).as_bytes(),
+        request: forwarded.as_bytes().to_vec(),
     });
 
     let mut outgoing = shared

@@ -97,6 +97,8 @@ pub enum ExecutionEvent {
         step: u32,
         /// Digest of the exact model request.
         request_digest: [u8; 32],
+        /// Pinned private artifact containing the exact provider-neutral request bytes.
+        request: FileRef,
     },
     /// One model stream item was observed.
     Model {
@@ -330,7 +332,7 @@ impl StockExecutor {
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         crate::contract::canonical_json_digest(&json!({
-            "executor": "acyclic.stock.v2",
+            "executor": "acyclic.stock.v3",
             "input": input,
             "model": self.model,
             "context": self.context.contracts(),
@@ -405,11 +407,10 @@ impl StockExecutor {
                 prior_messages: prior_messages.to_vec(),
             })
             .await?;
-        if context.messages.len() > self.limits.context_messages {
-            return Err(Error::Invalid("model context exceeds message limit".into()));
-        }
         for message in &context.messages {
-            message.content.validate_limits(self.limits)?;
+            for reference in message.content.file_refs() {
+                journal.verify_input_file(reference).await?;
+            }
         }
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();
@@ -438,13 +439,15 @@ impl StockExecutor {
                         .contains(&format!("tool:call:{}", tool.name))
                 })
                 .collect(),
-            max_output_tokens: None,
+            max_output_tokens: Some(4_096),
         };
-        let request_digest = model_request_digest(&request)?;
+        let request = crate::model::PreparedModelRequest::prepare(request, self.limits)?;
+        let request_digest = request.manifest().request_digest;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ModelStarted {
                 step: event_step,
                 request_digest,
+                ..
             } if *event_step == step => Some(*request_digest),
             _ => None,
         });
@@ -457,6 +460,22 @@ impl StockExecutor {
             return Err(Error::Conflict(
                 "model attempt identity is bound to another request".into(),
             ));
+        }
+        if let Some(reference) = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ModelStarted {
+                step: event_step,
+                request,
+                ..
+            } if *event_step == step => Some(request),
+            _ => None,
+        }) {
+            let recorded = load_json::<ModelRequest>(journal, reference).await?;
+            let recorded = crate::model::PreparedModelRequest::prepare(recorded, self.limits)?;
+            if recorded.bytes() != request.bytes() {
+                return Err(Error::Conflict(
+                    "recorded model request differs from dispatch".into(),
+                ));
+            }
         }
         let replay_completed = admission.completed;
         let model_events = if replay_completed {
@@ -498,6 +517,7 @@ impl StockExecutor {
                 ExecutionEvent::ModelStarted {
                     step: event_step,
                     request_digest,
+                    ..
                 } if *event_step == step => Some(*request_digest),
                 _ => None,
             }) {
@@ -508,6 +528,13 @@ impl StockExecutor {
                 }
                 return Err(Error::Indeterminate(input.operation_id));
             }
+            let request_ref = stage_bytes(
+                journal,
+                input.operation_id,
+                &format!("model:{step}:request"),
+                request.bytes().to_vec(),
+            )
+            .await?;
             let claimed = journal
                 .append_if_tail(
                     input.operation_id,
@@ -516,6 +543,7 @@ impl StockExecutor {
                     ExecutionEvent::ModelStarted {
                         step,
                         request_digest,
+                        request: request_ref,
                     },
                 )
                 .await;
@@ -622,33 +650,11 @@ impl StockExecutor {
         }
         tool.executor
             .authorize(Some(&self.tool_scope), &invocation)?;
-        // Malformed arguments are the model's mistake to correct, not a reason to end the turn:
-        // hand the validation message back as this call's own result so the next step can fix
-        // them. Ending the turn instead makes the most recoverable failure in the loop fatal, and
-        // the replacement agent — fresh context, same model, same schema — repeats it exactly.
-        //
-        // Nothing is journaled. The call was never admitted: no `ToolStarted`, no executor
-        // dispatch, no side effect to reconcile. Rejection is a pure function of the pinned schema
-        // and the arguments, both already recorded by the model step that produced the call, so a
-        // replay re-derives the identical message. `ToolFailureKind` is deliberately not used —
-        // every one of its variants describes an *admitted* call that then failed.
-        if let Err(error) = validate_value(
+        validate_value(
             &tool.definition.input_schema,
             &invocation.arguments,
             "tool input",
-        ) {
-            let message = ModelMessage {
-                role: ModelRole::Tool,
-                content: ModelContent::Part(ModelContentPart::ToolResult {
-                    call_id: invocation.call_id.clone(),
-                    name: invocation.name.clone(),
-                    value: json!({"error": error.to_string()}),
-                }),
-            };
-            message.content.validate_limits(self.limits)?;
-            prior_messages.push(message);
-            return Ok(());
-        }
+        )?;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolStarted {
                 step: event_step,
@@ -856,6 +862,7 @@ impl StockExecutor {
                 .projection
                 .project(&invocation, &result)
                 .and_then(|value| {
+                    validate_value(&tool.definition.output_schema, &value, "tool projection")?;
                     if crate::contract::canonical_json_bytes(&value)?.len() as u64
                         > self.limits.render_bytes
                     {
@@ -966,6 +973,11 @@ impl StockExecutor {
             (result, projection)
         };
         validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
+        validate_value(
+            &tool.definition.output_schema,
+            &projection,
+            "tool projection",
+        )?;
         let message = ModelMessage {
             role: ModelRole::Tool,
             content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -1101,19 +1113,30 @@ impl Executor for StockExecutor {
     }
 }
 
-fn model_request_digest(request: &ModelRequest) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(request)
-}
-
 pub(crate) async fn stage_json<T: Serialize>(
     journal: &dyn ExecutionJournal,
     operation_id: OperationId,
     key: &str,
     value: &T,
 ) -> Result<FileRef> {
-    let bytes = crate::contract::canonical_json_bytes(value)?;
+    stage_bytes(
+        journal,
+        operation_id,
+        key,
+        crate::contract::canonical_json_bytes(value)?,
+    )
+    .await
+}
+
+async fn stage_bytes(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    key: &str,
+    bytes: Vec<u8>,
+) -> Result<FileRef> {
+    let expected = crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json")?;
     let reference = journal
-        .stage(operation_id, key.into(), bytes.clone(), "application/json")
+        .stage(operation_id, key.into(), bytes, "application/json")
         .await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
@@ -1122,7 +1145,11 @@ pub(crate) async fn stage_json<T: Serialize>(
             "execution journal returned a non-private JSON reference".into(),
         ));
     }
-    reference.descriptor().verify(&bytes)?;
+    if reference.descriptor() != &expected {
+        return Err(Error::Storage(
+            "execution journal staged different JSON bytes".into(),
+        ));
+    }
     Ok(reference)
 }
 
@@ -1268,8 +1295,9 @@ mod tests {
     impl ModelProvider for SlippingModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            request: crate::model::PreparedModelRequest,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let request = request.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {
                 requests.push(request);
@@ -1323,8 +1351,17 @@ mod tests {
     impl ModelProvider for FakeModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            request: crate::model::PreparedModelRequest,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            assert_eq!(
+                request.bytes(),
+                crate::contract::canonical_json_bytes(request.request()).unwrap_or_default()
+            );
+            assert_eq!(
+                request.manifest().request_digest,
+                *blake3::hash(request.bytes()).as_bytes()
+            );
+            let request = request.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {
                 requests.push(request);
@@ -1369,7 +1406,7 @@ mod tests {
     impl ModelProvider for RecoverableModel {
         fn generate<'a>(
             &'a self,
-            _: ModelRequest,
+            _: crate::model::PreparedModelRequest,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter(vec![
@@ -1732,8 +1769,45 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         assert!(replay_context.is_empty());
-        let replayed = executor.execute(input, &journal).await?;
+        let replayed = executor.execute(input.clone(), &journal).await?;
         assert_eq!(first, replayed);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+        let reopened = Journal(
+            Mutex::new(
+                journal
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+            Mutex::new(
+                journal
+                    .1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+        );
+        assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
+        let request_key = format!("{}:model:0:request", input.operation_id);
+        reopened
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .get_mut(&request_key)
+            .ok_or_else(|| Error::NotFound("recorded request".into()))?
+            .1 = b"{}".to_vec();
+        assert!(executor.execute(input.clone(), &reopened).await.is_err());
+        reopened
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .remove(&request_key);
+        assert!(matches!(
+            executor.execute(input, &reopened).await,
+            Err(Error::NotFound(_))
+        ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
         let durable = serde_json::to_string(
@@ -1826,8 +1900,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_tool_arguments_return_to_the_model_instead_of_ending_the_turn() -> Result<()>
-    {
+    async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
         let model = Arc::new(SlippingModel {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
@@ -1870,39 +1943,12 @@ mod tests {
             max_steps: 4,
         };
 
-        // The turn survives the rejected call and finishes on the corrected one.
-        let output = executor.execute(input, &journal).await?;
-        assert_eq!(output.text, "done");
-
-        // The rejected call was never admitted, so only the corrected one reached the executor.
-        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
-
-        // The model was told what was wrong, as that call's own tool result.
-        let requests = model
-            .requests
-            .lock()
-            .map_err(|_| Error::Storage("model lock poisoned".into()))?;
-        let rejection = requests.get(1).and_then(|request| {
-            request
-                .messages
-                .iter()
-                .find_map(|message| match (&message.role, &message.content) {
-                    (
-                        ModelRole::Tool,
-                        ModelContent::Part(ModelContentPart::ToolResult { call_id, value, .. }),
-                    ) if call_id == "call-1" => Some(value.clone()),
-                    _ => None,
-                })
-        });
-        let rejection = rejection.ok_or_else(|| Error::Storage("no rejection message".into()))?;
-        let text = rejection
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        assert!(
-            text.contains("tool input failed validation"),
-            "expected the validation message, got {text:?}"
-        );
+        assert!(matches!(
+            executor.execute(input, &journal).await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
 

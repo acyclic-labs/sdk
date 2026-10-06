@@ -32,15 +32,21 @@ impl Model {
             revision: revision.into(),
             options,
         };
-        if value.provider.trim().is_empty()
-            || value.name.trim().is_empty()
-            || value.revision.trim().is_empty()
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Validates constructor and deserialized selections.
+    pub fn validate(&self) -> Result<()> {
+        if self.provider.trim().is_empty()
+            || self.name.trim().is_empty()
+            || self.revision.trim().is_empty()
         {
             return Err(Error::Invalid(
                 "model provider, name, and revision must be non-empty".into(),
             ));
         }
-        Ok(value)
+        Ok(())
     }
 }
 
@@ -253,6 +259,9 @@ pub enum FileProjectionPolicy {
     Native,
 }
 
+/// Hard aggregate ceiling for the canonical serialized model input, independent of output bounds.
+pub const MAX_MODEL_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelRequest {
@@ -264,6 +273,170 @@ pub struct ModelRequest {
     pub tools: Vec<crate::tool::ToolDefinition>,
     /// Maximum output tokens when constrained.
     pub max_output_tokens: Option<u32>,
+}
+
+/// Immutable, admitted input and the exact canonical bytes supplied to a provider.
+#[derive(Clone, Debug)]
+pub struct PreparedModelRequest {
+    request: ModelRequest,
+    bytes: Vec<u8>,
+    manifest: ModelRequestManifest,
+}
+
+/// Versioned identity of ordered provider input; counters bound wire bytes, not heap use.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRequestManifest {
+    /// Canonical construction version.
+    pub version: u32,
+    /// BLAKE3 digest of the exact supplied bytes.
+    pub request_digest: [u8; 32],
+    /// Serialized byte count.
+    pub wire_bytes: u64,
+    /// Exact model and ordered tool definitions, including pinned revisions and schemas.
+    pub binding_digest: [u8; 32],
+    /// Ordered role and content identities.
+    pub message_digests: Vec<[u8; 32]>,
+}
+
+impl ModelRequest {
+    fn validate(&self, limits: crate::conversation::Limits) -> Result<()> {
+        use crate::tool::{ToolInvocation, validate_value};
+        use std::collections::BTreeMap;
+
+        limits.validate()?;
+        self.model.validate()?;
+        if self.messages.is_empty() || self.messages.len() > limits.context_messages {
+            return Err(Error::Invalid("model context count is invalid".into()));
+        }
+        if self.max_output_tokens.is_none_or(|bound| bound == 0) {
+            return Err(Error::Invalid(
+                "model output token bound is required".into(),
+            ));
+        }
+        let mut tools = BTreeMap::new();
+        for tool in &self.tools {
+            tool.validate()?;
+            if tools.insert(&tool.name, tool).is_some() {
+                return Err(Error::Invalid("model tool definition is repeated".into()));
+            }
+        }
+        let mut pending = BTreeMap::new();
+        for message in &self.messages {
+            message.content.validate_limits(limits)?;
+            let parts = match &message.content {
+                ModelContent::Text(_) => &[][..],
+                ModelContent::Part(part) => std::slice::from_ref(part),
+                ModelContent::Parts(parts) => parts.as_slice(),
+            };
+            for part in parts {
+                match part {
+                    ModelContentPart::ToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                    } => {
+                        ToolInvocation::validate_identity(call_id, name)?;
+                        if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
+                            return Err(Error::Invalid(
+                                "model tool call role or identity is invalid".into(),
+                            ));
+                        }
+                        let tool = tools
+                            .get(name)
+                            .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
+                        validate_value(&tool.input_schema, arguments, "model tool arguments")?;
+                        pending.insert(call_id, name);
+                    }
+                    ModelContentPart::ToolResult {
+                        call_id,
+                        name,
+                        value,
+                    } => {
+                        ToolInvocation::validate_identity(call_id, name)?;
+                        if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
+                        {
+                            return Err(Error::Invalid(
+                                "model tool result has no matching call".into(),
+                            ));
+                        }
+                        let tool = tools
+                            .get(name)
+                            .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
+                        validate_value(&tool.output_schema, value, "model tool result")?;
+                    }
+                    ModelContentPart::Text { .. } | ModelContentPart::File { .. } => {
+                        if message.role == ModelRole::Tool {
+                            return Err(Error::Invalid(
+                                "tool role requires a paired result".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            if message.role == ModelRole::Tool && parts.is_empty() {
+                return Err(Error::Invalid("tool role requires a paired result".into()));
+            }
+            if !pending.is_empty() && matches!(message.role, ModelRole::System | ModelRole::User) {
+                return Err(Error::Invalid("model tool exchange is interrupted".into()));
+            }
+        }
+        if !pending.is_empty() {
+            return Err(Error::Invalid("model tool exchange is incomplete".into()));
+        }
+        Ok(())
+    }
+}
+
+impl PreparedModelRequest {
+    /// Admits explicit input without retrieval, compaction or truncation.
+    /// Providers are trusted to honor the token ceiling and native encoding.
+    pub fn prepare(request: ModelRequest, limits: crate::conversation::Limits) -> Result<Self> {
+        request.validate(limits)?;
+        let bytes = crate::contract::canonical_json_bytes(&request)?;
+        if bytes.len() as u64 > MAX_MODEL_REQUEST_BYTES {
+            return Err(Error::Invalid(
+                "model request exceeds aggregate byte limit".into(),
+            ));
+        }
+        let manifest = ModelRequestManifest {
+            version: 1,
+            request_digest: *blake3::hash(&bytes).as_bytes(),
+            wire_bytes: bytes.len() as u64,
+            binding_digest: crate::contract::canonical_json_digest(&(
+                &request.model,
+                &request.tools,
+            ))?,
+            message_digests: request
+                .messages
+                .iter()
+                .map(crate::contract::canonical_json_digest)
+                .collect::<Result<_>>()?,
+        };
+        Ok(Self {
+            request,
+            bytes,
+            manifest,
+        })
+    }
+
+    /// Read-only admitted values for provider-specific encoding.
+    #[must_use]
+    pub fn request(&self) -> &ModelRequest {
+        &self.request
+    }
+
+    /// Exact canonical provider-neutral bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Versioned identity of these bytes and ordered content.
+    #[must_use]
+    pub fn manifest(&self) -> &ModelRequestManifest {
+        &self.manifest
+    }
 }
 
 /// Ordered event emitted by a model run.
@@ -313,11 +486,150 @@ pub struct ModelAttempt {
 /// Replaceable streaming model provider.
 pub trait ModelProvider: Send + Sync {
     /// Starts one request and yields ordered model events.
-    fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>>;
+    fn generate<'a>(&'a self, request: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>>;
 
     /// Continues or reconciles an interrupted run without starting another model request.
     fn reconcile<'a>(
         &'a self,
         attempt: ModelAttempt,
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conversation::Limits;
+    use serde_json::json;
+
+    fn request() -> Result<ModelRequest> {
+        Ok(ModelRequest {
+            model: Model::new("mock", "exact", "pinned", json!({}))?,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("é\0🦀\r\n".into()),
+            }],
+            tools: vec![crate::tool::ToolDefinition {
+                name: "echo".into(),
+                revision: "schema-1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"string"}),
+                output_schema: json!({"type":"string"}),
+            }],
+            max_output_tokens: Some(32),
+        })
+    }
+
+    fn exchange(request: &mut ModelRequest) {
+        request.messages.extend([
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::ToolCall {
+                    call_id: "call-1".into(),
+                    name: "echo".into(),
+                    arguments: json!("é"),
+                }),
+            },
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: "call-1".into(),
+                    name: "echo".into(),
+                    value: json!("é"),
+                }),
+            },
+        ]);
+    }
+
+    #[test]
+    fn canonical_bytes_pin_unicode_order_schemas_and_parent_mutation() -> Result<()> {
+        let mut original = request()?;
+        exchange(&mut original);
+        let prepared = PreparedModelRequest::prepare(original.clone(), Limits::default())?;
+        assert_eq!(
+            prepared.bytes(),
+            include_bytes!("../../../../fixtures/harness/v2/model-request.json")
+        );
+        assert_eq!(
+            serde_json::from_slice::<ModelRequest>(prepared.bytes())
+                .map_err(|e| Error::Invalid(e.to_string()))?,
+            original
+        );
+        assert_eq!(
+            prepared.manifest().request_digest,
+            *blake3::hash(prepared.bytes()).as_bytes()
+        );
+        assert_eq!(
+            prepared.manifest().wire_bytes,
+            prepared.bytes().len() as u64
+        );
+        original.messages[0].content = ModelContent::Text("parent changed".into());
+        assert_ne!(
+            PreparedModelRequest::prepare(original, Limits::default())?
+                .manifest()
+                .request_digest,
+            prepared.manifest().request_digest
+        );
+        let mut changed = prepared.request().clone();
+        changed.tools[0].revision = "schema-2".into();
+        assert_ne!(
+            PreparedModelRequest::prepare(changed, Limits::default())?
+                .manifest()
+                .binding_digest,
+            prepared.manifest().binding_digest
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
+        let base = request()?;
+        let mut valid = base.clone();
+        exchange(&mut valid);
+        PreparedModelRequest::prepare(valid.clone(), Limits::default())?;
+        let mut candidates = Vec::new();
+        let mut changed = valid.clone();
+        changed.messages.pop();
+        candidates.push(changed);
+        let mut changed = valid.clone();
+        changed.messages.swap(1, 2);
+        candidates.push(changed);
+        let mut changed = valid.clone();
+        changed.messages[1].role = ModelRole::User;
+        candidates.push(changed);
+        let mut changed = valid.clone();
+        if let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) =
+            &mut changed.messages[2].content
+        {
+            *value = json!(42);
+        }
+        candidates.push(changed);
+        let mut changed = valid.clone();
+        changed.tools.push(changed.tools[0].clone());
+        candidates.push(changed);
+        let mut changed = valid.clone();
+        changed.max_output_tokens = None;
+        candidates.push(changed);
+        let mut changed = valid.clone();
+        changed.max_output_tokens = Some(0);
+        candidates.push(changed);
+        let mut changed = valid.clone();
+        changed.model.revision.clear();
+        candidates.push(changed);
+        let mut changed = valid.clone();
+        if let ModelContent::Part(ModelContentPart::ToolCall { arguments, .. }) =
+            &mut changed.messages[1].content
+        {
+            *arguments = json!(false);
+        }
+        candidates.push(changed);
+        for candidate in candidates {
+            assert!(PreparedModelRequest::prepare(candidate, Limits::default()).is_err());
+        }
+        let mut oversized = base;
+        let maximum = usize::try_from(MAX_MODEL_REQUEST_BYTES)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        oversized.model.options = json!({"large": "x".repeat(maximum)});
+        assert!(PreparedModelRequest::prepare(oversized, Limits::default()).is_err());
+        Ok(())
+    }
 }

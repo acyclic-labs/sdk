@@ -5,7 +5,8 @@ import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchW
 import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 import { HARNESS_MAX_BATCH_INPUTS } from "./limits-contract.js";
-import { validateModelContent as validateModelContentWasm, validateModelMessages as validateModelMessagesWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
+import { validateModelContent as validateModelContentWasm, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmModelContent, WasmModelContentPart, WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { ForkPreparer, ForkPublisher, ForkReport, ForkRequest, ForkSeed, ResourceRef } from "./fork.js";
@@ -279,6 +280,17 @@ function validateSelectedContext(selected: SelectedModelContext, limits: Limits)
 }
 
 /** Builds the one canonical model content value for a direct user turn. */
+function publicModelContent(content: WasmModelContent): ModelContent {
+  if (typeof content === "string") return content;
+  const part = (value: WasmModelContentPart) => {
+    if (value.kind === "file") return { ...value, file: value.file as FileRef };
+    if (value.kind !== "tool_call" && value.kind !== "tool_result") return value;
+    const { call_id: callId, ...rest } = value;
+    return { ...rest, callId };
+  };
+  return Array.isArray(content) ? content.map(part) : part(content);
+}
+
 function directUserContent(input: AgentInput<UserContentPart>): ModelContent {
   if (input.content === undefined || input.content.length === 0) return input.prompt;
   return input.prompt
@@ -2310,14 +2322,29 @@ export class AgentHarness {
       const selected = input.selectedContext;
       const base = selected?.messages ?? [first];
       const messages: ModelMessage[] = [...(await contextBuilder?.build(input, base) ?? base)];
-      validateModelMessagesWasm(messages, nativeLimits(this.limits));
       let text = "";
       let previousAdmission: ModelEventAdmissionState = { count: 0, calls: [], completed: false, text_bytes: 0 };
       const maxSteps = Math.min(this.scope.limits.maxSteps ?? this.limits.model_steps, this.limits.model_steps);
       for (let step = 0; step < maxSteps; step += 1) {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
-        for await (const event of model.provider.generate({ model: model.identity, messages, tools: this.#modelToolDefinitions(), signal: context.signal })) {
+        const request = { model: model.identity, messages, tools: this.#modelToolDefinitions(), maxOutputTokens: 4_096 };
+        const bytes = prepareModelRequestWasm(request, nativeLimits(this.limits));
+        const wire = this.contracts.decodeModelJson(bytes) as unknown as WasmModelRequestWire;
+        const admittedRequest = {
+          serializedInput: bytes,
+          model: wire.model,
+          messages: wire.messages.map((message) => ({
+            ...message, content: publicModelContent(message.content),
+          })),
+          tools: wire.tools.map((tool) => ({
+            name: tool.name, revision: tool.revision, description: tool.description,
+            inputSchema: tool.input_schema as ToolJsonSchema, outputSchema: tool.output_schema as ToolJsonSchema,
+          })),
+          maxOutputTokens: wire.max_output_tokens!,
+          signal: context.signal,
+        };
+        for await (const event of model.provider.generate(admittedRequest)) {
           const admitted = this.contracts.admitModelEvent(event, this.limits, admission);
           admission = admitted.state;
           const admittedEvent = admitted.event;
