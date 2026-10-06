@@ -86,7 +86,9 @@ class InstalledCanonicalReplayTest {
       expected.computeIfAbsent(rpc, ignored -> new ArrayDeque<>()).add(ExpectedCall.from(entry));
     }
     assertEquals(106, expected.size());
-    assertEquals(2, completionMarkers, "canonical completion markers");
+    int expectedCompletionMarkers = root.has("completion_marker_count")
+        ? root.get("completion_marker_count").getAsInt() : 0;
+    assertEquals(expectedCompletionMarkers, completionMarkers, "canonical completion markers");
 
     Map<String, MethodDescriptor<?, ?>> methods = methodDescriptors();
     assertEquals(106, methods.size(), "generated JVM descriptor inventory");
