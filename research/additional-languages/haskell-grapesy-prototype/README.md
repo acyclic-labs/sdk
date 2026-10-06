@@ -1,6 +1,8 @@
-# Haskell generated SDK prototype
+# Haskell generated SDK
 
-This lane verifies the Haskell OSS path from the Rust contract itself:
+This lane verifies the Haskell SDK path from the Rust contract itself. The
+generated package is `acyclic-sdk-haskell` and the Rust contract is the only
+input that defines its wire and semantic surface:
 
 1. The contract proto set is copied from the Rust-owned `proto/` projection plus `rust/crates/stream/proto/stream/v2/stream.proto`.
 2. `proto-lens-protoc` 0.9.0.1 produces bindings for every active family and archived v1 binding, retaining the generated type-level service method lists.
@@ -9,7 +11,7 @@ This lane verifies the Haskell OSS path from the Rust contract itself:
 5. `run-remote-prototype.ps1 -RustGrpcFixture` regenerates from the canonical Rust proto set, builds an installable source archive, installs the archive into an isolated directory, and runs the installed typed consumer against the Rust fixture over HTTP/2.
 6. `Acyclic.Semantics` is generated from the resolved Rust descriptor graph. Its 101 known oneof arms are closed GADT constructors with concrete scalar or proto-lens payload types; only the forward-compatible unknown arm accepts raw bytes. The generated semantic test and its negative GHC fixture verify this boundary.
 
-The remote consumer carries a Rust-owned request manifest for `StreamService/Append`. It exercises append and recovery on the live connection, configures grapesy cancellation deadlines and exponential reconnect, and exposes TLS through `ACYCLIC_HASKELL_GRPC_TLS` for a TLS endpoint. The remote fixture run remains separate from the local 106-method type proof so a fixture build failure cannot be mistaken for a type-surface pass.
+The remote consumer carries a Rust-owned request manifest for `StreamService/Append`. It exercises append and recovery on the live connection, configures grapesy cancellation deadlines and exponential reconnect, and exposes TLS through `ACYCLIC_HASKELL_GRPC_TLS` for a TLS endpoint. The remote fixture run remains separate from the local 106-method type proof so a fixture build failure cannot be mistaken for a type-surface pass. `generate.ps1` is the Rust-owned producer entrypoint and emits the final package identity and provenance alongside the generated source.
 
 Pinned OSS sources:
 

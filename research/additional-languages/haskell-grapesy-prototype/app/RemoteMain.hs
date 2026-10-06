@@ -9,12 +9,10 @@ import Control.Exception (SomeException, try)
 import Data.List (stripPrefix)
 import Data.Maybe (fromMaybe)
 import Network.GRPC.Client qualified as Client
-import Network.GRPC.Client.StreamType.IO qualified as Typed
 import Network.GRPC.Common
-import Network.GRPC.Common.Protobuf
-import Acyclic.Stream.Api (Append)
+import Network.GRPC.Common.Protobuf (Proto)
+import Acyclic.Stream.Api (Append, append, appendRequest)
 import Proto.Stream.V2.Stream
-import Proto.Stream.V2.Stream_Fields
 import System.Environment (lookupEnv)
 import System.Timeout (timeout)
 import Text.Read (readMaybe)
@@ -30,10 +28,7 @@ parseEndpoint raw =
   in Endpoint host port
 
 request :: Proto AppendRequest
-request = Proto $ defMessage
-  & path .~ "haskell/remote"
-  & records .~ ["rust-owned-haskell-record"]
-  & idempotencyKey .~ "haskell-remote-append"
+request = appendRequest "haskell/remote" ["rust-owned-haskell-record"] "haskell-remote-append"
 
 main :: IO ()
 main = do
@@ -54,12 +49,12 @@ main = do
   putStrLn ("tls=" <> show tls)
   putStrLn "request-manifest=AppendRequest(path,records,idempotencyKey)"
   result <- try (Client.withConnection params server $ \conn -> do
-      response <- Typed.nonStreaming conn (Client.rpc @Append) request
+      response <- append conn request
       putStrLn ("append-response=" <> show response)
       cancelResult <- timeout (cancelMs * 1000) $
-        Typed.nonStreaming conn (Client.rpc @Append) request
+        append conn request
       putStrLn ("cancel-probe=" <> maybe "timed-out-and-cancelled" (const "completed-before-deadline") cancelResult)
-      recovered <- Typed.nonStreaming conn (Client.rpc @Append) request
+      recovered <- append conn request
       putStrLn ("recovery-response=" <> show recovered)
     ) :: IO (Either SomeException ())
   case result of

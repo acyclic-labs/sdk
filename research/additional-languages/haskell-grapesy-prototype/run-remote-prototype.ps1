@@ -64,6 +64,7 @@ try {
 set -euo pipefail
 rm -rf '$linuxRepo'
 cp -a '$wslRepo' '$linuxRepo'
+mv '$linuxRepo/acyclic-haskell-grapesy-prototype.cabal' '$linuxRepo/acyclic-sdk-haskell.cabal'
 rm -rf '$linuxRepo/source'
 mkdir -p '$linuxRepo/source/stream/v2'
 cp -a '$contractProto/.' '$linuxRepo/source/'
@@ -86,10 +87,10 @@ protoc --experimental_allow_proto3_optional --plugin=protoc-gen-haskell="$genera
   '$linuxRepo/source/stream/v2/stream.proto'
 cd '$linuxRepo'
 $cabal build --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' exe:acyclic-haskell-remote exe:acyclic-haskell-full-typed
-tar -czf '$linuxRepo/dist-sdist/acyclic-haskell-grapesy-prototype-0.1.0.0.tar.gz' --exclude='dist-*' --exclude='installed' -C '$linuxRepo' .
-archive='$linuxRepo/dist-sdist/acyclic-haskell-grapesy-prototype-0.1.0.0.tar.gz'
+tar -czf '$linuxRepo/dist-sdist/acyclic-sdk-haskell-0.1.0.0.tar.gz' --exclude='dist-*' --exclude='installed' -C '$linuxRepo' .
+archive='$linuxRepo/dist-sdist/acyclic-sdk-haskell-0.1.0.0.tar.gz'
 test -n "$archive"
-tar -tzf "$archive" | grep -Eq '(^|/)acyclic-haskell-grapesy-prototype\.cabal$'
+tar -tzf "$archive" | grep -Eq '(^|/)acyclic-sdk-haskell\.cabal$'
 tar -tzf "$archive" | grep -Eq '(^|/)app/RemoteMain\.hs$'
 tar -tzf "$archive" | grep -Eq '(^|/)src/Acyclic/Semantics\.hs$'
 echo "artifact=$archive"
@@ -141,7 +142,7 @@ grep -Eq '^cancel-probe=' '$linuxRepo/installed-consumer.log'
     request_manifest_sha256 = (Get-FileHash -LiteralPath (Join-Path $scriptDir 'request-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()
     generator = [ordered]@{ package = 'proto-lens-protoc'; version = '0.9.0.1'; ghc = '9.2.8'; cabal = '3.10.2.1'; grapesy = '1.2.1' }
     transport = [ordered]@{ fixture = 'rust/crates/sdk-examples/src/bin/fixture-server.rs'; protocol = 'HTTP/2 gRPC'; endpoint = $endpoint; tls = $false }
-    artifact = [ordered]@{ path = 'dist-sdist/acyclic-haskell-grapesy-prototype-0.1.0.0.tar.gz'; sha256 = if ($artifactLine) { ($artifactLine -split '=',2)[1] } else { '' }; archive_contents_verified = $true }
+    artifact = [ordered]@{ path = 'dist-sdist/acyclic-sdk-haskell-0.1.0.0.tar.gz'; sha256 = if ($artifactLine) { ($artifactLine -split '=',2)[1] } else { '' }; archive_contents_verified = $true }
     installed_consumer = [ordered]@{ path = 'installed/acyclic-haskell-remote'; status = 'passed'; sha256 = if ($installedLine) { ($installedLine -split '=',2)[1] } else { '' }; source_bound = $true; typed_rpc_surface = '106 methods across 18 Rust-derived services'; output_proof_verified = $true }
     scenarios = [ordered]@{ typed_surface = 'passed'; append = 'passed'; cancellation = 'deadline probe completed before deadline; cancellation API wired but timeout was not forced by the fixture'; recovery = 'passed on the same live HTTP/2 connection'; tls = 'configured and available through ACYCLIC_HASKELL_GRPC_TLS; no TLS Rust fixture supplied' }
   }
@@ -150,8 +151,5 @@ grep -Eq '^cancel-probe=' '$linuxRepo/installed-consumer.log'
   if ($fixtureProcess -and -not $fixtureProcess.HasExited) { Stop-Process -Id $fixtureProcess.Id -Force }
 }
 Write-Output "Haskell installed remote receipt: $(Join-Path $work 'haskell-remote-receipt.json')"
-
-
-
 
 

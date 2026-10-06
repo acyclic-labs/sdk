@@ -1,6 +1,6 @@
 packages: .
 with-compiler: /home/var/.ghcup/bin/ghc
 optimization: False
-package acyclic-haskell-grapesy-prototype
+package acyclic-sdk-haskell
   ghc-options: -Wall -Wcompat
 constraints: crypton == 1.0.5
