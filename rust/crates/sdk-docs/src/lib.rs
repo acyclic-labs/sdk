@@ -3,18 +3,17 @@
 //! The input boundary is the pinned [`rustdoc_types::Crate`] representation. The output is a
 //! deliberately small public projection: private rustdoc items and compiler-only metadata never
 //! cross this boundary.
-
-use rustdoc_types::{
-    Crate, GenericArg, GenericArgs, GenericBound, GenericParamDef, GenericParamDefKind, Id, Item,
-    ItemEnum, ItemKind, Type, Visibility, FORMAT_VERSION,
-};
+use rustdoc_types::{Crate, Id, Item, ItemEnum, ItemKind, FORMAT_VERSION};
 use schemars::JsonSchema;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+
+mod public_api;
 
 pub const DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";
 pub const VERSION_INDEX_SCHEMA_VERSION: &str = "sdk-docs-versions.v1";
@@ -32,6 +31,9 @@ pub enum Channel {
 pub struct SourceInfo {
     pub revision: String,
     pub source_state: String,
+    /// Digest of the trusted source manifest supplied by the generation launcher.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_sha256: Option<String>,
     pub input_sha256: String,
     pub rustdoc_format_versions: Vec<u32>,
     pub generator: String,
@@ -130,6 +132,7 @@ pub struct BuildInput {
     pub channel: Channel,
     pub revision: String,
     pub source_state: String,
+    pub source_sha256: Option<String>,
     pub repository_root: PathBuf,
     pub rustdoc_files: Vec<PathBuf>,
     pub mark_latest: bool,
@@ -167,6 +170,14 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
     if input.version.trim().is_empty() {
         return Err(Error::Invalid("version must not be empty".into()));
     }
+    if input.version != input.version.trim() {
+        return Err(Error::Invalid(
+            "version must not contain surrounding whitespace".into(),
+        ));
+    }
+    if input.channel == Channel::Release {
+        stable_version(&input.version)?;
+    }
     if input.revision.len() < 40
         || input.revision.len() > 64
         || !input.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -191,10 +202,27 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             "source state must be captured-snapshot, working-tree, or release-tag".into(),
         ));
     }
+    if let Some(source_sha256) = &input.source_sha256 {
+        validate_source_digest(source_sha256)?;
+    } else if input.source_state != "working-tree" {
+        return Err(Error::Invalid(
+            "captured snapshots and release tags require a trusted source manifest digest".into(),
+        ));
+    }
+    // Callers may discover rustdoc files through different filesystem traversals.
+    // Normalize the order before hashing or projecting so the same inputs always
+    // produce the same identity and family order.
+    let mut rustdoc_files = input.rustdoc_files.clone();
+    rustdoc_files.sort_by_key(|path| normalize_path(path));
+    if rustdoc_files.windows(2).any(|paths| paths[0] == paths[1]) {
+        return Err(Error::Invalid(
+            "rustdoc JSON input contains the same file more than once".into(),
+        ));
+    }
     let mut families = Vec::new();
     let mut format_versions = std::collections::BTreeSet::new();
     let mut input_digest = Sha256::new();
-    for path in &input.rustdoc_files {
+    for path in &rustdoc_files {
         let bytes = fs::read(path)?;
         if let Some(name) = path.file_name() {
             input_digest.update(name.to_string_lossy().as_bytes());
@@ -213,6 +241,21 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
                 path.display(),
                 krate.format_version,
                 FORMAT_VERSION
+            )));
+        }
+        if let Some(crate_version) = krate.crate_version.as_deref() {
+            if crate_version != input.version {
+                return Err(Error::Invalid(format!(
+                    "{} reports crate version {crate_version}, but the build is {}",
+                    path.display(),
+                    input.version
+                )));
+            }
+        }
+        if krate.includes_private {
+            return Err(Error::Invalid(format!(
+                "{} includes private rustdoc items; public-api requires normal public JSON",
+                path.display()
             )));
         }
         format_versions.insert(krate.format_version);
@@ -234,7 +277,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             })
             .collect(),
     };
-    Ok(DocsData {
+    let data = DocsData {
         schema: DATA_SCHEMA_VERSION.into(),
         schema_version: DATA_SCHEMA_VERSION.into(),
         version: input.version.clone(),
@@ -242,17 +285,33 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         source: SourceInfo {
             revision: input.revision.clone(),
             source_state: input.source_state.clone(),
+            source_sha256: input.source_sha256.clone(),
             input_sha256: format!("{:x}", input_digest.finalize()),
             rustdoc_format_versions: format_versions.into_iter().collect(),
             generator: format!("sdk-docs/{GENERATOR_VERSION}"),
         },
         navigation,
         families,
-    })
+    };
+    validate_source_info(&data.source)?;
+    Ok(data)
 }
 
 /// Write data, its Schemars-generated schema, and the guarded version index.
 pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Result<(), Error> {
+    if data.schema != DATA_SCHEMA_VERSION || data.schema_version != DATA_SCHEMA_VERSION {
+        return Err(Error::Invalid(
+            "cannot publish data with an unsupported docs schema".into(),
+        ));
+    }
+    if data.channel == Channel::Release {
+        stable_version(&data.version)?;
+    }
+    if mark_latest && data.channel != Channel::Release {
+        return Err(Error::Invalid("only a release can be marked latest".into()));
+    }
+    validate_source_info(&data.source)?;
+    reject_reparse_ancestors(output_dir)?;
     fs::create_dir_all(output_dir)?;
     let channel_dir = match data.channel {
         Channel::Release => "releases",
@@ -286,22 +345,24 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
     };
     let index = load_version_index(output_dir)?;
     let updated_index = merge_version_index(index, &entry, mark_latest)?;
+    reject_reparse_ancestors(&version_dir)?;
     fs::create_dir_all(&version_dir)?;
-    if !data_path.exists() {
-        fs::write(&data_path, &data_bytes)?;
-    }
+    atomic_write(&data_path, &data_bytes, true)?;
     let schema = schemars::schema_for!(DocsData);
-    fs::write(
-        version_dir.join("sdk-docs-data.v1.schema.json"),
-        serde_json::to_vec_pretty(&schema)?,
+    atomic_write(
+        &version_dir.join("sdk-docs-data.v1.schema.json"),
+        &serde_json::to_vec_pretty(&schema)?,
+        true,
     )?;
-    fs::write(
-        output_dir.join("sdk-docs-versions.v1.schema.json"),
-        serde_json::to_vec_pretty(&schemars::schema_for!(VersionIndex))?,
+    atomic_write(
+        &output_dir.join("sdk-docs-versions.v1.schema.json"),
+        &serde_json::to_vec_pretty(&schemars::schema_for!(VersionIndex))?,
+        true,
     )?;
-    fs::write(
-        output_dir.join("sdk-docs-versions.v1.json"),
-        serde_json::to_vec_pretty(&updated_index)?,
+    atomic_write(
+        &output_dir.join("sdk-docs-versions.v1.json"),
+        &serde_json::to_vec_pretty(&updated_index)?,
+        false,
     )?;
     Ok(())
 }
@@ -332,6 +393,22 @@ fn merge_version_index(
     entry: &VersionEntry,
     mark_latest: bool,
 ) -> Result<VersionIndex, Error> {
+    for release in &index.releases {
+        if release.channel != Channel::Release {
+            return Err(Error::Invalid(
+                "version index contains a non-release entry in releases".into(),
+            ));
+        }
+        stable_version(&release.version)?;
+    }
+    if let Some(latest) = &index.latest {
+        if latest.channel != Channel::Release {
+            return Err(Error::Invalid(
+                "version index latest entry must be a release".into(),
+            ));
+        }
+        stable_version(&latest.version)?;
+    }
     if entry.channel == Channel::Release {
         if let Some(existing) = index
             .releases
@@ -346,10 +423,27 @@ fn merge_version_index(
             }
         } else {
             index.releases.push(entry.clone());
-            index.releases.sort_by(|a, b| a.version.cmp(&b.version));
+            index.releases.sort_by(|a, b| {
+                match (release_version(&a.version), release_version(&b.version)) {
+                    (Ok(a), Ok(b)) => a.cmp(&b),
+                    _ => a.version.cmp(&b.version),
+                }
+            });
         }
         if mark_latest {
-            index.latest = Some(entry.clone());
+            let should_advance = match index.latest.as_ref() {
+                None => true,
+                Some(current) => match (
+                    release_version(&entry.version),
+                    release_version(&current.version),
+                ) {
+                    (Ok(entry), Ok(current)) => entry > current,
+                    _ => false,
+                },
+            };
+            if should_advance {
+                index.latest = Some(entry.clone());
+            }
         }
     } else if let Some(existing) = &index.preview {
         if existing.version == entry.version && existing != entry {
@@ -366,25 +460,55 @@ fn merge_version_index(
 }
 
 fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Result<Family, Error> {
-    let crate_name = krate
-        .index
-        .get(&krate.root)
-        .and_then(|item| item.name.clone())
-        .or_else(|| {
-            json_path
-                .file_stem()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
+    let root_item = krate.index.get(&krate.root).ok_or_else(|| {
+        Error::Invalid(format!(
+            "{} does not contain its declared rustdoc root item",
+            json_path.display()
+        ))
+    })?;
+    if !matches!(&root_item.inner, ItemEnum::Module(module) if module.is_crate) {
+        return Err(Error::Invalid(format!(
+            "{} does not declare a crate root module",
+            json_path.display()
+        )));
+    }
+    let crate_name = root_item
+        .name
+        .clone()
         .ok_or_else(|| Error::Invalid(format!("{} has no crate name", json_path.display())))?;
     let slug = slugify(&crate_name);
     let title = titleize(&crate_name);
-    let implicit_public = implicit_public_ids(krate);
-    let paths = public_paths(krate, &implicit_public);
+    let public_items = public_api::extract(json_path)?;
+    let use_occurrences = public_use_occurrences(krate, &crate_name)?;
     let mut items = Vec::new();
-    for (id, path) in &paths {
-        let Some(item) = krate.index.get(id) else {
-            continue;
-        };
+    for public_item in &public_items {
+        let id = public_item.id;
+        let path = public_item.path.clone();
+        if path.first() != Some(&crate_name) {
+            return Err(Error::Invalid(format!(
+                "public-api item {} does not resolve to the crate root",
+                id.0
+            )));
+        }
+        let (item_id, item, target) =
+            if let Some(use_id) = use_occurrences.get(&(id, path.join("::"))).copied() {
+                let use_item = krate.index.get(&use_id).ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "public use item {} is absent from rustdoc index",
+                        use_id.0
+                    ))
+                })?;
+                let target = krate.index.get(&id);
+                (use_id, use_item, target)
+            } else {
+                let item = krate.index.get(&id).ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "public-api item {} is absent from rustdoc index",
+                        id.0
+                    ))
+                })?;
+                (id, item, None)
+            };
         if item.crate_id != 0
             || item_name(item).is_none()
             || matches!(item.inner, ItemEnum::Impl(_))
@@ -392,29 +516,37 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
             continue;
         }
         let name = item_name(item).unwrap_or_default();
-        items.push(ApiItem {
-            id: format_id(*id),
-            name: name.clone(),
-            kind: kind_name(item.inner.item_kind()).into(),
-            path: path.join("::"),
-            signature: signature(item, &name, is_public(*id, item, &implicit_public)),
-            docs: item.docs.clone(),
-            source: item.span.as_ref().map(source_span).transpose()?,
-            reexport: match &item.inner {
-                ItemEnum::Use(use_) => Some(use_.source.clone()),
-                _ => None,
-            },
-            reexport_target: match &item.inner {
-                ItemEnum::Use(use_) => use_
-                    .id
+        let docs = item
+            .docs
+            .clone()
+            .or_else(|| target.and_then(|target| target.docs.clone()));
+        let (reexport, reexport_target) = match &item.inner {
+            ItemEnum::Use(use_) => (
+                Some(use_.source.clone()),
+                use_.id
                     .and_then(|target| krate.paths.get(&target))
                     .map(|summary| summary.path.join("::")),
-                _ => None,
-            },
+            ),
+            _ => (None, None),
+        };
+        items.push(ApiItem {
+            id: format_id(item_id),
+            name,
+            kind: kind_name(item.inner.item_kind()).into(),
+            path: path.join("::"),
+            signature: public_item.display.clone(),
+            docs,
+            source: item
+                .span
+                .as_ref()
+                .map(|span| source_span(repository_root, span))
+                .transpose()?,
+            reexport,
+            reexport_target,
         });
     }
     items.sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));
-    let guides = read_guides(repository_root, &crate_name)?;
+    let guides = guides_from_rustdoc(krate, &crate_name, &public_items)?;
     Ok(Family {
         slug,
         title,
@@ -424,20 +556,92 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
     })
 }
 
-fn source_span(span: &rustdoc_types::Span) -> Result<SourceSpan, Error> {
-    if span.filename.is_absolute()
-        || span
-            .filename
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
-    {
-        return Err(Error::Invalid(format!(
+fn public_use_occurrences(
+    krate: &Crate,
+    crate_name: &str,
+) -> Result<HashMap<(Id, String), Id>, Error> {
+    let mut occurrences = HashMap::new();
+    let mut visited = HashSet::new();
+    collect_public_use_occurrences(
+        krate,
+        krate.root,
+        vec![crate_name.to_owned()],
+        &mut occurrences,
+        &mut visited,
+    )?;
+    Ok(occurrences)
+}
+
+fn collect_public_use_occurrences(
+    krate: &Crate,
+    id: Id,
+    path: Vec<String>,
+    occurrences: &mut HashMap<(Id, String), Id>,
+    visited: &mut HashSet<Id>,
+) -> Result<(), Error> {
+    if !visited.insert(id) {
+        return Ok(());
+    }
+    let item = krate.index.get(&id).ok_or_else(|| {
+        Error::Invalid(format!("rustdoc module item {} is absent from index", id.0))
+    })?;
+    let ItemEnum::Module(module) = &item.inner else {
+        return Ok(());
+    };
+    for child_id in &module.items {
+        let child = krate.index.get(child_id).ok_or_else(|| {
+            Error::Invalid(format!(
+                "rustdoc child item {} is absent from index",
+                child_id.0
+            ))
+        })?;
+        match &child.inner {
+            ItemEnum::Use(use_) => {
+                if let Some(target) = use_.id {
+                    let mut exported = path.clone();
+                    exported.push(use_.name.clone());
+                    occurrences.insert((target, exported.join("::")), *child_id);
+                }
+            }
+            ItemEnum::Module(_) => {
+                if let Some(name) = item_name(child) {
+                    let mut nested = path.clone();
+                    nested.push(name);
+                    collect_public_use_occurrences(krate, *child_id, nested, occurrences, visited)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn source_span(repository_root: &Path, span: &rustdoc_types::Span) -> Result<SourceSpan, Error> {
+    let repository_root = repository_root.canonicalize().map_err(|error| {
+        Error::Invalid(format!(
+            "cannot resolve rustdoc source root {}: {error}",
+            repository_root.display()
+        ))
+    })?;
+    let source_path = if span.filename.is_absolute() {
+        span.filename.clone()
+    } else {
+        repository_root.join(&span.filename)
+    };
+    let source_path = source_path.canonicalize().map_err(|error| {
+        Error::Invalid(format!(
+            "cannot resolve rustdoc source span {}: {error}",
+            span.filename.display()
+        ))
+    })?;
+    let relative = source_path.strip_prefix(&repository_root).map_err(|_| {
+        Error::Invalid(format!(
             "rustdoc source span escapes its source root: {}",
             span.filename.display()
-        )));
-    }
+        ))
+    })?;
     Ok(SourceSpan {
-        path: normalize_path(&span.filename),
+        path: normalize_path(relative),
         begin_line: span.begin.0,
         begin_column: span.begin.1,
         end_line: span.end.0,
@@ -445,428 +649,11 @@ fn source_span(span: &rustdoc_types::Span) -> Result<SourceSpan, Error> {
     })
 }
 
-fn implicit_public_ids(krate: &Crate) -> HashSet<Id> {
-    let mut result = HashSet::new();
-    for item in krate.index.values() {
-        if !matches!(item.visibility, Visibility::Public) {
-            continue;
-        }
-        match &item.inner {
-            ItemEnum::Enum(enum_) => result.extend(enum_.variants.iter().copied()),
-            ItemEnum::Trait(trait_) => result.extend(trait_.items.iter().copied()),
-            _ => {}
-        }
-    }
-    result
-}
-
-fn is_public(id: Id, item: &Item, implicit_public: &HashSet<Id>) -> bool {
-    matches!(item.visibility, Visibility::Public) || implicit_public.contains(&id)
-}
-
-fn public_paths(krate: &Crate, implicit_public: &HashSet<Id>) -> HashMap<Id, Vec<String>> {
-    let mut result = HashMap::new();
-    let mut visited = HashSet::new();
-    walk_public_item(
-        krate,
-        krate.root,
-        Vec::new(),
-        &mut result,
-        &mut visited,
-        implicit_public,
-    );
-    result
-}
-fn walk_public_item(
-    krate: &Crate,
-    id: Id,
-    parent: Vec<String>,
-    result: &mut HashMap<Id, Vec<String>>,
-    visited: &mut HashSet<Id>,
-    implicit_public: &HashSet<Id>,
-) {
-    if !visited.insert(id) {
-        return;
-    }
-    let Some(item) = krate.index.get(&id) else {
-        return;
-    };
-    let mut path = parent;
-    if let Some(name) = item_name(item).as_ref() {
-        path.push(name.clone());
-    }
-    result.insert(id, path.clone());
-    match &item.inner {
-        ItemEnum::Module(module) => {
-            for child in &module.items {
-                let Some(child_item) = krate.index.get(child) else {
-                    continue;
-                };
-                if is_public(*child, child_item, implicit_public) {
-                    walk_public_item(
-                        krate,
-                        *child,
-                        path.clone(),
-                        result,
-                        visited,
-                        implicit_public,
-                    );
-                }
-            }
-        }
-        ItemEnum::Enum(enum_) => {
-            for child in &enum_.variants {
-                walk_public_item(
-                    krate,
-                    *child,
-                    path.clone(),
-                    result,
-                    visited,
-                    implicit_public,
-                );
-            }
-        }
-        ItemEnum::Trait(trait_) => {
-            for child in &trait_.items {
-                walk_public_item(
-                    krate,
-                    *child,
-                    path.clone(),
-                    result,
-                    visited,
-                    implicit_public,
-                );
-            }
-        }
-        ItemEnum::Struct(struct_) => {
-            let fields = match &struct_.kind {
-                rustdoc_types::StructKind::Plain { fields, .. } => fields.clone(),
-                rustdoc_types::StructKind::Tuple(fields) => {
-                    fields.iter().flatten().copied().collect()
-                }
-                rustdoc_types::StructKind::Unit => Vec::new(),
-            };
-            for child in fields {
-                if let Some(child_item) = krate.index.get(&child) {
-                    if is_public(child, child_item, implicit_public) {
-                        walk_public_item(
-                            krate,
-                            child,
-                            path.clone(),
-                            result,
-                            visited,
-                            implicit_public,
-                        );
-                    }
-                }
-            }
-        }
-        ItemEnum::Union(union_) => {
-            for child in &union_.fields {
-                if let Some(child_item) = krate.index.get(child) {
-                    if is_public(*child, child_item, implicit_public) {
-                        walk_public_item(
-                            krate,
-                            *child,
-                            path.clone(),
-                            result,
-                            visited,
-                            implicit_public,
-                        );
-                    }
-                }
-            }
-        }
-        ItemEnum::Variant(variant) => {
-            let fields = match &variant.kind {
-                rustdoc_types::VariantKind::Plain => Vec::new(),
-                rustdoc_types::VariantKind::Tuple(fields) => {
-                    fields.iter().flatten().copied().collect()
-                }
-                rustdoc_types::VariantKind::Struct { fields, .. } => fields.clone(),
-            };
-            for child in fields {
-                if let Some(child_item) = krate.index.get(&child) {
-                    if is_public(child, child_item, implicit_public) {
-                        walk_public_item(
-                            krate,
-                            child,
-                            path.clone(),
-                            result,
-                            visited,
-                            implicit_public,
-                        );
-                    }
-                }
-            }
-        }
-        ItemEnum::Use(use_) => {
-            // The alias is the public item. The target is recorded as a resolved path below;
-            // walking it here would incorrectly publish a private definition path.
-            let _ = use_.id;
-        }
-        _ => {}
-    }
-}
-
 fn item_name(item: &Item) -> Option<String> {
     item.name.clone().or_else(|| match &item.inner {
         ItemEnum::Use(use_) => Some(use_.name.clone()),
         _ => None,
     })
-}
-
-fn signature(item: &Item, name: &str, public: bool) -> String {
-    let prefix = if public { "pub " } else { "" };
-    match &item.inner {
-        ItemEnum::Function(function) => {
-            let mut result = String::new();
-            if function.header.is_const {
-                result.push_str("const ");
-            }
-            if function.header.is_unsafe {
-                result.push_str("unsafe ");
-            }
-            if function.header.is_async {
-                result.push_str("async ");
-            }
-            result.push_str(prefix);
-            result.push_str("fn ");
-            result.push_str(name);
-            result.push_str(&generics_text(&function.generics));
-            result.push('(');
-            for (index, (arg, ty)) in function.sig.inputs.iter().enumerate() {
-                if index > 0 {
-                    result.push_str(", ");
-                }
-                let _ = write!(result, "{arg}: {}", type_text(ty));
-            }
-            if function.sig.is_c_variadic {
-                if !function.sig.inputs.is_empty() {
-                    result.push_str(", ");
-                }
-                result.push_str("...");
-            }
-            result.push(')');
-            if let Some(output) = &function.sig.output {
-                let _ = write!(result, " -> {}", type_text(output));
-            }
-            result
-        }
-        ItemEnum::Struct(struct_) => {
-            format!("{prefix}struct {name}{}", generics_text(&struct_.generics))
-        }
-        ItemEnum::Enum(enum_) => {
-            format!("{prefix}enum {name}{}", generics_text(&enum_.generics))
-        }
-        ItemEnum::Union(_) => format!("{prefix}union {name}"),
-        ItemEnum::Trait(trait_) => {
-            format!("{prefix}trait {name}{}", generics_text(&trait_.generics))
-        }
-        ItemEnum::TypeAlias(alias) => format!(
-            "{prefix}type {name}{} = {}",
-            generics_text(&alias.generics),
-            type_text(&alias.type_)
-        ),
-        ItemEnum::Constant { type_, .. } => format!("{prefix}const {name}: {}", type_text(type_)),
-        ItemEnum::Static(static_) => {
-            format!("{prefix}static {name}: {}", type_text(&static_.type_))
-        }
-        ItemEnum::StructField(ty) => format!("{prefix}{name}: {}", type_text(ty)),
-        ItemEnum::Use(use_) => format!("{prefix}use {}", use_.source),
-        _ => format!("{prefix}{} {name}", kind_name(item.inner.item_kind())),
-    }
-}
-
-fn type_text(ty: &Type) -> String {
-    match ty {
-        Type::ResolvedPath(path) => format!(
-            "{}{}",
-            path.path,
-            path.args
-                .as_deref()
-                .map(generic_args_text)
-                .unwrap_or_default()
-        ),
-        Type::Generic(name) | Type::Primitive(name) => name.clone(),
-        Type::Tuple(types) => format!(
-            "({})",
-            types.iter().map(type_text).collect::<Vec<_>>().join(", ")
-        ),
-        Type::Slice(inner) => format!("[{}]", type_text(inner)),
-        Type::Array { type_, len } => format!("[{}; {len}]", type_text(type_)),
-        Type::RawPointer { is_mutable, type_ } => format!(
-            "*{} {}",
-            if *is_mutable { "mut" } else { "const" },
-            type_text(type_)
-        ),
-        Type::BorrowedRef {
-            lifetime,
-            is_mutable,
-            type_,
-        } => {
-            let lifetime = lifetime
-                .as_deref()
-                .map(|value| format!("{value} "))
-                .unwrap_or_default();
-            format!(
-                "&{lifetime}{}{}",
-                if *is_mutable { "mut " } else { "" },
-                type_text(type_)
-            )
-        }
-        Type::Infer => "_".into(),
-        Type::FunctionPointer(pointer) => format!(
-            "fn({}){}",
-            pointer
-                .sig
-                .inputs
-                .iter()
-                .map(|(_, ty)| type_text(ty))
-                .collect::<Vec<_>>()
-                .join(", "),
-            pointer
-                .sig
-                .output
-                .as_ref()
-                .map(|ty| format!(" -> {}", type_text(ty)))
-                .unwrap_or_default()
-        ),
-        Type::DynTrait(dynamic) => {
-            let mut traits = dynamic
-                .traits
-                .iter()
-                .map(|poly| {
-                    format!(
-                        "{}{}",
-                        poly.trait_.path,
-                        poly.trait_
-                            .args
-                            .as_deref()
-                            .map(generic_args_text)
-                            .unwrap_or_default()
-                    )
-                })
-                .collect::<Vec<_>>();
-            if let Some(lifetime) = &dynamic.lifetime {
-                traits.push(lifetime.clone());
-            }
-            format!("dyn {}", traits.join(" + "))
-        }
-        Type::ImplTrait(bounds) => format!(
-            "impl {}",
-            bounds
-                .iter()
-                .map(generic_bound_text)
-                .collect::<Vec<_>>()
-                .join(" + ")
-        ),
-        Type::Pat { type_, .. } => type_text(type_),
-        Type::QualifiedPath {
-            name,
-            self_type,
-            trait_,
-            args,
-        } => {
-            let owner = type_text(self_type);
-            let trait_path = trait_
-                .as_ref()
-                .map(|path| format!(" as {}", path.path))
-                .unwrap_or_default();
-            format!(
-                "<{owner}{trait_path}>::{name}{}",
-                args.as_deref().map(generic_args_text).unwrap_or_default()
-            )
-        }
-    }
-}
-
-fn generics_text(generics: &rustdoc_types::Generics) -> String {
-    let params = generics.params.iter().map(param_text).collect::<Vec<_>>();
-    if params.is_empty() {
-        String::new()
-    } else {
-        format!("<{}>", params.join(", "))
-    }
-}
-
-fn param_text(param: &GenericParamDef) -> String {
-    match &param.kind {
-        GenericParamDefKind::Lifetime { .. } => param.name.clone(),
-        GenericParamDefKind::Type {
-            bounds, default, ..
-        } => {
-            let bounds = if bounds.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    ": {}",
-                    bounds
-                        .iter()
-                        .map(generic_bound_text)
-                        .collect::<Vec<_>>()
-                        .join(" + ")
-                )
-            };
-            let default = default
-                .as_ref()
-                .map(|ty| format!(" = {}", type_text(ty)))
-                .unwrap_or_default();
-            format!("{}{bounds}{default}", param.name)
-        }
-        GenericParamDefKind::Const { type_, default } => {
-            let default = default
-                .as_ref()
-                .map(|value| format!(" = {value}"))
-                .unwrap_or_default();
-            format!("const {}: {}{default}", param.name, type_text(type_))
-        }
-    }
-}
-
-fn generic_args_text(args: &GenericArgs) -> String {
-    match args {
-        GenericArgs::AngleBracketed { args, constraints } => {
-            let mut values = args
-                .iter()
-                .map(|arg| match arg {
-                    GenericArg::Lifetime(value) => value.clone(),
-                    GenericArg::Type(ty) => type_text(ty),
-                    GenericArg::Const(value) => value.expr.clone(),
-                    GenericArg::Infer => "_".into(),
-                })
-                .collect::<Vec<_>>();
-            values.extend(constraints.iter().map(|constraint| constraint.name.clone()));
-            format!("<{}>", values.join(", "))
-        }
-        GenericArgs::Parenthesized { inputs, output } => {
-            let suffix = output
-                .as_ref()
-                .map(|ty| format!(" -> {}", type_text(ty)))
-                .unwrap_or_default();
-            format!(
-                "({}){suffix}",
-                inputs.iter().map(type_text).collect::<Vec<_>>().join(", ")
-            )
-        }
-        GenericArgs::ReturnTypeNotation => "(..)".into(),
-    }
-}
-
-fn generic_bound_text(bound: &GenericBound) -> String {
-    match bound {
-        GenericBound::TraitBound { trait_, .. } => format!(
-            "{}{}",
-            trait_.path,
-            trait_
-                .args
-                .as_deref()
-                .map(generic_args_text)
-                .unwrap_or_default()
-        ),
-        GenericBound::Outlives(value) => value.clone(),
-        GenericBound::Use(values) => format!("use<{values:?}>"),
-    }
 }
 
 fn kind_name(kind: ItemKind) -> &'static str {
@@ -898,104 +685,187 @@ fn kind_name(kind: ItemKind) -> &'static str {
     }
 }
 
-fn read_guides(repository_root: &Path, crate_name: &str) -> Result<Vec<Guide>, Error> {
-    let repository_root = repository_root.canonicalize()?;
-    let mut package_roots = Vec::new();
-    let normalized = crate_name.replace('_', "-");
-    let mut manifests = Vec::new();
-    collect_manifests(&repository_root.join("rust/crates"), &mut manifests)?;
-    for manifest in manifests {
-        let text = fs::read_to_string(&manifest)?;
-        let package_name = text.lines().find_map(|line| {
-            let (key, value) = line.split_once('=')?;
-            if key.trim() != "name" {
-                return None;
-            }
-            Some(value.trim().trim_matches('"').to_owned())
-        });
-        if package_name.as_deref().map(|name| name.replace('_', "-")) == Some(normalized.clone()) {
-            if let Some(root) = manifest.parent() {
-                package_roots.push(root.to_owned());
-            }
-        }
-    }
-    if package_roots.is_empty() {
-        package_roots.push(repository_root.join("rust/crates").join(crate_name));
-    }
-    let candidates: Vec<PathBuf> = package_roots
-        .into_iter()
-        .flat_map(|root| [root.join("README.md"), root.join("docs")])
-        .collect();
-    let mut files = Vec::new();
-    for candidate in candidates {
-        if !candidate.exists() {
+fn guides_from_rustdoc(
+    krate: &Crate,
+    crate_name: &str,
+    public_items: &[public_api::PublicItemSignature],
+) -> Result<Vec<Guide>, Error> {
+    let mut guides = Vec::new();
+    for public_item in public_items {
+        if public_item.path.first().map(String::as_str) != Some(crate_name) {
             continue;
         }
-        let canonical = candidate.canonicalize()?;
-        if !canonical.starts_with(&repository_root) {
-            return Err(Error::Invalid(format!(
-                "guide path escapes repository root: {}",
-                candidate.display()
-            )));
+        let Some(item) = krate.index.get(&public_item.id) else {
+            continue;
+        };
+        if !matches!(&item.inner, ItemEnum::Module(_)) {
+            continue;
         }
-        if canonical.is_file() {
-            files.push(canonical);
-        } else if canonical.is_dir() {
-            collect_markdown(&canonical, &mut files)?;
-        }
-    }
-    files.sort();
-    files.dedup();
-    files
-        .into_iter()
-        .map(|path| {
-            let markdown = fs::read_to_string(&path)?;
-            let title = markdown
-                .lines()
-                .find_map(|line| line.strip_prefix("# "))
-                .unwrap_or("Guide")
-                .trim()
-                .to_owned();
-            let relative = path.strip_prefix(&repository_root).unwrap_or(&path);
-            Ok(Guide {
-                path: normalize_path(relative),
-                title,
-                markdown,
+        let Some(markdown) = item.docs.clone().filter(|docs| !docs.trim().is_empty()) else {
+            continue;
+        };
+        let path = public_item.path.join("::");
+        let title = markdown
+            .lines()
+            .find_map(|line| line.strip_prefix("# "))
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| {
+                public_item
+                    .path
+                    .last()
+                    .map(String::as_str)
+                    .unwrap_or(crate_name)
             })
-        })
-        .collect()
-}
-
-fn collect_manifests(root: &Path, manifests: &mut Vec<PathBuf>) -> Result<(), Error> {
-    if !root.is_dir() {
-        return Ok(());
+            .to_owned();
+        guides.push(Guide {
+            path,
+            title,
+            markdown,
+        });
     }
-    for entry in fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect_manifests(&path, manifests)?;
-        } else if path.file_name().is_some_and(|name| name == "Cargo.toml") {
-            manifests.push(path);
-        }
-    }
-    manifests.sort();
-    Ok(())
-}
-fn collect_markdown(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {
-    for entry in fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect_markdown(&path, files)?;
-        } else if path.extension().is_some_and(|extension| extension == "md") {
-            files.push(path);
-        }
-    }
-    Ok(())
+    guides.sort_by(|a, b| a.path.cmp(&b.path));
+    guides.dedup_by(|a, b| a.path == b.path);
+    Ok(guides)
 }
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(bytes);
     format!("{:x}", digest.finalize())
+}
+
+fn atomic_write(path: &Path, bytes: &[u8], immutable: bool) -> Result<(), Error> {
+    reject_reparse_ancestors(path)?;
+    if let Ok(existing) = fs::read(path) {
+        if immutable && existing != bytes {
+            return Err(Error::Invalid(format!(
+                "refusing to rewrite immutable file {}",
+                path.display()
+            )));
+        }
+        if immutable {
+            return Ok(());
+        }
+    }
+    let parent = path.parent().unwrap_or(path);
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    if immutable {
+        file.persist_noclobber(path)
+            .map_err(|error| Error::Io(error.error))?;
+    } else {
+        file.persist(path).map_err(|error| Error::Io(error.error))?;
+    }
+    Ok(())
+}
+
+fn reject_reparse_ancestors(path: &Path) -> Result<(), Error> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if let Ok(metadata) = fs::symlink_metadata(candidate) {
+            if is_reparse_or_symlink(&metadata) {
+                return Err(Error::Invalid(format!(
+                    "path contains a reparse point or symlink: {}",
+                    candidate.display()
+                )));
+            }
+        }
+        current = candidate.parent();
+    }
+    Ok(())
+}
+
+fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return metadata.file_attributes() & 0x400 != 0;
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn stable_version(version: &str) -> Result<Version, Error> {
+    let parsed = Version::parse(version).map_err(|error| {
+        Error::Invalid(format!(
+            "release version {version:?} is not valid semver: {error}"
+        ))
+    })?;
+    if !parsed.pre.is_empty() {
+        return Err(Error::Invalid(format!(
+            "release version {version:?} must not contain a pre-release identifier"
+        )));
+    }
+    Ok(parsed)
+}
+
+fn validate_source_digest(value: &str) -> Result<(), Error> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(Error::Invalid(
+            "source manifest digest must use the sha256:<64 hex characters> form".into(),
+        ));
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::Invalid(
+            "source manifest digest must use the sha256:<64 hex characters> form".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_source_info(source: &SourceInfo) -> Result<(), Error> {
+    if source.revision.len() < 40
+        || source.revision.len() > 64
+        || !source.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(Error::Invalid(
+            "source revision must be a 40- to 64-character hexadecimal identity".into(),
+        ));
+    }
+    if !matches!(
+        source.source_state.as_str(),
+        "captured-snapshot" | "working-tree" | "release-tag"
+    ) {
+        return Err(Error::Invalid("unsupported source state".into()));
+    }
+    if let Some(source_sha256) = &source.source_sha256 {
+        validate_source_digest(source_sha256)?;
+    } else if source.source_state != "working-tree" {
+        return Err(Error::Invalid(
+            "captured snapshots and release tags require a trusted source manifest digest".into(),
+        ));
+    }
+    if source.input_sha256.len() != 64
+        || !source
+            .input_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(Error::Invalid(
+            "rustdoc input digest must be 64 hexadecimal characters".into(),
+        ));
+    }
+    if source
+        .rustdoc_format_versions
+        .iter()
+        .any(|format| *format != FORMAT_VERSION)
+    {
+        return Err(Error::Invalid(format!(
+            "unsupported rustdoc format in source metadata; expected {}",
+            FORMAT_VERSION
+        )));
+    }
+    Ok(())
+}
+
+fn release_version(version: &str) -> Result<Version, Error> {
+    stable_version(version)
 }
 fn safe_version(version: &str) -> Result<String, Error> {
     if version.is_empty() || version == "." || version == ".." || version.contains(['/', '\\']) {
@@ -1062,8 +932,9 @@ mod tests {
             source: SourceInfo {
                 revision: "a".repeat(40),
                 source_state: "captured-snapshot".into(),
-                input_sha256: "input".into(),
-                rustdoc_format_versions: vec![31],
+                source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
+                input_sha256: "a".repeat(64),
+                rustdoc_format_versions: vec![60],
                 generator: "sdk-docs/test".into(),
             },
             navigation: Navigation {
@@ -1093,7 +964,8 @@ mod tests {
             source: SourceInfo {
                 revision: "1".repeat(40),
                 source_state: "captured-snapshot".into(),
-                input_sha256: "input".into(),
+                source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
+                input_sha256: "a".repeat(64),
                 rustdoc_format_versions: vec![60],
                 generator: "sdk-docs/test".into(),
             },
@@ -1106,6 +978,12 @@ mod tests {
         data.version = "1.1.0".into();
         data.source.revision = "2".repeat(40);
         write_bundle(&data, &output, true).expect("latest should advance to the next release");
+        data.version = "0.9.0".into();
+        data.source.revision = "9".repeat(40);
+        write_bundle(&data, &output, true).expect("an older release should remain immutable");
+        data.version = "0.10.0".into();
+        data.source.revision = "8".repeat(40);
+        write_bundle(&data, &output, true).expect("semantic release ordering should be accepted");
         data.version = "preview-1".into();
         data.channel = Channel::Preview;
         data.source.revision = "3".repeat(40);
@@ -1117,7 +995,14 @@ mod tests {
             &fs::read(output.join("sdk-docs-versions.v1.json")).expect("index should exist"),
         )
         .expect("index should parse");
-        assert_eq!(index.releases.len(), 2);
+        assert_eq!(
+            index
+                .releases
+                .iter()
+                .map(|entry| entry.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0.9.0", "0.10.0", "1.0.0", "1.1.0"]
+        );
         assert_eq!(
             index.latest.as_ref().map(|entry| entry.version.as_str()),
             Some("1.1.0")
@@ -1138,10 +1023,10 @@ mod tests {
         let fixture = serde_json::json!({
             "root": 0,
             "crate_version": null,
-            "includes_private": true,
+            "includes_private": false,
             "index": {
                 "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [1, 2], "is_stripped": false}}},
-                "1": {"id": 1, "crate_id": 0, "name": "hidden", "span": null, "visibility": "default", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": false, "items": [3], "is_stripped": false}}},
+                "1": {"id": 1, "crate_id": 0, "name": "hidden", "span": null, "visibility": "default", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": false, "items": [3], "is_stripped": true}}},
                 "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": "alias", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
                 "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}}
             },
@@ -1160,6 +1045,7 @@ mod tests {
             channel: Channel::Release,
             revision: "f".repeat(40),
             source_state: "captured-snapshot".into(),
+            source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
             repository_root: root.clone(),
             rustdoc_files: vec![rustdoc_path],
             mark_latest: false,
@@ -1167,16 +1053,28 @@ mod tests {
         let first = build_data(&input).expect("typed fixture should build");
         let second = build_data(&input).expect("typed fixture should build deterministically");
         assert_eq!(first, second);
+        let mut changed_source = input.clone();
+        changed_source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
+        let changed = build_data(&changed_source).expect("source identity should be retained");
+        assert_ne!(first.source.source_sha256, changed.source.source_sha256);
         let family = &first.families[0];
         assert!(family
             .items
             .iter()
             .any(|item| item.reexport.as_deref() == Some("hidden::Visible")
                 && item.reexport_target.as_deref() == Some("demo::hidden::private_function")));
-        assert!(!family
-            .items
-            .iter()
-            .any(|item| item.name == "private_function"));
+        let mismatched_path = root.join("mismatched.json");
+        let mut mismatched = fixture.clone();
+        mismatched["crate_version"] = serde_json::json!("9.9.9");
+        fs::write(
+            &mismatched_path,
+            serde_json::to_vec(&mismatched).expect("mismatched fixture should serialize"),
+        )
+        .expect("mismatched fixture should write");
+        let mut mismatched_input = input;
+        mismatched_input.rustdoc_files = vec![mismatched_path];
+        let error = build_data(&mismatched_input).expect_err("crate version mismatch must fail");
+        assert!(error.to_string().contains("reports crate version 9.9.9"));
         fs::remove_dir_all(root).expect("fixture directory should be removable");
     }
 }

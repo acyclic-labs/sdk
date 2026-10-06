@@ -12,9 +12,9 @@ reconstruct those declarations.
 | Rust declarations to protobuf | Protify 0.1.4, Prost 0.14.4 | Direct message encoding and schema rendering; checked digest projection and unknown enum preservation | Full Actors descriptor, options, streaming signatures, tonic generation and drift checks |
 | TypeScript static types | ts-rs 12.0.1 | Seven Rust tests; generated positive and negative TS consumers for nominal identity, digest, bigint and tagged union | Installed native/browser Actors clients and complete operation coverage |
 | Rust documentation input | rustdoc-types 0.60.0, Rustdoc 1.98.1, format 60 | Real public/re-export/private-path fixtures; docs and spans joined by item identity | Complete input provenance, source coverage and immutable bundles |
-| API signature formatting | public-api 0.52.2 | Real generic/dynamic signatures and aliases after a checked format adapter | Production integration and removal of the custom formatter |
+| API signature formatting | public-api 0.52.2 | Integrated checked format adapter; real generic methods, repeated aliases, enum fields and associated items; custom formatter removed | Full SDK source coverage |
 | Shared language bindings | UniFFI 0.31.0 | Installed Windows Python wheel calling canonical Rust Stream memory behavior, typed errors, finite reads and cancellation; Swift generated-source type checks | Actual remote backend, installed target packages and complete capability coverage |
-| Browser gRPC | tonic-web-wasm-client 0.9.2, tonic 0.14.6 | Generic Actors client dependency/type compatibility | Actual WASM/browser calls and public gRPC-Web ingress |
+| Browser gRPC | tonic-web-wasm-client 0.9.2, tonic 0.14.6 | Generic Actors client completed all eight unary operations against a local gRPC-Web service in headless Chrome | Production Rust-source package and public gRPC-Web ingress |
 
 Cloudflare Forge and OpenAPI Generator operate downstream of API contracts.
 They do not extract executable Rust behavior. Independently generated foreign
