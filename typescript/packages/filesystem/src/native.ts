@@ -1097,10 +1097,16 @@ function nativeArchitecture(value: string): "x64" | "arm64" {
   }
 }
 
+/** Rust emits exact u64 counters; reject any that JSON numbers cannot hold losslessly. */
 function parseWork(value: string): WorkCounters {
   const parsed: unknown = JSON.parse(value);
   if (typeof parsed !== "object" || parsed === null) {
     throw new TypeError("native work receipt is malformed");
+  }
+  for (const [key, counter] of Object.entries(parsed)) {
+    if (!Number.isSafeInteger(counter) || (counter as number) < 0) {
+      throw new RangeError(`native work counter ${key} exceeds the public safe number range`);
+    }
   }
   return parsed as WorkCounters;
 }
