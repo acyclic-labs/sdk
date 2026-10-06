@@ -1,57 +1,78 @@
 {
-  "name": "@acyclic-labs/actors",
-  "version": "0.2.0",
-  "private": false,
-  "license": "Apache-2.0",
-  "description": "Generated Actors v1 contracts and authenticated HTTP client",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/acyclic-labs/sdk.git",
-    "directory": "typescript/packages/actors"
-  },
-  "type": "module",
-  "exports": {
-    ".": {
-      "browser": {
-        "types": "./dist/browser.d.ts",
-        "default": "./dist/browser.js"
-      },
-      "node": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+  "acyclicGenerated": {
+    "defaultTransports": {
+      "browser": "http",
+      "native": "grpc"
     },
-    "./proto": {
-      "types": "./generated/proto/actors/v1/actors_pb.d.ts",
-      "default": "./generated/proto/actors/v1/actors_pb.js"
-    },
-    "./grpc": {
-      "default": "./dist/grpc.js",
-      "types": "./dist/grpc.d.ts"
-    }
-  },
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "generated",
-    "CHANGELOG.md"
-  ],
-  "scripts": {
-    "build:wasm": "bun ../../../scripts/build-remote-web-wasm.mjs ./generated/wasm",
-    "build": "bun run build:wasm && tsc -b",
-    "test": "bun run build:wasm && tsc -b --pretty false",
-    "prepack": "npm run build",
-    "pack:dry": "bun pm pack --dry-run"
+    "family": "actors",
+    "generator": "sdk-typescript",
+    "generatorVersion": "0.1.0",
+    "nativeCompanions": {},
+    "sourceContentSha256": "0f04c40b803d60cacc4b156374928b1552561c087d981e44e231f56b85876d4c",
+    "sourceGitSha": null,
+    "sourceGitShaKind": null,
+    "sourceModelRevision": "working-tree",
+    "sourceModelSha256": "0f04c40b803d60cacc4b156374928b1552561c087d981e44e231f56b85876d4c"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",
     "@connectrpc/connect": "2.1.1",
     "@connectrpc/connect-node": "2.1.1"
   },
+  "description": "Generated Actors v1 contracts and authenticated HTTP client",
   "devDependencies": {
-    "typescript": "7.0.2",
-    "@types/node": "26.4.1"
-  }
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  },
+  "exports": {
+    ".": {
+      "browser": {
+        "default": "./dist/browser.js",
+        "types": "./dist/browser.d.ts"
+      },
+      "default": "./dist/index.js",
+      "node": {
+        "default": "./dist/index.js",
+        "types": "./dist/index.d.ts"
+      },
+      "types": "./dist/index.d.ts"
+    },
+    "./generated-client": {
+      "default": "./dist/generated-client.js",
+      "types": "./dist/generated-client.d.ts"
+    },
+    "./grpc": {
+      "default": "./dist/grpc.js",
+      "types": "./dist/grpc.d.ts"
+    },
+    "./proto": {
+      "default": "./generated/proto/actors/v1/actors_pb.js",
+      "types": "./generated/proto/actors/v1/actors_pb.d.ts"
+    },
+    "./provenance": {
+      "default": "./generated/rust-provenance.json"
+    }
+  },
+  "files": [
+    "dist",
+    "generated",
+    "CHANGELOG.md"
+  ],
+  "license": "Apache-2.0",
+  "name": "@acyclic-labs/actors",
+  "private": false,
+  "repository": {
+    "directory": "typescript/packages/actors",
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git"
+  },
+  "scripts": {
+    "build": "bun run build:wasm && tsc -b",
+    "build:wasm": "bun ../../../scripts/build-remote-web-wasm.mjs ./generated/wasm",
+    "pack:dry": "bun pm pack --dry-run",
+    "test": "bun run build:wasm && tsc -b --pretty false"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "version": "0.2.0"
 }

@@ -1,0 +1,31 @@
+{
+  "artifactKind": "source-projection",
+  "defaultTransports": {
+    "browser": "grpc-web",
+    "native": "grpc"
+  },
+  "descriptorSha256": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7",
+  "family": "machines",
+  "generatedClientSha256": null,
+  "generatedSourceSha256": "b490e2e8def3b79a25227a0bbbfb09a84b44b5a2db7c99e7ae2847b190247387",
+  "generator": "sdk-typescript",
+  "generatorVersion": "0.1.0",
+  "nativeCompanions": {
+    "@acyclic-labs/machines-darwin-arm64": "0.2.0",
+    "@acyclic-labs/machines-darwin-x64": "0.2.0",
+    "@acyclic-labs/machines-linux-arm64-gnu": "0.2.0",
+    "@acyclic-labs/machines-linux-arm64-musl": "0.2.0",
+    "@acyclic-labs/machines-linux-x64-gnu": "0.2.0",
+    "@acyclic-labs/machines-linux-x64-musl": "0.2.0",
+    "@acyclic-labs/machines-win32-arm64": "0.2.0",
+    "@acyclic-labs/machines-win32-x64": "0.2.0"
+  },
+  "rustCrate": "acyclic-machines",
+  "schema": "acyclic.sdk.typescript.package.provenance.v1",
+  "sourceArtifact": "acyclic_sdk_contract_wire::machines::machines_descriptor",
+  "sourceContentSha256": "c0435a38d4a5faea49a6caa7d775e77cfbc378e3b0076846690a53e3562456fb",
+  "sourceGitSha": null,
+  "sourceGitShaKind": null,
+  "sourceModelRevision": "working-tree",
+  "sourceModelSha256": "c0435a38d4a5faea49a6caa7d775e77cfbc378e3b0076846690a53e3562456fb"
+}

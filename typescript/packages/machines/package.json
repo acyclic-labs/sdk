@@ -1,31 +1,108 @@
 {
-  "name": "@acyclic-labs/machines",
-  "version": "0.2.0",
-  "private": false,
-  "license": "Apache-2.0",
+  "acyclicGenerated": {
+    "defaultTransports": {
+      "browser": "grpc-web",
+      "native": "grpc"
+    },
+    "family": "machines",
+    "generator": "sdk-typescript",
+    "generatorVersion": "0.1.0",
+    "nativeCompanions": {
+      "@acyclic-labs/machines-darwin-arm64": "0.2.0",
+      "@acyclic-labs/machines-darwin-x64": "0.2.0",
+      "@acyclic-labs/machines-linux-arm64-gnu": "0.2.0",
+      "@acyclic-labs/machines-linux-arm64-musl": "0.2.0",
+      "@acyclic-labs/machines-linux-x64-gnu": "0.2.0",
+      "@acyclic-labs/machines-linux-x64-musl": "0.2.0",
+      "@acyclic-labs/machines-win32-arm64": "0.2.0",
+      "@acyclic-labs/machines-win32-x64": "0.2.0"
+    },
+    "sourceContentSha256": "c0435a38d4a5faea49a6caa7d775e77cfbc378e3b0076846690a53e3562456fb",
+    "sourceGitSha": null,
+    "sourceGitShaKind": null,
+    "sourceModelRevision": "working-tree",
+    "sourceModelSha256": "c0435a38d4a5faea49a6caa7d775e77cfbc378e3b0076846690a53e3562456fb"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0",
+    "@connectrpc/connect": "2.1.1",
+    "@connectrpc/connect-node": "2.1.1"
+  },
   "description": "Machine lifecycle contracts, authenticated provider, and simulator",
-  "keywords": ["machines", "compute", "checkpoints"],
-  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/machines" },
-  "type": "module",
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  },
   "exports": {
     ".": {
-      "browser": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" },
-      "node": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "browser": {
+        "default": "./dist/browser.js",
+        "types": "./dist/browser.d.ts"
+      },
+      "default": "./dist/index.js",
+      "node": {
+        "default": "./dist/index.js",
+        "types": "./dist/index.d.ts"
+      },
+      "types": "./dist/index.d.ts"
     },
-    "./grpc": { "node": { "types": "./dist/grpc.d.ts", "default": "./dist/grpc.js" } },
-    "./native": { "node": { "types": "./dist/native.d.ts", "default": "./dist/native.js" } },
-    "./proto": { "types": "./generated/proto/machines/v1/machines_pb.d.ts", "default": "./generated/proto/machines/v1/machines_pb.js" }
+    "./generated-client": {
+      "default": "./dist/generated-client.js",
+      "types": "./dist/generated-client.d.ts"
+    },
+    "./grpc": {
+      "node": {
+        "default": "./dist/grpc.js",
+        "types": "./dist/grpc.d.ts"
+      }
+    },
+    "./native": {
+      "default": "./dist/native.js",
+      "types": "./dist/native.d.ts"
+    },
+    "./proto": {
+      "default": "./generated/proto/machines/v1/machines_pb.js",
+      "types": "./generated/proto/machines/v1/machines_pb.d.ts"
+    },
+    "./provenance": {
+      "default": "./generated/rust-provenance.json"
+    }
   },
-  "types": "./dist/index.d.ts",
-  "files": ["dist", "generated", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "generated",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "machines",
+    "compute",
+    "checkpoints"
+  ],
+  "license": "Apache-2.0",
+  "name": "@acyclic-labs/machines",
+  "optionalDependencies": {
+    "@acyclic-labs/machines-darwin-arm64": "0.2.0",
+    "@acyclic-labs/machines-darwin-x64": "0.2.0",
+    "@acyclic-labs/machines-linux-arm64-gnu": "0.2.0",
+    "@acyclic-labs/machines-linux-arm64-musl": "0.2.0",
+    "@acyclic-labs/machines-linux-x64-gnu": "0.2.0",
+    "@acyclic-labs/machines-linux-x64-musl": "0.2.0",
+    "@acyclic-labs/machines-win32-arm64": "0.2.0",
+    "@acyclic-labs/machines-win32-x64": "0.2.0"
+  },
+  "private": false,
+  "repository": {
+    "directory": "typescript/packages/machines",
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git"
+  },
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
     "build:wasm": "bun ../../../scripts/build-machines-wasm.mjs",
-    "test": "bun run build && bun test test",
-    "pack:dry": "bun pm pack --dry-run"
+    "pack:dry": "bun pm pack --dry-run",
+    "test": "bun run build && bun test test"
   },
-  "dependencies": { "@bufbuild/protobuf": "2.15.0", "@connectrpc/connect": "2.1.1", "@connectrpc/connect-node": "2.1.1" },
-  "devDependencies": { "typescript": "7.0.2", "@types/node": "26.4.1" }
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "version": "0.2.0"
 }

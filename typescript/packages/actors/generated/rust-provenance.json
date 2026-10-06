@@ -1,0 +1,22 @@
+{
+  "artifactKind": "source-projection",
+  "defaultTransports": {
+    "browser": "http",
+    "native": "grpc"
+  },
+  "descriptorSha256": "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf",
+  "family": "actors",
+  "generatedClientSha256": null,
+  "generatedSourceSha256": "38ec663d1972dcf96be834f648a0a961690c91087d7a1f5dc120dd2d9077dcae",
+  "generator": "sdk-typescript",
+  "generatorVersion": "0.1.0",
+  "nativeCompanions": {},
+  "rustCrate": "acyclic-actors",
+  "schema": "acyclic.sdk.typescript.package.provenance.v1",
+  "sourceArtifact": "acyclic_sdk_contract_wire::actors_descriptor",
+  "sourceContentSha256": "0f04c40b803d60cacc4b156374928b1552561c087d981e44e231f56b85876d4c",
+  "sourceGitSha": null,
+  "sourceGitShaKind": null,
+  "sourceModelRevision": "working-tree",
+  "sourceModelSha256": "0f04c40b803d60cacc4b156374928b1552561c087d981e44e231f56b85876d4c"
+}

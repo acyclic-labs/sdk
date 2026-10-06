@@ -1,90 +1,115 @@
 {
-  "name": "@acyclic-labs/objects",
-  "version": "0.2.0",
-  "private": false,
-  "license": "Apache-2.0",
-  "description": "Logical Objects v2 with memory, HTTP, and Node/Bun gRPC providers",
-  "keywords": [
-    "objects",
-    "storage",
-    "buckets"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/acyclic-labs/sdk.git",
-    "directory": "typescript/packages/objects"
-  },
-  "type": "module",
-  "exports": {
-    "./v2": {
-      "types": "./dist/v2.d.ts",
-      "default": "./dist/v2.js"
+  "acyclicGenerated": {
+    "defaultTransports": {
+      "browser": "http",
+      "native": "grpc"
     },
-    "./v2/proto": {
-      "types": "./generated/proto/objects/v2/objects_pb.d.ts",
-      "default": "./generated/proto/objects/v2/objects_pb.js"
-    },
-    "./v2/http": {
-      "types": "./dist/v2-http.d.ts",
-      "default": "./dist/v2-http.js"
-    },
-    "./v2/grpc": {
-      "types": "./dist/v2-grpc.d.ts",
-      "default": "./dist/v2-grpc.js"
-    },
-    ".": {
-      "browser": {
-        "types": "./dist/browser.d.ts",
-        "default": "./dist/browser.js"
-      },
-      "node": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./browser": {
-      "types": "./dist/browser.d.ts",
-      "default": "./dist/browser.js"
-    },
-    "./proto": {
-      "types": "./generated/proto/objects/v2/objects_pb.d.ts",
-      "default": "./generated/proto/objects/v2/objects_pb.js"
-    },
-    "./http": { "types": "./dist/v2-http.d.ts", "default": "./dist/v2-http.js" },
-    "./grpc": {
-      "default": "./dist/v2-grpc.js",
-      "types": "./dist/v2-grpc.d.ts"
-    },
-    "./platform": {
-      "types": "./dist/platform.d.ts",
-      "default": "./dist/platform.js"
-    },
-    "./wasm": {
-      "types": "./dist/wasm-runtime.d.ts",
-      "default": "./dist/wasm-runtime.js"
-    }
-  },
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "generated",
-    "CHANGELOG.md"
-  ],
-  "scripts": {
-    "build": "bun run build:wasm && tsc -b",
-    "build:wasm": "bun ../../../scripts/build-objects-wasm.mjs",
-    "test": "bun run build && bun test test"
+    "family": "objects",
+    "generator": "sdk-typescript",
+    "generatorVersion": "0.1.0",
+    "nativeCompanions": {},
+    "sourceContentSha256": "69187d57960b49c929cdeaaa406da42310efb7ac94e5ee9703ecf586228a5b25",
+    "sourceGitSha": null,
+    "sourceGitShaKind": null,
+    "sourceModelRevision": "working-tree",
+    "sourceModelSha256": "69187d57960b49c929cdeaaa406da42310efb7ac94e5ee9703ecf586228a5b25"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",
     "@connectrpc/connect": "2.1.1",
     "@connectrpc/connect-node": "2.1.1"
   },
+  "description": "Logical Objects v2 with memory, HTTP, and Node/Bun gRPC providers",
   "devDependencies": {
     "@types/bun": "1.4.2",
     "@types/node": "26.4.1",
     "typescript": "7.0.2"
-  }
+  },
+  "exports": {
+    ".": {
+      "browser": {
+        "default": "./dist/browser.js",
+        "types": "./dist/browser.d.ts"
+      },
+      "default": "./dist/index.js",
+      "node": {
+        "default": "./dist/index.js",
+        "types": "./dist/index.d.ts"
+      },
+      "types": "./dist/index.d.ts"
+    },
+    "./browser": {
+      "default": "./dist/browser.js",
+      "types": "./dist/browser.d.ts"
+    },
+    "./generated-client": {
+      "default": "./dist/generated-client.js",
+      "types": "./dist/generated-client.d.ts"
+    },
+    "./grpc": {
+      "default": "./dist/v2-grpc.js",
+      "types": "./dist/v2-grpc.d.ts"
+    },
+    "./http": {
+      "default": "./dist/v2-http.js",
+      "types": "./dist/v2-http.d.ts"
+    },
+    "./platform": {
+      "default": "./dist/platform.js",
+      "types": "./dist/platform.d.ts"
+    },
+    "./proto": {
+      "default": "./generated/proto/objects/v2/objects_pb.js",
+      "types": "./generated/proto/objects/v2/objects_pb.d.ts"
+    },
+    "./provenance": {
+      "default": "./generated/rust-provenance.json"
+    },
+    "./v2": {
+      "default": "./dist/v2.js",
+      "types": "./dist/v2.d.ts"
+    },
+    "./v2/grpc": {
+      "default": "./dist/v2-grpc.js",
+      "types": "./dist/v2-grpc.d.ts"
+    },
+    "./v2/http": {
+      "default": "./dist/v2-http.js",
+      "types": "./dist/v2-http.d.ts"
+    },
+    "./v2/proto": {
+      "default": "./generated/proto/objects/v2/objects_pb.js",
+      "types": "./generated/proto/objects/v2/objects_pb.d.ts"
+    },
+    "./wasm": {
+      "default": "./dist/wasm-runtime.js",
+      "types": "./dist/wasm-runtime.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "generated",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "objects",
+    "storage",
+    "buckets"
+  ],
+  "license": "Apache-2.0",
+  "name": "@acyclic-labs/objects",
+  "private": false,
+  "repository": {
+    "directory": "typescript/packages/objects",
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git"
+  },
+  "scripts": {
+    "build": "bun run build:wasm && tsc -b",
+    "build:wasm": "bun ../../../scripts/build-objects-wasm.mjs",
+    "test": "bun run build && bun test test"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "version": "0.2.0"
 }

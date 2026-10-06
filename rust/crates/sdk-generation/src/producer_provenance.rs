@@ -28,6 +28,7 @@ pub struct ProducerManifest {
     pub target: String,
     pub source_revision: String,
     pub source_digest: String,
+    pub rust_model_digest: String,
     pub files: Vec<ProducerFile>,
     pub artifact_digest: String,
 }
@@ -41,6 +42,7 @@ pub fn emit(
     target: &str,
     source_revision: &str,
     source_digest: &str,
+    rust_model_digest: &str,
 ) -> Result<(PathBuf, ProducerManifest), String> {
     let manifest_path = target_root.join(MANIFEST_FILE);
     let files = collect_files(target_root, Some(&manifest_path))?;
@@ -55,6 +57,7 @@ pub fn emit(
         target: target.to_owned(),
         source_revision: source_revision.to_owned(),
         source_digest: source_digest.to_owned(),
+        rust_model_digest: rust_model_digest.to_owned(),
         artifact_digest: artifact_digest(&files),
         files,
     };
@@ -71,6 +74,7 @@ pub fn verify(
     expected_target: &str,
     expected_source_revision: &str,
     expected_source_digest: &str,
+    expected_rust_model_digest: &str,
 ) -> Result<ProducerManifest, String> {
     let bytes = fs::read(manifest_path)
         .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
@@ -101,6 +105,12 @@ pub fn verify(
             manifest.source_digest
         ));
     }
+    if manifest.rust_model_digest != expected_rust_model_digest {
+        return Err(format!(
+            "producer {expected_target} Rust model digest differs: expected {expected_rust_model_digest}, got {}",
+            manifest.rust_model_digest
+        ));
+    }
     let target_root = manifest_path
         .parent()
         .ok_or_else(|| "producer manifest has no parent directory".to_owned())?;
@@ -127,6 +137,7 @@ pub fn verify_plan(
     output: &Path,
     expected_source_revision: &str,
     expected_source_digest: &str,
+    expected_rust_model_digest: &str,
 ) -> Result<(), String> {
     let plan_path = output.join("language-producers/plan.json");
     if !plan_path.is_file() {
@@ -161,6 +172,7 @@ pub fn verify_plan(
             target,
             expected_source_revision,
             expected_source_digest,
+            expected_rust_model_digest,
         )?;
     }
     Ok(())
@@ -273,11 +285,26 @@ mod tests {
         fs::write(root.join("package/src/client.rs"), b"pub struct Client;\n").expect("write");
         let revision = "a".repeat(40);
         let (manifest_path, manifest) =
-            emit(&root, "rust", &revision, "sha256:model").expect("emit manifest");
+            emit(
+                &root,
+                "rust",
+                &revision,
+                "sha256:source",
+                &"a".repeat(64),
+            )
+                .expect("emit manifest");
         assert_eq!(manifest.files.len(), 1);
         assert_eq!(manifest.files[0].path, "package/src/client.rs");
         assert_eq!(manifest.files[0].bytes, 19);
-        verify(&manifest_path, "rust", &revision, "sha256:model").expect("verify manifest");
+        verify(
+            &manifest_path,
+            "rust",
+            &revision,
+            "sha256:source",
+            &"a".repeat(64),
+        )
+        .expect("verify manifest");
+        assert_eq!(manifest.rust_model_digest, "a".repeat(64));
         cleanup(&root);
     }
 
@@ -288,11 +315,52 @@ mod tests {
         fs::write(&file, b"pub struct Client;\n").expect("write");
         let revision = "b".repeat(40);
         let (manifest_path, _) =
-            emit(&root, "rust", &revision, "sha256:model").expect("emit manifest");
+            emit(
+                &root,
+                "rust",
+                &revision,
+                "sha256:source",
+                &"b".repeat(64),
+            )
+                .expect("emit manifest");
         fs::write(&file, b"pub struct Client<T>;\n").expect("mutate");
-        let error = verify(&manifest_path, "rust", &revision, "sha256:model")
+        let error = verify(
+            &manifest_path,
+            "rust",
+            &revision,
+            "sha256:source",
+            &"b".repeat(64),
+        )
             .expect_err("modified file must fail");
         assert!(error.contains("file manifest differs"));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn stale_rust_model_binding_is_rejected() {
+        let root = test_root("model-digest");
+        fs::write(root.join("package/client.rs"), b"pub struct Client;\n").expect("write");
+        let revision = "c".repeat(40);
+        let (manifest_path, _) = emit(
+            &root,
+            "rust",
+            &revision,
+            "sha256:source",
+            &"c".repeat(64),
+        )
+        .expect("emit manifest");
+        let mut document: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        document["rust_model_digest"] = Value::String("d".repeat(64));
+        fs::write(&manifest_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let error = verify(
+            &manifest_path,
+            "rust",
+            &revision,
+            "sha256:source",
+            &"c".repeat(64),
+        )
+        .expect_err("stale Rust model binding must fail");
+        assert!(error.contains("Rust model digest differs"));
         cleanup(&root);
     }
 }

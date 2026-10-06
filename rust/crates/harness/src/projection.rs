@@ -1,5 +1,6 @@
 //! Explicit, provenance-preserving selection from canonical history to model context.
 
+/// Selected, provenance-preserving model context.
 pub use crate::conversation::ModelContextSelection;
 use crate::{
     Error, Result,

@@ -13,7 +13,7 @@ the public surfaces to their supported targets and implementation profiles.
 | Hosted workspace client | `HostedFs`, `HostedFsOptions` | Native targets; unavailable on `wasm32` |
 | Native filesystem watching | `watch` and native capture support | Native targets; selected automatically by the native profile |
 | Native mounts | `native_mount` | Native targets; selected automatically by the native profile |
-| S3 HTTP support | `s3_http` | Native targets; selected automatically by the native profile |
+| S3 HTTP support | `s3_http` | Native targets; selected automatically by the default profile |
 | gRPC wire service | `FilesystemWireService` and generated `wire::filesystem::v2` bindings | Native targets; included by the native build |
 
 The public wire contract is `acyclic.filesystem.v2`. The packaged

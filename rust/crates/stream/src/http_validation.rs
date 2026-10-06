@@ -362,6 +362,10 @@ fn validate_idempotency(value: &Value) -> Result {
     }
 }
 
+/// Validates one hosted HTTP success payload against the Rust-owned route contract.
+///
+/// `route` is one of the entries in [`crate::HTTP_RESPONSE_CONTRACT`]. Numeric and opaque
+/// values are checked using the same bounds and encodings as the provider and WASM adapters.
 pub fn validate(route: &str, value: &Value) -> Result {
     match crate::HTTP_RESPONSE_CONTRACT
         .iter()

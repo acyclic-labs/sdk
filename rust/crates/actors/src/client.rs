@@ -7,44 +7,47 @@
 
 use crate::wire;
 
-/// Maximum response size used by the platform HTTP fallback.
+/// Default response bound used by the platform HTTP fallback, in bytes.
 pub const DEFAULT_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
-/// The transport selected by [`connect`] after negotiation.
+/// Transport selected by [`connect`] after a successful native negotiation.
+///
+/// Native builds prefer verified gRPC and use HTTP when the endpoint exposes
+/// only the verified HTTP contract.
 #[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_TRANSPORT: &str = "grpc";
-/// The transport selected by [`connect`] in browser builds.
+/// Transport selected by [`connect`] for browser builds.
 #[cfg(target_arch = "wasm32")]
 pub const DEFAULT_TRANSPORT: &str = "http";
 
-/// Client setup, transport, or canonical service failure.
+/// Failure reported by the platform-aware client during setup, transport, or service use.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Invalid endpoint, credential, or negotiation configuration.
+    /// The endpoint, bearer credential, CA, or negotiated contract is invalid.
     #[error("Actors client configuration failed: {0}")]
     Configuration(String),
-    /// Transport setup or network failure.
+    /// A selected transport could not be created or reached.
     #[error("Actors transport failure: {0}")]
     Transport(String),
-    /// The service rejected an operation or handshake.
+    /// The service rejected an operation or transport handshake.
     #[error("Actors service failure")]
     Service {
-        /// gRPC status code when the rejection came from gRPC.
+        /// Numeric gRPC status code when the rejection came from gRPC.
         grpc_code: Option<i32>,
         /// HTTP status when the rejection came from HTTP.
         http_status: Option<u16>,
-        /// Canonical semantic error detail, when present.
+        /// Rust-owned semantic error detail when the service supplied one.
         detail: Option<wire::Error>,
     },
-    /// A configured response bound was exceeded.
+    /// A response exceeded the configured HTTP or handshake byte bound.
     #[error("Actors response exceeds configured bound")]
     ResponseTooLarge,
-    /// The service response did not match the Rust-owned descriptor.
+    /// A response could not be decoded with the Rust-owned descriptor.
     #[error("malformed Actors response")]
     MalformedResponse,
 }
 
-/// Error returned while creating the platform-default client.
+/// Alias for [`Error`], returned by the platform-default connection helpers.
 pub type ConnectError = Error;
 
 impl From<crate::http::Error> for Error {
@@ -73,11 +76,11 @@ impl Error {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Error {
-    fn from_grpc(status: tonic::Status) -> Self {
+    fn from_grpc(status: &tonic::Status) -> Self {
         Self::Service {
             grpc_code: Some(status.code() as i32),
             http_status: None,
-            detail: crate::grpc::error_detail(&status),
+            detail: crate::grpc::error_detail(status),
         }
     }
 
@@ -115,14 +118,14 @@ enum Backend {
     Http(crate::http::Client),
 }
 
-/// Authenticated Actors client selecting the best available transport.
+/// Authenticated Actors client whose transport was selected during connection.
 #[derive(Clone)]
 pub struct Client {
     inner: Backend,
 }
 
 impl Client {
-    /// Return the transport selected during connection setup.
+    /// Return the negotiated transport name (`"grpc"` or `"http"`).
     #[must_use]
     pub const fn transport(&self) -> &'static str {
         match &self.inner {
@@ -134,6 +137,11 @@ impl Client {
 }
 
 /// Connect to an Actors service using the best compatible platform transport.
+///
+/// Native targets verify the Actors control identity over gRPC and then retain
+/// that channel when it is available. They fall back to the verified HTTP
+/// contract when gRPC is unavailable. Browser targets use the verified HTTP
+/// contract directly.
 pub async fn connect(
     endpoint: impl AsRef<str>,
     token: impl AsRef<str>,
@@ -142,6 +150,9 @@ pub async fn connect(
 }
 
 /// Connect with a caller-pinned private CA certificate.
+///
+/// The certificate is scoped to this connection and is used when the selected
+/// native transport establishes TLS.
 pub async fn connect_with_ca_certificate(
     endpoint: impl AsRef<str>,
     token: impl AsRef<str>,
@@ -164,7 +175,18 @@ async fn connect_with_trust(
         }
     }
 
-    let inner = crate::http::Client::new(endpoint, token, DEFAULT_HTTP_RESPONSE_BYTES)?;
+    #[cfg(target_arch = "wasm32")]
+    if ca.is_some() {
+        return Err(Error::Configuration(
+            "caller-provided CA certificates are unsupported in browser builds".into(),
+        ));
+    }
+    let inner = crate::http::Client::new_with_ca(
+        endpoint,
+        token,
+        DEFAULT_HTTP_RESPONSE_BYTES,
+        ca,
+    )?;
     if !inner.verify_handshake().await? {
         return Err(Error::Configuration(
             "endpoint has no compatible Actors transport".into(),

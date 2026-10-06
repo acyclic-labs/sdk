@@ -1,23 +1,69 @@
 {
-  "name": "@acyclic-labs/inference",
-  "version": "0.2.0",
-  "private": false,
-  "license": "Apache-2.0",
-  "description": "Immutable inference contexts, recoverable runs, and warm commitments",
-  "keywords": ["inference", "contexts", "runs"],
-  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/inference" },
-  "type": "module",
-  "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./proto": { "types": "./generated/proto/inference/v1/inference_pb.d.ts", "default": "./generated/proto/inference/v1/inference_pb.js" }
+  "acyclicGenerated": {
+    "defaultTransports": {
+      "browser": "http",
+      "native": "http"
+    },
+    "family": "inference",
+    "generator": "sdk-typescript",
+    "generatorVersion": "0.1.0",
+    "nativeCompanions": {},
+    "sourceContentSha256": "cd3150aae552a750620b93e88b15faa2c09e5eeaf88dedfe892c7ebfa95a37dc",
+    "sourceGitSha": null,
+    "sourceGitShaKind": null,
+    "sourceModelRevision": "working-tree",
+    "sourceModelSha256": "cd3150aae552a750620b93e88b15faa2c09e5eeaf88dedfe892c7ebfa95a37dc"
   },
-  "files": ["dist", "generated", "CHANGELOG.md"],
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0"
+  },
+  "description": "Immutable inference contexts, recoverable runs, and warm commitments",
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  },
+  "exports": {
+    ".": {
+      "default": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./generated-client": {
+      "default": "./dist/generated-client.js",
+      "types": "./dist/generated-client.d.ts"
+    },
+    "./proto": {
+      "default": "./generated/proto/inference/v1/inference_pb.js",
+      "types": "./generated/proto/inference/v1/inference_pb.d.ts"
+    },
+    "./provenance": {
+      "default": "./generated/rust-provenance.json"
+    }
+  },
+  "files": [
+    "dist",
+    "generated",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "inference",
+    "contexts",
+    "runs"
+  ],
+  "license": "Apache-2.0",
+  "name": "@acyclic-labs/inference",
+  "private": false,
+  "repository": {
+    "directory": "typescript/packages/inference",
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git"
+  },
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
     "build:wasm": "bun scripts/build-wasm.mjs",
-    "test": "bun run build:wasm && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false && bun test test",
-    "pack:dry": "bun pm pack --dry-run"
+    "pack:dry": "bun pm pack --dry-run",
+    "test": "bun run build:wasm && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false && bun test test"
   },
-  "dependencies": { "@bufbuild/protobuf": "2.15.0" },
-  "devDependencies": { "@types/bun": "1.4.2", "typescript": "7.0.2", "@types/node": "26.4.1" }
+  "type": "module",
+  "version": "0.2.0"
 }

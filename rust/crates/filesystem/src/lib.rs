@@ -36,6 +36,7 @@ pub mod wire {
 #[cfg(not(target_arch = "wasm32"))]
 mod wire_service;
 #[cfg(not(target_arch = "wasm32"))]
+/// Native hosted-service credentials, limits, and source-provider contracts.
 pub use wire_service::{
     CredentialGrant, CredentialGrantRequest, CredentialKind, DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS,
     DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, FILESYSTEM_PROTOCOL_VERSION, FilesystemCredentialIssuer,
@@ -69,6 +70,7 @@ mod public_contract_tests {
 
 pub mod async_storage;
 mod collection;
+/// Collection views and publication holds for grouped object operations.
 pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
@@ -81,6 +83,7 @@ pub mod distributed;
 #[cfg(feature = "distributed")]
 mod logical_objects;
 #[cfg(feature = "distributed")]
+/// Logical object storage over distributed authority and object providers.
 pub use logical_objects::LogicalObjectStore;
 #[cfg(feature = "distributed")]
 mod distributed_fs;
@@ -160,19 +163,26 @@ pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObject
 pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
+/// Asynchronous authority/object stores and workspace-fork commit operations.
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
     ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope, WorkspaceForkCommit,
     WorkspaceForkOutcome, append_first_record, commit_workspace_fork_in_steps,
 };
+/// Object-store caching layers, configuration, and statistics.
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
+/// Cooperative cancellation primitives used by filesystem operations.
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+/// Local durable core-state storage and its deferred-durability policy.
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(feature = "distributed")]
+/// Stream-backed authority storage for distributed deployments.
 pub use distributed::StreamAuthorityStore;
 #[cfg(feature = "distributed")]
+/// Distributed filesystem facade over shared authority and object stores.
 pub use distributed_fs::DistributedFs;
+/// The portable filesystem facade, mutation results, and resolved views.
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
@@ -184,17 +194,21 @@ pub use facade::{
     ResolvedFileRangeReadRequest, StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+/// Native local backends and options for the filesystem facade.
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
     LocalOperationWindowStore, LocalOptions, LocalVolume,
 };
 #[cfg(all(feature = "memory", feature = "distributed"))]
+/// In-memory authority and object backends used by distributed tests.
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
+/// Stable filesystem identities, commit values, and digest helpers.
 pub use foundation::{
     AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
     FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,
     authority_commit_digest,
 };
+/// Git-compatible capture, diff, traversal, and pending-transition operations.
 pub use git_compat::{
     GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
     GitCaptureError, GitCaptureProof, GitCapturedGeneration, GitCommand, GitCommandOutput,
@@ -210,6 +224,7 @@ pub use git_compat::{
     parse_git_public_command, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
+/// Hosted filesystem clients, transactions, and response-size limits.
 pub use hosted::{
     HostedFs, HostedFsError, HostedFsOptions, HostedGeneration, HostedS3Access,
     HostedS3AccessOptions, HostedTransaction, HostedWorkspace, MAX_BYTE_RESPONSE_ENVELOPE_BYTES,
@@ -219,16 +234,19 @@ pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest,
 };
+/// Lazy workspace overlays, cursors, snapshots, and in-memory stores.
 pub use lazy_workspace::{
     LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyLookup, LazyOverlay,
     LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
     LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore,
 };
+/// Workspace lineage records, graphs, and durable lineage stores.
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
     WorkspaceLineageError, WorkspaceLineageRecord, WorkspaceLineageStore,
 };
+/// Journaled materialization plans, recovery state, and backend contracts.
 pub use materializer::{
     JournaledMaterializer, MaterializationBackend, MaterializationEdit, MaterializationError,
     MaterializationJournal, MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
@@ -236,18 +254,22 @@ pub use materializer::{
     MemoryMaterializationJournalStoreError,
 };
 #[cfg(not(target_arch = "wasm32"))]
+/// Native tree materialization backends and their failure type.
 pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializationError};
 #[cfg(all(
     feature = "local",
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
+/// Local publication of native workspace generations after materialization.
 pub use materializer::{
     NativeWorkspacePublication, NativeWorkspacePublicationError,
     publish_native_generation_transition, publish_native_workspace_generation,
 };
 #[cfg(test)]
+/// In-memory stores exposed for filesystem crate tests.
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
+/// Merge-driver registration, conflict values, plans, and resolutions.
 pub use merge_driver::{
     AttributeRule, CachedMergeResolution, ConflictKey, ConflictKind, ConflictSide, ConflictValue,
     ConflictView, DefaultTextMergeDriver, DriverError, DriverRegistrationError,
@@ -255,10 +277,12 @@ pub use merge_driver::{
     MergePlanResolutionError, MergeResolution, MergeResolutionCache, ResolutionKey,
     UnpublishedMergeCandidate, resolve_merge_plan,
 };
+/// Mounted checkout views and routing errors.
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,
     MountedViewSnapshot, RoutedCheckout,
 };
+/// Coordinated publication and materialization across multiple workspace roots.
 pub use multi_root::{
     LineageMultiRootPublicationAuthorizationError, LineageMultiRootPublicationAuthorizer,
     MaterializingWorkspaceMultiRootPublisher, MaterializingWorkspaceMultiRootPublisherError,
@@ -270,6 +294,7 @@ pub use multi_root::{
     WorkspaceMultiRootPublisher, WorkspaceMultiRootPublisherError, WorkspaceResolver,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+/// Native directory capture, path conversion, and bounded watch batches.
 pub use native_capture::{
     CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt,
     capture_baseline, capture_baseline_with_policy, capture_paths, capture_paths_with_policy,
@@ -278,12 +303,14 @@ pub use native_capture::{
     host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
+/// Native exchange journals, phases, recovery, and publication operations.
 pub use native_exchange::{
     NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
     exchange_native_entries, prepare_native_exchange, prepare_native_exchange_with_recovery,
     publish_native_exchange, recover_native_exchange,
 };
 #[cfg(not(target_arch = "wasm32"))]
+/// Stable identity of a native filesystem root.
 pub use native_identity::NativeRootIdentity;
 #[cfg(all(feature = "native-mount", windows))]
 pub use native_mount::recover_native_mount_destination_preserving_residue;
@@ -307,10 +334,12 @@ pub use native_mount::{
     recover_native_mount_destination, restore_checkout_host_path, seal_checkout,
     seal_checkout_with_permit,
 };
+/// Notification stores and polling results for filesystem consumers.
 pub use notification::{
     AsyncNotificationStore, ImmediateNotificationStore, MemoryNotificationStore, NotificationError,
     NotificationPoll, NotificationResult, NotificationStore,
 };
+/// Durable operation-window leases, reconciliation, and state stores.
 pub use operation_window::{
     MemoryOperationWindowStore, OperationLease, OperationLeaseId, OperationReconcileLimits,
     OperationWindowCoordinator, OperationWindowError, OperationWindowFinish, OperationWindowLease,
@@ -318,25 +347,31 @@ pub use operation_window::{
     WorkspaceOperationFinish,
 };
 #[cfg(feature = "distributed")]
+/// Stream-backed durable storage for distributed operation windows.
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
+/// Work budgets, counters, receipts, and measured operation failures.
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
+/// S3 workspace objects, listings, multipart options, and errors.
 pub use s3::{
     S3Error, S3List, S3ListCursor, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object,
     S3ObjectHead, S3Workspace,
 };
 #[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
+/// HTTP S3 adapter, authentication, limits, and multipart retention helpers.
 pub use s3_http::{
     FilesystemS3Adapter, FilesystemS3Authentication, FilesystemS3Limits, FilesystemS3Principal,
     FilesystemS3Resolver, S3MultipartRetentionLimits, active_s3_multipart_objects,
 };
 #[cfg(feature = "memory")]
+/// Deterministic in-memory simulation stores, faults, and traces.
 pub use simulation::{
     ScheduledSimulationFault, SimulatedAuthorityStore, SimulatedObjectStore, Simulation,
     SimulationError, SimulationFault, SimulationOperation, SimulationOptions, SimulationTrace,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+/// Attached native sources, reconciliation outcomes, and source policies.
 pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};
 pub use speculation::{
     ObjectResidency, PromotionAdmission, PromotionCandidate, PromotionDestination,
@@ -348,6 +383,7 @@ pub use speculation::{
     SpeculationPreemption, StorageLocationId, StorageTier, StorePromotionExecutor,
     StorePromotionExecutorError, execute_promotion, execute_residency,
 };
+/// Authority/object-store contracts, receipts, ranges, and publication permits.
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
     AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
@@ -356,21 +392,25 @@ pub use storage::{
     ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
     object_digest,
 };
+/// Durable Stream authority records and their encoded-size constants.
 pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,
     StreamsDurableRecord,
 };
 #[cfg(feature = "native-watch")]
+/// Native watcher backends, capabilities, events, and invalidation reasons.
 pub use watch::{
     NativeWatch, NativeWatchBackend, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions,
     WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence,
     native_watch_capabilities,
 };
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
+/// Windows USN checkpoints and continuity validation.
 pub use windows_usn::{
     WindowsUsnCheckpoint, WindowsUsnContinuity, WindowsUsnDiscontinuity, WindowsUsnError,
     capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
 };
+/// Workspace generations, transactions, joins, changes, and path operations.
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, Checkpoint, DrivenJoinError, ForkOptions, Generation,
     GenerationPin, IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
@@ -381,6 +421,7 @@ pub use workspace::{
     WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
     WorkspaceRestore, WorkspaceStat, WorkspaceSync,
 };
+/// Workspace context registries, routes, roots, and durable state stores.
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,
     WorkspaceContextDiscardOutcome, WorkspaceContextError, WorkspaceContextId,

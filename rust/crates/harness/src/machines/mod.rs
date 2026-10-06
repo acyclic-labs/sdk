@@ -2,7 +2,14 @@
 #![doc = include_str!("../../docs/machines.md")]
 
 mod execution;
-pub use execution::{AccessFuture, MachinesExecution, MachinesExecutionAccess, MachinesTaskBuild};
+/// Future returned by a Machines execution access operation.
+pub use execution::AccessFuture;
+/// Machines execution implementation.
+pub use execution::MachinesExecution;
+/// Access boundary for a Machines execution.
+pub use execution::MachinesExecutionAccess;
+/// Builder for a Machines task.
+pub use execution::MachinesTaskBuild;
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,

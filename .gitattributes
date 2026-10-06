@@ -7,6 +7,27 @@
 *.ts text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+audit-*.txt text eol=lf
+cpp/consumer/*.txt text eol=lf
+swift/consumer/*.txt text eol=lf
+dotnet/consumer/**/*.txt text eol=lf
+*.hs text eol=lf
+*.ps1 text eol=lf
+*.sh text eol=lf
+*.rb text eol=lf
+*.rbs text eol=lf
+*.rbi text eol=lf
+*.py text eol=lf
+*.go text eol=lf
+*.java text eol=lf
+*.kt text eol=lf
+*.scala text eol=lf
+*.cs text eol=lf
+*.swift text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.php text eol=lf
+*.dart text eol=lf
 *.c text eol=lf
 *.h text eol=lf
 *.bin binary

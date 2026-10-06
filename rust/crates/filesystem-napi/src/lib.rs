@@ -1,4 +1,16 @@
 //! Generated-language native embedding boundary for the canonical Rust engine.
+//!
+//! The `NativeFs::open` factory opens the durable local engine rooted at the
+//! supplied path. Native watcher and mount behavior is selected by the Rust
+//! target and is reported through `NativeFs::capabilities` and
+//! `native_capabilities`; consumers do not carry platform feature flags.
+//! Methods retain the canonical Rust workspace, generation, transaction, and
+//! bounded-work contracts across the N-API boundary.
+//!
+//! Fixed identities and byte payloads cross N-API as `Buffer` values, while
+//! counters and sizes that can exceed JavaScript's exact integer range cross
+//! as `BigInt`. Inputs that represent bounded `u32` values are validated at
+//! the boundary before entering the Rust engine.
 
 use acyclic_fs::compat_wire;
 use acyclic_fs::kernel::{
@@ -129,14 +141,23 @@ pub fn decode_publication_json(value_json: String) -> Result<String> {
 /// range is the admissible maximum at this boundary.
 #[napi]
 pub fn validate_hosted_page_bound(value: f64) -> Result<()> {
-    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=(u32::MAX as f64)).contains(&value) {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=f64::from(u32::MAX)).contains(&value) {
         return Err(napi_wire_error(
             "value must be a finite integer in the u32 range",
         ));
     }
-    let value = value as u32;
+    let value = bounded_f64_to_u32(value);
     acyclic_fs::hosted_contract::validate_page_bound(value, u32::MAX)
         .map_err(napi_wire_error)
+}
+
+fn bounded_f64_to_u32(value: f64) -> u32 {
+    // The caller has already checked finiteness, integrality, and the complete
+    // non-negative u32 range, so this conversion cannot truncate or lose sign.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        value as u32
+    }
 }
 
 /// Exact native companion capabilities returned before any filesystem work.
@@ -1514,6 +1535,15 @@ impl NativeResolvedFile {
             .map_err(napi_error)
     }
 
+    /// Cooperatively cancels this resolved file's in-flight and future reads.
+    ///
+    /// The cancellation is terminal for this handle; resolve the file again
+    /// to start future reads after cancellation.
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
     /// Reads one exact logical range without another namespace lookup.
     #[napi]
     pub async fn read_range(&self, offset: BigInt, length: BigInt) -> Result<NativeFileRead> {
@@ -1996,7 +2026,7 @@ impl NativeWorkspace {
     #[napi(js_name = readRange)]
     /// Reads an exact bounded byte range from a regular file.
     ///
-    /// `offset` and `length` are unsigned BigInts so large files retain their
+    /// `offset` and `length` are unsigned `BigInt`s so large files retain their
     /// full Rust range without JavaScript number conversion.
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
         Box::pin(
@@ -4172,6 +4202,15 @@ impl NativeVolume {
         serde_json::to_string(&self.acquisition_work).map_err(napi_error)
     }
 
+    /// Cooperatively cancels this volume's in-flight and future operations.
+    ///
+    /// The cancellation is terminal for this handle; create or open a new
+    /// volume handle to start future operations after cancellation.
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
     /// Computes one bounded Merkle-aware semantic generation diff.
     ///
     /// # Errors
@@ -6271,6 +6310,15 @@ impl NativeWatcher {
 
 #[napi]
 impl NativeWatcher {
+    /// Cooperatively cancels this watcher's in-flight and future operations.
+    ///
+    /// The cancellation is terminal for this handle; create a new watcher to
+    /// start future reconciliation or polling after cancellation.
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
     /// Establishes an authenticated baseline while preserving events that
     /// arrive during the scan. The watcher owns both checkout and source-root
     /// identity, so callers cannot accidentally reconcile the wrong tree.
@@ -7956,6 +8004,30 @@ mod tests {
             sparse_files: true,
             limits: VolumeLimits::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn native_volume_cancel_is_terminal_for_future_operations()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let fs = LocalFs::local(LocalOptions::new(root.path())).await?;
+        let cancellation = CancellationToken::new();
+        let volume = fs
+            .create_volume(test_config(), WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        let native = NativeVolume {
+            inner: volume,
+            cancellation: CancellationToken::new(),
+            acquisition_work: acyclic_fs::WorkCounters::default(),
+        };
+
+        native.cancel();
+        assert!(native
+            .diff_generations(Buffer::from(vec![0; 32]), Buffer::from(vec![0; 32]), 1)
+            .await
+            .is_err());
+        Ok(())
     }
 
     #[test]

@@ -131,9 +131,6 @@ struct Target {
     language_family: &'static str,
     status: TargetStatus,
     remote: RemoteCapability,
-    #[serde(skip)]
-    #[schemars(with = "EmbeddedProjectionSchema")]
-    embedded: EmbeddedCapabilityMarker,
     maturity: Maturity,
     generator: Generator,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,11 +159,6 @@ struct RemoteCapability {
     #[schemars(with = "String")]
     notes: Option<&'static str>,
 }
-
-#[derive(Debug, Clone, Copy)]
-struct EmbeddedCapabilityMarker;
-
-const EMBEDDED_CAPABILITY_MARKER: EmbeddedCapabilityMarker = EmbeddedCapabilityMarker;
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -295,7 +287,6 @@ const CATALOG: Catalog = Catalog {
                     "Canonical workspace provider and descriptor baseline; the installable acyclic-sdk facade groups the public family crates without re-exporting internal generators or prototypes.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "workspace Rust descriptor/codegen",
@@ -342,7 +333,6 @@ const CATALOG: Catalog = Catalog {
                     "Generated transport and UI adapters only; shared handwritten behavior remains Rust-owned.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "protobuf-es + grpc-web/native adapter",
@@ -388,7 +378,6 @@ const CATALOG: Catalog = Catalog {
                     "Python remote clients are generated from the Rust-owned protobuf contract; embedded behavior remains behind the Rust FFI/WASM boundary.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "grpcio-tools",
@@ -432,7 +421,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-authority-bound Go producer emits an installable module for all nine families plus validation options; transport qualification remains separately evidenced.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "protoc-gen-go + protoc-gen-go-grpc",
@@ -505,7 +493,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "protoc + grpc-java",
@@ -568,7 +555,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "Grpc.Tools + Grpc.Net.Client",
@@ -627,7 +613,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "grpc-swift-2 + grpc-swift-protobuf + SwiftProtobuf",
@@ -701,7 +686,6 @@ const CATALOG: Catalog = Catalog {
                     "Pinned Generate.ps1 emits source-bound receipt; remote CMake requires matching Protobuf 36.2 and gRPC C++ 1.80.0.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "protoc + gRPC C++",
@@ -773,7 +757,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "grpc-tools + grpc Ruby",
@@ -835,7 +818,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "grpc_php_plugin + protobuf PHP",
@@ -897,7 +879,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "protoc_plugin + grpc Dart",
@@ -959,7 +940,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some("Distinct Kotlin coroutine/stub artifact over Java protobuf messages."),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "grpc-kotlin protoc plugin",
@@ -1028,7 +1008,6 @@ const CATALOG: Catalog = Catalog {
                     "The unified JVM producer compiles Rust-generated Scala facades over the generated Java gRPC transport. The separately pinned ScalaPB prototype provides native Scala protobuf/gRPC research evidence. Installed full-RPC cancellation and recovery qualification remains pending.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "Rust JVM facades + protoc + grpc-java",
@@ -1112,7 +1091,6 @@ const CATALOG: Catalog = Catalog {
                     "grpc and protobuf Hex packages; custom Rust facade still required for recovery policy.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "elixir-grpc + protobuf_generate",
@@ -1163,7 +1141,6 @@ const CATALOG: Catalog = Catalog {
                     "Built-in bal grpc generator/runtime; toolchain is tied to Ballerina/JVM releases.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "bal grpc",
@@ -1211,7 +1188,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some("Official gRPC Objective-C plugin and Protobuf CocoaPods runtime."),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "grpc Objective-C protoc plugin",
@@ -1263,7 +1239,6 @@ const CATALOG: Catalog = Catalog {
                     "grpcbox advertises generated services, reflection and all streaming shapes, but needs maintenance qualification.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Experimental,
             generator: Generator {
                 name: "grpcbox + gpb",
@@ -1313,7 +1288,6 @@ const CATALOG: Catalog = Catalog {
                     "ocaml-grpc supports Eio/Lwt/Async and all streaming forms; ecosystem maturity is lower.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Experimental,
             generator: Generator {
                 name: "ocaml-protoc-plugin + ocaml-grpc",
@@ -1364,7 +1338,6 @@ const CATALOG: Catalog = Catalog {
                     "ag-gRPC demonstrates generated stubs but package/license provenance is not yet release-grade.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "ag-gRPC",
@@ -1405,7 +1378,6 @@ const CATALOG: Catalog = Catalog {
                     "OpenAPI Generator Ada client; no qualifying protobuf/gRPC generator in the selected stack.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator ada",
@@ -1466,7 +1438,6 @@ const CATALOG: Catalog = Catalog {
                     "OpenAPI Generator C/libcurl output is HTTP-only and documented as beta.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Beta,
             generator: Generator {
                 name: "OpenAPI Generator c",
@@ -1505,7 +1476,6 @@ const CATALOG: Catalog = Catalog {
                     "OAG Clojure client is an HTTP projection; Java gRPC stubs are a possible adapter but not independent Clojure generation.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator clojure",
@@ -1566,7 +1536,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::JsonHttp,
                 notes: Some("OAG Crystal client is beta; no maintained gRPC target selected."),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Beta,
             generator: Generator {
                 name: "OpenAPI Generator crystal",
@@ -1627,7 +1596,6 @@ const CATALOG: Catalog = Catalog {
                     "OpenAPI Generator output is browser/HTTP oriented; no native gRPC runtime.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator elm",
@@ -1688,7 +1656,6 @@ const CATALOG: Catalog = Catalog {
                     "Godot 4 HTTP client target; platform/library variant rather than a general SDK runtime.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator gdscript",
@@ -1747,7 +1714,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-owned five-family HTTP projection is qualified by the Julia receipt; no maintained Julia gRPC generator is selected.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Beta,
             generator: Generator {
                 name: "OpenAPI Generator julia-client",
@@ -1804,7 +1770,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::JsonHttp,
                 notes: Some("OAG Nim client; no selected maintained gRPC runtime."),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator nim",
@@ -1863,7 +1828,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-derived OpenAPI projections for Actors, Workers, Stream, Objects and Inference have installed Perl HTTP consumers; OAG remains JSON/HTTP-only and does not provide protobuf support.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator perl",
@@ -1934,7 +1898,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-owned adapted PowerShell HTTP modules are installed and loopback-qualified for one route in each of the five HTTP family projections; no protobuf/gRPC package target.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator powershell",
@@ -2005,7 +1968,6 @@ const CATALOG: Catalog = Catalog {
                     "OAG R feature table is JSON/XML and does not provide protobuf/gRPC parity.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator r",
@@ -2064,7 +2026,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-derived OpenAPI projections generate an installable Bash/curl bundle for all five explicit HTTP families; receipt: research/additional-languages/openapi-targets/bash-manifest.json.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator bash",
@@ -2133,7 +2094,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-generated protobuf services and descriptor-specific semantic GADTs compile with proto-lens and use grapesy HTTP/2 transport.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "proto-lens-protoc + grapesy",
@@ -2199,7 +2159,6 @@ const CATALOG: Catalog = Catalog {
                     "lua-protobuf provides serialization but no maintained gRPC runtime; OAG Lua output is beta HTTP-only.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Experimental,
             generator: Generator {
                 name: "lua-protobuf / OpenAPI Generator lua",
@@ -2244,7 +2203,6 @@ const CATALOG: Catalog = Catalog {
                     "OpenAPI Generator also lists k6, JMeter, Terraform provider and documentation targets; these are not SDK languages.",
                 ),
             },
-            embedded: EMBEDDED_CAPABILITY_MARKER,
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator docs/tooling templates",

@@ -36,12 +36,14 @@ mod grpc;
 #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
 pub mod control_wire {
     #![allow(missing_docs, clippy::all, clippy::pedantic, reason = "generated control bindings")]
+    /// Protocol identity and capability messages used during transport selection.
     pub mod protocol {
         /// Version-one protocol identity and capability messages.
         pub mod v1 {
             include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
         }
     }
+    /// Handshake service bindings used to verify the Rust-owned contract.
     pub mod transport {
         /// Version-one handshake service bindings.
         pub mod v1 {

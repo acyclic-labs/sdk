@@ -1,0 +1,22 @@
+{
+  "artifactKind": "source-projection",
+  "defaultTransports": {
+    "browser": "http",
+    "native": "grpc"
+  },
+  "descriptorSha256": "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128",
+  "family": "workers",
+  "generatedClientSha256": null,
+  "generatedSourceSha256": "06e691bc0e4864622c658dc57eeb292395e75c2d4e0f1a15e8422f26aa04cb8f",
+  "generator": "sdk-typescript",
+  "generatorVersion": "0.1.0",
+  "nativeCompanions": {},
+  "rustCrate": "acyclic-workers",
+  "schema": "acyclic.sdk.typescript.package.provenance.v1",
+  "sourceArtifact": "acyclic_sdk_contract_wire::workers::workers_descriptor",
+  "sourceContentSha256": "d96887fe5785c89b676f3a15cae2d4f86914ca1d6bf2a74e07023aa4b1240b6f",
+  "sourceGitSha": null,
+  "sourceGitShaKind": null,
+  "sourceModelRevision": "working-tree",
+  "sourceModelSha256": "d96887fe5785c89b676f3a15cae2d4f86914ca1d6bf2a74e07023aa4b1240b6f"
+}

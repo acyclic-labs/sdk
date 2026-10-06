@@ -1,57 +1,78 @@
 {
-  "name": "@acyclic-labs/workers",
-  "version": "0.2.0",
-  "private": false,
-  "license": "Apache-2.0",
-  "description": "Generated Workers v1 contracts and authenticated HTTP client",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/acyclic-labs/sdk.git",
-    "directory": "typescript/packages/workers"
-  },
-  "type": "module",
-  "exports": {
-    ".": {
-      "browser": {
-        "types": "./dist/browser.d.ts",
-        "default": "./dist/browser.js"
-      },
-      "node": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+  "acyclicGenerated": {
+    "defaultTransports": {
+      "browser": "http",
+      "native": "grpc"
     },
-    "./proto": {
-      "types": "./generated/proto/workers/v1/workers_pb.d.ts",
-      "default": "./generated/proto/workers/v1/workers_pb.js"
-    },
-    "./grpc": {
-      "default": "./dist/grpc.js",
-      "types": "./dist/grpc.d.ts"
-    }
-  },
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "generated",
-    "CHANGELOG.md"
-  ],
-  "scripts": {
-    "build:wasm": "bun ../../../scripts/build-remote-web-wasm.mjs ./generated/wasm",
-    "build": "bun run build:wasm && tsc -b",
-    "test": "bun run build:wasm && tsc -b --pretty false",
-    "prepack": "npm run build",
-    "pack:dry": "bun pm pack --dry-run"
+    "family": "workers",
+    "generator": "sdk-typescript",
+    "generatorVersion": "0.1.0",
+    "nativeCompanions": {},
+    "sourceContentSha256": "d96887fe5785c89b676f3a15cae2d4f86914ca1d6bf2a74e07023aa4b1240b6f",
+    "sourceGitSha": null,
+    "sourceGitShaKind": null,
+    "sourceModelRevision": "working-tree",
+    "sourceModelSha256": "d96887fe5785c89b676f3a15cae2d4f86914ca1d6bf2a74e07023aa4b1240b6f"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",
     "@connectrpc/connect": "2.1.1",
     "@connectrpc/connect-node": "2.1.1"
   },
+  "description": "Generated Workers v1 contracts and authenticated HTTP client",
   "devDependencies": {
-    "typescript": "7.0.2",
-    "@types/node": "26.4.1"
-  }
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  },
+  "exports": {
+    ".": {
+      "browser": {
+        "default": "./dist/browser.js",
+        "types": "./dist/browser.d.ts"
+      },
+      "default": "./dist/index.js",
+      "node": {
+        "default": "./dist/index.js",
+        "types": "./dist/index.d.ts"
+      },
+      "types": "./dist/index.d.ts"
+    },
+    "./generated-client": {
+      "default": "./dist/generated-client.js",
+      "types": "./dist/generated-client.d.ts"
+    },
+    "./grpc": {
+      "default": "./dist/grpc.js",
+      "types": "./dist/grpc.d.ts"
+    },
+    "./proto": {
+      "default": "./generated/proto/workers/v1/workers_pb.js",
+      "types": "./generated/proto/workers/v1/workers_pb.d.ts"
+    },
+    "./provenance": {
+      "default": "./generated/rust-provenance.json"
+    }
+  },
+  "files": [
+    "dist",
+    "generated",
+    "CHANGELOG.md"
+  ],
+  "license": "Apache-2.0",
+  "name": "@acyclic-labs/workers",
+  "private": false,
+  "repository": {
+    "directory": "typescript/packages/workers",
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git"
+  },
+  "scripts": {
+    "build": "bun run build:wasm && tsc -b",
+    "build:wasm": "bun ../../../scripts/build-remote-web-wasm.mjs ./generated/wasm",
+    "pack:dry": "bun pm pack --dry-run",
+    "test": "bun run build:wasm && tsc -b --pretty false"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "version": "0.2.0"
 }

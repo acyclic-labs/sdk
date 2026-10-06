@@ -19,24 +19,40 @@ use crate::{
 const HTTP_FOLLOW_READ_LIMIT: u32 = 256;
 const HTTP_FOLLOW_POLL_DELAY_MILLIS: u32 = 250;
 
+/// Stable error-code vocabulary emitted by the browser adapter.
+///
+/// These values are the JavaScript boundary representation of [`crate::StreamError`].
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
 #[tsify(from_wasm_abi, into_wasm_abi)]
-#[allow(missing_docs)]
 pub enum StreamErrorCode {
+    /// The path is empty, non-ASCII, malformed, or exceeds the path limits.
     InvalidPath,
+    /// The request shape or scalar value is invalid.
     InvalidArgument,
+    /// A canonical count or byte limit was exceeded.
     LimitExceeded,
+    /// The requested stream or commit does not exist.
     NotFound,
+    /// The requested destination already exists.
     AlreadyExists,
+    /// The requested source prefix is no longer retained.
     PrefixNotRetained,
+    /// The requested sequence is beyond the observed tail.
     OutOfRange,
+    /// A retry identity was reused with different request arguments.
     IdempotencyMismatch,
+    /// The provider cannot admit more bounded state.
     Capacity,
+    /// The caller is not authorized for the operation.
     AccessDenied,
+    /// The provider or its required authority is unavailable.
     Unavailable,
+    /// A hierarchy changed during a paginated traversal.
     HierarchyChanged,
+    /// A provider-evaluated commit deadline elapsed.
     DeadlineElapsed,
+    /// The requested semantic capability is unavailable.
     Unsupported,
 }
 
@@ -251,6 +267,7 @@ async fn dispatch_commit(provider: &MemoryStream, input: &[u8]) -> Result<Vec<u8
 
 #[wasm_bindgen]
 impl WasmMemoryStream {
+    /// Creates an empty browser provider backed by the canonical Rust memory state machine.
     #[wasm_bindgen(constructor)]
     #[must_use]
     pub fn new() -> Self {
@@ -671,6 +688,10 @@ pub struct HttpFollowCursor {
 
 #[wasm_bindgen(js_class = HttpFollowCursor)]
 impl HttpFollowCursor {
+    /// Creates a follow cursor from a canonical protobuf follow request.
+    ///
+    /// The cursor starts at the request position and remains Rust-owned while JavaScript
+    /// supplies only the hosted HTTP responses.
     #[wasm_bindgen(constructor)]
     pub fn new(input: &[u8]) -> Result<Self, JsValue> {
         check_command_size(input)?;
@@ -680,12 +701,14 @@ impl HttpFollowCursor {
         Ok(Self { path: path.to_string(), next: from, empty: false, closed: false })
     }
 
+    /// Encodes the next canonical tail request for the follow cursor.
     #[wasm_bindgen(js_name = tailRequest)]
     pub fn tail_request(&self) -> Result<Vec<u8>, JsValue> {
         self.ensure_open()?;
         Ok(wire::TailRequest { path: self.path.clone() }.encode_to_vec())
     }
 
+    /// Encodes the next bounded canonical read request for the follow cursor.
     #[wasm_bindgen(js_name = readRequest)]
     pub fn read_request(&self) -> Result<Vec<u8>, JsValue> {
         self.ensure_open()?;
@@ -696,6 +719,7 @@ impl HttpFollowCursor {
         }.encode_to_vec())
     }
 
+    /// Accepts a validated hosted tail response without advancing the cursor.
     #[wasm_bindgen(js_name = acceptTail)]
     pub fn accept_tail(&mut self, response_json: &str) -> Result<(), JsValue> {
         self.ensure_open()?;
@@ -706,6 +730,7 @@ impl HttpFollowCursor {
         Ok(())
     }
 
+    /// Accepts a contiguous hosted read page and advances the follow cursor.
     #[wasm_bindgen(js_name = acceptRead)]
     pub fn accept_read(&mut self, response_json: &str) -> Result<(), JsValue> {
         self.ensure_open()?;
@@ -718,15 +743,19 @@ impl HttpFollowCursor {
         Ok(())
     }
 
+    /// Returns whether the caller should poll again after the last accepted page.
     #[wasm_bindgen(js_name = shouldPoll)]
     pub fn should_poll(&self) -> bool { !self.closed && self.empty }
 
+    /// Returns the canonical delay before the next empty-page poll.
     #[wasm_bindgen(js_name = pollDelayMillis)]
     pub fn poll_delay_millis(&self) -> u32 { HTTP_FOLLOW_POLL_DELAY_MILLIS }
 
+    /// Returns whether the cursor has been closed.
     #[wasm_bindgen(js_name = isClosed)]
     pub fn is_closed(&self) -> bool { self.closed }
 
+    /// Closes the cursor; subsequent request or response operations fail closed.
     #[wasm_bindgen]
     pub fn close(&mut self) { self.closed = true; }
 

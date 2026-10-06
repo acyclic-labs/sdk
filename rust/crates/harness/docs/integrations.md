@@ -5,7 +5,7 @@ This guide defines the integration boundary for `acyclic-harness`.
 ## Integrations and harness extensions
 
 An integration connects an existing product such as Claude Code, Codex, Pi,
-OpenCode, or DSH to supported Acyclic capabilities. A harness extension supplies
+`OpenCode`, or DSH to supported Acyclic capabilities. A harness extension supplies
 components inside the open-source Harness crate. They can coexist, but they have
 different installation, lifecycle, and compatibility contracts.
 

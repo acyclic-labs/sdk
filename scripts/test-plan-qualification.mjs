@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { chooseLanes, ignored, laneKeys, qualificationSchema } from "./plan-qualification.mjs";
+import {
+  chooseLanes,
+  classifyQualificationEvent,
+  ignored,
+  laneKeys,
+  qualificationEventKinds,
+  qualificationSchema,
+  requiresFullQualification,
+} from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 const blob = (path, object = "a".repeat(40)) => `100644 blob ${object}\t${path}`;
@@ -43,6 +51,58 @@ test("release events force the full downstream qualification path", () => {
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
   assert.match(workflow, /\n  release:\n    types: \[published\]/);
   assert.match(workflow, /github\.event_name == 'release'/);
+});
+
+test("platform qualification is release, manual, or reusable only", () => {
+  for (const name of ["agent-host-qualification.yml", "native-mount-qualification.yml"]) {
+    const workflow = readFileSync(`.github/workflows/${name}`, "utf8").replaceAll("\r\n", "\n");
+    assert.match(workflow, /^  release:\n    types: \[published\]/m, name);
+    assert.match(workflow, /^  workflow_call:\n/m, name);
+    assert.match(workflow, /^  workflow_dispatch:\n/m, name);
+    assert.doesNotMatch(workflow, /^  (pull_request|push):/m, name);
+  }
+});
+
+test("event classification keeps ordinary main and routine manual runs cheap", () => {
+  const cases = [
+    [{ eventName: "pull_request" }, qualificationEventKinds.pullRequest, false],
+    [{ eventName: "push", ref: "refs/heads/main" }, qualificationEventKinds.mainPush, false],
+    [{ eventName: "workflow_dispatch", force: false }, qualificationEventKinds.manual, false],
+    [{ eventName: "release" }, qualificationEventKinds.release, true],
+    [{ eventName: "workflow_dispatch", force: true }, qualificationEventKinds.forcedDispatch, true],
+  ];
+  for (const [input, expected, full] of cases) {
+    const event = classifyQualificationEvent(input);
+    assert.equal(event, expected);
+    assert.equal(requiresFullQualification(event), full);
+    const { matrix } = chooseLanes(lanes, {
+      force: full,
+      mainPush: event === qualificationEventKinds.mainPush,
+      pullRequest: event === qualificationEventKinds.pullRequest,
+      coreOnly: !full,
+      trusted: null,
+      marker: () => null,
+      retained: () => "",
+    });
+    assert.deepEqual(
+      matrix.map(lane => lane.lane),
+      full ? lanes.map(lane => lane.lane) : ["gate", "policy"],
+      expected,
+    );
+  }
+});
+
+test("an ordinary main push may reuse only the verified core receipt", () => {
+  const { matrix, reused } = chooseLanes(lanes, {
+    force: false,
+    mainPush: true,
+    coreOnly: true,
+    trusted: source,
+    marker: everywhere,
+    retained: retainedAll,
+  });
+  assert.deepEqual(matrix, []);
+  assert.deepEqual(Object.keys(reused).sort(), ["gate", "policy"]);
 });
 
 test("the PR lane split invalidates pre-gating qualification markers", () => {
@@ -164,7 +224,7 @@ test("full hosted qualification requires release or explicit force", () => {
 });
 
 test("reusable package qualification does not duplicate central release runs", () => {
-  const names = ["additional-language-qualification.yml", "python-go-release-qualification.yml", "http-target-release-qualification.yml", "dotnet-native-rid-manual.yml", "embedded-abi-release.yml"];
+  const names = ["rust-source-qualification.yml", "stream-native-packages.yml"];
   for (const name of names) {
     const workflow = readFileSync(`.github/workflows/${name}`, "utf8").replaceAll("\r\n", "\n");
     assert.doesNotMatch(workflow, /^  (release|push):/m, name);
@@ -174,13 +234,13 @@ test("reusable package qualification does not duplicate central release runs", (
 });
 
 
-test("native embedded consumers share one aggregate package build", () => {
+test("the primary release profile keeps deferred language and embedded hooks out", () => {
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
   assert.doesNotMatch(workflow, /^  (rust_embedded|dotnet_embedded):/m);
-  assert.equal((workflow.match(/uses: \.\/\.github\/workflows\/embedded-native-packaging\.yml/g) ?? []).length, 1);
-  const aggregate = readFileSync(".github/workflows/embedded-native-packaging.yml", "utf8");
-  assert.match(aggregate, /qualify-embedded-abi-installed/);
-  assert.match(aggregate, /abi-installed-consumer/);
+  const downstream = workflow.slice(workflow.indexOf("\n  rust_source:"));
+  assert.equal((downstream.match(/uses: \.\/\.github\/workflows\/rust-source-qualification\.yml/g) ?? []).length, 1);
+  assert.equal((downstream.match(/uses: \.\/\.github\/workflows\/stream-native-packages\.yml/g) ?? []).length, 1);
+  assert.doesNotMatch(downstream, /additional-language-qualification|python-go-release|http-target-release|dotnet-native-rid|embedded-native-packaging/);
 });
 
 test("routine checks avoid full coverage and workspace qualification", () => {

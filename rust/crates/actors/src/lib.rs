@@ -27,11 +27,15 @@ pub mod control_wire {
     }
 }
 
+/// Platform-aware Actors client that selects and verifies the best transport.
 pub mod client;
 #[cfg(not(target_arch = "wasm32"))]
+/// Direct authenticated gRPC transport for the Actors v1 service.
 pub mod grpc;
+/// Direct authenticated HTTP transport for the Actors v1 service.
 pub mod http;
 
+/// The platform-aware client and its connection helpers.
 pub use client::{
     Client, ConnectError, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, Error, connect,
     connect_with_ca_certificate,
@@ -44,14 +48,17 @@ pub mod wire {
     include!("generated/acyclic.actors.v1.rs");
 }
 
-/// Canonical version-one descriptor set.
+/// File descriptor set for the immutable Actors v1 wire contract.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-actors-v1.bin");
-/// Maximum subscriptions on one Actor contract.
+/// Maximum number of subscription specifications accepted by one Actor contract.
 pub const MAX_SUBSCRIPTIONS: usize = 64;
-/// Maximum named bindings on one Actor contract.
+/// Maximum number of named binding specifications accepted by one Actor contract.
 pub const MAX_BINDINGS: usize = 64;
 
-/// Rust-owned route names used by the TypeScript transport generator.
+/// Stable operation names and relative HTTP paths for the Actors v1 fallback transport.
+///
+/// Each tuple contains the operation identifier used by generated clients and the
+/// path appended to a configured service endpoint.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("createActor", "v1/actors/create"),
     ("updateActor", "v1/actors/update"),
@@ -66,13 +73,13 @@ pub const HTTP_ROUTES: &[(&str, &str)] = &[
 /// Invalid customer-authored Actors request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ContractError {
-    /// A required field is absent or malformed.
+    /// A required field, digest, limit, or subscription start is absent or malformed.
     #[error("required field is absent or malformed")]
     InvalidArgument,
-    /// A collection exceeds its contract bound.
+    /// The subscription or binding collection exceeds its contract bound.
     #[error("Actors v1 collection limit exceeded")]
     LimitExceeded,
-    /// A subscription or binding name occurs more than once.
+    /// Two subscriptions or two bindings use the same name in one request.
     #[error("duplicate subscription or binding name")]
     DuplicateName,
 }
@@ -91,7 +98,13 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
         )
 }
 
-/// Validates a customer-authored Actor creation request before admission.
+/// Validates an Actor creation request against the v1 admission invariants.
+///
+/// The request needs a nonzero 32-byte code digest, home region, idempotency
+/// key, and positive handler, memory, and checkpoint limits. Subscription and
+/// binding counts are bounded by [`MAX_SUBSCRIPTIONS`] and [`MAX_BINDINGS`];
+/// subscription identifiers and binding names are unique, and at most one
+/// subscription may carry the placement anchor.
 pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
     if !digest(&request.code_sha256)
         || request.home_region.is_empty()
@@ -133,8 +146,13 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
     Ok(())
 }
 
-/// Validates a full compare-and-replace Actor configuration mutation.
-/// The service checks checkpoint compatibility or migration before activation.
+/// Validates the request fields for a full Actor configuration replacement.
+///
+/// The actor identifier, nonzero 32-byte code digest, idempotency key, and all
+/// three positive resource limits are required. Binding names, capabilities,
+/// and resources must be nonempty and unique, and the binding count is bounded
+/// by [`MAX_BINDINGS`]. Checkpoint compatibility is evaluated by the service
+/// when the replacement is activated.
 pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
         || !digest(&request.code_sha256)
@@ -162,7 +180,11 @@ pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), Contrac
     Ok(())
 }
 
-/// Validates a newly authored subscription; its cursor may not later be rewound.
+/// Validates a subscription addition before it is attached to an Actor.
+///
+/// The actor identifier and idempotency key must be present. The subscription
+/// must have a nonempty identifier and stream path and select exactly one
+/// supported start mode: a cursor or the current head.
 pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
 ) -> Result<(), ContractError> {

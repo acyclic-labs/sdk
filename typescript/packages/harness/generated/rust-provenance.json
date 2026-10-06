@@ -1,0 +1,19 @@
+{
+  "artifactKind": "source-projection",
+  "defaultTransports": {},
+  "descriptorSha256": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e",
+  "family": "harness",
+  "generatedClientSha256": null,
+  "generatedSourceSha256": "23db4e1687c3460e975dda11b14fc30c3aaf3f350137e21e98da2bb06f7cc9ca",
+  "generator": "sdk-typescript",
+  "generatorVersion": "0.1.0",
+  "nativeCompanions": {},
+  "rustCrate": "acyclic-harness",
+  "schema": "acyclic.sdk.typescript.package.provenance.v1",
+  "sourceArtifact": "acyclic_sdk_contract_wire::harness::harness_descriptor",
+  "sourceContentSha256": "2fa5ae034c1eb4dc74faf7275ef827067c28a37d9066275ee552759159997bdd",
+  "sourceGitSha": null,
+  "sourceGitShaKind": null,
+  "sourceModelRevision": "working-tree",
+  "sourceModelSha256": "2fa5ae034c1eb4dc74faf7275ef827067c28a37d9066275ee552759159997bdd"
+}

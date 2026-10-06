@@ -1,4 +1,5 @@
 #[cfg(not(target_arch = "wasm32"))]
+/// Server-side tonic adapter for exposing a [`MachinesProvider`] over gRPC.
 #[path = "grpc_service.rs"]
 pub mod service;
 use super::*;
@@ -68,6 +69,7 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> f
     }
 }
 
+#[allow(clippy::doc_markdown, reason = "tonic generated protocol service docs are external output")]
 mod control_wire {
     pub mod protocol {
         pub mod v1 {
@@ -88,7 +90,7 @@ mod control_wire {
 }
 
 /// Verify the Rust-owned protocol identity before sending any Machines operation.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 async fn verify_protocol(channel: Channel) -> Result<(), ProviderError> {
     verify_protocol_authenticated(channel, None).await
 }
@@ -519,6 +521,7 @@ impl Machines {
         Self::grpc_authenticated(channel, auth.0)
     }
 
+    #[cfg(test)]
     fn grpc(channel: Channel) -> Self {
         Self::grpc_authenticated(channel, None)
     }

@@ -1,28 +1,81 @@
 {
-  "name": "@acyclic-labs/harness",
-  "version": "0.2.0",
+  "acyclicGenerated": {
+    "defaultTransports": {},
+    "family": "harness",
+    "generator": "sdk-typescript",
+    "generatorVersion": "0.1.0",
+    "nativeCompanions": {},
+    "sourceContentSha256": "2fa5ae034c1eb4dc74faf7275ef827067c28a37d9066275ee552759159997bdd",
+    "sourceGitSha": null,
+    "sourceGitShaKind": null,
+    "sourceModelRevision": "working-tree",
+    "sourceModelSha256": "2fa5ae034c1eb4dc74faf7275ef827067c28a37d9066275ee552759159997bdd"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0"
+  },
   "description": "Generic durable substrate and fully composable agent runtime",
-  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/harness" },
-  "license": "Apache-2.0",
-  "private": false,
-  "type": "module",
-  "sideEffects": false,
-  "files": ["dist", "generated", "CHANGELOG.md"],
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/node": "26.4.1",
+    "bun-types": "1.4.0",
+    "fake-indexeddb": "6.2.4",
+    "typescript": "7.0.2"
+  },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./objects": { "types": "./dist/objects.d.ts", "default": "./dist/objects.js" },
-    "./proto": { "types": "./generated/proto/harness/v2/harness_pb.d.ts", "default": "./generated/proto/harness/v2/harness_pb.js" },
-    "./protocol": { "types": "./generated/proto/protocol/v1/protocol_pb.d.ts", "default": "./generated/proto/protocol/v1/protocol_pb.js" }
+    ".": {
+      "default": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./generated-client": {
+      "default": "./dist/generated-client.js",
+      "types": "./dist/generated-client.d.ts"
+    },
+    "./objects": {
+      "default": "./dist/objects.js",
+      "types": "./dist/objects.d.ts"
+    },
+    "./proto": {
+      "default": "./generated/proto/harness/v2/harness_pb.js",
+      "types": "./generated/proto/harness/v2/harness_pb.d.ts"
+    },
+    "./protocol": {
+      "default": "./generated/proto/protocol/v1/protocol_pb.js",
+      "types": "./generated/proto/protocol/v1/protocol_pb.d.ts"
+    },
+    "./provenance": {
+      "default": "./generated/rust-provenance.json"
+    }
+  },
+  "files": [
+    "dist",
+    "generated",
+    "CHANGELOG.md"
+  ],
+  "license": "Apache-2.0",
+  "name": "@acyclic-labs/harness",
+  "peerDependencies": {
+    "@acyclic-labs/objects": "0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@acyclic-labs/objects": {
+      "optional": true
+    }
+  },
+  "private": false,
+  "repository": {
+    "directory": "typescript/packages/harness",
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git"
   },
   "scripts": {
-    "build:wasm": "bun ../../../scripts/build-harness-wasm.mjs",
     "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
+    "build:wasm": "bun ../../../scripts/build-harness-wasm.mjs",
     "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
     "test": "bun run build && bun test test"
   },
-  "dependencies": { "@bufbuild/protobuf": "2.15.0" },
-  "peerDependencies": { "@acyclic-labs/objects": "0.2.0" },
-  "peerDependenciesMeta": { "@acyclic-labs/objects": { "optional": true } },
-  "devDependencies": { "@types/bun": "1.4.2", "@types/node": "26.4.1", "bun-types": "1.4.0", "fake-indexeddb": "6.2.4", "typescript": "7.0.2" }
+  "sideEffects": false,
+  "type": "module",
+  "version": "0.2.0"
 }

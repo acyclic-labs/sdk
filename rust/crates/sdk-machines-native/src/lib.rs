@@ -4,8 +4,6 @@
 //! response is validated and projected by `sdk-machines-public`, the same
 //! boundary used by the browser/WASM adapter.
 
-#![allow(missing_docs)]
-
 use acyclic_machines::{Machines, ProviderError, Tls};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
@@ -70,7 +68,9 @@ impl MachinesNativeClient {
         Ok(Self::from_machines(client))
     }
 
-    /// Connects using the canonical ACYCLIC_MACHINES_* environment configuration.
+    /// Connects using the canonical `ACYCLIC_MACHINES_*` environment configuration.
+    /// Connects using the endpoint and mutual-TLS files named by the
+    /// `ACYCLIC_MACHINES_*` environment variables.
     #[napi(factory, js_name = "connectFromEnv")]
     pub async fn connect_from_env() -> Result<Self> {
         Ok(Self::from_machines(
@@ -78,86 +78,111 @@ impl MachinesNativeClient {
         ))
     }
 
+    /// Qualifies an immutable image and returns the Rust-owned JSON result.
+    ///
+    /// `request_json` is the public `ImageIn` envelope. Validation, capability
+    /// admission, and response projection are performed by `sdk-machines-public`.
     #[napi(js_name = "qualifyImage")]
     pub async fn qualify_image(&self, request_json: String) -> Result<String> {
         self.public("qualifyImage", request_json).await
     }
+    /// Admits machine creation and returns the Rust-owned mutation outcome JSON.
+    /// Replaying the request's idempotency key is handled by the canonical provider.
     #[napi]
     pub async fn create(&self, request_json: String) -> Result<String> {
         self.public("create", request_json).await
     }
+    /// Reads one machine observation by its stable identity and returns JSON.
     #[napi(js_name = "inspectMachine")]
     pub async fn inspect_machine(&self, request_json: String) -> Result<String> {
         self.public("inspectMachine", request_json).await
     }
+    /// Lists machines using the provider's bounded opaque cursor and returns JSON.
     #[napi(js_name = "listMachines")]
     pub async fn list_machines(&self, request_json: String) -> Result<String> {
         self.public("listMachines", request_json).await
     }
+    /// Reads an ordered page of machine events after an exclusive sequence cursor.
     #[napi]
     pub async fn events(&self, request_json: String) -> Result<String> {
         self.public("events", request_json).await
     }
+    /// Returns the provider's authoritative usage receipt for a half-open interval.
     #[napi]
     pub async fn usage(&self, request_json: String) -> Result<String> {
         self.public("usage", request_json).await
     }
+    /// Captures an immutable checkpoint using the request's idempotency key.
     #[napi]
     pub async fn checkpoint(&self, request_json: String) -> Result<String> {
         self.public("checkpoint", request_json).await
     }
+    /// Reads one immutable checkpoint observation and returns JSON.
     #[napi(js_name = "inspectCheckpoint")]
     pub async fn inspect_checkpoint(&self, request_json: String) -> Result<String> {
         self.public("inspectCheckpoint", request_json).await
     }
+    /// Forks an immutable checkpoint into fresh machine observations.
     #[napi]
     pub async fn fork(&self, request_json: String) -> Result<String> {
         self.public("fork", request_json).await
     }
+    /// Forks a running machine directly, preserving the Rust-selected fork fidelity.
     #[napi(js_name = "forkMachine")]
     pub async fn fork_machine(&self, request_json: String) -> Result<String> {
         self.public("forkMachine", request_json).await
     }
+    /// Admits an idempotent suspension transition for one machine.
     #[napi]
     pub async fn suspend(&self, request_json: String) -> Result<String> {
         self.public("suspend", request_json).await
     }
+    /// Admits an idempotent wake transition for one machine.
     #[napi]
     pub async fn wake(&self, request_json: String) -> Result<String> {
         self.public("wake", request_json).await
     }
+    /// Replaces one machine's automatic suspension policy idempotently.
     #[napi(js_name = "setSuspensionPolicy")]
     pub async fn set_suspension_policy(&self, request_json: String) -> Result<String> {
         self.public("setSuspensionPolicy", request_json).await
     }
+    /// Admits irreversible destruction of one machine using its idempotency key.
     #[napi(js_name = "destroyMachine")]
     pub async fn destroy_machine(&self, request_json: String) -> Result<String> {
         self.public("destroyMachine", request_json).await
     }
+    /// Admits irreversible destruction of one checkpoint using its idempotency key.
     #[napi(js_name = "destroyCheckpoint")]
     pub async fn destroy_checkpoint(&self, request_json: String) -> Result<String> {
         self.public("destroyCheckpoint", request_json).await
     }
+    /// Replays the mutation associated with an exact idempotency key.
     #[napi]
     pub async fn recover(&self, request_json: String) -> Result<String> {
         self.public("recover", request_json).await
     }
+    /// Resolves the operation admitted for an exact idempotency key.
     #[napi(js_name = "recoverOperation")]
     pub async fn recover_operation(&self, request_json: String) -> Result<String> {
         self.public("recoverOperation", request_json).await
     }
+    /// Reads the latest state of one admitted operation.
     #[napi(js_name = "inspectOperation")]
     pub async fn inspect_operation(&self, request_json: String) -> Result<String> {
         self.public("inspectOperation", request_json).await
     }
+    /// Requests cancellation of one admitted operation and returns its latest state.
     #[napi]
     pub async fn cancel(&self, request_json: String) -> Result<String> {
         self.public("cancel", request_json).await
     }
+    /// Collects correlated operation observations into a JSON array.
     #[napi(js_name = "watchOperation")]
     pub async fn watch_operation(&self, request_json: String) -> Result<String> {
         self.public("watchOperation", request_json).await
     }
+    /// Returns the provider assurance classification as Rust-owned JSON.
     #[napi(js_name = "assurance")]
     pub fn assurance_json(&self) -> Result<String> {
         serde_json::to_string(&self.inner.assurance()).map_err(bridge_error)

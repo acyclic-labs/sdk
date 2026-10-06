@@ -1,66 +1,112 @@
 {
-  "name": "@acyclic-labs/fs",
-  "version": "0.2.0",
-  "license": "Apache-2.0",
-  "description": "Versioned workspaces for browser, memory, hosted, and native providers",
-  "keywords": ["filesystem", "storage", "workspaces"],
-  "private": false,
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/acyclic-labs/sdk.git",
-    "directory": "typescript/packages/filesystem"
-  },
-  "type": "module",
-  "sideEffects": false,
-  "files": ["dist", "generated", "examples", "CHANGELOG.md"],
-  "exports": {
-    ".": {
-      "types": "./dist/browser.d.ts",
-      "default": "./dist/browser.js"
+  "acyclicGenerated": {
+    "defaultTransports": {
+      "browser": "grpc-web",
+      "native": "grpc"
     },
-    "./browser": {
-      "types": "./dist/browser.d.ts",
-      "default": "./dist/browser.js"
+    "family": "filesystem",
+    "generator": "sdk-typescript",
+    "generatorVersion": "0.1.0",
+    "nativeCompanions": {
+      "@acyclic-labs/fs-darwin-arm64": "0.2.0",
+      "@acyclic-labs/fs-darwin-x64": "0.2.0",
+      "@acyclic-labs/fs-linux-arm64": "0.2.0",
+      "@acyclic-labs/fs-linux-x64": "0.2.0",
+      "@acyclic-labs/fs-win32-arm64": "0.2.0",
+      "@acyclic-labs/fs-win32-x64": "0.2.0"
     },
-    "./memory": {
-      "types": "./dist/memory.d.ts",
-      "node": "./dist/memory-node.js",
-      "default": "./dist/memory.js"
-    },
-    "./hosted": {
-      "types": "./dist/hosted.d.ts",
-      "default": "./dist/hosted.js"
-    },
-    "./native": {
-      "types": "./dist/native.d.ts",
-      "default": "./dist/native.js"
-    },
-    "./proto": {
-      "types": "./generated/proto/filesystem/v2/filesystem_pb.d.ts",
-      "default": "./generated/proto/filesystem/v2/filesystem_pb.js"
-    }
-  },
-  "scripts": {
-    "build:proto": "cd ../../.. && bun run generate",
-    "clean": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'tsconfig.tsbuildinfo']) rmSync(path, { recursive: true, force: true })\"",
-    "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
-    "build:clean": "bun run clean && bun run build",
-    "build:wasm": "bun scripts/build-wasm.mjs",
-    "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
-    "check:types": "bun x tsc -p tsconfig.type-tests.json --pretty false",
-    "test": "bun run build && bun run test:composition && bun run test:s3",
-    "test:composition": "bun test/node-memory.mjs",
-    "test:s3": "bun test test/hosted-s3.test.mjs",
-    "test:browser": "bun test/browser-qualify.mjs",
-    "pack:dry": "bun run build:clean && bun pm pack --dry-run"
+    "sourceContentSha256": "88d1dd90ca02e81baaa2e6bf5dad5769dcd13be2bd811a8d82b098e6527329bc",
+    "sourceGitSha": null,
+    "sourceGitShaKind": null,
+    "sourceModelRevision": "working-tree",
+    "sourceModelSha256": "88d1dd90ca02e81baaa2e6bf5dad5769dcd13be2bd811a8d82b098e6527329bc"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.15.0",
     "@connectrpc/connect": "2.1.1",
     "@connectrpc/connect-web": "2.1.1"
   },
+  "description": "Versioned workspaces for browser, memory, hosted, and native providers",
   "devDependencies": {
     "@types/node": "26.6.2",
     "typescript": "7.0.2"
-  }
+  },
+  "exports": {
+    ".": {
+      "default": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./browser": {
+      "default": "./dist/browser.js",
+      "types": "./dist/browser.d.ts"
+    },
+    "./generated-client": {
+      "default": "./dist/generated-client.js",
+      "types": "./dist/generated-client.d.ts"
+    },
+    "./hosted": {
+      "default": "./dist/hosted.js",
+      "types": "./dist/hosted.d.ts"
+    },
+    "./memory": {
+      "default": "./dist/memory.js",
+      "node": "./dist/memory-node.js",
+      "types": "./dist/memory.d.ts"
+    },
+    "./native": {
+      "default": "./dist/native.js",
+      "types": "./dist/native.d.ts"
+    },
+    "./proto": {
+      "default": "./generated/proto/filesystem/v2/filesystem_pb.js",
+      "types": "./generated/proto/filesystem/v2/filesystem_pb.d.ts"
+    },
+    "./provenance": {
+      "default": "./generated/rust-provenance.json"
+    }
+  },
+  "files": [
+    "dist",
+    "generated",
+    "examples",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "filesystem",
+    "storage",
+    "workspaces"
+  ],
+  "license": "Apache-2.0",
+  "name": "@acyclic-labs/fs",
+  "optionalDependencies": {
+    "@acyclic-labs/fs-darwin-arm64": "0.2.0",
+    "@acyclic-labs/fs-darwin-x64": "0.2.0",
+    "@acyclic-labs/fs-linux-arm64": "0.2.0",
+    "@acyclic-labs/fs-linux-x64": "0.2.0",
+    "@acyclic-labs/fs-win32-arm64": "0.2.0",
+    "@acyclic-labs/fs-win32-x64": "0.2.0"
+  },
+  "private": false,
+  "repository": {
+    "directory": "typescript/packages/filesystem",
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git"
+  },
+  "scripts": {
+    "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
+    "build:clean": "bun run clean && bun run build",
+    "build:proto": "cd ../../.. && bun run generate",
+    "build:wasm": "bun scripts/build-wasm.mjs",
+    "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
+    "check:types": "bun x tsc -p tsconfig.type-tests.json --pretty false",
+    "clean": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'tsconfig.tsbuildinfo']) rmSync(path, { recursive: true, force: true })\"",
+    "pack:dry": "bun run build:clean && bun pm pack --dry-run",
+    "test": "bun run build && bun run test:composition && bun run test:s3",
+    "test:browser": "bun test/browser-qualify.mjs",
+    "test:composition": "bun test/node-memory.mjs",
+    "test:s3": "bun test test/hosted-s3.test.mjs"
+  },
+  "sideEffects": false,
+  "type": "module",
+  "version": "0.2.0"
 }

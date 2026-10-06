@@ -9,7 +9,7 @@ reference.
 
 
 The crate's default profile selects the local backend, memory support, native
-watching, and native mounting on native targets. Cargo selects the target-specific
+watching, native mounting, and the S3 HTTP adapter on native targets. Cargo selects the target-specific
 dependencies automatically, so native consumers use the local backend without a
 feature flag. The `wasm32` target exposes the portable parts of the crate and
 does not expose the native local or hosted service adapters.

@@ -158,7 +158,7 @@ impl Client {
         let mut client = wire::models_service_client::ModelsServiceClient::new(self.channel.clone())
             .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
             .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES);
-        Ok(client.list(self.request(request.clone())?).await?.into_inner())
+        Ok(client.list(self.request(*request)?).await?.into_inner())
     }
 
     /// Contexts/Create.

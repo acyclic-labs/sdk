@@ -128,7 +128,12 @@ impl Client {
         let client = Self::connect_with_tls([endpoint], token, ca)?;
         let family = BindingFamily::Stream;
         let version = control::control_protocol_version(family);
-        let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(client.channels[0].clone())
+        let channel = client
+            .channels
+            .first()
+            .cloned()
+            .ok_or(ConnectError::NoEndpoints)?;
+        let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(channel)
             .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
         let mut request = Request::new(HandshakeRequest {
             protocol: Some(ProtocolIdentity {

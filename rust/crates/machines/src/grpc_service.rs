@@ -20,7 +20,7 @@ impl<P> Clone for Service<P> {
     }
 }
 
-fn status(error: ProviderError) -> Status {
+fn status(error: &ProviderError) -> Status {
     let message = error.to_string();
     match error {
         ProviderError::NotFound(_) => Status::not_found(message),
@@ -82,17 +82,17 @@ fn operation_state_for(
 }
 fn contract(value: &MachineContract) -> Result<wire::MachineContract, Status> {
     Ok(wire::MachineContract {
-        image: Some(encode_image(&value.image).map_err(status)?),
+        image: Some(encode_image(&value.image).map_err(|error| status(&error))?),
         capabilities: value
             .capabilities
             .iter()
             .copied()
             .map(encode_capability)
             .collect(),
-        compatibility: Some(encode_compatibility(&value.compatibility).map_err(status)?),
+        compatibility: Some(encode_compatibility(&value.compatibility).map_err(|error| status(&error))?),
         compatibility_revision: value.compatibility_revision.to_vec(),
-        suspension: Some(encode_suspension(value.suspension).map_err(status)?),
-        expiration: Some(encode_expiration(value.expiration).map_err(status)?),
+        suspension: Some(encode_suspension(value.suspension).map_err(|error| status(&error))?),
+        expiration: Some(encode_expiration(value.expiration).map_err(|error| status(&error))?),
         network_policy_digest: value.network_policy_digest.to_vec(),
         budgets: Some(wire::Budgets {
             spend_micros: value.budgets.spend_micros,
@@ -140,7 +140,7 @@ fn machine_state_for(
     }
     machine_state(value)
 }
-fn checkpoint_state(value: CheckpointObservation) -> Result<wire::CheckpointState, Status> {
+fn checkpoint_state(value: &CheckpointObservation) -> Result<wire::CheckpointState, Status> {
     Ok(wire::CheckpointState {
         checkpoint: Some(encode_checkpoint(value.id)),
         source: Some(encode_machine(value.source)),
@@ -151,7 +151,7 @@ fn checkpoint_state(value: CheckpointObservation) -> Result<wire::CheckpointStat
 }
 fn checkpoint_state_for(
     expected: CheckpointId,
-    value: CheckpointObservation,
+    value: &CheckpointObservation,
 ) -> Result<wire::CheckpointState, Status> {
     if value.id != expected {
         return Err(Status::internal(
@@ -161,7 +161,7 @@ fn checkpoint_state_for(
     checkpoint_state(value)
 }
 fn admission(
-    value: MachineObservation,
+    value: &MachineObservation,
     operation: OperationId,
 ) -> Result<wire::MachineAdmission, Status> {
     Ok(wire::MachineAdmission {
@@ -171,7 +171,7 @@ fn admission(
     })
 }
 fn checkpoint_admission(
-    value: CheckpointObservation,
+    value: &CheckpointObservation,
     operation: OperationId,
 ) -> Result<wire::CheckpointAdmission, Status> {
     Ok(wire::CheckpointAdmission {
@@ -183,14 +183,14 @@ fn checkpoint_admission(
 }
 fn fork_admission(
     checkpoint: CheckpointId,
-    values: Vec<MachineObservation>,
+    values: &[MachineObservation],
     operation: OperationId,
 ) -> Result<wire::ForkAdmission, Status> {
     let retained = values
         .first()
         .ok_or_else(|| Status::internal("provider returned an empty fork"))?;
     let mut seen = BTreeSet::new();
-    for value in &values {
+    for value in values {
         if value.last_checkpoint != Some(checkpoint)
             || !seen.insert(value.id)
             || value.contract != retained.contract
@@ -213,14 +213,14 @@ fn fork_admission(
 fn live_fork_admission(
     source: MachineId,
     fidelity: ForkFidelity,
-    values: Vec<MachineObservation>,
+    values: &[MachineObservation],
     operation: OperationId,
 ) -> Result<wire::ForkMachineAdmission, Status> {
     let retained = values
         .first()
         .ok_or_else(|| Status::internal("provider returned an empty live fork"))?;
     let mut seen = BTreeSet::new();
-    for value in &values {
+    for value in values {
         if value.id == source
             || value.last_checkpoint.is_some()
             || !seen.insert(value.id)
@@ -254,8 +254,8 @@ fn mutation(
         checkpoint: checkpoint.map(encode_checkpoint),
     }
 }
-fn event(value: MachineEvent) -> wire::MachineEvent {
-    let (kind, state, pressure) = match value.fact {
+fn event(value: &MachineEvent) -> wire::MachineEvent {
+    let (kind, state, pressure) = match &value.fact {
         EventFact::State(state) => (
             wire::EventKind::State,
             match state {
@@ -298,7 +298,7 @@ fn event(value: MachineEvent) -> wire::MachineEvent {
 fn event_for(
     expected: MachineId,
     previous_sequence: Option<u64>,
-    value: MachineEvent,
+    value: &MachineEvent,
 ) -> Result<wire::MachineEvent, Status> {
     if value.machine != expected
         || value.sequence == 0
@@ -337,11 +337,11 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         version(value.protocol.as_ref())?;
         let value = self
             .provider
-            .qualify_image(decode_image(value.image.as_ref()).map_err(status)?)
+            .qualify_image(decode_image(value.image.as_ref()).map_err(|error| status(&error))?)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::ImageQualification {
-            image: Some(encode_image(&value.image).map_err(status)?),
+            image: Some(encode_image(&value.image).map_err(|error| status(&error))?),
             capabilities: value
                 .capabilities
                 .into_iter()
@@ -366,7 +366,7 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
             .iter()
             .map(|value| decode_capability(*value))
             .collect::<Result<BTreeSet<_>, _>>()
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         if capabilities.len() != policy.required.len() {
             return Err(Status::invalid_argument("duplicate required capability"));
         }
@@ -375,25 +375,25 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
             .ok_or_else(|| Status::invalid_argument("budgets are required"))?;
         let request = CreateMachine {
             idempotency_key: id,
-            image: decode_image(value.image.as_ref()).map_err(status)?,
-            compatibility: decode_compatibility(Some(policy), &capabilities).map_err(status)?,
-            suspension: decode_suspension(value.suspension.as_ref()).map_err(status)?,
-            expiration: decode_expiration(value.expiration.as_ref()).map_err(status)?,
+            image: decode_image(value.image.as_ref()).map_err(|error| status(&error))?,
+            compatibility: decode_compatibility(Some(policy), &capabilities).map_err(|error| status(&error))?,
+            suspension: decode_suspension(value.suspension.as_ref()).map_err(|error| status(&error))?,
+            expiration: decode_expiration(value.expiration.as_ref()).map_err(|error| status(&error))?,
             network_policy_digest: digest(&value.network_policy_digest, "network policy")
-                .map_err(status)?,
+                .map_err(|error| status(&error))?,
             budgets: Budgets {
                 spend_micros: budgets.spend_micros,
                 concurrency: budgets.concurrency,
             },
         };
         let MutationOutcome::Created(value) =
-            self.provider.create(request).await.map_err(status)?
+            self.provider.create(request).await.map_err(|error| status(&error))?
         else {
             return Err(Status::internal("provider returned a non-create outcome"));
         };
         Ok(Response::new(admission(
-            value,
-            self.provider.recover_operation(id).await.map_err(status)?,
+            &value,
+            self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
         )?))
     }
     async fn checkpoint(
@@ -405,17 +405,17 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let id = key(value.idempotency_key.as_ref())?;
         let MutationOutcome::Checkpointed(value) = self
             .provider
-            .checkpoint(decode_machine(value.machine.as_ref()).map_err(status)?, id)
+            .checkpoint(decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?, id)
             .await
-            .map_err(status)?
+            .map_err(|error| status(&error))?
         else {
             return Err(Status::internal(
                 "provider returned a non-checkpoint outcome",
             ));
         };
         Ok(Response::new(checkpoint_admission(
-            value,
-            self.provider.recover_operation(id).await.map_err(status)?,
+            &value,
+            self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
         )?))
     }
     async fn fork(
@@ -425,21 +425,21 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
         let id = key(value.idempotency_key.as_ref())?;
-        let checkpoint = decode_checkpoint(value.checkpoint.as_ref()).map_err(status)?;
+        let checkpoint = decode_checkpoint(value.checkpoint.as_ref()).map_err(|error| status(&error))?;
         let count = NonZeroU32::new(value.count)
             .ok_or_else(|| Status::invalid_argument("fork count must be positive"))?;
         let MutationOutcome::Forked(values) = self
             .provider
             .fork(checkpoint, count, id)
             .await
-            .map_err(status)?
+            .map_err(|error| status(&error))?
         else {
             return Err(Status::internal("provider returned a non-fork outcome"));
         };
         Ok(Response::new(fork_admission(
             checkpoint,
-            values,
-            self.provider.recover_operation(id).await.map_err(status)?,
+            &values,
+            self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
         )?))
     }
     async fn fork_machine(
@@ -449,7 +449,7 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
         let id = key(value.idempotency_key.as_ref())?;
-        let source = decode_machine(value.machine.as_ref()).map_err(status)?;
+        let source = decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?;
         let count = NonZeroU32::new(value.count)
             .ok_or_else(|| Status::invalid_argument("fork count must be positive"))?;
         let MutationOutcome::MachineForked {
@@ -460,7 +460,7 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
             .provider
             .fork_machine(source, count, id)
             .await
-            .map_err(status)?
+            .map_err(|error| status(&error))?
         else {
             return Err(Status::internal(
                 "provider returned a non-live-fork outcome",
@@ -469,8 +469,8 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         Ok(Response::new(live_fork_admission(
             source,
             fidelity,
-            children,
-            self.provider.recover_operation(id).await.map_err(status)?,
+            &children,
+            self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
         )?))
     }
     async fn suspend(
@@ -480,12 +480,12 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
         let id = key(value.idempotency_key.as_ref())?;
-        let machine = decode_machine(value.machine.as_ref()).map_err(status)?;
-        self.provider.suspend(machine, id).await.map_err(status)?;
+        let machine = decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?;
+        self.provider.suspend(machine, id).await.map_err(|error| status(&error))?;
         Ok(Response::new(mutation(
             Some(machine),
             None,
-            self.provider.recover_operation(id).await.map_err(status)?,
+            self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
         )))
     }
     async fn wake(
@@ -495,12 +495,12 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
         let id = key(value.idempotency_key.as_ref())?;
-        let machine = decode_machine(value.machine.as_ref()).map_err(status)?;
-        self.provider.wake(machine, id).await.map_err(status)?;
+        let machine = decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?;
+        self.provider.wake(machine, id).await.map_err(|error| status(&error))?;
         Ok(Response::new(mutation(
             Some(machine),
             None,
-            self.provider.recover_operation(id).await.map_err(status)?,
+            self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
         )))
     }
     async fn destroy_machine(
@@ -510,15 +510,15 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
         let id = key(value.idempotency_key.as_ref())?;
-        let machine = decode_machine(value.machine.as_ref()).map_err(status)?;
+        let machine = decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?;
         self.provider
             .destroy_machine(machine, id)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(mutation(
             Some(machine),
             None,
-            self.provider.recover_operation(id).await.map_err(status)?,
+            self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
         )))
     }
 
@@ -529,18 +529,18 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
         let id = key(value.idempotency_key.as_ref())?;
-        let machine = decode_machine(value.machine.as_ref()).map_err(status)?;
-        let policy = decode_suspension(value.policy.as_ref()).map_err(status)?;
+        let machine = decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?;
+        let policy = decode_suspension(value.policy.as_ref()).map_err(|error| status(&error))?;
         self.provider
             .set_suspension_policy(machine, policy, id)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::PolicyAdmission {
             machine: Some(encode_machine(machine)),
             operation: Some(wire_operation(
-                self.provider.recover_operation(id).await.map_err(status)?,
+                self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
             )),
-            policy: Some(encode_suspension(policy).map_err(status)?),
+            policy: Some(encode_suspension(policy).map_err(|error| status(&error))?),
         }))
     }
     async fn destroy_checkpoint(
@@ -550,15 +550,15 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
         let id = key(value.idempotency_key.as_ref())?;
-        let checkpoint = decode_checkpoint(value.checkpoint.as_ref()).map_err(status)?;
+        let checkpoint = decode_checkpoint(value.checkpoint.as_ref()).map_err(|error| status(&error))?;
         self.provider
             .destroy_checkpoint(checkpoint, id)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(mutation(
             None,
             Some(checkpoint),
-            self.provider.recover_operation(id).await.map_err(status)?,
+            self.provider.recover_operation(id).await.map_err(|error| status(&error))?,
         )))
     }
     async fn recover(
@@ -568,12 +568,12 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
         let id = key(value.idempotency_key.as_ref())?;
-        let operation = self.provider.recover_operation(id).await.map_err(status)?;
+        let operation = self.provider.recover_operation(id).await.map_err(|error| status(&error))?;
         use wire::recovered_admission::Result as Kind;
-        let result = match self.provider.recover(id).await.map_err(status)? {
-            MutationOutcome::Created(value) => Kind::Create(admission(value, operation)?),
+        let result = match self.provider.recover(id).await.map_err(|error| status(&error))? {
+            MutationOutcome::Created(value) => Kind::Create(admission(&value, operation)?),
             MutationOutcome::Checkpointed(value) => {
-                Kind::Checkpoint(checkpoint_admission(value, operation)?)
+                Kind::Checkpoint(checkpoint_admission(&value, operation)?)
             }
             MutationOutcome::Forked(values) => {
                 let retained = values
@@ -582,13 +582,13 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
                 let checkpoint = retained
                     .last_checkpoint
                     .ok_or_else(|| Status::internal("recovered fork lacks checkpoint identity"))?;
-                Kind::Fork(fork_admission(checkpoint, values, operation)?)
+                Kind::Fork(fork_admission(checkpoint, &values, operation)?)
             }
             MutationOutcome::MachineForked {
                 source,
                 fidelity,
                 children,
-            } => Kind::ForkMachine(live_fork_admission(source, fidelity, children, operation)?),
+            } => Kind::ForkMachine(live_fork_admission(source, fidelity, &children, operation)?),
             MutationOutcome::Suspended(machine) => {
                 Kind::Suspend(mutation(Some(machine), None, operation))
             }
@@ -603,7 +603,7 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
                 Kind::SetSuspensionPolicy(wire::PolicyAdmission {
                     machine: Some(encode_machine(machine)),
                     operation: Some(wire_operation(operation)),
-                    policy: Some(encode_suspension(policy).map_err(status)?),
+                    policy: Some(encode_suspension(policy).map_err(|error| status(&error))?),
                 })
             }
         };
@@ -618,13 +618,13 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
     ) -> Result<Response<wire::MachineState>, Status> {
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
-        let machine = decode_machine(value.machine.as_ref()).map_err(status)?;
+        let machine = decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?;
         Ok(Response::new(machine_state_for(
             machine,
             self.provider
                 .inspect_machine(machine)
                 .await
-                .map_err(status)?,
+                .map_err(|error| status(&error))?,
         )?))
     }
     async fn inspect_checkpoint(
@@ -633,14 +633,13 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
     ) -> Result<Response<wire::CheckpointState>, Status> {
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
-        let checkpoint = decode_checkpoint(value.checkpoint.as_ref()).map_err(status)?;
-        Ok(Response::new(checkpoint_state_for(
-            checkpoint,
-            self.provider
-                .inspect_checkpoint(checkpoint)
-                .await
-                .map_err(status)?,
-        )?))
+        let checkpoint = decode_checkpoint(value.checkpoint.as_ref()).map_err(|error| status(&error))?;
+        let observation = self
+            .provider
+            .inspect_checkpoint(checkpoint)
+            .await
+            .map_err(|error| status(&error))?;
+        Ok(Response::new(checkpoint_state_for(checkpoint, &observation)?))
     }
     async fn list_machines(
         &self,
@@ -653,23 +652,22 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
             .as_ref()
             .map(|value| decode_machine(Some(value)))
             .transpose()
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let page = self
             .provider
             .list_machines(after, value.limit)
             .await
-            .map_err(status)?;
-        if let Some(cursor) = after {
-            if page.machines.iter().any(|machine| machine.id <= cursor) {
+            .map_err(|error| status(&error))?;
+        if let Some(cursor) = after
+            && page.machines.iter().any(|machine| machine.id <= cursor) {
                 return Err(Status::internal(
                     "provider returned an invalid machine page cursor",
                 ));
-            }
         }
         if page
             .machines
             .windows(2)
-            .any(|machines| machines[0].id >= machines[1].id)
+            .any(|machines| matches!(machines, [first, second] if first.id >= second.id))
         {
             return Err(Status::internal(
                 "provider returned an unordered machine page",
@@ -699,7 +697,7 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
     ) -> Result<Response<wire::EventPage>, Status> {
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
-        let machine = decode_machine(value.machine.as_ref()).map_err(status)?;
+        let machine = decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?;
         let page = self
             .provider
             .events(
@@ -708,20 +706,19 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
                 value.limit,
             )
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let mut previous = (value.after_sequence != 0).then_some(value.after_sequence);
         let mut events = Vec::with_capacity(page.events.len());
         for item in page.events {
-            let encoded = event_for(machine, previous, item)?;
+            let encoded = event_for(machine, previous, &item)?;
             previous = Some(encoded.sequence);
             events.push(encoded);
         }
-        if let Some(next) = page.next_sequence {
-            if previous.is_some_and(|last| next < last) {
+        if let Some(next) = page.next_sequence
+            && previous.is_some_and(|last| next < last) {
                 return Err(Status::internal(
                     "provider returned an invalid event cursor",
                 ));
-            }
         }
         Ok(Response::new(wire::EventPage {
             events,
@@ -734,14 +731,14 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
     ) -> Result<Response<wire::UsageReceipt>, Status> {
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
-        let machine = decode_machine(value.machine.as_ref()).map_err(status)?;
+        let machine = decode_machine(value.machine.as_ref()).map_err(|error| status(&error))?;
         let start_unix_ms = value.start_unix_ms;
         let end_unix_ms = value.end_unix_ms;
         let value = self
             .provider
             .usage(machine, start_unix_ms, end_unix_ms)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let value = usage_receipt_for(machine, start_unix_ms, end_unix_ms, value)?;
         Ok(Response::new(wire::UsageReceipt {
             machine: Some(encode_machine(value.machine)),
@@ -762,13 +759,13 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
     ) -> Result<Response<wire::OperationState>, Status> {
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
-        let operation = decode_operation(value.operation.as_ref()).map_err(status)?;
+        let operation = decode_operation(value.operation.as_ref()).map_err(|error| status(&error))?;
         Ok(Response::new(operation_state_for(
             operation,
             self.provider
                 .inspect_operation(operation)
                 .await
-                .map_err(status)?,
+                .map_err(|error| status(&error))?,
         )?))
     }
     async fn cancel(
@@ -777,10 +774,10 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
     ) -> Result<Response<wire::OperationState>, Status> {
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
-        let operation = decode_operation(value.operation.as_ref()).map_err(status)?;
+        let operation = decode_operation(value.operation.as_ref()).map_err(|error| status(&error))?;
         Ok(Response::new(operation_state_for(
             operation,
-            self.provider.cancel(operation).await.map_err(status)?,
+            self.provider.cancel(operation).await.map_err(|error| status(&error))?,
         )?))
     }
 
@@ -792,16 +789,16 @@ impl<P: MachinesProvider + 'static> wire::machines_service_server::MachinesServi
     ) -> Result<Response<Self::WatchOperationStream>, Status> {
         let value = request.into_inner();
         version(value.protocol.as_ref())?;
-        let operation = decode_operation(value.operation.as_ref()).map_err(status)?;
+        let operation = decode_operation(value.operation.as_ref()).map_err(|error| status(&error))?;
         let stream = self
             .provider
             .watch_operation(operation)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(Box::pin(stream.map(
             move |value| match value {
                 Ok(value) => operation_state_for(operation, value),
-                Err(error) => Err(status(error)),
+                Err(error) => Err(status(&error)),
             },
         ))))
     }
@@ -850,7 +847,7 @@ mod tests {
         assert!(
             checkpoint_state_for(
                 other_checkpoint,
-                CheckpointObservation {
+                &CheckpointObservation {
                     id: checkpoint_id,
                     source: machine_id,
                     contract: contract(),
@@ -874,7 +871,7 @@ mod tests {
             event_for(
                 other_machine,
                 None,
-                MachineEvent {
+                &MachineEvent {
                     machine: machine_id,
                     sequence: 1,
                     observed_at_unix_ms: 1,
@@ -887,7 +884,7 @@ mod tests {
             event_for(
                 machine_id,
                 Some(1),
-                MachineEvent {
+                &MachineEvent {
                     machine: machine_id,
                     sequence: 1,
                     observed_at_unix_ms: 1,
@@ -929,17 +926,17 @@ mod tests {
         assert!(
             fork_admission(
                 checkpoint,
-                vec![valid_child.clone(), valid_child.clone()],
+                &[valid_child.clone(), valid_child.clone()],
                 operation,
             )
             .is_err()
         );
-        assert!(fork_admission(checkpoint, vec![machine(child, None)], operation).is_err());
+        assert!(fork_admission(checkpoint, &[machine(child, None)], operation).is_err());
         assert!(
             live_fork_admission(
                 source,
                 ForkFidelity::MemoryAndDisk,
-                vec![machine(source, None)],
+                &[machine(source, None)],
                 operation,
             )
             .is_err()
@@ -948,7 +945,7 @@ mod tests {
             live_fork_admission(
                 source,
                 ForkFidelity::MemoryAndDisk,
-                vec![machine(child, Some(checkpoint))],
+                &[machine(child, Some(checkpoint))],
                 operation,
             )
             .is_err()

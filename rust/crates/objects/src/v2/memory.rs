@@ -76,7 +76,7 @@ impl FixedClock {
 
 impl Clock for FixedClock {
     fn now(&self) -> Result<prost_types::Timestamp, Error> {
-        Ok(self.timestamp.clone())
+        Ok(self.timestamp)
     }
 }
 

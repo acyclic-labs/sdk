@@ -27,11 +27,13 @@ pub mod persistence;
 pub mod preparation;
 /// Canonical request validation and route encoding.
 pub mod request;
+/// Hosted HTTP transport and response validation shared by native and browser clients.
 // The WASM adapter consumes this module on browser builds; native builds keep
 // it available for contract tests without pulling in JS bindings.
 pub mod http;
 #[allow(dead_code)]
 mod http_codec;
+/// Decodes one hosted HTTP request through the canonical Rust wire contract.
 pub use http_codec::decode as decode_http_request;
 #[allow(dead_code)]
 mod http_validation;

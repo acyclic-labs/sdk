@@ -65,8 +65,9 @@ pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 pub use embedded_capabilities::{
     EMBEDDED_CAPABILITIES, EmbeddedArtifact, EmbeddedArtifactKind, EmbeddedBinding,
     EmbeddedCapability, EmbeddedCoverage, EmbeddedEvidence, EmbeddedFamily, EmbeddedLanguage,
-    EmbeddedQualification, embedded_capabilities, embedded_capabilities_json,
-    embedded_capability, embedded_family_table_json,
+    EmbeddedQualification, embedded_capabilities, embedded_capabilities_for,
+    embedded_capabilities_json, embedded_capability, embedded_capability_with_binding,
+    embedded_family_table_json,
 };
 pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 

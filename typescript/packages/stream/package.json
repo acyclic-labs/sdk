@@ -1,36 +1,54 @@
 {
-  "name": "@acyclic-labs/stream",
-  "version": "0.2.0",
-  "private": false,
-  "license": "Apache-2.0",
-  "description": "Hierarchical append-only streams with typed clients and provider adapters",
-  "keywords": [
-    "streams",
-    "events",
-    "versioning"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/acyclic-labs/sdk.git",
-    "directory": "typescript/packages/stream"
+  "acyclicGenerated": {
+    "defaultTransports": {
+      "browser": "http",
+      "native": "grpc"
+    },
+    "family": "stream",
+    "generator": "sdk-typescript",
+    "generatorVersion": "0.1.0",
+    "nativeCompanions": {
+      "@acyclic-labs/stream-darwin-arm64": "0.2.0",
+      "@acyclic-labs/stream-darwin-x64": "0.2.0",
+      "@acyclic-labs/stream-linux-arm64-gnu": "0.2.0",
+      "@acyclic-labs/stream-linux-arm64-musl": "0.2.0",
+      "@acyclic-labs/stream-linux-x64-gnu": "0.2.0",
+      "@acyclic-labs/stream-linux-x64-musl": "0.2.0",
+      "@acyclic-labs/stream-win32-arm64": "0.2.0",
+      "@acyclic-labs/stream-win32-x64": "0.2.0"
+    },
+    "sourceContentSha256": "20eccc6e2f7e7ec7eaf4087e8594db4c458ab944cf08c9c592a00ac78dba4a42",
+    "sourceGitSha": null,
+    "sourceGitShaKind": null,
+    "sourceModelRevision": "working-tree",
+    "sourceModelSha256": "20eccc6e2f7e7ec7eaf4087e8594db4c458ab944cf08c9c592a00ac78dba4a42"
   },
-  "type": "module",
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0",
+    "@connectrpc/connect": "2.1.1",
+    "@connectrpc/connect-node": "2.1.1"
+  },
+  "description": "Hierarchical append-only streams with typed clients and provider adapters",
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  },
   "exports": {
     ".": {
       "browser": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
+        "default": "./dist/index.js",
+        "types": "./dist/index.d.ts"
       },
+      "default": "./dist/index.js",
       "node": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
+        "default": "./dist/index.js",
+        "types": "./dist/index.d.ts"
       },
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./dist/index.d.ts"
     },
-    "./proto": {
-      "types": "./generated/proto/stream/v2/stream_pb.d.ts",
-      "default": "./generated/proto/stream/v2/stream_pb.js"
+    "./generated-client": {
+      "default": "./dist/generated-client.js",
+      "types": "./dist/generated-client.d.ts"
     },
     "./grpc": {
       "node": {
@@ -39,32 +57,53 @@
       }
     },
     "./native": {
-      "node": {
-        "default": "./dist/native.js",
-        "types": "./dist/native.d.ts"
-      }
+      "default": "./dist/native.js",
+      "types": "./dist/native.d.ts"
+    },
+    "./proto": {
+      "default": "./generated/proto/stream/v2/stream_pb.js",
+      "types": "./generated/proto/stream/v2/stream_pb.d.ts"
+    },
+    "./provenance": {
+      "default": "./generated/rust-provenance.json"
     }
   },
-  "types": "./dist/index.d.ts",
   "files": [
     "dist",
     "generated",
     "examples",
     "CHANGELOG.md"
   ],
+  "keywords": [
+    "streams",
+    "events",
+    "versioning"
+  ],
+  "license": "Apache-2.0",
+  "name": "@acyclic-labs/stream",
+  "optionalDependencies": {
+    "@acyclic-labs/stream-darwin-arm64": "0.2.0",
+    "@acyclic-labs/stream-darwin-x64": "0.2.0",
+    "@acyclic-labs/stream-linux-arm64-gnu": "0.2.0",
+    "@acyclic-labs/stream-linux-arm64-musl": "0.2.0",
+    "@acyclic-labs/stream-linux-x64-gnu": "0.2.0",
+    "@acyclic-labs/stream-linux-x64-musl": "0.2.0",
+    "@acyclic-labs/stream-win32-arm64": "0.2.0",
+    "@acyclic-labs/stream-win32-x64": "0.2.0"
+  },
+  "private": false,
+  "repository": {
+    "directory": "typescript/packages/stream",
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git"
+  },
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
     "build:wasm": "bun scripts/build-wasm.mjs",
-    "test": "bun run build && bun test test",
-    "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts"
+    "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts",
+    "test": "bun run build && bun test test"
   },
-  "dependencies": {
-    "@bufbuild/protobuf": "2.15.0",
-    "@connectrpc/connect": "2.1.1",
-    "@connectrpc/connect-node": "2.1.1"
-  },
-  "devDependencies": {
-    "@types/node": "26.4.1",
-    "typescript": "7.0.2"
-  }
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "version": "0.2.0"
 }

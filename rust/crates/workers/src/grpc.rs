@@ -10,7 +10,7 @@ use tonic::{
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
 
-/// Bearer metadata applied to every generated RPC.
+/// Interceptor that adds the account bearer metadata to every generated RPC.
 #[derive(Clone)]
 pub struct BearerAuth(MetadataValue<Ascii>);
 
@@ -23,35 +23,38 @@ impl Interceptor for BearerAuth {
     }
 }
 
-/// Generated client with account authentication on every request.
+/// Generated Workers v1 client with account authentication on every request.
 pub type Client = wire::workers_service_client::WorkersServiceClient<
     tonic::service::interceptor::InterceptedService<Channel, BearerAuth>,
 >;
 
-/// Client configuration error.
+/// Error returned while constructing or negotiating an authenticated gRPC client.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
-    /// The authenticated control service rejected the handshake.
+    /// The authenticated control service returned a non-negotiation status.
     #[error("Workers control handshake rejected: {0}")]
     RemoteStatus(Status),
-    /// The endpoint did not prove the required Rust-owned contract identity.
+    /// The endpoint returned a descriptor or capability identity different from Workers v1.
     #[error("Workers control identity mismatch: {0}")]
     Negotiation(String),
-    /// Endpoint must use authenticated TLS.
+    /// The endpoint is not an HTTPS URI without credentials, query, or fragment components.
     #[error("Workers endpoints must use https")]
     InsecureEndpoint,
-    /// Credential must be valid nonempty HTTP metadata.
+    /// The bearer token is empty, contains forbidden line breaks, or is not valid HTTP metadata.
     #[error("invalid Workers bearer credential")]
     InvalidCredential,
-    /// Private CA must contain between one byte and 64 KiB.
+    /// The private CA input is empty, larger than 64 KiB, or not a PEM certificate.
     #[error("invalid Workers private CA")]
     InvalidCaCertificate,
-    /// URI or TLS connection failed.
+    /// URI parsing, TLS setup, or channel connection failed.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
 }
 
 /// Connect using standard TLS roots and account-bound bearer metadata.
+///
+/// The endpoint is validated as an HTTPS origin and every request carries the
+/// bearer token in authorization metadata.
 ///
 /// # Errors
 /// Returns an error for invalid configuration or an unavailable TLS endpoint.
@@ -194,7 +197,11 @@ async fn connect_channel_with_ca_certificate(
     Ok((channel, authorization))
 }
 
-/// Decode the canonical semantic error carried in gRPC status details.
+/// Decode the Rust-owned semantic error carried in gRPC status details.
+///
+/// The detail is returned only when its numeric error code maps to a defined
+/// Workers error variant; an absent, malformed, or unspecified detail yields
+/// `None`.
 #[must_use]
 pub fn error_detail(status: &Status) -> Option<wire::Error> {
     let detail = wire::Error::decode(status.details()).ok()?;

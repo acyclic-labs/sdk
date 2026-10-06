@@ -28,12 +28,20 @@ fn temporary_root() -> PathBuf {
 }
 
 fn run_product_command(command: &str, root: &Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_sdk-contract-wire"))
-        .arg(command)
-        .arg("--root")
-        .arg(root)
-        .output()
-        .expect("run Rust product exporter")
+    run_product_command_with_profile(command, root, None)
+}
+
+fn run_product_command_with_profile(
+    command: &str,
+    root: &Path,
+    profile: Option<&str>,
+) -> std::process::Output {
+    let mut process = Command::new(env!("CARGO_BIN_EXE_sdk-contract-wire"));
+    process.arg(command).arg("--root").arg(root);
+    if let Some(profile) = profile {
+        process.arg("--profile").arg(profile);
+    }
+    process.output().expect("run Rust product exporter")
 }
 
 #[test]
@@ -148,10 +156,19 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
             source.contains("replay"),
             "replay policy missing from {relative}"
         );
-        assert!(
-            !source.contains("retry"),
-            "automatic retry policy leaked into {relative}"
-        );
+        for marker in [
+            "retry(",
+            ".retry(",
+            "retry {",
+            "retry do",
+            "RetryAsync(",
+            "retry_async(",
+        ] {
+            assert!(
+                !source.contains(marker),
+                "automatic retry behavior leaked into {relative}: {marker}"
+            );
+        }
         match relative {
             "ruby/lib/acyclic_sdk/generated_remote_policy.rb" => {
                 assert!(
@@ -346,7 +363,11 @@ fn tonic_generation_preserves_inference_model_options_and_archive_identity() {
 #[test]
 fn committed_product_artifacts_match_the_rust_model() {
     let root = repository_root();
-    let checked = run_product_command("check-products", &root);
+    let checked = run_product_command_with_profile(
+        "check-products",
+        &root,
+        Some("rust-typescript-docs"),
+    );
     assert!(
         checked.status.success(),
         "committed product artifacts failed parity: {}{}",

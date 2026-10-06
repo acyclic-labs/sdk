@@ -795,6 +795,7 @@ fn check(
         output,
         &source.revision,
         &source.digest,
+        &require_rust_wire_model_digest(output, &source.revision)?,
     )
     .map_err(CliError::new)?;
     verify_authority_manifest(source_root, output)?;
@@ -912,6 +913,7 @@ fn drift(
         output,
         &source.revision,
         &source.digest,
+        &require_rust_wire_model_digest(output, &source.revision)?,
     )
     .map_err(CliError::new)?;
     verify_authority_manifest(source_root, output)?;
@@ -3450,6 +3452,7 @@ fn run_tools(
                 &spec,
                 relative_request,
                 operation,
+                profile,
             )?);
             continue;
         }
@@ -3555,6 +3558,7 @@ fn run_tools(
             }
         }
         if spec.id == "sdk-language-producers" {
+            let rust_model_digest = require_rust_wire_model_digest(output, &source.revision)?;
             results.push(run_language_producers(
                 root,
                 output,
@@ -3562,6 +3566,7 @@ fn run_tools(
                 relative_request,
                 source,
                 operation,
+                &rust_model_digest,
             )?);
             continue;
         }
@@ -4439,12 +4444,39 @@ fn run_generated_type_audit(
     let _ = fs::remove_dir_all(&audit_root);
     Ok(result)
 }
+fn product_artifact_command(
+    manifest: &Path,
+    operation: &str,
+    root: &Path,
+    destination: &Path,
+    profile: GenerationProfile,
+) -> Vec<OsString> {
+    vec![
+        cargo_program(),
+        OsString::from("run"),
+        OsString::from("--manifest-path"),
+        manifest.as_os_str().to_os_string(),
+        OsString::from("--locked"),
+        OsString::from("--bin"),
+        OsString::from("sdk-contract-wire"),
+        OsString::from("--"),
+        OsString::from(operation),
+        OsString::from("--root"),
+        root.as_os_str().to_os_string(),
+        OsString::from("--out"),
+        destination.as_os_str().to_os_string(),
+        OsString::from("--profile"),
+        OsString::from(profile.as_str()),
+    ]
+}
+
 fn run_product_artifacts(
     root: &Path,
     output: &Path,
     spec: &ToolSpec,
     request: String,
     operation: Operation,
+    profile: GenerationProfile,
 ) -> Result<ToolResult, CliError> {
     let Some(manifest) = spec.manifest.as_ref() else {
         return Ok(ToolResult {
@@ -4478,21 +4510,7 @@ fn run_product_artifacts(
     };
     ensure_product_destination(root, destination, operation)?;
     for operation in operations {
-        let command = vec![
-            cargo_program(),
-            OsString::from("run"),
-            OsString::from("--manifest-path"),
-            manifest.as_os_str().to_os_string(),
-            OsString::from("--locked"),
-            OsString::from("--bin"),
-            OsString::from("sdk-contract-wire"),
-            OsString::from("--"),
-            OsString::from(operation),
-            OsString::from("--root"),
-            root.as_os_str().to_os_string(),
-            OsString::from("--out"),
-            destination.as_os_str().to_os_string(),
-        ];
+        let command = product_artifact_command(manifest, operation, root, destination, profile);
         if first_command.is_empty() {
             first_command = command.clone();
         }
@@ -4750,6 +4768,7 @@ fn run_language_producers(
     request: String,
     source: &SourceIdentity,
     operation: Operation,
+    rust_model_digest: &str,
 ) -> Result<ToolResult, CliError> {
     let Some(targets_path) = spec.manifest.as_ref() else {
         return Ok(ToolResult {
@@ -4874,6 +4893,7 @@ fn run_language_producers(
                     "source_root": root,
                     "output": target_output,
                     "source": source,
+                    "rust_model_digest": rust_model_digest,
                     "contract_scope": "rust-authority",
                     "contract_inputs": [
                         "rust/crates/sdk-contract-wire",
@@ -4998,6 +5018,7 @@ fn run_language_producers(
                                     id,
                                     &source.revision,
                                     &source.digest,
+                                    rust_model_digest,
                                 )
                                 .map_err(|error| {
                                     CliError::new(format!(
@@ -5048,6 +5069,7 @@ fn run_language_producers(
                 "operation": operation_name(operation),
                 "source_revision": source.revision,
                 "source_digest": source.digest,
+                "rust_model_digest": rust_model_digest,
                 "contract_scope": "rust-authority",
                 "contract_inputs": [
                     "rust/crates/sdk-contract-wire",
@@ -9322,6 +9344,29 @@ mod tests {
     }
 
     #[test]
+    fn product_artifact_command_forwards_each_generation_profile() {
+        for (profile, expected) in [
+            (GenerationProfile::RustTypescriptDocs, "rust-typescript-docs"),
+            (GenerationProfile::AllLanguages, "all-languages"),
+        ] {
+            let command = product_artifact_command(
+                Path::new("rust/crates/sdk-contract-wire/Cargo.toml"),
+                "generate-products",
+                Path::new("source"),
+                Path::new("output"),
+                profile,
+            );
+            let text = command
+                .iter()
+                .map(|part| part.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(text.windows(2).any(|pair| {
+                pair[0] == "--profile" && pair[1] == expected
+            }));
+        }
+    }
+
+    #[test]
     fn primary_type_audit_stages_only_rust_and_typescript_surfaces() {
         let output = test_directory("primary-type-audit-staging");
         for relative in [
@@ -9444,6 +9489,7 @@ mod tests {
             "requests/sdk-language-producers.json".into(),
             &source,
             Operation::Generate,
+            &"a".repeat(64),
         )
         .expect("target catalog is valid");
         assert!(matches!(result.status.as_str(), "pending" | "failed"));
@@ -9579,6 +9625,7 @@ mod tests {
             "requests/sdk-language-producers.json".into(),
             &source,
             Operation::Generate,
+            &"a".repeat(64),
         )
         .expect_err("missing generator pin must fail closed");
         assert!(error.message.contains("missing pin"));

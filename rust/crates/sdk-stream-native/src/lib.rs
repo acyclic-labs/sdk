@@ -29,6 +29,10 @@ fn parse_u64(value: &str, field: &str) -> Result<u64> {
         .map_err(|error| native_error(field, error))
 }
 
+fn bounded_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or_else(|_| std::process::abort())
+}
+
 fn stream_error(error: StreamError) -> Error {
     native_error("Stream operation failed", error)
 }
@@ -53,7 +57,7 @@ fn id(value: &[u8]) -> Buffer {
     Buffer::from(value.to_vec())
 }
 
-fn record(value: acyclic_stream::Record) -> NativeRecord {
+fn record(value: &acyclic_stream::Record) -> NativeRecord {
     NativeRecord {
         sequence: value.sequence.to_string(),
         value: Buffer::from(value.value.to_vec()),
@@ -62,7 +66,7 @@ fn record(value: acyclic_stream::Record) -> NativeRecord {
     }
 }
 
-fn fork_receipt(value: ForkReceipt) -> NativeForkReceipt {
+fn fork_receipt(value: &ForkReceipt) -> NativeForkReceipt {
     NativeForkReceipt {
         source: value.source.to_string(),
         destination: value.destination.to_string(),
@@ -136,15 +140,21 @@ pub struct NativeStreamCancellation {
     wake: Arc<Notify>,
 }
 
+impl Default for NativeStreamCancellation {
+    fn default() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(Notify::new()),
+        }
+    }
+}
+
 #[napi]
 impl NativeStreamCancellation {
     /// Creates a cancellation handle in the non-cancelled state.
     #[napi(constructor)]
     pub fn new() -> Self {
-        Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
-            wake: Arc::new(Notify::new()),
-        }
+        Self::default()
     }
 
     /// Wakes and cancels every Rust follow operation using this handle.
@@ -198,7 +208,7 @@ impl NativeStreamClient {
     /// Returns the canonical endpoint-pool bound.
     #[napi]
     pub fn max_endpoints() -> u32 {
-        grpc::MAX_ENDPOINTS as u32
+        bounded_u32(grpc::MAX_ENDPOINTS)
     }
 
     /// Reads the current tail through the Rust provider.
@@ -282,7 +292,7 @@ impl NativeStreamClient {
         let mut records = self.inner.read(request).await.map_err(stream_error)?;
         let mut values = Vec::new();
         while let Some(value) = records.next().await {
-            values.push(record(value.map_err(stream_error)?));
+            values.push(record(&value.map_err(stream_error)?));
         }
         Ok(NativeRecordBatch {
             records: values,
@@ -329,7 +339,7 @@ impl NativeStreamClient {
                     cancelled: false,
                 });
             };
-            values.push(record(value.map_err(stream_error)?));
+            values.push(record(&value.map_err(stream_error)?));
         }
     }
 
@@ -357,7 +367,7 @@ impl NativeStreamClient {
         self.inner
             .fork(request)
             .await
-            .map(fork_receipt)
+            .map(|value| fork_receipt(&value))
             .map_err(stream_error)
     }
 
@@ -432,9 +442,9 @@ impl NativeStreamClient {
 pub fn native_stream_capabilities() -> NativeStreamCapabilities {
     NativeStreamCapabilities {
         version: PACKAGE_VERSION.to_owned(),
-        max_endpoints: grpc::MAX_ENDPOINTS as u32,
-        max_endpoint_uri_bytes: grpc::MAX_ENDPOINT_URI_BYTES as u32,
-        max_ca_certificate_bytes: grpc::MAX_CA_CERTIFICATE_BYTES as u32,
+        max_endpoints: bounded_u32(grpc::MAX_ENDPOINTS),
+        max_endpoint_uri_bytes: bounded_u32(grpc::MAX_ENDPOINT_URI_BYTES),
+        max_ca_certificate_bytes: bounded_u32(grpc::MAX_CA_CERTIFICATE_BYTES),
         operation_deadline_ms: 10_000,
         endpoint_attempt_timeout_ms: 1_000,
         follow_attempt_timeout_ms: 500,
@@ -535,7 +545,7 @@ mod tests {
         assert!(cancellation.cancelled());
         assert_eq!(
             NativeStreamClient::max_endpoints(),
-            grpc::MAX_ENDPOINTS as u32
+            bounded_u32(grpc::MAX_ENDPOINTS)
         );
     }
 }

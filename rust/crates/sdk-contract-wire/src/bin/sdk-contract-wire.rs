@@ -103,6 +103,105 @@ const PROTOCOL_ARCHIVED_FIXTURE: &[u8] =
 
 type GeneratedArtifact = (String, Vec<u8>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProductProfile {
+    RustTypescriptDocs,
+    AllLanguages,
+}
+
+impl ProductProfile {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "rust-typescript-docs" => Ok(Self::RustTypescriptDocs),
+            "all-languages" => Ok(Self::AllLanguages),
+            other => Err(format!(
+                "unknown product profile {other}; expected rust-typescript-docs or all-languages"
+            )
+            .into()),
+        }
+    }
+}
+
+const PRIMARY_PRODUCT_PATHS: &[&str] = &[
+    "generated/sdk/type-policy.json",
+    EMBEDDED_CAPABILITIES_PATH,
+    EMBEDDED_FAMILY_TABLE_PATH,
+    FILESYSTEM_PRODUCT_DESCRIPTOR,
+    HARNESS_PRODUCT_DESCRIPTOR,
+    HARNESS_PRODUCT_ARCHIVE,
+    INFERENCE_PRODUCT_DESCRIPTOR,
+    INFERENCE_CONTRACT_PRODUCT_DESCRIPTOR,
+    INFERENCE_PRODUCT_DOC_DESCRIPTOR,
+    INFERENCE_CONTRACT_PRODUCT_DOC_DESCRIPTOR,
+    INFERENCE_PRODUCT_ARCHIVE,
+    MACHINES_PRODUCT_DESCRIPTOR,
+    MACHINES_PRODUCT_DOC_DESCRIPTOR,
+    MACHINES_PRODUCT_ARCHIVE,
+    "generated/rust/acyclic/actors/v1/acyclic.actors.v1.rs",
+    "rust/crates/actors/src/generated/acyclic.actors.v1.rs",
+    "generated/rust/acyclic/actors/v1/acyclic.actors.v1.tonic.rs",
+    "rust/crates/actors/src/generated/acyclic.actors.v1.tonic.rs",
+    "rust/crates/actors/src/generated/acyclic.protocol.v1.rs",
+    "rust/crates/actors/src/generated/acyclic.transport.v1.rs",
+    "rust/crates/actors/src/generated/platform-client-methods.rs",
+    "generated/rust/acyclic/workers/v1/acyclic.workers.v1.rs",
+    "rust/crates/workers/src/generated/acyclic.workers.v1.rs",
+    "generated/rust/acyclic/workers/v1/acyclic.workers.v1.tonic.rs",
+    "rust/crates/workers/src/generated/acyclic.workers.v1.tonic.rs",
+    "rust/crates/workers/src/generated/acyclic.protocol.v1.rs",
+    "rust/crates/workers/src/generated/acyclic.transport.v1.rs",
+    "rust/crates/workers/src/generated/platform-client-methods.rs",
+    "generated/rust/acyclic/objects/v2/acyclic.objects.v2.rs",
+    "rust/crates/objects/src/generated/acyclic.objects.v2.rs",
+    "generated/rust/acyclic/objects/v2/acyclic.objects.v2.tonic.rs",
+    "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs",
+];
+
+// These output roots are deliberately deferred from the Rust/TypeScript/docs
+// profile. They remain generated and checked by the all-languages profile;
+// keeping the classification explicit makes a newly added product path fail
+// closed instead of silently disappearing from the primary profile.
+const DEFERRED_PRODUCT_PATH_PREFIXES: &[&str] = &[
+    "python/",
+    "go/",
+    "ruby/",
+    "php/",
+    "dart/",
+    "jvm/",
+    "dotnet/",
+    "swift/",
+    "cpp/",
+];
+
+fn is_deferred_product_path(path: &str) -> bool {
+    DEFERRED_PRODUCT_PATH_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+fn filter_product_artifacts_for_profile(
+    artifacts: Vec<GeneratedArtifact>,
+    profile: ProductProfile,
+) -> Result<Vec<GeneratedArtifact>, Box<dyn Error>> {
+    match profile {
+        ProductProfile::AllLanguages => Ok(artifacts),
+        ProductProfile::RustTypescriptDocs => artifacts
+            .into_iter()
+            .try_fold(Vec::new(), |mut selected, artifact| {
+                let path = artifact.0.as_str();
+                if PRIMARY_PRODUCT_PATHS.contains(&path) {
+                    selected.push(artifact);
+                } else if !is_deferred_product_path(path) {
+                    return Err(format!(
+                        "unclassified product artifact path {path}; classify it as primary or deferred"
+                    )
+                    .into());
+                }
+                Ok(selected)
+            }),
+    }
+}
+
 fn public_field_direction_name(direction: PublicFieldDirection) -> &'static str {
     match direction {
         PublicFieldDirection::Request => "request",
@@ -486,6 +585,86 @@ const MODEL_SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("../protocol.rs"),
     ),
     (
+        "rust/crates/sdk-contract-wire/src/csharp_typed_facades.rs",
+        include_bytes!("../csharp_typed_facades.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/embedded_capabilities.rs",
+        include_bytes!("../embedded_capabilities.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/embedded_facades.rs",
+        include_bytes!("../embedded_facades.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/facades.rs",
+        include_bytes!("../facades.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/facades_python_go.rs",
+        include_bytes!("../facades_python_go.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/php_runtime.rs",
+        include_bytes!("../php_runtime.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/portable_typed_facades.rs",
+        include_bytes!("../portable_typed_facades.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/product_paths.rs",
+        include_bytes!("../product_paths.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/remote_limits.rs",
+        include_bytes!("../remote_limits.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/semantic_oracle.rs",
+        include_bytes!("../semantic_oracle.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/semantic_oracle/actors.rs",
+        include_bytes!("../semantic_oracle/actors.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/semantic_oracle/inference.rs",
+        include_bytes!("../semantic_oracle/inference.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/semantic_oracle/machines.rs",
+        include_bytes!("../semantic_oracle/machines.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/semantic_oracle/objects.rs",
+        include_bytes!("../semantic_oracle/objects.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/semantic_oracle/stream.rs",
+        include_bytes!("../semantic_oracle/stream.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/semantic_oracle/workers.rs",
+        include_bytes!("../semantic_oracle/workers.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/swift_cpp_typed_facades.rs",
+        include_bytes!("../swift_cpp_typed_facades.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/transport.rs",
+        include_bytes!("../transport.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/typed_facades.rs",
+        include_bytes!("../typed_facades.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/wire_semantics.rs",
+        include_bytes!("../wire_semantics.rs"),
+    ),
+    (
         "rust/crates/sdk-contract-wire/src/bin/sdk-contract-wire.rs",
         include_bytes!("sdk-contract-wire.rs"),
     ),
@@ -529,6 +708,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut out = None;
     let mut root = None;
     let mut evidence = None;
+    let mut profile = ProductProfile::AllLanguages;
     while let Some(argument) = args.next() {
         if argument == "--out" {
             out = Some(PathBuf::from(
@@ -543,6 +723,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             evidence = Some(PathBuf::from(
                 args.next().ok_or("--evidence requires a JSON file")?,
             ));
+        } else if argument == "--profile" {
+            profile = ProductProfile::parse(
+                args.next().ok_or("--profile requires a value")?.as_str(),
+            )?;
         } else {
             return Err(format!("unknown argument: {argument}").into());
         }
@@ -562,12 +746,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         "generate-products" => {
             let root = root.ok_or("generate-products requires --root")?;
             let destination = out.as_deref().unwrap_or(root.as_path());
-            generate_products(&root, destination)
+            generate_products(&root, destination, profile)
         }
         "check-products" => {
             let root = root.ok_or("check-products requires --root")?;
             let destination = out.as_deref().unwrap_or(root.as_path());
-            check_products(&root, destination)
+            check_products(&root, destination, profile)
         }
         _ => Err(format!(
             "unknown command: {command}; expected generate, check, generate-products, or check-products"
@@ -576,7 +760,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn product_artifacts(root: &Path) -> Result<Vec<GeneratedArtifact>, Box<dyn Error>> {
+fn product_artifacts(
+    root: &Path,
+    profile: ProductProfile,
+) -> Result<Vec<GeneratedArtifact>, Box<dyn Error>> {
     let mut artifacts = vec![
         (
             "generated/sdk/type-policy.json".to_owned(),
@@ -724,11 +911,15 @@ fn product_artifacts(root: &Path) -> Result<Vec<GeneratedArtifact>, Box<dyn Erro
         artifacts.push((path.to_owned(), source.into_bytes()));
     }
     let _ = fs::remove_dir_all(staging);
-    Ok(artifacts)
+    filter_product_artifacts_for_profile(artifacts, profile)
 }
 
-fn generate_products(root: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
-    for (relative, expected) in product_artifacts(root)? {
+fn generate_products(
+    root: &Path,
+    destination: &Path,
+    profile: ProductProfile,
+) -> Result<(), Box<dyn Error>> {
+    for (relative, expected) in product_artifacts(root, profile)? {
         let path = destination.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -739,9 +930,13 @@ fn generate_products(root: &Path, destination: &Path) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-fn check_products(root: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
+fn check_products(
+    root: &Path,
+    destination: &Path,
+    profile: ProductProfile,
+) -> Result<(), Box<dyn Error>> {
     let mut drifted = Vec::new();
-    for (relative, expected) in product_artifacts(root)? {
+    for (relative, expected) in product_artifacts(root, profile)? {
         let path = destination.join(relative);
         match fs::read(&path) {
             Ok(actual) if actual == expected => println!("checked {}", path.display()),
@@ -1579,15 +1774,19 @@ fn find_message<'a>(
     None
 }
 
-fn model_source_revision() -> String {
+fn model_source_revision_for(sources: &[(&str, &[u8])]) -> String {
     let mut canonical = Vec::new();
-    for (path, bytes) in MODEL_SOURCES {
+    for (path, bytes) in sources {
         canonical.extend_from_slice(path.as_bytes());
         canonical.push(0);
         canonical.extend_from_slice(bytes);
         canonical.push(0);
     }
     sha256_hex(&canonical)
+}
+
+fn model_source_revision() -> String {
+    model_source_revision_for(MODEL_SOURCES)
 }
 
 /// Verify the package-local provenance snapshots against the checkout when a
@@ -1779,6 +1978,147 @@ mod tests {
             .expect_err("mutated provenance snapshot must fail closed");
         assert!(error.to_string().contains("sdk-contract-options/src/lib.rs"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn model_source_inventory_is_unique_and_nonempty() {
+        for (index, (path, bytes)) in MODEL_SOURCES.iter().enumerate() {
+            assert!(!path.is_empty(), "model source path {index} is empty");
+            assert!(!bytes.is_empty(), "model source {path} is empty");
+            assert!(
+                MODEL_SOURCES[index + 1..]
+                    .iter()
+                    .all(|(other, _)| other != path),
+                "model source {path} is listed more than once"
+            );
+        }
+
+        for path in [
+            "rust/crates/sdk-contract-wire/src/csharp_typed_facades.rs",
+            "rust/crates/sdk-contract-wire/src/embedded_capabilities.rs",
+            "rust/crates/sdk-contract-wire/src/embedded_facades.rs",
+            "rust/crates/sdk-contract-wire/src/facades.rs",
+            "rust/crates/sdk-contract-wire/src/facades_python_go.rs",
+            "rust/crates/sdk-contract-wire/src/php_runtime.rs",
+            "rust/crates/sdk-contract-wire/src/portable_typed_facades.rs",
+            "rust/crates/sdk-contract-wire/src/product_paths.rs",
+            "rust/crates/sdk-contract-wire/src/remote_limits.rs",
+            "rust/crates/sdk-contract-wire/src/semantic_oracle.rs",
+            "rust/crates/sdk-contract-wire/src/semantic_oracle/actors.rs",
+            "rust/crates/sdk-contract-wire/src/semantic_oracle/inference.rs",
+            "rust/crates/sdk-contract-wire/src/semantic_oracle/machines.rs",
+            "rust/crates/sdk-contract-wire/src/semantic_oracle/objects.rs",
+            "rust/crates/sdk-contract-wire/src/semantic_oracle/stream.rs",
+            "rust/crates/sdk-contract-wire/src/semantic_oracle/workers.rs",
+            "rust/crates/sdk-contract-wire/src/swift_cpp_typed_facades.rs",
+            "rust/crates/sdk-contract-wire/src/transport.rs",
+            "rust/crates/sdk-contract-wire/src/typed_facades.rs",
+            "rust/crates/sdk-contract-wire/src/wire_semantics.rs",
+        ] {
+            assert!(
+                MODEL_SOURCES.iter().any(|(candidate, _)| *candidate == path),
+                "emitter source {path} is absent from the model inventory"
+            );
+        }
+    }
+
+    fn recursive_model_source_paths(root: &str) -> Vec<String> {
+        let mut pending = vec![root.to_owned()];
+        let mut visited = BTreeSet::new();
+        while let Some(path) = pending.pop() {
+            if !visited.insert(path.clone()) {
+                continue;
+            }
+            let (_, bytes) = MODEL_SOURCES
+                .iter()
+                .find(|(candidate, _)| *candidate == path)
+                .unwrap_or_else(|| panic!("module {path} is absent from the model inventory"));
+            let source = std::str::from_utf8(bytes).expect("model source is UTF-8");
+            let directory = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+            let file_name = path.rsplit('/').next().expect("model source has a file name");
+            let module_directory = if file_name == "mod.rs" {
+                directory.to_owned()
+            } else {
+                let stem = file_name
+                    .strip_suffix(".rs")
+                    .expect("model source has a Rust extension");
+                if directory.is_empty() {
+                    stem.to_owned()
+                } else {
+                    format!("{directory}/{stem}")
+                }
+            };
+            for declaration in source.lines().map(str::trim) {
+                let declaration = declaration
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| declaration.strip_prefix("pub "))
+                    .unwrap_or(declaration);
+                let Some(name) = declaration
+                    .strip_prefix("mod ")
+                    .and_then(|name| name.strip_suffix(';'))
+                else {
+                    continue;
+                };
+                let child = if module_directory.is_empty() {
+                    format!("{name}.rs")
+                } else {
+                    format!("{module_directory}/{name}.rs")
+                };
+                assert!(
+                    MODEL_SOURCES.iter().any(|(candidate, _)| *candidate == child),
+                    "module declaration {child} is absent from the model inventory"
+                );
+                pending.push(child);
+            }
+        }
+        visited.into_iter().collect()
+    }
+
+    #[test]
+    fn semantic_oracle_child_edits_change_model_identity() {
+        let original = model_source_revision();
+        let root = "rust/crates/sdk-contract-wire/src/semantic_oracle.rs";
+        let child_paths = recursive_model_source_paths(root)
+            .into_iter()
+            .filter(|path| path != root)
+            .collect::<Vec<_>>();
+        assert!(!child_paths.is_empty(), "semantic-oracle module graph has no children");
+        for child_path in child_paths {
+            let mut sources = MODEL_SOURCES
+                .iter()
+                .map(|(path, bytes)| ((*path).to_owned(), bytes.to_vec()))
+                .collect::<Vec<_>>();
+            let child = sources
+                .iter_mut()
+                .find(|(path, _)| path.as_str() == child_path)
+                .expect("semantic-oracle child is in the model inventory");
+            child.1[0] ^= 0xff;
+            let edited = sources
+                .iter()
+                .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+                .collect::<Vec<_>>();
+            assert_ne!(
+                original,
+                model_source_revision_for(&edited),
+                "editing {child_path} must change the model identity"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_product_profile_rejects_unclassified_paths() {
+        let error = filter_product_artifacts_for_profile(
+            vec![("future-language/generated.rs".to_owned(), Vec::new())],
+            ProductProfile::RustTypescriptDocs,
+        )
+        .expect_err("unclassified product paths must fail closed");
+        assert!(error.to_string().contains("unclassified product artifact path"));
+        let deferred = filter_product_artifacts_for_profile(
+            vec![("python/generated.py".to_owned(), Vec::new())],
+            ProductProfile::RustTypescriptDocs,
+        )
+        .expect("known foreign-language paths remain explicitly deferred");
+        assert!(deferred.is_empty());
     }
 
     fn evidence_item() -> Value {
