@@ -10,10 +10,14 @@ The findings below were recorded before the follow-up model correction on the
 current branch. `SwarmMessage.tla` now permits completion of an already
 admitted message after cancellation while retaining a pre-admission rejection
 invariant. `ForkBoundary.tla` now separates immutable inherited capture from
-publication revision, models proven rebind, and qualifies a selected-child
-subset. The runtime tests and exporter still need to establish those
-correspondences; the corrections are bounded model changes, not a Rust
-refinement proof.
+publication revision, models proven rebind, qualifies a selected-child subset,
+and advances selected children through explicit sequential preparation and
+publication states. It also models idempotent retry after a lost publication
+acknowledgement and negative controls for duplicate publication, early child
+request, and stale publication ownership. The runtime tests and exporter still
+need to establish those correspondences; the corrections are bounded model
+changes, not a Rust refinement proof. The model does not claim journal replay,
+rollback of a partially prepared batch, or activation-claim recovery.
 
 ## Findings
 

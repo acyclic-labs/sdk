@@ -61,14 +61,19 @@ or whole-swarm verification. The locked acceptance matrix remains required.
 ## Completed fork boundary model
 
 `ForkBoundary.tla` models a possible child set with a selected batch subset and
-three parent revisions. It checks that every selected child is bound and the
-ordered triggering exchange is complete before dispatch, while unselected plans
-remain outside the batch. The immutable inherited boundary (`pinnedRevision` /
-`captured`) is separate from the parent publication revision. A proven rebind
-may update the latter without rewriting inherited model-input identity. Two
-negative controls separately permit early dispatch and mutable capture refresh;
-both must produce their expected invariant violation. The shared checker also
-qualifies a one-child selected batch:
+three parent revisions. Preparation and publication are explicit per-child
+states, so a batch can be partially prepared or published before the ordered
+exchange completes. It checks that every selected child is bound and the
+triggering exchange is complete before dispatch, while unselected plans remain
+outside the batch. A lost publication acknowledgement is represented by
+`RetryPublish`; the safe transition is idempotent, while the duplicate control
+allows a second physical publication. The immutable inherited boundary
+(`pinnedRevision` / `captured`) is separate from the parent publication
+revision. A proven rebind may update the latter without rewriting inherited
+model-input identity. Negative controls cover early dispatch, early child
+request, mutable capture refresh, duplicate physical publication, and stale
+publication ownership. The shared checker also qualifies a one-child selected
+batch:
 
 ```powershell
 ./check-models.ps1 -Model ForkBoundary -ToolsJar C:/tools/tla2tools.jar -EvidenceDirectory C:/evidence/forks
@@ -76,15 +81,18 @@ qualifies a one-child selected batch:
 
 The correspondence is `LocalModelForkPublisher::publish`'s selected-plan
 barrier and the frozen declaration consumed by `inherited_task_bundle`; the
-publication revision models the separately proven parent-stream rebind.
-This is a design model, not an implementation conformance proof. Captures are
-abstract immutable revision identities: it does not check serialization bytes,
-reference authorization, storage corruption, recursive depth, crashes, or
-scheduler progress. The real provider-input and recursive-fork tests remain
-necessary. In the current implementation (`ebd74c762`), the publisher first
-completes the durable admission barrier and then enqueues an owned child worker;
-the parent publication does not wait for child model completion. This safety
-model still does not establish live parent-child communication.
+publication revision models the separately proven parent-stream rebind. The
+sequential states deliberately cover partial preparation and a retry after a
+lost acknowledgement, but they do not model rollback, journal replay, or
+worker activation claims. This is a bounded design model, not an
+implementation conformance proof. Captures are abstract immutable revision
+identities: it does not check serialization bytes, reference authorization,
+storage corruption, recursive depth, crashes, or scheduler progress. The real
+provider-input and recursive-fork tests remain necessary. In the current
+implementation (`ebd74c762`), the publisher first completes the durable
+admission barrier and then enqueues an owned child worker; the parent
+publication does not wait for child model completion. This safety model still
+does not establish live parent-child communication.
 
 ## Verification direction
 
@@ -195,7 +203,7 @@ for this bounded run, not a proof of the production implementation.
 | Publication | one child; generations `0..1` | `SwarmPublication` | stale publication violates `PublicationAtCapturedGeneration` |
 | Message delivery | one durable message; delivery count `0..2` | `SwarmMessage` | duplicate and orphan delivery violate `AtMostOnce` / `DeliveredRequiresAdmission`; pre-admission cancellation delivery violates `PreAdmissionCancellationNeverDelivered` while admitted delivery may finish |
 | Activation recovery | one operation; two owner identities | `ActivationRecovery` | dropping an admitted claim violates `AdmittedClaimRetained` |
-| Fork boundary | two possible children; selected subset; three parent revisions | `ForkBoundary` | early dispatch and mutable capture violate their boundary invariants |
+| Fork boundary | two possible children; selected subset; sequential prepare/publish; retry dedup; three parent revisions | `ForkBoundary` | early dispatch, early child request, mutable capture, duplicate publication, and stale owner violate their boundary invariants |
 | Integration and approval | four agents; root `1`; children `2,4`; grandchild `3`; generations `0..1`; explicit integrate/discard | `SwarmIntegration` | sibling integration, grandchild writeback, stale approval, and mismatched approval each reach an effect and violate the scoped invariant |
 
 These results establish finite transition safety for the model states and

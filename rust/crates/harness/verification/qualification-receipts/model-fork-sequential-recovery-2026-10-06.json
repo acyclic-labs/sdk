@@ -1,0 +1,97 @@
+{
+  "schema": "bounded-tlc-qualification/v1",
+  "generated_utc": "2026-10-06T00:53:07.2787990Z",
+  "tool": {
+    "path": "target/formal-tools/tla2tools-1.7.4.jar",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "expected_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "runner": "rust/crates/harness/verification/check-models.ps1",
+    "workers": 1,
+    "java_heap_mb": 512,
+    "fingerprint_index": 0,
+    "seed": 1
+  },
+  "scope": {
+    "model": "ForkBoundary",
+    "cases": 7,
+    "safe_cases": 2,
+    "expected_counterexamples": 5,
+    "bounds": "Children={childA,childB}; Selected is either both children or childA; parentRevision, ownerEpoch, pinnedRevision, and publicationRevision are bounded to 0..2; per-child publicationCount is bounded to 0..2.",
+    "claims": "finite bounded safety only; no Rust refinement, liveness, unbounded recursion, OS confinement, crash journal replay, rollback, or runtime-trace qualification",
+    "covered": "immutable capture, sequential selected-child preparation/publication, complete exchange before child request/dispatch, lost-ack retry dedup, publication-owner fencing, and publication revision rebinding",
+    "runtime_gap": "The production publisher can leave a partially prepared batch across a fault and has activation/recovery records not represented by this model."
+  },
+  "sources": {
+    "rust/crates/harness/verification/ForkBoundary.tla": "0ef86c6e8bbb716cbc76b970aa76f017c6448c73f3c01763626e6bcd67141f03",
+    "rust/crates/harness/verification/ForkBoundary.cfg": "69d7223c4c3018cf5837888d7ce950303558fb0daa1a003ed7ec951111598df0",
+    "rust/crates/harness/verification/ForkBoundarySingleSelected.cfg": "d22340468ff618b397a7302b407ed8c4fb6bf1fe246d3957c049eebaad61c45f",
+    "rust/crates/harness/verification/ForkBoundaryEarlyDispatch.cfg": "cdd1892ad54a4c3f0447e29a6c594b2d7eb3d05883116551b2a501926b7a3b93",
+    "rust/crates/harness/verification/ForkBoundaryMutableCapture.cfg": "6c7055ac2eb723f390f5b99ddd4b8123c85df3f49bb842384ffbf73d75612a46",
+    "rust/crates/harness/verification/ForkBoundaryEarlyChildRequest.cfg": "8cd355f31abfd474412e7701a29843598c620bc8121ae85b6112bc2fdc92a979",
+    "rust/crates/harness/verification/ForkBoundaryDuplicatePublication.cfg": "5dbd404eafb30625d827b5fa7dbe31417510daf161190957c2f715a2f5e109c0",
+    "rust/crates/harness/verification/ForkBoundaryStaleOwner.cfg": "ee7aa01f369f3a9668f46917b14860c0b9879a67e11da2586e209eb74d3b0b8d",
+    "rust/crates/harness/verification/check-models.ps1": "e8247656ff9c939704bdc1d88ad223f386f8584f23e21b65fbb24b1961481857",
+    "rust/crates/harness/verification/README.md": "b6c73e6f1f2db5b2f0e75417f5945c986fe6a9d4a967f9a23fbde51f2bbe6bda",
+    "rust/crates/harness/verification/refinement-audit-2026-10-06.md": "1d1efa8c596e6529e269d66363b4498fb42357332b0c6a6c2da58ee84b1e6e8f"
+  },
+  "results": [
+    {
+      "path": "target\\formal-evidence\\fork-sequential-recovery-20261006-qualified\\03567648c83145519685fd931833e3a9-safe.log",
+      "sha256": "b7995327a63f52e357d4e31ad5482e462286618de758a638e5ca4e9b7891f4e7",
+      "status": "safe",
+      "states_generated": 10875,
+      "distinct_states": 2947,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\fork-sequential-recovery-20261006-qualified\\03567648c83145519685fd931833e3a9-safe-single-selected.log",
+      "sha256": "2d82e30fa49946f663db5a286b2900b6d6462a34435e136bd6f8952ccd421d83",
+      "status": "safe",
+      "states_generated": 1003,
+      "distinct_states": 387,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\fork-sequential-recovery-20261006-qualified\\03567648c83145519685fd931833e3a9-early-dispatch.log",
+      "sha256": "7c5c5437570d9d9637a07546f39cbb323f7b147b45a3f29889df2ceea7657b9d",
+      "status": "expected-counterexample",
+      "states_generated": 835,
+      "distinct_states": 528,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\fork-sequential-recovery-20261006-qualified\\03567648c83145519685fd931833e3a9-mutable-capture.log",
+      "sha256": "395f6d56366d662a8cb3bfa1b4a11302baded4cb699bdeacdfdf170c839b7972",
+      "status": "expected-counterexample",
+      "states_generated": 49,
+      "distinct_states": 40,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\fork-sequential-recovery-20261006-qualified\\03567648c83145519685fd931833e3a9-early-child-request.log",
+      "sha256": "21537d003d8827d9512628119d43a8efb1779e26c3f2026f5fb7988c7730ca6f",
+      "status": "expected-counterexample",
+      "states_generated": 387,
+      "distinct_states": 277,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\fork-sequential-recovery-20261006-qualified\\03567648c83145519685fd931833e3a9-duplicate-publication.log",
+      "sha256": "9457cd2807d75e11ede8f2e6689946084b2a814f1b54a9cbcda399303bc71c8e",
+      "status": "expected-counterexample",
+      "states_generated": 385,
+      "distinct_states": 276,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\fork-sequential-recovery-20261006-qualified\\03567648c83145519685fd931833e3a9-stale-owner.log",
+      "sha256": "4d600a5eeb31b86eca79c099469b1ca151bab0e36865859812e98d912fe02a99",
+      "status": "expected-counterexample",
+      "states_generated": 375,
+      "distinct_states": 266,
+      "completed": true
+    }
+  ],
+  "source_tree_commit": "6da56f4ae",
+  "qualification_source_head_before_commit": "6da56f4ae"
+}

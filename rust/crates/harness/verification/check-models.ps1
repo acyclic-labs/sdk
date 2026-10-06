@@ -21,7 +21,10 @@ $cases = if ($Model -eq 'ActivationRecovery') { @(
     @{ Name = 'safe'; Config = 'ForkBoundary.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'safe-single-selected'; Config = 'ForkBoundarySingleSelected.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'early-dispatch'; Config = 'ForkBoundaryEarlyDispatch.cfg'; Exit = 12; Expected = 'Invariant DispatchRequiresCompleteBatch is violated.' },
-    @{ Name = 'mutable-capture'; Config = 'ForkBoundaryMutableCapture.cfg'; Exit = 12; Expected = 'Invariant InheritedCaptureRemainsPinned is violated.' }
+    @{ Name = 'mutable-capture'; Config = 'ForkBoundaryMutableCapture.cfg'; Exit = 12; Expected = 'Invariant InheritedCaptureRemainsPinned is violated.' },
+    @{ Name = 'early-child-request'; Config = 'ForkBoundaryEarlyChildRequest.cfg'; Exit = 12; Expected = 'Invariant ChildRequestRequiresCompleteBatch is violated.' },
+    @{ Name = 'duplicate-publication'; Config = 'ForkBoundaryDuplicatePublication.cfg'; Exit = 12; Expected = 'Invariant AtMostOncePhysicalPublication is violated.' },
+    @{ Name = 'stale-owner'; Config = 'ForkBoundaryStaleOwner.cfg'; Exit = 12; Expected = 'Invariant PublicationOwnerMatchesPreparation is violated.' }
 ) } elseif ($Model -eq 'SwarmAuthority') { @(
     @{ Name = 'safe'; Config = 'SwarmAuthority.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe-authority'; Config = 'SwarmAuthorityUnsafe.cfg'; Exit = 12; Expected = 'Invariant DirectMessageAuthority is violated.' },
